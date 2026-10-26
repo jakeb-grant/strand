@@ -1030,3 +1030,899 @@ page   = "site/help/troubleshooting.md"
 text   = "it back, `strand reload --hard` drops every state that is not `persist`"
 source = ["crates/strand-compiler/src/instantiate/mod.rs:1448"]
 proof  = "crates/strand/src/run/tests.rs::saves_reload_live_with_state_kept"
+
+# --- concepts-howto ---
+
+[[claim]]
+page   = "site/how-to/calendar-popup.md"
+text   = "`state open = false` is"
+source = ["docs/spec.md:602"]
+proof  = "read: state directly in a component's body is one cell per instance; the page's config checks clean (strand-site build)"
+
+[[claim]]
+page   = "site/how-to/calendar-popup.md"
+text   = "When Escape or a click away closes it, the popup"
+source = ["docs/spec.md:295"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/calendar-popup.md"
+text   = "On a bar it opens away from the bar's edge"
+source = ["docs/spec.md:310"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/calendar-popup.md"
+text   = "is true while the popup named `cal` is open"
+source = ["docs/spec.md:948"]
+proof  = "read: `p.open` of the popup with `id: p`"
+
+[[claim]]
+page   = "site/how-to/calendar-popup.md"
+text   = "shows minutes, so it wakes the"
+source = ["docs/reference/services.md:141"]
+proof  = "crates/strand-compiler/tests/instantiate.rs (the_hello_bar_clock_ticks_once_a_minute, docs/features.md)"
+
+[[claim]]
+page   = "site/how-to/calendar-popup.md"
+text   = "gives the days of the weeks that cover"
+source = ["docs/reference/services.md:115"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/calendar-popup.md"
+text   = "A popup keeps a 6 px gap from the"
+source = ["docs/spec.md:313"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/launcher.md"
+text   = "`strand toggle` flips an exported `bool` state."
+source = ["docs/spec.md:2051"]
+proof  = "crates/strand/src/run/request/toggle.rs:1"
+
+[[claim]]
+page   = "site/how-to/launcher.md"
+text   = "matches the apps' names fuzzily, then their"
+source = ["docs/reference/services.md:20"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/launcher.md"
+text   = "An empty query lists every app, the most used"
+source = ["docs/reference/services.md:20"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/launcher.md"
+text   = "its last result while the next one runs"
+source = ["docs/spec.md:1581"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/launcher.md"
+text   = "lays out and mounts only its visible rows"
+source = ["docs/spec.md:1111"]
+proof  = "crates/strand-render/tests/layout.rs::a_2000_row_list_lays_out_only_visible_rows"
+
+[[claim]]
+page   = "site/how-to/launcher.md"
+text   = "sends the arrow keys and Return from the input to"
+source = ["docs/spec.md:1257"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/launcher.md"
+text   = "lists the extra"
+source = ["docs/reference/types.md:57"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/notifications.md"
+text   = "Only one program can own the notification service on the session bus."
+source = ["crates/strand-services/src/notifications.rs:56"]
+proof  = "read: the name is asked for without queueing and a notice names the owner"
+
+[[claim]]
+page   = "site/how-to/notifications.md"
+text   = "is the list of notifications to show now."
+source = ["docs/reference/services.md:340"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/notifications.md"
+text   = "The time is the sender's, or six"
+source = ["docs/reference/types.md:368"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/notifications.md"
+text   = "siblings slide up to fill the gap"
+source = ["docs/spec.md:1138"]
+proof  = "crates/strand-render/tests/motion.rs::a_leaving_toast_lets_the_next_slide_up_in_a_content_sized_panel"
+
+[[claim]]
+page   = "site/how-to/notifications.md"
+text   = "no timers of its own, and only a card counts down."
+source = ["crates/strand-services/src/notifications.rs:29"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/notifications.md"
+text   = "for senders that say (0 to 1)."
+source = ["docs/reference/types.md:372"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/notifications.md"
+text   = "keeps"
+source = ["docs/spec.md:628"]
+proof  = "read: `persist` keeps the value across restarts"
+
+[[claim]]
+page   = "site/how-to/osd.md"
+text   = "is on the focused monitor, above everything,"
+source = ["docs/spec.md:279"]
+proof  = "crates/strand-scene/src/surface.rs:340 (Osd => Layer::Overlay), crates/strand-surface/src/placement.rs:48 (click_through)"
+
+[[claim]]
+page   = "site/how-to/osd.md"
+text   = "the first value, nor for a value a reload writes, nor when"
+source = ["docs/spec.md:1528"]
+proof  = "crates/strand-core/tests/graph.rs::on_change_skips_first_value; crates/strand-core/tests/handler_semantics.rs::on_change_keyed_ignores_a_sink_switch (docs/features.md)"
+
+[[claim]]
+page   = "site/how-to/osd.md"
+text   = "waits for quiet: it runs once, 1.2"
+source = ["docs/spec.md:1542"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/osd.md"
+text   = "a step from the value it has now, and it never goes below 0."
+source = ["docs/spec.md:2050"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/osd.md"
+text   = "rolls the digits when"
+source = ["docs/reference/elements.md:775"]
+proof  = "crates/strand-render/tests/effects.rs::rolling_numbers_roll_only_the_changed_digit"
+
+[[claim]]
+page   = "site/how-to/osd.md"
+text   = "puts a copy on each"
+source = ["docs/spec.md:281"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/osd.md"
+text   = "fades out 1.2 seconds after the last one."
+source = ["eval/scenarios/docs/osd.scn:1"]
+proof  = "seen in its frames (site/media/osd.json, scripts/site/media.sh osd)"
+
+[[claim]]
+page   = "site/how-to/wallpaper-theme.md"
+text   = "quantises a 128 px downscale of the image away from the logic thread,"
+source = ["crates/strand-theme/src/image.rs:35"]
+proof  = "docs/spec.md:1721; docs/features.md:130"
+
+[[claim]]
+page   = "site/how-to/wallpaper-theme.md"
+text   = "While a new picture is read the old palette holds,"
+source = ["docs/spec.md:1768"]
+proof  = "docs/features.md:130"
+
+[[claim]]
+page   = "site/how-to/wallpaper-theme.md"
+text   = "**The file is watched**, and so is the target of a link to it."
+source = ["docs/features.md:131"]
+proof  = "read: the features line names its tests"
+
+[[claim]]
+page   = "site/how-to/wallpaper-theme.md"
+text   = "**The last palette is kept** across restarts"
+source = ["docs/spec.md:1768"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/wallpaper-theme.md"
+text   = "`vibrant`, `expressive`, `neutral`, `monochrome`, `fidelity`,"
+source = ["docs/reference/types.md:739"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/wallpaper-theme.md"
+text   = "contrast preference, 0 for normal and 1 for high."
+source = ["docs/reference/services.md:452"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/wallpaper-theme.md"
+text   = "Strand ships no per-app themes or templates"
+source = ["docs/design.md:426"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/wallpaper-theme.md"
+text   = "config and is plain TOML; Strand makes it the first time a value is"
+source = ["docs/spec.md:1988"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "A relative path is beside your config"
+source = ["docs/spec.md:1984"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "**A bad value keeps that field's last good value**"
+source = ["docs/spec.md:1988"]
+proof  = "crates/strand-core/tests/settings.rs"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "writes the file, keeping its comments, spacing and order."
+source = ["docs/spec.md:1996"]
+proof  = "crates/strand-compiler/tests/instantiate.rs::strand_set_reaches_settings_that_are_not_exported"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "Writes are saved after 250 ms of"
+source = ["docs/spec.md:1996"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "when two files declare settings named `prefs`, only that form works."
+source = ["crates/strand-compiler/src/instantiate/mod.rs:2123"]
+proof  = "read: set_text's export() refuses an ambiguous bare name"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "variant by name for an enum"
+source = ["crates/strand-compiler/src/vm/persist.rs:64"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "Writes follow symbolic links and replace the file through a temporary"
+source = ["docs/spec.md:1998"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "`export state prefs from …` would let other"
+source = ["docs/spec.md:631"]
+proof  = "checked offline: a second file reading `bar.prefs.seconds` checks clean (strand-site build, tried during writing)"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "is its `ActiveProfile`"
+source = ["docs/spec.md:660"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "The call does not hold the service up, and its answer is waited for"
+source = ["docs/spec.md:832"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "When Strand"
+source = ["docs/spec.md:835"]
+proof  = "read: the methods not read means not checked, with a warning"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "stops 5 s after its last reader goes, as the built-in ones do."
+source = ["docs/spec.md:701"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "parameter is exactly one argument, never split on spaces, and no"
+source = ["docs/spec.md:736"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "whose program it does not allow is a load error."
+source = ["docs/spec.md:731"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "lists every action with its command"
+source = ["docs/spec.md:820"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "**It runs detached.** The handler does not wait for it."
+source = ["docs/spec.md:749"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "it has 10 seconds, as a polled command has;"
+source = ["docs/spec.md:785"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "key=value` lines."
+source = ["docs/spec.md:764"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "(`SIGINT`, then `SIGTERM` and `SIGKILL` if the program"
+source = ["docs/spec.md:806"]
+proof  = "read"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "strand call notifications.clear"
+source = ["crates/strand/tests/m5/cli.rs:516"]
+proof  = "the test"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "git-only and marked unstable"
+source = ["docs/spec.md:705"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "directories deep, is loaded. There are no imports and no entry file:"
+source = ["docs/spec.md:105"]
+proof  = "docs/spec.md:111"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "(components, surfaces, enums, types, functions, token sets, actions and"
+source = ["docs/spec.md:119"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "`font`, `weight` and `color` are"
+source = ["docs/spec.md:902"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "and the last one"
+source = ["docs/spec.md:912"]
+proof  = "read: source order wins"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "(a bare number is px)"
+source = ["docs/spec.md:1356"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "joined with `+`; no interpolation"
+source = ["docs/spec.md:1323"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "A value that might be `null` must be unwrapped with `?.` or `??`"
+source = ["docs/spec.md:1330"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "`match` must cover every case."
+source = ["docs/spec.md:1442"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "A list of plain values names its key"
+source = ["docs/spec.md:1098"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "place where values are written and actions run."
+source = ["docs/spec.md:1509"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "shell checks each save the same way, and keeps running the last good"
+source = ["docs/spec.md:1974"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "recomputed only when something it reads has changed, and only"
+source = ["docs/spec.md:1451"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "- when nothing is written, nothing runs and no frame is drawn."
+source = ["docs/spec.md:1457"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "consistent set of values, never a mix of old and new"
+source = ["docs/spec.md:1492"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "is a load error with a fix."
+source = ["docs/spec.md:1509"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "| Directly in a surface's block | Each instance of the surface (a bar has one per monitor) |"
+source = ["docs/spec.md:602"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "The target must be writable: a `state`, a"
+source = ["docs/spec.md:1563"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "using an `Async<T>` where a `T` is needed is a load error"
+source = ["docs/spec.md:1588"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "for six seconds in all"
+source = ["docs/spec.md:1544"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "every one is delivered, in order."
+source = ["docs/spec.md:1497"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "A handler that writes one cell more than 30 times a second is"
+source = ["docs/spec.md:1608"]
+proof  = "crates/strand-core/tests/feedback.rs::more_than_thirty_writes_per_second_warns_and_throttles"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "Your input does not count"
+source = ["docs/spec.md:1614"]
+proof  = "crates/strand-core/tests/feedback.rs::smooth_input_scrolling_is_neither_warned_nor_delayed"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "Material 3's roles one to one, plus 13 hue roles"
+source = ["docs/spec.md:1650"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "material(seed: system.accent ?? #7aa2f7, dark: system.dark, contrast: system.contrast)"
+source = ["docs/spec.md:1719"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "the built-in theme. `extends roomy` starts a set from another one,"
+source = ["docs/spec.md:1684"]
+proof  = "the page's config checks clean (strand-site build)"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "some base tokens, as `roomy` names only `space`, takes the rest from"
+source = ["docs/spec.md:1719"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "Both are expressions, so the choice is live"
+source = ["docs/spec.md:1696"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "schemes, matugen output and W3C design-token files."
+source = ["docs/spec.md:1723"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "A raw hex colour in a prop is a warning"
+source = ["docs/spec.md:1699"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "is not a loop."
+source = ["docs/spec.md:1706"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "Only the palette's roles spring to their new values, in OKLab."
+source = ["docs/spec.md:1777"]
+proof  = "crates/strand-render/tests/theme_swap.rs"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "Text keeps a contrast of at least 3:1 against its background"
+source = ["docs/spec.md:1779"]
+proof  = "docs/features.md:128"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "never with the in-between ones."
+source = ["docs/spec.md:1784"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "little toward your accent."
+source = ["docs/spec.md:1732"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "sets a token for the running shell"
+source = ["docs/guide/level-5.md:146"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "month. The last palette is kept"
+source = ["docs/spec.md:1768"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/layout.md"
+text   = "with `center` centred on the whole whatever the others hold"
+source = ["docs/spec.md:1164"]
+proof  = "crates/strand-render/tests/layout.rs::split_centre_is_truly_centred (docs/features.md)"
+
+[[claim]]
+page   = "site/concepts/layout.md"
+text   = "fills the stack on an axis where it has no size of its own"
+source = ["docs/spec.md:1154"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/layout.md"
+text   = "`icon` with a size in pixels or `ch` does not shrink unless you say"
+source = ["docs/spec.md:1169"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/layout.md"
+text   = "A query switches with 4 px of slack"
+source = ["docs/spec.md:959"]
+proof  = "crates/strand-compiler/tests/instantiate.rs::container_queries_have_hysteresis"
+
+[[claim]]
+page   = "site/concepts/layout.md"
+text   = "and `opacity` move or fade what is already laid out"
+source = ["docs/spec.md:1135"]
+proof  = "crates/strand-render/tests/motion.rs::paint_only_springs_never_relayout"
+
+[[claim]]
+page   = "site/concepts/layout.md"
+text   = "the nearest ancestor whose size does not change"
+source = ["docs/spec.md:1135"]
+proof  = "crates/strand-render/tests/motion.rs::size_springs_relayout_only_under_the_nearest_size_stable_ancestor"
+
+[[claim]]
+page   = "site/concepts/layout.md"
+text   = "springs its own size when that changes, growing and shrinking alike."
+source = ["docs/features.md:121"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/motion.md"
+text   = "fades in over 160 ms and out over a second."
+source = ["docs/spec.md:1124"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/motion.md"
+text   = "Without an `exit`, a node leaves the way"
+source = ["docs/spec.md:1138"]
+proof  = "crates/strand-render/tests/motion.rs::enter_and_exit_poses_and_siblings_slide_to_fill_the_gap"
+
+[[claim]]
+page   = "site/concepts/motion.md"
+text   = "Poses work on surfaces, the branches of an `if`, the copies of a `for`,"
+source = ["docs/spec.md:1141"]
+proof  = "crates/strand-render/tests/motion.rs::if_branches_list_rows_and_pages_enter_and_exit"
+
+[[claim]]
+page   = "site/concepts/motion.md"
+text   = "`play shake` plays it once on the node the handler is on"
+source = ["docs/spec.md:1144"]
+proof  = "crates/strand-render/tests/effects.rs::keyframes_play_once_and_restart_on_a_new_seq"
+
+[[claim]]
+page   = "site/concepts/motion.md"
+text   = "lengths such as `pad`"
+source = ["docs/spec.md:1128"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/motion.md"
+text   = "With the desktop's reduced-motion setting on, every transition is"
+source = ["docs/spec.md:1133"]
+proof  = "crates/strand-render/tests/effects.rs::reduced_motion_skips_keyframes_and_freezes_loops; crates/strand-render/tests/reduced_motion.rs"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "| `bar` | A strip along a screen edge | On every monitor, top edge, `top` layer; keeps its thickness free of windows |"
+source = ["crates/strand-scene/src/surface.rs:337"]
+proof  = "docs/spec.md:333"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "| `panel` | Launchers, notification stacks, dashboards | On the focused monitor, `top` layer; windows go under it |"
+source = ["crates/strand-scene/src/surface.rs:339"]
+proof  = "docs/spec.md:339"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "| `osd` | A passing display: volume, brightness | On the focused monitor, `overlay` layer; clicks pass through it |"
+source = ["docs/spec.md:279"]
+proof  = "crates/strand-surface/src/placement.rs:48"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "Each one has a stable namespace, `strand-<Name>`"
+source = ["docs/spec.md:376"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "close and `w.close()` do."
+source = ["docs/spec.md:295"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "`screen` is not in scope in it: reading it is a load error that says"
+source = ["docs/spec.md:287"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "seconds and come back with it if the monitor does."
+source = ["docs/spec.md:274"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "when a click or a key opened it."
+source = ["docs/spec.md:301"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "`layer:`, `anchor:`, `margin:` or `keyboard:` (each is a load error);"
+source = ["docs/spec.md:385"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "something in it must call `auth.submit`, or it is a load error"
+source = ["docs/spec.md:489"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "fails closed: if anything in it faults"
+source = ["docs/spec.md:491"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "A save that changes it waits until you unlock."
+source = ["docs/spec.md:1894"]
+proof  = "read: the reload table's `lock` row"
+
+[[claim]]
+page   = "site/concepts/services.md"
+text   = "Strand has 28 built-in services."
+source = ["docs/reference/services.md:1"]
+proof  = "counted: the reference's 28 `## ` service headings"
+
+[[claim]]
+page   = "site/concepts/services.md"
+text   = "goes away or is no longer shown."
+source = ["docs/spec.md:1458"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/services.md"
+text   = "`clock.format(\"%H:%M\")` wakes once a minute"
+source = ["docs/reference/services.md:141"]
+proof  = "docs/features.md: the_hello_bar_clock_ticks_once_a_minute"
+
+[[claim]]
+page   = "site/concepts/services.md"
+text   = "so a config can hide what cannot work."
+source = ["docs/spec.md:2021"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/services.md"
+text   = "| `from file` | A file (JSON, `key=value` lines or plain text), again each time it changes |"
+source = ["crates/strand-services/src/custom.rs:39"]
+proof  = "docs/spec.md:662"
+
+[[claim]]
+page   = "site/concepts/services.md"
+text   = "saving a change to its declaration restarts only"
+source = ["docs/spec.md:703"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/live-reload.md"
+text   = "| A `state`'s default | Taken only if the value was never changed | Yes, if you changed it |"
+source = ["docs/spec.md:1885"]
+proof  = "crates/strand/src/fuzz.rs::random_edits_through_five_save_styles (docs/features.md:106)"
+
+[[claim]]
+page   = "site/concepts/live-reload.md"
+text   = "resets with a warning: Strand never guesses."
+source = ["docs/spec.md:1913"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/live-reload.md"
+text   = "surface keeps it."
+source = ["docs/spec.md:1902"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/live-reload.md"
+text   = "launcher.query: kept \"fir\" (default changed) [reset]"
+source = ["docs/spec.md:1928"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/live-reload.md"
+text   = "Strand waits 15 ms after the last write"
+source = ["docs/spec.md:1963"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/live-reload.md"
+text   = "If an error is still there 250 ms after the save, an overlay opens"
+source = ["docs/spec.md:2006"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/live-reload.md"
+text   = "freezes only its own component, outlined in red"
+source = ["docs/spec.md:2011"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/live-reload.md"
+text   = "drops every state that is not `persist`"
+source = ["docs/spec.md:1958"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/live-reload.md"
+text   = "`strand watch` prints each reload as it happens"
+source = ["docs/spec.md:2057"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "Strand's wakes and no frame is drawn"
+source = ["crates/strand/tests/budgets.rs:1602"]
+proof  = "crates/strand/tests/budgets.rs::the_design_bar_on_the_real_services_keeps_the_budget"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "repaints at most 2,000 px²"
+source = ["crates/strand/src/demo/mod.rs:382"]
+proof  = "crates/strand/src/demo/mod.rs::a_minute_tick_repaints_at_most_2000_px2"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "200,000 pixels of damage"
+source = ["crates/strand-render/src/promote.rs:56"]
+proof  = "crates/strand-render/src/promote.rs::a_panel_opening_is_promoted_at_its_first_frame"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "or none, for 3 seconds."
+source = ["crates/strand-render/src/promote.rs:63"]
+proof  = "crates/strand-render/src/promote.rs::a_settled_surface_goes_back_after_the_settle_period"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "30 seconds of going back waits 15 seconds the next time"
+source = ["crates/strand-render/src/promote.rs:66"]
+proof  = "crates/strand-render/src/promote.rs:70"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "(4 ms or more a frame)"
+source = ["crates/strand-render/src/promote.rs:76"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "After 3 lost devices in one run the GPU"
+source = ["crates/strand-render/src/promote.rs:93"]
+proof  = "crates/strand-render/src/promote.rs::the_third_lost_device_turns_the_gpu_off"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "| design.md's bar on two monitors, no GPU | 42 MiB | 48 MiB | `the_design_bar_with_no_gpu_keeps_the_cold_budget` |"
+source = ["crates/strand/tests/budgets.rs:109"]
+proof  = "crates/strand/tests/budgets.rs::the_design_bar_with_no_gpu_keeps_the_cold_budget"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "76 MiB | 104 MiB | `the_full_shell_with_no_gpu_keeps_the_cold_budget` |"
+source = ["crates/strand/tests/budgets.rs:126"]
+proof  = "crates/strand/tests/budgets.rs::the_full_shell_with_no_gpu_keeps_the_cold_budget"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "242 MiB | 252 MiB | `the_design_bar_on_the_real_services_keeps_the_budget` |"
+source = ["crates/strand/tests/budgets.rs:144"]
+proof  = "crates/strand/tests/budgets.rs::the_design_bar_on_the_real_services_keeps_the_budget"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "296 MiB | 324 MiB | `the_full_shell_on_the_real_services_is_measured` |"
+source = ["crates/strand/tests/budgets.rs:146"]
+proof  = "crates/strand/tests/budgets.rs::the_full_shell_on_the_real_services_is_measured"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "| 35 ms at p95 |"
+source = ["crates/strand/src/bench.rs:772"]
+proof  = "crates/strand/src/bench.rs::reload_latency_to_the_presented_frame"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "| 50 ms at p95 |"
+source = ["crates/strand/src/bench.rs:772"]
+proof  = "crates/strand/src/bench.rs::reload_latency_to_the_presented_frame"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "| under 5 ms (median) |"
+source = ["crates/strand-render/tests/theme_swap_bench.rs:67"]
+proof  = "crates/strand-render/tests/theme_swap_bench.rs::a_theme_swap_is_under_five_milliseconds_of_work"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "median within a 120 Hz frame, p95 within a 60 Hz one"
+source = ["crates/strand-render/tests/anim_bench.rs:1827"]
+proof  = "crates/strand-render/tests/anim_bench.rs::animated_cpu_frames_hold_their_gates"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "over the frames drawn among its"
+source = ["docs/spec.md:2079"]
+proof  = "read"

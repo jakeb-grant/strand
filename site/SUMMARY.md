@@ -18,10 +18,24 @@
 - [Plugins](../docs/guide/plugins.md)
 
 ## How-to
-- [A calendar popup](how-to/calendar-popup.md)
+- [A bar with a calendar popup](how-to/calendar-popup.md)
+- [An app launcher](how-to/launcher.md)
+- [A notification stack](how-to/notifications.md)
+- [A volume and brightness OSD](how-to/osd.md)
+- [A theme from your wallpaper](how-to/wallpaper-theme.md)
+- [A settings file](how-to/settings-file.md)
+- [A D-Bus method or an action](how-to/dbus-and-actions.md)
 
 ## Concepts
+- [The language in brief](concepts/language.md)
+- [State and reactivity](concepts/state.md)
+- [Tokens and theming](concepts/theming.md)
+- [Layout](concepts/layout.md)
 - [Motion](concepts/motion.md)
+- [Surfaces and monitors](concepts/surfaces.md)
+- [Services](concepts/services.md)
+- [Live reload](concepts/live-reload.md)
+- [Performance](concepts/performance.md)
 
 ## Tools
 - [Editor setup](tools/editor.md)
