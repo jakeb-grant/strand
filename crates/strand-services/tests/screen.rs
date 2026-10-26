@@ -63,7 +63,17 @@ fn a_screen_shot_is_one_frame_of_its_monitor() {
         "no limit: the monitor's size"
     );
     assert_eq!(rgba(&red), [255, 0, 0, 255]);
-    let log = fake.captures.lock().unwrap().clone();
+    // A shot returns with its frame and then ends its session; the fake
+    // logs the end when it reads the destroy, which may come a moment
+    // after (under a loaded CI it did).
+    let ended = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let log = loop {
+        let log = fake.captures.lock().unwrap().clone();
+        if log.contains(&"end output:FAKE-1".to_string()) || std::time::Instant::now() > ended {
+            break log;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
     assert!(
         log.contains(&"session output:FAKE-2".to_string()),
         "{log:?}"
