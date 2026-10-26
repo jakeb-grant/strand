@@ -50,7 +50,7 @@ pub const WHOLE_SHARE: f64 = 0.75;
 
 /// The frame fields the viewer draws (eval/viewer/viewer.js): a packed
 /// page holds these of each frame, `trace.json` every field.
-pub const VIEW_FIELDS: [&str; 10] = [
+pub const VIEW_FIELDS: [&str; 12] = [
     "k",
     "t_ns",
     "painted",
@@ -62,6 +62,11 @@ pub const VIEW_FIELDS: [&str; 10] = [
     "scales",
     "held_text",
     "cost",
+    // (clip-data) What a clip says of its elements' values and states:
+    // the controls' values and the router's flags, and the sliders held
+    // in a drag.
+    "ui",
+    "drags",
 ];
 
 /// A frame stored as a patch: its base frame (by name) and the boxes

@@ -110,6 +110,47 @@ pub struct RunTrace {
     /// Never in the digest.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub keyframes: BTreeMap<String, KeyframesRec>,
+    /// (clip-data) The props each element was written with in the
+    /// config, by its origin (`file:line:col`), once: the source text of
+    /// each, as written (docs/eval.md, "A clip"). Never in the digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub written: BTreeMap<String, WrittenRec>,
+}
+
+/// (clip-data) An element's props as the config wrote them, each the
+/// source text of `name: value` (runs of space with a line break in them
+/// read as one space): its positional argument (`text pct(x)`'s
+/// `pct(x)`), its own props in order, and its `when`, `enter` and `exit`
+/// blocks whole.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct WrittenRec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arg: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub props: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<String>,
+}
+
+/// (clip-data) A node's own value and the interaction flags the
+/// renderer holds for it at one frame: a `slider`'s, `meter`'s, `arc`'s,
+/// `graph`'s or `segmented`'s `value` (a segmented's as its option's
+/// label), `range` and `step` as logic sent them, and whether the input
+/// router has it hovered, pressed or focused (`Widgets`). Never an
+/// `input`'s text.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UiRec {
+    /// Its surface.
+    pub s: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub v: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<serde_json::Value>,
+    /// `hover`, `press`, `focus`, in that order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub f: Vec<String>,
 }
 
 /// (eval-rules-8) A `keyframes` block as declared: its stops (fractions
@@ -364,6 +405,22 @@ pub struct EventRec {
     pub line: u32,
     pub text: String,
     pub segment: Option<usize>,
+    /// (clip-data) An input step's surface once it acted (the pointer's;
+    /// a key's, `type`'s or `paste`'s, the keyboard's), and for the
+    /// pointer's its place there, surface logical px (a time step's,
+    /// where it starts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub s: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<[f32; 2]>,
+    /// (clip-data) The innermost node under the pointer then, by key:
+    /// the hit chain of the surface's last painted frame, as routing
+    /// reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub under: Option<String>,
+    /// (clip-data) A key's, `type`'s or `paste`'s focused node, by key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<String>,
 }
 
 /// From a step that changes something to the next rest
@@ -540,6 +597,11 @@ pub struct Frame {
     /// drag gives each.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub drags: BTreeMap<String, f32>,
+    /// (clip-data) On each painted surface, the controls' values and the
+    /// nodes the router has hovered, pressed or focused, by key. Never in
+    /// the digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ui: BTreeMap<String, UiRec>,
     /// (eval-rules-4) Each `image` and `icon` drawn this frame: where
     /// each of its decodes went (`strand_render::probe::ImageDrawn`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

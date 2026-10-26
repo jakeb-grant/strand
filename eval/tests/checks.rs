@@ -5245,6 +5245,7 @@ fn a_flash_under_a_scroll_or_a_later_step_passes() {
             line: line(s),
             text: s.into(),
             segment: Some(1),
+            ..Default::default()
         });
     }
     t.seal();
@@ -5318,6 +5319,7 @@ fn a_swipe_acts_over_its_span_on_the_scroll_it_moves() {
             line: line(step),
             text: step.into(),
             segment: None,
+            ..Default::default()
         });
         t.seal();
         t
@@ -5890,6 +5892,7 @@ fn a_spring_turned_back_by_a_later_change_travels_its_excursion() {
                 line,
                 text: "scroll -1".into(),
                 segment: Some(1),
+                ..Default::default()
             });
         }
         t.seal();
@@ -8713,6 +8716,7 @@ fn reduced_swipe(offset: impl Fn(u32) -> f32) -> (Scenario, RunTrace) {
         line,
         text: "swipe 60 over 80ms".into(),
         segment: Some(1),
+        ..Default::default()
     });
     for f in &mut t.frames {
         f.offsets.insert("list".into(), offset(f.k));
@@ -8801,6 +8805,7 @@ fn reduced_filtered(offset: impl Fn(u32) -> f32) -> (Scenario, RunTrace) {
             line,
             text,
             segment: Some(1),
+            ..Default::default()
         });
     }
     for f in &mut t.frames {
