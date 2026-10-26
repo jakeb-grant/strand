@@ -58,18 +58,18 @@ overlay closes when nothing is left on it.
   `ne`, `joe`, `mg`) runs inside `xdg-terminal-exec` when it is
   installed, else `$TERMINAL -e`. With no terminal to run it in, or no
   editor set, the click runs `xdg-open` on the file.
-- **The close button** dismisses the overlay. It stays away until the
-  list of problems changes.
+- **The close button** dismisses the overlay and clears its notices.
+  It stays away until the list changes.
 - **A notice with `[reset]`** resets that state cell to its default when
   clicked.
 
 ## Part of the shell stopped responding
 
 A runtime error, such as a handler that fails, freezes only the
-component it happened in, and outlines that component in red. The rest
-of the shell keeps running. `strand watch` prints the error as a
-`fault:` line with where it happened. The next reload of a fixed config
-takes the outline away.
+component it happened in, and outlines that component in red. An error
+outside any component freezes nothing. The rest of the shell keeps
+running. `strand watch` prints the error as a `fault:` line with where
+it happened. The next reload of a fixed config takes the outline away.
 
 ## A surface does not appear
 
@@ -96,8 +96,8 @@ takes the outline away.
 
 `blur` needs the compositor to blur what is behind the surface, through
 `ext-background-effect-v1`. Without it `blur` draws its tint fallback,
-and Strand says once, in the log and to `strand watch`, why there is no
-blur behind that surface. `blur_fallback: none` turns the tint off. On
+and Strand says why once per run, in the log and to `strand watch`,
+naming the first surface that asked for blur. `blur_fallback: none` turns the tint off. On
 Hyprland, `strand compositor-rules` prints layer rules for your config;
 paste them into your Hyprland config, and Hyprland blurs Strand's
 surfaces itself.
@@ -107,9 +107,10 @@ surfaces itself.
 Strand draws on the CPU by default and hands a surface to the GPU while
 it animates a large area. It asks for a GPU device only where a DRM
 render node (`/dev/dri/renderD*`) exists, and it needs a Vulkan driver
-for it. With no device, everything still draws on the CPU, but a
-`shader` node draws nothing; [the inspector](../tools/inspector.md)
-says why on that node's pane.
+for it; a software driver such as lavapipe counts as none. With no
+device, everything still draws on the CPU, but a `shader` node draws
+nothing; [the inspector](../tools/inspector.md) says why on that
+node's pane.
 
 `strand report` shows the GPU on its `gpu:` line: `unused`,
 `starting`, `up` with the adapter, or `unavailable` with the reason,

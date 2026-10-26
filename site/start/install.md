@@ -93,7 +93,7 @@ Strand runs on a Wayland compositor that offers `wl_compositor`,
 `strand run` stops at start and names the one that is missing:
 "the compositor does not offer zwlr\_layer\_shell\_v1".
 
-Some surfaces need one more protocol:
+Some features need one more protocol:
 
 | Protocol | Needed for | Without it |
 | --- | --- | --- |

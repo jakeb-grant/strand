@@ -2,7 +2,7 @@
 
 The inspector shows what Strand knows about one element of your running
 shell: where it comes from in your files, where it was laid out, which
-tokens its colours come from and which of its state was kept. The shell
+tokens its props read and which of its state was kept. The shell
 draws only the outline of the picked element and the repaint flashes;
 the rest runs in a terminal, in `strand-dev inspect`.
 
@@ -49,7 +49,8 @@ box 4.0  /c/bar.strand:3:5
   no GPU.
 - **identity**: what the shell knows the element by across reloads: its
   place in the instance (here the bar on `DP-2`), its `id:`, its
-  position among siblings of the same kind, and the scope it is in.
+  position among siblings of the same kind, and the component (else the
+  file) it is written in.
 - **layout**: the box it was drawn in, on each surface that shows it,
   or "not drawn".
 - **props**: its props as the shell holds them now.
@@ -71,7 +72,7 @@ Each command is a line typed into the inspector's terminal.
 | `r` | reset the element's subtree: its state back to the defaults |
 | `e` | open the element's source in `$VISUAL` or `$EDITOR` at its line |
 | `set <prop> <value>` | write a literal prop value back to the element's source |
-| `token <path> <value>` | write a token's literal value back to its definition |
+| `token <path> <value>` | write the literal value of a token the element reads back to its definition |
 | `f` | turn repaint flashing on or off |
 | `?` | list the commands |
 | `q` | quit (Ctrl-C too) |

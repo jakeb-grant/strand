@@ -121,16 +121,15 @@ strand watch
 `strand watch` connects to the running shell and prints each event
 until the shell ends: every reload with its time, what kind of edit it
 was, which files it committed or held back and which state it kept,
-reset cells, runtime faults and notices. A save of a larger bar, then
-a typo, looks like this:
+reset cells, runtime faults and notices. A save of the hello bar with
+a new height, then a typo in it, looks like this:
 
 ```text
-reload (21.8 ms): prop
+reload (20.6 ms): prop
   committed: /home/you/.config/strand/bar.strand
-  kept: bar.shown
-reload (20.2 ms): no change
+reload (18.0 ms): no change
   held back: /home/you/.config/strand/bar.strand
-  /home/you/.config/strand/bar.strand:4:14: error[check::unknown_prop]: unknown prop "heigth" on "bar"; did you mean "height"?
+  /home/you/.config/strand/bar.strand:5:14: error[check::unknown_prop]: unknown prop "heigth" on "bar"; did you mean "height"?
 ```
 
 `strand watch --json` prints the same events as one JSON object per
@@ -194,8 +193,7 @@ STRAND_LOG=info strand run
 ```
 
 `info` adds what the shell does as it runs, such as each surface
-mapped, each reload and each service starting or stopping, and lines
-from the libraries Strand uses. The topic `damage`
+mapped, each reload and each service starting or stopping. The topic `damage`
 (`STRAND_LOG=damage`, or `STRAND_LOG=info,damage` with a level) prints
 one line per painted frame with the rectangles it repainted.
 

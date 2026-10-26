@@ -24,23 +24,27 @@ Strand glitch report "the clock jumped when the launcher opened" at …
 ```
 
 The report is a folder under `reports/` in Strand's state directory
-(`$XDG_STATE_HOME/strand`, else `~/.local/state/strand`), named by the
-local date and time, readable only by you. Strand keeps the newest 20
-and deletes older ones.
+(`$STRAND_STATE_DIR` when it is set, else `$XDG_STATE_HOME/strand`, else
+`~/.local/state/strand`), named by the local date and time, readable
+only by you. Strand keeps the newest 20 and deletes older ones.
 
 ### What it holds
 
-While it runs, Strand keeps the last minute or so of what drove the
-shell in a fixed 256 KB buffer in memory, such as pointer moves,
-clicks, scrolls and keys, each service's changes, the `strand set` and
-`toggle` commands it was sent, reloads, and surfaces and monitors
-coming and going. Nothing goes to disk until you report. The report holds that recording, every
-service's state at that moment, a picture of each surface as Strand
-last drew it, a copy of your config's files, and your words.
+While it runs, Strand records what drove the shell in a fixed 256 KB
+buffer in memory: pointer moves, clicks, scrolls and keys, each
+service's changes, the `strand set` and `toggle` commands it was sent,
+reloads, and surfaces and monitors coming and going. When the buffer is
+full the oldest entries go first, so how far back it reaches depends on
+how busy the shell is; a replay uses at most the last two minutes.
+Nothing goes to disk until you report. The report holds that
+recording, every service's state at that moment, a picture of each
+surface as Strand last drew it, a copy of your config's files, and
+your words.
 
 It never holds what you type: a key that types a character is counted,
-not kept. Nothing is kept while the screen is locked, and a report
-asked for then is refused.
+not kept. Nothing is kept while the screen is locked or an admin
+password dialog or a login screen shows, and a report asked for then is
+refused.
 
 `strand set system.replay false` turns the recording off, and it stays
 off across restarts. A report then holds everything but the recording.
@@ -73,9 +77,9 @@ Without it, `strand replay` says so and stops.
 
 The replay draws on the CPU into a stand-in compositor of its own, and
 never touches your session's display. It writes into the report's
-`replay/` folder and prints one line: whether its frame at the moment
-you reported matched your live shell (VERIFIED or DRIFTED), and where
-`replay.txt` and the viewer are. Then it opens the viewer in your
+`replay/` folder and prints, in one line, whether its frame at the
+moment you reported matched your live shell (VERIFIED or DRIFTED), then
+where `replay.txt` and the viewer are. Then it opens the viewer in your
 browser. `--no-open` leaves it closed.
 
 The viewer shows the frame large with the timeline under it: scrub

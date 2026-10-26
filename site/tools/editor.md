@@ -20,9 +20,10 @@ input and output. An editor starts it for files ending in `.strand`.
 
 ### What it does
 
-- **Diagnostics**, the same ones `strand check` prints, for every file
-  of the config: when a file opens or is saved, and 200 ms after you
-  stop typing.
+- **Diagnostics**: what `strand check` finds in the config's files
+  (all of it but a missing `strand-auth` helper), for every file of the
+  config: when a file opens or is saved, and 200 ms after you stop
+  typing.
 - **Completion** after `$`, `.` and `<->`, and of element, component,
   keyword, prop and event names and enum values.
 - **Hover**: a name's type, and its documentation from the schemas.
@@ -35,11 +36,11 @@ input and output. An editor starts it for files ending in `.strand`.
   subtree into a new component.
 - **Formatting**, with the formatter `strand fmt` uses.
 
-It checks a file together with the rest of its config, by the rule
-`strand check <file>` uses: the config directory, when the file is
-part of it; else an editor workspace folder that holds `.strand` files
-and the file; else the file's own directory. Changes made to the files
-outside the editor are seen too.
+It checks a file together with the rest of its config: the config
+directory, when the file is part of it; else an editor workspace folder
+that holds `.strand` files and the file; else the file's own directory.
+That is the rule `strand check <file>` uses, with the workspace folder
+added. Changes made to the files outside the editor are seen too.
 
 Two initialization options change its defaults: `debounceMs` (how long
 after typing it waits, default 200) and `configDir` (the config
@@ -140,8 +141,8 @@ hand-written `src/scanner.c`), and four queries in `queries/`:
 - `highlights.scm`, the highlighting;
 - `indents.scm`, one indent level inside every block and bracketed
   list;
-- `injections.scm`, which marks comments only, since strings hold no
-  other language;
+- `injections.scm`, which injects only into comments (as the
+  `comment` language), since strings hold no other language;
 - `locals.scm`, the scopes, definitions and references.
 
 All four use nvim-treesitter's capture names. The grammar follows
