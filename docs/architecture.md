@@ -7027,7 +7027,7 @@ transparent huge pages for life.
   (services-round) `win.move_to(ws)` is `WindowAction::MoveTo { item,
   ws: WorkspaceItem }`, sent as `WmAction::MoveWindow { window,
   workspace }`: Hyprland's classic `movetoworkspacesilent N,address:…`
-  or Lua `hl.dsp.window.move({ workspace, window })`, sway's `[con_id=N]
+  or Lua `hl.dsp.window.move({ workspace, follow = false, window })`, sway's `[con_id=N]
   move container to workspace "<name>"`, niri's
   `MoveWindowToWorkspace { window_id, reference: { Id }, focus: false }`;
   `Unsupported` on the protocols. `model::Window::rect:

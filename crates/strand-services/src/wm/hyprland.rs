@@ -724,13 +724,15 @@ impl State {
             )),
             // (services-round) Moved without following it: the classic
             // `movetoworkspacesilent`; the Lua dispatcher takes the
-            // window, as `close` and `fullscreen` do.
+            // window, as `close` and `fullscreen` do, and follows unless
+            // told `follow = false` (its silent move; the compositor
+            // matrix caught focus following on Hyprland 0.56).
             WmAction::MoveWindow { window, workspace } => {
                 self.client(window)?;
                 let target = self.workspace_target(*workspace)?;
                 Ok(if lua {
                     format!(
-                        "dispatch hl.dsp.window.move({{ workspace = {}, window = {} }})",
+                        "dispatch hl.dsp.window.move({{ workspace = {}, follow = false, window = {} }})",
                         lua_string(&target),
                         lua_string(&format!("address:{window}"))
                     )
@@ -1327,7 +1329,7 @@ mod tests {
         );
         assert_eq!(
             s.dispatch_for(&mv, Dialect::Lua).unwrap(),
-            r#"dispatch hl.dsp.window.move({ workspace = "2", window = "address:0xa1" })"#
+            r#"dispatch hl.dsp.window.move({ workspace = "2", follow = false, window = "address:0xa1" })"#
         );
         let gone = WmAction::MoveWindow {
             window: "0xdead".into(),
