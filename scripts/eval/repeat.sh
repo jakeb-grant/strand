@@ -37,7 +37,7 @@ bad=0
 for i in $(seq 1 "$n"); do
   echo "=== repeat: run $i of $n"
   if cargo run -q --locked --manifest-path eval/Cargo.toml --bin strand-eval -- \
-    check --gate eval/scenarios/curated eval/scenarios/regressions --out "$out/$i/gate"; then
+    check --gate eval/scenarios/curated eval/scenarios/regressions eval/scenarios/docs --out "$out/$i/gate"; then
     echo "- run $i: gate passed" >>"$summary"
   else
     echo "- run $i: gate FAILED (see $out/$i/gate)" >>"$summary"

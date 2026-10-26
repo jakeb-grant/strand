@@ -1,7 +1,8 @@
 # Strand
 
 <!-- The sidebar, in order: `## Section`, then `- [Label](path from site/)`;
-     `@reference/elements` is the generated element reference. Each
+     `@reference/…` are the generated reference's pages and `@tools/cli`
+     the page made from `strand --help`. Each
      section's pages are owned by one writer; see each page's source. -->
 
 ## Start
@@ -25,9 +26,14 @@
 
 ## Tools
 - [Editor setup](tools/editor.md)
+- [The strand command](@tools/cli)
 
 ## Reference
 - [Elements](@reference/elements)
+- [Services](@reference/services)
+- [Types](@reference/types)
+- [Functions](@reference/functions)
+- [Tokens](@reference/tokens)
 
 ## Help
 - [Troubleshooting](help/troubleshooting.md)

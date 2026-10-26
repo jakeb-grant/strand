@@ -559,19 +559,55 @@ strand-site  the documentation site's generator (site/ to target/site):
 ```
 
 `strand-site` reads `site/SUMMARY.md` for the sidebar, renders
-`site/*.md`, `docs/guide/*.md` and one page per element from the schema
-(`strand_dev::reference::element`, the same text as
-`docs/reference/elements.md`), and writes plain HTML with relative links,
-so the site works from `file://` and from any host. It fails, writing
-nothing, on any link or anchor that reaches no page or file, any
-`strand file=` block or example config that does not check clean or is
-not `strand fmt`-formatted, a ```` ```strand-check ```` block that checks
-clean, an example whose media were rendered from other scenario text
-than it has now, and a text colour under 4.5:1 on its background;
-`tests/build.rs` builds the whole site. Examples are scenarios under
-`eval/scenarios/docs/`, rendered by `strand-eval` (`scripts/site/media.sh`)
-into frame strips and tracks in `site/media/`; the generator reads the
-committed media and never runs the renderer.
+`site/*.md`, `docs/guide/*.md` and the reference strand-dev's generator
+writes from the schema (`strand_dev::reference::pages`, the same text as
+`docs/reference/*.md`: a page per element and group and per service, each
+with an index of cards, and one page each for types, functions and
+tokens, `@reference/<set>` in the summary), and writes plain HTML with
+relative links, so the site works from `file://` and from any host. In
+the reference, a type named in a signature or a type cell links to its
+entry (records by their headings, enums, aliases and opaque types by
+anchors the site adds; a service's record to its service's page) and an
+element's groups to their pages; a link to an anchor of `elements.md` or
+`services.md` goes to that element's or service's page. The CLI page
+(`@tools/cli`, `tools/cli.html`) is made from the `strand` binary's own
+help, `strand --help` and the `--help` of the commands that answer it
+without acting (`run`, `check`, `fmt`, `new`, `export`,
+`compositor-rules`, `report`),
+captured in `crates/strand-site/cli-help.txt` by `strand-site cli BIN`
+(`scripts/site/cli.sh`). The build also writes `search-index.js`, every
+page's title and each `##`/`###` heading with its anchor and the text
+under it, as a script `site.js` loads the first time the reader searches
+(a `fetch` of a file fails on `file://`).
+
+It fails, writing nothing, on any link or anchor that reaches no page or
+file, any `strand file=` block or example config that does not check
+clean or is not `strand fmt`-formatted, a ```` ```strand-check ```` block
+that checks clean, a text colour under 4.5:1 on its background, a claim
+of `site/claims.toml` whose text its page does not say (whitespace runs
+collapsed), whose source does not exist (a path, `path:line` or
+`path:a-b` within the file, `file.md#anchor` with the heading there) or
+whose `proof` names a test function its file does not have, or that lacks
+`page`, `text` or `source`; with `--strand BIN`, on a CLI capture that is
+not what `BIN` prints; and on an example whose media are not tied to what
+is there now: the scenario text they were rendered from, its dark twin
+(`eval/scenarios/docs/dark/<name>.scn`, the scenario with the system in
+dark mode, written by `strand-site twin`), the seal of each mode's
+approved reference recording (`eval/refs/<id>.ref`) and each media file's
+hash. `tests/build.rs` builds the whole site. Examples are scenarios
+under `eval/scenarios/docs/`, run with their twins through eval's gate
+(`scripts/site/media.sh`, so each is held to its approved recording) and
+written as each mode's first frame whole plus a strip of the part that
+changes from every distinct frame, lossless, a palette PNG when it holds
+256 colours or fewer, with each frame's pixel hash, in `site/media/`; the
+generator reads the committed media and never runs the renderer. The
+docs scenarios and twins are in eval's gate (`scripts/eval/ci.sh` step
+5), so a renderer change that alters a recording fails there and, once
+approved, fails the site build until the media are rendered again; one
+that changes only pixels fails `media.sh --check`, which draws the media
+again and compares the frames' hashes (CI's `site` job, with the build,
+strand-site's tests and `scripts/site/shots.sh --all`, every page in
+headless Chromium).
 
 `strand-fake-wayland` (M4) is a test fixture, not part of the runtime: no
 root crate depends on it outside `[dev-dependencies]`

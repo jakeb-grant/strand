@@ -296,8 +296,9 @@ jobs:
   # checks with their self-tests, its tests (the GPU leg on lavapipe, as
   # the GPU tier) and test-report-view.sh on fixture bundles,
   # `strand-eval refs-check` (the reference recordings)
-  # and `check --gate` over the curated and regression scenarios, each
-  # held to its approved reference; the gate appends its summary to the
+  # and `check --gate` over the curated, regression and docs scenarios
+  # (the site's examples and their dark twins), each held to its approved
+  # reference; the gate appends its summary to the
   # job's; the effect matrix; and (report) a glitch report replayed end
   # to end (test-report-view.sh --e2e: `strand run` on headless sway, a
   # scripted session, `strand report`, the replay held to the live
@@ -329,6 +330,44 @@ jobs:
             target/eval/matrix-ci/index.html
             target/eval/matrix-ci/matrix.json
             target/eval/matrix-ci/summary.md
+          if-no-files-found: ignore
+
+  # The documentation site (crates/strand-site; docs/architecture.md,
+  # "strand-site"): the build, which fails on any link, anchor, config,
+  # claim, example or contrast it cannot vouch for, with its CLI page held
+  # to the strand binary's own help; strand-site's tests; the examples'
+  # media drawn again by eval from their scenarios and compared with the
+  # committed ones, pixel for pixel (scripts/site/media.sh --check); and
+  # every page in headless Chromium at three widths, light and dark, from
+  # file:// with no network (scripts/site/shots.sh --all, eval's pinned
+  # Playwright image on the runner's Docker, as eval-matrix.yml's viewer
+  # check): a console error, a failed request, a page wider than the
+  # screen or a search or player that does not work fails it.
+  site:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: site
+      - name: Build the site, its CLI page held to the strand binary
+        run: |
+          cargo build -q -p strand --bin strand
+          cargo run -q -p strand-site -- build --strand target/debug/strand
+      - run: cargo test -p strand-site
+      - run: scripts/site/media.sh --check
+        env:
+          SITE_DIRECT: "1"
+      - run: scripts/site/shots.sh --all
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: site
+          path: |
+            target/site/
+            target/site-shots/
           if-no-files-found: ignore
 
   # M3 exit: "runs on Hyprland, niri and sway". The stores and design.md's

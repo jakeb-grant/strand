@@ -15,8 +15,10 @@
 #      replay-mounts.sh on fixture bundles)
 #   5  strand-eval refs-check (the reference files: seals, notes, and a
 #      recording changed since the merge base with main under its old
-#      note), then check --gate over the curated and regression
-#      scenarios (each must match its approved reference recording)
+#      note), then check --gate over the curated, regression and docs
+#      scenarios (each must match its approved reference recording; the
+#      docs scenarios, with their dark twins, are the site's examples,
+#      scripts/site/media.sh)
 #   6  the effect matrix, every cell at 60 and 144 Hz, judged against
 #      eval/matrix/known.toml and held to eval/refs/matrix-<hz>.ref (a
 #      cell whose recording changed fails until it is approved)
@@ -77,7 +79,7 @@ gate() {
     refs-check ${base:+--base "$base"} || return 1
   rm -f target/eval/ci/summary.md
   cargo run -q --locked --manifest-path "$MANIFEST" --bin strand-eval -- \
-    check --gate eval/scenarios/curated eval/scenarios/regressions --out target/eval/ci ||
+    check --gate eval/scenarios/curated eval/scenarios/regressions eval/scenarios/docs --out target/eval/ci ||
     status=$?
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f target/eval/ci/summary.md ]; then
     cat target/eval/ci/summary.md >>"$GITHUB_STEP_SUMMARY"

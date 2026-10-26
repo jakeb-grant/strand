@@ -137,6 +137,7 @@ pre {
 }
 
 .brand {
+  flex: none;
   display: inline-flex;
   align-items: center;
   gap: 10px;
@@ -225,6 +226,143 @@ pre {
 
 .menu {
   display: none;
+}
+
+/* The search: a field in the top bar, a tone step from it, and its
+   results under it on the field's tone, the one picked a step further.
+   It needs the script, which shows it. */
+.search {
+  display: none;
+  position: relative;
+  align-items: center;
+}
+
+.js .search {
+  display: flex;
+}
+
+.search-input {
+  width: 15rem;
+  height: 38px;
+  padding: 0 34px 0 36px;
+  border: 0;
+  border-radius: var(--pill);
+  background: var(--raised-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9375rem;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.search-input::placeholder {
+  color: var(--ink-2);
+  opacity: 1;
+}
+
+.search-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  display: none;
+}
+
+.search-input:hover {
+  background: var(--raised-3);
+}
+
+.search-input:focus {
+  background: var(--page);
+}
+
+.search-icon {
+  position: absolute;
+  left: 12px;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: var(--ink-2);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+.search-key {
+  position: absolute;
+  right: 10px;
+  min-width: 20px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: var(--raised-3);
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 0.75rem;
+  line-height: 20px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.search-input:focus ~ .search-key {
+  display: none;
+}
+
+.search-results {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 30;
+  width: min(36rem, calc(100vw - 2 * var(--gutter)));
+  max-height: min(70vh, 34rem);
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: var(--radius);
+  background: var(--raised-2);
+}
+
+.search-results[hidden] {
+  display: none;
+}
+
+.search-hit {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.search-hit[aria-selected="true"] {
+  background: var(--raised-3);
+}
+
+.search-hit-title {
+  font-weight: 620;
+  line-height: 1.35;
+}
+
+.search-hit-page {
+  font-size: 0.8125rem;
+  color: var(--ink-2);
+}
+
+.search-hit-text {
+  font-size: var(--t-small);
+  line-height: 1.45;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.search-results mark {
+  background: var(--accent-soft);
+  color: var(--on-accent-soft);
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+.search-note {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: var(--t-small);
+  color: var(--ink-2);
 }
 
 /* ---- Docs layout ----------------------------------------------------- */
@@ -402,6 +540,13 @@ pre {
   padding: 14px 20px;
   background: var(--raised);
   border-radius: var(--radius);
+}
+
+/* A type or element named in the reference's code links to its page. */
+.prose code a,
+.code pre a {
+  color: inherit;
+  text-decoration-color: var(--accent);
 }
 
 .prose h1 code {
@@ -641,11 +786,18 @@ pre {
   background: var(--raised-2);
 }
 
-/* A strip of every distinct frame, one under another; the player picks
-   one by its place in the strip. */
+/* The first frame whole, and over it the part that changes: a strip of
+   that part of every distinct frame, one under another, from which the
+   player picks one by its place in the strip. */
 .ex-sprite {
   position: absolute;
   inset: 0;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+}
+
+.ex-moving {
+  position: absolute;
   background-size: 100% auto;
   background-repeat: no-repeat;
   background-position: 0 0;
@@ -1258,6 +1410,39 @@ pre {
   }
   .compositors-note {
     margin-top: 0;
+  }
+}
+
+@media (max-width: 1180px) and (min-width: 881px) {
+  .search-input {
+    width: 11rem;
+  }
+}
+
+@media (max-width: 880px) {
+  .top-end {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: flex-end;
+  }
+  .search {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 18rem;
+  }
+  .search-input {
+    width: 100%;
+    min-width: 0;
+  }
+  .search-key {
+    display: none;
+  }
+  .search-results {
+    position: fixed;
+    top: calc(var(--top-h) + env(safe-area-inset-top, 0px));
+    left: max(var(--gutter), env(safe-area-inset-left, 0px));
+    right: max(var(--gutter), env(safe-area-inset-right, 0px));
+    width: auto;
   }
 }
 
