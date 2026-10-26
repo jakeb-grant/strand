@@ -32,6 +32,20 @@ pub const MEDIA: &str = "site/media";
 pub const TWINS: &str = "eval/scenarios/docs/dark";
 /// Where eval keeps approved reference recordings.
 pub const REFS: &str = "eval/refs";
+/// The live examples' manifest, in the site (docs/live-examples.md):
+/// the build writes it saying there is no WebAssembly build, and
+/// scripts/wasm/site.sh, which adds one to a built site, writes it
+/// again naming its files. Every page loads it; a page offers live mode
+/// only when it names a build.
+pub const MANIFEST: &str = "wasm/manifest.js";
+
+/// The manifest a site without the WebAssembly build has.
+pub fn manifest_none() -> String {
+    "// The live examples' manifest (docs/live-examples.md): this site was built without\n\
+     // their WebAssembly build; scripts/wasm/site.sh adds it and names it here.\n\
+     window.STRAND_WASM = null;\n"
+        .to_string()
+}
 
 /// A scenario, parsed as far as the site needs.
 #[derive(Debug)]
@@ -45,6 +59,9 @@ pub struct Scenario {
     pub files: Vec<(String, String)>,
     /// The steps, as written.
     pub steps: String,
+    /// The header before the first section (TOML: `id`, `screen`,
+    /// `[services]`, …).
+    pub header: String,
     /// blake3 of the whole file.
     pub hash: String,
 }
@@ -92,12 +109,17 @@ pub fn load(root: &Path, name: &str) -> Result<Scenario, String> {
     if files.is_empty() {
         return Err(format!("{path}: no config file"));
     }
+    let header = text
+        .split_inclusive('\n')
+        .take_while(|l| !l.starts_with("=== "))
+        .collect();
     Ok(Scenario {
         name: name.to_string(),
         id,
         path,
         files,
         steps,
+        header,
         hash: blake3::hash(text.as_bytes()).to_hex().to_string(),
     })
 }
@@ -110,6 +132,107 @@ fn id_of(text: &str) -> Option<String> {
             let v = l.strip_prefix("id")?.trim_start().strip_prefix('=')?.trim();
             Some(v.strip_prefix('"')?.strip_suffix('"')?.to_string())
         })
+}
+
+/// The header keys a live example runs with (docs/live-examples.md):
+/// any other (`wall`, `fonts`, `[seed]`, a second screen, …) would make
+/// the browser's run another than eval's, so the build refuses it.
+const LIVE_KEYS: &[&str] = &["id", "about", "screen", "hz", "services"];
+
+/// What a figure's live mode runs (strand-web's `live::Example`): the
+/// scenario's config files, its `[services]` with each value as eval
+/// reads its text, its screen, its clock's rate and its steps, as JSON.
+pub fn live(s: &Scenario) -> Result<Value, String> {
+    use toml_edit::{DocumentMut, Item, Value as T};
+    let at = |e: &str| format!("{}: {e}", s.path);
+    let doc = s
+        .header
+        .parse::<DocumentMut>()
+        .map_err(|e| at(&e.to_string()))?;
+    for (k, _) in doc.iter() {
+        if !LIVE_KEYS.contains(&k) {
+            return Err(at(&format!(
+                "`{k}` is not a header key the live example runs with ({})",
+                LIVE_KEYS.join(", ")
+            )));
+        }
+    }
+    let screen = doc
+        .get("screen")
+        .and_then(Item::as_table_like)
+        .ok_or_else(|| at("no `screen = { width, height, scale }`"))?;
+    let num = |k: &str, default: Option<f64>| -> Result<f64, String> {
+        match screen.get(k).and_then(Item::as_value) {
+            Some(T::Integer(i)) => Ok(*i.value() as f64),
+            Some(T::Float(f)) => Ok(*f.value()),
+            None => default.ok_or_else(|| at(&format!("`screen` has no `{k}`"))),
+            Some(_) => Err(at(&format!("`screen.{k}` is not a number"))),
+        }
+    };
+    for (k, _) in screen.iter() {
+        if !["width", "height", "scale"].contains(&k) {
+            return Err(at(&format!(
+                "`screen.{k}` is not one the live example runs with"
+            )));
+        }
+    }
+    let hz = match doc.get("hz").and_then(Item::as_integer) {
+        Some(h) if (1..=1000).contains(&h) => h,
+        Some(h) => return Err(at(&format!("`hz = {h}`"))),
+        None => 60,
+    };
+    let mut services = Vec::new();
+    if let Some(t) = doc.get("services") {
+        let t = t
+            .as_table_like()
+            .ok_or_else(|| at("`[services]` is not a table"))?;
+        for (k, v) in t.iter() {
+            let text = match v.as_value() {
+                Some(T::String(s)) => s.value().clone(),
+                Some(v) => v.to_string().trim().to_string(),
+                None => return Err(at(&format!("`[services]` `{k}` is not a value"))),
+            };
+            services.push(serde_json::json!([k, text]));
+        }
+    }
+    Ok(serde_json::json!({
+        "name": s.name,
+        "id": s.id,
+        "files": s.files.iter().map(|(f, b)| serde_json::json!([f, b])).collect::<Vec<_>>(),
+        "services": services,
+        "screen": {
+            "width": num("width", None)?,
+            "height": num("height", None)?,
+            "scale": num("scale", Some(1.0))?,
+        },
+        "hz": hz,
+        "steps": s.steps,
+    }))
+}
+
+/// Every docs example (`eval/scenarios/docs/*.scn`, by name) as its
+/// live mode runs it ([`live`]), as a JSON list.
+pub fn all_live(root: &Path) -> Result<Value, String> {
+    let dir = root.join(DIR);
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("{DIR}: {e}"))?
+        .filter_map(|e| {
+            let p = e.ok()?.path();
+            (p.extension()? == "scn").then(|| p.file_stem()?.to_str().map(str::to_string))?
+        })
+        .collect();
+    names.sort();
+    let mut out = Vec::new();
+    for n in names {
+        out.push(live(&load(root, &n)?)?);
+    }
+    Ok(Value::Array(out))
+}
+
+/// JSON as the content of a `<script type="application/json">`: a `</`
+/// would end the element, so it is written `<\/`.
+pub fn script_json(v: &Value) -> String {
+    v.to_string().replace("</", "<\\/")
 }
 
 /// The id of `id`'s dark twin.
@@ -419,10 +542,18 @@ pub fn poster(media: &Value) -> usize {
     }
 }
 
-/// The example's figure: the frames, their player, the value curve and,
-/// unless the page already shows the same files (`code: false`), the
-/// config. `root` leads from the page to the site's root.
-pub fn figure(s: &Scenario, media: &Value, hl: &Highlighter, root: &str, code: bool) -> String {
+/// The example's figure: the frames, their player, the value curve,
+/// what its live mode runs ([`live`]) and, unless the page already shows
+/// the same files (`code: false`), the config. `root` leads from the
+/// page to the site's root.
+pub fn figure(
+    s: &Scenario,
+    media: &Value,
+    live: &Value,
+    hl: &Highlighter,
+    root: &str,
+    code: bool,
+) -> String {
     let mut o = String::new();
     let shown = poster(media);
     let size = nums(&media["size"]);
@@ -439,6 +570,7 @@ pub fn figure(s: &Scenario, media: &Value, hl: &Highlighter, root: &str, code: b
         name = s.name,
         still = if ticks > 1 { "" } else { " example-still" }
     );
+
     // Each mode's first frame, and over it the part that changes, from
     // a strip of every distinct frame's.
     for mode in ["light", "dark"] {
@@ -527,9 +659,13 @@ pub fn figure(s: &Scenario, media: &Value, hl: &Highlighter, root: &str, code: b
     let _ = write!(
         o,
         "<figcaption>Drawn by Strand's renderer {how}, from {which}; \
-         <a href=\"{}{}\">its scenario</a> holds the steps that drive it.</figcaption></figure>",
+         <a href=\"{}{}\">its scenario</a> holds the steps that drive it.</figcaption>\
+         <script type=\"application/json\" class=\"ex-live-data\">{}</script></figure>",
         crate::GITHUB_BLOB,
         s.path,
+        // What live mode runs (docs/live-examples.md), read by the
+        // page's script only when the reader asks for it.
+        script_json(live),
         which = if code {
             "this config"
         } else {
@@ -573,6 +709,42 @@ mod tests {
         );
         assert_eq!(s.steps, "rest\n");
         assert!(load(&dir, "../t").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_live_example_is_its_scenario_and_refuses_what_the_web_cannot_run() {
+        let dir = std::env::temp_dir().join(format!("strand-site-live-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(DIR)).unwrap();
+        let scn = |header: &str| {
+            format!(
+                "{header}\n\n=== shell.strand\nbar B {{ height: 30 }}\n\n=== steps\nrest\nset x \"a</script>\"\n"
+            )
+        };
+        std::fs::write(
+            dir.join(DIR).join("t.scn"),
+            scn("id = \"docs-t\"\nscreen = { width = 400, height = 100 }\n[services]\n\"battery.percent\" = 0.5\n\"x\" = 'hi'"),
+        )
+        .unwrap();
+        let v = live(&load(&dir, "t").unwrap()).unwrap();
+        assert_eq!(v["name"], "t");
+        assert_eq!(v["id"], "docs-t");
+        assert_eq!(v["screen"]["scale"], 1.0);
+        assert_eq!(v["hz"], 60);
+        assert_eq!(
+            v["services"],
+            serde_json::json!([["battery.percent", "0.5"], ["x", "hi"]])
+        );
+        // In a page, the JSON cannot end its script element early.
+        assert!(!script_json(&v).contains("</script>"));
+        // A header key the web host would not honour is refused by name.
+        std::fs::write(
+            dir.join(DIR).join("u.scn"),
+            scn("id = \"docs-u\"\nscreen = { width = 400, height = 100 }\ngpu = true"),
+        )
+        .unwrap();
+        let e = live(&load(&dir, "u").unwrap()).unwrap_err();
+        assert!(e.contains("`gpu` is not a header key"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

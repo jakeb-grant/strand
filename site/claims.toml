@@ -1806,13 +1806,13 @@ proof  = "read: exclusive false by default"
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "On the focused monitor, `overlay` layer; clicks pass through it"
-source = ["crates/strand-scene/src/surface.rs:340", "crates/strand-surface/src/placement.rs:486"]
+source = ["crates/strand-scene/src/surface.rs:340", "crates/strand-scene/src/placement.rs:490"]
 proof  = "read: click_through for NodeKind::Osd"
 
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "Opens below its element (away from the edge on a bar), 6 px from it; mounts its children only while shown"
-source = ["docs/spec.md:310", "crates/strand-surface/src/placement.rs:716", "crates/strand-compiler/src/instantiate/mount.rs:1045"]
+source = ["docs/spec.md:310", "crates/strand-scene/src/placement.rs:720", "crates/strand-compiler/src/instantiate/mount.rs:1045"]
 proof  = "read"
 
 [[claim]]
@@ -2322,7 +2322,7 @@ proof  = "read"
 [[claim]]
 page   = "site/how-to/calendar-popup.md"
 text   = "On a bar it opens away from the bar's edge"
-source = ["docs/spec.md:310", "crates/strand-surface/src/placement.rs:716"]
+source = ["docs/spec.md:310", "crates/strand-scene/src/placement.rs:720"]
 proof  = "read"
 
 [[claim]]
@@ -2720,3 +2720,55 @@ page   = "site/how-to/dbus-and-actions.md"
 text   = "git-only and marked unstable"
 source = ["docs/spec.md:701"]
 proof  = "read"
+
+# Live examples (docs/live-examples.md), checked against the code and by
+# scripts/wasm/check-browser.sh on 2026-10-26.
+
+[[claim]]
+page   = "site/index.md"
+text   = "Try it live runs the same config in your browser, Strand's compiler and renderer built to WebAssembly, and draws the same frames, pixel for pixel;"
+source = ["crates/strand-web/tests/live.rs:92", "scripts/wasm/check.py", "site/assets/site.js:442"]
+proof  = "crates/strand-web/tests/live.rs::every_docs_example_draws_every_frame_eval_drew (natively); scripts/wasm/check-browser.sh (every docs example, light and dark, in Chromium: each frame's time and pixel hash equal to the site media's)"
+
+[[claim]]
+page   = "site/index.md"
+text   = "edit the config and it runs again."
+source = ["site/assets/live.js", "scripts/wasm/check.py"]
+proof  = "scripts/wasm/check-browser.sh (an edit with an error shows its diagnostic, a fixed one runs again, Reset puts the config back)"
+
+[[claim]]
+page   = "site/playground.md"
+text   = "Strand's compiler and renderer, built to WebAssembly, run each one's config the way eval runs it, with the mock services the docs use and the steps its scenario plays."
+source = ["crates/strand-web/src/shell.rs:190", "crates/strand-web/src/steps.rs", "crates/strand-web/src/live.rs:121"]
+proof  = "crates/strand-web/tests/live.rs::every_docs_example_draws_every_frame_eval_drew"
+
+[[claim]]
+page   = "site/playground.md"
+text   = "a mistake shows what `strand check` would print."
+source = ["crates/strand-web/src/shell.rs:170"]
+proof  = "crates/strand-web/tests/live.rs::a_config_with_an_error_gives_its_diagnostic"
+
+[[claim]]
+page   = "site/playground.md"
+text   = "Time is a virtual clock that ticks every 1/60 s of real time,"
+source = ["site/assets/live.js:333", "crates/strand-web/src/steps.rs"]
+proof  = "read: Run.frame runs the ticks due at the example's rate (60 Hz) on requestAnimationFrame, at most four behind"
+
+[[claim]]
+page   = "site/playground.md"
+text   = "Bars, panels, OSDs and popups are shown; windows and lock screens are not, nor is the GPU's work."
+source = ["crates/strand-web/src/surfaces.rs:157", "crates/strand-web/Cargo.toml"]
+proof  = "crates/strand-web/tests/live.rs::a_click_opens_a_popup_below_its_bar; strand-render without `gpu`"
+
+[[claim]]
+page   = "site/playground.md"
+text   = "the icons are the few files the examples draw, and the fonts are the two faces Strand's tests use."
+source = ["crates/strand-web/src/live.rs:121", "scripts/wasm/build.sh:81"]
+proof  = "crates/strand-web/tests/live.rs::every_docs_example_draws_every_frame_eval_drew (icons supplied only from the files the examples draw); ::the_osd_without_its_icon_is_not_what_eval_drew"
+
+
+[[claim]]
+page   = "site/playground.md"
+text   = "Nothing is downloaded until you open an example live or this page."
+source = ["site/assets/site.js:442", "site/assets/live.js"]
+proof  = "scripts/wasm/check-browser.sh (each example's page requests no WebAssembly before Try it live is pressed)"

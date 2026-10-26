@@ -1,19 +1,22 @@
-//! A config running on a virtual clock (docs/wasm-spike.md): the logic VM
-//! with the mock services, the input router and the CPU renderer, wired
-//! through the shell's own host loop (`strand_render::host_loop`), as
-//! eval/src/harness.rs wires them, cut down to what a live example needs.
+//! A config running on a virtual clock (docs/live-examples.md): the logic
+//! VM with the mock services, the input router and the CPU renderer,
+//! wired through the shell's own host loop (`strand_render::host_loop`),
+//! as eval/src/harness.rs wires them, cut down to what a live example
+//! needs. Everything runs on the virtual clock: logic, frames and
+//! springs, and the renderer's and router's own timers (a tooltip's
+//! delay, a hover popup's grace: `set_now`); the loop wakes between
+//! frames exactly when eval's does (the renderer's due time, a layout
+//! inline shaping delivered).
 //!
 //! What eval's driver has that this does not: its trace and checks, text
 //! holds, the GPU and surface legs, windows, several screens, compositor
-//! poses, keyboard focus, and the virtual clock for the renderer's and
-//! router's own timers (`set_now`, behind strand-render's `eval-hooks`,
-//! which no root crate may enable). Those timers (a tooltip's delay, a
-//! hover popup's grace) read the real clock here; frames, springs and
-//! logic run on the virtual one.
+//! poses, keyboard focus and the history clocks.
 
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use strand_scene::time::Instant;
 
 use strand_compiler::SourceMap;
 use strand_compiler::diagnostic::{Severity, Style};
@@ -112,6 +115,24 @@ pub struct Shell {
     pub notes: Vec<String>,
     /// The compiler's warnings, rendered.
     pub warnings: String,
+    /// The instant `T0` stands for on the renderer's and router's clock.
+    i0: Instant,
+    /// Keep a [`Paint`] of every frame painted (the checks that hold the
+    /// web host's frames to eval's).
+    pub record: bool,
+    /// The frames painted since `record` was set, in paint order.
+    pub paints: Vec<Paint>,
+}
+
+/// A frame painted: its surface, its time from the clock's start, and
+/// its pixels' hash as the site's media hash eval's (blake3 of its
+/// physical width and height, little-endian, then its straight RGBA).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Paint {
+    pub surface: SurfaceId,
+    pub t: Duration,
+    pub size: [u32; 2],
+    pub hash: String,
 }
 
 impl std::fmt::Debug for Shell {
@@ -169,6 +190,10 @@ impl Shell {
         let host = Rc::new(SchemaHost::mock(&rt, &build.program.types));
         let engine = TextEngine::new(FontConfig::isolated(opts.fonts));
         let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+        let mut router = Router::new();
+        let i0 = Instant::now();
+        r.set_now(Some(i0));
+        router.set_now(Some(i0));
         // No frame waits for a wall-clock hold: the virtual clock paints
         // every frame it asks for (as eval's driver sets them).
         r.set_first_frame_wait(Duration::ZERO);
@@ -186,7 +211,7 @@ impl Shell {
             inst,
             schema,
             r,
-            router: Router::new(),
+            router,
             surfaces: Surfaces::new(opts.screen),
             hz: opts.hz.max(1),
             k: 0,
@@ -202,6 +227,9 @@ impl Shell {
             painted: 0,
             notes: Vec::new(),
             warnings,
+            i0,
+            record: false,
+            paints: Vec::new(),
         };
         s.set_screens().map_err(plain)?;
         for (path, text) in services {
@@ -226,6 +254,31 @@ impl Shell {
     /// Frames painted so far (every surface's).
     pub fn painted(&self) -> u64 {
         self.painted
+    }
+
+    /// The files the shown surfaces draw now: each icon's file as a
+    /// lookup finds it, each local image (eval's `images`).
+    pub fn files_drawn(&self) -> Vec<std::path::PathBuf> {
+        self.r.image_sources().files()
+    }
+
+    /// The virtual clock's rate, ticks a second.
+    pub fn hz(&self) -> u32 {
+        self.hz
+    }
+
+    /// The instant on the renderer's and router's clock `t` stands for
+    /// (eval's `Harness::instant`).
+    fn instant(&self, t: Duration) -> Instant {
+        self.i0 + t.saturating_sub(T0)
+    }
+
+    /// The renderer's and router's clock at the tick about to run: an
+    /// input or a step between ticks acts at it, as eval's do.
+    fn pin_clock(&mut self) {
+        let now = self.instant(self.t);
+        self.router.set_now(Some(now));
+        self.r.set_now(Some(now));
     }
 
     pub fn surfaces(&self) -> &Surfaces {
@@ -271,12 +324,15 @@ impl Shell {
     /// trace).
     pub fn tick(&mut self) -> Result<(), String> {
         let t = self.t;
+        let now = self.instant(t);
+        self.pin_clock();
         self.logic(t)?;
-        // A wake between frames: inline-shaped text and the renderer's
-        // own due times are collected here (eval wakes for exactly
-        // those; without its hooks this host cannot tell, so it always
-        // wakes, which only costs a layout pass when nothing changed).
-        self.wake()?;
+        // The loop's wakes between frames, as eval's: the renderer's own
+        // due time (the router's included) come; inline-shaped text
+        // wakes it in `turn_owed`.
+        if self.r.next_wake().is_some_and(|w| w <= now) {
+            self.wake()?;
+        }
         let mut rounds = 0;
         while self.held_for_facts() && self.answer()? {
             rounds += 1;
@@ -392,7 +448,7 @@ impl Shell {
 
     fn turn_owed(&mut self) -> Result<(), String> {
         for _ in 0..TURN_ROUNDS {
-            if std::mem::take(&mut self.wake_owed) {
+            if std::mem::take(&mut self.wake_owed) || self.r.take_inline_shaped() > 0 {
                 host_loop::woke(self)?;
                 continue;
             }
@@ -464,6 +520,20 @@ impl Shell {
         for id in ids {
             self.surfaces.paint(&mut self.r, id, t)?;
             self.painted += 1;
+            if self.record
+                && let Some(sh) = self.surfaces.get(id)
+            {
+                self.paints.push(Paint {
+                    surface: id,
+                    t: t.saturating_sub(T0),
+                    size: [sh.size.w, sh.size.h],
+                    hash: crate::surfaces::hash(
+                        sh.size.w,
+                        sh.size.h,
+                        &crate::surfaces::to_rgba(&sh.pixels),
+                    ),
+                });
+            }
             host_loop::painted(self, id)?;
         }
         self.turn()
@@ -497,6 +567,7 @@ impl Shell {
     /// a service field, an exported state, else a file's top-level state
     /// by name. Takes effect at the next tick.
     pub fn set(&mut self, path: &str, text: &str) -> Result<(), String> {
+        self.pin_clock();
         if let Some(token) = path.strip_prefix('$') {
             return self
                 .inst
@@ -636,6 +707,7 @@ impl Shell {
     /// The pointer moved to `at` (screen logical pixels): it leaves the
     /// surface it was on and enters the one under it, if any.
     pub fn pointer_move(&mut self, at: [f32; 2]) -> Result<(), String> {
+        self.pin_clock();
         let time = self.ms();
         let hit = self.surfaces.hit(at);
         let mut events = Vec::new();
@@ -666,6 +738,7 @@ impl Shell {
 
     /// The pointer left the screen.
     pub fn pointer_leave(&mut self) -> Result<(), String> {
+        self.pin_clock();
         match self.pointer.take() {
             Some(surface) => self.send(vec![InputEvent::PointerLeave { surface }]),
             None => Ok(()),
@@ -674,6 +747,7 @@ impl Shell {
 
     /// The left button went down (`pressed`) or up where the pointer is.
     pub fn pointer_button(&mut self, pressed: bool) -> Result<(), String> {
+        self.pin_clock();
         let Some(surface) = self.pointer else {
             return Ok(());
         };

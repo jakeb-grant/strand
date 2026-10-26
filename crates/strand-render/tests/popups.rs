@@ -402,3 +402,32 @@ fn a_tooltip_shows_after_a_rest_and_hides_on_leave() {
             .any(|(node, c)| *node == tip && *c == SurfaceChange::Removed)
     );
 }
+
+/// (live-examples) A host on a virtual clock pins the renderer's time
+/// (`Renderer::set_now`, outside eval's hooks): a tooltip's delay and
+/// [`Renderer::next_wake`] run on it, not on the wall clock.
+#[test]
+fn a_tooltip_waits_on_the_clock_the_host_pins() {
+    let (mut r, n) = bar_shown();
+    let mut d = SceneDiff::new();
+    d.set(n.clock, Prop::Tooltip, text("Calendar"));
+    r.apply(d);
+    r.take_surface_changes();
+    let t0 = strand_scene::time::Instant::now();
+    let delay = Duration::from_millis(40);
+    r.set_now(Some(t0));
+    r.set_tooltip_delay(delay);
+    r.set_widget_flag(n.bar, Flag::Hover, true);
+    r.set_widget_flag(n.clock, Flag::Hover, true);
+    r.update();
+    assert_eq!(r.next_wake(), Some(t0 + delay));
+    r.set_now(Some(t0 + delay - Duration::from_millis(1)));
+    r.update();
+    assert!(
+        r.tooltip_popup().is_none(),
+        "not before its delay on the pinned clock"
+    );
+    r.set_now(Some(t0 + delay));
+    r.update();
+    assert!(r.tooltip_popup().is_some(), "shown at its delay");
+}

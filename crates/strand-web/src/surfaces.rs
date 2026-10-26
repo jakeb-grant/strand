@@ -1,8 +1,8 @@
 //! The compositor's side, cut down from eval/src/surfaces.rs: one
 //! output; layer surfaces (`bar`, `panel`, `osd`) sized and placed as a
 //! wlroots compositor arranges them, and popups where their positioner
-//! asks, both through strand-surface's own placement code
-//! (`crate::placement`). Windows, several outputs and compositor poses
+//! asks, both through the placement code strand-surface's manager uses
+//! (`strand_scene::placement`). Windows, several outputs and compositor poses
 //! are not modelled: a config that opens a window gets a note, not a
 //! surface.
 
@@ -14,7 +14,7 @@ use strand_scene::{
     SurfaceId, SurfaceSpec,
 };
 
-use crate::placement::{self, LayerConfig, PopupConfig};
+use strand_scene::placement::{self, LayerConfig, PopupConfig};
 
 /// The screen surfaces are arranged on: logical size and scale.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -359,69 +359,105 @@ impl Surfaces {
         })
     }
 
-    /// The whole screen at its physical size, every surface laid over
-    /// the last in the order shown (premultiplied "over"), as straight
-    /// RGBA for a canvas's `ImageData`.
-    pub fn composite(&self) -> (u32, u32, Vec<u8>) {
-        self.composite_top(u32::MAX)
+    /// The screen's physical size.
+    pub fn physical(&self) -> [u32; 2] {
+        let s = self.screen.scale;
+        [
+            (f64::from(self.screen.width) * s).round().max(1.0) as u32,
+            (f64::from(self.screen.height) * s).round().max(1.0) as u32,
+        ]
     }
 
-    /// [`Surfaces::composite`] of the screen's top `rows` physical rows
-    /// only (a bar's example need not composite the empty screen under
-    /// it).
-    pub fn composite_top(&self, rows: u32) -> (u32, u32, Vec<u8>) {
+    /// A shown surface's place on the screen, physical pixels: x, y,
+    /// width, height (its origin rounded as the composite places it).
+    fn rect_of(&self, sh: &Shown) -> [i64; 4] {
         let s = self.screen.scale;
-        let w = (f64::from(self.screen.width) * s).round().max(1.0) as u32;
-        let h = (f64::from(self.screen.height) * s).round().max(1.0) as u32;
-        let h = h.min(rows.max(1));
-        // Premultiplied RGBA, then made straight at the end.
-        let mut acc = vec![0u8; (w * h * 4) as usize];
+        [
+            (f64::from(sh.origin[0]) * s).round() as i64,
+            (f64::from(sh.origin[1]) * s).round() as i64,
+            i64::from(sh.size.w),
+            i64::from(sh.size.h),
+        ]
+    }
+
+    /// The box holding every shown surface, within the screen, physical
+    /// pixels (x, y, width, height); `None` with none shown. A page
+    /// shows this part of the screen: for a docs example, its one
+    /// surface, as eval's frames are.
+    pub fn view(&self) -> Option<[u32; 4]> {
+        let [sw, sh] = self.physical();
+        let mut b: Option<[i64; 4]> = None;
+        for s in &self.shown {
+            let [x, y, w, h] = self.rect_of(s);
+            let (x0, y0) = (x.max(0), y.max(0));
+            let (x1, y1) = ((x + w).min(i64::from(sw)), (y + h).min(i64::from(sh)));
+            if x1 <= x0 || y1 <= y0 {
+                continue;
+            }
+            b = Some(match b {
+                None => [x0, y0, x1, y1],
+                Some([a0, b0, a1, b1]) => [a0.min(x0), b0.min(y0), a1.max(x1), b1.max(y1)],
+            });
+        }
+        b.map(|[x0, y0, x1, y1]| [x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32])
+    }
+
+    /// The screen's `rect` (physical x, y, width, height), every surface
+    /// laid over the last in the order shown (premultiplied "over"), as
+    /// straight RGBA for a canvas's `ImageData`, into `out` (its length
+    /// set to the rect's). With one surface filling the rect this is
+    /// that surface's frame exactly as eval's `to_rgba` makes it.
+    pub fn composite_into(&self, rect: [u32; 4], out: &mut Vec<u8>) {
+        let [rx, ry, rw, rh] = rect.map(i64::from);
+        out.clear();
+        out.resize((rw * rh * 4).max(0) as usize, 0);
         for sh in &self.shown {
-            let ox = (f64::from(sh.origin[0]) * s).round() as i64;
-            let oy = (f64::from(sh.origin[1]) * s).round() as i64;
-            for y in 0..sh.size.h as i64 {
-                let dy = oy + y;
-                if dy < 0 || dy >= i64::from(h) {
+            let [x, y, w, h] = self.rect_of(sh);
+            let (x0, x1) = (x.max(rx), (x + w).min(rx + rw));
+            let (y0, y1) = (y.max(ry), (y + h).min(ry + rh));
+            if x1 <= x0 || y1 <= y0 {
+                continue;
+            }
+            let n = (x1 - x0) as usize * 4;
+            for dy in y0..y1 {
+                let si = (((dy - y) * w + (x0 - x)) * 4) as usize;
+                let di = (((dy - ry) * rw + (x0 - rx)) * 4) as usize;
+                let (Some(src), Some(dst)) = (sh.pixels.get(si..si + n), out.get_mut(di..di + n))
+                else {
                     continue;
-                }
-                for x in 0..sh.size.w as i64 {
-                    let dx = ox + x;
-                    if dx < 0 || dx >= i64::from(w) {
-                        continue;
-                    }
-                    let si = ((y * i64::from(sh.size.w) + x) * 4) as usize;
-                    let di = ((dy * i64::from(w) + dx) * 4) as usize;
-                    let Some(p) = sh.pixels.get(si..si + 4) else {
-                        continue;
-                    };
+                };
+                for (p, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
                     let (b, g, r, a) = (p[0], p[1], p[2], p[3]);
-                    if a == 0 && b == 0 && g == 0 && r == 0 {
-                        continue;
+                    if a == 255 {
+                        d.copy_from_slice(&[r, g, b, a]);
+                    } else if (a | b | g | r) != 0 {
+                        let inv = 255 - u32::from(a);
+                        let over = |src: u8, dst: u8| -> u8 {
+                            (u32::from(src) + (u32::from(dst) * inv + 127) / 255).min(255) as u8
+                        };
+                        d[0] = over(r, d[0]);
+                        d[1] = over(g, d[1]);
+                        d[2] = over(b, d[2]);
+                        d[3] = over(a, d[3]);
                     }
-                    let inv = 255 - u32::from(a);
-                    let over = |src: u8, dst: u8| -> u8 {
-                        (u32::from(src) + (u32::from(dst) * inv + 127) / 255).min(255) as u8
-                    };
-                    acc[di] = over(r, acc[di]);
-                    acc[di + 1] = over(g, acc[di + 1]);
-                    acc[di + 2] = over(b, acc[di + 2]);
-                    acc[di + 3] = over(a, acc[di + 3]);
                 }
             }
         }
-        for p in acc.chunks_exact_mut(4) {
+        for p in out.chunks_exact_mut(4) {
             let a = u32::from(p[3]);
-            let un = |c: u8| {
-                (u32::from(c) * 255 + a / 2)
-                    .checked_div(a)
-                    .unwrap_or(0)
-                    .min(255) as u8
-            };
+            if a == 255 {
+                continue;
+            }
+            if a == 0 {
+                // As `to_rgba` reads a clear pixel, whatever light it adds.
+                p[..3].fill(0);
+                continue;
+            }
+            let un = |c: u8| ((u32::from(c) * 255 + a / 2) / a).min(255) as u8;
             p[0] = un(p[0]);
             p[1] = un(p[1]);
             p[2] = un(p[2]);
         }
-        (w, h, acc)
     }
 }
 
@@ -435,6 +471,17 @@ pub fn to_rgba(pixels: &[u8]) -> Vec<u8> {
         out.extend_from_slice(&[un(r), un(g), un(b), a as u8]);
     }
     out
+}
+
+/// A frame's hash as the site's media keep it (strand-site's
+/// `media::Image::hash`): blake3 of its width and height, little-endian,
+/// then its RGBA.
+pub fn hash(w: u32, h: u32, rgba: &[u8]) -> String {
+    let mut x = blake3::Hasher::new();
+    x.update(&w.to_le_bytes());
+    x.update(&h.to_le_bytes());
+    x.update(rgba);
+    x.finalize().to_hex().to_string()
 }
 
 fn scale_of(s: f64) -> Result<Scale, String> {

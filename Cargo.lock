@@ -3154,6 +3154,7 @@ dependencies = [
 name = "strand-scene"
 version = "0.0.0"
 dependencies = [
+ "log",
  "proptest",
  "rustix",
  "web-time",
@@ -3300,14 +3301,15 @@ dependencies = [
 name = "strand-web"
 version = "0.0.0"
 dependencies = [
- "log",
- "png",
+ "blake3",
  "serde_json",
  "strand-compiler",
  "strand-core",
+ "strand-icons",
  "strand-render",
  "strand-scene",
  "strand-services-schema",
+ "strand-site",
  "strand-text",
  "wasm-bindgen",
 ]

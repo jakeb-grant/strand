@@ -617,6 +617,7 @@ impl Renderer {
                     let Some(layout) = self.probe_hold(*node, &spec.text, layout) else {
                         continue;
                     };
+                    self.inline_shaped = self.inline_shaped.saturating_add(1);
                     self.deliver(layout);
                     delivered = true;
                 }

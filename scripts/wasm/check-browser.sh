@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# check-browser.sh: the playground (target/site/playground.html, after
-# scripts/wasm/build.sh and `strand-site build`) in headless Chromium,
+# check-browser.sh: the live examples (docs/live-examples.md) of the
+# built site (target/site, after `strand-site build`,
+# scripts/wasm/build.sh and scripts/wasm/site.sh) in headless Chromium,
 # in eval's pinned Playwright image (scripts/eval/Dockerfile.viewer)
 # with no network; scripts/wasm/check.py serves the site on the
-# container's loopback. Prints its JSON; screenshots land in
-# target/site-shots/.
+# container's loopback and holds every docs example's live frames to
+# eval's. Prints its JSON; screenshots land in target/site-shots/live/.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 DOCKERFILE=$ROOT/scripts/eval/Dockerfile.viewer
 IMAGE=strand-viewer-check:$(sha256sum "$DOCKERFILE" | cut -c1-12)
-SHOTS=${SITE_SHOTS:-$ROOT/target/site-shots}
+SHOTS=${SITE_SHOTS:-$ROOT/target/site-shots/live}
 LABEL=strand.wasm-check=$$
-[ -f target/site/playground.html ] || { echo "no target/site/playground.html: run strand-site build" >&2; exit 2; }
-[ -f target/site/assets/wasm/strand_web_bg.wasm ] || { echo "no wasm: run scripts/wasm/build.sh" >&2; exit 2; }
+[ -f target/site/index.html ] || { echo "no target/site: run strand-site build" >&2; exit 2; }
+grep -q '"module"' target/site/wasm/manifest.js 2>/dev/null || { echo "target/site has no live examples: run scripts/wasm/build.sh, then scripts/wasm/site.sh" >&2; exit 2; }
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   docker build -q -t "$IMAGE" -f "$DOCKERFILE" "$ROOT/scripts/eval" >&2
 fi

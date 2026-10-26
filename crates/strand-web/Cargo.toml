@@ -1,6 +1,6 @@
 [package]
 name = "strand-web"
-description = "(wasm spike) The render path in a browser: a config compiled, run on a virtual clock with mock services, its frames as RGBA"
+description = "The site's live examples: the render path in a browser, a docs example run on a virtual clock with mock services, its frames as RGBA"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,21 +8,22 @@ repository.workspace = true
 publish.workspace = true
 
 # A cdylib for wasm-bindgen (scripts/wasm/build.sh), an rlib for the
-# native tests (docs/wasm-spike.md).
+# native tests (docs/live-examples.md).
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 strand-compiler.workspace = true
 strand-core.workspace = true
+# (live-examples) The icon theme a page supplies, with no disk to look in.
+strand-icons.workspace = true
 strand-render.workspace = true
 strand-scene.workspace = true
 strand-services-schema.workspace = true
 strand-text.workspace = true
 serde_json = "1.0.151"
-# strand-surface's placement code, included by path (src/lib.rs), logs
-# through it.
-log = "0.4"
+# A frame's hash as the site's media keep it (the version strand-site uses).
+blake3 = "1.8.7"
 
 # The JS boundary: only on wasm, so native builds and tests link none of
 # it. The version is the one Cargo.lock already has (js-sys 0.3.106's).
@@ -30,8 +31,10 @@ log = "0.4"
 wasm-bindgen = "0.2.129"
 
 [dev-dependencies]
-# The site's example frames (site/media/*.png), decoded to compare.
-png = "0.18"
+# The docs examples as their figures carry them (`example::live`) and
+# the frames eval drew for them (site/media/), which the live frames are
+# held to (tests/live.rs).
+strand-site = { path = "../strand-site" }
 
 [lints]
 workspace = true

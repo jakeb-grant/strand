@@ -3480,6 +3480,33 @@ fn a_hover_popup_waits_for_its_delay() {
     assert_eq!(opens(&mut f), [(POP_A, true)]);
 }
 
+/// (live-examples) A host on a virtual clock pins the router's time
+/// (`Router::set_now`, outside eval's hooks): the delay runs on it, not
+/// on the wall clock, so no sleep is needed and none would help.
+#[test]
+fn a_hover_popup_waits_for_its_delay_on_the_clock_the_host_pins() {
+    use std::time::Duration;
+    let t0 = strand_scene::time::Instant::now();
+    let delay = Duration::from_millis(80);
+    let mut scene = Islands::new(true, Some(delay));
+    let mut f = R::default();
+    f.router.set_now(Some(t0));
+    f.attached(S_BAR, BAR_N);
+    f.input(&at_x(S_BAR, 5.0), &mut scene);
+    assert_eq!(f.router.next_wake(), Some(t0 + delay));
+    f.router
+        .set_now(Some(t0 + delay - Duration::from_millis(1)));
+    f.out.extend(f.router.tick(&mut scene));
+    assert_eq!(
+        opens(&mut f),
+        [],
+        "not before its delay on the pinned clock"
+    );
+    f.router.set_now(Some(t0 + delay));
+    f.out.extend(f.router.tick(&mut scene));
+    assert_eq!(opens(&mut f), [(POP_A, true)]);
+}
+
 /// A popup without `trigger: hover` is the program's, as before M6: the
 /// router never writes its `open`, and its anchor's `hover` goes as the
 /// pointer leaves the anchor.

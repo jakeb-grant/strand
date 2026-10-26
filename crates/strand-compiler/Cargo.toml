@@ -28,7 +28,7 @@ similar = "2.7.0"
 
 # (wasm-spike) On wasm, similar's diff deadline takes web-time's
 # `Instant`, the one strand-scene's `time` names there
-# (docs/wasm-spike.md).
+# (docs/live-examples.md).
 [target.'cfg(target_family = "wasm")'.dependencies]
 similar = { version = "2.7.0", features = ["wasm32_web_time"] }
 

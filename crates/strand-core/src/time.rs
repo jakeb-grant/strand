@@ -1,6 +1,6 @@
 //! (wasm-spike) The monotonic clock type strand-core names, as
 //! strand-scene's `time` (which it cannot depend on)
-//! (docs/wasm-spike.md). Natively it is `std::time::Instant`, so nothing
+//! (docs/live-examples.md). Natively it is `std::time::Instant`, so nothing
 //! changes. On wasm32-unknown-unknown std has no clock (its
 //! `Instant::now()` panics), so there it is web-time's, which reads the
 //! page's `performance.now()`; every crate on the render path names

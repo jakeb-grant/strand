@@ -1,8 +1,12 @@
 //! How a [`SurfaceSpec`] maps onto `zwlr_layer_surface_v1` state: anchor,
 //! size, exclusive zone, margins, layer, keyboard focus and namespace.
-//! Pure, so it is tested without a compositor.
+//! Pure, so it is tested without a compositor, and shared by every host
+//! that places surfaces: strand-surface's manager (which re-exports it as
+//! `strand_surface::placement`), eval's driver and the web host
+//! (strand-web), which cannot link Wayland (docs/decisions.md,
+//! live-examples).
 
-use strand_scene::{Anchor, Edge, Keyboard, Layer, NodeKind, SurfaceSpec};
+use crate::{Anchor, Edge, Keyboard, Layer, NodeKind, SurfaceSpec};
 
 /// `zwlr_layer_surface_v1.anchor` bits.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -263,7 +267,7 @@ fn size(v: f32) -> u32 {
 /// takes the offset there (subtracted on a right or bottom anchor); an
 /// axis centred or stretched keeps its margins (render delegates no
 /// offset on one). Rounded to whole pixels, as margins are.
-pub fn posed_margin(config: &LayerConfig, offset: strand_scene::LogicalPoint) -> [i32; 4] {
+pub fn posed_margin(config: &LayerConfig, offset: crate::LogicalPoint) -> [i32; 4] {
     let [mut t, mut r, mut b, mut l] = config.margin;
     let a = config.anchors;
     let px = |v: f32| -> i32 {
@@ -524,7 +528,7 @@ pub struct WindowConfig {
     /// the box plus it, and the window geometry leaves it out.
     pub overhang: [i32; 4],
     /// Who draws its title bar and borders.
-    pub decorations: strand_scene::Decorations,
+    pub decorations: crate::Decorations,
 }
 
 impl WindowConfig {
@@ -886,8 +890,8 @@ pub fn popup_slides(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Insets, Prop, PropValue};
     use std::collections::HashMap;
-    use strand_scene::{Insets, Prop, PropValue};
 
     fn spec(kind: NodeKind, props: &[(Prop, PropValue)]) -> SurfaceSpec {
         let map: HashMap<Prop, PropValue> = props.iter().cloned().collect();
@@ -1006,7 +1010,7 @@ mod tests {
 
     #[test]
     fn poses_move_a_surface_from_its_anchored_edges() {
-        use strand_scene::LogicalPoint;
+        use crate::LogicalPoint;
         // panel { anchor: top_right; margin: 8 } and one centred.
         let corner = spec(
             NodeKind::Panel,
@@ -1415,7 +1419,7 @@ mod tests {
     /// right of it, touching it unless a margin says otherwise.
     #[test]
     fn a_popup_at_the_pointer_opens_from_the_press() {
-        use strand_scene::{LogicalRect, NodeId};
+        use crate::{LogicalRect, NodeId};
         let bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(36.0))]);
         let mut p = spec(
             NodeKind::Popup,
@@ -1454,7 +1458,7 @@ mod tests {
     /// with no grab and no input.
     #[test]
     fn popups_open_away_from_their_bar() {
-        use strand_scene::{LogicalRect, NodeId};
+        use crate::{LogicalRect, NodeId};
         let mut bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(36.0))]);
         bar.overhang = Insets::all(4.0);
         let mut p = spec(NodeKind::Popup, &[]);
@@ -1504,7 +1508,7 @@ mod tests {
     /// whatever its `anchor:`.
     #[test]
     fn submenus_open_to_the_side_their_anchor_names() {
-        use strand_scene::{LogicalRect, NodeId};
+        use crate::{LogicalRect, NodeId};
         let mut menu = spec(NodeKind::Popup, &[]);
         menu.parent = Some(NodeId::new(1, 0));
         menu.width = Some(160.0);
@@ -1646,7 +1650,7 @@ mod tests {
     /// 36 px top bar covers the bar, its fillets at the screen's edge.
     #[test]
     fn an_attached_popup_touches_its_anchor_at_its_margin() {
-        use strand_scene::{LogicalRect, NodeId};
+        use crate::{LogicalRect, NodeId};
         let bar = spec(NodeKind::Bar, &[(Prop::Height, PropValue::Number(36.0))]);
         let mut p = spec(NodeKind::Popup, &[(Prop::Attach, kw("top"))]);
         p.parent = Some(NodeId::new(1, 0));
@@ -1704,7 +1708,7 @@ mod tests {
     /// and the scrim's layer is the one below.
     #[test]
     fn a_top_panel_with_a_scrim_rises_to_overlay() {
-        let dim = PropValue::Color(strand_scene::Color::new(0.0, 0.0, 0.0, 0.3));
+        let dim = PropValue::Color(crate::Color::new(0.0, 0.0, 0.0, 0.3));
         let size = [
             (Prop::Width, PropValue::Number(100.0)),
             (Prop::Height, PropValue::Number(100.0)),
@@ -1847,7 +1851,7 @@ mod tests {
     /// a popup in it is placed in its window geometry (its box).
     #[test]
     fn a_window_config_names_and_sizes_it() {
-        let mut spec = SurfaceSpec::resolve(NodeKind::Window, |_| None::<&strand_scene::PropValue>);
+        let mut spec = SurfaceSpec::resolve(NodeKind::Window, |_| None::<&crate::PropValue>);
         spec.name = Some("Settings".into());
         assert_eq!(
             window_config(&spec),
@@ -1857,7 +1861,7 @@ mod tests {
         spec.height = Some(300.0);
         spec.min_size = (Some(200.0), None);
         spec.max_size = (None, Some(900.0));
-        spec.overhang = strand_scene::Insets::from_values(&[4.0, 8.0, 12.0, 8.0]).unwrap();
+        spec.overhang = crate::Insets::from_values(&[4.0, 8.0, 12.0, 8.0]).unwrap();
         let c = window_config(&spec).unwrap();
         assert_eq!(c.title, "Settings");
         assert_eq!(c.app_id, "strand-Settings");
@@ -1878,16 +1882,16 @@ mod tests {
         );
         assert_eq!(
             window_config(&SurfaceSpec::resolve(NodeKind::Panel, |_| None::<
-                &strand_scene::PropValue,
+                &crate::PropValue,
             >)),
             Err(PlacementError::NotLayerSurface(NodeKind::Panel))
         );
         // A popup in it: anchored in its box, as in a popup's.
-        let mut popup = SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+        let mut popup = SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&crate::PropValue>);
         popup.parent = None;
         popup.width = Some(100.0);
         popup.height = Some(50.0);
-        popup.anchor_rect = Some(strand_scene::LogicalRect::new(28.0, 24.0, 40.0, 20.0));
+        popup.anchor_rect = Some(crate::LogicalRect::new(28.0, 24.0, 40.0, 20.0));
         let p = popup_config(&popup, &spec).unwrap();
         assert_eq!((p.anchor_rect.0, p.anchor_rect.1), (20, 20));
     }

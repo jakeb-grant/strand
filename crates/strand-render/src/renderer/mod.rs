@@ -506,6 +506,12 @@ pub struct Renderer {
     pub(crate) inspect: crate::inspect::Inspect,
     /// (M5, S-tools) Frame timing for `frame_summary` (`summary.rs`).
     frame_stats: summary::FrameStats,
+    /// The time the renderer's own timers read in place of the wall
+    /// clock ([`Renderer::set_now`]): a host on a virtual clock's.
+    clock: Option<Instant>,
+    /// Layouts inline shaping delivered at once since the last
+    /// [`Renderer::take_inline_shaped`].
+    inline_shaped: u32,
     /// (M4) The GPU backend: promotion, the device, lowering, passes.
     #[cfg(feature = "gpu")]
     gpu: backend::GpuState,
@@ -634,6 +640,8 @@ impl Renderer {
             clocks: crate::clock::Clocks::default(),
             inspect: Default::default(),
             frame_stats: Default::default(),
+            clock: None,
+            inline_shaped: 0,
             #[cfg(feature = "gpu")]
             gpu: backend::GpuState::default(),
             #[cfg(feature = "eval-hooks")]
@@ -1042,15 +1050,32 @@ impl Renderer {
     }
 
     /// The time the renderer's own timers (a tooltip's delay, a capped
-    /// clock's ticks) are measured by: the wall clock, or under the
-    /// `eval-hooks` feature the evaluation sandbox's virtual time once
-    /// it pins one (`Renderer::set_now`, docs/decisions.md eval-sandbox).
+    /// clock's ticks) are measured by: the wall clock, or the virtual
+    /// time a host pins ([`Renderer::set_now`]).
     fn now(&self) -> Instant {
-        #[cfg(feature = "eval-hooks")]
-        if let Some(now) = self.probe.now {
+        if let Some(now) = self.clock {
             return now;
         }
         Instant::now()
+    }
+
+    /// Reads `now` in place of the wall clock in the renderer's own
+    /// timers (`None`: the wall clock again): a tooltip's delay and a
+    /// capped clock's ticks (`effect shimmer`, a raster rate) run on the
+    /// time of a host that runs on a virtual clock, the evaluation
+    /// sandbox's and the web host's, and [`Renderer::next_wake`]
+    /// answers on it (docs/decisions.md eval-sandbox, live-examples).
+    pub fn set_now(&mut self, now: Option<Instant>) {
+        self.clock = now;
+    }
+
+    /// How many layouts inline shaping delivered at once since the last
+    /// call. A text worker wakes the render loop for every layout it
+    /// delivers (the host then runs [`Renderer::update`]); with inline
+    /// shaping nothing wakes it, so a host that shapes inline (the
+    /// evaluation sandbox, the web host) wakes its loop for these.
+    pub fn take_inline_shaped(&mut self) -> u32 {
+        std::mem::take(&mut self.inline_shaped)
     }
 
     /// The surfaces showing surface node `root` lay out again.

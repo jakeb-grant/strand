@@ -1,4 +1,4 @@
-# The wasm spike's image (docs/wasm-spike.md): the CI image
+# The live examples' image (docs/live-examples.md): the CI image
 # (scripts/container/Dockerfile, tagged strand-ci:<hash> by
 # scripts/container/run.sh) plus the wasm32-unknown-unknown target,
 # wasm-bindgen-cli at the version of the wasm-bindgen crate in

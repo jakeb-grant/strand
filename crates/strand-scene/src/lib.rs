@@ -14,6 +14,7 @@ pub mod id;
 pub mod input;
 pub mod motion;
 pub mod paint;
+pub mod placement;
 pub mod protocol;
 pub mod provenance;
 pub mod shader;

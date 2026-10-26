@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs a command in the wasm spike's image (scripts/wasm/Dockerfile: the
+# Runs a command in the live examples' image (scripts/wasm/Dockerfile: the
 # CI image plus wasm32-unknown-unknown, wasm-bindgen-cli and wasm-opt),
 # mounted as scripts/container/run.sh mounts the checkout: same paths,
 # same cargo volumes and compile cache, the host's uid.

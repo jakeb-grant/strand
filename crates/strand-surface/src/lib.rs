@@ -26,7 +26,9 @@ pub mod clock;
 pub mod input;
 mod manager;
 pub mod monitor;
-pub mod placement;
+/// How a surface spec maps onto layer-shell, popup and toplevel state:
+/// strand-scene's, shared with the hosts that cannot link Wayland.
+pub use strand_scene::placement;
 pub mod shm;
 pub mod solid;
 

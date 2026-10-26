@@ -1,6 +1,7 @@
 // The Strand site's script. Every page reads without it; it adds the
 // theme switch, the search, copy buttons, the sidebar on narrow screens,
-// the bands' entrance and the example players.
+// the bands' entrance, the example players and, where the site has
+// their WebAssembly build, the offer of each example live.
 (function () {
   "use strict";
   var root = document.documentElement;
@@ -405,6 +406,13 @@
         show(0);
       }
     }
+    // Live mode (assets/live.js) takes the figure's place while it runs.
+    fig.addEventListener("strand-live", function (e) {
+      if (e.detail) {
+        fig.dataset.touched = "1";
+        setPlaying(false);
+      }
+    });
     // It plays while it is on screen, unless motion is reduced.
     if (!reduced.matches && "IntersectionObserver" in window) {
       var seen = new IntersectionObserver(function (entries) {
@@ -423,4 +431,76 @@
       });
     }
   });
+
+  // ---- Live examples (docs/live-examples.md). Offered only where they
+  // can run: the site has their WebAssembly build (wasm/manifest.js
+  // names it), it is served over http (a browser loads no WebAssembly
+  // from a file) and the browser runs WebAssembly. Nothing is fetched
+  // until the reader asks; the player stays the default and the
+  // fallback.
+  var wasm = window.STRAND_WASM;
+  var canLive = !!wasm && /^https?:$/.test(location.protocol) && typeof WebAssembly === "object";
+  var liveScript = null;
+  function loadLive() {
+    if (!liveScript) {
+      liveScript = new Promise(function (resolve, reject) {
+        var s = document.createElement("script");
+        s.src = new URL("assets/live.js", siteRoot).href;
+        s.onload = function () { resolve(window.StrandLive); };
+        s.onerror = function () { reject(new Error("assets/live.js did not load")); };
+        document.head.appendChild(s);
+      });
+      liveScript.catch(function () { liveScript = null; });
+    }
+    return liveScript;
+  }
+  function megabytes(n) {
+    return (n / 1e6).toFixed(1) + " MB";
+  }
+  if (canLive) {
+    document.querySelectorAll(".example").forEach(function (fig) {
+      if (!fig.querySelector(".ex-live-data")) return;
+      var offer = document.createElement("div");
+      offer.className = "ex-live-offer";
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "ex-live-try";
+      b.textContent = "Try it live";
+      var note = document.createElement("span");
+      note.className = "ex-live-note";
+      note.textContent = "Runs Strand in your browser; edit the config and it runs again" +
+        (wasm.download ? " (" + megabytes(wasm.download) + ", once)" : "");
+      offer.appendChild(b);
+      offer.appendChild(note);
+      fig.querySelector(".ex-view").appendChild(offer);
+      b.addEventListener("click", function () {
+        b.disabled = true;
+        b.textContent = "Loading…";
+        loadLive()
+          .then(function (L) { return L.figure(fig, wasm, siteRoot); })
+          .then(function () {
+            b.disabled = false;
+            b.textContent = "Try it live";
+          })
+          .catch(function (e) {
+            b.disabled = false;
+            b.textContent = "Try it live";
+            note.textContent = "The live example did not load (" + (e && e.message ? e.message : e) + "); the frames above are Strand's own.";
+          });
+      });
+    });
+  }
+  var pg = document.querySelector(".playground");
+  if (pg) {
+    var pgNote = pg.querySelector(".pg-note");
+    if (!wasm) pgNote.textContent = "This copy of the site was built without the playground's WebAssembly build (scripts/wasm/site.sh adds it).";
+    else if (!/^https?:$/.test(location.protocol)) pgNote.textContent = "The playground needs the site served over http: a browser loads no WebAssembly from a file.";
+    else if (!canLive) pgNote.textContent = "The playground needs a browser that runs WebAssembly.";
+    else {
+      pgNote.textContent = "Loading the playground" + (wasm.download ? " (" + megabytes(wasm.download) + ")" : "") + "…";
+      loadLive()
+        .then(function (L) { return L.playground(pg, wasm, siteRoot); })
+        .catch(function (e) { pgNote.textContent = "The playground did not load: " + (e && e.message ? e.message : e) + "."; });
+    }
+  }
 })();

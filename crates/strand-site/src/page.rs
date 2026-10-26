@@ -46,9 +46,11 @@ fn head(o: &mut String, title: &str, out: &str, description: &str) {
          <title>{}</title>\n<meta name=\"description\" content=\"{}\">\n{THEME_BOOT}\n\
          <link rel=\"stylesheet\" href=\"{r}theme.css\">\n<link rel=\"stylesheet\" href=\"{r}assets/site.css\">\n\
          <link rel=\"icon\" href=\"{r}assets/mark.svg\" type=\"image/svg+xml\">\n\
+         <script src=\"{r}{manifest}\" defer></script>\n\
          <script src=\"{r}assets/site.js\" defer></script>\n</head>\n",
         esc(title),
-        esc(description)
+        esc(description),
+        manifest = crate::example::MANIFEST,
     );
 }
 

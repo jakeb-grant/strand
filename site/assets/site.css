@@ -981,6 +981,226 @@ pre {
   margin: 0;
 }
 
+/* ---- Live examples (assets/live.js, docs/live-examples.md) ----------- */
+
+/* The offer, under a player: a tone step, no line. */
+.ex-live-offer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.ex-live-try,
+.lv-controls button,
+.pg-choice {
+  border: 0;
+  border-radius: var(--pill);
+  font: inherit;
+  font-size: var(--t-small);
+  padding: 7px 16px;
+  cursor: pointer;
+  background: var(--raised-3);
+  color: var(--ink);
+  min-height: 36px;
+}
+
+.ex-live-try {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.ex-live-try:hover,
+.lv-replay:hover {
+  filter: brightness(1.08);
+}
+
+.lv-controls button:hover,
+.pg-choice:hover {
+  background: var(--raised-2);
+}
+
+.ex-live-try:disabled {
+  cursor: progress;
+  filter: none;
+}
+
+.ex-live-note,
+.lv-status {
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+/* Live, the canvas takes the frames' place and the steps the player's. */
+.is-live .ex-sprite,
+.is-live .ex-controls,
+.is-live .ex-curve,
+.is-live .ex-legend,
+.is-live .ex-live-offer,
+.is-live > .code:not(.lv-file) {
+  display: none;
+}
+
+.lv-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.lv-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.lv-controls .lv-replay {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.lv-controls .lv-act {
+  font-family: var(--font-code);
+  font-size: 0.8125rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lv-controls .lv-act.lv-done {
+  background: var(--accent-soft);
+  color: var(--on-accent-soft);
+}
+
+.lv-controls .lv-back {
+  margin-left: auto;
+}
+
+.lv-status {
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lv-edit {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.lv-file {
+  margin: 0;
+}
+
+.lv-file .code-head .lv-reset {
+  margin-left: auto;
+  border: 0;
+  background: var(--raised-2);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 0.8125rem;
+  padding: 3px 10px;
+  border-radius: var(--pill);
+  cursor: pointer;
+}
+
+.lv-file .code-head .lv-reset:hover {
+  color: var(--ink);
+  background: var(--raised-3);
+}
+
+/* The editor: a textarea over its own text, highlighted. The two share
+   every metric, so the caret lies on the letters. */
+.lv-editor {
+  display: grid;
+  min-width: 0;
+}
+
+.lv-hl,
+.lv-code {
+  grid-area: 1 / 1;
+  margin: 0;
+  padding: 10px 18px 18px;
+  font-family: var(--font-code);
+  font-size: 0.875rem;
+  line-height: 1.65;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  border: 0;
+  min-width: 0;
+}
+
+.lv-hl {
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.lv-code {
+  resize: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--ink);
+  outline: none;
+  overflow-wrap: normal;
+}
+
+.lv-code::selection {
+  background: var(--accent-soft);
+  color: transparent;
+}
+
+.lv-file:focus-within {
+  background: var(--raised-2);
+}
+
+.lv-out-box {
+  margin: 0;
+}
+
+.lv-out {
+  margin: 0;
+  padding: 14px 18px;
+  overflow-x: auto;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+/* The playground: the picker, then the run, larger. */
+.playground {
+  display: grid;
+  gap: 16px;
+  margin: 1.5em 0;
+}
+
+.pg-note {
+  margin: 0;
+  color: var(--ink-2);
+}
+
+.pg-pick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pg-choice[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.pg-stage {
+  min-height: 48px;
+}
+
 /* ---- Pager ----------------------------------------------------------- */
 
 .pager {
@@ -1239,6 +1459,13 @@ pre {
   grid-column: 1 / -1;
 }
 
+/* Live beside its config, the run stays in view while the config is
+   edited below the fold. */
+.band-motion .example.is-live > .ex-view {
+  position: sticky;
+  top: calc(var(--top-h) + 16px);
+}
+
 .band-check {
   grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
 }
@@ -1394,6 +1621,9 @@ pre {
   .band-check,
   .band-motion .example {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .band-motion .example.is-live > .ex-view {
+    position: static;
   }
   .band-check .band-copy,
   .band-check .check,

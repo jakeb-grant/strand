@@ -278,6 +278,26 @@ fn code_block(
                 }
             }
         }
+        "playground" => {
+            // The playground page's examples (docs/live-examples.md): what
+            // each runs live, for its script to offer them in turn.
+            let mut all = Vec::new();
+            for name in words.iter().skip(1) {
+                match example::load(ctx.root, name).and_then(|s| example::live(&s)) {
+                    Ok(v) => all.push(v),
+                    Err(e) => errors.push(format!("{at}: {e}")),
+                }
+            }
+            if all.is_empty() {
+                errors.push(format!("{at}: ```playground names its examples"));
+            }
+            format!(
+                "<div class=\"playground\" id=\"try\"><p class=\"pg-note\">The playground runs \
+                 Strand in your browser, which needs the page served over http and this site's \
+                 WebAssembly build.</p><script type=\"application/json\" class=\"pg-data\">{}</script></div>",
+                example::script_json(&serde_json::Value::Array(all))
+            )
+        }
         "example" => {
             let Some(name) = words.get(1) else {
                 errors.push(format!("{at}: ```example names its scenario"));
@@ -308,9 +328,11 @@ fn code_block(
                         .iter()
                         .any(|(pf, pb)| pf == f && pb.trim_end() == b.trim_end())
                 });
+                let live = example::live(&s)?;
                 Ok(example::figure(
                     &s,
                     &m,
+                    &live,
                     ctx.hl,
                     &crate::html::root(ctx.out),
                     !shown,

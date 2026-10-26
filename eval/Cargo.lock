@@ -2170,6 +2170,7 @@ dependencies = [
 name = "strand-scene"
 version = "0.0.0"
 dependencies = [
+ "log",
  "rustix",
  "web-time",
 ]
