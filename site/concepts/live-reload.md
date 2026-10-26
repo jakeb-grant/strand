@@ -70,7 +70,8 @@ A save is checked before anything changes:
 
 If an error is still there 250 ms after the save, an overlay opens
 listing every diagnostic, with where it is and a fix where there is
-one. Clicking one opens the file in `$EDITOR`. A save you fix within
+one. Clicking one opens the file at that line in your editor
+(`$STRAND_EDITOR`, `$VISUAL` or `$EDITOR`). A save you fix within
 the 250 ms, such as one your editor formats, never opens it.
 
 A fault while the shell runs, such as a value that cannot be computed,

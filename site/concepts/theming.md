@@ -18,9 +18,11 @@ palette role and base token.
 
 **Hue roles** are colours that must stay recognisable: `$red`,
 `$orange`, `$yellow`, `$green`, `$cyan`, `$blue`, `$magenta`, and
-`$bright_red` through `$bright_magenta`. A scheme that has these hues
-gives its own; for one that does not, each is the plain hue moved a
-little toward your accent.
+a brighter one of each but orange, `$bright_red` through
+`$bright_magenta`. A scheme that has these hues gives its own. For one
+that does not, each base hue is the plain hue moved a little toward
+your accent, and each bright one is its base made lighter in a dark
+palette and darker in a light one.
 
 ## The built-in theme
 
@@ -127,8 +129,8 @@ Choosing another palette, a desktop setting changing, a new wallpaper,
 2. Only the palette's roles spring to their new values, in OKLab.
    Every derived token is computed from them each frame, so it is
    exact at every step of the animation.
-3. Text keeps a contrast of at least 3:1 against its background
-   throughout. Where a swap between light and dark makes that
+3. Text colours keep a contrast of at least 3:1 against the
+   backgrounds they are paired with, throughout. Where a swap between light and dark makes that
    impossible, the surface takes one picture of its old frame and
    crossfades from it instead.
 4. What cannot be animated, such as a font, changes at once.
@@ -158,7 +160,7 @@ shows both.
 
 ## Trying a colour
 
-`strand set '$accent' '#ff5555'` sets a token for the running shell
-only, over what the theme says, and `strand clear '$accent'` takes it
-off. Quote both: a shell reads `$accent` as a variable and `#` as a
+`strand set '$accent' '#ff5555'` sets a token over what the theme
+says. It is kept in Strand's state directory, so it stays across
+restarts until `strand clear '$accent'` takes it off. Quote both: a shell reads `$accent` as a variable and `#` as a
 comment.

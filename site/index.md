@@ -5,7 +5,7 @@
 
 <p class="hero-lede">A toolkit for Wayland shells.</p>
 
-<p class="hero-text">Write bars, launchers, lock screens and panels in one small typed language. Every prop springs, saving a file never restarts the shell, and nothing runs while nothing changes.</p>
+<p class="hero-text">Write bars, launchers, lock screens and panels in one small typed language. Colours, sizes and positions spring, saving a file never restarts the shell, and nothing runs while nothing changes.</p>
 
 <p class="hero-actions"><a class="button" href="guide/level-1.html">Build the hello bar</a><a class="text-link" href="guide/index.html">Read the guide</a></p>
 
@@ -37,7 +37,7 @@ running, and an overlay points at the line.
 <section class="band band-motion">
 <div class="band-copy">
 
-## Everything springs
+## Changes spring into place
 
 Change a value and its prop moves there. Spring curves are theme tokens
 you can retune, and a prop can choose its own after `~`. These frames
@@ -76,10 +76,10 @@ bar Top {
 
 ## Idle when nothing changes
 
-The hello bar wakes once a minute, to turn its clock. A still surface
-repaints only what changed, and the GPU draws large animations and
-shaders. CI holds a two-monitor bar to 48 MB, measured with the GPU
-cold.
+With nothing else changing, the hello bar wakes once a minute, to
+turn its clock. A surface repaints only what changed, and the GPU
+draws large animations and shaders. CI holds design.md's bar on two
+monitors to 48 MiB, measured with no GPU device.
 
 </div>
 <ul class="compositors" aria-label="Compositors tested in CI">

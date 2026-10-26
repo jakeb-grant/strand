@@ -14,9 +14,9 @@ as often as what you read from it changes: a clock that shows minutes
 wakes it once a minute, and the battery when the battery changes.
 Services nobody reads are not running at all.
 
-CI holds this on design.md's bar running on real services (PipeWire,
-UPower, NetworkManager and the rest, as mocks on a private bus, under a
-headless sway): over 10 seconds between two minute ticks, no thread of
+CI holds this on design.md's bar running on real services (UPower,
+NetworkManager and logind as mocks on a private bus, a private
+PipeWire, under a headless sway): over 10 seconds between two minute ticks, no thread of
 Strand's wakes and no frame is drawn, and the next tick wakes it in one
 burst. The test is
 `the_design_bar_on_the_real_services_keeps_the_budget` in
@@ -25,8 +25,9 @@ burst. The test is
 ## Only what changed is painted
 
 Each frame repaints only the area that changed, its **damage**. When
-the clock ticks, Strand repaints the clock's text, not the bar. On a
-2560 px wide bar at scale 1 and 1.25, a minute tick, even one that
+the clock ticks, Strand repaints the clock's text, not the bar. On the
+demo bar (`strand run --demo`), 2560 px wide at scale 1 and 1.25, a
+minute tick, even one that
 changes every digit and the text's width, repaints at most 2,000 px²
 (`a_minute_tick_repaints_at_most_2000_px2` in
 [crates/strand/src/demo/mod.rs](../../crates/strand/src/demo/mod.rs)).

@@ -8,14 +8,15 @@ and [grammar.md](../../docs/grammar.md) is the exact syntax.
 
 ## Files
 
-Your config is a directory, `~/.config/strand` unless you name another
-one to `strand run`. Every `.strand` file in it, up to three
+Your config is a directory, `~/.config/strand`
+(`$XDG_CONFIG_HOME/strand`) unless you name another one to `strand
+run`. Every `.strand` file in it, up to three
 directories deep, is loaded. There are no imports and no entry file:
 a component declared in one file is usable in every other.
 
 What a file declares at the top level is either shared by every file
-(components, surfaces, enums, types, functions, token sets, actions and
-services) or the file's own (its `state` and `let`). `export` shares a
+(components, surfaces, enums, types, functions, token sets, keyframes,
+actions and services) or the file's own (its `state` and `let`). `export` shares a
 value too: `export state open = false` in `launcher.strand` is read
 elsewhere, and from the command line, as `launcher.open`.
 

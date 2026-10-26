@@ -33,8 +33,8 @@ bar Top {
 }
 ```
 
-Point the setting at your wallpaper. `prefs.toml` sits beside the
-config and is plain TOML; Strand makes it the first time a value is
+Point the setting at your wallpaper. `prefs.toml` is in your config
+directory and is plain TOML; Strand makes it the first time a value is
 written:
 
 ```toml file=prefs.toml

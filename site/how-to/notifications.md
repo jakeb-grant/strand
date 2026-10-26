@@ -50,8 +50,8 @@ component Toast(n: Notification) {
 ```
 
 Only one program can own the notification service on the session bus.
-If dunst, mako or another daemon is running, Strand says so and names
-it; stop it first. Then send yourself one:
+If dunst, mako or another daemon is running, Strand says so, names
+it and says how to stop it, and takes the name as soon as it is free. Then send yourself one:
 
 ```sh
 notify-send "Hello" "from Strand"
@@ -106,3 +106,6 @@ show.
   download or a copy has got, for senders that say (0 to 1).
 - **More or fewer at once.** `.take(5)` shows at most five cards;
   change the number.
+- **The service's own switch.** `notifications.dnd` is a writable field
+  of the service: while it is true, new notifications that are not
+  critical skip `popups` altogether (they are still kept in `notifications.all`).
