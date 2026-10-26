@@ -2209,21 +2209,56 @@ fn a_window_moves_and_resizes_from_its_own_press() {
     std::thread::sleep(Duration::from_millis(200));
 
     // A press held at `from` until strand has asked (its `asks`-th ask),
-    // then the pointer dragged by `by` in steps, then let go.
-    let mut drag = |d: &mut Drag, from: (i64, i64), by: (i64, i64), asks: u32| {
-        let (x, y, w, h) = at(from.0, from.1);
-        pointer.press(x, y, w, h);
-        d.reads("asks", &asks.to_string());
-        // The ask reaches the compositor just after the state reads so.
-        std::thread::sleep(Duration::from_millis(500));
-        for i in 1..=10 {
-            let (x, y, w, h) = at(from.0 + by.0 * i / 10, from.1 + by.1 * i / 10);
-            pointer.motion(x, y, w, h);
-            std::thread::sleep(Duration::from_millis(30));
-        }
-        std::thread::sleep(Duration::from_millis(200));
-        pointer.release();
-    };
+    // then the pointer dragged by `by` from where the compositor's grab
+    // began, then let go. The grab begins when the compositor takes the
+    // ask, which nothing shows until the pointer moves, so no wait orders
+    // the two: the pointer goes a tenth of `by` at a time, the window
+    // looked at while it rests, until the window (drawn as `pre` before
+    // the press) has moved (with `resize`, changed size). The grab began
+    // where the pointer is less that change, at whichever step it began;
+    // the pointer then goes on to there plus `by`, and lets go.
+    let mut drag =
+        |d: &mut Drag, pre: [i64; 4], from: (i64, i64), by: (i64, i64), asks: u32, resize: bool| {
+            let (x, y, w, h) = at(from.0, from.1);
+            pointer.press(x, y, w, h);
+            d.reads("asks", &asks.to_string());
+            let mut now = from;
+            let mut began = None;
+            for i in 1..=10 {
+                now = (from.0 + by.0 * i / 10, from.1 + by.1 * i / 10);
+                let (x, y, w, h) = at(now.0, now.1);
+                pointer.motion(x, y, w, h);
+                let (b, _) = settled(d, &format!("the drag's step {i}"));
+                let change = if resize {
+                    (b[2] - pre[2], b[3] - pre[3])
+                } else {
+                    (b[0] - pre[0], b[1] - pre[1])
+                };
+                if change != (0, 0) {
+                    began = Some((now.0 - change.0, now.1 - change.1));
+                    break;
+                }
+            }
+            let Some(began) = began else {
+                panic!(
+                    "the window never {} while the press was dragged by {by:?}\n{}",
+                    if resize { "changed size" } else { "moved" },
+                    d.log_text()
+                );
+            };
+            eprintln!("matrix: {kind}: the grab began at {began:?} (the press at {from:?})");
+            let to = (began.0 + by.0, began.1 + by.1);
+            let start = now;
+            for i in 1..=10 {
+                let (x, y, w, h) = at(
+                    start.0 + (to.0 - start.0) * i / 10,
+                    start.1 + (to.1 - start.1) * i / 10,
+                );
+                pointer.motion(x, y, w, h);
+                std::thread::sleep(Duration::from_millis(30));
+            }
+            pointer.release();
+        };
     let centre = |b: [i64; 4]| (b[0] + b[2] / 2, b[1] + b[3] / 2);
 
     // `w.move()`: toward the middle of its output, so it stays on it.
@@ -2236,7 +2271,7 @@ fn a_window_moves_and_resizes_from_its_own_press() {
         if cx <= mid.0 { 90 } else { -90 },
         if cy <= mid.1 { 60 } else { -60 },
     );
-    drag(&mut d, (cx, cy), by, 1);
+    drag(&mut d, b0, (cx, cy), by, 1, false);
     let shifted = |b: [i64; 4]| [b[0] + by.0, b[1] + by.1, b[2], b[3]];
     let want = (shifted(b0), r0.map(shifted));
     until("moved by the drag", || {
@@ -2275,7 +2310,7 @@ fn a_window_moves_and_resizes_from_its_own_press() {
     );
     d.reads("resizing", "true");
     let by = (-60, -40);
-    drag(&mut d, centre(b1), by, 2);
+    drag(&mut d, b1, centre(b1), by, 2, true);
     let sized = |b: [i64; 4]| [b[0], b[1], b[2] + by.0, b[3] + by.1];
     let want = (sized(b1), r1.map(sized));
     until("resized by the drag", || {

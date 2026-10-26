@@ -846,7 +846,15 @@ impl Leg {
         use strand_fake_wayland::Cmd;
         match t {
             Teed::Surface(node, change) => {
-                if matches!(change, SurfaceChange::Removed) {
+                // A window the manager destroys (its node gone, closed,
+                // or made again) is one the fake forgets: the next one
+                // of that node is told its first configure afresh.
+                let gone = match &change {
+                    SurfaceChange::Removed => true,
+                    SurfaceChange::Created(spec) => !spec.open,
+                    SurfaceChange::Updated { spec, recreate } => !spec.open || *recreate,
+                };
+                if gone {
                     self.said.remove(&node);
                 }
                 self.mgr.state_mut().apply_surface_change(node, change);
@@ -867,7 +875,8 @@ impl Leg {
                     .any(|(n, (a, _))| *n != node && *a == app_id)
                 {
                     return Err(Error::Unsupported(format!(
-                        "the surface leg with two windows of app id `{app_id}` shown at once                          (its fake compositor finds a window by its app id)"
+                        "the surface leg with two windows of app id `{app_id}` shown at once \
+                         (its fake compositor finds a window by its app id)"
                     )));
                 }
                 self.barrier()?;
@@ -891,8 +900,11 @@ impl Leg {
                 });
             }
             Teed::Close {
-                surface, app_id, ..
+                node,
+                surface,
+                app_id,
             } => {
+                self.said.remove(&node);
                 self.barrier()?;
                 self.fake.cmd(Cmd::CloseWindow(app_id));
                 self.fake.sync();

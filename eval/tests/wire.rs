@@ -453,3 +453,94 @@ fn the_leg_refuses_two_windows_of_one_app_id() {
     }
     go(&sc, RunOptions::default()).unwrap_or_else(|e| panic!("{e}"));
 }
+
+/// (oi-window) A window closed (`window #w close`) and opened again on
+/// the leg: the fake forgot it with its toplevel, so the leg tells the
+/// new one its first configure afresh (not deduped as the closed one's),
+/// and it commits a buffer again.
+#[test]
+fn a_window_closed_and_opened_again_is_configured_afresh_on_the_leg() {
+    use strand_eval::wire::WireWindow;
+    let sc = scenario(
+        "id = \"window-reopen\"\nscreen = { width = 400, height = 300, scale = 1.0 }\nsurface = true\n\
+         === shell.strand\nstate shown = true\n\
+         window W { id: w; open: <-> shown; bg: #181825\n\
+           box { width: 120; height: 60; bg: #45475a }\n}\n\
+         === steps\nrest\n\
+         window #w close\nrest\n\
+         set shown true\nrest\n",
+    );
+    let t = go(&sc, RunOptions::default()).unwrap_or_else(|e| panic!("{e}"));
+    assert_clean(&t);
+    let said: Vec<WireWindow> = log(&t)
+        .windows
+        .iter()
+        .map(|w| WireWindow {
+            k: 0,
+            surface: 0,
+            ..w.clone()
+        })
+        .collect();
+    let first = WireWindow {
+        activated: true,
+        ..WireWindow::default()
+    };
+    let close = WireWindow {
+        close: true,
+        ..WireWindow::default()
+    };
+    assert_eq!(said, [first.clone(), close, first]);
+    let closed_at = log(&t)
+        .windows
+        .iter()
+        .find(|w| w.close)
+        .map(|w| w.k)
+        .unwrap();
+    let again = log(&t).windows.last().unwrap();
+    assert!(again.k > closed_at, "{:?}", log(&t).windows);
+    let buffers: Vec<u32> = log(&t)
+        .commits
+        .iter()
+        .filter(|c| c.surface == Some(again.surface) && c.buffer == Some([120, 60]))
+        .map(|c| c.k)
+        .collect();
+    assert!(
+        buffers.iter().any(|k| *k >= again.k),
+        "the reopened window painted no buffer: {buffers:?} (opened again at k{})",
+        again.k
+    );
+}
+
+/// (oi-window) Two windows of one app id shown one after the other (the
+/// first closed before the second opens) are not refused on the leg:
+/// each is told its own first configure.
+#[test]
+fn two_windows_of_one_app_id_one_after_the_other_run_on_the_leg() {
+    let sc = scenario(
+        "id = \"windows-in-turn\"\nscreen = { width = 400, height = 300, scale = 1.0 }\nsurface = true\n\
+         === shell.strand\nstate a = true\nstate b = false\n\
+         window A { id: wa; open: <-> a; app_id: \"same\"; box { width: 40; height: 10; bg: #45475a } }\n\
+         window B { id: wb; open: <-> b; app_id: \"same\"; box { width: 60; height: 20; bg: #45475a } }\n\
+         === steps\nrest\n\
+         window #wa close\nrest\n\
+         set b true\nrest\n",
+    );
+    let t = go(&sc, RunOptions::default()).unwrap_or_else(|e| panic!("{e}"));
+    assert_clean(&t);
+    let configured: Vec<u32> = log(&t)
+        .windows
+        .iter()
+        .filter(|w| !w.close)
+        .map(|w| w.surface)
+        .collect();
+    assert_eq!(configured.len(), 2, "{:?}", log(&t).windows);
+    assert_ne!(configured[0], configured[1], "{:?}", log(&t).windows);
+    let b = configured[1];
+    assert!(
+        log(&t)
+            .commits
+            .iter()
+            .any(|c| c.surface == Some(b) && c.buffer == Some([60, 20])),
+        "the second window painted no buffer"
+    );
+}

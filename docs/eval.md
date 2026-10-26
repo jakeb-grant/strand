@@ -2052,14 +2052,18 @@ presentation clock read the same time.
   never shown, and its feedback is discarded.
 - (oi-window) A `window` is the manager's `xdg_toplevel` on the fake,
   which waits for the leg's word before its first configure. Each time
-  the stand-in compositor configures it (a `window` step, or the window's
-  own size while it floats), the fake sends that configure: the size on
-  each axis the stand-in sized (0 elsewhere, the window's own), its
-  maximized, fullscreen, tiled and activated states and its bounds, and
-  `resizing` where it sized an axis no state explains, so the manager
-  keeps the size given as the stand-in did. A `window … close` is the
-  fake's `close`. The surface is matched by its app id, so a run with two
-  windows of one app id is refused as unsupported with the leg. The
+  the stand-in compositor configures it with something new (its first, a
+  `window` step's, a replay's, its answer to `w.maximize()`), the fake
+  sends that configure: the size on each axis the stand-in sized (0
+  elsewhere, the window's own), its maximized, fullscreen, tiled and
+  activated states and its bounds, and `resizing` where it sized an axis
+  no state explains, so the manager keeps the size given as the stand-in
+  did. The window's own size changing while it floats sends nothing, as
+  the fake's configure leaves that size to it. A `window … close` is the
+  fake's `close`; a window closed and opened again is told its first
+  configure afresh. The surface is matched by its app id, so a run with
+  two windows of one app id shown at once is refused as unsupported with
+  the leg (one after the other runs). The
   configures and closes are logged in `WireLog::windows`, in order with
   the tick that sent them.
 
