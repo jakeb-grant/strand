@@ -25,6 +25,7 @@
 
 ## Tools
 - [Editor setup](tools/editor.md)
+- [Playground](playground.md)
 
 ## Reference
 - [Elements](@reference/elements)

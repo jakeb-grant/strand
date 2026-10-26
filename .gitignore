@@ -3,3 +3,4 @@
 *.swp
 *~
 /eval/scenarios/local/
+/site/assets/wasm/

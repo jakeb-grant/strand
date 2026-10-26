@@ -1,0 +1,138 @@
+/* The playground's live examples (assets/playground.js), in the site's
+   own tokens (theme.css). */
+
+.pg {
+  margin: 2em 0;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.pg-stage {
+  background: var(--raised);
+  border-radius: var(--radius);
+  padding: 20px;
+  display: grid;
+  justify-items: center;
+  min-height: 72px;
+}
+
+.pg-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  background: var(--raised-2);
+  touch-action: none;
+}
+
+.pg-failed .pg-canvas {
+  opacity: 0.35;
+}
+
+.pg-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.pg-run,
+.pg-flip {
+  min-height: 40px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: var(--pill);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--raised-3);
+  color: var(--ink);
+}
+
+.pg-run {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.pg-flip {
+  font-family: var(--font-code);
+  font-size: var(--t-small);
+  font-weight: 500;
+}
+
+.pg-run:active,
+.pg-flip:active {
+  transform: scale(0.97);
+}
+
+.pg-status {
+  color: var(--ink-2);
+  font-size: var(--t-small);
+  font-variant-numeric: tabular-nums;
+}
+
+.pg-edit {
+  border-radius: var(--radius);
+  background: var(--raised);
+  overflow: hidden;
+}
+
+.pg-file {
+  padding: 10px 18px 0;
+  font-family: var(--font-code);
+  font-size: 0.8125rem;
+  color: var(--ink-2);
+}
+
+.pg-code {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 10px 18px 16px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  resize: vertical;
+  tab-size: 2;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.pg-code:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.pg-more summary {
+  cursor: pointer;
+  color: var(--ink-2);
+  font-size: var(--t-small);
+}
+
+.pg-services {
+  margin-top: 8px;
+  border-radius: 10px;
+  background: var(--raised);
+}
+
+.pg-out {
+  margin: 0;
+  padding: 12px 18px;
+  border-radius: 10px;
+  background: var(--out-bg);
+  color: var(--out-fg);
+  font-family: var(--font-code);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.pg-out:empty {
+  display: none;
+}
