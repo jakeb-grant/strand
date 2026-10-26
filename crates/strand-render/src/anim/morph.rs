@@ -32,7 +32,8 @@
 //! frames with no clock show it in place at once.
 
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_scene::{Curve, LogicalRect, Motion, NodeId};
 use vello_cpu::kurbo::Affine;

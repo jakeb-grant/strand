@@ -52,7 +52,8 @@
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_scene::{Damage, NodeId, Rect, Scale};
 use vello_cpu::kurbo::Affine;

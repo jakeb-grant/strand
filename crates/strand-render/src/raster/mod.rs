@@ -11,7 +11,8 @@
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_scene::{Damage, PaintTarget, Rect, Scale};
 use vello_cpu::kurbo::Affine;
@@ -225,7 +226,7 @@ impl Raster {
 
     /// Frees the paint cache's and offscreen groups' idle entries without
     /// painting.
-    pub fn trim_idle(&mut self, now: std::time::Instant) {
+    pub fn trim_idle(&mut self, now: strand_scene::time::Instant) {
         self.cache.trim_idle(now);
         self.offscreen.trim_idle(now);
         crate::hugepage::trim_idle(now, self.cache.idle_free());

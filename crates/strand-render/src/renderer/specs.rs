@@ -2,7 +2,8 @@
 //! sizing, overhang, and holding frames for the configure at a new size.
 
 use std::collections::BTreeSet;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_scene::{
     Anchor, Curve, Edge, Insets, LogicalRect, LogicalSize, NodeId, NodeKind, Prop, Scale, Size,

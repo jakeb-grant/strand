@@ -17,7 +17,8 @@
 //! made it recover from a stray short gap).
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_scene::{NodeKind, Prop, PropValue, SurfaceId};
 

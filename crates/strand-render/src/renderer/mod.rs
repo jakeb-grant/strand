@@ -3,7 +3,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_scene::{
     Damage, LogicalPoint, LogicalSize, NodeId, NodeKind, Prop, PropValue, Scale, Size,

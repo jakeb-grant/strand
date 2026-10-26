@@ -642,7 +642,7 @@ pub(crate) struct Probe {
     pub(crate) held: Vec<(HeldText, TextLayout)>,
     /// The time the renderer's own timers read in place of the wall
     /// clock (`Renderer::set_now`).
-    pub(crate) now: Option<std::time::Instant>,
+    pub(crate) now: Option<strand_scene::time::Instant>,
     /// Layouts inline shaping delivered at once since the last
     /// `Renderer::take_inline_shaped`: each is one a text worker would
     /// have woken the loop for.

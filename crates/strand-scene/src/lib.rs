@@ -18,6 +18,7 @@ pub mod protocol;
 pub mod provenance;
 pub mod shader;
 pub mod surface;
+pub mod time;
 pub mod tokens;
 
 pub use backend::{AdapterInfo, Backend, BackendChange, GpuStatus};

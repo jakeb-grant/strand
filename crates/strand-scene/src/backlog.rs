@@ -59,14 +59,14 @@ pub type ClockFn = fn() -> Clocks;
 /// The clocks now.
 pub fn clocks() -> Clocks {
     Clocks {
-        boot: read(rustix::time::ClockId::Boottime),
-        awake: read(rustix::time::ClockId::Monotonic),
+        boot: read(ClockId::Boottime),
+        awake: read(ClockId::Monotonic),
     }
 }
 
 /// The boot clock now (`CLOCK_BOOTTIME`): what backlog times are on.
 pub fn boot_now() -> Duration {
-    read(rustix::time::ClockId::Boottime)
+    read(ClockId::Boottime)
 }
 
 /// (graph-follow review) The POSIX id of the clock `wp_presentation`
@@ -91,10 +91,7 @@ pub fn boot_at(p: Duration) -> Duration {
     let id = PRESENTATION_CLOCK.load(std::sync::atomic::Ordering::Relaxed);
     let (boot, presentation) = match id {
         7 => return p,
-        4 => (
-            read(rustix::time::ClockId::Boottime),
-            read(rustix::time::ClockId::MonotonicRaw),
-        ),
+        4 => (read(ClockId::Boottime), read(ClockId::MonotonicRaw)),
         _ => {
             let c = clocks();
             (c.boot, c.awake)
@@ -108,7 +105,31 @@ fn moved(p: Duration, boot: Duration, presentation: Duration) -> Duration {
     (p + boot).saturating_sub(presentation)
 }
 
-fn read(id: rustix::time::ClockId) -> Duration {
+#[cfg(not(target_family = "wasm"))]
+use rustix::time::ClockId;
+
+/// (wasm-spike) The clocks `read` tells apart: a browser has one, which
+/// never stops (there is no suspend to tell boot from monotonic time).
+#[cfg(target_family = "wasm")]
+#[derive(Clone, Copy, Debug)]
+enum ClockId {
+    Boottime,
+    Monotonic,
+    MonotonicRaw,
+}
+
+/// (wasm-spike) Every clock is the page's monotonic clock
+/// (`performance.now()`), from an hour in, so no clock reads zero.
+#[cfg(target_family = "wasm")]
+fn read(id: ClockId) -> Duration {
+    use std::sync::OnceLock;
+    static START: OnceLock<web_time::Instant> = OnceLock::new();
+    let _ = id;
+    Duration::from_secs(3600) + START.get_or_init(web_time::Instant::now).elapsed()
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn read(id: ClockId) -> Duration {
     let t = rustix::time::clock_gettime(id);
     Duration::new(
         u64::try_from(t.tv_sec).unwrap_or(0),

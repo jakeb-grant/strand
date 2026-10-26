@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Instant;
+use strand_scene::time::Instant;
 
 use strand_scene::{NodeId, Size, SurfaceId};
 

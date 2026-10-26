@@ -21,7 +21,8 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_scene::motion::START_LEAD;
 use strand_scene::{

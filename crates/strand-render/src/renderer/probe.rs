@@ -59,7 +59,7 @@ impl Renderer {
     /// rate) run on the evaluation sandbox's virtual time, and
     /// [`Renderer::next_wake`] answers on it (docs/decisions.md
     /// eval-sandbox).
-    pub fn set_now(&mut self, now: Option<std::time::Instant>) {
+    pub fn set_now(&mut self, now: Option<strand_scene::time::Instant>) {
         self.probe.now = now;
     }
 

@@ -35,7 +35,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_gpu::{
     Brush, Frame, GpuErrorKind, GpuMode, GpuReply, GpuRequest, Op, PassFrame, PassGlobals,

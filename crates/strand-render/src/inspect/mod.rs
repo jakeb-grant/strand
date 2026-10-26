@@ -65,7 +65,7 @@ pub struct DrawnFrame {
     /// When the frame was drawn, on the wall clock: its time on the
     /// presentation clock mapped through the surface's last frame
     /// (`None`: no frame time was known).
-    pub drawn_at: Option<std::time::Instant>,
+    pub drawn_at: Option<strand_scene::time::Instant>,
     /// The surface's frame period estimate.
     pub period: std::time::Duration,
     pub nodes: Vec<DrawnNode>,

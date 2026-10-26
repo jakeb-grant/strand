@@ -42,7 +42,8 @@
 //!   m4-close-gpucap): no device is asked for again, and nothing is
 //!   promoted.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 /// The longest pause between two large frames that keeps them one run
 /// (many dropped frames at any refresh rate, a slow debug frame

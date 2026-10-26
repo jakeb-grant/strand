@@ -3,7 +3,8 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_scene::{NodeId, NodeKind, Scale, SurfaceId};
 use strand_text::{TextEngine, TextError, TextKey, TextLayout, TextRequest, TextWorker};

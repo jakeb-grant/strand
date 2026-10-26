@@ -20,7 +20,8 @@
 //! or not Linux) the advice changes nothing and the spare still saves
 //! the faults.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 /// Buffers smaller than this are plain heap memory, never advised: no
 /// bar, toast or icon buffer is this large.

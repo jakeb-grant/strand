@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use strand_scene::time::Instant;
 
 use strand_scene::SurfaceId;
 use strand_text::HookGate;

@@ -12,7 +12,8 @@
 //! and drop (M4) reach the same state.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_scene::input::button;
 use strand_scene::{
