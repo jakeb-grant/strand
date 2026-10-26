@@ -3040,9 +3040,17 @@ panel Card {
         "sway floats a fixed-size window: {report}"
     );
     let with_window = own_kb(pid);
-    let before = switches(pid);
+    // The report's round trip ends after its answer (the connection's
+    // hangup), so the quiet seconds start once that has settled.
+    shell.settle("the report answered");
+    let before = per_thread(pid);
     std::thread::sleep(Duration::from_secs(5));
-    let woke = switches(pid) - before;
+    let after = per_thread(pid);
+    let woke: Vec<String> = after
+        .iter()
+        .filter(|(t, n)| before.get(*t) != Some(*n))
+        .map(|(t, n)| format!("{t}: {} -> {n}", before.get(t).copied().unwrap_or(0)))
+        .collect();
     close("b.win", "strand-Probe");
     let after_window = own_kb(pid);
     open("b.card", "strand-Card");
@@ -3053,13 +3061,11 @@ panel Card {
     eprintln!(
         "window cost: own PSS {bar} kB the bar, {with_window} kB with the window ({window} kB), \
          {with_panel} kB with the panel ({panel} kB), {after_window} kB the window closed; \
-         {woke} context switches over 5 s with the window open"
+         threads woken over 5 s with the window open: {woke:?}"
     );
-    assert_eq!(
-        woke,
-        0,
-        "an open window woke strand: {:?}\n{}",
-        per_thread(pid),
+    assert!(
+        woke.is_empty(),
+        "an open window woke strand: {woke:?}\n{}",
         shell.log_text()
     );
     assert!(
