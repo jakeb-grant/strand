@@ -1165,7 +1165,10 @@ monitor, the keyboard always).
   bottom, and a drag reads the pointer's height; an upright meter
   fills plainly (its `wave` is a horizontal meter's). Its written
   `width` and `height` decide (where both are lengths), else its
-  laid-out box, so a box springing through a square does not turn it,
+  laid-out box, so a box springing through a square does not turn it;
+  one that grows from a written 0 on one axis (`width: 0; grow: 1`,
+  sharing what is left of its row) runs along that axis, whatever its
+  other side,
   and a drag keeps the orientation it began with. There is no
   orientation prop. `step:` on a slider moves a drag in whole steps of
   its `range`'s units from its low end (`range: 0, 100; step: 5`), the
