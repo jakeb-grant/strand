@@ -8,3 +8,1025 @@
 # text   = "Below a ratio of 1 it overshoots"  # words exactly as on the page
 # source = ["crates/strand-core/src/anim.rs:120", "docs/design.md#motion-and-time"]
 # proof  = "crates/strand-core/tests/springs.rs::underdamped_overshoots"  # a test, or how it was seen
+
+# --- start-tools-help ---
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "Strand has no packaged release yet."
+source = ["Cargo.toml:8", ".github/workflows/ci.yml:209"]
+proof  = "workspace version 0.0.0 with publish = false; the CI artifact's comment says it is not a release"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "The workspace sets `rust-version = \"1.97\"`"
+source = ["Cargo.toml:11"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "and CI builds with Rust 1.97.0."
+source = [".github/workflows/ci.yml:360", "scripts/container/Dockerfile:25"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev libpam0g-dev"
+source = [".github/workflows/ci.yml:357"]
+proof  = "the container image (scripts/container/Dockerfile:13) builds strand with them"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "cargo build --release -p strand -p strand-auth"
+source = ["crates/strand-auth/src/client.rs:31", "crates/strand/Cargo.toml:58"]
+proof  = "the two packages' binaries are strand and strand-auth; built (debug) in the container"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "It is the only program in the workspace that links libpam."
+source = ["crates/strand-auth/Cargo.toml:13"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "`strand --version` prints `strand 0.0.0`."
+source = ["crates/strand/src/entry.rs:109"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "`/usr/libexec/strand`, `/usr/lib/strand` and `/usr/local/libexec/strand`."
+source = ["crates/strand-auth/src/client.rs:266"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "Without it, `strand run` warns at every start that a `lock` would have"
+source = ["crates/strand/src/run/mod.rs:748", "crates/strand/src/run/lock.rs:969"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26: the warning came with a config holding no lock"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "has a `lock`. A shell with no lock screen runs without the helper."
+source = ["crates/strand/src/check.rs:317"]
+proof  = "crates/strand/src/check.rs tests; ran a lock-less config without the helper"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "The GPU backend is a default feature. To build without it:"
+source = ["crates/strand/Cargo.toml:11"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "That build links no wgpu, vello\\_gpu or naga, and draws everything on"
+source = ["Cargo.toml:19", "crates/strand-render/src/renderer/mod.rs:1087"]
+proof  = "CI's budgets job builds it (.github/workflows/ci.yml:195)"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "`cargo build --release --manifest-path eval/Cargo.toml`. It is a"
+source = ["eval/Cargo.toml:14", "crates/strand/src/report/replay.rs:103"]
+proof  = "cargo metadata --manifest-path eval/Cargo.toml in the container: target_directory eval/target"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "`strand-release-binaries`, for 30 days: `strand-gpu`, the default"
+source = [".github/workflows/ci.yml:211", ".github/workflows/ci.yml:216", ".github/workflows/ci.yml:190"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "build, and `strand-cpu`, the build without the GPU backend. Both are"
+source = [".github/workflows/ci.yml:195", ".github/workflows/ci.yml:208"]
+proof  = "read: strand-cpu is copied after the --no-default-features build"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "built on Ubuntu 24.04."
+source = [".github/workflows/ci.yml:160"]
+proof  = "the budgets job runs-on ubuntu-24.04"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "The artifact holds no `strand-auth`, `strand-dev` or `strand-eval`."
+source = [".github/workflows/ci.yml:212"]
+proof  = "the artifact's path lists strand-cpu and strand-gpu only"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "`wl_shm` and `zwlr_layer_shell_v1` (layer shell). Without one of them,"
+source = ["crates/strand-surface/src/manager/mod.rs:1030"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "\"the compositor does not offer zwlr\\_layer\\_shell\\_v1\"."
+source = ["crates/strand-surface/src/manager/mod.rs:394"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "| `xdg_wm_base` | `window` surfaces and popups | windows and popups are not shown |"
+source = ["crates/strand-surface/src/manager/window.rs:146", "crates/strand-surface/src/manager/popup.rs:270"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "a `lock` cannot lock the session, and `strand run` warns at start"
+source = ["crates/strand/src/run/lock.rs:983", "crates/strand-surface/src/manager/session_lock.rs:99"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "`blur` draws its tint fallback, and Strand says why once"
+source = ["crates/strand-surface/src/caps.rs:82", "crates/strand/src/demo/host.rs:487"]
+proof  = "crates/strand-render/tests/paint.rs::blur_tints_until_the_compositor_blurs"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "`strand compositor-rules` prints the rules for your config, to paste"
+source = ["crates/strand/src/rules.rs:277"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "into your Hyprland config. Strand never applies them itself."
+source = ["crates/strand/src/rules.rs:283"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "`xdg_activation_v1`. `strand report` lists every global your"
+source = ["crates/strand-surface/src/manager/mod.rs:1036", "crates/strand-surface/src/activation.rs:58", "crates/strand/src/report/mod.rs:296"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26: strand report listed 44 globals with versions"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "and niri's own IPC. On a compositor without one of those adapters, the"
+source = ["crates/strand-services/src/wm/detect.rs:61", "crates/strand-services/src/wm/protocol.rs:1"]
+proof  = "crates/strand/tests/compositor_matrix.rs (labwc: the stores without IPC)"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "CI's `compositors` job runs the compositor matrix test on **sway**,"
+source = [".github/workflows/ci.yml:348", "scripts/compositor-matrix-ci.sh:28"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "on every push and every night. It checks what the `workspaces` and"
+source = [".github/workflows/ci.yml:3", ".github/workflows/ci.yml:9"]
+proof  = "the job has no `if:`, so push, pull_request and the schedule run it"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "Hyprland it runs the design document's bar in `strand run`. The rest"
+source = ["scripts/compositor-matrix.sh:2", "crates/strand/tests/compositor_matrix.rs:155"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "of the test suite runs on a headless sway 1.9 on Ubuntu 24.04."
+source = ["scripts/container/Dockerfile:1"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "`$XDG_CONFIG_HOME/strand`, or `~/.config/strand` when"
+source = ["crates/strand/src/check.rs:38"]
+proof  = "crates/strand/src/check.rs tests"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "three directories below it. There is no entry file and nothing to"
+source = ["crates/strand-compiler/src/source.rs:79", "crates/strand-compiler/src/source.rs:105"]
+proof  = "features.md M1, module-set discovery"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "import. Files and directories whose names start with `.` are skipped,"
+source = ["crates/strand-compiler/src/source.rs:107"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "and symlinks are followed, so a config kept in a dotfiles repository"
+source = ["crates/strand-compiler/src/source.rs:108"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "files that sit deeper than three directories, since they are not"
+source = ["crates/strand/src/check.rs:134"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "`strand new` writes one file, `bar.strand`, the guide's hello bar, and"
+source = ["crates/strand/src/new.rs:12", "crates/strand/src/new.rs:15"]
+proof  = "crates/strand/tests/m5/new.rs::the_new_shell_is_the_template_and_checks"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "start it with `strand run`"
+source = ["crates/strand/src/new.rs:104"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "already holds anything, even a hidden file, and writes nothing there."
+source = ["crates/strand/src/new.rs:159"]
+proof  = "crates/strand/src/new.rs::a_non_empty_dir_or_a_file_is_refused"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "it gets SIGINT or SIGTERM (Ctrl-C in its terminal). Before it ends it"
+source = ["crates/strand/src/run/mod.rs:35"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26: SIGTERM ended it with status 0"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "writes the `persist` state and settings it has not saved yet."
+source = ["crates/strand/src/run/mod.rs:38"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "nothing to show and waits: the first file you save there appears."
+source = ["crates/strand/src/run/mod.rs:626"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26: an empty directory, then a saved bar.strand, which strand report then listed"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "together, as \"save all\" does, count as one change."
+source = ["docs/design.md#the-pipeline"]
+proof  = "crates/strand/src/fuzz.rs::random_edits_through_five_save_styles"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "A save that does not check leaves the last good shell running. A"
+source = ["docs/design.md#the-pipeline"]
+proof  = "crates/strand/src/run/tests.rs::saves_reload_live_with_state_kept"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "quarter of a second later an overlay lists the problems, and the fix"
+source = ["crates/strand/src/overlay.rs:23"]
+proof  = "crates/strand/src/overlay.rs::the_quiet_period_and_dismissal"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "`$XDG_CACHE_HOME/strand/last-good` (`~/.cache/strand/last-good` by"
+source = ["crates/strand-compiler/src/reconcile/loader.rs:679"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26: the cache held one entry after a run"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "default). A config that is broken when the shell starts runs that last"
+source = ["crates/strand/src/run/logic.rs:313"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "good version, with the overlay up. With no last good version yet, only"
+source = ["crates/strand/src/run/tests.rs:1434"]
+proof  = "crates/strand/src/run/tests.rs::a_config_broken_at_first_boot_runs_once_fixed"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "an error status when it finds an error, so it works in scripts and"
+source = ["crates/strand/src/check.rs:346"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26: exit 1 with 2 errors, 0 when clean"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "strand check: 1 file in /home/you/.config/strand: 0 errors, 0 warnings"
+source = ["crates/strand/src/check.rs:247"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "`strand check bar.strand` checks it together with the rest of its"
+source = ["crates/strand/src/check.rs:70"]
+proof  = "crates/strand/src/check.rs::a_file_is_checked_with_its_config"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "path it formats the config directory; it also takes directories and"
+source = ["crates/strand/src/fmt.rs:23"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "formatted and exits with an error status when there is one:"
+source = ["crates/strand/src/fmt.rs:69"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26: exit 1"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "strand fmt: 2 files, 1 not formatted"
+source = ["crates/strand/src/fmt.rs:124"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "A file with syntax errors is reported and left as it was. A formatted"
+source = ["crates/strand/src/fmt.rs:7"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "file replaces the old one through a rename, so a symlinked file stays"
+source = ["crates/strand/src/fmt.rs:190"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "`strand watch` connects to the running shell and prints each event"
+source = ["crates/strand/src/ipc/cli.rs:94", "crates/strand/src/ipc/describe.rs:7"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "reload (21.8 ms): prop"
+source = ["crates/strand/src/ipc/describe.rs:26"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (the times vary)"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "line, for scripts. Its first line, `{\"event\":\"watching\",\"v\":1}`, says"
+source = ["crates/strand/src/ipc/cli.rs:111"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "the config now and prints that reload's event as `strand watch` does."
+source = ["crates/strand/src/ipc/cli.rs:47"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26: printed `reload (0.9 ms): no change`"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "`strand reload --hard` also drops every state that is not `persist`"
+source = ["crates/strand-compiler/src/instantiate/mod.rs:1448"]
+proof  = "crates/strand/src/run/tests.rs::saves_reload_live_with_state_kept; ran: a toggled export came back at its default"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "hard reload waits until you unlock."
+source = ["crates/strand-compiler/src/instantiate/mod.rs:1452"]
+proof  = "crates/strand/src/run/tests.rs::a_replayed_hard_reload_reports_the_newer_errors"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "- `strand set <path> <value>` writes an exported `state`, a settings"
+source = ["crates/strand/src/run/request/set.rs:1", "docs/spec.md#13-the-command-line-and-ipc"]
+proof  = "crates/strand/tests/m5/cli.rs"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "number or percentage, such as `+5%`, steps from its current value."
+source = ["docs/spec.md#13-the-command-line-and-ipc"]
+proof  = "crates/strand-services/tests/audio.rs"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "- `strand toggle <path>` flips an exported `bool` state."
+source = ["crates/strand/src/ipc/query.rs:68"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "- `strand get <path>` prints an exported value, a settings field or a"
+source = ["crates/strand/src/ipc/query.rs:55"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26: printed `true`"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "A path is `file.name` for a value a file exports (`launcher.open` is"
+source = ["docs/spec.md#13-the-command-line-and-ipc"]
+proof  = "docs/guide/level-4.md (launcher.strand's `export state open`)"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "'$accent' '#ff5555'` lays a token over the theme until `strand clear"
+source = ["crates/strand/src/ipc/overlay.rs:25", "docs/guide/level-5.md"]
+proof  = "crates/strand/tests/m5/cli.rs::get_toggle_and_a_token_overlay_over_the_socket"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "level, one of `off`, `error`, `warn`, `info`, `debug` and `trace`, with"
+source = ["crates/strand/src/logging.rs:16"]
+proof  = "crates/strand/src/logging.rs::parses_levels_and_topics"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "strand: WARN strand::run::logic: no IPC socket (strand reload, strand watch): …"
+source = ["crates/strand/src/logging.rs:59", "crates/strand/src/run/logic.rs:124"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "`info` adds what the shell does as it runs, such as each surface"
+source = ["crates/strand/src/logging.rs:28"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 with STRAND_LOG=info: surface, reload, service started and stopped lines, and zbus's"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "one line per painted frame with the rectangles it repainted."
+source = ["crates/strand/src/logging.rs:23", "crates/strand/src/demo/host.rs:982"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "The shell connects to the display `WAYLAND_DISPLAY` names, and the"
+source = ["crates/strand-surface/src/manager/mod.rs:1012"]
+proof  = "read"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "for that display (`strand-wayland-1.sock`). Its log then goes wherever"
+source = ["crates/strand-core/src/ipc.rs:599"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "A second `strand run` on the same display finds the socket taken: it"
+source = ["crates/strand/src/ipc/server.rs:91", "crates/strand/src/run/logic.rs:124"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "its own `STRAND_SOCKET` and `STRAND_STATE_DIR`."
+source = ["crates/strand/src/entry.rs:69", "docs/spec.md#13-the-command-line-and-ipc"]
+proof  = "read"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "The language server is `strand-dev lsp`. Build `strand-dev` from the"
+source = ["crates/strand-dev/src/main.rs:19"]
+proof  = "crates/strand-dev/tests/lsp.rs::the_binary_serves_stdio"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "`strand-dev lsp` speaks the Language Server Protocol over standard"
+source = ["crates/strand-dev/src/server.rs:44"]
+proof  = "crates/strand-dev/tests/lsp.rs::the_binary_serves_stdio"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "of the config: when a file opens or is saved, and 200 ms after you"
+source = ["crates/strand-dev/src/server.rs:41", "crates/strand-dev/src/server.rs:312"]
+proof  = "crates/strand-dev/tests/lsp.rs::diagnostics_on_open_and_debounced_on_change"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "- **Completion** after `$`, `.` and `<->`, and of element, component,"
+source = ["crates/strand-dev/src/server.rs:63"]
+proof  = "crates/strand-dev/tests/lsp.rs::completion_of_elements_props_and_events"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "- **Hover**: a name's type, and its documentation from the schemas."
+source = ["crates/strand-dev/src/server.rs:66"]
+proof  = "crates/strand-dev/tests/lsp.rs::hover_shows_types_and_schema_docs"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "- **Go to definition**, across the config's files."
+source = ["crates/strand-dev/src/server.rs:67"]
+proof  = "crates/strand-dev/tests/lsp.rs::definition_across_files"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "- **Rename** across files: a `state`, a `let`, a component, a token, and"
+source = ["crates/strand-dev/src/server.rs:68"]
+proof  = "crates/strand-dev/tests/lsp.rs::rename_state_let_component_and_token, ::rename_a_component_prop_across_files"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "config, or one of a built-in name, is refused."
+source = ["crates/strand-dev/src/server.rs:559"]
+proof  = "crates/strand-dev/tests/lsp.rs::rename_refuses_what_would_break_or_is_built_in"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "missing `key`, and \"extract component\", which moves the selected"
+source = ["crates/strand-dev/src/server.rs:75"]
+proof  = "crates/strand-dev/tests/lsp.rs::quick_fix_for_did_you_mean, ::quick_fix_for_a_missing_key, ::extract_component_moves_a_subtree_into_a_new_component"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "- **Formatting**, with the formatter `strand fmt` uses."
+source = ["crates/strand-dev/src/server.rs:82"]
+proof  = "crates/strand-compiler/src/fmt.rs:1"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "`strand check <file>` uses: the config directory, when the file is"
+source = ["crates/strand-dev/src/workspace.rs:3"]
+proof  = "crates/strand-dev/tests/lsp.rs::configs_are_found_as_strand_check_finds_them"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "outside the editor are seen too."
+source = ["crates/strand-dev/src/workspace.rs:11"]
+proof  = "crates/strand-dev/tests/lsp.rs::files_changed_on_disk_are_seen"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "Two initialization options change its defaults: `debounceMs` (how long"
+source = ["crates/strand-dev/src/server.rs:150", "crates/strand-dev/src/server.rs:155"]
+proof  = "read"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "use-grammars = { only = [\"strand\"] }"
+source = ["crates/strand-dev/tree-sitter-strand/tree-sitter.json"]
+proof  = "helix 25.07.1 in archlinux:latest: hx --grammar build built strand.so, hx --health strand found strand-dev and the queries"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "On Arch Linux the program is called `helix`, not `hx`."
+source = ["crates/strand-dev/tree-sitter-strand/tree-sitter.json"]
+proof  = "archlinux:latest's helix 25.07.1-2 package installs /usr/bin/helix and no hx"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "numbers `constant.numeric`, for one, where the query says `number`."
+source = ["crates/strand-dev/tree-sitter-strand/queries/highlights.scm:13"]
+proof  = "the query's capture; Helix's theme scope name is Helix's own"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "vim.lsp.enable(\"strand\")"
+source = ["crates/strand-dev/src/main.rs:19"]
+proof  = "neovim 0.12.6 in archlinux:latest, headless: the client attached and showed strand-dev's unknown-prop diagnostic"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "  callback = function() vim.treesitter.start() end,"
+source = ["crates/strand-dev/tree-sitter-strand/queries/highlights.scm:1"]
+proof  = "neovim 0.12.6 headless: the compiled parser loaded, the highlights query parsed and the highlighter was active"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "There is no VS Code extension for Strand. VS Code starts a language"
+source = ["crates/strand-dev/Cargo.toml:1"]
+proof  = "git ls-files: no extension, package.json or tmLanguage file in the repository"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "hand-written `src/scanner.c`), and four queries in `queries/`:"
+source = ["crates/strand-dev/tree-sitter-strand/tree-sitter.json"]
+proof  = "read"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "- `indents.scm`, one indent level inside every block and bracketed"
+source = ["crates/strand-dev/tree-sitter-strand/queries/indents.scm:1"]
+proof  = "read"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "- `injections.scm`, which marks comments only, since strings hold no"
+source = ["crates/strand-dev/tree-sitter-strand/queries/injections.scm:2"]
+proof  = "read"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "- `locals.scm`, the scopes, definitions and references."
+source = ["crates/strand-dev/tree-sitter-strand/queries/locals.scm:1"]
+proof  = "read"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "All four use nvim-treesitter's capture names. The grammar follows"
+source = ["crates/strand-dev/tree-sitter-strand/queries/highlights.scm:1"]
+proof  = "crates/strand-dev/tests/tree_sitter.rs"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "committed generated files are what tree-sitter 0.27.0 makes of"
+source = ["scripts/check-tree-sitter.sh:5", "scripts/container/Dockerfile:54", ".github/workflows/ci.yml:101"]
+proof  = "read"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "draws only the outline of the picked element and the repaint flashes;"
+source = ["docs/design.md#developer-experience"]
+proof  = "crates/strand-render/tests/inspect.rs::the_picked_node_is_outlined"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "commands use (`$STRAND_SOCKET`, else the socket in `$XDG_RUNTIME_DIR`"
+source = ["crates/strand-dev/src/inspect/mod.rs:78"]
+proof  = "read"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "in pick mode: click an element on any monitor. While you pick, clicks"
+source = ["crates/strand-dev/src/inspect/mod.rs:140"]
+proof  = "crates/strand/tests/m5/inspect.rs::a_pick_on_output_2_answers_identity_layout_and_provenance"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "go to the inspector, not to the shell's handlers. Enter stops picking"
+source = ["crates/strand-dev/src/inspect/mod.rs:37", "crates/strand-dev/src/inspect/mod.rs:325"]
+proof  = "crates/strand-render/tests/inspect.rs::pick_mode_holds_pointer_input_from_the_handlers"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "One click picks one element, and the shell takes its input back. The"
+source = ["crates/strand-dev/src/inspect/mod.rs:270"]
+proof  = "crates/strand/tests/m5/inspect.rs::ending_pick_mode_returns_input_to_the_handlers"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "element stays outlined, and the terminal shows its pane. A lock screen"
+source = ["crates/strand-dev/src/inspect/mod.rs:300"]
+proof  = "crates/strand-render/tests/inspect.rs::a_lock_surface_is_never_picked_or_outlined"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "is never picked, and pick mode ends when the screen locks."
+source = ["crates/strand-dev/src/inspect/mod.rs:280"]
+proof  = "crates/strand/tests/lock.rs::the_inspector_cannot_pick_while_locked"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "The inspector's own test draws this pane for a `box`:"
+source = ["crates/strand-dev/src/inspect/pane.rs:118"]
+proof  = "crates/strand-dev/src/inspect/pane.rs::a_pane_shows_identity_layout_chain_and_badges"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "  identity  [DP-2]  id: target  #0  in bar"
+source = ["crates/strand-dev/src/inspect/pane.rs:139"]
+proof  = "crates/strand-dev/src/inspect/pane.rs::a_pane_shows_identity_layout_chain_and_badges"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "- **why**, for a `shader` node that draws nothing: the reason, such as"
+source = ["crates/strand-dev/src/inspect/pane.rs:26"]
+proof  = "crates/strand-dev/src/inspect/pane.rs::a_shader_that_draws_nothing_says_why"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "- **state**: the state cells of the component, surface and list item"
+source = ["crates/strand-compiler/src/instantiate/inspect.rs:470"]
+proof  = "crates/strand-compiler/tests/inspect.rs::kept_and_persisted_badges"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "| `r` | reset the element's subtree: its state back to the defaults |"
+source = ["crates/strand-dev/src/inspect/mod.rs:37"]
+proof  = "crates/strand-dev/tests/inspect_session.rs::the_terminal_session_picks_shows_resets_flashes_and_offers_editor"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "| `e` | open the element's source in `$VISUAL` or `$EDITOR` at its line |"
+source = ["crates/strand-dev/src/inspect/mod.rs:444"]
+proof  = "read"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "When the inspector quits, the shell ends pick mode, the outline and the"
+source = ["crates/strand-dev/src/inspect/mod.rs:9"]
+proof  = "crates/strand/src/run/tests.rs::the_inspector_belongs_to_its_client"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "**Repaint flashing** tints each area the shell repaints for 300 ms, so"
+source = ["docs/features.md"]
+proof  = "crates/strand-render/tests/inspect.rs::repaint_flash_tints_only_the_damage"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "an expression, a binding or a reference to a token is refused, since"
+source = ["crates/strand-dev/src/inspect/write.rs:5"]
+proof  = "crates/strand-dev/tests/inspect.rs::one_span_is_edited"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "The file must still be the one the shell compiled. If it changed since,"
+source = ["crates/strand-dev/src/inspect/write.rs:12", "crates/strand-dev/src/inspect/write.rs:98"]
+proof  = "crates/strand-dev/tests/inspect.rs::a_file_changed_underneath_is_refused"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "new text replaces the file atomically and follows symlinks, so a linked"
+source = ["crates/strand-dev/src/inspect/write.rs:15"]
+proof  = "crates/strand-dev/tests/inspect.rs::a_symlink_is_followed"
+
+[[claim]]
+page   = "site/tools/inspector.md"
+text   = "store, is refused with the reason, and the inspector offers to open it"
+source = ["crates/strand-dev/src/inspect/write.rs:104"]
+proof  = "crates/strand-dev/tests/inspect.rs::a_read_only_target_is_refused_offering_editor"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "saved a glitch report to /home/you/.local/state/strand/reports/2026-10-26_19-51-11"
+source = ["crates/strand/src/report/mod.rs:273"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "(`$XDG_STATE_HOME/strand`, else `~/.local/state/strand`), named by the"
+source = ["crates/strand-core/src/persist.rs:134", "crates/strand/src/report/bundle.rs:14"]
+proof  = "crates/strand/tests/report.rs::a_bundle_holds_every_part"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "local date and time, readable only by you. Strand keeps the newest 20"
+source = ["crates/strand/src/report/bundle.rs:33", "crates/strand/src/report/bundle.rs:14"]
+proof  = "crates/strand/tests/report.rs::the_twenty_first_report_prunes_the_oldest_and_nothing_else"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "While it runs, Strand keeps the last minute or so of what drove the"
+source = ["docs/design.md#testing"]
+proof  = "docs/features.md, Glitch reports (the ring)"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "shell in a fixed 256 KB buffer in memory, such as pointer moves,"
+source = ["docs/design.md#testing"]
+proof  = "crates/strand/src/run/record.rs tests"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "`toggle` commands it was sent, reloads, and surfaces and monitors"
+source = ["crates/strand/src/run/record.rs:3214"]
+proof  = "crates/strand/src/run/record.rs::a_request_records_its_verb_and_the_value_after"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "goes to disk until you report. The report holds that recording, every"
+source = ["docs/design.md#testing"]
+proof  = "crates/strand/tests/report.rs::a_bundle_holds_every_part"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "It never holds what you type: a key that types a character is counted,"
+source = ["docs/design.md#testing"]
+proof  = "docs/features.md, Glitch reports (text keys to a count)"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "not kept. Nothing is kept while the screen is locked, and a report"
+source = ["docs/design.md#testing"]
+proof  = "crates/strand/src/run/record.rs tests (the_ring_pauses_from...)"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "`strand set system.replay false` turns the recording off, and it stays"
+source = ["docs/design.md#testing"]
+proof  = "crates/strand-services/tests/system.rs::replay_is_kept_across_restarts"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "`strand report` with no words prints a description of the running"
+source = ["crates/strand/src/report/mod.rs:286", "crates/strand/src/report/mod.rs:244"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "bug about your hardware or compositor. `--json` prints it as JSON."
+source = ["crates/strand/src/report/mod.rs:278"]
+proof  = "crates/strand/tests/m5/report.rs::every_section_is_reported_and_the_json_round_trips"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "`strand replay` replays the newest report, or the folder you name, in"
+source = ["crates/strand/src/report/replay.rs:1"]
+proof  = "crates/strand/tests/replay_handoff.rs::path_is_the_fallback_and_the_newest_report_the_default"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "Without it, `strand replay` says so and stops."
+source = ["crates/strand/src/report/replay.rs:103"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26: exit 1 with the message"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "The replay draws on the CPU into a stand-in compositor of its own, and"
+source = ["docs/eval.md#replaying-a-glitch-report"]
+proof  = "eval/tests/replay.rs::the_replay_command_runs_as_a_plain_process_beside_a_display"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "you reported matched your live shell (VERIFIED or DRIFTED), and where"
+source = ["docs/design.md#testing"]
+proof  = "docs/features.md, Glitch reports (the verdict)"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "browser. `--no-open` leaves it closed."
+source = ["eval/src/cli.rs:183"]
+proof  = "read: eval/src/cli.rs:192 takes --no-open"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "1. Drag across the timeline to set when, or press `[` at the start and"
+source = ["eval/viewer/viewer.js:1876"]
+proof  = "scripts/eval/viewer-check.sh --expect replay"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "2. Click the elements on the frame, or drag a rectangle over them."
+source = ["eval/viewer/viewer.js:1891"]
+proof  = "scripts/eval/viewer-check.sh --expect replay"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "4. Press **Copy for agent** and paste the text, or **Save clip** for"
+source = ["eval/viewer/viewer.js:1914"]
+proof  = "eval/tests/clip.rs::the_page_and_the_command_line_clip_alike"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "The same clip comes from a terminal, once the report has been"
+source = ["eval/src/replay/clip.rs:124"]
+proof  = "eval/tests/clip.rs::a_clip_refuses_what_it_cannot_clip_as_typed_errors"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "Times count back from the report (`-3.2s`, or `-3200ms`), and `--to`"
+source = ["eval/src/replay/clip.rs:368"]
+proof  = "eval/tests/clip.rs"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "defaults to the report itself. `--node` names an element by its `#id`,"
+source = ["eval/src/replay/clip.rs:368"]
+proof  = "eval/tests/clip.rs::a_clip_names_nodes_by_key_id_and_config_line"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "what you selected."
+source = ["eval/viewer/viewer.js:1920"]
+proof  = "read: the clip panel shows the command under 'The same clip from the command line:'"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "- **\"cannot connect to the Wayland compositor\".** Strand connects to"
+source = ["crates/strand-surface/src/manager/mod.rs:392"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 with no compositor"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "- **\"… is not a directory\".** The config directory does not exist."
+source = ["crates/strand/src/run/mod.rs:594"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "- **\"no config directory (set XDG\\_CONFIG\\_HOME or HOME)\".** Neither"
+source = ["crates/strand/src/entry.rs:232"]
+proof  = "read"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "its last good version keeps running, `strand watch` lists it under"
+source = ["crates/strand/src/ipc/describe.rs:35"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26: `held back:` after a typo"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "When a save leaves problems that stand for a quarter of a second, an"
+source = ["crates/strand/src/overlay.rs:23"]
+proof  = "crates/strand/src/overlay.rs::the_quiet_period_and_dismissal"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "save that is fixed within that quarter second, as format-on-save does,"
+source = ["crates/strand/src/overlay.rs:1"]
+proof  = "crates/strand/src/run/tests.rs::a_save_fixed_at_once_never_opens_the_overlay"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "`$STRAND_EDITOR` when it is set, as a template with `{file}`, `{line}`"
+source = ["crates/strand/src/overlay.rs:693"]
+proof  = "crates/strand/src/overlay.rs::the_editor_command"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "  `ne`, `joe`, `mg`) runs inside `xdg-terminal-exec` when it is"
+source = ["crates/strand/src/overlay.rs:689", "crates/strand/src/overlay.rs:753"]
+proof  = "crates/strand/src/overlay.rs::the_editor_command"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "editor set, the click runs `xdg-open` on the file."
+source = ["crates/strand/src/overlay.rs:738"]
+proof  = "crates/strand/src/overlay.rs::the_editor_command"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "- **The close button** dismisses the overlay. It stays away until the"
+source = ["crates/strand/src/overlay.rs:533"]
+proof  = "crates/strand/src/overlay.rs::the_quiet_period_and_dismissal"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "A runtime error, such as a handler that fails, freezes only the"
+source = ["docs/design.md#errors", "crates/strand-compiler/src/instantiate/mod.rs:255"]
+proof  = "crates/strand-compiler/tests/reload.rs::a_fault_outlines_its_component_until_the_fixing_reload"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "of the shell keeps running. `strand watch` prints the error as a"
+source = ["crates/strand/src/ipc/describe.rs:72"]
+proof  = "crates/strand/src/ipc/describe.rs"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "A missing `xdg_wm_base` is logged as a warning for windows; for"
+source = ["crates/strand-surface/src/manager/window.rs:145", "crates/strand-surface/src/manager/popup.rs:270"]
+proof  = "read: log::warn for windows, log::debug for popups"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "run` says so at every start, and `strand check` reports an error on a"
+source = ["crates/strand/src/run/lock.rs:969", "crates/strand/src/check.rs:317"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "- **\"the compositor does not offer ext-session-lock\".** A `lock` cannot"
+source = ["crates/strand/src/run/lock.rs:983"]
+proof  = "read"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "and Strand says once, in the log and to `strand watch`, why there is no"
+source = ["crates/strand/src/demo/host.rs:587"]
+proof  = "read"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "blur behind that surface. `blur_fallback: none` turns the tint off. On"
+source = ["crates/strand-surface/src/caps.rs:89"]
+proof  = "read"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "it animates a large area. It asks for a GPU device only where a DRM"
+source = ["crates/strand-gpu/src/lib.rs:79", "docs/design.md#rendering-performance-and-memory-budget"]
+proof  = "read"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "Strand draws on the CPU by default and hands a surface to the GPU while"
+source = ["docs/design.md#rendering-performance-and-memory-budget"]
+proof  = "read: crates/strand-render/src/promote.rs, the promotion rule"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "render node (`/dev/dri/renderD*`) exists, and it needs a Vulkan driver"
+source = ["crates/strand-gpu/src/lib.rs:80", "crates/strand-gpu/src/device.rs:44"]
+proof  = "read"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "`shader` node draws nothing; [the inspector](../tools/inspector.md)"
+source = ["docs/design.md#rendering-performance-and-memory-budget", "crates/strand-dev/src/inspect/pane.rs:26"]
+proof  = "crates/strand/src/run/tests.rs::a_shader_node_pane_says_why_it_draws_nothing"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "`strand report` shows the GPU on its `gpu:` line: `unused`,"
+source = ["crates/strand/src/report/mod.rs:326"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26: `gpu: up (llvmpipe …)`"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "and how many devices were lost. After three lost devices in one run"
+source = ["crates/strand-render/src/promote.rs:93", "crates/strand-render/src/promote.rs:97"]
+proof  = "read"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "A build without the GPU backend gives \"built without the GPU backend\"."
+source = ["crates/strand-scene/src/backend.rs:76", "crates/strand-render/src/renderer/mod.rs:1090"]
+proof  = "read"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "`$XDG_RUNTIME_DIR/strand-<display>.sock`. \"no running strand on …;"
+source = ["crates/strand-core/src/ipc.rs:599", "crates/strand/src/ipc/cli.rs:15"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "A second `strand run` on the same display runs without a socket and"
+source = ["crates/strand/src/run/logic.rs:124", "crates/strand/src/ipc/server.rs:91"]
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "it back, `strand reload --hard` drops every state that is not `persist`"
+source = ["crates/strand-compiler/src/instantiate/mod.rs:1448"]
+proof  = "crates/strand/src/run/tests.rs::saves_reload_live_with_state_kept"

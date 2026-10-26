@@ -25,6 +25,8 @@
 
 ## Tools
 - [Editor setup](tools/editor.md)
+- [Inspector](tools/inspector.md)
+- [Reporting a glitch](tools/reporting.md)
 
 ## Reference
 - [Elements](@reference/elements)
