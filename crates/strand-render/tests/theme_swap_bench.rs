@@ -17,11 +17,11 @@
 //! measured once: no case is re-run, so the gate is that one median
 //! (decisions.md, laptop-ci). In an optimised build the timed tests
 //! take turns instead of running on libtest's parallel threads, so a
-//! swap is timed alone (`turn`; decisions.md, oi-timing). A debug build does the same
-//! work about four times slower (some six on CI's runners), so there the
-//! gate is eight times the budget: it still fails on a regression of the
-//! work's shape (a check per node, a palette played through without
-//! end).
+//! swap is timed alone (`turn`; decisions.md, oi-timing). A debug build
+//! does the same work about four times slower (some six on CI's
+//! runners), so there the gate is eight times the budget: it still fails
+//! on a regression of the work's shape (a check per node, a palette
+//! played through without end).
 //!
 //! A swap no spring keeps readable crossfades instead; its work (the
 //! same, plus taking a snapshot of each surface once) is held to the

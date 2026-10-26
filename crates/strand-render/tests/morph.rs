@@ -682,7 +682,13 @@ bar Top {
 fn a_moving_frame_waits_for_its_new_text_once() {
     use strand_text::{FontConfig, TextWorker, test_font_path};
     let data = std::fs::read(test_font_path()).unwrap();
-    let slow: strand_text::Waker = Box::new(|| std::thread::sleep(Duration::from_millis(3)));
+    // A worker slow enough that the paint finds texts still being
+    // shaped (twelve take it 240 ms) even when this thread is kept off
+    // the CPU between `update` and the paint: the paint takes in what
+    // was delivered before it flattens, so a 3 ms worker could have
+    // shaped them all after a stall of some 30 ms. The frame waits no
+    // longer for it: its wait is capped at the estimate wait.
+    let slow: strand_text::Waker = Box::new(|| std::thread::sleep(Duration::from_millis(20)));
     let worker =
         TextWorker::spawn_with_waker(FontConfig::isolated(vec![Arc::new(data)]), Some(slow))
             .unwrap();
@@ -709,7 +715,7 @@ fn a_moving_frame_waits_for_its_new_text_once() {
     sh.k += 1;
     sh.shown[0].2.paint_at(&mut sh.r, BAR, 1, frame(k));
     // The paint laid the moving bar out again and found the texts still
-    // being shaped (twelve take the worker 36 ms): it looked for them
+    // being shaped (twelve take the worker 240 ms): it looked for them
     // in the frame's wait. (Not whether it drew: under load the worker
     // may have shaped none of them yet, and nothing has moved at the
     // transition's first frame; 23 of 480 runs 48 at a time drew
