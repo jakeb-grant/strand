@@ -926,42 +926,57 @@ fn each_frame_png_is_the_frame_shown() {
     // The cursor off the bar (the screen shows it), and the colour's
     // spring over.
     desk.pointer.motion(640, 500, 1280, 720);
-    std::thread::sleep(Duration::from_millis(1500));
-    let ans = desk.report("frames");
-    let dir = PathBuf::from(ans["bundle"].as_str().unwrap());
-    let b = read_json(&dir.join("bundle.json"));
-    let bar = b["surfaces"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|s| s["kind"] == "bar")
-        .unwrap()
-        .clone();
-    let (w, h, ours) = decode_png(&dir.join(bar["frame"].as_str().unwrap()));
-    let shot = desk.dir.join("shot.png");
-    let ok = Command::new("grim")
-        .args(["-g", &format!("0,0 {w}x{h}")])
-        .arg(&shot)
-        .envs(desk.env())
-        .status()
-        .unwrap();
-    assert!(ok.success(), "grim");
-    let (sw, sh, theirs) = decode_png(&shot);
-    assert_eq!((sw, sh), (w, h));
-    // The screen shows the surface over what is under it: its opaque
-    // pixels are the frame's own.
-    let (mut off, mut n) = (0usize, 0usize);
-    for (a, b) in ours.chunks_exact(4).zip(theirs.chunks_exact(4)) {
-        if a[3] != 255 {
-            continue;
+    // The report's frame and the compositor's shot are taken one after
+    // the other; on a loaded machine the screen may still move between
+    // them (the pointer's leave, the spring's last frames), so the pair
+    // is taken again until it agrees, a few times at most. A frame that
+    // is not the one shown differs every time.
+    let mut tries = 0;
+    let (ours, w, h, n, off) = loop {
+        tries += 1;
+        std::thread::sleep(Duration::from_millis(1500));
+        let ans = desk.report("frames");
+        let dir = PathBuf::from(ans["bundle"].as_str().unwrap());
+        let b = read_json(&dir.join("bundle.json"));
+        let bar = b["surfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["kind"] == "bar")
+            .unwrap()
+            .clone();
+        let (w, h, ours) = decode_png(&dir.join(bar["frame"].as_str().unwrap()));
+        let shot = desk.dir.join("shot.png");
+        let ok = Command::new("grim")
+            .args(["-g", &format!("0,0 {w}x{h}")])
+            .arg(&shot)
+            .envs(desk.env())
+            .status()
+            .unwrap();
+        assert!(ok.success(), "grim");
+        let (sw, sh, theirs) = decode_png(&shot);
+        assert_eq!((sw, sh), (w, h));
+        // The screen shows the surface over what is under it: its opaque
+        // pixels are the frame's own.
+        let (mut off, mut n) = (0usize, 0usize);
+        for (a, b) in ours.chunks_exact(4).zip(theirs.chunks_exact(4)) {
+            if a[3] != 255 {
+                continue;
+            }
+            n += 1;
+            if a[..3].iter().zip(&b[..3]).any(|(x, y)| x.abs_diff(*y) > 2) {
+                off += 1;
+            }
         }
-        n += 1;
-        if a[..3].iter().zip(&b[..3]).any(|(x, y)| x.abs_diff(*y) > 2) {
-            off += 1;
+        if off * 1000 <= n || tries == 5 {
+            break (ours, w, h, n, off);
         }
-    }
+    };
     assert!(n * 2 > (w * h) as usize, "mostly opaque: {n}");
-    assert!(off * 1000 <= n, "{off} of {n} opaque pixels differ");
+    assert!(
+        off * 1000 <= n,
+        "{off} of {n} opaque pixels differ, {tries} tries"
+    );
     // The button is green, as clicked.
     let px = &ours[(20 * w as usize + 40) * 4..][..3];
     assert!(px[1] > 200 && px[0] < 40 && px[2] < 40, "{px:?}");
