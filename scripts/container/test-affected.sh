@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests affected.sh's choice of crates on stand-in diffs (AFFECTED_FILES):
 # a crate's file picks that crate, --deep adds its dependents, docs pick
-# the crates whose tests read them, the root manifest picks every crate
+# the crates whose tests read them, site/ picks strand-site, the root manifest picks every crate
 # and the eval sandbox, eval/ and scripts/eval/ pick the sandbox alone, a
 # strand-render change picks strand-render, checks its eval-hooks build
 # and names the sandbox's command, and other scripts alone pick none.
@@ -31,7 +31,8 @@ expect "a crate's file picks that crate" \
 expect "two crates, a test file among them" \
   $'crates/strand-text/src/lib.rs\ncrates/strand-services/tests/network.rs' "strand-services strand-text"
 expect "docs pick the crates whose tests read them" \
-  "docs/spec.md" "strand strand-compiler strand-dev"
+  "docs/spec.md" "strand strand-compiler strand-dev strand-site"
+expect "the site's pages pick the site's generator" "site/index.md" "strand-site"
 expect "scripts alone pick nothing" "scripts/container/ci.sh" ""
 all=$(cargo metadata --format-version 1 --no-deps --offline 2>/dev/null |
   jq -r '.packages[].name' | sort | tr '\n' ' ' | sed 's/ $//')
