@@ -109,7 +109,8 @@ sized axes to `Renderer::set_window_sized(surface, (bool, bool))`
 asked; an axis the compositor lets go of takes the content's size at
 once, with no spring from the size it was given), the bounds to `set_surface_bounds`, and the states to logic as
 `set_flag` with `NodeFlag::Focused`, `Maximized`, `Fullscreen`,
-`Tiled` and `Decorated` on the window's root, each only when it
+`Tiled` and `Decorated` on the window's root (and, oi-lock,
+`NodeFlag::Blank` on a thumbnail the feeds gave nothing), each only when it
 changed (`window_flags`; the sized axes and bounds likewise, so a
 configure that only resizes, each step of an interactive resize, wakes
 no logic). The host keeps each window's last state: bounds a configure
@@ -5156,7 +5157,30 @@ Public interfaces other crates and later stages build on:
     other instances, so render's `Router` shares the
     in-flight text and caret among them
     (`crates/strand-render/tests/input.rs::twin_inputs_share_writes_in_flight_and_the_caret`);
-    the caret shows only on the surface with keyboard focus.
+    the caret shows only on the surface with keyboard focus. (oi-lock)
+    The `Router` remembers the twin key of the input focused last
+    (`focused_twin`, set whenever focus lands on a twin, cleared when it
+    lands elsewhere or no twin of that key is left); a `KeyboardEnter`
+    on a surface with no focus held focuses that surface's twin before
+    any `focus: true` input, so a field focused by a click or Tab keeps
+    the keys when the compositor moves them to another monitor's lock
+    (`::the_keyboard_entering_another_monitors_lock_finds_the_field`;
+    `crates/strand/tests/lock.rs::the_keys_carry_the_password_to_whichever_monitor_has_them`
+    in the lock VM).
+    The checker's last pass, `check/secrets.rs` (oi-lock), is the
+    warning `check::secret_flow`: from the place a `type: password`
+    input binds its `text` to, along `let`s, state starts,
+    assignments, list writes, `for` bindings, component parameters,
+    `fn` parameters and results and lambda parameters, and from the key
+    of an `on key` on or around such an input (a worklist over the
+    program's flows, each looked at again only when a place it reads
+    is reached; a call of a `fn`, or of a place given only lambdas,
+    carries what its result's place holds, not its arguments), to an element prop, a declared action's or a
+    record or service action's argument (but `auth.submit`,
+    `polkit.respond`, `greetd.submit` and `AccessPoint.connect_with`),
+    a token, pose or keyframes, a service or settings write, or a persisted or exported state; a
+    `bool` and `.len` carry nothing. It runs only on a program with no
+    error.
     A lock from which nothing calls `auth.submit` (its handlers and
     timers, in any branch, and the components it shows) is the error
     `check::lock_no_auth`, judged only on a program with no other error:
@@ -7675,6 +7699,23 @@ transparent huge pages for life.
     from the host's `lock_changed` on `Unlocked` or `Finished` and the
     guard's end, which also feeds `None` to every lock thumbnail fed one,
     so no still shows at a later lock; a missing still feeds `None`).
+    (oi-lock) `Feeds::screen(id, connector)` drops the lock still of a
+    monitor that is unplugged or changes connector during the lock, so a
+    monitor plugged in while locked (a replug or another monitor on the
+    same port included) is fed `None`, never a still of what that port
+    showed. A thumbnail fed nothing (a lock still missing, a window gone,
+    a screen not captured, a pre-map still that failed or was given up,
+    each now fed `None`, which clears a frame kept from an earlier show)
+    is `blank`: `feeds::fed` tells logic `set_flag(node,
+    NodeFlag::Blank, on)` through `Host::thumbnail_blank` when that
+    changes (`Feeds::blank_changed`; once per change, not per frame),
+    and the compiler's `NodeState::blank` signal (made on first use,
+    carried across a remount like a window's states) is what `t.blank`
+    reads (`feeds.rs::tests::a_monitor_plugged_in_while_locked_has_no_still`,
+    `a_failed_still_feeds_its_thumbnail_nothing`;
+    `crates/strand-compiler/tests/window.rs::a_thumbnails_blank_reads_on_its_id_and_survives_a_reload`;
+    `crates/strand/tests/lock.rs::the_locks_thumbnail_is_a_still_from_before_the_lock`
+    in the lock VM).
     (lockmon review) Every still is taken at most `STILL_MAX` =
     1280×720; `Feeds::prune(now)`, called each loop turn with
     `Feeds::wait(now)` in the loop's wait, lets a pre-map still go

@@ -521,6 +521,18 @@ fn blur_nodes(
 }
 
 impl Host {
+    /// (oi-lock) Thumbnail `node` was fed a frame (`blank` false) or
+    /// nothing (true): `id.blank` follows ([`crate::run::feeds::fed`]).
+    pub(crate) fn thumbnail_blank(&self, node: NodeId, blank: bool) {
+        if let Some(f) = &self.logic {
+            f.send(ToLogic::Flag {
+                node,
+                flag: NodeFlag::Blank,
+                on: blank,
+            });
+        }
+    }
+
     pub fn new(mut renderer: Renderer, log_damage: bool) -> Self {
         // A compositor answers a resize: a content-sized surface waits for
         // it rather than painting one frame at its old size.

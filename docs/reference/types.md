@@ -342,6 +342,7 @@ A live handle, not data: it compares, but `persist` and settings files cannot st
 | `fullscreen` | `bool` | A `window` the compositor made fullscreen. False on other elements. |
 | `tiled` | `bool` | A `window` the compositor tiles against another window or a screen edge on any side: drawn square there, with no shadow. False on other elements. |
 | `decorated` | `bool` | A `window` whose title bar and borders the compositor draws (`decorations: server` where it offers them). While false the config draws its own: `if !w.decorated { TitleBar }`. False on other elements. |
+| `blank` | `bool` | A `thumbnail` with nothing to show, which draws nothing: its window went, its screen could not be captured, or inside a `lock` its monitor has no still from before the lock (it was plugged in while locked). `when still.blank { … }` styles that monitor's lock its own way. It turns true a frame after the thumbnail is first drawn, and false when a frame comes. False on other elements. |
 
 | Method | |
 | --- | --- |

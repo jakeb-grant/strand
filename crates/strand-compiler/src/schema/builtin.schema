@@ -148,6 +148,13 @@ handle record Node {
   /// config draws its own: `if !w.decorated { TitleBar }`. False on
   /// other elements.
   decorated: bool
+  /// A `thumbnail` with nothing to show, which draws nothing: its window
+  /// went, its screen could not be captured, or inside a `lock` its
+  /// monitor has no still from before the lock (it was plugged in while
+  /// locked). `when still.blank { … }` styles that monitor's lock its
+  /// own way. It turns true a frame after the thumbnail is first drawn,
+  /// and false when a frame comes. False on other elements.
+  blank: bool
   /// `w.move()` moves a `window` with the pointer, from a handler of the
   /// press that is still held (`on change bar.pressed { if bar.pressed
   /// { w.move() } }`): a title bar the config draws.
@@ -2021,7 +2028,11 @@ element input: node {
   text: text <->
   /// Shown while it is empty.
   placeholder: text
-  /// `password` masks it.
+  /// `password` masks it, and the text it binds is a password:
+  /// `check::secret_flow` warns where that reaches anything that shows,
+  /// keeps or sends it, other than `auth.submit`, `polkit.respond`,
+  /// `greetd.submit` and a network's `connect_with` (its length and
+  /// whether it is empty are free to show).
   type: InputKind
   /// Takes keyboard focus when shown, and again whenever it turns true
   /// while its surface has the keyboard (`focus: mode == search`). Tab
@@ -2196,8 +2207,10 @@ element lottie(path -> source): node {
 /// what was there, not that surface; one shown later in a surface
 /// already on screen is taken then, and holds that surface. Inside a
 /// `lock` it is the still taken just before the lock covered the
-/// screen; a monitor plugged in while locked has none, and shows
-/// nothing.
+/// screen; a monitor plugged in while locked (a replug included) has
+/// none, and draws nothing, so the lock's own `bg` shows there. With
+/// nothing to show it is `blank` (`thumbnail screen { id: still }`, then
+/// `when still.blank { … }`).
 element thumbnail(Window | Screen -> source): node {
   /// How the thumbnail fills its box.
   fit: Fit

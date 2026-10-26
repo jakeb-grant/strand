@@ -452,6 +452,12 @@ pub struct Router {
     /// (lockmon) Each `input` with twins (`Prop::Twin`: the lock's field
     /// on every monitor) and their shared key.
     twins: HashMap<NodeId, String>,
+    /// (oi-lock) The twin key of the input that had keyboard focus last,
+    /// when it has twins: the keyboard entering another monitor's lock
+    /// focuses that monitor's twin, so typing carries on in the field the
+    /// user was typing in (focused by a click or Tab, not `focus: true`).
+    /// Forgotten once focus moves to anything else.
+    focused_twin: Option<String>,
     /// The slider being dragged on each surface (the left button went
     /// down on it).
     dragging: HashMap<SurfaceId, NodeId>,
@@ -1509,9 +1515,22 @@ impl Router {
                 if self.focus.contains_key(&surface) {
                     return;
                 }
-                let first = scene
-                    .tree()
-                    .and_then(|t| first_with_focus(t, root))
+                // (oi-lock) The keyboard moved here from another
+                // monitor's lock: its field's twin here, else the input
+                // with `focus: true`, else the surface.
+                let twin = self.focused_twin.as_ref().and_then(|k| {
+                    let tree = scene.tree()?;
+                    let mut here: Vec<NodeId> = self
+                        .twins
+                        .iter()
+                        .filter(|(n, key)| *key == k && tree.root_of(**n) == Some(root))
+                        .map(|(n, _)| *n)
+                        .collect();
+                    here.sort();
+                    here.first().copied()
+                });
+                let first = twin
+                    .or_else(|| scene.tree().and_then(|t| first_with_focus(t, root)))
                     .unwrap_or(root);
                 self.set_focus(surface, Some(first));
                 // Fresh focus (the surface opened again) starts its
@@ -1976,12 +1995,25 @@ impl Router {
         });
         self.edits.retain(|n, _| live(*n));
         self.twins.retain(|n, _| live(*n));
+        // (oi-lock) The lock ended: no field is left to carry on in.
+        if self
+            .focused_twin
+            .as_ref()
+            .is_some_and(|k| !self.twins.values().any(|v| v == k))
+        {
+            self.focused_twin = None;
+        }
         self.focus.retain(|_, n| live(*n));
         self.pending_paste.retain(|_, n| live(*n));
     }
 
     /// Moves keyboard focus on `surface` to `node` (`focused`).
     fn set_focus(&mut self, surface: SurfaceId, node: Option<NodeId>) {
+        // (oi-lock) Focus taken away (the keyboard left) keeps the field
+        // it was in for the next lock surface the keyboard enters.
+        if let Some(n) = node {
+            self.focused_twin = self.twins.get(&n).cloned();
+        }
         let old = match node {
             Some(n) => self.focus.insert(surface, n),
             None => self.focus.remove(&surface),

@@ -737,8 +737,11 @@ steps.
   there; one that appears later in a surface already open is taken
   then, and shows that surface. In a `lock`, `thumbnail screen` is the
   desktop as it was just before the lock covered it, on each monitor's
-  lock; a monitor plugged in while locked has no still and shows
-  nothing. Mind what that shows: a locked screen is for whoever is at
+  lock; a monitor plugged in while locked has no still and draws
+  nothing, so the lock's own background shows there. To style that
+  monitor its own way, name the thumbnail and read `blank`:
+  `thumbnail screen { id: still }`, then `when still.blank { … }`.
+  Mind what that shows: a locked screen is for whoever is at
   the machine, and a lock's `thumbnail screen` shows them your desktop
   as you left it, open windows and all, at the size you draw it. A
   still is kept at 1280×720 at most, scaled up past that.

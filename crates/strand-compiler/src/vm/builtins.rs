@@ -235,6 +235,8 @@ pub(crate) fn field(vm: &Rc<Vm>, rt: &Runtime, base: &Value, name: &str) -> Resu
             "fullscreen" => Value::Bool(n.window(rt).fullscreen.get(rt)?),
             "tiled" => Value::Bool(n.window(rt).tiled.get(rt)?),
             "decorated" => Value::Bool(n.window(rt).decorated.get(rt)?),
+            // (oi-lock) False on anything but a thumbnail told so.
+            "blank" => Value::Bool(n.blank(rt).get(rt)?),
             _ => Value::Null,
         },
         Value::List(items) => list_field(items, name),

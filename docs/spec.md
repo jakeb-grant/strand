@@ -479,7 +479,13 @@ monitor, the keyboard always).
   monitor taken just before the lock covered it (the lock request waits
   up to 500 ms for it, at most 1280×720, let go when the lock ends; only
   monitors the lock's thumbnails show are taken); a monitor plugged in
-  while locked has none and its thumbnail shows nothing. A `lock` in which nothing
+  while locked (a replug of one, or another monitor on its port,
+  included: a still goes with the monitor it was taken of) has none, and
+  its thumbnail draws nothing, so the lock's own `bg` shows where it
+  is, and reads `blank` (section 6.3; decisions.md oi-lock, 2026-10-26).
+  Keys typed carry on in the field they were typed into when the
+  compositor moves the keyboard to another monitor's lock, focused there
+  as on the first (by `focus: true`, a click or Tab). A `lock` in which nothing
   calls `auth.submit` is a load error (it has no way out); a `popup` in
   a lock is a warning, since popups never open on a lock surface. The
   lock is exempt from reload (section 10.1) and **fails closed**: if
@@ -510,6 +516,32 @@ monitor, the keyboard always).
   texts one word, and `strand run` ends once greetd takes the session.
   Neither service's answers are recorded, reported or taken by
   `strand call` (section 13), as with `auth`.
+- **A password's way out is warned** (`check::secret_flow`, a warning;
+  decisions.md oi-lock, 2026-10-26). What an `input` whose `type` may
+  be `password` writes (`text: <-> pw`) is a password (`password`
+  written on it or in one of its `when` blocks, or a `type` read from
+  elsewhere, such as a component's parameter), and so is the key an
+  `on key(k)` on or around one hears (`k.text`, `k.name`). So is any value made from
+  it through `let`s, `state`s it is written to, list writes, `for`
+  bindings, component and `fn` parameters, the result of a `fn` or of a
+  lambda whose body passes it on (a `fn` making dots of it does not),
+  and every operation that keeps its characters (`+`, `?:`, `??`,
+  `match`, text methods, `join`, `number`). Reaching any of these is
+  the warning: a prop of a built-in element (`text pw`, a
+  `placeholder`, a canvas's `draw`, a `file`'s `run:`, which show,
+  draw or run it), other than a password input's own `text`; a token,
+  a pose or keyframes; an argument of a declared `action`
+  (the process list shows it) or of an action of a service or record
+  (`clipboard.copy`, `n.reply`, a `from dbus` method), other than
+  `auth.submit`, `polkit.respond`, `greetd.submit` and an access
+  point's `connect_with`; a write to a service's field or a settings
+  field; and a `state` holding it that is `persist` or exported. A
+  `bool` made from it (`pw != ""`, `pw.contains(" ")`) and its length
+  (`pw.len`) carry nothing: password dots and a field that changes
+  colour while typed are fine. Flows are followed over the whole config
+  rather than per call, so a component given a password by one call is
+  checked as if every call gave it; which branch runs is not followed
+  (`if pw == "x" { a = 1 }` makes nothing a password).
 
 ### 5.2 Components and slot
 
@@ -965,6 +997,14 @@ monitor, the keyboard always).
   the checker does not refuse it, but such a node should read the
   pointer of a parent that stays put (the dock reads its row's).
   (decisions.md flex, 2026-10-24)
+- **`name.blank`** is true while the `thumbnail` with `id: name` has
+  nothing to show and draws nothing: its window went, its screen could
+  not be captured, or, inside a `lock`, its monitor has no still from
+  before the lock (it was plugged in while locked). It turns true a
+  frame after the thumbnail is first drawn and false when a frame
+  comes, and is false on other elements: `thumbnail screen { id:
+  still }`, then `when still.blank { … }` styles a monitor whose lock
+  has no still of its own way (decisions.md oi-lock, 2026-10-26).
 - **What a box may drive.** Anything that does not lay that box out
   again. The checker follows what each value depends on, directly or
   through `let`s, the `state`s and service fields handlers set from
