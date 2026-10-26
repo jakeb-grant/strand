@@ -15,7 +15,9 @@
 //! many swaps (31 per look pair, 24 crossfades, 16 per scopes case,
 //! half as many in a debug build; the p95 and the worst are printed),
 //! measured once: no case is re-run, so the gate is that one median
-//! (decisions.md, laptop-ci). A debug build does the same
+//! (decisions.md, laptop-ci). In an optimised build the timed tests
+//! take turns instead of running on libtest's parallel threads, so a
+//! swap is timed alone (`turn`; decisions.md, oi-timing). A debug build does the same
 //! work about four times slower (some six on CI's runners), so there the
 //! gate is eight times the budget: it still fails on a regression of the
 //! work's shape (a check per node, a palette played through without
@@ -48,7 +50,7 @@
 mod common;
 
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use common::*;
@@ -102,6 +104,26 @@ impl Gates {
             panic!("{miss}");
         }
     }
+}
+
+/// The benches' turns (see [`turn`]).
+static TURNS: Mutex<()> = Mutex::new(());
+
+/// Holds the bench's turn: the timed tests here run one at a time, not
+/// on libtest's parallel threads, so a swap is timed alone, as the
+/// budget means it ("5 ms of work"), not beside another bench building
+/// its shell or painting a 4K crossfade on the next core. On GitHub's
+/// four-thread runners, each miss of this bench's gates (5.12, 5.56 and
+/// 6.23 ms of work in all, 5.64 ms for mocha → wallpaper) came with
+/// that case's apply or per-frame work far over the same figure in
+/// other runs of the same code, as contention does, and no commit made
+/// the work slower (decisions.md, oi-timing). A test that failed
+/// holding the turn passes it on. A debug build, whose gates check the
+/// work's shape at eight times the budget, keeps the parallel threads
+/// (taking turns there made the workspace step's run of this bench
+/// 12 s to 21 s).
+fn turn() -> Option<MutexGuard<'static, ()>> {
+    (!cfg!(debug_assertions)).then(|| TURNS.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
 /// Swaps measured per case: `optimised` where the gate is the budget
@@ -352,6 +374,7 @@ fn finish(shell: Shell, dir: std::path::PathBuf, storage: Storage) {
 
 #[test]
 fn a_theme_swap_is_under_five_milliseconds_of_work() {
+    let _turn = turn();
     let (mut shell, dir, storage) = bench_shell("bench");
     let mut report = Vec::new();
     for (from, to) in [
@@ -582,6 +605,7 @@ fn crossfade_rounds(surfaces: &[(NodeKind, u32, u32)], double: bool, rounds: u32
 
 #[test]
 fn a_crossfading_swap_is_under_five_milliseconds_of_work() {
+    let _turn = turn();
     let gate = gate();
     // Blending is held to its budget in optimised builds only (below).
     let blend_gated = !cfg!(debug_assertions);
@@ -636,6 +660,7 @@ fn a_crossfading_swap_is_under_five_milliseconds_of_work() {
 /// one swap per age.
 #[test]
 fn a_4k_surface_crossfade_is_measured() {
+    let _turn = turn();
     const SCRIM: &[(NodeKind, u32, u32)] = &[(NodeKind::Panel, 3840, 2160)];
     let rounds = if cfg!(debug_assertions) { 1 } else { 9 };
     for double in [false, true] {
@@ -697,6 +722,7 @@ fn spring_tables(stiffness: f32) -> (TokenTable, TokenTable) {
 /// (decisions.md).
 #[test]
 fn set_scopes_and_slow_springs_stay_within_the_budget() {
+    let _turn = turn();
     let tok = |p: &str| PropValue::Token(TokenExpr::path(p));
     // Logic's re-resolve of a light↔dark swap on design.md's theme,
     // with material(seed:) solving each palette again (a seed not shown
@@ -871,6 +897,7 @@ const OUTPUT_FLIPS: usize = 32;
 /// `material(seed:)` again, as the swap bench's do.
 #[test]
 fn file_outputs_after_a_swap_are_under_five_milliseconds() {
+    let _turn = turn();
     let outputs = |both: bool| {
         (0..10)
             .map(|i| {

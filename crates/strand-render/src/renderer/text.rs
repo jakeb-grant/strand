@@ -529,7 +529,13 @@ impl Renderer {
         let started = Instant::now();
         // The wait starts here, not before laying out: a heavy first
         // pass does not use it up.
-        let deadline = *deadline.get_or_insert(started + self.estimate_wait);
+        let deadline = match *deadline {
+            Some(d) => d,
+            None => {
+                self.estimate_windows += 1;
+                *deadline.insert(started + self.estimate_wait)
+            }
+        };
         while waiting(&self.texts) {
             let left = deadline.saturating_duration_since(Instant::now());
             let TextBackend::Worker(w) = &self.text else {
