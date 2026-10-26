@@ -38,8 +38,18 @@ impl Renderer {
         self.estimate_waits
     }
 
+    /// Estimate waits laying out has opened so far: one a surface's
+    /// frame, however many layout passes it takes and shared by its
+    /// `update` and its `paint`, each later wait of the frame taking only
+    /// what is left of it (owner-testing.md bug 17). A frame that waits
+    /// for nothing opens none.
+    pub fn estimate_windows(&self) -> u64 {
+        self.estimate_windows
+    }
+
     /// How long laying out has waited for the worker so far (at most
-    /// the estimate wait a frame).
+    /// the estimate wait a frame, and what taking in the layouts that
+    /// arrived costs).
     pub fn estimate_waited(&self) -> Duration {
         self.estimate_waited
     }

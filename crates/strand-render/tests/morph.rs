@@ -595,10 +595,15 @@ bar Top {
 
 /// (owner-testing.md bug 17) A frame waits for its new text once, however
 /// many layout passes it takes: on a worker that shapes a text every
-/// 3 ms, twelve texts mounting together cost laying the bar out at most
-/// the estimate wait. Before, each pass that received one of them waited
-/// the whole estimate wait again for the rest (up to six passes: 31 ms
-/// here), as the owner's card did when its dashboard mounted.
+/// 3 ms, twelve texts mounting together open one estimate wait for
+/// laying the bar out, and its later passes wait only for what is left
+/// of it. Before, each pass that received one of them waited the whole
+/// estimate wait again for the rest (up to six passes: 31 ms here), as
+/// the owner's card did when its dashboard mounted. The waits are
+/// counted, not timed: the wall clock under load overshoots the wait
+/// by a preemption (10.6 ms once on GitHub), so the time is held only
+/// to a bound loose enough to still catch the six waits of before
+/// (decisions.md, oi-timing).
 #[test]
 fn a_frame_waits_for_its_new_text_once() {
     use strand_text::{FontConfig, TextWorker, test_font_path};
@@ -612,7 +617,11 @@ fn a_frame_waits_for_its_new_text_once() {
     r.set_new_text_wait(Duration::ZERO);
     let mut sh = Shell::boot_with(r, MANY, 1.0, 800);
     run(&mut sh, NodeId::new(0, 0));
-    let (waits, waited) = (sh.r.estimate_waits(), sh.r.estimate_waited());
+    let (waits, windows, waited) = (
+        sh.r.estimate_waits(),
+        sh.r.estimate_windows(),
+        sh.r.estimate_waited(),
+    );
     // The texts mount, and the bar is laid out once (`update`).
     sh.inst
         .set_value("shell", "more", Value::Bool(true))
@@ -624,13 +633,28 @@ fn a_frame_waits_for_its_new_text_once() {
         sh.r.estimate_waits() > waits,
         "the new texts are waited for"
     );
+    assert_eq!(
+        sh.r.estimate_windows() - windows,
+        1,
+        "the frame's passes share one wait ({waited:?} in all)"
+    );
     // The wait, and taking in what arrived meanwhile (a debug build's
-    // glyphs): well under the six waits of before.
+    // glyphs), with room for a preemption: still under the six waits of
+    // before.
     assert!(
-        waited < strand_render::ESTIMATE_WAIT * 2,
+        waited < LOOSE_WAIT,
         "the frame waited {waited:?} for its text"
     );
 }
+
+/// What the frames of the two tests above and below may wait in all on
+/// the wall clock: one estimate wait plus room for a busy runner's
+/// preemptions and a debug build's glyphs (8 and 10.6 ms seen on
+/// GitHub; a median of 5.07 ms and a worst of 9.85 ms over 400 runs
+/// sixteen at a time on the laptop), still short of the six waits
+/// (31 ms) of owner-testing.md bug 17. The count of waits is the check
+/// of the behaviour; this is its sanity bound.
+const LOOSE_WAIT: Duration = Duration::from_millis(25);
 
 /// Twelve texts mounting in a row that starts to move with them.
 const MANY_MOVING: &str = "
@@ -652,12 +676,19 @@ bar Top {
 /// estimate wait: a surface that moves is flattened again when painted,
 /// and that flatten waits only for what is left of the frame's wait.
 /// Before, each waited `ESTIMATE_WAIT` anew for the same texts (10 ms a
-/// frame on a swelling card mounting its dashboard).
+/// frame on a swelling card mounting its dashboard). Counted, as above:
+/// one wait opened for the frame, `update` and `paint` together.
 #[test]
 fn a_moving_frame_waits_for_its_new_text_once() {
     use strand_text::{FontConfig, TextWorker, test_font_path};
     let data = std::fs::read(test_font_path()).unwrap();
-    let slow: strand_text::Waker = Box::new(|| std::thread::sleep(Duration::from_millis(3)));
+    // A worker slow enough that the paint finds texts still being
+    // shaped (twelve take it 240 ms) even when this thread is kept off
+    // the CPU between `update` and the paint: the paint takes in what
+    // was delivered before it flattens, so a 3 ms worker could have
+    // shaped them all after a stall of some 30 ms. The frame waits no
+    // longer for it: its wait is capped at the estimate wait.
+    let slow: strand_text::Waker = Box::new(|| std::thread::sleep(Duration::from_millis(20)));
     let worker =
         TextWorker::spawn_with_waker(FontConfig::isolated(vec![Arc::new(data)]), Some(slow))
             .unwrap();
@@ -666,7 +697,11 @@ fn a_moving_frame_waits_for_its_new_text_once() {
     r.set_new_text_wait(Duration::ZERO);
     let mut sh = Shell::boot_with(r, MANY_MOVING, 1.0, 800);
     run(&mut sh, NodeId::new(0, 0));
-    let (waits, waited) = (sh.r.estimate_waits(), sh.r.estimate_waited());
+    let (waits, windows, waited) = (
+        sh.r.estimate_waits(),
+        sh.r.estimate_windows(),
+        sh.r.estimate_waited(),
+    );
     // The texts mount as the row starts to move: `update` lays the bar
     // out, then the frame is painted (flattened again, as it moves).
     sh.inst
@@ -674,17 +709,29 @@ fn a_moving_frame_waits_for_its_new_text_once() {
         .unwrap();
     assert!(sh.r.apply(sh.inst.flush().diff).is_empty());
     sh.r.update();
+    let laid_out = sh.r.estimate_waits();
+    assert!(laid_out > waits, "the new texts are waited for");
     let k = sh.k;
     sh.k += 1;
-    let d = sh.shown[0].2.paint_at(&mut sh.r, BAR, 1, frame(k));
-    assert!(!d.is_empty(), "the frame is painted");
-    let waited = sh.r.estimate_waited() - waited;
+    sh.shown[0].2.paint_at(&mut sh.r, BAR, 1, frame(k));
+    // The paint laid the moving bar out again and found the texts still
+    // being shaped (twelve take the worker 240 ms): it looked for them
+    // in the frame's wait. (Not whether it drew: under load the worker
+    // may have shaped none of them yet, and nothing has moved at the
+    // transition's first frame; 23 of 480 runs 48 at a time drew
+    // nothing.)
     assert!(
-        sh.r.estimate_waits() > waits,
-        "the new texts are waited for"
+        sh.r.estimate_waits() > laid_out,
+        "the paint flattened the moving bar again"
+    );
+    let waited = sh.r.estimate_waited() - waited;
+    assert_eq!(
+        sh.r.estimate_windows() - windows,
+        1,
+        "the frame's update and paint share one wait ({waited:?} in all)"
     );
     assert!(
-        waited < strand_render::ESTIMATE_WAIT * 3 / 2,
+        waited < LOOSE_WAIT,
         "the frame waited {waited:?} for its text"
     );
 }

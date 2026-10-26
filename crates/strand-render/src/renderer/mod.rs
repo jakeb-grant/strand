@@ -377,6 +377,9 @@ pub struct Renderer {
     new_text_wait: Duration,
     estimate_wait: Duration,
     estimate_waits: u64,
+    /// Estimate waits opened: one a surface's frame (see
+    /// [`Renderer::estimate_windows`]).
+    estimate_windows: u64,
     estimate_waited: Duration,
     busy_window: Duration,
     /// (owner-testing.md bug 9) Per surface node whose sizes spring:
@@ -585,6 +588,7 @@ impl Renderer {
             estimate_wait: ESTIMATE_WAIT,
             estimate_waited: Duration::ZERO,
             estimate_waits: 0,
+            estimate_windows: 0,
             busy_window: BUSY_WINDOW,
             held_reach: HashMap::new(),
             scrolls: HashMap::new(),
