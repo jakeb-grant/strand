@@ -30,21 +30,40 @@
 //! during tick `k` is shown at refresh `k`; one the manager could only
 //! make after it is late.
 //!
+//! (oi-window) A `window` is an `xdg_toplevel` of the fake: each
+//! configure the sandbox's stand-in compositor tells it (its first, a
+//! `window` step's, a replay's, its answer to `w.maximize()`) the fake
+//! sends the manager's toplevel in its turn among the tick's surface
+//! changes ([`crate::surfaces::Teed`]), saying what the stand-in says
+//! (the size on the axes it sized, `resizing` where neither a tile, a
+//! maximize nor a fullscreen explains one, so the manager's own rule,
+//! `placement::window_kept_size`, sizes it as the stand-in did; the
+//! states; the bounds), and a `window … close` is the fake's close; each
+//! is logged ([`WireLog::windows`]). The manager's buffers are its own
+//! sizing, so `regions-on-wire`'s buffer size holds the two to one
+//! answer. A window is found in the fake by its app id: two shown at once
+//! with one app id are refused.
+//!
 //! What the leg does not model: the buffer holds no pixels (the fake
 //! reads none), a CPU frame's damage is the harness buffer's (age 1),
 //! the stand-in WSI presents at once (the GPU thread's own latency is
 //! strand-gpu's), the scale is 1 (the fake's output has no other), and
 //! no layer surface is sized by another's exclusive zone (the fake
 //! stretches each over the whole output; a run that needs a zone is
-//! refused, eval-false-alarms), and no `window` (the fake maps no
-//! `xdg_toplevel`; a run with one is refused).
+//! refused, eval-false-alarms); a window's decorations (the fake offers
+//! no `xdg-decoration`, so the manager reads every window undecorated,
+//! which changes nothing it commits; the sandbox's `w.decorated` is the
+//! stand-in's) and its asks (`w.maximize()` reaches the fake as the
+//! stand-in's answer, a configure, not as the request).
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use strand_fake_wayland::{BufferKind, CommitRecord, Fake, Region, SurfaceGlobals};
+use strand_fake_wayland::{
+    BufferKind, CommitRecord, Fake, Region, SurfaceGlobals, WindowConfigure,
+};
 use strand_scene::{
     BlurRegion, Damage, LogicalRect, NodeId, PaintTarget, Painter, Scale, Screens, Size,
     SurfaceChange, SurfaceId, SurfacePose,
@@ -59,7 +78,7 @@ use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 
 use crate::Error;
 use crate::scenario::Screen;
-use crate::surfaces::OUTPUT;
+use crate::surfaces::{OUTPUT, Teed};
 
 /// How long the fake may take to answer one barrier.
 const WAIT: Duration = Duration::from_secs(20);
@@ -109,6 +128,60 @@ pub struct WireLog {
     /// not of the frame before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub held: Vec<HeldMargins>,
+    /// (oi-window) What the fake compositor told each window, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<WireWindow>,
+}
+
+/// (oi-window) A configure the fake compositor sent window `surface` in
+/// tick `k`, as the sandbox's stand-in compositor gave it, or its close.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct WireWindow {
+    pub k: u32,
+    /// The surface (the trace's id).
+    pub surface: u32,
+    /// The size it gave (0 on an axis: the window's own).
+    pub size: [u32; 2],
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub maximized: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fullscreen: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tiled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub activated: bool,
+    /// The size is the compositor's though nothing else says so (a size
+    /// the stand-in kept as given: a resize).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resizing: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounds: Option<[u32; 2]>,
+    /// The compositor's close, not a configure.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub close: bool,
+}
+
+/// (oi-window) What the fake says to a window the stand-in compositor
+/// configured as `st`: the size on each axis it sized (0 elsewhere, the
+/// window's own), its states, and `resizing` where it sized an axis that
+/// no tile, maximize or fullscreen explains, so the surface manager's
+/// rule (`placement::window_kept_size`, after its echoes) keeps the size
+/// given as the stand-in did.
+pub fn window_configure(st: &strand_surface::ToplevelState) -> WindowConfigure {
+    let constrained = st.maximized || st.fullscreen || st.tiled;
+    let (sw, sh) = st.sized;
+    WindowConfigure {
+        size: (
+            if sw { st.size.0 } else { 0 },
+            if sh { st.size.1 } else { 0 },
+        ),
+        maximized: st.maximized,
+        fullscreen: st.fullscreen,
+        tiled: st.tiled,
+        activated: st.activated,
+        resizing: (sw || sh) && !constrained,
+        bounds: st.bounds,
+    }
 }
 
 /// (integration-r7) [`WireLog::held`]: surface `surface`'s margins (top,
@@ -453,9 +526,14 @@ pub struct Leg {
     files: Vec<std::fs::File>,
     wsi: BTreeMap<SurfaceId, Wsi>,
     /// The surface changes of the tick reported before its first paint,
-    /// and after it, and its frames, applied at its end in that order.
-    changes: Vec<(NodeId, SurfaceChange)>,
-    post: Vec<(NodeId, SurfaceChange)>,
+    /// and after it, and its frames, applied at its end in that order;
+    /// (oi-window) with what the stand-in told windows among them.
+    changes: Vec<Teed>,
+    post: Vec<Teed>,
+    /// (oi-window) What the fake last said to each window shown (by its
+    /// node), and its app id.
+    said: HashMap<NodeId, (String, WindowConfigure)>,
+    windows: Vec<WireWindow>,
     snaps: Vec<Snapshot>,
     /// The frames, with the regions expected on the wire.
     frames: Vec<WireFrame>,
@@ -517,6 +595,8 @@ impl Leg {
                 output_size: (screen.width, screen.height),
                 presentation: true,
                 vblank: true,
+                // (oi-window) A window's configures are the stand-in's.
+                window_configure_on_cmd: true,
                 ..SurfaceGlobals::default()
             })
             .try_start()
@@ -550,6 +630,8 @@ impl Leg {
             wsi: BTreeMap::new(),
             changes: Vec::new(),
             post: Vec::new(),
+            said: HashMap::new(),
+            windows: Vec::new(),
             snaps: Vec::new(),
             frames: Vec::new(),
             ticks: Vec::new(),
@@ -566,15 +648,19 @@ impl Leg {
         Ok(leg)
     }
 
-    /// Surface changes the renderer reported, for the manager at the end
-    /// of the tick.
-    pub fn surface_changes(&mut self, changes: impl IntoIterator<Item = (NodeId, SurfaceChange)>) {
+    /// Surface changes the renderer reported, and (oi-window) what the
+    /// stand-in compositor told windows, for the manager and the fake at
+    /// the end of the tick.
+    pub fn surface_changes(&mut self, changes: impl IntoIterator<Item = Teed>) {
         // The sandbox's one screen is the fake's one output: a surface
         // asked for on it (by its `screens.all` id) is asked for on the
         // output by its connector name, which the manager matches too.
         let screen_names = self.screen_names.clone();
-        let changes = changes.into_iter().map(move |(node, mut change)| {
-            if let SurfaceChange::Created(spec) | SurfaceChange::Updated { spec, .. } = &mut change
+        let changes = changes.into_iter().map(move |mut t| {
+            if let Teed::Surface(
+                _,
+                SurfaceChange::Created(spec) | SurfaceChange::Updated { spec, .. },
+            ) = &mut t
                 && let Screens::Named(names) = &mut spec.screens
             {
                 for n in names
@@ -584,7 +670,7 @@ impl Leg {
                     *n = OUTPUT.to_string();
                 }
             }
-            (node, change)
+            t
         });
         if self.snaps.is_empty() {
             self.changes.extend(changes);
@@ -682,8 +768,8 @@ impl Leg {
                 );
             }
         }
-        for (node, change) in std::mem::take(&mut self.changes) {
-            self.mgr.state_mut().apply_surface_change(node, change);
+        for t in std::mem::take(&mut self.changes) {
+            self.apply(k, t)?;
         }
         self.settle()?;
         for s in &snaps {
@@ -712,8 +798,8 @@ impl Leg {
         }
         self.settle()?;
         // What the paints left (a closing surface's removal, a new size).
-        for (node, change) in std::mem::take(&mut self.post) {
-            self.mgr.state_mut().apply_surface_change(node, change);
+        for t in std::mem::take(&mut self.post) {
+            self.apply(k, t)?;
         }
         self.settle()?;
         let released = std::mem::take(&mut self.mgr.state_mut().host_mut().gpu_released);
@@ -746,6 +832,77 @@ impl Leg {
                  time (the run was that slow): late-present does not judge this tick's frames \
                  or the next's"
             ));
+        }
+        Ok(())
+    }
+
+    /// One of tick `k`'s surface changes to the manager, or (oi-window)
+    /// what the stand-in told a window to the fake: a configure only when
+    /// what it says changed (a window's own size growing is no
+    /// configure), after a barrier, so the fake has taken every request
+    /// the manager made before it (a window's creation and first commit,
+    /// another's destruction), and before the manager reads on.
+    fn apply(&mut self, k: u32, t: Teed) -> Result<(), Error> {
+        use strand_fake_wayland::Cmd;
+        match t {
+            Teed::Surface(node, change) => {
+                if matches!(change, SurfaceChange::Removed) {
+                    self.said.remove(&node);
+                }
+                self.mgr.state_mut().apply_surface_change(node, change);
+            }
+            Teed::Window {
+                node,
+                surface,
+                app_id,
+                state,
+            } => {
+                let c = window_configure(&state);
+                if self.said.get(&node) == Some(&(app_id.clone(), c)) {
+                    return Ok(());
+                }
+                if self
+                    .said
+                    .iter()
+                    .any(|(n, (a, _))| *n != node && *a == app_id)
+                {
+                    return Err(Error::Unsupported(format!(
+                        "the surface leg with two windows of app id `{app_id}` shown at once                          (its fake compositor finds a window by its app id)"
+                    )));
+                }
+                self.barrier()?;
+                self.fake.cmd(Cmd::ConfigureWindow {
+                    app_id: app_id.clone(),
+                    configure: c,
+                });
+                self.fake.sync();
+                self.said.insert(node, (app_id, c));
+                self.windows.push(WireWindow {
+                    k,
+                    surface: surface.0,
+                    size: [c.size.0, c.size.1],
+                    maximized: c.maximized,
+                    fullscreen: c.fullscreen,
+                    tiled: c.tiled,
+                    activated: c.activated,
+                    resizing: c.resizing,
+                    bounds: c.bounds.map(|(w, h)| [w, h]),
+                    close: false,
+                });
+            }
+            Teed::Close {
+                surface, app_id, ..
+            } => {
+                self.barrier()?;
+                self.fake.cmd(Cmd::CloseWindow(app_id));
+                self.fake.sync();
+                self.windows.push(WireWindow {
+                    k,
+                    surface: surface.0,
+                    close: true,
+                    ..WireWindow::default()
+                });
+            }
         }
         Ok(())
     }
@@ -921,6 +1078,7 @@ impl Leg {
             notes: std::mem::take(&mut self.notes),
             gave_up: std::mem::take(&mut self.gave_up),
             held: std::mem::take(&mut self.held),
+            windows: std::mem::take(&mut self.windows),
         };
         let mut next = events.iter();
         let mut owner: HashMap<usize, u32> = HashMap::new();

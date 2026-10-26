@@ -269,6 +269,8 @@ fn bug23_passes_on_both_legs() {
 #[test]
 fn every_committed_scenario_passes_the_surface_checks() {
     let mut ran = 0;
+    // (oi-window) Runs that showed a window (window-tile-maximize-close).
+    let mut windows = 0;
     for dir in ["scenarios/curated", "scenarios/regressions"] {
         let mut files: Vec<_> = std::fs::read_dir(eval_root().join(dir))
             .unwrap()
@@ -312,10 +314,12 @@ fn every_committed_scenario_passes_the_surface_checks() {
                 assert_eq!(regions_on_wire(t), [], "{} ({leg:?})", sc.id);
                 assert_eq!(late_present(t), [], "{} ({leg:?})", sc.id);
                 ran += 1;
+                windows += usize::from(t.wire.as_ref().is_some_and(|w| !w.windows.is_empty()));
             }
         }
     }
     assert!(ran > 15, "{ran} runs");
+    assert!(windows > 0, "no run showed a window on the leg");
 }
 
 /// (eval-false-alarms) The fake compositor stretches a layer surface
@@ -348,15 +352,95 @@ fn the_leg_refuses_a_layer_surface_sized_by_another_ones_zone() {
     assert_clean(&t);
 }
 
-/// (window) The fake compositor maps no `xdg_toplevel`: a run that
-/// shows a window is refused with the leg (before the fake sees it),
-/// and runs without it.
+/// (oi-window) A window on the leg: the fake compositor maps it as an
+/// `xdg_toplevel` and tells it what the stand-in compositor told it, in
+/// its turn (its first configure, floating; a tile; a maximize in what
+/// the bar leaves; a resize kept as given, `W!`; floating at its own size
+/// again), and closes it when the stand-in does; the window's own growth
+/// is no configure. The manager's buffers are the stand-in's sizes, so
+/// the surface checks pass.
 #[test]
-fn the_leg_refuses_a_window() {
+fn a_window_takes_the_stand_ins_configures_on_the_leg() {
+    use strand_eval::wire::WireWindow;
     let sc = scenario(
-        "id = \"window\"\nscreen = { width = 200, height = 120, scale = 1.0 }\n\
-         === shell.strand\nstate shown = true\n\
-         window W { open: <-> shown; box { width: 40; height: 10 } }\n\
+        "id = \"window-leg\"\nscreen = { width = 400, height = 300, scale = 1.0 }\nsurface = true\n\
+         === shell.strand\nstate shown = true\nstate grown = false\n\
+         bar Top { height: 20; bg: #1e1e2e }\n\
+         window W { id: w; open: <-> shown; bg: #181825\n\
+           box { id: b; width: grown ? 160 : 120; height: 60; bg: #45475a }\n}\n\
+         === steps\nrest\n\
+         window #w 300,200 tiled activated\nrest\n\
+         window #w _,_ maximized activated\nrest\n\
+         window #w 220!,140! activated bounds 400,280\nrest\n\
+         window #w _,_ activated\nrest\n\
+         set grown true\nrest\n\
+         window #w close\nrest\n",
+    );
+    let t = go(&sc, RunOptions::default()).unwrap_or_else(|e| panic!("{e}"));
+    assert_clean(&t);
+    let win = t
+        .surfaces
+        .iter()
+        .find(|s| s.kind == "window")
+        .expect("the window in the trace")
+        .id;
+    let said: Vec<WireWindow> = log(&t)
+        .windows
+        .iter()
+        .map(|w| WireWindow { k: 0, ..w.clone() })
+        .collect();
+    let w = |size: [u32; 2]| WireWindow {
+        surface: win,
+        size,
+        activated: true,
+        ..WireWindow::default()
+    };
+    assert_eq!(
+        said,
+        [
+            w([0, 0]),
+            WireWindow {
+                tiled: true,
+                ..w([300, 200])
+            },
+            WireWindow {
+                maximized: true,
+                ..w([400, 280])
+            },
+            WireWindow {
+                resizing: true,
+                bounds: Some([400, 280]),
+                ..w([220, 140])
+            },
+            w([0, 0]),
+            WireWindow {
+                surface: win,
+                close: true,
+                ..WireWindow::default()
+            },
+        ]
+    );
+    let buffers: Vec<[u32; 2]> = log(&t)
+        .commits
+        .iter()
+        .filter(|c| c.surface == Some(win))
+        .filter_map(|c| c.buffer)
+        .collect();
+    for size in [[120, 60], [300, 200], [400, 280], [220, 140], [160, 60]] {
+        assert!(buffers.contains(&size), "no {size:?} buffer in {buffers:?}");
+    }
+}
+
+/// (oi-window) The fake compositor finds a window by its app id, so two
+/// shown at once with one app id are refused with the leg, and run
+/// without it.
+#[test]
+fn the_leg_refuses_two_windows_of_one_app_id() {
+    let sc = scenario(
+        "id = \"windows\"\nscreen = { width = 200, height = 120, scale = 1.0 }\n\
+         === shell.strand\nstate a = true\nstate b = true\n\
+         window A { open: <-> a; app_id: \"same\"; box { width: 40; height: 10 } }\n\
+         window B { open: <-> b; app_id: \"same\"; box { width: 40; height: 10 } }\n\
          === steps\nrest\n",
     );
     let leg = RunOptions {
@@ -364,7 +448,7 @@ fn the_leg_refuses_a_window() {
         ..RunOptions::default()
     };
     match run(&sc, &leg) {
-        Err(Error::Unsupported(why)) => assert!(why.contains("xdg_toplevel"), "{why}"),
+        Err(Error::Unsupported(why)) => assert!(why.contains("app id"), "{why}"),
         other => panic!("not refused: {:?}", other.map(|o| o.notes)),
     }
     go(&sc, RunOptions::default()).unwrap_or_else(|e| panic!("{e}"));

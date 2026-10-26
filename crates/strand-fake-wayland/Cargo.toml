@@ -1,6 +1,6 @@
 [package]
 name = "strand-fake-wayland"
-description = "A fake Wayland compositor for tests: toplevels, workspaces and layer surfaces"
+description = "A fake Wayland compositor for tests: toplevels, workspaces, layer surfaces and xdg windows"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

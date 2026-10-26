@@ -567,7 +567,11 @@ the clipboard's `ext-data-control-v1` and `wlr-data-control`
 (`src/data_control.rs`: one selection, a client's source or one the fake
 sets itself with `Cmd::SetSelection`, reported by `Fake::selection`;
 `strand-services/tests/clipboard.rs`); and `wl_compositor`, `wl_shm`,
-layer shell, `xdg_wm_base` for popups (`src/xdg.rs`), a `wl_seat` with a
+layer shell, `xdg_wm_base` for popups and (oi-window) toplevels
+(`src/xdg.rs`: a configure with a size, states and bounds sent with
+`Cmd::ConfigureWindow`, kept for its app id, the compositor's close with
+`Cmd::CloseWindow`, the window's title, app id, sizes, geometry, acks
+and asks recorded in `SurfaceRecord::toplevel`), a `wl_seat` with a
 keyboard whose focus the tests move, the viewporter, single-pixel
 buffers, the alpha modifier and `ext-background-effect-v1` for
 strand-surface, recording what each surface committed for the tests to
@@ -580,7 +584,9 @@ a layer surface's `margin` after it (top, right, bottom, left), frame
 callbacks, feedback), and with `SurfaceGlobals::vblank` shows commits
 only at a refresh the test sends (`Cmd::Vblank`, at a time on the
 presentation clock it names), when it completes frame callbacks and
-presents or discards feedback. `FakeBuilder::try_start` and
+presents or discards feedback; with
+`SurfaceGlobals::window_configure_on_cmd` a window's first configure
+waits for `Cmd::ConfigureWindow`. `FakeBuilder::try_start` and
 `Fake::try_connect` return an error where `start` and `connect` panic.
 
 `eval/` (eval-sandbox) is the animation evaluation sandbox, the

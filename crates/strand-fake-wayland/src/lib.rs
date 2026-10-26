@@ -29,6 +29,10 @@
 //!   [`CommitRecord`]), and with [`SurfaceGlobals::vblank`] commits shown
 //!   only at refreshes the caller sends ([`Cmd::Vblank`]), on the
 //!   caller's clock.
+//! - (oi-window) the surface manager's `window`: an `xdg_toplevel`
+//!   configured as [`Cmd::ConfigureWindow`] says ([`WindowConfigure`]),
+//!   closed by [`Cmd::CloseWindow`], what it asks recorded
+//!   ([`SurfaceRecord::toplevel`], [`Fake::windows`]).
 //!
 //! It runs on its own thread and is driven by [`Cmd`]s.
 
@@ -45,6 +49,8 @@ pub use capture::DEFAULT_SIZE as CAPTURE_SIZE;
 pub use data_control::{DataControl, Selection};
 
 pub use surfaces::{BufferKind, CommitRecord, Region, RegionOp, SurfaceGlobals, SurfaceRecord};
+
+pub use xdg::{ToplevelRecord, WindowConfigure};
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
@@ -162,6 +168,17 @@ pub enum Cmd {
     /// copying: each type with its bytes, which it writes to readers
     /// itself ([`FakeBuilder::data_control`]).
     SetSelection(Vec<(String, Vec<u8>)>),
+    /// (oi-window) The compositor configures the windows (`xdg_toplevel`)
+    /// of this app id as said: at once once their first commit came, else
+    /// at it; kept for the windows of that app id to come, until the last
+    /// of them goes.
+    ConfigureWindow {
+        app_id: String,
+        configure: WindowConfigure,
+    },
+    /// (oi-window) The compositor's close (`xdg_toplevel.close`) of the
+    /// windows of this app id.
+    CloseWindow(String),
 }
 
 struct Toplevel {
@@ -515,6 +532,10 @@ impl Server {
                 let _ = done.send(());
             }
             Cmd::SetSelection(offers) => self.dc.set_own(dh, offers),
+            Cmd::ConfigureWindow { app_id, configure } => {
+                self.surf.configure_window(&app_id, configure);
+            }
+            Cmd::CloseWindow(app_id) => self.surf.close_window(&app_id),
             Cmd::Key(key, pressed) => {
                 self.serial += 1;
                 let state = if pressed {
@@ -1341,6 +1362,19 @@ impl Fake {
         self.surfaces()
             .into_iter()
             .filter(|s| !s.destroyed && s.namespace.as_deref() == Some(ns))
+            .collect()
+    }
+
+    /// (oi-window) The live windows (`xdg_toplevel`s) of app id `app_id`.
+    pub fn windows(&self, app_id: &str) -> Vec<SurfaceRecord> {
+        self.surfaces()
+            .into_iter()
+            .filter(|s| {
+                !s.destroyed
+                    && s.toplevel
+                        .as_ref()
+                        .is_some_and(|t| t.app_id.as_deref() == Some(app_id))
+            })
             .collect()
     }
 

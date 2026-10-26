@@ -2256,6 +2256,8 @@ impl Harness {
                     .find(|s| s.node == node)
                     .map(|s| s.id);
                 if let Some(id) = shown {
+                    // (oi-window) The surface leg's compositor closes it too.
+                    self.surfaces.tee_close(id);
                     self.send(vec![InputEvent::ClickAway { surface: id }])?;
                 }
             }
@@ -4482,17 +4484,6 @@ impl LoopSync for Harness {
         let bounds = Some(LogicalSize::new(screen.width as f32, screen.height as f32));
         let mut done = Vec::new();
         for (node, change) in self.r.take_surface_changes() {
-            // (window) The leg's fake compositor maps no `xdg_toplevel`.
-            if self.leg.is_some()
-                && let strand_scene::SurfaceChange::Created(spec)
-                | strand_scene::SurfaceChange::Updated { spec, .. } = &change
-                && spec.kind == strand_scene::NodeKind::Window
-            {
-                return Err(Error::Unsupported(
-                    "the surface leg with a window (the fake compositor maps no xdg_toplevel)"
-                        .into(),
-                ));
-            }
             for c in self.surfaces.change(node, change, k)? {
                 self.surface_change(c, bounds)?;
                 done.push(c);

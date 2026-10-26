@@ -2050,6 +2050,18 @@ presentation clock read the same time.
   each tick, at the tick's time. A commit made in tick `k` is shown at
   refresh `k`. A buffer that another commit replaces before the refresh is
   never shown, and its feedback is discarded.
+- (oi-window) A `window` is the manager's `xdg_toplevel` on the fake,
+  which waits for the leg's word before its first configure. Each time
+  the stand-in compositor configures it (a `window` step, or the window's
+  own size while it floats), the fake sends that configure: the size on
+  each axis the stand-in sized (0 elsewhere, the window's own), its
+  maximized, fullscreen, tiled and activated states and its bounds, and
+  `resizing` where it sized an axis no state explains, so the manager
+  keeps the size given as the stand-in did. A `window … close` is the
+  fake's `close`. The surface is matched by its app id, so a run with two
+  windows of one app id is refused as unsupported with the leg. The
+  configures and closes are logged in `WireLog::windows`, in order with
+  the tick that sent them.
 
 The fake logs every commit (`Fake::commits`): its buffer, buffer scale,
 viewport, damage, the opaque, input and blur regions it holds after it,
@@ -2122,9 +2134,12 @@ What the surface leg leaves out:
   output, so a run in which another surface's zone sizes one (a left bar
   under a top bar) is refused as unsupported with the leg
   (eval-false-alarms);
-- (window) a `window`: the fake maps no `xdg_toplevel`, so a run that
-  shows one is refused as unsupported with the leg (strand-surface's
-  sway tests and the compositor matrix hold the toplevel's protocol);
+- a window's decorations, which the fake does not negotiate (it has no
+  `xdg-decoration`, so the manager's window is undecorated there), and
+  its asks (`w.move()`, `w.maximize()` and the rest are recorded by the
+  fake and answered by nothing; the stand-in answers them in the
+  sandbox, and strand-surface's sway tests and the compositor matrix
+  hold the toplevel's protocol);
 - the regions of a posed frame (see above).
 
 ## Cost

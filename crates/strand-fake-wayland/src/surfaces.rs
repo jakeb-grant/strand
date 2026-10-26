@@ -2,8 +2,9 @@
 //! `wl_subcompositor`, `zwlr_layer_shell_v1`, `wp_viewporter`, `wp_single_pixel_buffer_v1`,
 //! `wp_alpha_modifier_v1`, `ext_background_effect_v1` and, when asked
 //! for, `zxdg_output_manager_v1` and `wp_presentation` (and, in
-//! `xdg.rs`, `xdg_wm_base` for popups), enough for the surface manager
-//! (`strand-surface`) to map layer surfaces and popups, and recording
+//! `xdg.rs`, `xdg_wm_base` for popups and windows), enough for the
+//! surface manager (`strand-surface`) to map layer surfaces, popups and
+//! (oi-window) windows, and recording
 //! what each surface committed so tests can check the protocol state the
 //! compositor saw (sway 1.9 in CI offers neither the alpha modifier nor
 //! the background effect).
@@ -87,6 +88,13 @@ pub struct SurfaceGlobals {
     /// ([`crate::Fake::commits`]). Off by default: callbacks are done and
     /// feedback presented at each commit.
     pub vblank: bool,
+    /// (oi-window) A window's first configure waits for a
+    /// [`crate::Cmd::ConfigureWindow`] naming its app id (sent before or
+    /// after its first commit), as the eval surface leg's stand-in
+    /// compositor decides it. Off by default: a window with none is
+    /// configured on its first commit as a floating compositor does
+    /// ([`crate::WindowConfigure::default`]).
+    pub window_configure_on_cmd: bool,
 }
 
 impl Default for SurfaceGlobals {
@@ -103,6 +111,7 @@ impl Default for SurfaceGlobals {
             activation: true,
             pointer: false,
             vblank: false,
+            window_configure_on_cmd: false,
         }
     }
 }
@@ -218,6 +227,8 @@ pub struct SurfaceRecord {
     /// A subsurface placed directly below its parent (`place_below`
     /// with the parent).
     pub below_parent: bool,
+    /// (oi-window) Its `xdg_toplevel` role: what it asked and was told.
+    pub toplevel: Option<crate::xdg::ToplevelRecord>,
 }
 
 /// (eval-surface-leg) One `wl_surface.commit`, as the compositor took
@@ -278,6 +289,8 @@ struct Pending {
     alpha: Option<u32>,
     frames: Vec<wl_callback::WlCallback>,
     feedbacks: Vec<WpPresentationFeedback>,
+    /// (oi-window) `xdg_surface.set_window_geometry`.
+    geometry: Option<(i32, i32, i32, i32)>,
 }
 
 /// A layer surface's requested state.
@@ -295,6 +308,8 @@ struct Live {
     wl: wl_surface::WlSurface,
     /// Its `xdg_popup` role, if it has one.
     popup: Option<crate::xdg::PopupState>,
+    /// (oi-window) Its `xdg_toplevel` role, if it has one.
+    toplevel: Option<crate::xdg::ToplevelLive>,
     pending: Pending,
     /// The buffer on screen, released when another replaces it.
     current: Option<wl_buffer::WlBuffer>,
@@ -334,6 +349,9 @@ pub(crate) struct Surfaces {
     vblank_frames: Vec<wl_callback::WlCallback>,
     vblank_feedback: Vec<(usize, WpPresentationFeedback)>,
     unshown: Vec<usize>,
+    /// (oi-window) The last [`crate::Cmd::ConfigureWindow`] for each app
+    /// id: what a window of it is told (its first configure too).
+    window_configures: HashMap<String, crate::xdg::WindowConfigure>,
 }
 
 impl Surfaces {
@@ -361,7 +379,7 @@ impl Surfaces {
         }
     }
 
-    fn record(&self, surface: &ObjectId, f: impl FnOnce(&mut SurfaceRecord)) {
+    pub(crate) fn record(&self, surface: &ObjectId, f: impl FnOnce(&mut SurfaceRecord)) {
         let Some(live) = self.live.get(surface) else {
             return;
         };
@@ -377,6 +395,122 @@ impl Surfaces {
         if let Some(l) = self.live.get_mut(surface) {
             l.popup = Some(popup);
         }
+    }
+
+    /// (oi-window) Gives `surface` its `xdg_toplevel` role.
+    pub(crate) fn set_toplevel(&mut self, surface: &ObjectId, toplevel: crate::xdg::ToplevelLive) {
+        if let Some(l) = self.live.get_mut(surface) {
+            l.toplevel = Some(toplevel);
+        }
+        self.record(surface, |r| r.toplevel = Some(Default::default()));
+    }
+
+    /// (oi-window) `surface`'s toplevel role destroyed (the surface
+    /// stays, its record kept). The last window of its app id gone, the
+    /// configure kept for it is forgotten: one of that app id made again
+    /// starts afresh.
+    pub(crate) fn drop_toplevel(&mut self, surface: &ObjectId) {
+        if self.live.get(surface).is_none_or(|l| l.toplevel.is_none()) {
+            return;
+        }
+        let app_id = self.app_id_of(surface);
+        if let Some(l) = self.live.get_mut(surface) {
+            l.toplevel = None;
+        }
+        if let Some(a) = app_id
+            && self.windows_of(&a, false).is_empty()
+        {
+            self.window_configures.remove(&a);
+        }
+    }
+
+    /// (oi-window) Records something of `surface`'s toplevel.
+    pub(crate) fn toplevel_record(
+        &self,
+        surface: &ObjectId,
+        f: impl FnOnce(&mut crate::xdg::ToplevelRecord),
+    ) {
+        self.record(surface, |r| {
+            if let Some(t) = r.toplevel.as_mut() {
+                f(t);
+            }
+        });
+    }
+
+    /// (oi-window) `surface`'s window geometry, for its next commit.
+    pub(crate) fn set_geometry(&mut self, surface: &ObjectId, g: (i32, i32, i32, i32)) {
+        if let Some(l) = self.live.get_mut(surface) {
+            l.pending.geometry = Some(g);
+        }
+    }
+
+    /// (oi-window) The app id window `surface` last set.
+    fn app_id_of(&self, surface: &ObjectId) -> Option<String> {
+        let live = self.live.get(surface)?;
+        let records = self.records.lock().ok()?;
+        records.get(live.index)?.toplevel.as_ref()?.app_id.clone()
+    }
+
+    /// (oi-window) The live windows of app id `app_id` (`committed`:
+    /// only those whose first commit came).
+    fn windows_of(&self, app_id: &str, committed: bool) -> Vec<ObjectId> {
+        self.live
+            .iter()
+            .filter(|(_, l)| {
+                l.toplevel
+                    .as_ref()
+                    .is_some_and(|t| t.committed || !committed)
+            })
+            .map(|(id, _)| id.clone())
+            .filter(|id| self.app_id_of(id).as_deref() == Some(app_id))
+            .collect()
+    }
+
+    /// (oi-window) Configures every live window of app id `app_id` as `c`
+    /// says, now if its first commit came (else at it), and keeps `c` for
+    /// the windows of that app id to come.
+    pub(crate) fn configure_window(&mut self, app_id: &str, c: crate::xdg::WindowConfigure) {
+        self.window_configures.insert(app_id.to_string(), c);
+        for id in self.windows_of(app_id, true) {
+            self.send_window_configure(&id, c);
+        }
+    }
+
+    /// (oi-window) The compositor's close of every live window of app id
+    /// `app_id`.
+    pub(crate) fn close_window(&mut self, app_id: &str) {
+        for id in self.windows_of(app_id, false) {
+            let closed = self
+                .live
+                .get(&id)
+                .and_then(|l| l.toplevel.as_ref())
+                .filter(|t| t.toplevel.is_alive())
+                .map(|t| t.toplevel.close())
+                .is_some();
+            if closed {
+                self.toplevel_record(&id, |r| r.closed += 1);
+            }
+        }
+    }
+
+    /// (oi-window) Sends `c` to window `surface` as a new configure, and
+    /// records it.
+    fn send_window_configure(&mut self, surface: &ObjectId, c: crate::xdg::WindowConfigure) {
+        let Some(l) = self.live.get_mut(surface) else {
+            return;
+        };
+        let Some(t) = l.toplevel.as_mut() else {
+            return;
+        };
+        l.serial += 1;
+        let serial = l.serial;
+        t.configure(&c, serial);
+        self.record(surface, |r| {
+            r.configured = Some((c.size.0, c.size.1));
+            if let Some(t) = r.toplevel.as_mut() {
+                t.configures.push((serial, c));
+            }
+        });
     }
 
     /// `surface`'s popup repositioned at `size` (`xdg_popup.reposition`
@@ -450,6 +584,32 @@ impl Surfaces {
             }
         }
         let (w, h) = self.output_size();
+        // (oi-window) A window's first commit is answered with its first
+        // configure: the one kept for its app id, else (unless that must
+        // wait for one) a floating compositor's.
+        let first = match self.live.get_mut(surface).and_then(|l| l.toplevel.as_mut()) {
+            Some(t) if !t.committed => {
+                t.committed = true;
+                true
+            }
+            _ => false,
+        };
+        if first {
+            let wait = self
+                .globals
+                .as_ref()
+                .is_some_and(|g| g.window_configure_on_cmd);
+            let kept = self
+                .app_id_of(surface)
+                .and_then(|a| self.window_configures.get(&a).copied());
+            match kept {
+                Some(c) => self.send_window_configure(surface, c),
+                None if !wait => {
+                    self.send_window_configure(surface, crate::xdg::WindowConfigure::default())
+                }
+                None => {}
+            }
+        }
         let Some(live) = self.live.get_mut(surface) else {
             return;
         };
@@ -564,6 +724,9 @@ impl Surfaces {
             }
             if let Some(b) = pending.buffer_scale {
                 rec.buffer_scale = b;
+            }
+            if let (Some(g), Some(t)) = (pending.geometry, rec.toplevel.as_mut()) {
+                t.geometry = Some(g);
             }
             logged = Some(CommitRecord {
                 surface: index,
@@ -689,6 +852,7 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for Server {
                         index,
                         wl: s.clone(),
                         popup: None,
+                        toplevel: None,
                         pending: Pending::default(),
                         current: None,
                         layer: None,
@@ -772,6 +936,7 @@ impl Dispatch<wl_surface::WlSurface, ()> for Server {
             }
             wl_surface::Request::Commit => state.surf.commit(&id),
             wl_surface::Request::Destroy => {
+                state.surf.drop_toplevel(&id);
                 state.surf.record(&id, |r| r.destroyed = true);
                 state.surf.live.remove(&id);
             }
@@ -786,6 +951,7 @@ impl Dispatch<wl_surface::WlSurface, ()> for Server {
         _: &(),
     ) {
         let id = s.id();
+        state.surf.drop_toplevel(&id);
         state.surf.record(&id, |r| r.destroyed = true);
         state.surf.live.remove(&id);
     }

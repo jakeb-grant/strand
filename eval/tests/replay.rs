@@ -2332,6 +2332,69 @@ fn a_window_replays_at_its_recorded_configure() {
     );
 }
 
+/// (oi-window) A report with a window replays on the surface leg: the
+/// replayed scenario's window configures reach the real surface manager
+/// through the fake's `xdg_toplevel` as the stand-in compositor gave them
+/// (its own size, then tiled at 600 × 400), the compositor's close goes
+/// to it as one, and its buffers are the sizes the frames drew.
+#[test]
+fn a_replayed_window_runs_on_the_surface_leg() {
+    use strand_eval::checks::wire::{late_present, regions_on_wire};
+    let (f, _) = window_session();
+    let dir = f.write("window-leg");
+    let (_, _, text) = plan_of(&dir, &defaults());
+    let to = dir
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("scenarios/local/report-fixture.scn");
+    std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+    std::fs::write(&to, &text).unwrap();
+    let sc = Scenario::load(&to).unwrap_or_else(|e| panic!("{e}\n{text}"));
+    let opts = RunOptions {
+        surface: Some(true),
+        ..RunOptions::default()
+    };
+    let out = match harness::run(&sc, &opts) {
+        Ok(o) => o,
+        Err(strand_eval::Error::NoDevice(e)) if !strand_eval::gpu::required() => {
+            eprintln!("skipped: {e}");
+            return;
+        }
+        Err(e) => panic!("{e}\n{text}"),
+    };
+    let leg_notes: Vec<_> = out
+        .notes
+        .iter()
+        .filter(|n| n.starts_with("the surface leg"))
+        .collect();
+    assert!(leg_notes.is_empty(), "{leg_notes:?}");
+    let t = &out.trace;
+    let win = t
+        .surfaces
+        .iter()
+        .find(|s| s.kind == "window")
+        .expect("the window in the trace");
+    let wire = t.wire.as_ref().expect("the leg's log");
+    let said: Vec<_> = wire
+        .windows
+        .iter()
+        .filter(|w| w.surface == win.id)
+        .collect();
+    assert!(
+        said.iter()
+            .any(|w| w.size == [600, 400] && w.tiled && w.activated && !w.close),
+        "the tile reached the fake: {said:?}"
+    );
+    assert!(
+        said.last().is_some_and(|w| w.close),
+        "the compositor's close comes last: {said:?}"
+    );
+    assert_eq!(regions_on_wire(t), []);
+    assert_eq!(late_present(t), []);
+}
+
 /// (window) A configure recorded with an axis the compositor sized at
 /// exactly the size the window asked for (an interactive resize's) is
 /// replayed sized (`W!`), with the bounds the compositor said; a click

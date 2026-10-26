@@ -189,6 +189,32 @@ pub enum Change {
     Detached(SurfaceId),
 }
 
+/// (eval-surface-leg) What the surface leg's manager and compositor are
+/// handed ([`Surfaces::tee`]), in the order it happened here.
+#[derive(Clone, Debug, PartialEq)]
+// Nearly every one is a `Surface`, the large one, as the tee was before
+// windows: boxing it would cost each change an allocation.
+#[allow(clippy::large_enum_variant)]
+pub enum Teed {
+    /// One of the renderer's surface changes, for the manager.
+    Surface(NodeId, SurfaceChange),
+    /// (oi-window) This compositor configured window `surface` (app id
+    /// `app_id`) so: the leg's fake compositor says the same.
+    Window {
+        node: NodeId,
+        surface: SurfaceId,
+        app_id: String,
+        state: ToplevelState,
+    },
+    /// (oi-window) This compositor closed window `surface` (a `window …
+    /// close` step).
+    Close {
+        node: NodeId,
+        surface: SurfaceId,
+        app_id: String,
+    },
+}
+
 /// (fidelity) One output: its screen and who it is (`screens.all`'s
 /// name and id).
 #[derive(Clone, Debug, PartialEq)]
@@ -214,8 +240,10 @@ pub struct Surfaces {
     /// moves it): where a surface no screen pins maps.
     pub focused: usize,
     /// (eval-surface-leg) With the surface leg, every change the renderer
-    /// reported, as it reported it, for the real surface manager.
-    pub tee: Option<Vec<(NodeId, SurfaceChange)>>,
+    /// reported, as it reported it, for the real surface manager; and
+    /// (oi-window) in their order among them, what this compositor told
+    /// each window, for the leg's fake compositor to tell it.
+    pub tee: Option<Vec<Teed>>,
     /// (window) The compositor's state of each window, by its node: kept
     /// while it is shown (or before it shows, a replay's configure that
     /// came first), forgotten when it goes.
@@ -387,6 +415,25 @@ impl Surfaces {
         Ok(out)
     }
 
+    /// (oi-window) The compositor closes window `id` (a `window … close`
+    /// step): told to the surface leg, if it runs.
+    pub fn tee_close(&mut self, id: SurfaceId) {
+        let Some(sh) = self.get(id) else {
+            return;
+        };
+        let Place::Window { config, .. } = &sh.place else {
+            return;
+        };
+        let close = Teed::Close {
+            node: sh.node,
+            surface: id,
+            app_id: config.app_id.clone(),
+        };
+        if let Some(tee) = self.tee.as_mut() {
+            tee.push(close);
+        }
+    }
+
     /// (window) Window `id`'s node and what its last configure told
     /// (`None`: not a window, or not configured).
     pub fn told(&self, id: SurfaceId) -> Option<(NodeId, ToplevelState)> {
@@ -488,7 +535,7 @@ impl Surfaces {
     ) -> Result<Vec<Change>, Error> {
         let mut out = Vec::new();
         if let Some(tee) = self.tee.as_mut() {
-            tee.push((node, change.clone()));
+            tee.push(Teed::Surface(node, change.clone()));
         }
         match change {
             SurfaceChange::Created(s) | SurfaceChange::Updated { spec: s, .. } => {
@@ -846,8 +893,9 @@ impl Surfaces {
             let (bw, bh) = config.buffer((w, h));
             let o = [(at[0] - l) as f32, (at[1] - t) as f32];
             placed.push((sh.id, [bw.max(1), bh.max(1)], o, o));
-            let id = sh.id;
+            let (id, node) = (sh.id, sh.node);
             let floating = !(st.fullscreen || st.maximized || st.tiled);
+            let mut tell = false;
             if let Place::Window { float, told, .. } = &mut self.shown[i].place {
                 if floating {
                     *float = Some(at);
@@ -855,7 +903,16 @@ impl Surfaces {
                 if *told != Some(state) {
                     *told = Some(state);
                     told_now.push(id);
+                    tell = true;
                 }
+            }
+            if tell && let Some(tee) = self.tee.as_mut() {
+                tee.push(Teed::Window {
+                    node,
+                    surface: id,
+                    app_id: config.app_id.clone(),
+                    state,
+                });
             }
         }
         told_now

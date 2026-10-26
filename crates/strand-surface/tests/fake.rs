@@ -1828,3 +1828,162 @@ fn the_newest_committed_frame_is_copied_and_its_refresh_known() {
     assert!(mgr.state_mut().frame_pixels(id).is_some());
     assert_eq!(mgr.state().refresh(id), None);
 }
+
+/// (oi-window) A `window` on the fake compositor: its first commit is
+/// answered with a floating compositor's configure (no size, focused,
+/// every capability), which it acks and paints at the size it asks for,
+/// with its title, app id and window geometry; a configure that tiles it
+/// at another size lays it out there (sized on both axes, told to the
+/// host); what it asks (a maximize, a fullscreen) is recorded, not
+/// answered; the compositor's close is its click away.
+#[test]
+fn a_window_on_the_fake_is_configured_acked_and_closed() {
+    use strand_fake_wayland::WindowConfigure;
+    use strand_scene::WindowAsk;
+    use strand_surface::InputEvent;
+    const WIN: NodeId = NodeId::new(9, 0);
+    const APP: &str = "strand-Probe";
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let spec = common::window_spec("Probe", "Probe window", 300.0, 200.0);
+    mgr.state_mut()
+        .apply_surface_change(WIN, SurfaceChange::Created(spec));
+    let painted = |fake: &Fake, w: i32, h: i32| {
+        fake.windows(APP).first().is_some_and(|r| {
+            r.buffer
+                == Some(strand_fake_wayland::BufferKind::Shm {
+                    width: w,
+                    height: h,
+                })
+                && r.toplevel
+                    .as_ref()
+                    .is_some_and(|t| t.geometry == Some((0, 0, w, h)))
+        })
+    };
+    let ok = mgr
+        .dispatch_until(WAIT, |_| painted(&fake, 300, 200))
+        .unwrap();
+    assert!(ok, "the window never painted: {:?}", fake.windows(APP));
+    let rec = fake.windows(APP).remove(0);
+    let t = rec.toplevel.expect("a toplevel");
+    assert_eq!(t.title.as_deref(), Some("Probe window"));
+    assert_eq!(t.configures.len(), 1, "{t:?}");
+    let (serial, first) = t.configures[0];
+    assert_eq!(first, WindowConfigure::default());
+    assert!(t.acked.contains(&serial), "{t:?}");
+    let state = mgr.state().toplevel_state(WIN).expect("configured");
+    assert_eq!((state.size, state.sized), ((300, 200), (false, false)));
+    assert!(state.activated && state.can_maximize && state.can_fullscreen);
+
+    // Tiled at 500×400: laid out there, the host told.
+    fake.cmd(Cmd::ConfigureWindow {
+        app_id: APP.into(),
+        configure: WindowConfigure {
+            size: (500, 400),
+            tiled: true,
+            ..WindowConfigure::default()
+        },
+    });
+    let ok = mgr
+        .dispatch_until(WAIT, |_| painted(&fake, 500, 400))
+        .unwrap();
+    assert!(
+        ok,
+        "the tiled window never painted: {:?}",
+        fake.windows(APP)
+    );
+    let state = mgr.state().toplevel_state(WIN).expect("configured");
+    assert_eq!((state.size, state.sized), ((500, 400), (true, true)));
+    assert!(state.tiled);
+    let told = mgr.state().host().window_states.last().map(|(_, s)| *s);
+    assert_eq!(told, Some(state));
+    let t = fake.windows(APP).remove(0).toplevel.expect("a toplevel");
+    assert_eq!(t.acked.len(), 2, "{t:?}");
+
+    // Its asks reach the compositor, which leaves them unanswered.
+    mgr.state_mut().window_ask(WIN, WindowAsk::Maximize, None);
+    mgr.state_mut().window_ask(WIN, WindowAsk::Fullscreen, None);
+    // (The fake answers nothing: polled, not waited on an event.)
+    let asked = || {
+        fake.windows(APP)
+            .first()
+            .and_then(|r| r.toplevel.as_ref())
+            .is_some_and(|t| t.asks == ["maximize", "fullscreen"])
+    };
+    let deadline = Instant::now() + WAIT;
+    while !asked() && Instant::now() < deadline {
+        mgr.dispatch(Some(Duration::from_millis(20))).unwrap();
+    }
+    assert!(asked(), "the asks never came: {:?}", fake.windows(APP));
+
+    // The compositor's close: its click away.
+    let id = mgr.state().surfaces_of(WIN)[0];
+    fake.cmd(Cmd::CloseWindow(APP.into()));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host()
+                .input
+                .contains(&InputEvent::ClickAway { surface: id })
+        })
+        .unwrap();
+    assert!(ok, "the close never came: {:?}", mgr.state().host().input);
+    let t = fake.windows(APP).remove(0).toplevel.expect("a toplevel");
+    assert_eq!(t.closed, 1);
+}
+
+/// (oi-window) With `window_configure_on_cmd` (the eval surface leg's
+/// fake), a window's first configure waits for the compositor's word for
+/// its app id: none, no configure and nothing painted; then the one
+/// given, here maximised at 640×480, which it is first painted at.
+#[test]
+fn a_windows_first_configure_can_wait_for_the_compositors_word() {
+    use strand_fake_wayland::WindowConfigure;
+    const WIN: NodeId = NodeId::new(9, 0);
+    const APP: &str = "strand-Probe";
+    let fake = Fake::compositor(SurfaceGlobals {
+        window_configure_on_cmd: true,
+        ..SurfaceGlobals::default()
+    });
+    let mut mgr = manager(&fake);
+    let spec = common::window_spec("Probe", "Probe", 300.0, 200.0);
+    mgr.state_mut()
+        .apply_surface_change(WIN, SurfaceChange::Created(spec));
+    // Its first commit, unanswered.
+    let ok = mgr
+        .dispatch_until(WAIT, |_| {
+            fake.windows(APP).first().is_some_and(|r| r.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "no first commit: {:?}", fake.surfaces());
+    mgr.dispatch_until(Duration::from_millis(200), |_| false)
+        .unwrap();
+    let rec = fake.windows(APP).remove(0);
+    assert_eq!(rec.buffer, None);
+    assert_eq!(rec.toplevel.map(|t| t.configures.len()), Some(0));
+    assert_eq!(mgr.state().toplevel_state(WIN), None);
+
+    fake.cmd(Cmd::ConfigureWindow {
+        app_id: APP.into(),
+        configure: WindowConfigure {
+            size: (640, 480),
+            maximized: true,
+            ..WindowConfigure::default()
+        },
+    });
+    let ok = mgr
+        .dispatch_until(WAIT, |_| {
+            fake.windows(APP).first().is_some_and(|r| {
+                r.buffer
+                    == Some(strand_fake_wayland::BufferKind::Shm {
+                        width: 640,
+                        height: 480,
+                    })
+            })
+        })
+        .unwrap();
+    assert!(ok, "never painted maximised: {:?}", fake.windows(APP));
+    let rec = fake.windows(APP).remove(0);
+    assert_eq!(rec.buffer_commits, 1, "first painted at 640×480");
+    let state = mgr.state().toplevel_state(WIN).expect("configured");
+    assert!(state.maximized && state.sized == (true, true));
+}
