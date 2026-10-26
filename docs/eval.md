@@ -673,6 +673,15 @@ What `continuity`'s `track` and `still`, `twin`'s `still` and
 
 None is in the digest or a recording.
 
+What a clip reads (clip-data, "A clip"), none of it in the digest or a
+recording: per frame, on each painted surface, each control's `value`,
+`range` and `step` as logic sent them and the nodes the input router
+has hovered, pressed or focused (`ui`); per input step, its surface,
+the pointer's place there and the innermost node under it with a key,
+or a key's focused node (the event's `s`, `at`, `under`, `focus`); and
+once per origin, the props each element was written with, as source
+text (`written`).
+
 Once per node the trace records what the rule checks read from its
 config when it was first seen: its `enter` and `exit` poses (an exit
 mirrors its enter; a pose's width and height too), a container's
@@ -2971,8 +2980,61 @@ The text, compact for an agent's context:
   when it is the drawn one), opacity, scale and the motions that move it
   (its own; `hidden: …` when it is hidden); `not drawn` where it is not,
   `kN (gone) … not drawn: its surface went` from the step its surface
-  detached;
+  detached; (clip-data) above the table, `written:` its props as the
+  config wrote them, and below it its values and states, a row per
+  change (below);
+- (clip-data) the slice's input (below);
 - `regenerate:` and the command that makes the clip again.
+
+**What an agent needs besides the boxes** (clip-data, decisions.md
+clip-data 2026-10-26). Three blocks, all data from the trace, none drawn
+into a frame (the frames are pictures of the UI exactly as drawn: a
+clip never draws, overlays or invents anything in them):
+
+- **Props as written** (`elements[].written`: `arg`, `props`,
+  `blocks`; the text's `written: arg { prop; prop; when … { … } }`):
+  the source text of each prop written on the element (`name: value`,
+  a two-way `<->` and a transition included; a run of space with a line
+  break in it reads as one space), in order, its positional argument
+  (`text pct(x) {…}`'s `pct(x)`) and its `when`, `enter` and `exit`
+  blocks whole; never `id:` or a handler. The trace records it once per
+  origin (`RunTrace::written`, read from the checked program's elements
+  when the run compiles the config), so a component's element says what
+  its component wrote (`value: <-> dev.volume`).
+- **Values and states** (`elements[].states`, a run per change over the
+  slice's steps, as the frames table): a `slider`'s, `meter`'s, `arc`'s,
+  `graph`'s or `segmented`'s `value` (a segmented's as its option's
+  label), `range` and `step` as logic sent them (`-`: unset, 0 to 1 and
+  free), the router's `hover`, `press` and `focus` on any element, and
+  `drag`: where a drag holds a slider's knob, a fraction of its range
+  from its low end (what it draws while the writes go through logic).
+  Strand has no switch or checkbox element; a toggle written as a box
+  says its state through its props and these flags. Never an `input`'s
+  text. They are as of each frame painted (`Frame::ui`, `drags`, a
+  surface's held until it paints again): a flag that changes nothing
+  drawn shows at the next frame painted. An element that has none says
+  `values and states: none`.
+- **The input** (`input`, every step in the JSON): each input step the
+  replay ran in the slice's ticks (`pointer`, `press`, `release`,
+  `click`, `scroll`, `swipe`, `leave`, `glide`, `drag`, `key`, `type`,
+  `paste`, `focus`, `unfocus`), as the trace recorded it (`events`):
+  its tick and time, its text, its surface, the pointer's place there
+  in surface logical px, the innermost node under the pointer with a
+  key (`under`: the hit chain of the surface's last painted frame, as
+  routing reads it; a time step's where it starts) or a key's focused
+  node (`focus`), and `element`: the deepest of the clip's elements
+  that holds it. The text gives each step a line, but a run of moves on
+  one surface is one line, its ends and its count, `drag` when the left
+  button is held (`k1170..k1180 (… s) drag x7: 159.01,401.29 ->
+  178.73,401.29, over [2]`), with the places it went over in turn (a
+  clip element `[n]`, another node by its label). Typed text is never
+  in it: the recorder keeps a count of a typed span's keys and never
+  which (a password's not even the count), and the replay types `x`s
+  (`type 8`).
+
+A trace from a strand-eval before these says, per block, `not in this
+trace` (`strand replay <report>` again records them); the input is
+still listed, each move's place read from its step.
 
 **Its fidelity, honestly.** For each surface the clip is of: the frames
 the slice shows of it (their paint ticks: those painted in the slice,
@@ -3062,7 +3124,8 @@ are kept. A replay's report keeps each thing once:
   DIR` rebuild every frame whole and exactly.
 - **`index.html`** holds the trace packed, of each frame only what the
   viewer draws (`pack::VIEW_FIELDS`: `k`, `t_ns`, `painted`, `sizes`,
-  `png`, `n`, `scale`, `held_text`, `cost`; `trace.json` has every
+  `png`, `n`, `scale`, `scales`, `held_text`, `cost`, and (clip-data)
+  `ui` and `drags`, which a clip reads; `trace.json` has every
   field), and every stored frame file as a data URI with the patches
   (`patches`). The viewer unpacks the trace as it opens the scenario
   and draws a patched frame onto a canvas from its base (rebuilt the

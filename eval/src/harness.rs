@@ -507,6 +507,7 @@ impl Driver {
             seg.hz = self.h.clock.hz();
         }
         t.nodes = self.h.labels.metas.clone();
+        t.written = self.h.labels.written.clone();
         t.seal();
         t
     }
@@ -1234,8 +1235,15 @@ impl Harness {
         let services = strand_services_schema::schemas();
         let schema = Schema::builtin_with(&services)
             .map_err(|(i, e)| Error::Config(format!("service schema {i}: {e:?}")))?;
-        let build = Build::compile_with(None, map.clone(), &schema)
-            .map_err(|d| load_failed(&sc, &map, &d))?;
+        // As `Build::compile_with`, with the checked program kept long
+        // enough to read (clip-data) each element's props as written.
+        let compiled = strand_compiler::compile_with(&map, &schema);
+        if compiled.errors() > 0 {
+            return Err(load_failed(&sc, &map, &compiled.diagnostics));
+        }
+        let written = crate::labels::written_index(&compiled.program, &map);
+        let build = Build::lowered(None, map.clone(), &compiled, &schema);
+        drop(compiled);
         let warnings = diagnostics(&sc, &map, &build.warnings, false);
         let rt = Runtime::new();
         // (report) `wall`: the mock's clock and local time at it.
@@ -1351,7 +1359,7 @@ impl Harness {
             i0,
             clock: Clock::new(sc.hz),
             surfaces: Surfaces::of_screens(&sc.screens, sc.main),
-            labels: Labels::new(),
+            labels: Labels::with_written(written),
             text: TextRules::default(),
             pointer: Pointer::default(),
             trace,
@@ -2718,6 +2726,7 @@ impl Harness {
             line: step.line,
             text: step.text.clone(),
             segment: self.open,
+            ..EventRec::default()
         });
     }
 
@@ -2760,9 +2769,78 @@ impl Harness {
         Ok(())
     }
 
+    /// A step begun, as [`Harness::begin_step`]; (clip-data) an input
+    /// step's event then says where it acted ([`Harness::input_facts`]).
+    fn begin(&mut self, step: &Step) -> Result<Option<TimeRun>, Error> {
+        let n = self.trace.events.len();
+        let run = self.begin_step(step)?;
+        if self.trace.events.len() > n {
+            self.input_facts(n, &step.kind);
+        }
+        Ok(run)
+    }
+
+    /// (clip-data) What the trace's event `i` of an input step records
+    /// besides its text, once the step acted (a time step's where it
+    /// starts): a pointer step's surface, the pointer's place there and
+    /// the innermost node under it with a key (the hit chain of the
+    /// surface's last painted frame, as routing reads it); a key's,
+    /// `type`'s or `paste`'s surface with the keyboard and the node
+    /// focused there. Never a character typed: a step types `x`s.
+    fn input_facts(&mut self, i: usize, kind: &StepKind) {
+        let pointer = matches!(
+            kind,
+            StepKind::Pointer { .. }
+                | StepKind::Click { .. }
+                | StepKind::Press { .. }
+                | StepKind::Release { .. }
+                | StepKind::Scroll { .. }
+                | StepKind::Swipe { .. }
+                | StepKind::Leave
+                | StepKind::Glide { .. }
+                | StepKind::Drag { .. }
+        );
+        let keys = matches!(
+            kind,
+            StepKind::Key { .. }
+                | StepKind::Type { .. }
+                | StepKind::Paste { .. }
+                | StepKind::Focus { .. }
+                | StepKind::Unfocus
+        );
+        let (s, at, under, focus) = if pointer {
+            match self.pointer.surface {
+                Some(s) => {
+                    let at = self.pointer.at;
+                    let under = self
+                        .r
+                        .hit(s, at)
+                        .into_iter()
+                        .find_map(|n| self.labels.known(n).map(str::to_string));
+                    (Some(s.0), Some([at.x, at.y]), under, None)
+                }
+                None => (None, None, None, None),
+            }
+        } else if keys {
+            let focus = self
+                .kb
+                .and_then(|s| self.router.focused(s))
+                .and_then(|n| self.labels.known(n).map(str::to_string));
+            (self.kb.map(|s| s.0), None, None, focus)
+        } else {
+            return;
+        };
+        if let Some(e) = self.trace.events.get_mut(i) {
+            e.s = s;
+            e.at = at;
+            e.under = under;
+            e.focus = focus;
+        }
+    }
+
     /// A step begun: an instant step done, a time step's plan returned
     /// for [`Harness::advance`] to run tick by tick.
-    fn begin(&mut self, step: &Step) -> Result<Option<TimeRun>, Error> {
+    fn begin_step(&mut self, step: &Step) -> Result<Option<TimeRun>, Error> {
         // Instant steps act at the tick about to run.
         let t = self.clock.now();
         self.router.set_now(Some(self.instant(t)));
@@ -3249,6 +3327,7 @@ impl Harness {
             line,
             text: "frames".into(),
             segment: self.open,
+            ..EventRec::default()
         });
         Span {
             line,
@@ -4002,6 +4081,13 @@ impl Harness {
                         .key(n.node, &self.inst, self.r.tree(), &self.sources);
                     self.trace.opened.entry(key).or_default().push(k0);
                 }
+                // (clip-data) Its value and the router's flags on it.
+                if let Some(rec) = self.ui_rec(*s, n.node) {
+                    let key = self
+                        .labels
+                        .key(n.node, &self.inst, self.r.tree(), &self.sources);
+                    frame.ui.insert(key, rec);
+                }
                 if let Some(v) = n.drag {
                     let key = self
                         .labels
@@ -4119,6 +4205,53 @@ impl Harness {
             .collect();
         self.trace.frames.push(frame);
         Ok(())
+    }
+
+    /// (clip-data) What `Frame::ui` records of `node` on surface `s`: a
+    /// `slider`'s, `meter`'s, `arc`'s, `graph`'s or `segmented`'s value,
+    /// `range` and `step` as logic sent them (a segmented's value as its
+    /// option's label), and whether the router has it hovered, pressed
+    /// or focused; `None` for any other node it has none of.
+    fn ui_rec(&self, s: u32, node: NodeId) -> Option<crate::trace::UiRec> {
+        use strand_scene::NodeKind;
+        let w = self.r.widgets();
+        let f: Vec<String> = [
+            (w.hovered.contains(&node), "hover"),
+            (w.pressed.contains(&node), "press"),
+            (w.focused.contains(&node), "focus"),
+        ]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, n)| n.to_string())
+        .collect();
+        let n = self.r.tree().get(node)?;
+        let control = matches!(
+            n.kind,
+            NodeKind::Slider
+                | NodeKind::Meter
+                | NodeKind::Arc
+                | NodeKind::Graph
+                | NodeKind::Segmented
+        );
+        if !control && f.is_empty() {
+            return None;
+        }
+        let mut rec = crate::trace::UiRec {
+            s,
+            f,
+            ..Default::default()
+        };
+        if control {
+            rec.v = n.get(Prop::Value).map(|v| match n.kind {
+                NodeKind::Segmented => {
+                    serde_json::Value::String(strand_render::widgets::option_label(v))
+                }
+                _ => prop_json(v),
+            });
+            rec.range = n.get(Prop::Range).map(prop_json);
+            rec.step = n.get(Prop::Step).map(prop_json);
+        }
+        Some(rec)
     }
 
     /// (eval-rules-6) What `frame` records of node `n` on surface `s`
@@ -4404,6 +4537,7 @@ impl Harness {
             dev.finish();
         }
         self.trace.nodes = std::mem::take(&mut self.labels.metas);
+        self.trace.written = std::mem::take(&mut self.labels.written);
         if self.sc.warmup > 0 {
             trim_warmup(&mut self.trace);
         }
@@ -4646,6 +4780,31 @@ fn trim_warmup(trace: &mut RunTrace) {
                 s.places.remove(0);
             }
         }
+    }
+}
+
+/// (clip-data) A control's prop value as `Frame::ui` records it: a
+/// number as the shortest decimal of its `f32` (`0.69000244`), a length
+/// in px as its number, a keyword or text as itself, a list item by
+/// item; anything else as its debug form, cut to 80 characters.
+fn prop_json(v: &strand_scene::PropValue) -> serde_json::Value {
+    use serde_json::Value as J;
+    use strand_scene::{Length, PropValue as P};
+    let num = |n: f32| {
+        format!("{n}")
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map_or(J::Null, J::Number)
+    };
+    match v {
+        P::Unset => J::Null,
+        P::Bool(b) => J::Bool(*b),
+        P::Number(n) | P::Length(Length::Px(n)) => num(*n),
+        P::Keyword(k) => J::String(k.clone()),
+        P::Text(t) => J::String(t.clone()),
+        P::List(items) => J::Array(items.iter().map(prop_json).collect()),
+        other => J::String(format!("{other:?}").chars().take(80).collect()),
     }
 }
 

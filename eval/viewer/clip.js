@@ -175,8 +175,15 @@ var StrandClip = (function () {
         var rows = {};
         (f.n || []).forEach(function (r) { if (r[C.s] === s) rows[r[0]] = r; });
         var own = (f.scales && f.scales[s]) || fscale;
+        // (clip-data) Its controls' values and the router's flags, and
+        // the sliders held in a drag on it, as its rows stand.
+        var ui = {}, drag = {};
+        Object.keys(f.ui || {}).forEach(function (key) { if (f.ui[key].s === s) ui[key] = f.ui[key]; });
+        Object.keys(f.drags || {}).forEach(function (key) { if (rows[key]) drag[key] = f.drags[key]; });
         cur[s] = {
           rows: rows,
+          ui: ui,
+          drag: drag,
           png: fresh || (prev ? prev.png : null),
           size: f.sizes[s],
           scale: fresh || !prev ? own : prev.scale,
@@ -185,7 +192,9 @@ var StrandClip = (function () {
       });
       Object.keys(cur).forEach(function (s) {
         var v = cur[s];
-        if (f.sizes[s] && v.size !== f.sizes[s]) cur[s] = { rows: v.rows, png: v.png, size: f.sizes[s], scale: v.scale, k: v.k };
+        if (f.sizes[s] && v.size !== f.sizes[s]) {
+          cur[s] = { rows: v.rows, ui: v.ui, drag: v.drag, png: v.png, size: f.sizes[s], scale: v.scale, k: v.k };
+        }
       });
       any = true;
       each({ k: f.k, painted: f.painted || [], gone: null }, cur);
@@ -260,6 +269,7 @@ var StrandClip = (function () {
         var row = null, sid = null;
         Object.keys(cur).forEach(function (s) { if (!row && cur[s].rows[key]) { row = cur[s].rows[key]; sid = +s; } });
         el[key] = row ? valueOf(row, sid) : null;
+        if (row) el[key].ui = uiOf(cur[sid].ui[key], cur[sid].drag[key]);
       });
       return { k: st.k, painted: st.painted, gone: st.gone, surf: surf, el: el };
     }
@@ -278,6 +288,22 @@ var StrandClip = (function () {
         inherited: names((o.emot || 0) & ~own, MOT),
         hidden: o.hid || null
       };
+    }
+    // (clip-data) A node's value and states at a step: its value, range
+    // and step as logic sent them, the router's flags on it and where a
+    // drag holds a slider's knob (a fraction of its range, 0 at its low
+    // end: what it draws while the writes go through logic); null with
+    // none.
+    function uiOf(u, drag) {
+      if (!u && drag === undefined) return null;
+      var o = {
+        value: u && u.v !== undefined ? u.v : null,
+        range: u && u.range !== undefined ? u.range : null,
+        step: u && u.step !== undefined ? u.step : null,
+        flags: (u && u.f) || [],
+        drag: drag === undefined ? null : drag
+      };
+      return o;
     }
     walk(t, C, function (st, cur) {
       var at = ms(st.k);
@@ -312,6 +338,10 @@ var StrandClip = (function () {
       return m && m.origin ? m.origin : (s ? (s.root.split('|')[1] || s.root) : null);
     }
 
+    // (clip-data) What the trace records of each element's props as
+    // written, its values and states, and the input: absent from a trace
+    // of a strand-eval before them.
+    var written = t.written || null;
     // Each element, frame by frame.
     var elements = keys.map(function (key, n) {
       var m = t.nodes[key] || {};
@@ -349,6 +379,10 @@ var StrandClip = (function () {
         origin: m.origin || null,
         source: sourceLine(m.origin),
         surfaces: sids.map(function (s) { return { id: s, label: surfInfo[s] ? surfInfo[s].label : null, root: rootOrigin(s) }; }),
+        // (clip-data) Its props as the config wrote them, and its value
+        // and states, a run per change.
+        written: written ? (written[m.origin] || null) : null,
+        states: written ? statesOf(steps.map(function (st) { return st.el[key]; }), steps, tOf) : null,
         frames: frames
       };
     });
@@ -371,6 +405,7 @@ var StrandClip = (function () {
       fid.json.untraced_before = -traced;
     }
     var hints = hintsOf(src.checks, keys, k0, k1, period, W, F);
+    var input = inputOf(t, keys, k0, k1, tOf, surfName, !!written);
     var crop = cropOf(steps, sids, keys, elements, surfInfo);
     // The command again: a tick given stays a tick.
     function arg(x) { return x.k !== null ? 'k' + x.k : secs(x.t) + 's'; }
@@ -386,6 +421,7 @@ var StrandClip = (function () {
         held_from: steps[0].held ? steps[0].k : null, painted: painted, steps: steps.map(function (s) { return s.k; })
       },
       elements: elements,
+      input: input.json,
       fidelity: fid.json,
       hints: hints.json,
       crop: crop,
@@ -419,8 +455,11 @@ var StrandClip = (function () {
       L.push('[' + e.n + '] ' + e.label + (twins.length ? tell + comesOrGoes(e) : '') + ' · ' + e.source + ' · ' +
         (e.surfaces.length ? 'on ' + e.surfaces.map(function (s) { return surfName(s.id); }).join(', ') : 'not drawn in this slice'));
       L.push('    key ' + e.key);
+      L.push('    written: ' + writtenText(e, !!written));
       tableOf(e).forEach(function (l) { L.push('    ' + l); });
+      statesText(e, !!written).forEach(function (l) { L.push('    ' + l); });
     });
+    input.lines.forEach(function (l) { L.push(l); });
     L.push('regenerate: ' + cli);
     return { text: L.join('\n') + '\n', json: json };
   }
@@ -481,6 +520,174 @@ var StrandClip = (function () {
     return all.map(function (l) {
       return l.map(function (c, i) { return i === l.length - 1 ? c : pad(c, w[i]); }).join('  ').replace(/\s+$/, '');
     });
+  }
+
+  // ---- (clip-data) values and states, props as written, input -----------
+
+  // The runs of an element's value and states over the slice's steps
+  // (`vals[i]`: its value at step i, null where it is not drawn), a run
+  // per change; the step held at the slice's start a run of its own.
+  function statesOf(vals, steps, tOf) {
+    var runs = [], cur = null;
+    vals.forEach(function (v, i) {
+      var st = steps[i];
+      var u = v ? (v.ui || { value: null, range: null, step: null, flags: [], drag: null }) : null;
+      var sig = JSON.stringify(u);
+      if (cur && !cur.held && !st.held && cur.sig === sig) { cur.run.to_k = st.k; cur.run.to = tOf(st.k); return; }
+      var run = { from_k: st.k, to_k: st.k, from: tOf(st.k), to: tOf(st.k) };
+      if (st.held) run.held = true;
+      if (!u) run.drawn = false;
+      else { run.value = u.value; run.range = u.range; run.step = u.step; run.flags = u.flags; run.drag = u.drag; }
+      cur = { sig: sig, held: !!st.held, run: run };
+      runs.push(run);
+    });
+    return runs;
+  }
+
+  // A value as the text shows it: a number to 4 decimals, a list item by
+  // item, a keyword or text as itself; `-` for none.
+  function shown(v) {
+    if (v === null || v === undefined) return '-';
+    if (typeof v === 'number') return num(v, 4);
+    if (Array.isArray(v)) return '[' + v.map(shown).join(', ') + ']';
+    return String(v);
+  }
+  function rangeShown(r) {
+    if (r === null || r === undefined) return '-';
+    if (Array.isArray(r) && r.length === 2) return shown(r[0]) + '..' + shown(r[1]);
+    return shown(r);
+  }
+
+  var NOT_RECORDED = 'not in this trace (`strand replay <report>` with this strand-eval records it)';
+
+  // An element's props as written: `arg { prop; prop; when … { … } }`.
+  function writtenText(e, recorded) {
+    if (!recorded) return NOT_RECORDED;
+    var w = e.written;
+    if (!w) return 'none recorded (a node no config line writes)';
+    var parts = (w.props || []).concat(w.blocks || []);
+    return (w.arg ? w.arg + ' ' : '') + (parts.length ? '{ ' + parts.join('; ') + ' }' : '{ }');
+  }
+
+  // An element's value and states, a row per change.
+  function statesText(e, recorded) {
+    if (!recorded) return ['values and states: ' + NOT_RECORDED];
+    var runs = e.states || [];
+    var drawn = runs.filter(function (r) { return r.drawn !== false; });
+    if (!drawn.length) return [];
+    var none = drawn.every(function (r) {
+      return r.value === null && r.range === null && r.step === null && !r.flags.length && r.drag === null;
+    });
+    if (none) return ['values and states: none (no value of its own, never hovered, pressed or focused here)'];
+    var head = ['frames', 'time (s)', 'value', 'range', 'step', 'states'];
+    var lines = runs.map(function (r) {
+      var ks = 'k' + r.from_k + (r.held ? ' (held)' : '') + (r.from_k === r.to_k ? '' : '..k' + r.to_k);
+      var ts = r.from_k === r.to_k ? secs(r.from) : secs(r.from) + '..' + secs(r.to);
+      if (r.drawn === false) return [ks, ts, 'not drawn', '', '', ''];
+      var st = r.flags.join(' ');
+      if (r.drag !== null) st += (st ? ', ' : '') + 'drag ' + shown(r.drag) + ' of its range';
+      return [ks, ts, shown(r.value), rangeShown(r.range), shown(r.step), st || '-'];
+    });
+    var all = [head].concat(lines);
+    var w = head.map(function (_, i) { return Math.max.apply(null, all.map(function (l) { return l[i].length; })); });
+    return ['values and states, a row per change (range and step `-`: unset, 0..1 and free):'].concat(all.map(function (l) {
+      return l.map(function (c, i) { return i === l.length - 1 ? c : pad(c, w[i]); }).join('  ').replace(/\s+$/, '');
+    }));
+  }
+
+  // The input steps the replay ran, as its trace recorded them.
+  var INPUT = ['pointer', 'press', 'release', 'click', 'scroll', 'swipe', 'leave', 'glide', 'drag', 'key', 'type', 'paste',
+    'focus', 'unfocus'];
+  var POINTED = ['pointer', 'press', 'release', 'click', 'scroll', 'swipe', 'leave', 'glide', 'drag'];
+
+  // The slice's input: every event in the JSON, each with its tick, time,
+  // surface, the pointer's place there (logical px), the node under it
+  // (or, for a key, the node focused) and the deepest of the clip's
+  // elements that holds it; in the text, a run of moves as its ends and
+  // its count, a move with a button held as a drag. Typed text is never
+  // in it: the recorder keeps a count of the keys typed, never which.
+  function inputOf(t, keys, k0, k1, tOf, surfName, recorded) {
+    function element(key) {
+      for (var guard = 0; key && guard < 256; guard++) {
+        var i = keys.indexOf(key);
+        if (i >= 0) return i + 1;
+        key = t.nodes[key] ? t.nodes[key].parent : null;
+      }
+      return null;
+    }
+    var json = [];
+    (t.events || []).forEach(function (e) {
+      if (e.k < k0 || e.k > k1) return;
+      var kind = String(e.text).split(' ')[0];
+      if (INPUT.indexOf(kind) < 0) return;
+      var at = e.at || null, m;
+      // A trace from before `at` was recorded: the step's own place.
+      if (!at && (kind === 'pointer' || kind === 'click') && (m = /^\w+ (-?[\d.]+),(-?[\d.]+)/.exec(e.text))) at = [+m[1], +m[2]];
+      var pointed = POINTED.indexOf(kind) >= 0;
+      json.push({
+        k: e.k, t: tOf(e.k), kind: kind, text: e.text,
+        surface: e.s === undefined ? null : e.s,
+        at: at,
+        under: e.under || null,
+        focus: e.focus || null,
+        element: element(pointed ? e.under : e.focus)
+      });
+    });
+    var lines = [];
+    if (!json.length) {
+      lines.push('input: none in this slice');
+      return { json: json, lines: lines };
+    }
+    lines.push('input (' + json.length + ' event' + (json.length === 1 ? '' : 's') + '; places in surface logical px, a run of moves ' +
+      'as its ends and count' + (recorded ? '' : '; what was under the pointer is ' + NOT_RECORDED) + '):');
+    function place(x) {
+      if (x.element) return '[' + x.element + ']';
+      var key = x.kind === 'key' || x.kind === 'type' || x.kind === 'paste' ? x.focus : x.under;
+      if (!key) return null;
+      return t.nodes[key] ? t.nodes[key].label : key;
+    }
+    function where(at) { return at ? num(at[0], 2) + ',' + num(at[1], 2) : null; }
+    // The left button held at the slice's start: by the steps before it.
+    var lastS = null, held = false, i = 0;
+    (t.events || []).forEach(function (e) {
+      if (e.k >= k0) return;
+      if (/^press left$/.test(e.text)) held = true;
+      else if (/^release left$/.test(e.text) || /^leave$/.test(e.text)) held = false;
+    });
+    function on(x) {
+      if (x.surface === null || x.surface === lastS) return '';
+      lastS = x.surface;
+      return ' on ' + surfName(x.surface);
+    }
+    while (i < json.length) {
+      var x = json[i];
+      if (x.kind === 'pointer') {
+        var j = i;
+        while (j + 1 < json.length && json[j + 1].kind === 'pointer' && json[j + 1].surface === x.surface) j++;
+        var a = json[i], b = json[j], n = j - i + 1;
+        var places = [];
+        for (var q = i; q <= j; q++) {
+          var p = place(json[q]);
+          if (p && places[places.length - 1] !== p) places.push(p);
+        }
+        var over = !places.length ? '' : ', over ' + (places.length <= 3 ? places.join(' -> ')
+          : places[0] + ' -> ... -> ' + places[places.length - 1] + ' (' + places.length + ' places)');
+        var what = held ? 'drag' : 'pointer';
+        var ks = n === 1 ? 'k' + a.k + ' (' + secs(a.t) + ' s)' : 'k' + a.k + '..k' + b.k + ' (' + secs(a.t) + '..' + secs(b.t) + ' s)';
+        var head = '  ' + ks + ' ' + what + (n === 1 ? '' : ' x' + n) + on(a) + ': ';
+        lines.push(head + (n === 1 ? where(a.at) || a.text : (where(a.at) || '?') + ' -> ' + (where(b.at) || '?')) + over);
+        i = j + 1;
+        continue;
+      }
+      if (x.kind === 'press' && / left$/.test(x.text)) held = true;
+      if (x.kind === 'release' && / left$/.test(x.text)) held = false;
+      if (x.kind === 'leave') held = false;
+      var pl = place(x), at2 = POINTED.indexOf(x.kind) >= 0 && x.kind !== 'pointer' && x.kind !== 'leave' ? where(x.at) : null;
+      var into = x.kind === 'key' || x.kind === 'type' || x.kind === 'paste' ? ', focus ' : ', over ';
+      lines.push('  k' + x.k + ' (' + secs(x.t) + ' s) ' + x.text + on(x) + (at2 ? ' at ' + at2 : '') + (pl ? into + pl : ''));
+      i++;
+    }
+    return { json: json, lines: lines };
   }
 
   // What checked the slice's frames, honestly: the frame the verdict held

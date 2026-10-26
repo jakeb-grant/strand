@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 use fx::*;
 use serde_json::Value as Json;
+use strand_core::flight::{Rec, kind};
 use strand_eval::replay::clip::{self, ClipError, Replay, Spec};
 use strand_eval::report;
 use strand_eval::trace::{Row, RunTrace};
@@ -998,6 +999,28 @@ fn the_page_and_the_command_line_clip_alike() {
         assert_eq!(pg.zip, cli.zip, "the .zip");
         assert_eq!(pg.missing, cli.missing);
         assert!(cli.missing.is_empty(), "{:?}", cli.missing);
+        // (clip-data) Alike with the input, the props as written and the
+        // values and states in them: the page holds what they are made of.
+        if s.nodes.len() == 2 {
+            let j: Json = serde_json::from_str(&cli.json).unwrap();
+            assert!(
+                j["input"]
+                    .as_array()
+                    .is_some_and(|i| i.iter().any(|e| e["kind"] == "press" && e["element"] == 2)),
+                "{:#}",
+                j["input"]
+            );
+            let els = j["elements"].as_array().unwrap();
+            assert!(els.iter().all(|e| e["written"]["props"].is_array()));
+            assert!(
+                els.iter().any(|e| e["states"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|r| r["flags"].as_array().is_some_and(|f| !f.is_empty()))),
+                "{els:#?}"
+            );
+        }
         let Some(z) = cli.zip else { continue };
         // The .zip: the text, the JSON and each frame cropped, pixel for
         // pixel the crop of the frame Rust rebuilds.
@@ -1259,4 +1282,391 @@ fn a_clip_covers_a_window() {
         "{surfaces:?}"
     );
     assert!(m.text.contains("window Settings"), "{}", m.text);
+}
+
+// ---- (clip-data) values and states, props as written, input ------------
+
+/// The fixture's spot, the line other elements are written after.
+const SPOT: &str =
+    "    box { id: spot; width: 80; height: 40; bg: #303030; when hover { bg: #ffffff } }";
+
+/// The scripted session with `line` written after the spot in the bar's
+/// row and `state` at the end of the config (so the bar and its boxes
+/// keep their origins), replayed.
+fn replayed_with(tag: &str, line: &str, state: &str, more: impl FnOnce(&mut Fx)) -> PathBuf {
+    let mut f = Fx::session();
+    assert!(f.config.contains(SPOT), "{}", f.config);
+    f.config = f.config.replace(SPOT, &format!("{SPOT}\n{line}"));
+    f.config.push_str(state);
+    more(&mut f);
+    let (_, out) = replay_of(&f.write(tag), &defaults());
+    out
+}
+
+fn element(j: &Json, n: u64) -> &Json {
+    j["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["n"] == n)
+        .unwrap()
+}
+
+/// The text of `[n]`'s block: from its line to the next element's, or
+/// the input.
+fn block(text: &str, n: usize) -> String {
+    text.split(&format!("\n[{n}] "))
+        .nth(1)
+        .unwrap()
+        .split("\n[")
+        .next()
+        .unwrap()
+        .split("\ninput")
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+/// Each element's props as the config wrote them, once, from the trace:
+/// the source text of each prop and of its `when` block, `id:` and
+/// handlers left out.
+#[test]
+fn a_clip_says_how_each_element_was_written() {
+    let out = replayed("clip-written");
+    let r = Replay::find(&out).unwrap();
+    let (from, to) = around_the_click(&out);
+    let m = clip::make(
+        &r,
+        &spec(&from, Some(&to), &["#spot", "#button"], ""),
+        false,
+    )
+    .unwrap();
+    let j: Json = serde_json::from_str(&m.json).unwrap();
+    let spot = &element(&j, 1)["written"];
+    assert_eq!(
+        spot["props"],
+        serde_json::json!(["width: 80", "height: 40", "bg: #303030"]),
+        "{spot}"
+    );
+    assert_eq!(
+        spot["blocks"],
+        serde_json::json!(["when hover { bg: #ffffff }"])
+    );
+    assert_eq!(
+        element(&j, 2)["written"]["props"],
+        serde_json::json!([
+            "width: 80",
+            "height: 40",
+            "bg: clicks > 0 ? #00ff00 : #0000ff"
+        ])
+    );
+    assert!(
+        block(&m.text, 1).contains(
+            "\n    written: { width: 80; height: 40; bg: #303030; when hover { bg: #ffffff } }\n"
+        ),
+        "{}",
+        m.text
+    );
+    assert!(
+        block(&m.text, 2).contains(
+            "\n    written: { width: 80; height: 40; bg: clicks > 0 ? #00ff00 : #0000ff }\n"
+        ),
+        "{}",
+        m.text
+    );
+    let _ = std::fs::remove_dir_all(out.parent().unwrap());
+}
+
+/// A slider's value, `range` and `step` as logic sent them and the
+/// router's flags on it, frame by frame as a run per change: at rest at
+/// 2.5, then hovered, pressed and dragged (where the drag holds its
+/// knob), then at the value the drag wrote once the pointer leaves it.
+#[test]
+fn a_clip_says_each_elements_value_and_states() {
+    let out = replayed_with(
+        "clip-states",
+        "    slider { id: knob; width: 120; height: 20; value: <-> level; range: 0, 10; step: 0.5 }",
+        "state level = 2.5\n",
+        |f| {
+            // Onto the knob's slider (x 280 to 400, the badge before it
+            // since the click), pressed at 300, dragged to 380 and let go.
+            f.pointer(1, kind::MOTION, 290.0, 20.0, 9 * S);
+            let b = |t: u64, x: f32, down: u8| {
+                Rec::new(t, kind::BUTTON, 1)
+                    .f32_at(0, x)
+                    .f32_at(4, 20.0)
+                    .u16_at(8, 0)
+                    .u8_at(10, down)
+            };
+            f.input.push(b(9 * S + 500 * MS, 300.0, 1));
+            f.pointer(1, kind::MOTION, 340.0, 20.0, 9 * S + 600 * MS);
+            f.pointer(1, kind::MOTION, 380.0, 20.0, 9 * S + 700 * MS);
+            f.input.push(b(9 * S + 900 * MS, 380.0, 0));
+            // Off it: it draws itself at rest again (a flag that changes
+            // nothing drawn shows at the next frame painted).
+            f.pointer(1, kind::MOTION, 40.0, 20.0, 10 * S + 200 * MS);
+        },
+    );
+    let r = Replay::find(&out).unwrap();
+    let m = clip::make(&r, &spec("-21.5s", Some("-19.5s"), &["#knob"], ""), false).unwrap();
+    let j: Json = serde_json::from_str(&m.json).unwrap();
+    let e = element(&j, 1);
+    assert_eq!(
+        e["written"]["props"],
+        serde_json::json!([
+            "width: 120",
+            "height: 20",
+            "value: <-> level",
+            "range: 0, 10",
+            "step: 0.5"
+        ])
+    );
+    let runs = e["states"].as_array().unwrap();
+    assert_eq!(runs[0]["value"], 2.5, "{runs:#?}");
+    assert_eq!(runs[0]["range"], serde_json::json!([0, 10]));
+    assert_eq!(runs[0]["step"], 0.5);
+    let flags = |r: &Json| -> Vec<String> {
+        r["flags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f.as_str().unwrap().to_string())
+            .collect()
+    };
+    assert!(
+        runs.iter().any(|r| flags(r).contains(&"hover".to_string())),
+        "{runs:#?}"
+    );
+    // Dragged: where the drag holds the knob, a fraction of the range
+    // (2.5 of 0 to 10 is 0.25), past where it was.
+    let dragged: Vec<f64> = runs
+        .iter()
+        .filter(|r| flags(r).contains(&"press".to_string()))
+        .filter_map(|r| r["drag"].as_f64())
+        .collect();
+    assert!(
+        dragged.iter().any(|d| *d > 0.25),
+        "no run pressed and dragged past the value:\n{}",
+        m.text
+    );
+    let last = runs.last().unwrap();
+    assert!(last["value"].as_f64().unwrap() > 2.5, "{runs:#?}");
+    assert!(
+        last["drag"].is_null() && !flags(last).contains(&"press".to_string()),
+        "{}",
+        m.text
+    );
+    // Each run a change: no two alike one after the other.
+    let cells = |r: &Json| {
+        let mut r = r.clone();
+        for k in ["from_k", "to_k", "from", "to", "held"] {
+            r.as_object_mut().unwrap().remove(k);
+        }
+        r
+    };
+    for w in runs[1..].windows(2) {
+        assert_ne!(cells(&w[0]), cells(&w[1]), "{runs:#?}");
+    }
+    // The text: a row per run, the range and step as the trace has them.
+    let b = block(&m.text, 1);
+    assert!(
+        b.contains("values and states, a row per change"),
+        "{}",
+        m.text
+    );
+    let rows: Vec<&str> = b
+        .split("values and states")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .skip(2)
+        .collect();
+    assert_eq!(rows.len(), runs.len(), "{b}");
+    assert!(
+        rows[0].contains(" 2.5 ") && rows[0].contains(" 0..10 ") && rows[0].contains(" 0.5 "),
+        "{b}"
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("hover press, drag ") && r.ends_with(" of its range")),
+        "{b}"
+    );
+    let _ = std::fs::remove_dir_all(out.parent().unwrap());
+}
+
+/// The slice's input: every step the replay ran in it in the JSON, each
+/// with its tick, time, surface, the pointer's place and the element
+/// under it (the deepest of the clip's, else the node's key); in the
+/// text, a run of moves as its ends and count.
+#[test]
+fn a_clip_lists_the_input_of_its_slice() {
+    let out = replayed("clip-input");
+    let r = Replay::find(&out).unwrap();
+    let (t, _) = trace_of(&out);
+    let button = key_of(&t, "button");
+    let spot = key_of(&t, "spot");
+    // The pointer comes in at 40,20 at 5 s, goes to the spot at 6 s and
+    // back at 7 s, and clicks the button at 8 s (the report at 30 s).
+    let m = clip::make(
+        &r,
+        &spec("-25.5s", Some("-21.5s"), &["#button", "#spot"], ""),
+        false,
+    )
+    .unwrap();
+    let j: Json = serde_json::from_str(&m.json).unwrap();
+    let input = j["input"].as_array().unwrap();
+    let kinds: Vec<&str> = input.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert!(
+        kinds.contains(&"pointer") && kinds.contains(&"press") && kinds.contains(&"release"),
+        "{kinds:?}"
+    );
+    let bar = t.surfaces[0].id;
+    for e in input {
+        let k = e["k"].as_u64().unwrap();
+        assert!(
+            t.events
+                .iter()
+                .any(|x| u64::from(x.k) == k && x.text == e["text"]),
+            "{e}"
+        );
+        assert_eq!(e["surface"], bar, "{e}");
+        let at: Vec<f64> = e["at"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        let (n, key) = if at[0] < 80.0 {
+            (1, &button)
+        } else {
+            (2, &spot)
+        };
+        assert_eq!(e["element"], n, "{e}");
+        assert_eq!(e["under"], key.as_str(), "{e}");
+    }
+    let press = input.iter().find(|e| e["kind"] == "press").unwrap();
+    assert_eq!(press["at"], serde_json::json!([40, 20]));
+    // The text: the steps in order, the press over the button.
+    let text = m.text.split("\ninput (").nth(1).unwrap();
+    assert!(
+        text.starts_with(&format!("{} events; ", input.len())),
+        "{text}"
+    );
+    assert!(text.contains(" press left at 40,20, over [1]\n"), "{text}");
+    // The three moves one run: its ends, its count and the elements it
+    // went over in turn.
+    assert!(
+        text.contains(
+            " pointer x3 on bar Top (surface 1): 40,20 -> 40,20, over [1] -> [2] -> [1]\n"
+        ),
+        "{text}"
+    );
+    // The spot lit while the pointer was on it: its states say so.
+    let lit = element(&j, 2)["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["flags"] == serde_json::json!(["hover"]));
+    assert!(lit, "{:#}", element(&j, 2)["states"]);
+    let _ = std::fs::remove_dir_all(out.parent().unwrap());
+}
+
+/// (clip-data) A clip of a slice where a password was typed holds no
+/// character typed: the recorder keeps a count of a password span's keys
+/// and never which (the replay types eight `x`s), and the clip's input
+/// says the step, the focused field and nothing more.
+#[test]
+fn a_clip_of_a_password_slice_holds_no_typed_text() {
+    let out = replayed_with(
+        "clip-password",
+        "    input { id: pw; type: password; text: <-> secret; width: 80; height: 40; focus: true }",
+        "state secret = \"\"\n",
+        |f| {
+            f.input.push(Rec::new(20 * S, kind::KEYBOARD_ENTER, 1));
+            f.input.push(
+                Rec::new(20 * S + 100 * MS, kind::TEXT, 1)
+                    .u32_at(0, 5)
+                    .u32_at(4, 0)
+                    .u8_at(8, 1),
+            );
+        },
+    );
+    let r = Replay::find(&out).unwrap();
+    let (t, _) = trace_of(&out);
+    let pw = key_of(&t, "pw");
+    let m = clip::make(&r, &spec("-10.5s", Some("-8s"), &["#pw"], ""), true).unwrap();
+    let j: Json = serde_json::from_str(&m.json).unwrap();
+    let typed = j["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "type")
+        .unwrap_or_else(|| panic!("no typing in {:#}", j["input"]));
+    assert_eq!(typed["text"], "type 8");
+    assert_eq!(typed["focus"], pw.as_str());
+    assert_eq!(typed["element"], 1);
+    assert!(m.text.contains(" type 8"), "{}", m.text);
+    // The replay typed eight `x`s into the field: none is anywhere in
+    // the clip, its .zip's text and JSON included.
+    for (what, s) in [("text", &m.text), ("JSON", &m.json)] {
+        assert!(
+            !s.contains("xx"),
+            "the clip's {what} holds typed text:\n{s}"
+        );
+    }
+    let files = unzip(m.zip.as_ref().unwrap());
+    for name in ["clip.txt", "clip.json"] {
+        let s = String::from_utf8(files[name].clone()).unwrap();
+        assert!(!s.contains("xx"), "{name}");
+    }
+    let _ = std::fs::remove_dir_all(out.parent().unwrap());
+}
+
+/// A trace from a strand-eval before the clip's data was recorded: the
+/// clip says each block is not in it rather than showing it empty.
+#[test]
+fn a_clip_of_an_older_trace_says_what_it_lacks() {
+    let out = replayed("clip-older");
+    let r = Replay::find(&out).unwrap();
+    // The trace as an older strand-eval wrote it.
+    let file = r.entry.join("trace.json");
+    let mut v: Json = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    v.as_object_mut().unwrap().remove("written");
+    for e in v["events"].as_array_mut().unwrap() {
+        for k in ["s", "at", "under", "focus"] {
+            e.as_object_mut().unwrap().remove(k);
+        }
+    }
+    for f in v["frames"].as_array_mut().unwrap() {
+        let f = f.as_object_mut().unwrap();
+        f.remove("ui");
+        if let Some(Json::Array(same)) = f.get_mut("=") {
+            same.retain(|k| k != "ui");
+        }
+    }
+    std::fs::write(&file, serde_json::to_string(&v).unwrap()).unwrap();
+    let r = Replay::find(&out).unwrap();
+    let m = clip::make(&r, &spec("-25.5s", Some("-21.5s"), &["#spot"], ""), false).unwrap();
+    let b = block(&m.text, 1);
+    assert!(b.contains("    written: not in this trace"), "{b}");
+    assert!(
+        b.contains("    values and states: not in this trace"),
+        "{b}"
+    );
+    assert!(
+        m.text
+            .contains("what was under the pointer is not in this trace"),
+        "{}",
+        m.text
+    );
+    // The input is still listed, each move's place read from its step.
+    let j: Json = serde_json::from_str(&m.json).unwrap();
+    let ev = j["input"].as_array().unwrap();
+    assert!(
+        ev.iter()
+            .any(|e| e["kind"] == "pointer" && e["at"].is_array()),
+        "{ev:?}"
+    );
+    assert!(ev.iter().all(|e| e["under"].is_null()));
+    let _ = std::fs::remove_dir_all(out.parent().unwrap());
 }

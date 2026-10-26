@@ -13,7 +13,7 @@ use strand_render::SceneTree;
 use strand_scene::{NodeId, Prop, PropValue};
 
 use crate::select::NodeView;
-use crate::trace::{NodeMeta, Pose};
+use crate::trace::{NodeMeta, Pose, WrittenRec};
 
 /// Keys and metadata of the nodes a run saw.
 #[derive(Debug, Default)]
@@ -22,6 +22,144 @@ pub struct Labels {
     owners: HashMap<String, NodeId>,
     /// Every node seen, by key.
     pub metas: BTreeMap<String, NodeMeta>,
+    /// (clip-data) The props each node seen was written with, by its
+    /// origin (`RunTrace::written`).
+    pub written: BTreeMap<String, WrittenRec>,
+    /// (clip-data) Every element of the program the run's logic runs,
+    /// by its `NodeIdx`, as written ([`written_index`]).
+    index: HashMap<u32, WrittenRec>,
+}
+
+/// (clip-data) Source `text` from `start` to `end` (bytes), as written:
+/// a run of space with a line break in it reads as one space.
+fn written_text(text: &str, start: u32, end: u32) -> Option<String> {
+    let t = text.get(start as usize..end as usize)?;
+    let mut out = String::with_capacity(t.len());
+    let mut gap = String::new();
+    for c in t.chars() {
+        if c.is_whitespace() {
+            gap.push(c);
+            continue;
+        }
+        if !gap.is_empty() {
+            out.push_str(if gap.contains('\n') { " " } else { &gap });
+            gap.clear();
+        }
+        out.push(c);
+    }
+    Some(out)
+}
+
+/// (clip-data) Where a prop is written: from its name to the end of its
+/// value, its transition and its sub-props (a part that does not follow
+/// the name, as one the checker made up, is left out).
+fn prop_span(p: &strand_compiler::hir::Prop) -> (u32, u32) {
+    let a = p.span.start;
+    let mut b = p.span.end;
+    let mut take = |s: u32, e: u32| {
+        if s >= a {
+            b = b.max(e);
+        }
+    };
+    take(p.value.span.start, p.value.span.end);
+    if let Some(t) = &p.transition {
+        take(t.span.start, t.span.end);
+    }
+    for sub in &p.sub {
+        let (x, y) = prop_span(sub);
+        take(x, y);
+    }
+    (a, b)
+}
+
+/// (clip-data) Each element under `nodes` as written into `out`.
+fn index_nodes(
+    nodes: &[strand_compiler::hir::Node],
+    text: &str,
+    out: &mut HashMap<u32, WrittenRec>,
+) {
+    use strand_compiler::hir::Node;
+    for n in nodes {
+        match n {
+            Node::Element(e) => index_element(e, text, out),
+            Node::If(i) => {
+                index_nodes(&i.then, text, out);
+                index_nodes(&i.else_, text, out);
+            }
+            Node::For(f) => index_nodes(&f.body, text, out),
+            Node::Match(m) => {
+                for (_, arm) in &m.arms {
+                    index_nodes(arm, text, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn index_element(
+    e: &strand_compiler::hir::Element,
+    text: &str,
+    out: &mut HashMap<u32, WrittenRec>,
+) {
+    use strand_compiler::hir::Node;
+    let arg = e.arg.as_ref().map(|a| a.span);
+    let props = e
+        .props
+        .iter()
+        // The positional argument is `arg`; `id:` is the element's name.
+        .filter(|p| p.name != "id" && Some(p.value.span) != arg)
+        .filter_map(|p| {
+            let (a, b) = prop_span(p);
+            written_text(text, a, b)
+        })
+        .collect();
+    let blocks = e
+        .children
+        .iter()
+        .filter_map(|c| match c {
+            Node::When(w) => Some(w.span),
+            Node::Pose(p) => Some(p.span),
+            _ => None,
+        })
+        .filter_map(|s| written_text(text, s.start, s.end))
+        .collect();
+    out.insert(
+        e.node.0,
+        WrittenRec {
+            arg: arg.and_then(|s| written_text(text, s.start, s.end)),
+            props,
+            blocks,
+        },
+    );
+    index_nodes(&e.children, text, out);
+}
+
+/// (clip-data) Every element of the checked program `prog` as written,
+/// by its `NodeIdx` (unique in the program; the lowered program the run's
+/// logic runs keeps the same).
+pub fn written_index(
+    prog: &strand_compiler::hir::Program,
+    sources: &SourceMap,
+) -> HashMap<u32, WrittenRec> {
+    use strand_compiler::hir::Item;
+    let mut out = HashMap::new();
+    for f in &prog.files {
+        let Some(src) = sources.get(f.file) else {
+            continue;
+        };
+        for it in &f.items {
+            match it {
+                Item::Component(c) => index_nodes(&c.body, &src.text, &mut out),
+                Item::Surface(s) => index_element(&s.element, &src.text, &mut out),
+                _ => {}
+            }
+        }
+        for e in &f.outputs {
+            index_element(e, &src.text, &mut out);
+        }
+    }
+    out
 }
 
 /// What `Instance` says of a node, and where it is written.
@@ -350,6 +488,15 @@ impl Labels {
         Labels::default()
     }
 
+    /// (clip-data) Labels that record each node's props as written, from
+    /// the program's elements ([`written_index`]).
+    pub fn with_written(index: HashMap<u32, WrittenRec>) -> Labels {
+        Labels {
+            index,
+            ..Labels::default()
+        }
+    }
+
     /// `node`'s key, made (with its metadata) the first time it is asked.
     pub fn key(
         &mut self,
@@ -421,6 +568,13 @@ impl Labels {
             ) => format!("{kind}@{f}:{l}"),
             _ => kind.to_string(),
         };
+        if let Some(o) = &origin
+            && !self.written.contains_key(o)
+            && let Some((_, idx, _)) = inst.origin(node)
+            && let Some(w) = self.index.get(&idx.0)
+        {
+            self.written.insert(o.clone(), w.clone());
+        }
         let enter = strand_render::probe::enter_of(tree, node);
         self.metas.entry(key.clone()).or_insert(NodeMeta {
             label,
