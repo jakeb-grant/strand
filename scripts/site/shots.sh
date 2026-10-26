@@ -4,7 +4,8 @@
 # (scripts/eval/Dockerfile.viewer) with no network: each page at 1440,
 # 768 and 390 px, light and dark, saved to target/site-shots/, failing on
 # console errors, failed requests and sideways overflow (shots.py).
-# Pages are paths in the site; index.html when none is given.
+# Pages are paths in the site; index.html when none is given, every page
+# with --all (CI's site job). The search is driven on the first page.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"

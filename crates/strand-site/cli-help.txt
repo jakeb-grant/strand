@@ -1,0 +1,48 @@
+# Captured by `strand-site cli` from the strand binary (scripts/site/cli.sh); do not edit.
+$ strand --help
+usage: strand <command> [args]
+
+commands:
+  run               run the config [dir] (default $XDG_CONFIG_HOME/strand; --demo: the M0 hello bar)
+  check             check the config without running it [dir | file]
+  fmt               format .strand files in place [--check] [paths]
+  watch             stream reload events, faults and notices (--json)
+  reload            rescan now (--hard drops non-persisted state)
+  get               read an exported value, a settings field or a token ('$accent') (--json)
+  set               write an exported value, a settings field or an rw service field (strand set theme.look mocha; audio.sink.volume +5%; '$accent' overlays a token)
+  toggle            flip an exported boolean
+  call              invoke a service action (strand call notifications.clear) (--json)
+  clear             drop a runtime overlay (strand clear '$accent')
+  new               write a starter shell into [dir] (default $XDG_CONFIG_HOME/strand; refuses a non-empty dir)
+  export            write the palette: json | base24 | --template <file> [--palette <expr>] [-o <file>]
+  compositor-rules  print blur rules for the compositor
+  report            dump compositor, protocols, scales, memory, GPU and frame stats (--json); with words (strand report the clock jumped), save a glitch report
+  replay            replay a glitch report [report-dir] (default: the newest) in the evaluation sandbox and open its viewer (--no-open); needs strand-eval next to strand
+
+options:
+  --write-schemas   write this plugin binary's service schemas for strand check and the LSP
+  -V, --version     print the version
+
+environment (not passed to programs the shell starts):
+  STRAND_SOCKET     the shell's socket (default $XDG_RUNTIME_DIR/strand-<display>.sock)
+  STRAND_STATE_DIR  the shell's state directory (default $XDG_STATE_HOME/strand)
+$ strand run --help
+usage: strand run [dir | --demo]
+$ strand check --help
+usage: strand check [dir | file]
+
+Parses and type-checks every .strand file under the directory (default $XDG_CONFIG_HOME/strand) as one config and prints diagnostics; exits non-zero on errors. Given a file, checks it with the rest of its config (the default directory if the file is in it, else the file's directory) and prints the diagnostics in that file, and a missing lock helper.
+$ strand fmt --help
+usage: strand fmt [--check] [--] [dir | file]...
+
+Formats .strand files in place (a directory means its .strand files, as `strand check` loads them; default $XDG_CONFIG_HOME/strand). With --check, writes nothing, lists the files that are not formatted and exits non-zero if there are any. Files with syntax errors are reported and left as written.
+$ strand new --help
+strand new: usage: strand new [dir]
+$ strand export --help
+strand export: usage: strand export json | base24 | --template <file> [--palette '<expr>'] [-o <file>]
+$ strand compositor-rules --help
+usage: strand compositor-rules [dir] [--classic]
+
+Prints Hyprland layer rules that blur behind the surfaces of the config at dir (default $XDG_CONFIG_HOME/strand) that ask for `blur`, matched by their strand-<Name> namespaces, for you to paste into your Hyprland config. The default is Hyprland 0.56's Lua config (hl.layer_rule); --classic prints hyprlang `layerrule =` lines for older versions. Nothing is applied to the running session.
+$ strand report --help
+strand report: usage: strand report [--json] [what you saw…]

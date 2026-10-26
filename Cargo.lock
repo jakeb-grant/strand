@@ -3224,6 +3224,7 @@ dependencies = [
  "strand-dev",
  "strand-scene",
  "strand-theme",
+ "toml_edit",
  "tree-sitter",
  "tree-sitter-strand",
 ]

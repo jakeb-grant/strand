@@ -1,0 +1,148 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-swap"
+verdict good
+note "docs example (swap): first recording, its frames looked at on a contact sheet (enter, settle, exit; light and dark)"
+date 2026-10-26
+rev "6dce7f51"
+approver "claude"
+scenario b6c07083fe9de687
+seal 4d07656673407253
+S1 0 - "bar Top"
+N0 "|swap.strand:10:5|[Mock | DP-1]#0" "text(\"Strand\")"
+N1 "|swap.strand:11:5|[Mock | DP-1]#0" "spacer@swap.strand:11"
+N2 "|swap.strand:12:5|[Mock | DP-1]#1" "text(\"12:00\")"
+N3 "|swap.strand:5:1|[Mock | DP-1]#0" "bar@swap.strand:5"
+N4 "|swap.strand:8:3|[Mock | DP-1]#0" "row@swap.strand:8"
+N5 "|swap.strand:9:5|[Mock | DP-1]#0" "box@swap.strand:9"
+k0 p1
+s1 z=360,40
+n0 x=32 y=13 w=39 h=15 txt=S ord=3 ink=32.5,15,37.5,10 fg=4c4f69ff gl=["Strand"]
+n1 x=79 y=20 w=228 h=0 ord=4
+n2 x=315 y=13 w=33 h=15 txt=S ord=5 ink=315.5,15,31.5,10 fg=4c4f69a6 gl=["12:00"]
+n3 x=0 y=0 w=360 h=40 bg=eff1f5ff
+n4 x=0 y=0 w=360 h=40 ord=1
+n5 x=12 y=14 w=12 h=12 ord=2 bg=8839efff
+k1
+n0 fg=4f536dff
+n2 fg=4f536da6
+n3 bg=cdcfd5ff
+n5 bg=914ef1ff
+k2
+n0 fg=393d56ff
+n2 fg=393d56a6
+n3 bg=9798a3ff
+n5 bg=a06af4ff
+k3
+n0 fg=d4dbfaff
+n2 fg=d4dbfaa6
+n3 bg=6a6c79ff
+n5 bg=ae7ff5ff
+k4
+n0 fg=c2c9e7ff
+n2 fg=c2c9e7a6
+n3 bg=4c4d5cff
+n5 bg=b88ef6ff
+k5
+n0 fg=b8c0ddff
+n2 fg=b8c0dda6
+n3 bg=393a49ff
+n5 bg=c098f7ff
+k6
+n0 fg=c0c9e6ff
+n2 fg=c0c9e6a6
+n3 bg=2e2e3eff
+n5 bg=c49df7ff
+k7
+n0 fg=c6ceecff
+n2 fg=c6ceeca6
+n3 bg=272737ff
+n5 bg=c7a1f7ff
+k8
+n0 fg=c9d2efff
+n2 fg=c9d2efa6
+n3 bg=232333ff
+n5 bg=c9a3f7ff
+k9
+n0 fg=cbd3f1ff
+n2 fg=cbd3f1a6
+n3 bg=212131ff
+n5 bg=caa4f7ff
+k10
+n0 fg=ccd5f3ff
+n2 fg=ccd5f3a6
+n3 bg=202030ff
+n5 bg=caa5f7ff
+k11
+n3 bg=1f1f2fff
+n5 bg=cba5f7ff
+k12
+n0 fg=cdd6f4ff
+n2 fg=cdd6f4a6
+n5 bg=cba6f7ff
+k13
+n3 bg=1e1e2eff
+k14
+k15
+k16
+k17
+n0 fg=b9c1dfff
+n2 fg=b9c1dfa6
+n3 bg=373847ff
+n5 bg=c099f7ff
+k18
+n0 fg=d1d9f7ff
+n2 fg=d1d9f7a6
+n3 bg=666774ff
+n5 bg=af81f5ff
+k19
+n0 fg=353952ff
+n2 fg=353952a6
+n3 bg=92949eff
+n5 bg=a16cf4ff
+k20
+n0 fg=484c65ff
+n2 fg=484c65a6
+n3 bg=b4b5beff
+n5 bg=975bf2ff
+k21
+n0 fg=4f526cff
+n2 fg=4f526ca6
+n3 bg=cbccd3ff
+n5 bg=914ff1ff
+k22
+n0 fg=535671ff
+n2 fg=535671a6
+n3 bg=d9dbe1ff
+n5 bg=8d47f0ff
+k23
+n0 fg=525670ff
+n2 fg=525670a6
+n3 bg=e2e4e9ff
+n5 bg=8b41f0ff
+k24
+n0 fg=50536dff
+n2 fg=50536da6
+n3 bg=e8eaeeff
+n5 bg=8a3eefff
+k25
+n0 fg=4e516bff
+n2 fg=4e516ba6
+n3 bg=ebedf1ff
+n5 bg=893cefff
+k26
+n0 fg=4d506aff
+n2 fg=4d506aa6
+n3 bg=edeff3ff
+n5 bg=893befff
+k27
+n3 bg=eef0f4ff
+n5 bg=883aefff
+k28
+n0 fg=4c4f69ff
+n2 fg=4c4f69a6
+n5 bg=8839efff
+k29
+n3 bg=eff1f5ff
+k30
+k31
+k32

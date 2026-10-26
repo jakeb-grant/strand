@@ -1,0 +1,315 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-toasts"
+verdict good
+note "docs example (toasts): first recording, its frames looked at on a contact sheet (enter, settle, exit; light and dark)"
+date 2026-10-26
+rev "6dce7f51"
+approver "claude"
+scenario 7beea67b1a1555ba
+seal f09afd356b26125d
+S1 1 - "panel Toasts"
+N0 "|toasts.strand:15:3|[1]#0" "col@toasts.strand:15"
+N1 "|toasts.strand:5:1|#0" "panel@toasts.strand:5"
+N2 "|toasts.strand:9:3|#0" "col@toasts.strand:9"
+N3 "|toasts.strand:24:5|[1]#0" "row@toasts.strand:24"
+N4 "|toasts.strand:25:7|[1]#0" "image@toasts.strand:25"
+N5 "|toasts.strand:26:7|[1]#0" "col@toasts.strand:26"
+N6 "|toasts.strand:27:9|[1]#0" "text(\"Mail · Ada Lovelace\")"
+N7 "|toasts.strand:28:9|[1]#1" "text(\"Lunch at noon?\")"
+N8 "|toasts.strand:30:7|[1]#0" "icon@toasts.strand:30"
+N9 "|toasts.strand:15:3|[2]#1" "col@toasts.strand:15"
+N10 "|toasts.strand:24:5|[2]#0" "row@toasts.strand:24"
+N11 "|toasts.strand:25:7|[2]#0" "image@toasts.strand:25"
+N12 "|toasts.strand:26:7|[2]#0" "col@toasts.strand:26"
+N13 "|toasts.strand:27:9|[2]#0" "text(\"Builds · main passed\")"
+N14 "|toasts.strand:28:9|[2]#1" "text(\"All 412 tests passed.\")"
+N15 "|toasts.strand:30:7|[2]#0" "icon@toasts.strand:30"
+k1 p1
+s1 z=429,192 o=11,0
+n0 x=457 y=12 w=380 h=60 op=0 hid=opacity0 ord=2
+n1 x=37 y=12 w=380 h=180
+n2 x=37 y=12 w=380 h=180 ord=1
+k2
+n0 x=348 op=37 hid=- bg=faf9ffff bd=ffffffff sh=0000004d@311.5,-16.5,453,133/00000033@344.5,9.5,387,67
+n3 x=360 y=24 w=356 h=36 op=37 ord=3
+n4 x=360 y=24 w=36 h=36 op=37 ord=4 im=0,0,36,36@72,72+1a1b20ff
+n5 x=404 y=27 w=290 h=30 op=37 ord=5
+n6 x=404 y=27 w=290 h=15 op=37 txt=S ord=6 ink=404.5,29,119.5,10 fg=1a1b20ff gl=["Mail\u0020·\u0020Ada\u0020Lovelace"]
+n7 x=404 y=42 w=290 h=15 op=37 txt=S ord=7 ink=405,44,88.5,10 fg=1a1b20a6 gl=["Lunch\u0020at\u0020noon?"]
+n8 x=702 y=35 w=14 h=14 op=37 ord=8 im=0,0,14,14@28,28+1a1b20ff
+k3
+n0 x=188 op=98 sh=0000004d@151.5,-16.5,453,133/00000033@184.5,9.5,387,67
+n3 x=200 op=98
+n4 x=200 op=98
+n5 x=244 op=98
+n6 x=244 op=98 ink=244.5,29,119.5,10
+n7 x=244 op=98 ink=245,44,88.5,10
+n8 x=542 op=98
+k4
+n0 x=83 op=151 sh=0000004d@46.5,-16.5,453,133/00000033@79.5,9.5,387,67
+n3 x=95 op=151
+n4 x=95 op=151
+n5 x=139 op=151
+n6 x=139 op=151 ink=139.5,29,119.5,10
+n7 x=139 op=151 ink=140,44,88.5,10
+n8 x=437 op=151
+k5
+n0 x=37 op=190 sh=0000004d@0.5,-16.5,453,133/00000033@33.5,9.5,387,67
+n3 x=49 op=190
+n4 x=49 op=190
+n5 x=93 op=190
+n6 x=93 op=190 ink=93.5,29,119.5,10
+n7 x=93 op=190 ink=94,44,88.5,10
+n8 x=391 op=190
+k6
+n0 x=25 op=216 sh=0000004d@-11.5,-16.5,453,133/00000033@21.5,9.5,387,67
+n3 x=37 op=216
+n4 x=37 op=216
+n5 x=81 op=216
+n6 x=81 op=216 ink=81.5,29,119.5,10
+n7 x=81 op=216 ink=82,44,88.5,10
+n8 x=379 op=216
+k7
+n0 x=27 op=232 sh=0000004d@-9.5,-16.5,453,133/00000033@23.5,9.5,387,67
+n3 x=39 op=232
+n4 x=39 op=232
+n5 x=83 op=232
+n6 x=83 op=232 ink=83.5,29,119.5,10
+n7 x=83 op=232 ink=84,44,88.5,10
+n8 x=381 op=232
+k8
+n0 x=32 op=241 sh=0000004d@-4.5,-16.5,453,133/00000033@28.5,9.5,387,67
+n3 x=44 op=241
+n4 x=44 op=241
+n5 x=88 op=241
+n6 x=88 op=241 ink=88.5,29,119.5,10
+n7 x=88 op=241 ink=89,44,88.5,10
+n8 x=386 op=241
+k9
+n0 x=35 op=247 sh=0000004d@-1.5,-16.5,453,133/00000033@31.5,9.5,387,67
+n3 x=47 op=247
+n4 x=47 op=247
+n5 x=91 op=247
+n6 x=91 op=247 ink=91.5,29,119.5,10
+n7 x=91 op=247 ink=92,44,88.5,10
+n8 x=389 op=247
+k10
+n0 x=37 op=251 sh=0000004d@0.5,-16.5,453,133/00000033@33.5,9.5,387,67
+n3 x=49 op=251
+n4 x=49 op=251
+n5 x=93 op=251
+n6 x=93 op=251 ink=93.5,29,119.5,10
+n7 x=93 op=251 ink=94,44,88.5,10
+n8 x=391 op=251
+k11
+n0 op=253
+n3 op=253
+n4 op=253
+n5 op=253
+n6 op=253
+n7 op=253
+n8 op=253
+k12
+n0 op=254
+n3 op=254
+n4 op=254
+n5 op=254
+n6 op=254
+n7 op=254
+n8 op=254
+k13
+k14
+n0 op=255
+n3 op=255
+n4 op=255
+n5 op=255
+n6 op=255
+n7 op=255
+n8 op=255
+k15
+k62
+n9 x=348 y=80 w=380 h=60 op=37 ord=9 bg=faf9ffff bd=ffffffff sh=0000004d@311.5,51.5,453,133/00000033@344.5,77.5,387,67
+n10 x=360 y=92 w=356 h=36 op=37 ord=10
+n11 x=360 y=92 w=36 h=36 op=37 ord=11 im=0,0,36,36@72,72+1a1b20ff
+n12 x=404 y=95 w=290 h=30 op=37 ord=12
+n13 x=404 y=95 w=290 h=15 op=37 txt=S ord=13 ink=404.5,97,129,12.5 fg=1a1b20ff gl=["Builds\u0020·\u0020main\u0020passed"]
+n14 x=404 y=110 w=290 h=15 op=37 txt=S ord=14 ink=404,112,119,12.5 fg=1a1b20a6 gl=["All\u0020412\u0020tests\u0020passed."]
+n15 x=702 y=103 w=14 h=14 op=37 ord=15 im=0,0,14,14@28,28+1a1b20ff
+k63
+n9 x=188 op=98 sh=0000004d@151.5,51.5,453,133/00000033@184.5,77.5,387,67
+n10 x=200 op=98
+n11 x=200 op=98
+n12 x=244 op=98
+n13 x=244 op=98 ink=244.5,97,129,12.5
+n14 x=244 op=98 ink=244,112,119,12.5
+n15 x=542 op=98
+k64
+n9 x=83 op=151 sh=0000004d@46.5,51.5,453,133/00000033@79.5,77.5,387,67
+n10 x=95 op=151
+n11 x=95 op=151
+n12 x=139 op=151
+n13 x=139 op=151 ink=139.5,97,129,12.5
+n14 x=139 op=151 ink=139,112,119,12.5
+n15 x=437 op=151
+k65
+n9 x=37 op=190 sh=0000004d@0.5,51.5,453,133/00000033@33.5,77.5,387,67
+n10 x=49 op=190
+n11 x=49 op=190
+n12 x=93 op=190
+n13 x=93 op=190 ink=93.5,97,129,12.5
+n14 x=93 op=190 ink=93,112,119,12.5
+n15 x=391 op=190
+k66
+n9 x=25 op=216 sh=0000004d@-11.5,51.5,453,133/00000033@21.5,77.5,387,67
+n10 x=37 op=216
+n11 x=37 op=216
+n12 x=81 op=216
+n13 x=81 op=216 ink=81.5,97,129,12.5
+n14 x=81 op=216 ink=81,112,119,12.5
+n15 x=379 op=216
+k67
+n9 x=27 op=232 sh=0000004d@-9.5,51.5,453,133/00000033@23.5,77.5,387,67
+n10 x=39 op=232
+n11 x=39 op=232
+n12 x=83 op=232
+n13 x=83 op=232 ink=83.5,97,129,12.5
+n14 x=83 op=232 ink=83,112,119,12.5
+n15 x=381 op=232
+k68
+n9 x=32 op=241 sh=0000004d@-4.5,51.5,453,133/00000033@28.5,77.5,387,67
+n10 x=44 op=241
+n11 x=44 op=241
+n12 x=88 op=241
+n13 x=88 op=241 ink=88.5,97,129,12.5
+n14 x=88 op=241 ink=88,112,119,12.5
+n15 x=386 op=241
+k69
+n9 x=35 op=247 sh=0000004d@-1.5,51.5,453,133/00000033@31.5,77.5,387,67
+n10 x=47 op=247
+n11 x=47 op=247
+n12 x=91 op=247
+n13 x=91 op=247 ink=91.5,97,129,12.5
+n14 x=91 op=247 ink=91,112,119,12.5
+n15 x=389 op=247
+k70
+n9 x=37 op=251 sh=0000004d@0.5,51.5,453,133/00000033@33.5,77.5,387,67
+n10 x=49 op=251
+n11 x=49 op=251
+n12 x=93 op=251
+n13 x=93 op=251 ink=93.5,97,129,12.5
+n14 x=93 op=251 ink=93,112,119,12.5
+n15 x=391 op=251
+k71
+n9 op=253
+n10 op=253
+n11 op=253
+n12 op=253
+n13 op=253
+n14 op=253
+n15 op=253
+k72
+n9 op=254
+n10 op=254
+n11 op=254
+n12 op=254
+n13 op=254
+n14 op=254
+n15 op=254
+k73
+k74
+n9 op=255
+n10 op=255
+n11 op=255
+n12 op=255
+n13 op=255
+n14 op=255
+n15 op=255
+k75
+k123
+n0 x=146 h=44 op=218 hid=inert sh=0000004d@109.5,-16.5,453,117/00000033@142.5,9.5,387,51
+n3 x=158 op=218 hid=inert
+n4 x=158 op=218 hid=inert
+n5 x=202 op=218 hid=inert
+n6 x=202 op=218 hid=inert ink=202.5,29,119.5,10
+n7 x=202 op=218 hid=inert ink=203,44,88.5,10
+n8 x=500 op=218 hid=inert
+n9 y=64 sh=0000004d@0.5,35.5,453,133/00000033@33.5,61.5,387,67
+n10 y=76
+n11 y=76
+n12 y=79
+n13 y=79 ink=93.5,81,129,12.5
+n14 y=94 ink=93,96,119,12.5
+n15 y=87
+k124
+n0 x=306 h=22 op=157 sh=0000004d@269.5,-16.5,453,95/00000033@302.5,9.5,387,29
+n3 x=318 y=23 op=157
+n4 x=318 y=23 op=157
+n5 x=362 y=26 op=157
+n6 x=362 y=26 op=157 ink=362.5,28,119.5,10
+n7 x=362 y=41 op=157 ink=363,43,88.5,10
+n8 x=660 y=34 op=157
+n9 y=42 sh=0000004d@0.5,13.5,453,133/00000033@33.5,39.5,387,67
+n10 y=54
+n11 y=54
+n12 y=57
+n13 y=57 ink=93.5,59,129,12.5
+n14 y=72 ink=93,74,119,12.5
+n15 y=65
+k125
+n0 x=411 h=7 op=104 sh=0000004d@374.5,-16.5,453,80/00000033@407.5,9.5,387,14
+n3 x=423 y=15 op=104
+n4 x=423 y=15 op=104
+n5 x=467 y=18 op=104
+n6 x=467 y=18 op=104 ink=467.5,20,119.5,10
+n7 x=467 y=33 op=104 ink=468,35,88.5,10
+n8 x=765 y=26 op=104
+n9 y=25 sh=0000004d@0.5,-3.5,453,133/00000033@33.5,22.5,387,67
+n10 y=37
+n11 y=37
+n12 y=40
+n13 y=40 ink=93.5,42,129,12.5
+n14 y=55 ink=93,57,119,12.5
+n15 y=48
+k126
+n0 x=457 h=0 op=65 bg=- bd=- sh=-
+n3 -
+n4 -
+n5 -
+n6 -
+n7 -
+n8 -
+n9 y=12 ord=3 sh=0000004d@0.5,-16.5,453,133/00000033@33.5,9.5,387,67
+n10 y=24 ord=4
+n11 y=24 ord=5
+n12 y=27 ord=6
+n13 y=27 ord=7 ink=93.5,29,129,12.5
+n14 y=42 ord=8 ink=93,44,119,12.5
+n15 y=35 ord=9
+k127
+n0 x=469 op=39
+k128
+n0 x=467 op=23
+k129
+n0 x=462 op=14
+k130
+n0 x=459 op=8
+k131
+n0 x=457 op=4
+k132
+n0 op=2
+k133
+n0 op=1
+k134
+k135
+n0 op=0
+k136
+n0 hid=opacity0
+k137
+n0 -
+n9 ord=2
+n10 ord=3
+n11 ord=4
+n12 ord=5
+n13 ord=6
+n14 ord=7
+n15 ord=8
