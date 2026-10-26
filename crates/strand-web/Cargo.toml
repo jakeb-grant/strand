@@ -1,0 +1,37 @@
+[package]
+name = "strand-web"
+description = "(wasm spike) The render path in a browser: a config compiled, run on a virtual clock with mock services, its frames as RGBA"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# A cdylib for wasm-bindgen (scripts/wasm/build.sh), an rlib for the
+# native tests (docs/wasm-spike.md).
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+strand-compiler.workspace = true
+strand-core.workspace = true
+strand-render.workspace = true
+strand-scene.workspace = true
+strand-services-schema.workspace = true
+strand-text.workspace = true
+serde_json = "1.0.151"
+# strand-surface's placement code, included by path (src/lib.rs), logs
+# through it.
+log = "0.4"
+
+# The JS boundary: only on wasm, so native builds and tests link none of
+# it. The version is the one Cargo.lock already has (js-sys 0.3.106's).
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm-bindgen = "0.2.129"
+
+[dev-dependencies]
+# The site's example frames (site/media/*.png), decoded to compare.
+png = "0.18"
+
+[lints]
+workspace = true

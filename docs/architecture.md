@@ -556,7 +556,25 @@ strand-site  the documentation site's generator (site/ to target/site):
              strand-compiler, strand-scene, strand-theme (contrast maths)
              and tree-sitter-strand (the highlight queries)
   ^-- nothing
+
+strand-web  (wasm spike, docs/wasm-spike.md) the render path in a
+            browser: a cdylib + rlib on strand-compiler (no `shaders`),
+            strand-core, strand-scene, strand-text, strand-render (no
+            `gpu`, no `eval-hooks`) and strand-services-schema; it
+            includes strand-surface's src/placement.rs by path rather
+            than depending on strand-surface (Wayland); wasm-bindgen
+            only when built for wasm
+  ^-- nothing
 ```
+
+(wasm-spike) On `target_family = "wasm"` the render path names its
+monotonic clock through `strand_scene::time::Instant` (strand-core: its
+own `time::Instant`), which is web-time's `Instant` there and
+`std::time::Instant` natively; so `Renderer::set_now`,
+`Router::set_now`, `Renderer::next_wake` and every other signature that
+takes or returns an `Instant` take web-time's on wasm and std's,
+unchanged, natively. The wall clock stays `std::time::SystemTime` on
+both; `strand_scene::time::system_now()` reads it.
 
 `strand-site` reads `site/SUMMARY.md` for the sidebar, renders
 `site/*.md`, `docs/guide/*.md` and one page per element from the schema
