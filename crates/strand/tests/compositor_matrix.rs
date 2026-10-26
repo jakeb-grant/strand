@@ -2224,6 +2224,13 @@ fn a_window_moves_and_resizes_from_its_own_press() {
     // the pointer then goes on to there plus `by`, and lets go.
     let mut drag =
         |d: &mut Drag, pre: [i64; 4], from: (i64, i64), by: (i64, i64), asks: u32, resize: bool| {
+            // A pixel off first, as a hand never presses where a drag
+            // let go without moving: Hyprland gives the pointer back to
+            // the window it just moved (its leave came after the release)
+            // only on a motion, and a press with no motion before it
+            // reaches no window.
+            let (x, y, w, h) = at(from.0 + 1, from.1);
+            pointer.motion(x, y, w, h);
             let (x, y, w, h) = at(from.0, from.1);
             pointer.press(x, y, w, h);
             d.reads("asks", &asks.to_string());

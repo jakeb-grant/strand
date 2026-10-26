@@ -440,10 +440,11 @@ impl<H: SurfaceHost + 'static> State<H> {
             }
             other => log::debug!("{node:?}: the compositor does not offer {other:?}"),
         }
-        // The press now drives the compositor's move or resize, and its
-        // release is the compositor's (Hyprland sends the window neither
-        // it nor a leave), so for strand the press ends here, as on a
-        // leave: no click, and the next press is a press again.
+        // The press now drives the compositor's move or resize, so for
+        // strand it ends here, as on a leave: sway, niri and labwc send a
+        // leave at once, but Hyprland sends the button's release when the
+        // move ends, on the spot of the window the press was on (it moved
+        // with the pointer), which would end the press there as a click.
         if handed {
             log::debug!("{node:?}: {ask:?} handed to the compositor: the press ends here");
             self.send_input(InputEvent::PointerLeave { surface: id });

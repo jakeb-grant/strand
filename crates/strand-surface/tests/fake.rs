@@ -1989,12 +1989,14 @@ fn a_windows_first_configure_can_wait_for_the_compositors_word() {
 }
 
 /// (integrate) A window's move or resize hands the press that asked it
-/// to the compositor, whose grab then owns the button: Hyprland sends
-/// the window neither its release nor a leave, so strand's press would
-/// stay held and the next press on it would not be one (the compositor
-/// matrix's second press, GitHub run 40295583420). The surface manager
-/// ends the press for strand as a leave does, once per ask, on a
-/// compositor (this fake) that sends nothing back.
+/// to the compositor, whose grab then owns the button: sway, niri and
+/// labwc send the window a leave at once, but Hyprland sends the
+/// button's release when the move ends, on the spot of the window the
+/// press was on (it moved with the pointer), which strand would take as
+/// the end of its press there, a click (the compositor matrix's
+/// Hyprland log, GitHub run 40303477902). The surface manager ends the
+/// press for strand as a leave does, once per ask, on a compositor (this
+/// fake) that sends nothing back.
 #[test]
 fn a_press_handed_to_the_compositor_ends_for_strand() {
     use strand_scene::{Anchor, InputEvent, WindowAsk};
