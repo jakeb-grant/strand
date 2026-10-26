@@ -344,6 +344,11 @@ impl Document {
         }
     }
 
+    /// Whether it is nothing but whitespace (an empty file).
+    pub fn is_blank(&self) -> bool {
+        matches!(self, Document::Text(t) if t.is_empty())
+    }
+
     /// The value at `key` (see the module docs); `None`: not in it.
     pub fn get(&self, key: &[String]) -> Option<Data> {
         match self {
@@ -1396,7 +1401,17 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
     let mut first = true;
     loop {
         // Read (first, or after a change to the file itself).
-        let doc = read_doc_bounded(path).await?;
+        let mut doc = read_doc_bounded(path).await?;
+        if !first && doc.as_ref().is_some_and(Document::is_blank) {
+            // A file emptied by a change is most often a write in
+            // progress (`echo 5 > f`, a plain rewrite: truncated, then
+            // written), which `MODIFY` shows between the two: read it
+            // again once it settles, so a value does not flicker to its
+            // default and back (a file left empty is read empty then).
+            tokio::time::sleep(FILE_SETTLE).await;
+            let _ = watch.drain();
+            doc = read_doc_bounded(path).await?;
+        }
         if first || doc != last {
             let mut state = cx.state().clone();
             match &doc {
@@ -1440,6 +1455,10 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
         }
     }
 }
+
+/// How long a `from file` service waits before taking a file a change
+/// left empty as empty (a truncate-then-write shows empty in between).
+pub const FILE_SETTLE: Duration = Duration::from_millis(50);
 
 /// (services-round) The most files a `from dir` service lists (the
 /// first by name); more are left out, with a warning.

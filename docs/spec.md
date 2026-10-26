@@ -553,7 +553,9 @@ monitor, the keyboard always).
   are checked against the object's introspection. A field written
   `name: type rw = Property` is writable (section 8.1); without `rw` it
   is read-only.
-- `from file path { fields }` reads a file; `from listen command`
+- `from file path { fields }` reads a file, again whenever it changes
+  (a file a change leaves empty is read again 50 ms later, since a
+  rewrite in place truncates before it writes); `from listen command`
   reads the lines a command prints; `from poll command every T` runs a
   command, or reads a file, at an interval. Their fields are checked
   against the schema you declare.
