@@ -1,6 +1,9 @@
-//! `strand-site build [--out DIR]` builds the site (into `target/site`);
-//! `strand-site media <name> <light-run> [<dark-run>]` renders an
-//! example's media from eval runs of its scenario (scripts/site/media.sh).
+//! `strand-site build [--out DIR] [--strand BIN]` builds the site (into
+//! `target/site`), holding its CLI page to `BIN` when given;
+//! `strand-site cli BIN` captures `BIN`'s help for that page
+//! (scripts/site/cli.sh); `strand-site media <name> <light-run>
+//! [<dark-run>]` renders an example's media from eval runs of its
+//! scenario (scripts/site/media.sh).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -11,7 +14,8 @@ fn repo() -> PathBuf {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: strand-site build [--out DIR]\n       strand-site media <name> <light-run-dir> [<dark-run-dir>]"
+        "usage: strand-site build [--out DIR] [--strand BIN]\n       strand-site cli BIN\n       \
+         strand-site twin <name>\n       strand-site media [--check] <name> <light-run-dir> <dark-run-dir>"
     );
     ExitCode::from(2)
 }
@@ -21,15 +25,22 @@ fn main() -> ExitCode {
     let root = repo();
     match args.first().map(String::as_str) {
         Some("build") => {
-            let out = match args.get(1).map(String::as_str) {
-                Some("--out") => match args.get(2) {
-                    Some(o) => PathBuf::from(o),
-                    None => return usage(),
-                },
-                Some(_) => return usage(),
-                None => root.join("target/site"),
-            };
-            match strand_site::build(&root, &out) {
+            let mut out = root.join("target/site");
+            let mut opts = strand_site::Options::default();
+            let mut rest = args[1..].iter();
+            while let Some(a) = rest.next() {
+                match (a.as_str(), rest.next()) {
+                    ("--out", Some(o)) => out = PathBuf::from(o),
+                    ("--strand", Some(b)) => opts.strand = Some(PathBuf::from(b)),
+                    _ => return usage(),
+                }
+            }
+            if opts.strand.is_none() {
+                eprintln!(
+                    "strand-site: the CLI page is not held to a binary (--strand BIN holds it)"
+                );
+            }
+            match strand_site::build_with(&root, &out, &opts) {
                 Ok(r) => {
                     println!("strand-site: {} files in {}", r.pages.len(), out.display());
                     ExitCode::SUCCESS
@@ -43,12 +54,64 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Some("media") => {
-            let (Some(name), Some(light)) = (args.get(1), args.get(2)) else {
+        Some("cli") => {
+            let Some(bin) = args.get(1) else {
                 return usage();
             };
-            let dark = args.get(3).map(PathBuf::from);
-            match strand_site::media::render(&root, name, Path::new(light), dark.as_deref()) {
+            let path = root.join(strand_site::cli::CAPTURE);
+            match strand_site::cli::capture(Path::new(bin)) {
+                Ok(h) => match std::fs::write(&path, strand_site::cli::write(&h)) {
+                    Ok(()) => {
+                        println!("strand-site: {}", strand_site::cli::CAPTURE);
+                        ExitCode::SUCCESS
+                    }
+                    Err(e) => {
+                        eprintln!("error: {}: {e}", path.display());
+                        ExitCode::FAILURE
+                    }
+                },
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Some("media") => {
+            let check = args.get(1).is_some_and(|a| a == "--check");
+            let rest = &args[if check { 2 } else { 1 }..];
+            let [name, light, dark] = rest else {
+                return usage();
+            };
+            let (light, dark) = (Path::new(light), Path::new(dark));
+            let done = if check {
+                strand_site::media::compare(&root, name, light, dark)
+            } else {
+                strand_site::media::render(&root, name, light, dark)
+            };
+            match done {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Some("twin") => {
+            let Some(name) = args.get(1) else {
+                return usage();
+            };
+            let ex = strand_site::example::DIR;
+            let twins = strand_site::example::TWINS;
+            let made = std::fs::read_to_string(root.join(format!("{ex}/{name}.scn")))
+                .map_err(|e| format!("{ex}/{name}.scn: {e}"))
+                .and_then(|t| strand_site::example::dark_twin(name, &t))
+                .and_then(|t| {
+                    std::fs::create_dir_all(root.join(twins))
+                        .map_err(|e| format!("{twins}: {e}"))?;
+                    std::fs::write(root.join(format!("{twins}/{name}.scn")), t)
+                        .map_err(|e| format!("{twins}/{name}.scn: {e}"))
+                });
+            match made {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("error: {e}");

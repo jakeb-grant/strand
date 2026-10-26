@@ -59,6 +59,7 @@ const TEXT_PAIRS: &[(&str, &str)] = &[
     ("ink", "raised-2"),
     ("ink-2", "raised-2"),
     ("ink", "raised-3"),
+    ("ink-2", "raised-3"),
     ("accent", "page"),
     ("accent", "raised"),
     ("on-accent", "accent"),

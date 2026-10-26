@@ -25,6 +25,8 @@ serde_json = "1.0.151"
 png = "0.18.1"
 # Ties each example's media to the scenario text it was rendered from.
 blake3 = "1.8.7"
+# The claims ledger, site/claims.toml (the version strand-core uses).
+toml_edit = "0.25.15"
 
 [lints]
 workspace = true

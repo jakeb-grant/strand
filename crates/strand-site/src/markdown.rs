@@ -28,8 +28,9 @@ use crate::html::{anchor, esc, relative};
 use crate::nav::normalise;
 use crate::{GITHUB_BLOB, example};
 
-/// A same-page `#anchor` to the page it names, if it names one.
-pub type AnchorPage<'a> = &'a dyn Fn(&str) -> Option<String>;
+/// `(source, #anchor)` to the output page the anchor names (the
+/// reference's `elements.md#node` is `reference/elements/node.html`).
+pub type AnchorPages = HashMap<(String, String), String>;
 
 /// What a page is rendered with.
 pub struct Ctx<'a> {
@@ -41,9 +42,11 @@ pub struct Ctx<'a> {
     /// Every published source's output.
     pub outputs: &'a HashMap<String, String>,
     pub hl: &'a Highlighter,
-    /// A same-page `#anchor` that names another page (the reference's
-    /// `#node` is `node.html`).
-    pub anchor_page: Option<AnchorPage<'a>>,
+    /// Anchors of a source that name a page of their own: a link to one
+    /// goes to that page.
+    pub anchor_pages: &'a AnchorPages,
+    /// On a reference page: the types and elements its code links.
+    pub links: Option<&'a crate::reference::Links>,
 }
 
 impl std::fmt::Debug for Ctx<'_> {
@@ -75,6 +78,33 @@ pub struct Rendered {
     pub config: Vec<(String, String)>,
     /// Plain text, for search.
     pub text: String,
+    /// The same text split at each `##` and `###` heading, for search:
+    /// the first part is the page's own, before its first heading.
+    pub sections: Vec<SearchSection>,
+}
+
+/// A part of a page under one heading, as search finds it.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct SearchSection {
+    /// The heading's text and anchor; empty for the page's opening part.
+    pub heading: String,
+    pub id: String,
+    pub text: String,
+}
+
+impl Rendered {
+    /// Text for search, to the part it is in.
+    fn said(&mut self, t: &str) {
+        self.text.push_str(t);
+        self.text.push(' ');
+        if self.sections.is_empty() {
+            self.sections.push(SearchSection::default());
+        }
+        if let Some(s) = self.sections.last_mut() {
+            s.text.push_str(t);
+            s.text.push(' ');
+        }
+    }
 }
 
 fn options() -> Options {
@@ -102,13 +132,16 @@ fn resolve(ctx: &Ctx, dest: &str, r: &mut Rendered, errors: &mut Vec<String>) ->
     }
     let (path, fragment) = dest.split_once('#').unwrap_or((dest, ""));
     if path.is_empty() {
-        if let Some(page) = ctx.anchor_page.and_then(|f| f(fragment)) {
+        if let Some(page) = ctx
+            .anchor_pages
+            .get(&(ctx.source.to_string(), fragment.to_string()))
+        {
             r.links.push(LinkRef {
                 page: page.clone(),
                 fragment: String::new(),
                 from: ctx.source.to_string(),
             });
-            return relative(ctx.out, &page);
+            return relative(ctx.out, page);
         }
         r.links.push(LinkRef {
             page: ctx.out.to_string(),
@@ -130,6 +163,17 @@ fn resolve(ctx: &Ctx, dest: &str, r: &mut Rendered, errors: &mut Vec<String>) ->
     } else {
         format!("#{fragment}")
     };
+    if let Some(page) = ctx
+        .anchor_pages
+        .get(&(target.clone(), fragment.to_string()))
+    {
+        r.links.push(LinkRef {
+            page: page.clone(),
+            fragment: String::new(),
+            from: ctx.source.to_string(),
+        });
+        return relative(ctx.out, page);
+    }
     if let Some(out) = ctx.outputs.get(&target) {
         r.links.push(LinkRef {
             page: out.clone(),
@@ -193,7 +237,16 @@ fn code_block(
             } else if let Some(file) = attrs.get("file") {
                 r.config.push(((*file).to_string(), body.to_string()));
                 code_box(&esc(file), "strand", &html)
-            } else if words.contains(&"fragment") || words.contains(&"signature") {
+            } else if words.contains(&"signature") {
+                match ctx.links {
+                    Some(l) => code_box(
+                        "",
+                        "strand",
+                        &l.signature(body, &mut |p, f| href(ctx, r, p, f)),
+                    ),
+                    None => code_box("", "strand", &html),
+                }
+            } else if words.contains(&"fragment") {
                 code_box("", "strand", &html)
             } else {
                 errors.push(format!(
@@ -264,9 +317,35 @@ fn code_block(
     }
 }
 
+/// The URL from the page to `page#frag` (site paths), recorded as a link
+/// the build checks.
+fn href(ctx: &Ctx, r: &mut Rendered, page: &str, frag: &str) -> String {
+    r.links.push(LinkRef {
+        page: page.to_string(),
+        fragment: frag.to_string(),
+        from: ctx.source.to_string(),
+    });
+    let url = relative(ctx.out, page);
+    if frag.is_empty() {
+        url
+    } else {
+        format!("{url}#{frag}")
+    }
+}
+
+/// The `id="…"`s of raw HTML, which are anchors as headings' are.
+fn html_ids(html: &str, anchors: &mut HashSet<String>) {
+    for rest in html.split(" id=\"").skip(1) {
+        if let Some((id, _)) = rest.split_once('"') {
+            anchors.insert(id.to_string());
+        }
+    }
+}
+
 /// Renders `text`, a page's markdown.
 pub fn render(text: &str, ctx: &Ctx, errors: &mut Vec<String>) -> Rendered {
     let mut r = Rendered::default();
+    let mut in_link = 0usize;
     let mut ids: HashMap<String, usize> = HashMap::new();
     let mut out: Vec<Event> = Vec::new();
     let mut events = Parser::new_ext(text, options()).peekable();
@@ -301,6 +380,13 @@ pub fn render(text: &str, ctx: &Ctx, errors: &mut Vec<String>) -> Rendered {
                 r.anchors.insert(id.clone());
                 r.text.push_str(&plain);
                 r.text.push('\n');
+                if lv == 2 || lv == 3 {
+                    r.sections.push(SearchSection {
+                        heading: plain.clone(),
+                        id: id.clone(),
+                        text: String::new(),
+                    });
+                }
                 let mut h = String::new();
                 let inner: Vec<Event> = inner
                     .into_iter()
@@ -341,11 +427,35 @@ pub fn render(text: &str, ctx: &Ctx, errors: &mut Vec<String>) -> Rendered {
                 out.push(Event::Html(CowStr::from("</div>")));
             }
             Event::Text(t) => {
-                r.text.push_str(&t);
-                r.text.push(' ');
+                r.said(&t);
                 out.push(Event::Text(t));
             }
-            e => out.push(rewrite_link(e, ctx, &mut r, errors)),
+            Event::Code(t) => {
+                r.said(&t);
+                match ctx.links {
+                    Some(l) if in_link == 0 => {
+                        let html = l.code(&t, &mut |p, f| href(ctx, &mut r, p, f));
+                        out.push(Event::InlineHtml(CowStr::from(html)));
+                    }
+                    _ => out.push(Event::Code(t)),
+                }
+            }
+            Event::Html(t) => {
+                html_ids(&t, &mut r.anchors);
+                out.push(Event::Html(t));
+            }
+            Event::InlineHtml(t) => {
+                html_ids(&t, &mut r.anchors);
+                out.push(Event::InlineHtml(t));
+            }
+            e => {
+                match &e {
+                    Event::Start(Tag::Link { .. }) => in_link += 1,
+                    Event::End(TagEnd::Link) => in_link = in_link.saturating_sub(1),
+                    _ => {}
+                }
+                out.push(rewrite_link(e, ctx, &mut r, errors))
+            }
         }
     }
     pulldown_cmark::html::push_html(&mut r.html, out.into_iter());
@@ -418,7 +528,8 @@ mod tests {
             out: "guide/level-1.html",
             outputs: &outputs,
             hl: &hl,
-            anchor_page: None,
+            anchor_pages: &AnchorPages::new(),
+            links: None,
         };
         let mut errors = Vec::new();
         let r = render(text, &ctx, &mut errors);

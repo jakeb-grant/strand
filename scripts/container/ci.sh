@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The CI jobs `lint`, `test`, `budgets`, `acceptance`, `timing` and
-# `eval` (.github/workflows/ci.yml), step by step and one job after the
-# other,
+# The CI jobs `lint`, `test`, `budgets`, `acceptance`, `timing`, `eval`
+# and `site` (.github/workflows/ci.yml), step by step and one job after
+# the other,
 # inside the image of scripts/container/run.sh (run it as
 # `scripts/container/run.sh ci`). Stops at the first failing step and
 # names it. Keep the steps in step with ci.yml.
@@ -31,8 +31,8 @@ FROM=${CI_FROM:-1}
 ONLY=${CI_JOB:-}
 STRICT_TIMING=${STRAND_STRICT_TIMING:-0}
 case "$ONLY" in
-  "" | lint | test | budgets | acceptance | timing | eval) ;;
-  *) echo "CI_JOB=$ONLY: not one of lint, test, budgets, acceptance, timing, eval" >&2; exit 2 ;;
+  "" | lint | test | budgets | acceptance | timing | eval | site) ;;
+  *) echo "CI_JOB=$ONLY: not one of lint, test, budgets, acceptance, timing, eval, site" >&2; exit 2 ;;
 esac
 n=0
 job=setup
@@ -225,6 +225,20 @@ step "cargo test (eval/) and test-report-view.sh" 60 bash scripts/eval/ci.sh 4
 step "strand-eval refs-check and check --gate (curated and regressions)" 30 bash scripts/eval/ci.sh 5
 step "the effect matrix at 60 and 144 Hz against its references" 30 bash scripts/eval/ci.sh 6
 step "a glitch report replayed end to end (test-report-view.sh --e2e)" 30 bash scripts/eval/ci.sh 7
+
+# The documentation site (crates/strand-site, docs/architecture.md
+# "strand-site"): the build, with its CLI page held to the strand binary;
+# strand-site's tests; the examples' media drawn again from their
+# scenarios and compared with the committed ones. GitHub's site job also
+# loads every page in a browser (scripts/site/shots.sh --all), which runs
+# on the host's Docker, not in this image: run it on the host after this.
+job=site
+step "strand-site build --strand (the CLI page held to the binary)" 30 bash -c '
+  cargo build -q -p strand --bin strand &&
+  cargo run -q -p strand-site -- build --strand "${CARGO_TARGET_DIR:-target}/debug/strand"'
+step "cargo test -p strand-site" 30 cargo test -p strand-site
+step "scripts/site/media.sh --check (the examples against the renderer)" 30 \
+  env SITE_DIRECT=1 bash scripts/site/media.sh --check
 
 echo
 # The compile cache's hits and misses (run.sh's sccache), when it ran.

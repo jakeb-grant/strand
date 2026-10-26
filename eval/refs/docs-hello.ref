@@ -1,0 +1,28 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-hello"
+verdict good
+note "docs-gen: initial references of the site's examples (eval/scenarios/docs and their dark twins); every frame is pixel for pixel the media committed at c6d470df, all other checks pass"
+date 2026-10-26
+rev "c6d470df+changes"
+approver "claude"
+scenario 67e0a13d3c736af1
+seal 06e01a203a559b50
+S1 0 - "bar Top"
+N0 "|shell.strand:1:1|[Mock | DP-1]#0" "bar@shell.strand:1"
+N1 "|shell.strand:3:3|[Mock | DP-1]#0" "split@shell.strand:3"
+N2 "|shell.strand:4:14|[Mock | DP-1]#0" "text(\"README.md — Strand\")"
+N3 "|shell.strand:4:5|[Mock | DP-1]#0" "start@shell.strand:4"
+N4 "|shell.strand:5:14|[Mock | DP-1]#0" "text(\"09:41\")"
+N5 "|shell.strand:5:5|[Mock | DP-1]#0" "center@shell.strand:5"
+N6 "|shell.strand:6:14|[Mock | DP-1]#0" "text(\"82%\")"
+N7 "|shell.strand:6:5|[Mock | DP-1]#0" "end@shell.strand:6"
+k0 p1
+s1 z=640,32
+n0 x=0 y=0 w=640 h=32 bg=faf9ffff
+n1 x=0 y=0 w=640 h=32 ord=1
+n2 x=0 y=9 w=136 h=15 txt=S ord=3 ink=1,11,134.5,10 fg=1a1b20ff gl=["README.md\u0020—\u0020Strand"]
+n3 x=0 y=0 w=304 h=32 ord=2
+n4 x=304 y=9 w=33 h=15 txt=S ord=5 ink=304.5,11,31.5,10 fg=1a1b20ff gl=["09:41"]
+n5 x=304 y=0 w=33 h=32 ord=4
+n6 x=613 y=9 w=27 h=15 txt=S ord=7 ink=613.5,11,25.5,10 fg=1a1b20ff gl=["82%"]
+n7 x=337 y=0 w=303 h=32 ord=6

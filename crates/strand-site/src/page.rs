@@ -1,7 +1,7 @@
 //! The pages' HTML around their content: the top bar, the sidebar, the
 //! page's contents and the pager. Plain HTML that reads with scripts off;
-//! `site.js` adds the theme switch, the copy buttons, the menu on narrow
-//! screens and the example players.
+//! `site.js` adds the theme switch, the search, the copy buttons, the
+//! menu on narrow screens and the example players.
 
 use std::fmt::Write as _;
 
@@ -82,9 +82,17 @@ fn topbar(o: &mut String, out: &str, current: &str) {
         "Reference",
         "reference",
     );
+    // The search field works only with the script, which shows it.
     let _ = writeln!(
         o,
-        "</nav><div class=\"top-end\"><a class=\"gh\" href=\"{GITHUB}\">GitHub</a>\
+        "</nav><div class=\"top-end\"><div class=\"search\" role=\"search\">\
+         <svg class=\"search-icon\" viewBox=\"0 0 20 20\" aria-hidden=\"true\"><circle cx=\"8.5\" cy=\"8.5\" r=\"5.5\"/>\
+         <path d=\"m13 13 4 4\"/></svg><input type=\"search\" class=\"search-input\" id=\"search\" \
+         placeholder=\"Search\" aria-label=\"Search the documentation\" autocomplete=\"off\" spellcheck=\"false\" \
+         role=\"combobox\" aria-expanded=\"false\" aria-controls=\"search-results\" aria-autocomplete=\"list\">\
+         <kbd class=\"search-key\" aria-hidden=\"true\">/</kbd>\
+         <div class=\"search-results\" id=\"search-results\" role=\"listbox\" aria-label=\"Search results\" hidden></div></div>\
+         <a class=\"gh\" href=\"{GITHUB}\">GitHub</a>\
          <button type=\"button\" class=\"theme\" aria-label=\"Theme: system\" title=\"Theme\">\
          <svg viewBox=\"0 0 20 20\" aria-hidden=\"true\"><circle cx=\"10\" cy=\"10\" r=\"6.5\"/>\
          <path class=\"theme-half\" d=\"M10 3.5a6.5 6.5 0 0 1 0 13z\"/></svg></button></div></div></header>"

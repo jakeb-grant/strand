@@ -1,11 +1,14 @@
 // The Strand site's script. Every page reads without it; it adds the
-// theme switch, copy buttons, the sidebar on narrow screens, the bands'
-// entrance and the example players.
+// theme switch, the search, copy buttons, the sidebar on narrow screens,
+// the bands' entrance and the example players.
 (function () {
   "use strict";
   var root = document.documentElement;
   root.classList.add("js");
   var reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  // The site's root, from this script's own URL (assets/site.js): it
+  // works from disk as from a server.
+  var siteRoot = document.currentScript ? new URL("../", document.currentScript.src) : new URL("./", location.href);
 
   // ---- Theme: system, light, dark, in turn. A choice that cannot be
   // stored is still made for this page.
@@ -42,6 +45,209 @@
         menu.setAttribute("aria-expanded", "false");
         menu.focus();
       }
+    });
+  }
+
+  // ---- Search: the index (search-index.js, written by the build) is a
+  // script loaded the first time the reader searches, since a fetch of a
+  // file fails on file://. Every word typed must be found; a heading's
+  // match counts most, then the page's title, then the text.
+  var field = document.getElementById("search");
+  var list = document.getElementById("search-results");
+  if (field && list) setupSearch(field, list);
+
+  function setupSearch(field, list) {
+    var index = null;
+    var state = "idle"; // idle, loading, ready, failed
+    var hits = [];
+    var active = -1;
+
+    function load() {
+      if (state !== "idle") return;
+      state = "loading";
+      var s = document.createElement("script");
+      s.src = new URL("search-index.js", siteRoot).href;
+      s.onload = function () {
+        index = (window.STRAND_SEARCH || []).map(function (e) {
+          return { e: e, p: e.p.toLowerCase(), h: e.h.toLowerCase(), x: e.x.toLowerCase() };
+        });
+        state = "ready";
+        update();
+      };
+      s.onerror = function () {
+        state = "failed";
+        update();
+      };
+      document.head.appendChild(s);
+    }
+
+    function esc(t) {
+      return t.replace(/[&<>"']/g, function (c) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+      });
+    }
+
+    // `text` with each word marked, escaped.
+    function marked(text, words) {
+      var lower = text.toLowerCase();
+      var spans = [];
+      words.forEach(function (w) {
+        var at = 0;
+        while ((at = lower.indexOf(w, at)) !== -1) {
+          spans.push([at, at + w.length]);
+          at += w.length;
+        }
+      });
+      spans.sort(function (a, b) { return a[0] - b[0]; });
+      var out = "";
+      var pos = 0;
+      spans.forEach(function (sp) {
+        if (sp[0] < pos) return;
+        out += esc(text.slice(pos, sp[0])) + "<mark>" + esc(text.slice(sp[0], sp[1])) + "</mark>";
+        pos = sp[1];
+      });
+      return out + esc(text.slice(pos));
+    }
+
+    // The text around the first word found, cut at spaces.
+    function snippet(e, x, words) {
+      var at = -1;
+      for (var i = 0; i < words.length && at < 0; i++) at = x.indexOf(words[i]);
+      if (at < 0) at = 0;
+      var from = Math.max(0, at - 50);
+      var to = Math.min(e.x.length, at + 110);
+      if (from > 0) from = e.x.indexOf(" ", from) + 1 || from;
+      var sp = e.x.lastIndexOf(" ", to);
+      if (to < e.x.length && sp > at) to = sp;
+      return (from > 0 ? "… " : "") + marked(e.x.slice(from, to), words) + (to < e.x.length ? " …" : "");
+    }
+
+    function score(item, words) {
+      var total = 0;
+      for (var i = 0; i < words.length; i++) {
+        var w = words[i];
+        var s = 0;
+        var h = item.h.indexOf(w);
+        if (h === 0 || (h > 0 && /\W/.test(item.h[h - 1]))) s += 12;
+        else if (h > 0) s += 8;
+        if (item.p.indexOf(w) >= 0) s += 5;
+        // Each time the text says it counts, up to five.
+        for (var at = item.x.indexOf(w), n = 0; at >= 0 && n < 5; at = item.x.indexOf(w, at + w.length), n++) s += 1;
+        if (!s) return 0;
+        total += s;
+      }
+      // The words as typed, together.
+      var phrase = words.join(" ");
+      if (words.length > 1 && (item.h + " " + item.x).indexOf(phrase) >= 0) total += 6;
+      // A page's own entry, then shorter headings, first.
+      return total + (item.h ? 0 : 0.5) - item.h.length / 1000;
+    }
+
+    function render(q) {
+      var html = "";
+      if (state === "loading") html = '<p class="search-note">Loading the index…</p>';
+      else if (state === "failed") html = '<p class="search-note">The search index could not be loaded.</p>';
+      else if (!hits.length) html = '<p class="search-note">Nothing found for “' + esc(q) + '”.</p>';
+      else {
+        var words = q.toLowerCase().split(/\s+/).filter(Boolean);
+        hits.forEach(function (it, i) {
+          var e = it.e;
+          html += '<a class="search-hit" role="option" id="search-hit-' + i + '" aria-selected="' + (i === active) +
+            '" href="' + esc(new URL(e.u, siteRoot).href) + '">' +
+            '<span class="search-hit-title">' + marked(e.h || e.p, words) + "</span>" +
+            (e.h ? '<span class="search-hit-page">' + esc(e.p) + "</span>" : "") +
+            (e.x ? '<span class="search-hit-text">' + snippet(e, it.x, words) + "</span>" : "") +
+            "</a>";
+        });
+      }
+      list.innerHTML = html;
+      list.hidden = false;
+      field.setAttribute("aria-expanded", "true");
+      setActive(active);
+    }
+
+    function update() {
+      var q = field.value.trim();
+      if (!q) return close();
+      load();
+      hits = [];
+      if (state === "ready") {
+        var words = q.toLowerCase().split(/\s+/).filter(Boolean);
+        var scored = [];
+        index.forEach(function (it) {
+          var s = score(it, words);
+          if (s > 0) scored.push([s, it]);
+        });
+        scored.sort(function (a, b) { return b[0] - a[0]; });
+        hits = scored.slice(0, 10).map(function (s) { return s[1]; });
+      }
+      active = hits.length ? 0 : -1;
+      render(q);
+    }
+
+    function setActive(i) {
+      var items = list.querySelectorAll(".search-hit");
+      active = items.length ? Math.max(0, Math.min(items.length - 1, i)) : -1;
+      Array.prototype.forEach.call(items, function (el, n) {
+        el.setAttribute("aria-selected", n === active ? "true" : "false");
+      });
+      if (active >= 0) {
+        field.setAttribute("aria-activedescendant", items[active].id);
+        items[active].scrollIntoView({ block: "nearest" });
+      } else field.removeAttribute("aria-activedescendant");
+    }
+
+    function close() {
+      list.hidden = true;
+      list.innerHTML = "";
+      hits = [];
+      active = -1;
+      field.setAttribute("aria-expanded", "false");
+      field.removeAttribute("aria-activedescendant");
+    }
+
+    field.addEventListener("focus", function () {
+      load();
+      if (field.value.trim()) update();
+    });
+    field.addEventListener("input", update);
+    field.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        if (list.hidden) return update();
+        e.preventDefault();
+        setActive(active + (e.key === "ArrowDown" ? 1 : -1));
+      } else if (e.key === "Enter") {
+        var items = list.querySelectorAll(".search-hit");
+        if (items[active]) {
+          e.preventDefault();
+          location.href = items[active].href;
+        }
+      } else if (e.key === "Escape") {
+        e.stopPropagation();
+        if (!list.hidden) close();
+        else {
+          field.value = "";
+          field.blur();
+        }
+      }
+    });
+    // A press on a result keeps the field focused until the link opens.
+    list.addEventListener("mousedown", function (e) { e.preventDefault(); });
+    list.addEventListener("mousemove", function (e) {
+      var hit = e.target.closest && e.target.closest(".search-hit");
+      if (!hit) return;
+      var items = Array.prototype.indexOf.call(list.querySelectorAll(".search-hit"), hit);
+      if (items !== active) setActive(items);
+    });
+    field.addEventListener("blur", close);
+    // "/" anywhere but in a field goes to the search.
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+      var t = e.target;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      e.preventDefault();
+      field.focus();
+      field.select();
     });
   }
 
@@ -113,7 +319,9 @@
     var controls = fig.querySelector(".ex-controls");
     if (!controls) return;
     var t = controls.dataset.t.split(",").map(Number);
-    var sprites = Array.prototype.map.call(fig.querySelectorAll(".ex-sprite"), function (el) {
+    // Each mode's moving part: a strip of every distinct frame's, over
+    // the still first frame.
+    var sprites = Array.prototype.map.call(fig.querySelectorAll(".ex-moving"), function (el) {
       return { el: el, count: Number(el.dataset.count), ticks: el.dataset.ticks.split(",").map(Number) };
     });
     var scrub = fig.querySelector(".ex-scrub");

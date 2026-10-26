@@ -1,0 +1,204 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-springs"
+verdict good
+note "docs-gen: initial references of the site's examples (eval/scenarios/docs and their dark twins); every frame is pixel for pixel the media committed at c6d470df, all other checks pass"
+date 2026-10-26
+rev "c6d470df+changes"
+approver "claude"
+scenario 9c8af1a94be9fd91
+seal e58ec50ad22c3797
+S1 0 - "bar Springs"
+N0 "bouncy|shell.strand:20:9|[Mock | DP-1]#0" "box#bouncy"
+N1 "spatial|shell.strand:10:9|[Mock | DP-1]#0" "box#spatial"
+N2 "timed|shell.strand:30:9|[Mock | DP-1]#0" "box#timed"
+N3 "|shell.strand:17:5|[Mock | DP-1]#1" "row@shell.strand:17"
+N4 "|shell.strand:18:7|[Mock | DP-1]#0" "text(\"bouncy\")"
+N5 "|shell.strand:19:7|[Mock | DP-1]#0" "box@shell.strand:19"
+N6 "|shell.strand:27:5|[Mock | DP-1]#2" "row@shell.strand:27"
+N7 "|shell.strand:28:7|[Mock | DP-1]#0" "text(\"300ms\")"
+N8 "|shell.strand:29:7|[Mock | DP-1]#0" "box@shell.strand:29"
+N9 "|shell.strand:3:1|[Mock | DP-1]#0" "bar@shell.strand:3"
+N10 "|shell.strand:6:3|[Mock | DP-1]#0" "col@shell.strand:6"
+N11 "|shell.strand:7:5|[Mock | DP-1]#0" "row@shell.strand:7"
+N12 "|shell.strand:8:7|[Mock | DP-1]#0" "text(\"default\")"
+N13 "|shell.strand:9:7|[Mock | DP-1]#0" "box@shell.strand:9"
+k0 p1
+s1 z=360,128
+n0 x=96 y=54 w=24 h=24 ord=9 bg=455e91ff
+n1 x=96 y=16 w=24 h=24 ord=5 bg=455e91ff
+n2 x=96 y=92 w=24 h=24 ord=13 bg=455e91ff
+n3 x=20 y=54 w=320 h=24 ord=6
+n4 x=20 y=59 w=64 h=15 txt=S ord=7 ink=20.5,61,41.5,12.5 fg=1a1b20a6 gl=["bouncy"]
+n5 x=96 y=54 w=220 h=24 ord=8 bg=e6e5ebff
+n6 x=20 y=92 w=320 h=24 ord=10
+n7 x=20 y=97 w=64 h=15 txt=S ord=11 ink=20,99,39,10 fg=1a1b20a6 gl=["300ms"]
+n8 x=96 y=92 w=220 h=24 ord=12 bg=e6e5ebff
+n9 x=0 y=0 w=360 h=128 bg=faf9ffff
+n10 x=0 y=0 w=360 h=128 ord=1
+n11 x=20 y=16 w=320 h=24 ord=2
+n12 x=20 y=21 w=64 h=15 txt=S ord=3 ink=20.5,23,38.5,10 fg=1a1b20a6 gl=["default"]
+n13 x=96 y=16 w=220 h=24 ord=4 bg=e6e5ebff
+k1
+n0 x=105
+n1 x=147
+n2 x=103
+k2
+n0 x=126
+n1 x=221
+n2 x=135
+k3
+n0 x=152
+n1 x=270
+n2 x=176
+k4
+n0 x=180
+n1 x=292
+n2 x=204
+k5
+n0 x=207
+n1 x=297
+n2 x=224
+k6
+n0 x=230
+n2 x=239
+k7
+n0 x=249
+n1 x=294
+n2 x=251
+k8
+n0 x=265
+n1 x=293
+n2 x=261
+k9
+n0 x=277
+n1 x=292
+n2 x=268
+k10
+n0 x=285
+n2 x=274
+k11
+n0 x=291
+n2 x=279
+k12
+n0 x=295
+n2 x=283
+k13
+n0 x=297
+n2 x=286
+k14
+n2 x=288
+k15
+n0 x=298
+n2 x=290
+k16
+n0 x=297
+n2 x=291
+k17
+n0 x=296
+n2 x=292
+k18
+k19
+n0 x=295
+k20
+n0 x=294
+k21
+k22
+n0 x=293
+k23
+k24
+n0 x=292
+k25
+k26
+k27
+k28
+k29
+k30
+k31
+k32
+k33
+k34
+k35
+k36
+k37
+k38
+n0 x=283
+n1 x=241
+n2 x=285
+k39
+n0 x=262
+n1 x=167
+n2 x=253
+k40
+n0 x=236
+n1 x=118
+n2 x=212
+k41
+n0 x=208
+n1 x=96
+n2 x=184
+k42
+n0 x=181
+n1 x=91
+n2 x=164
+k43
+n0 x=158
+n2 x=149
+k44
+n0 x=139
+n1 x=94
+n2 x=137
+k45
+n0 x=123
+n1 x=95
+n2 x=127
+k46
+n0 x=111
+n1 x=96
+n2 x=120
+k47
+n0 x=103
+n2 x=114
+k48
+n0 x=97
+n2 x=109
+k49
+n0 x=93
+n2 x=105
+k50
+n0 x=91
+n2 x=102
+k51
+n2 x=100
+k52
+n0 x=90
+n2 x=98
+k53
+n0 x=91
+n2 x=97
+k54
+n0 x=92
+n2 x=96
+k55
+k56
+n0 x=93
+k57
+n0 x=94
+k58
+k59
+n0 x=95
+k60
+k61
+n0 x=96
+k62
+k63
+k64
+k65
+k66
+k67
+k68
+k69
+k70
+k71
+k72
+k73
+k74
