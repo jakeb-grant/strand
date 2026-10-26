@@ -1987,3 +1987,76 @@ fn a_windows_first_configure_can_wait_for_the_compositors_word() {
     let state = mgr.state().toplevel_state(WIN).expect("configured");
     assert!(state.maximized && state.sized == (true, true));
 }
+
+/// (integrate) A window's move or resize hands the press that asked it
+/// to the compositor, whose grab then owns the button: Hyprland sends
+/// the window neither its release nor a leave, so strand's press would
+/// stay held and the next press on it would not be one (the compositor
+/// matrix's second press, GitHub run 40295583420). The surface manager
+/// ends the press for strand as a leave does, once per ask, on a
+/// compositor (this fake) that sends nothing back.
+#[test]
+fn a_press_handed_to_the_compositor_ends_for_strand() {
+    use strand_scene::{Anchor, InputEvent, WindowAsk};
+    const BAR: NodeId = NodeId::new(1, 0);
+    const WIN: NodeId = NodeId::new(3, 0);
+    let fake = Fake::builder()
+        .toplevel_list(false)
+        .surfaces(SurfaceGlobals::default())
+        .seats(1)
+        .start();
+    let mut mgr = manager(&fake);
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(common::bar_spec("Top", 36.0)));
+    mgr.state_mut().apply_surface_change(
+        WIN,
+        SurfaceChange::Created(common::window_spec("Probe", "Probe", 400.0, 300.0)),
+    );
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            !s.surfaces_of(WIN).is_empty()
+                && s.surfaces_of(BAR)
+                    .first()
+                    .and_then(|id| s.surface(*id))
+                    .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "the bar maps and the window is made");
+    let win = mgr.state().surfaces_of(WIN)[0];
+    // A press (a key's: the fake has no pointer) gives the seat a serial.
+    fake.cmd(Cmd::KeyboardEnter("strand-Top"));
+    fake.cmd(Cmd::Key(1, true));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host()
+                .input
+                .iter()
+                .any(|e| matches!(e, InputEvent::Key { .. }))
+        })
+        .unwrap();
+    assert!(ok, "the press reached the bar");
+    for (ask, said) in [
+        (WindowAsk::Move, "move "),
+        (WindowAsk::Resize(Anchor::BottomRight), "resize "),
+    ] {
+        let n = mgr.state().host().input.len();
+        mgr.state_mut().window_ask(WIN, ask, None);
+        let asked = |fake: &Fake| {
+            fake.windows("strand-Probe")
+                .first()
+                .and_then(|w| w.toplevel.as_ref())
+                .is_some_and(|t| t.asks.iter().any(|a| a.starts_with(said)))
+        };
+        // The fake answers an ask with nothing, so it is watched itself.
+        let deadline = Instant::now() + WAIT;
+        while !asked(&fake) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(asked(&fake), "the compositor was asked to {said}");
+        let leaves = mgr.state().host().input[n..]
+            .iter()
+            .filter(|e| matches!(e, InputEvent::PointerLeave { surface } if *surface == win))
+            .count();
+        assert_eq!(leaves, 1, "{ask:?} ends strand's press once");
+    }
+}

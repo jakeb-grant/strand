@@ -401,6 +401,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         let st = t.state;
         let w = &t.window;
+        let mut handed = false;
         match ask {
             WindowAsk::Move | WindowAsk::Resize(_) => {
                 let Some((seat, last)) = seat else {
@@ -410,10 +411,16 @@ impl<H: SurfaceHost + 'static> State<H> {
                 let serial = press.unwrap_or(last);
                 match ask {
                     WindowAsk::Resize(a) => match resize_edge(a) {
-                        Some(edge) => w.resize(&seat, serial, edge),
+                        Some(edge) => {
+                            w.resize(&seat, serial, edge);
+                            handed = true;
+                        }
                         None => log::debug!("{node:?}: a resize from the centre does nothing"),
                     },
-                    _ => w.move_(&seat, serial),
+                    _ => {
+                        w.move_(&seat, serial);
+                        handed = true;
+                    }
                 }
             }
             WindowAsk::Minimize if st.can_minimize => w.set_minimized(),
@@ -432,6 +439,13 @@ impl<H: SurfaceHost + 'static> State<H> {
                 }
             }
             other => log::debug!("{node:?}: the compositor does not offer {other:?}"),
+        }
+        // The press now drives the compositor's move or resize, and its
+        // release is the compositor's (Hyprland sends the window neither
+        // it nor a leave), so for strand the press ends here, as on a
+        // leave: no click, and the next press is a press again.
+        if handed {
+            self.send_input(InputEvent::PointerLeave { surface: id });
         }
         if let Err(e) = self.conn.flush() {
             log::warn!("flushing the Wayland connection failed: {e}");

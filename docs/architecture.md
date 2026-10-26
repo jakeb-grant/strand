@@ -5451,7 +5451,9 @@ and the connection):
   `close` is the surface's `InputEvent::ClickAway` (after
   `SurfaceHost::window_closed`), as is `WindowAsk::Close`.
   `State::window_ask` sends move and resize with the
-  diff's press serial (else the seat's last), and minimize, maximize
+  diff's press serial (else the seat's last), then hands the host an
+  `InputEvent::PointerLeave` of the window (the press is the
+  compositor's grab now, whose release Hyprland never sends it), and minimize, maximize
   and fullscreen (toggles) only where `wm_capabilities` lists them; a
   maximize, fullscreen or minimize asked of a window its spec opens but
   not made yet waits in `State::window_asks` and is asked at its
