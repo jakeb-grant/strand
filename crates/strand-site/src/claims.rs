@@ -204,27 +204,63 @@ pub fn check_source(root: &Path, source: &str) -> Option<String> {
     }
 }
 
-/// Why `proof` names a test that is not there, when it names one
-/// (`path.rs::name`, the test's function); any other proof is a note.
+/// Why `proof` names a test that is not there, when it names any: every
+/// `path.rs::name` in it (`path.rs::tests::name` too) must be a function
+/// in that file. A bare `file.rs` is next to the path named before it in
+/// the same proof. Words around them (`; ran in the container`, `(the
+/// file is written)`) are notes.
 pub fn check_proof(root: &Path, proof: &str) -> Option<String> {
-    let (path, name) = proof.split_once("::")?;
-    if !path.ends_with(".rs") || path.contains(char::is_whitespace) {
-        return None;
+    let path_char = |c: char| c.is_ascii_alphanumeric() || "_./-".contains(c);
+    let ident_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut dir: Option<String> = None;
+    let mut rest = proof;
+    let mut at = 0;
+    while let Some(i) = rest.find("::") {
+        let before = &proof[..at + i];
+        let start = before
+            .char_indices()
+            .rev()
+            .find(|&(_, c)| !path_char(c))
+            .map_or(0, |(j, c)| j + c.len_utf8());
+        let path = &before[start..];
+        let after = &rest[i + 2..];
+        at += i + 2;
+        rest = after;
+        if !path.ends_with(".rs") {
+            continue;
+        }
+        // The function: the last of `a::b::name`.
+        let mut chain = after;
+        let name = loop {
+            let end = chain.find(|c| !ident_char(c)).unwrap_or(chain.len());
+            match chain[end..].strip_prefix("::") {
+                Some(more) if more.starts_with(ident_char) => chain = more,
+                _ => break &chain[..end],
+            }
+        };
+        let full = match (&dir, path.contains('/')) {
+            (Some(d), false) => format!("{d}/{path}"),
+            _ => path.to_string(),
+        };
+        dir = full.rsplit_once('/').map(|(d, _)| d.to_string());
+        let text = match std::fs::read_to_string(root.join(&full)) {
+            Ok(t) => t,
+            Err(_) => return Some(format!("proof `{proof}`: {full} does not exist")),
+        };
+        let found = !name.is_empty()
+            && text.lines().any(|l| {
+                let l = l.trim_start();
+                let l = l.strip_prefix("pub ").unwrap_or(l);
+                let l = l.strip_prefix("async ").unwrap_or(l);
+                l.strip_prefix("fn ")
+                    .and_then(|r| r.strip_prefix(name))
+                    .is_some_and(|r| r.starts_with('(') || r.starts_with('<'))
+            });
+        if !found {
+            return Some(format!("proof `{proof}`: {full} has no `fn {name}`"));
+        }
     }
-    let name = name.rsplit("::").next().unwrap_or(name);
-    let text = match std::fs::read_to_string(root.join(path)) {
-        Ok(t) => t,
-        Err(_) => return Some(format!("proof `{proof}`: {path} does not exist")),
-    };
-    let found = text.lines().any(|l| {
-        let l = l.trim_start();
-        let l = l.strip_prefix("pub ").unwrap_or(l);
-        let l = l.strip_prefix("async ").unwrap_or(l);
-        l.strip_prefix("fn ")
-            .and_then(|r| r.strip_prefix(name))
-            .is_some_and(|r| r.starts_with('(') || r.starts_with('<'))
-    });
-    (!found).then(|| format!("proof `{proof}`: {path} has no `fn {name}`"))
+    None
 }
 
 /// Every problem with the ledger at `root`: entries, pages, texts,
@@ -359,6 +395,21 @@ mod tests {
         ));
         assert_eq!(e.len(), 1, "{e:?}");
         assert!(e[0].contains("no `fn undershoots`"), "{e:?}");
+    }
+
+    #[test]
+    fn every_test_a_proof_names_is_checked_and_notes_around_them_are_not() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let here = "crates/strand-site/src/claims.rs";
+        let ok = format!(
+            "{here}::tests::a_proof_naming_a_missing_test_fails (a note); \\
+             claims.rs::whitespace_runs_count_as_one_space; ran in the container"
+        );
+        assert_eq!(check_proof(&root, &ok), None);
+        let bad = format!("{here}::a_proof_naming_a_missing_test_fails; claims.rs::nowhere (note)");
+        let e = check_proof(&root, &bad).unwrap();
+        assert!(e.contains("claims.rs has no `fn nowhere`"), "{e}");
+        assert_eq!(check_proof(&root, "seen on the page, 2026-10-26"), None);
     }
 
     #[test]

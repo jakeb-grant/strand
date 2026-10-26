@@ -301,7 +301,20 @@ fn code_block(
                     ));
                 }
                 let m = example::media(ctx.root, &s)?;
-                Ok(example::figure(&s, &m, ctx.hl, &crate::html::root(ctx.out)))
+                // The page already shows these very files: say so, not
+                // them again.
+                let shown = s.files.iter().all(|(f, b)| {
+                    r.config
+                        .iter()
+                        .any(|(pf, pb)| pf == f && pb.trim_end() == b.trim_end())
+                });
+                Ok(example::figure(
+                    &s,
+                    &m,
+                    ctx.hl,
+                    &crate::html::root(ctx.out),
+                    !shown,
+                ))
             }) {
                 Ok(html) => html,
                 Err(e) => {

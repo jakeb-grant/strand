@@ -379,25 +379,40 @@
       }
     }
     play.addEventListener("click", function () {
+      if (!playing) begin();
       if (!playing && k >= t.length - 1) show(0);
       setPlaying(!playing);
     });
     fig.querySelectorAll(".ex-step").forEach(function (b) {
       b.addEventListener("click", function () {
+        fresh = false;
         setPlaying(false);
         show(k + Number(b.dataset.step));
       });
     });
     scrub.addEventListener("input", function () {
+      fresh = false;
       setPlaying(false);
       show(Number(scrub.value));
     });
-    show(0);
+    // Before it plays, the scene as its first step left it; playing
+    // starts from the beginning.
+    var fresh = true;
+    show(Number(controls.dataset.poster || 0));
+    function begin() {
+      if (fresh) {
+        fresh = false;
+        show(0);
+      }
+    }
     // It plays while it is on screen, unless motion is reduced.
     if (!reduced.matches && "IntersectionObserver" in window) {
       var seen = new IntersectionObserver(function (entries) {
         entries.forEach(function (e) {
-          if (e.isIntersecting && !playing && !fig.dataset.touched) setPlaying(true);
+          if (e.isIntersecting && !playing && !fig.dataset.touched) {
+            begin();
+            setPlaying(true);
+          }
           if (!e.isIntersecting && playing) setPlaying(false);
         });
       }, { threshold: 0.4 });

@@ -348,14 +348,22 @@ fn curve(o: &mut String, v: &Value) {
             continue;
         };
         let xx = x(*ms);
+        // A long step (a whole JSON record) is cut short; all of it is
+        // the label's title.
+        let short: String = if text.chars().count() > MARK_CHARS {
+            text.chars().take(MARK_CHARS - 1).collect::<String>() + "…"
+        } else {
+            text.to_string()
+        };
         let _ = write!(
             o,
             "<line class=\"ex-mark\" x1=\"{xx:.1}\" x2=\"{xx:.1}\" y1=\"{pad_t}\" y2=\"{}\"/>\
-             <text class=\"ex-axis ex-mark-text\" x=\"{:.1}\" y=\"{}\">{}</text>",
+             <text class=\"ex-axis ex-mark-text\" x=\"{:.1}\" y=\"{}\"><title>{}</title>{}</text>",
             base + 6.0,
             xx + 4.0,
             base + 20.0,
             esc(text),
+            esc(&short),
         );
     }
     let _ = write!(
@@ -390,10 +398,33 @@ fn fmt_num(v: f64) -> String {
     }
 }
 
-/// The example's figure: the frames, their player, the value curve and
-/// the config. `root` leads from the page to the site's root.
-pub fn figure(s: &Scenario, media: &Value, hl: &Highlighter, root: &str) -> String {
+/// The longest step label under a curve, in characters.
+const MARK_CHARS: usize = 26;
+
+/// The tick a figure shows before it plays: the scene as its first step
+/// left it, just before the second acts (the last tick when there is
+/// one step or none), so a still view is never the blank before it all.
+pub fn poster(media: &Value) -> usize {
+    let ticks = media["t"].as_array().map_or(0, Vec::len);
+    let acts: Vec<usize> = media["marks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m["k"].as_u64())
+        .map(|k| k as usize)
+        .collect();
+    match acts.get(1) {
+        Some(&k) if k > 0 => (k - 1).min(ticks.saturating_sub(1)),
+        _ => ticks.saturating_sub(1),
+    }
+}
+
+/// The example's figure: the frames, their player, the value curve and,
+/// unless the page already shows the same files (`code: false`), the
+/// config. `root` leads from the page to the site's root.
+pub fn figure(s: &Scenario, media: &Value, hl: &Highlighter, root: &str, code: bool) -> String {
     let mut o = String::new();
+    let shown = poster(media);
     let size = nums(&media["size"]);
     let (lw, lh) = (
         size.first().copied().unwrap_or(1.0),
@@ -428,16 +459,24 @@ pub fn figure(s: &Scenario, media: &Value, hl: &Highlighter, root: &str) -> Stri
             bx.as_slice(),
         ) {
             let pc = |a: f64, b: f64| format!("{:.4}%", 100.0 * a / b);
+            let at = nums(&m["ticks"]);
+            // Without the script, the poster's frame is what shows.
+            let i = at.get(shown).copied().unwrap_or(0.0);
+            let y_at = if count > 1 {
+                100.0 * i / (count - 1) as f64
+            } else {
+                0.0
+            };
             let _ = write!(
                 o,
                 "<div class=\"ex-moving\" style=\"left: {}; top: {}; width: {}; height: {}; \
-                 background-image: url('{root}media/{sprite}')\" data-count=\"{count}\" data-ticks=\"{}\"></div>",
+                 background-image: url('{root}media/{sprite}'); background-position: 0 {y_at:.4}%\" \
+                 data-count=\"{count}\" data-ticks=\"{}\"></div>",
                 pc(*x, *fw),
                 pc(*y, *fh),
                 pc(*w, *fw),
                 pc(*h, *fh),
-                nums(&m["ticks"])
-                    .iter()
+                at.iter()
                     .map(|f| (*f as u64).to_string())
                     .collect::<Vec<_>>()
                     .join(",")
@@ -451,7 +490,7 @@ pub fn figure(s: &Scenario, media: &Value, hl: &Highlighter, root: &str) -> Stri
     if moving {
         let _ = write!(
             o,
-            "<div class=\"ex-controls\" data-t=\"{}\">\
+            "<div class=\"ex-controls\" data-t=\"{}\" data-poster=\"{shown}\">\
          <button type=\"button\" class=\"ex-play\" aria-label=\"Play\" aria-pressed=\"false\">\
          <svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path class=\"ex-icon-play\" d=\"M4 2.5v11l9-5.5z\"/>\
          <path class=\"ex-icon-pause\" d=\"M4 2.5h3v11H4zM9 2.5h3v11H9z\"/></svg></button>\
@@ -468,7 +507,7 @@ pub fn figure(s: &Scenario, media: &Value, hl: &Highlighter, root: &str) -> Stri
         curve(&mut o, media);
     }
     o.push_str("</div>");
-    for (file, body) in &s.files {
+    for (file, body) in s.files.iter().filter(|_| code) {
         let _ = write!(
             o,
             "<div class=\"code\"><div class=\"code-head\"><span class=\"code-file\">{}</span>\
@@ -487,10 +526,15 @@ pub fn figure(s: &Scenario, media: &Value, hl: &Highlighter, root: &str) -> Stri
     };
     let _ = write!(
         o,
-        "<figcaption>Drawn by Strand's renderer {how}, from this config; \
+        "<figcaption>Drawn by Strand's renderer {how}, from {which}; \
          <a href=\"{}{}\">its scenario</a> holds the steps that drive it.</figcaption></figure>",
         crate::GITHUB_BLOB,
-        s.path
+        s.path,
+        which = if code {
+            "this config"
+        } else {
+            "the config above"
+        }
     );
     o
 }
@@ -498,6 +542,19 @@ pub fn figure(s: &Scenario, media: &Value, hl: &Highlighter, root: &str) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_poster_is_the_scene_its_first_step_left() {
+        let m: Value = serde_json::json!({
+            "t": (0..75).collect::<Vec<_>>(),
+            "marks": [{"k": 1, "text": "set on true"}, {"k": 40, "text": "set on false"}],
+        });
+        assert_eq!(poster(&m), 39);
+        let one: Value = serde_json::json!({"t": [0, 1, 2], "marks": [{"k": 1, "text": "x"}]});
+        assert_eq!(poster(&one), 2);
+        let still: Value = serde_json::json!({"t": [0]});
+        assert_eq!(poster(&still), 0);
+    }
 
     #[test]
     fn a_scenario_splits_into_files_and_steps() {
