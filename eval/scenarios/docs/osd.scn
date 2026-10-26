@@ -1,0 +1,44 @@
+id     = "docs-osd"
+about  = """The OSD how-to (site/how-to/osd.md): design.md's volume and
+brightness OSD (example (d)), word for word. The volume steps up three
+times, a frame or so apart, as a held key would: the OSD springs in at the
+first change and follows the level; 1.2 s after the last change it
+fades out again."""
+screen = { width = 400, height = 240, scale = 2.0 }
+
+[services]
+"audio.sink.volume" = 0.4
+"audio.sink.muted" = false
+"audio.sink.icon" = "audio-volume-medium-symbolic"
+"brightness.level" = 0.7
+
+=== osd.strand
+// osd.strand. Media keys stay in the compositor: strand set audio.sink.volume +5%
+enum Kind { volume, brightness }
+state kind = volume
+state shown = false
+on change audio.sink.volume, audio.sink.muted { kind = volume; shown = true }
+on change brightness.level                    { kind = brightness; shown = true }
+on change audio.sink.volume, audio.sink.muted, brightness.level after 1.2s { shown = false }
+let level = kind == volume ? (audio.sink.muted ? 0 : audio.sink.volume) : brightness.level
+
+osd Level {                                       // focused monitor, overlay, click-through
+  anchor: bottom; margin: 0, 0, 96; open: shown
+  enter { opacity: 0; scale: 0.9 }
+  row { width: 260; pad: $space.3; gap: $space.3; align: center
+        radius: full; bg: $surface.alpha(0.8); blur: 24; shadow: $elevation.lg
+    icon kind == volume ? audio.sink.icon : "display-brightness-symbolic" { size: 20 }
+    meter level { grow: 1; height: 6; color: $accent; track: $fg.alpha(0.15) }
+    text pct(level) { width: 4ch; align: end; font: $font.mono }
+  }
+}
+
+=== steps
+rest
+mark volume-up
+set audio.sink.volume 0.45
+frames 6
+set audio.sink.volume 0.5
+frames 6
+set audio.sink.volume 0.55
+rest
