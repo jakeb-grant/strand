@@ -380,7 +380,7 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   failures (`AuthConfig::failed`) to the main loop and only then calls
   `State::enable_session_lock`. The host's `lock::LockScreen` forwards
   `SurfaceHost::lock_changed` as `ToLogic::LockState` and, once a fault
-  shows the fallback, paints the lock's content surface with
+  shows the fallback, paints every content surface of the lock with
   `strand_render::lock_fallback` and takes its keys. The watchdog is
   `ToLogic::Beat(seq)`, sent only while locked, 1 s after the last
   answer, with 3 s to answer. The faults also include a runtime fault
@@ -4646,6 +4646,33 @@ Public interfaces other crates and later stages build on:
     queues for that action's next call; a host that never takes the
     requests (a test) leaves the calls pending, and the eval harness
     answers one with nothing queued with an error.
+    (lockmon, decisions.md lockmon) An action's run: `rec.running` and
+    `rec.started` check as fields of the schema record `ActionRun`
+    (`running: bool`, `started: Date?`, `action stop()`), its base the
+    action's `ExprKind::Def` typed as that record (`Checker::action_run`,
+    for a field read or a method call only); they lower to
+    `Op::ActionRun(def)` (the record, read from the instance's
+    `vm::runs::ActionRuns`: two signals per action, made by name when a
+    program declares it, owned by no scope and carried across reloads
+    with `Vm::set_runs`) and `rec.stop()` to `Op::StopAction(def)`,
+    which queues an `ExecRequest` with `stop: true` (new field; empty
+    `argv`, no reply) in order with the calls. The host says how each
+    action stands with `Instance::set_action_run(action, running: bool,
+    started: Option<chrono::NaiveDateTime>)` (local time; kept to the
+    minute) and can read it back with `Instance::action_running`. The
+    strand crate's `Execs` gives each command a `Halt` (an atomic ask,
+    plus an eventfd for a detached command's thread, which sleeps on the
+    child's pidfd and that wake rather than in `wait`): a stop makes the
+    owning thread send its group SIGINT, SIGTERM after `STOP_GRACE` (2 s)
+    while the leader lives (seen with `waitid(WNOWAIT)`), SIGKILL after
+    another, then reap; `Execs::runs()` reports the actions whose run
+    changed (a detached command, or any result call; the oldest start),
+    which `run_execs` passes to `set_action_run` and wakes the loop for.
+    A stop is not recorded (the replayed handler stops again); the
+    commands' ends are `ACTION` records as before, and the eval replay
+    plan turns each end into an `end action <name>` step. The eval
+    harness counts a detached command as running from its call to that
+    step or a stop (`stop <name>` in the trace's commands).
   - (M6, decisions.md m6-w2-language, a config `service` shadowing a
     builtin) `read_builtin(rt, service, field)`, `sources_builtin(rt,
     service, field)`, `acquire_builtin(rt, service)` and
@@ -5090,8 +5117,46 @@ Public interfaces other crates and later stages build on:
     before any report since the lock last opened (a host with no session
     lock included), true while a `lock` on the scene is not `open:
     false`. The code is `instantiate/lock.rs`; `check/lock.rs` makes a
-    second `lock` an error (`check::lock_twice`) and `screens`, `layer`,
-    `anchor` and `keyboard` on a lock warnings (`check::lock_prop`).
+    second `lock` an error (`check::lock_twice`) and `layer`, `anchor`
+    and `keyboard` on a lock warnings (`check::lock_prop`).
+    (lockmon) A lock mounts like a bar: one instance per monitor its
+    `screens:` picks (every monitor by default), keyed by `Screen` id
+    through `mount_keyed`, each with its own `screen` and `let`s; its
+    `state`s live once in a lock-level `Env` all instances share, so
+    there is one password and one attempt. A lock `state` whose start
+    reads `screen` or a lock `let` is the error `check::lock_state_screen`
+    (it would differ per monitor). (lockmon review) The lock's timers
+    and `on change` and service handlers, in its body and its elements
+    (not in `if`/`match` branches, components or `for` bodies, which
+    are each instance's with their `state`s), are taken out of the
+    instances' tree (`instantiate::lock::lock_logic`) and mounted once,
+    in the lock-level `Env`, when the first instance shows; they are
+    suspended while none is shown and resumed after
+    (`Ctx::lock_logic_shown`, `lock::LockLogic`), so a counter steps
+    once for every monitor and `auth.submit` from a handler runs once.
+    Element events (`on key`, `on activate`) stay per instance. Reading
+    `screen`, a lock `let` or a lock element (or `play` on one) in that
+    logic is `check::lock_state_screen` too
+    (`crates/strand-compiler/tests/surfaces.rs::the_locks_timers_and_handlers_run_once_for_every_monitor`,
+    `::the_locks_timers_and_handlers_cannot_read_its_screen`).
+    `screens: focused`, or a pick no
+    plugged monitor matches, mounts one instance on the focused monitor
+    (its `screen` is that monitor). The lock-level `Env` is a fault
+    bound (`Env::set_fault_bound`), so a runtime fault below it freezes
+    only the instance it happened in, not its siblings or the shared
+    `Env`; a fault in the shared logic or the `screens:` pick freezes
+    the lock's own scope. `Instance::fault_nodes(&RuntimeError)` names
+    the nodes a fault froze (its scope's nodes, else its node), which
+    the binary matches to each monitor's instance, so a fault with no
+    node (an `if` effect, the pick) is seen
+    (`::a_lock_fault_with_no_node_is_seen_by_what_it_freezes`) (`crates/strand-compiler/tests/surfaces.rs::a_fault_in_one_monitors_lock_freezes_that_instance_only`).
+    An `input` of a lock instance whose two-way `text` is a lock-level
+    `state` (`Ctx::shares_text`; lockmon review: not a component's or a
+    `for` row's own) carries `Prop::Twin` naming the same field in the
+    other instances, so render's `Router` shares the
+    in-flight text and caret among them
+    (`crates/strand-render/tests/input.rs::twin_inputs_share_writes_in_flight_and_the_caret`);
+    the caret shows only on the surface with keyboard focus.
     A lock from which nothing calls `auth.submit` (its handlers and
     timers, in any branch, and the components it shows) is the error
     `check::lock_no_auth`, judged only on a program with no other error:
@@ -5500,9 +5565,11 @@ and the connection):
     `SurfaceSpec::inhibit_idle` (`Prop::InhibitIdle`, `inhibit_idle:`
     on any surface) gives each of the node's Wayland surfaces a
     `zwp_idle_inhibitor_v1` from `zwp_idle_inhibit_manager_v1` (bound
-    when offered): made as a layer surface, popup or (services-round
-    review) lock surface is created (`session_lock.rs` syncs it as each
-    lock surface's content goes in) and when `apply_surface_change`
+    when offered): made once a layer surface, popup or (services-round
+    review) lock surface is mapped, its first buffer committed (lockmon:
+    sway 1.12 ignores an inhibitor made before; `session_lock.rs` syncs
+    it as each lock surface's content goes in, so a lock's content holds
+    it from its first frame) and when `apply_surface_change`
     turns it on in place, destroyed when it turns off and before the
     surface goes. `SurfaceInfo::inhibits_idle` says
     whether one is held.
@@ -5545,8 +5612,33 @@ and the connection):
     `SurfaceHost::lock_changed(LockState)` (`Locked`, `Finished`, and
     `Unlocked` after an unlock). A `lock` spec gets one lock surface per
     output, including outputs plugged in while locked; config content
-    goes on the focused output, a single-pixel background in the lock's
-    colour on the rest. `State::unlock(strand_auth::UnlockToken)` is the
+    goes on the focused output (lockmon: on each output an instance is
+    pinned to, below), a single-pixel background in the lock's colour on
+    the rest. (lockmon) Each lock instance is its own spec,
+    pinned to its output (`wants`): every output with a live instance
+    gets that instance's content surface, the rest the solid; a focused
+    (unpinned) instance follows the focused output.
+    `State::lock_contents()` lists the content surfaces,
+    `State::lock_content_on(output)` names one, and `State::lock_content()`
+    is the one on the focused output (else the first).
+    `State::lock_instance_failed(node)` puts that instance's output back
+    on the solid for the rest of the lock session (keys go to another
+    content); the binary calls it for a faulted, unmounted or never-drawn
+    instance (lockmon review: one whose fault nodes fall in it, or that
+    has not drawn `INSTANCE_FIRST_FRAME` = 3 s after its own first
+    configure while another has; a fault matching no content yet is
+    kept until one appears;
+    `crates/strand/src/run/lock.rs::tests::one_monitors_instance_fails_by_its_faults_and_its_first_frame`).
+    A spec removed while locked leaves its content in place
+    until a new spec wants that output; when no spec wants any output
+    the one remaining content follows the focused output. Keyboard
+    focus is the compositor's: sway 1.9 keeps it on the first lock
+    surface mapped and moves it only when that surface goes away, so a
+    click on another output's content reaches it as pointer input
+    without moving the keys. `SurfaceHost::before_lock()` runs just
+    before the lock request, the last moment the outputs show the
+    desktop: the binary takes its pre-lock screen stills there
+    (`crates/strand-surface/tests/session_lock.rs::a_lock_instance_on_every_output`). `State::unlock(strand_auth::UnlockToken)` is the
     only way to unlock; `finished` without `locked` is a diagnostic and
     the lock counts as not shown.
     As built (m4-lock wave 1): the module is
@@ -5560,7 +5652,7 @@ and the connection):
     `wp_single_pixel_buffer_v1` buffer, else a 1×1 shm buffer, scaled by
     `wp_viewporter` (a full-size shm one without it), from the scrims'
     `solid` helper (wave 2), and a keyboard focus on one of them is
-    delivered as the content's. A spec closing (`open: false`) or going
+    delivered as the focused output's content's (else the first's). A spec closing (`open: false`) or going
     away never unlocks: the surfaces stay and only `unlock` releases the
     lock; a closed spec re-arms it, so an open spec locks again only
     after it closed. `Finished` after `Locked` is answered with
@@ -6678,7 +6770,11 @@ transparent huge pages for life.
   conversation (`Conv::held`) and written only to a secret question.
   `helper::Helper::find` takes a socket only when it is a socket and a
   program only when it is setuid, both owned by `PolkitConfig::owner`
-  (root), else the store does not register. The request's `command` is
+  (root), else the store does not register; (lockmon review) the path
+  is read with `symlink_metadata`, and `Helper::open` takes a connected
+  socket only when its peer's uid (`SO_PEERCRED`) is `Helper::owner`,
+  failing with `PermissionDenied`, never falling back to the program
+  (`helper.rs::tests::the_socket_first_and_only_its_owners`). The request's `command` is
   the details' `command_line`, else `program`.
   `polkit::configure(Some(PolkitConfig { helper, socket, owner }))`
   points stores started later at a test's helper), and `greetd` (`greetd.rs`:
@@ -7026,7 +7122,7 @@ transparent huge pages for life.
   (services-round) `win.move_to(ws)` is `WindowAction::MoveTo { item,
   ws: WorkspaceItem }`, sent as `WmAction::MoveWindow { window,
   workspace }`: Hyprland's classic `movetoworkspacesilent N,address:…`
-  or Lua `hl.dsp.window.move({ workspace, window })`, sway's `[con_id=N]
+  or Lua `hl.dsp.window.move({ workspace, follow = false, window })`, sway's `[con_id=N]
   move container to workspace "<name>"`, niri's
   `MoveWindowToWorkspace { window_id, reference: { Id }, focus: false }`;
   `Unsupported` on the protocols. `model::Window::rect:
@@ -7559,8 +7655,9 @@ transparent huge pages for life.
     (`capture_output` without the cursor, `y_invert` flipped), into a
     memfd buffer in ARGB8888 or XRGB8888, scaled by `downscale` and
     turned by `upright`; `f(None)` when the connector is not there, no
-    protocol is offered, the copy fails or `screen::SHOT_WAIT` (3 s)
-    passes; a dropped `ScreenShot` never calls `f`. `run/feeds.rs`
+    protocol is offered, the copy fails, the thread cannot start
+    (lockmon review) or `screen::SHOT_WAIT` (3 s) passes; a dropped
+    `ScreenShot` never calls `f`. `run/feeds.rs`
     learns each plugged monitor's connector by its `Screen` id
     (`Feeds::screen(id, Option<connector>)`, from the host's monitor
     callbacks) and turns a `FeedKind::Thumbnail` whose text is one into
@@ -7569,6 +7666,31 @@ transparent huge pages for life.
     (`crates/strand-services/tests/screen.rs`, against the fake's output
     source and headless sway's screencopy;
     `crates/strand/src/run/feeds.rs::tests::a_screens_thumbnail_takes_a_frame_of_its_monitor`).
+    (lockmon) Stills: in `before_lock` the host calls
+    `Feeds::take_lock_stills(connectors, LOCK_STILL_WAIT)` (500 ms at
+    most, blocking) for the monitors the lock's `thumbnail screen`s
+    name; a lock thumbnail is `Want::LockStill` and shows only that
+    still (nothing when there is none: never a live frame of the lock),
+    and the stills go at the lock's end (`Feeds::lock_ended(renderer)`,
+    from the host's `lock_changed` on `Unlocked` or `Finished` and the
+    guard's end, which also feeds `None` to every lock thumbnail fed one,
+    so no still shows at a later lock; a missing still feeds `None`).
+    (lockmon review) Every still is taken at most `STILL_MAX` =
+    1280×720; `Feeds::prune(now)`, called each loop turn with
+    `Feeds::wait(now)` in the loop's wait, lets a pre-map still go
+    `STILL_KEEP` after it was taken and gives up a shot that has not
+    answered in `SHOT_GIVE_UP` (`SHOT_WAIT` + 2 s)
+    (`feeds.rs::tests::stills_and_shots_are_let_go_in_time`). Before a
+    non-lock surface maps (`surface_attached`) the host calls
+    `Feeds::before_map(surface, screens_under(tree, node))`, which
+    starts a shot of each monitor its `thumbnail screen`s name and holds
+    the surface's first frame (`Feeds::holds`, `HOLD` = 300 ms, read by
+    `wants_frame` and `frame_deadline`); a thumbnail of that monitor
+    shows the still (`Tap::Still`, kept `STILL_KEEP` = 2 s) or waits for
+    it (`Tap::Waiting`), so it never captures the surface showing it
+    (`feeds.rs::tests::a_lock_thumbnail_shows_the_still_from_before_the_lock`,
+    `a_still_from_before_a_surface_mapped_is_what_its_thumbnail_shows`;
+    `crates/strand/tests/acceptance.rs::a_panels_screen_thumbnail_is_a_still_from_before_it_opened`).
   - Tray: `Activate`, `SecondaryActivate` and `ContextMenu` get the
     anchor's output-logical position for `x`/`y` instead of 0, 0. How it
     reaches the action (an optional argument, or filled in by the host

@@ -230,6 +230,11 @@ pub trait SurfaceHost: Painter {
     fn lock_changed(&mut self, state: LockState) {
         let _ = state;
     }
+    /// (lockmon) A session lock is about to be asked for: the last moment
+    /// every output still shows the desktop. The host may take what it
+    /// needs of the screens now (stills for the lock's `thumbnail
+    /// screen`), briefly: the request waits for it.
+    fn before_lock(&mut self) {}
     /// (M4) Whether a drop on `surface` now, at the drag's last position,
     /// would land on something whose `on drop` takes it (the Router's
     /// `drop_target`). The manager asks after every `Drag*` event it sent

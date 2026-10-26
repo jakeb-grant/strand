@@ -490,9 +490,27 @@ impl Ctx {
     /// Create the `let`s and `state`s of a body in `env`: every `let`
     /// first (they are lazy), then each `state` with its initial value.
     pub(crate) fn declare(self: &Rc<Self>, rt: &Runtime, nodes: &[Node], env: &Rc<Env>) {
+        self.declare_only(rt, nodes, env, Decls::Both);
+    }
+
+    /// [`Ctx::declare`] for the `state`s only, the `let`s only, or both:
+    /// (lockmon) a lock's states are declared once above its instances,
+    /// and each instance declares its `let`s.
+    pub(crate) fn declare_only(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        nodes: &[Node],
+        env: &Rc<Env>,
+        which: Decls,
+    ) {
         let mut lets = Vec::new();
         let mut states = Vec::new();
         collect_decls(nodes, &mut lets, &mut states);
+        match which {
+            Decls::Both => {}
+            Decls::States => lets.clear(),
+            Decls::Lets => states.clear(),
+        }
         let mut made = Vec::with_capacity(lets.len());
         for (def, value) in lets {
             let (vm, e) = (self.vm.clone(), env.clone());
@@ -1498,6 +1516,11 @@ impl Ctx {
         // A reload keeps the node this element was (same place in the
         // instance tree, same identity, same kind).
         let key: Rc<str> = format!("{}/e{}", env.ident(), self.sid(e.file, e.span)).into();
+        // (lockmon) The key a lock instance's input shares with its twins.
+        let twin = match kind == NodeKind::Input {
+            true => self.twin_key(&key),
+            false => None,
+        };
         let claimed = self.claim_node(&key, kind);
         let id = self
             .em
@@ -1638,6 +1661,21 @@ impl Ctx {
         {
             self.bind_shown(rt, id, &state, env, (e.file, e.span));
         }
+        // (lockmon) An `input` of a lock's instance whose text is the
+        // lock's one `state` (or a top-level one) names its twins: the
+        // same input on every other monitor, one text between them. One
+        // bound to a component's or a `for` item's own state, which each
+        // monitor has its own of, has none.
+        if let Some(twin) = twin
+            && self.shares_text(e, env)
+        {
+            self.em.borrow_mut().set(
+                id,
+                SceneProp::Twin,
+                PropValue::Text(twin),
+                Transition::Instant,
+            );
+        }
         let mut two_way = Vec::new();
         for p in e.props.iter().chain(e.arg.iter()) {
             if let (Some(sp), Some(tw)) = (p.prop, &p.two_way) {
@@ -1754,6 +1792,14 @@ impl Ctx {
         };
         let on_demand = matches!(e.kind, ElementKind::Builtin(NodeKind::Popup));
         let is_lock = matches!(e.kind, ElementKind::Builtin(NodeKind::Lock));
+        if is_lock {
+            let (weak, scene) = (Rc::downgrade(self), ec.scene);
+            rt.on_cleanup(move || {
+                if let Some(ctx) = weak.upgrade() {
+                    ctx.lock_logic_gone(scene);
+                }
+            });
+        }
         let services = services.unwrap_or_default();
         let content = Arc::new(content);
         let inner = self.em.borrow_mut().new_frag(Some(frag), None);
@@ -1782,6 +1828,11 @@ impl Ctx {
             // mount that starts open (a reload) is not one.
             if is_lock && is_open && prev == Some(false) {
                 me.lock_opened();
+            }
+            // (lockmon) The lock's own logic runs while any of its
+            // instances shows.
+            if is_lock {
+                me.lock_logic_shown(rt, ec.scene, is_open);
             }
             if is_open {
                 me.set_held(rt, token, true);
@@ -3729,10 +3780,15 @@ impl Ctx {
     /// in scope, pinned to that monitor with `screens: "<monitor id>"`.
     /// Instances are keyed by the monitor's identity (make, model and
     /// description), and one whose monitor goes is parked with its state
-    /// until the monitor comes back or is forgotten. (flex) A `lock` is
-    /// one instance whose `screen` is the monitor its content shows on,
-    /// the focused one else the first, changing in place (the surface
-    /// manager moves the content with focus; a typed password stays).
+    /// until the monitor comes back or is forgotten. (lockmon) A `lock`
+    /// is per monitor as a bar is, every monitor by default, and its own
+    /// `state`s are one for all its instances (declared once, in a scope
+    /// above them), so what is typed into one is typed into every one;
+    /// `screens: focused`, or a `screens:` that picks no plugged monitor,
+    /// is one instance whose `screen` is the focused monitor (else the
+    /// first, else an empty one), changing in place as focus moves. Each
+    /// `input` in a lock's instance carries its twins' key
+    /// ([`SceneProp::Twin`]): the same input on every monitor.
     pub(crate) fn mount_surface(
         self: &Rc<Self>,
         rt: &Runtime,
@@ -3775,31 +3831,27 @@ impl Ctx {
         self.note_surface(ident.clone(), true);
         self.note_lock_scope(s.kind, ident.clone());
         let lock = s.kind == NodeKind::Lock;
+        // (lockmon) A lock's own `state`s live in a scope above its
+        // instances, one for every monitor.
+        let lock_env = lock.then(|| {
+            let l = Env::child(env, Arc::default(), None, None);
+            l.set_ident(ident.clone());
+            l
+        });
         // (flex review) `screens:` that evaluates to `focused` (written
         // as an expression, so `screen` is in scope): one instance, keyed
         // by a constant as the lock's, whose `screen` follows focus in
         // place, unpinned, so moving focus does not mount it again (a
         // launcher keeps its query).
         let on_focused = Rc::new(Cell::new(false));
-        let (ctx, outer, focus_now) = (self.clone(), env.clone(), on_focused.clone());
+        let (ctx, outer, focus_now) = (
+            self.clone(),
+            lock_env.clone().unwrap_or_else(|| env.clone()),
+            on_focused.clone(),
+        );
         let list: ListFn = Box::new(move |rt| {
             let all = ctx.vm.host.read_builtin(rt, "screens", "all")?;
             let types = &ctx.vm.prog.types;
-            if lock {
-                // One lock, never unmounted for a monitor: its screen is
-                // the content's, or an empty one while none is known.
-                let focused = ctx.vm.host.read_builtin(rt, "screens", "focused")?;
-                let screen = match focused {
-                    Value::Null => all.as_list().and_then(|l| l.first()).cloned(),
-                    f => Some(f),
-                };
-                let screen = screen.unwrap_or_else(|| {
-                    types.find_record("Screen").map_or(Value::Null, |r| {
-                        crate::vm::builtins::default_of(types, &crate::ty::Ty::Record(r))
-                    })
-                });
-                return Ok(vec![(ValueKey(Value::text("lock")), screen)]);
-            }
             let wanted = match pick {
                 Some(c) => Some(ctx.eval(rt, c, &outer)?),
                 None => None,
@@ -3817,8 +3869,10 @@ impl Ctx {
                 }
                 _ => None,
             };
-            focus_now.set(focused.is_some());
-            if let Some(f) = &focused {
+            if !lock {
+                focus_now.set(focused.is_some());
+            }
+            if !lock && let Some(f) = &focused {
                 ctx.bar_instances(&ident, usize::from(!f.is_null()));
                 return Ok(if f.is_null() {
                     Vec::new()
@@ -3837,63 +3891,125 @@ impl Ctx {
                 _ => None,
             };
             let mut out = Vec::new();
-            for sc in all.as_list().unwrap_or(&[]) {
-                let key = screen_key(types, sc);
-                let keep = match &names {
-                    Some(names) => names.iter().any(|n| {
-                        sc.field(types, "name").and_then(Value::as_text) == Some(n.as_str())
-                            || sc.field(types, "id").and_then(Value::as_text) == Some(n.as_str())
-                    }),
-                    None => true,
-                };
-                if keep {
-                    out.push((ValueKey(Value::text(key)), sc.clone()));
+            if focused.is_none() {
+                for sc in all.as_list().unwrap_or(&[]) {
+                    let key = screen_key(types, sc);
+                    let keep = match &names {
+                        Some(names) => names.iter().any(|n| {
+                            sc.field(types, "name").and_then(Value::as_text) == Some(n.as_str())
+                                || sc.field(types, "id").and_then(Value::as_text)
+                                    == Some(n.as_str())
+                        }),
+                        None => true,
+                    };
+                    if keep {
+                        out.push((ValueKey(Value::text(key)), sc.clone()));
+                    }
                 }
+            }
+            if lock {
+                // (lockmon) `screens: focused`, or nothing it picks is
+                // plugged in: one instance on the focused monitor, else
+                // the first, else an empty `Screen` while none is known.
+                // The lock always has content (it fails closed).
+                let one = out.is_empty();
+                focus_now.set(one);
+                if one {
+                    let focused = match focused {
+                        Some(f) => f,
+                        None => ctx.vm.host.read_builtin(rt, "screens", "focused")?,
+                    };
+                    let screen = match focused {
+                        Value::Null => all.as_list().and_then(|l| l.first()).cloned(),
+                        f => Some(f),
+                    };
+                    let screen = screen.unwrap_or_else(|| {
+                        types.find_record("Screen").map_or(Value::Null, |r| {
+                            crate::vm::builtins::default_of(types, &crate::ty::Ty::Record(r))
+                        })
+                    });
+                    return Ok(vec![(ValueKey(Value::text("focused")), screen)]);
+                }
+                return Ok(out);
             }
             // In a reload: a single surface turned bar hands its cells
             // to the bar's only instance.
             ctx.bar_instances(&ident, out.len());
             Ok(out)
         });
+        let lock_children = lock.then(|| element.clone());
+        // (lockmon) The lock's own timers and `on change` and service
+        // handlers, beside its `state`s, run once in the lock's scope;
+        // each monitor's instance mounts the rest.
+        let mut logic = Vec::new();
+        let element = match lock {
+            true => {
+                let mut e = (*element).clone();
+                e.children = super::lock::lock_logic(&e.children, &mut logic);
+                Arc::new(e)
+            }
+            false => element,
+        };
         let item: ItemMount = Rc::new(move |ctx, rt, env, frag, v| {
             let mut extra = extra.clone();
             // The instance's own pin wins over the bar's `screens:`.
-            if !lock && !on_focused.get() {
+            if !on_focused.get() {
                 extra.push((
                     SceneProp::Screens,
                     PropValue::Text(screen_key(&ctx.vm.prog.types, v)),
                 ));
+            } else if lock {
+                // (lockmon) The one instance is the focused monitor's,
+                // whatever its `screens:` named.
+                extra.push((SceneProp::Screens, PropValue::Keyword("focused".into())));
             }
-            ctx.declare(rt, &element.children, env);
+            if lock {
+                // (lockmon) Its states are the lock's (declared above);
+                // its `let`s, which may read `screen`, are its own.
+                ctx.note_lock_instance(env.ident());
+                ctx.declare_only(rt, &element.children, env, Decls::Lets);
+            } else {
+                ctx.declare(rt, &element.children, env);
+            }
             ctx.mount_element_with(rt, &element, env, frag, extra, Some(&services));
         });
-        self.mount_keyed(
-            rt,
-            parent,
-            env,
-            Keyed {
-                source: ListSource::Memo(list),
-                binding: Some(screen),
-                owned: s.body.owned.clone(),
-                item,
-                what: if lock {
-                    "lock on its screen".to_string()
-                } else {
-                    format!("{} on every screen", s.kind.name())
-                },
-                at: (s.element.file, s.element.span),
-                park: true,
-                window: None,
-                tag,
-                reads: (
-                    pick.into_iter().collect(),
-                    ["all", "focused"]
-                        .into_iter()
-                        .flat_map(|f| self.vm.host.sources_builtin(rt, "screens", Some(f)))
-                        .collect(),
-                ),
+        let keyed = Keyed {
+            source: ListSource::Memo(list),
+            binding: Some(screen),
+            owned: s.body.owned.clone(),
+            item,
+            what: if lock {
+                "lock on every screen".to_string()
+            } else {
+                format!("{} on every screen", s.kind.name())
             },
-        );
+            at: (s.element.file, s.element.span),
+            park: true,
+            window: None,
+            tag,
+            reads: (
+                pick.into_iter().collect(),
+                ["all", "focused"]
+                    .into_iter()
+                    .flat_map(|f| self.vm.host.sources_builtin(rt, "screens", Some(f)))
+                    .collect(),
+            ),
+        };
+        match lock_env.zip(lock_children) {
+            Some((lenv, children)) => {
+                self.mount_block(rt, parent, None, |ctx, rt, frag| {
+                    lenv.set_owner(rt.current_owner());
+                    // A fault in one monitor's instance freezes that
+                    // instance only; one in the shared state, all.
+                    lenv.set_fault_bound();
+                    ctx.note_env(&lenv);
+                    ctx.declare_only(rt, &children.children, &lenv, Decls::States);
+                    ctx.set_lock_logic(rt, &lenv, logic);
+                    ctx.mount_keyed(rt, frag, &lenv, keyed);
+                });
+            }
+            None => self.mount_keyed(rt, parent, env, keyed),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -4191,7 +4307,13 @@ impl Ctx {
         }
     }
 
-    fn mount_timer(self: &Rc<Self>, rt: &Runtime, t: &Timer, env: &Rc<Env>, el: Option<&ElemCtx>) {
+    pub(crate) fn mount_timer(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        t: &Timer,
+        env: &Rc<Env>,
+        el: Option<&ElemCtx>,
+    ) {
         let (ctx, e, duration, kind) = (self.clone(), env.clone(), t.duration, t.kind);
         let word = match kind {
             TimerKind::After => "after",
@@ -4682,9 +4804,17 @@ fn slot_elements(nodes: &[Node], out: &mut std::collections::BTreeSet<crate::hir
     }
 }
 
-/// The `let`s and `state`s of a body: in elements and `if`/`match`
-/// branches, not in `for` items or components (they have their own
-/// scope).
+/// Which declarations [`Ctx::declare_only`] makes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Decls {
+    Both,
+    States,
+    Lets,
+}
+
+/// The `let`s and `state`s of a body: in its elements, not in `if`/
+/// `match` branches (each branch declares its own as it mounts), `for`
+/// items or components (they have their own scope).
 fn collect_decls<'a>(
     nodes: &'a [Node],
     lets: &mut Vec<(DefId, ChunkId)>,

@@ -205,6 +205,18 @@ advance the clock.
   error "<text>"` answer the next call of the config's action `<name>`,
   one with a result (`-> T`), read as its `T`; with none queued the call
   is answered with an error, since the sandbox runs no command.
+- `end action <name>` (lockmon): the command of the config's action
+  `<name>` that the sandbox counts as running ends. The sandbox runs no
+  command, so a call of an action without a result counts as running
+  (`rec.running`, `rec.started` at the virtual wall time) from the call
+  until this step; a call with a result runs until it is answered, at
+  once. (lockmon review) As the live runner does, a call while one runs
+  queues one re-run (several calls make one), which this step starts at
+  its time; `rec.stop()` (the trace's commands say `stop <name>`) drops
+  the queued re-run and leaves the running one to its recorded end,
+  since live the command ends only when its program does. A report's
+  replay writes this step where the recording says each command ended.
+  A name the config does not declare as an action refuses the step.
 - `notify "<summary>" ["<body>"] [app=…] [urgency=…]` parses, but a run
   refuses it as unsupported: the notification daemon is not in the
   sandbox. Set `notifications.*` and `emit` instead.
@@ -346,7 +358,10 @@ recorded, never executed. (flex review) A call of an action with a result
 (`-> T`, spec.md 5.7) is answered by the answer queued for it (`answer action
 <name> …`, which a report's replay writes from what the live call answered),
 else with an error saying no command runs in the sandbox, so its `.error`
-shows rather than a call pending for ever.
+shows rather than a call pending for ever. (lockmon) A call of an action
+without a result counts as running (`rec.running`, `rec.started`) from
+the call until `end action <name>`, a call while it runs queued as one
+re-run as live.
 
 ### Perturbations
 
@@ -2648,7 +2663,8 @@ capability, used by any scenario):
   answered with it, ahead of the mock's own (`SchemaHost::answer`).
   A call of an action with a result is a fetch named `action <name>`
   in the recording, given as `answer action <name> <JSON>` (flex
-  review).
+  review). (lockmon) A command's recorded end is `end action <name>` at
+  its time, so `rec.running` reads as it did live.
 
 **The verdict** (replay-owner; `replay::drawn`, `fidelity.json`'s
 first key `verdict`, the first line of `replay.txt`, of what

@@ -354,7 +354,7 @@ async fn a_lua_config_hyprland_gets_lua_dispatches() {
             r#"dispatch hl.dsp.window.close({ window = "address:0x55d0c0a1c3d0" })"#,
             r#"dispatch hl.dsp.window.fullscreen({ mode = "maximized", window = "address:0x55d0c0a1c3d0" })"#,
             r#"dispatch hl.dsp.window.fullscreen({ mode = "fullscreen", window = "address:0x55d0c0a1c3d0" })"#,
-            r#"dispatch hl.dsp.window.move({ workspace = "3", window = "address:0x55d0c0a1c3d0" })"#,
+            r#"dispatch hl.dsp.window.move({ workspace = "3", follow = false, window = "address:0x55d0c0a1c3d0" })"#,
         ]
     );
     service.abort();

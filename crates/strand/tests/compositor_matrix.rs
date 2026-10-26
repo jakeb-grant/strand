@@ -33,6 +33,12 @@
 //! On all four, `window_state_actions_follow_the_compositor` turns a
 //! window's fullscreen and maximize on and off through the `windows` store
 //! and checks the compositor's report and the window's own configures.
+//! (lockmon) On all four, too, `a_window_is_placed_and_moved_by_the_stores`
+//! checks `win.rect` and `win.move_to(ws)`, `modes_and_layouts_follow_the_compositor`
+//! `wm.mode` and the keyboard layouts, and
+//! `idle_follows_the_compositor_and_a_surface_holds_it_awake` `idle.after`
+//! and a panel's `inhibit_idle`, each against the compositor's own report
+//! (labwc: the documented fallbacks).
 //!
 //! Environment: `STRAND_MATRIX` names the compositor (`sway`, `hyprland`
 //! or `niri`); `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and its IPC variable
@@ -1274,7 +1280,7 @@ fn compositor_says(kind: &str, app: &str) -> Option<(bool, bool)> {
 /// The reply to `action` from a `wm::run` of its own (the stores log a
 /// failed action, they do not return it), once that run shows `app`'s
 /// window: the window's id there is the stores' (the same adapter).
-fn reply_to(app: &str, action: fn(String) -> WmAction) -> Result<(), WmError> {
+fn reply_to(app: &str, action: impl FnOnce(String) -> WmAction) -> Result<(), WmError> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1507,6 +1513,727 @@ fn a_strand_window_is_a_toplevel_of_the_compositor() {
             .ok_or_else(|| format!("not yet\n{}", log_text()))
     });
     drop(strand);
+    s.shutdown();
+}
+
+/// (lockmon) A window's workspace (by name) and place, `[x, y, width,
+/// height]` on its screen, as the compositor itself reports them: sway's
+/// tree (the container's rect less its output's), Hyprland's `j/clients`
+/// (`at` less its monitor's origin, and `size`), niri's `windows` (a
+/// floating tile's position in its workspace's view plus the window's
+/// offset in it, and its size; a tiled window has none). `None` when the
+/// window is not in the report.
+fn compositor_window(kind: Kind, app: &str) -> Option<(String, Option<[i64; 4]>)> {
+    let int = |v: &Value| v.as_i64().unwrap_or(0);
+    match kind {
+        Kind::Sway => {
+            fn walk(
+                n: &Value,
+                app: &str,
+                origin: (i64, i64),
+                ws: &str,
+            ) -> Option<(String, Option<[i64; 4]>)> {
+                let int = |v: &Value| v.as_i64().unwrap_or(0);
+                let origin = if n["type"] == "output" {
+                    (int(&n["rect"]["x"]), int(&n["rect"]["y"]))
+                } else {
+                    origin
+                };
+                let ws = if n["type"] == "workspace" {
+                    n["name"].as_str().unwrap_or_default()
+                } else {
+                    ws
+                };
+                if n["app_id"] == app {
+                    let r = &n["rect"];
+                    return Some((
+                        ws.to_string(),
+                        Some([
+                            int(&r["x"]) - origin.0,
+                            int(&r["y"]) - origin.1,
+                            int(&r["width"]),
+                            int(&r["height"]),
+                        ]),
+                    ));
+                }
+                ["nodes", "floating_nodes"]
+                    .iter()
+                    .filter_map(|k| n[*k].as_array())
+                    .flatten()
+                    .find_map(|c| walk(c, app, origin, ws))
+            }
+            walk(&json("swaymsg", &["-t", "get_tree", "-r"]), app, (0, 0), "")
+        }
+        Kind::Hyprland => {
+            let clients = json("hyprctl", &["-j", "clients"]);
+            let c = clients.as_array()?.iter().find(|c| c["class"] == app)?;
+            let monitors = json("hyprctl", &["-j", "monitors"]);
+            let m = monitors
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|m| m["id"] == c["monitor"]);
+            let (mx, my) = m.map_or((0, 0), |m| (int(&m["x"]), int(&m["y"])));
+            let (at, size) = (&c["at"], &c["size"]);
+            let rect = (at.is_array() && size.is_array()).then(|| {
+                [
+                    int(&at[0]) - mx,
+                    int(&at[1]) - my,
+                    int(&size[0]),
+                    int(&size[1]),
+                ]
+            });
+            Some((text(&c["workspace"]["name"]), rect))
+        }
+        Kind::Niri => {
+            let windows = json("niri", &["msg", "--json", "windows"]);
+            let w = windows.as_array()?.iter().find(|w| w["app_id"] == app)?;
+            let workspaces = json("niri", &["msg", "--json", "workspaces"]);
+            let ws = workspaces
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|ws| ws["id"] == w["workspace_id"])
+                .map(|ws| {
+                    ws["name"]
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| ws["idx"].as_u64().unwrap_or(0).to_string())
+                })
+                .unwrap_or_default();
+            let pair = |key: &str| -> Option<(f64, f64)> {
+                let v = w["layout"].get(key)?.as_array()?;
+                Some((v.first()?.as_f64()?, v.get(1)?.as_f64()?))
+            };
+            let rect = pair("tile_pos_in_workspace_view").and_then(|(tx, ty)| {
+                let (ox, oy) = pair("window_offset_in_tile").unwrap_or((0.0, 0.0));
+                let (ww, wh) = pair("window_size")?;
+                Some([
+                    (tx + ox).round() as i64,
+                    (ty + oy).round() as i64,
+                    ww.round() as i64,
+                    wh.round() as i64,
+                ])
+            });
+            Some((ws, rect))
+        }
+    }
+}
+
+/// (lockmon) What the stores say of `app`'s window: its workspace's name
+/// (`?` when `workspaces.all` has no workspace of its id) and its
+/// `rect`.
+fn stored_window(b: &Builtin, rt: &Runtime, app: &str) -> Option<(String, Option<[i64; 4]>)> {
+    let win = b
+        .windows
+        .cells()
+        .snapshot(rt)
+        .ok()?
+        .all
+        .into_iter()
+        .find(|w| w.app_id == app)?;
+    let ws = b
+        .workspaces
+        .cells()
+        .snapshot(rt)
+        .ok()?
+        .all
+        .into_iter()
+        .find(|w| Some(w.id) == win.workspace)
+        .map_or_else(|| "?".to_string(), |w| w.name);
+    let rect = win
+        .rect
+        .map(|r| [r.x, r.y, r.width, r.height].map(|v| v.round() as i64));
+    Some((ws, rect))
+}
+
+/// (lockmon) `win.rect` and `win.move_to(ws)` on every compositor of the
+/// matrix. With an IPC (sway, Hyprland, niri) the window's place in the
+/// stores is the compositor's own report ([`compositor_window`]): a
+/// tiled window has a place on sway and Hyprland, and none on niri (its
+/// columns scroll); `win.move_to(ws)` moves it to another workspace with
+/// the focus staying where it is, and a request through the adapter
+/// (Hyprland's Lua `hl.dsp.window.move` on 0.55 on, `movetoworkspacesilent`
+/// before) moves it back. labwc has no IPC: the window has no place, and
+/// a move is `Unsupported` (the standard protocols cannot move a window
+/// to a workspace).
+#[test]
+fn a_window_is_placed_and_moved_by_the_stores() {
+    let Ok(kind) = std::env::var("STRAND_MATRIX") else {
+        skipped("the window place and move test");
+        return;
+    };
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"));
+    let socket = runtime.join(std::env::var_os("WAYLAND_DISPLAY").expect("WAYLAND_DISPLAY"));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    b.workspaces.acquire(&rt);
+    b.windows.acquire(&rt);
+    b.wm.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)), "the first read");
+    const APP: &str = "strand-moved";
+    let win = TestWindow::open(&socket, APP, "moved");
+    let item = || {
+        s.pump(&rt);
+        rt.flush();
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .ok()
+            .and_then(|w| w.all.into_iter().find(|w| w.app_id == APP))
+    };
+    until("the window in windows.all", || {
+        item().map(|_| ()).ok_or_else(|| "not yet".to_string())
+    });
+
+    let Some(live) = live() else {
+        // labwc: no place, and no move.
+        assert_eq!(item().expect("the window").rect, None, "{kind}");
+        assert!(
+            matches!(
+                reply_to(APP, |window| WmAction::MoveWindow {
+                    window,
+                    workspace: 1
+                }),
+                Err(WmError::Unsupported(_))
+            ),
+            "{kind} cannot move a window to a workspace"
+        );
+        drop(win);
+        s.shutdown();
+        return;
+    };
+
+    // The window, the stores and the compositor agreeing on its
+    // workspace `ws` and its place.
+    let placed = |what: &str, ws: &str| {
+        let mut last = None;
+        until(what, || {
+            s.pump(&rt);
+            rt.flush();
+            let theirs =
+                compositor_window(live.kind, APP).ok_or("not in the compositor's report")?;
+            let ours = stored_window(&b, &rt, APP).ok_or("not in the stores")?;
+            last = Some(theirs.clone());
+            if theirs.0 != ws {
+                Err(format!("{kind} has it on {theirs:?}, not on {ws}"))
+            } else if ours != theirs {
+                Err(format!("{kind}: {theirs:?}; the stores: {ours:?}"))
+            } else {
+                Ok(())
+            }
+        });
+        let (_, rect) = last.expect("a report");
+        eprintln!("matrix: {what}: on {ws}, rect {rect:?}");
+        rect
+    };
+    let real = live.real();
+    let home = real.focused.clone().expect("a focused workspace");
+    let rect = placed("the window opened", &home);
+    if live.kind == Kind::Niri {
+        // A tiled niri window scrolls with its column: no place. Floating,
+        // it has one, and tiled again none.
+        assert_eq!(rect, None, "a tiled niri window");
+        let windows = json("niri", &["msg", "--json", "windows"]);
+        let id = windows
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|w| w["app_id"] == APP)
+            .and_then(|w| w["id"].as_u64())
+            .expect("niri's id for the window")
+            .to_string();
+        let float = || {
+            run(
+                "niri",
+                &["msg", "action", "toggle-window-floating", "--id", &id],
+            )
+        };
+        float();
+        let mut floated = None;
+        until("the floating window placed", || {
+            s.pump(&rt);
+            rt.flush();
+            let theirs = compositor_window(live.kind, APP).ok_or("gone")?;
+            let ours = stored_window(&b, &rt, APP).ok_or("not in the stores")?;
+            floated = theirs.1;
+            if theirs.1.is_some() && ours == theirs {
+                Ok(())
+            } else {
+                Err(format!("niri: {theirs:?}; the stores: {ours:?}"))
+            }
+        });
+        eprintln!("matrix: floating on niri: rect {floated:?}");
+        float();
+        assert_eq!(placed("tiled again", &home), None, "a tiled niri window");
+    } else {
+        let [x, y, w, h] = rect.expect("a tiled window's place");
+        assert!(
+            w > 0 && h > 0 && x >= 0 && y >= 0 && x + w <= live.w as i64 && y + h <= live.h as i64,
+            "{kind}: {rect:?} on a {}x{} output",
+            live.w,
+            live.h
+        );
+    }
+
+    // Another workspace, kept by a window of its own, then back home.
+    let other = live.other(&real);
+    live.switch(&other);
+    until("the other workspace focused", || {
+        let r = live.real();
+        if r.focused.as_deref() == Some(other.as_str()) {
+            Ok(())
+        } else {
+            Err(format!("{r}"))
+        }
+    });
+    let keeper = TestWindow::open(&socket, "strand-keeper", "keeper");
+    until(
+        "the keeper on the other workspace",
+        || match compositor_window(live.kind, "strand-keeper") {
+            Some((ws, _)) if ws == other => Ok(()),
+            got => Err(format!("{got:?}")),
+        },
+    );
+    live.switch(&home);
+    until("home focused again, in the stores too", || {
+        s.pump(&rt);
+        rt.flush();
+        let r = live.real();
+        let ours = stored(&b, &rt, &live)?;
+        if r.focused.as_deref() == Some(home.as_str()) && ours.focused == r.focused {
+            Ok(())
+        } else {
+            Err(format!("compositor: {r}\nstores:     {ours}"))
+        }
+    });
+
+    // `win.move_to(ws)` through the store: moved, the focus staying home.
+    until("the other workspace in the stores", || {
+        s.pump(&rt);
+        rt.flush();
+        let all = b
+            .workspaces
+            .cells()
+            .snapshot(&rt)
+            .map_err(|e| format!("{e:?}"))?;
+        all.all
+            .iter()
+            .any(|w| w.name == other)
+            .then_some(())
+            .ok_or_else(|| format!("{:?}", all.all.iter().map(|w| &w.name).collect::<Vec<_>>()))
+    });
+    let ws = workspace_named(&b, &rt, &other);
+    b.windows
+        .act(
+            &rt,
+            WindowAction::MoveTo {
+                item: item().expect("the window"),
+                ws,
+            },
+        )
+        .unwrap();
+    placed("win.move_to(other)", &other);
+    until("the focus stayed home", || {
+        s.pump(&rt);
+        rt.flush();
+        let r = live.real();
+        let ours = stored(&b, &rt, &live)?;
+        if r.focused.as_deref() == Some(home.as_str()) && ours.focused == r.focused {
+            Ok(())
+        } else {
+            Err(format!("compositor: {r}\nstores:     {ours}"))
+        }
+    });
+
+    // Back by a request of the adapter's own: `Ok`.
+    let home_id = workspace_named(&b, &rt, &home).id;
+    assert_eq!(
+        reply_to(APP, move |window| WmAction::MoveWindow {
+            window,
+            workspace: home_id
+        }),
+        Ok(())
+    );
+    placed("moved back by request", &home);
+    drop(keeper);
+    drop(win);
+    s.shutdown();
+}
+
+/// (lockmon) A `wm::run` of the test's own, for what the stores give
+/// only to a reader that shows it (`wm.mode`, `keyboard.layout` and
+/// `keyboard.layouts` are streams): its mirror, and its requests'
+/// replies.
+struct OwnWm {
+    tokio: tokio::runtime::Runtime,
+    mirror: Arc<std::sync::Mutex<wm::Mirror>>,
+    tx: tokio::sync::mpsc::UnboundedSender<WmRequest>,
+    service: tokio::task::JoinHandle<()>,
+}
+
+impl OwnWm {
+    fn start() -> OwnWm {
+        let tokio = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let mirror = Arc::new(std::sync::Mutex::new(wm::Mirror::default()));
+        let m = mirror.clone();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let service = tokio.spawn(async move {
+            let _ = wm::run(
+                WmConfig::from_env(None),
+                move |batch: Vec<wm::WmChange>| {
+                    let mut m = m.lock().unwrap();
+                    for c in &batch {
+                        m.apply(c).unwrap();
+                    }
+                },
+                rx,
+            )
+            .await;
+        });
+        OwnWm {
+            tokio,
+            mirror,
+            tx,
+            service,
+        }
+    }
+
+    /// Polls until `f` holds of the mirror; the mirror explains a
+    /// timeout.
+    fn until(&self, what: &str, f: impl Fn(&wm::Mirror) -> bool) {
+        until(what, || {
+            let m = self.mirror.lock().unwrap();
+            if f(&m) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "mode {:?}, layout {:?}, layouts {:?}, sources {:?}",
+                    m.mode, m.keyboard_layout, m.keyboard_layouts, m.sources
+                ))
+            }
+        });
+    }
+
+    fn mirror(&self) -> wm::Mirror {
+        self.mirror.lock().unwrap().clone()
+    }
+
+    /// The adapter's reply to `action`.
+    fn ask(&self, action: WmAction) -> Result<(), WmError> {
+        let (req, reply) = WmRequest::new(action);
+        self.tx.send(req).unwrap();
+        self.tokio
+            .block_on(async { tokio::time::timeout(PATIENCE, reply).await })
+            .expect("a reply in time")
+    }
+}
+
+impl Drop for OwnWm {
+    fn drop(&mut self) {
+        self.service.abort();
+    }
+}
+
+/// (lockmon) `wm.mode`, `keyboard.layout` and `keyboard.layouts`, and
+/// `keyboard.set_layout(i)` / `next_layout()`, on every compositor of the
+/// matrix, against its own report: sway's binding mode (the matrix
+/// config's `matrix` mode, entered and left) and its first keyboard's
+/// layouts (`get_inputs`, of a virtual keyboard naming two plugged in,
+/// since a headless sway has no devices);
+/// niri, which has no modes, its `keyboard-layouts` (the matrix config's
+/// `us,de`), switched both ways; Hyprland's default submap (null) and its
+/// main keyboard's active keymap (`j/devices`). labwc has no IPC: no
+/// mode, no layouts, and a switch is `Unsupported`.
+#[test]
+fn modes_and_layouts_follow_the_compositor() {
+    let Ok(kind) = std::env::var("STRAND_MATRIX") else {
+        skipped("the mode and layout test");
+        return;
+    };
+    let own = OwnWm::start();
+    own.until("the first state", |m| !m.workspaces.is_empty());
+    let Some(live) = live() else {
+        let m = own.mirror();
+        assert_eq!(m.mode, None, "{kind}");
+        assert_eq!(m.keyboard_layout, None, "{kind}");
+        assert!(m.keyboard_layouts.is_empty(), "{kind}");
+        assert!(
+            matches!(
+                own.ask(WmAction::SwitchLayout(wm::LayoutSwitch::Next)),
+                Err(WmError::Unsupported(_))
+            ),
+            "{kind} cannot switch layouts"
+        );
+        return;
+    };
+    own.until("connected", |m| m.sources.connected);
+    // Every compositor starts in its default mode: none.
+    assert_eq!(own.mirror().mode, None, "{kind}");
+    match live.kind {
+        Kind::Sway => {
+            run("swaymsg", &["mode", "matrix"]);
+            own.until("sway's matrix mode", |m| {
+                m.mode.as_deref() == Some("matrix")
+            });
+            run("swaymsg", &["mode", "default"]);
+            own.until("sway's default mode", |m| m.mode.is_none());
+            // (lockmon review) A headless sway has no keyboard: one is
+            // plugged in (a virtual keyboard whose keymap names two
+            // layouts), so the layouts compared are sway's own, not two
+            // empty lists. A virtual keyboard's keymap comes after its
+            // `added` event and sway sends no `xkb_keymap` for it, so a
+            // connection made once sway lists its layouts reads them
+            // (`get_inputs`), as at a session's start.
+            let dir = tempfile::tempdir().expect("a keymap dir");
+            let _keyboard = support::keyboard::Keyboard::with_layouts(
+                &live.socket,
+                dir.path(),
+                &["English (US)", "German"],
+            );
+            // The first keyboard that names layouts (sway may put a null
+            // in), as the adapter reads `get_inputs`.
+            let sways = || -> Vec<String> {
+                let inputs = json("swaymsg", &["-t", "get_inputs", "-r"]);
+                inputs
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|i| i["type"] == "keyboard")
+                    .map(|i| {
+                        i["xkb_layout_names"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|n| n.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .find(|n| !n.is_empty())
+                    .unwrap_or_default()
+            };
+            until("sway's keyboard names its layouts", || {
+                let n = sways();
+                (!n.is_empty())
+                    .then_some(())
+                    .ok_or_else(|| format!("sway lists no layouts: {n:?}"))
+            });
+            let names = sways();
+            assert_eq!(names, ["English (US)", "German"], "sway's own report");
+            let fresh = OwnWm::start();
+            fresh.until("sway's layouts", |m| m.keyboard_layouts == names);
+            drop(fresh);
+            eprintln!("matrix: sway's layouts: {names:?}");
+        }
+        Kind::Niri => {
+            let niri = || {
+                let l = json("niri", &["msg", "--json", "keyboard-layouts"]);
+                let names: Vec<String> = l["names"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(text)
+                    .collect();
+                let idx = l["current_idx"].as_u64().unwrap_or(0) as usize;
+                (names, idx)
+            };
+            let (names, idx) = niri();
+            assert_eq!(names.len(), 2, "the matrix config's us,de: {names:?}");
+            own.until("niri's layouts", |m| {
+                m.keyboard_layouts == names && m.keyboard_layout.as_ref() == names.get(idx)
+            });
+            for to in [
+                wm::LayoutSwitch::Index(1),
+                wm::LayoutSwitch::Next,
+                wm::LayoutSwitch::Next,
+            ] {
+                let want = match to {
+                    wm::LayoutSwitch::Index(i) => i as usize,
+                    _ => (niri().1 + 1) % names.len(),
+                };
+                assert_eq!(own.ask(WmAction::SwitchLayout(to)), Ok(()), "{to:?}");
+                until("niri switched", || {
+                    let (_, now) = niri();
+                    (now == want)
+                        .then_some(())
+                        .ok_or_else(|| format!("niri is on {now}, not {want}"))
+                });
+                own.until("the switch in keyboard.layout", |m| {
+                    m.keyboard_layout.as_ref() == names.get(want)
+                });
+                eprintln!("matrix: niri's layout {to:?}: {:?}", names.get(want));
+            }
+            assert_eq!(own.mirror().mode, None, "niri has no modes");
+        }
+        Kind::Hyprland => {
+            let devices = json("hyprctl", &["-j", "devices"]);
+            let keyboards: Vec<&Value> = devices["keyboards"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .collect();
+            let keyboard = keyboards
+                .iter()
+                .find(|k| k["main"] == true)
+                .or(keyboards.first());
+            let want = keyboard
+                .map(|k| text(&k["active_keymap"]))
+                .filter(|l| !l.is_empty());
+            // (lockmon review) Where Hyprland has a keyboard, it names a
+            // layout: the comparison is not `None == None`.
+            if keyboard.is_some() {
+                assert!(
+                    want.is_some(),
+                    "Hyprland's keyboard names no layout: {devices}"
+                );
+            }
+            own.until("Hyprland's main keyboard's layout", |m| {
+                m.keyboard_layout == want
+            });
+            eprintln!("matrix: Hyprland's layout: {want:?}");
+        }
+    }
+}
+
+/// (lockmon) `idle.after(t)` and a surface's `inhibit_idle` on every
+/// compositor of the matrix. Where `ext_idle_notifier_v1` is offered,
+/// the seat (no input reaches a headless compositor) is idle after
+/// 300 ms; a panel with `inhibit_idle: true` holds a timeout read while
+/// it shows back, and turned off in place lets the seat go idle again.
+/// A compositor without `zwp_idle_inhibit_manager_v1` gets no inhibitor
+/// and goes idle anyway; one without the notifier is `available: false`
+/// and never idle (the documented fallbacks).
+#[test]
+fn idle_follows_the_compositor_and_a_surface_holds_it_awake() {
+    use strand_scene::{NodeId, NodeKind, Prop, PropValue, SurfaceChange, SurfaceSpec};
+    use strand_surface::{Config, SurfaceManager};
+    use wayland_client::Connection;
+
+    let Ok(kind) = std::env::var("STRAND_MATRIX") else {
+        skipped("the idle test");
+        return;
+    };
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"));
+    let socket = runtime.join(std::env::var_os("WAYLAND_DISPLAY").expect("WAYLAND_DISPLAY"));
+    let offered = registry(&socket);
+    let has = |i: &str| offered.iter().any(|o| o == i);
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    let d = b.idle.dynamic();
+    b.idle.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)), "the first read");
+    let after = |t: Duration| -> bool {
+        s.pump(&rt);
+        rt.flush();
+        match d.call(&rt, "after", &[Data::Duration(t)]) {
+            Some(Ok(Data::Bool(b))) => b,
+            other => panic!("idle.after: {other:?}"),
+        }
+    };
+    let available = || {
+        s.pump(&rt);
+        rt.flush();
+        b.idle.cells().available.get_untracked(&rt)
+    };
+    if !has("ext_idle_notifier_v1") {
+        until("idle unavailable", || match available() {
+            Ok(false) if b.idle.starts() > 0 => Ok(()),
+            got => Err(format!("available: {got:?}")),
+        });
+        assert!(!after(Duration::from_millis(1)), "{kind}: never idle");
+        eprintln!("matrix: {kind} offers no ext_idle_notifier_v1: idle.after is false");
+        b.idle.release(&rt);
+        s.shutdown();
+        return;
+    }
+    until("idle available", || match available() {
+        Ok(true) => Ok(()),
+        got => Err(format!("available: {got:?}")),
+    });
+    let short = Duration::from_millis(300);
+    let started = Instant::now();
+    assert!(!after(short), "{kind}: idle before its first notification");
+    until("idle after 300 ms", || {
+        after(short).then_some(()).ok_or_else(|| "not idle".into())
+    });
+    assert!(started.elapsed() >= short, "{:?}", started.elapsed());
+    eprintln!("matrix: {kind} went idle after {:?}", started.elapsed());
+
+    // `panel Caffeine { inhibit_idle: true; 40 × 40 }`.
+    let inhibits = has("zwp_idle_inhibit_manager_v1");
+    let stream = std::os::unix::net::UnixStream::connect(&socket).expect("the compositor");
+    let conn = Connection::from_socket(stream).expect("a connection");
+    let mut mgr = SurfaceManager::with_connection(conn, BlueHost::default(), Config::default())
+        .expect("the surface manager starts");
+    const CAFFEINE: NodeId = NodeId::new(10, 0);
+    let props: std::collections::HashMap<Prop, PropValue> = [
+        (Prop::Name, PropValue::Text("Caffeine".into())),
+        (Prop::Anchor, PropValue::Keyword("top_left".into())),
+        (Prop::Width, PropValue::Number(40.0)),
+        (Prop::Height, PropValue::Number(40.0)),
+    ]
+    .into_iter()
+    .collect();
+    let spec = |inhibit: bool| {
+        let mut spec = SurfaceSpec::resolve(NodeKind::Panel, |p| props.get(&p));
+        spec.inhibit_idle = inhibit;
+        spec
+    };
+    mgr.state_mut()
+        .apply_surface_change(CAFFEINE, SurfaceChange::Created(spec(true)));
+    let ok = mgr
+        .dispatch_until(PATIENCE, |s| {
+            s.surfaces()
+                .iter()
+                .any(|i| i.node == CAFFEINE && i.stats.commits > 0)
+        })
+        .expect("dispatch");
+    assert!(ok, "{kind}: the panel: {:?}", mgr.state().surfaces());
+    let shown = |mgr: &SurfaceManager<BlueHost>| {
+        mgr.state()
+            .surfaces()
+            .iter()
+            .find(|i| i.node == CAFFEINE)
+            .map(|i| i.inhibits_idle)
+    };
+    assert_eq!(shown(&mgr), Some(inhibits), "{kind}: {offered:?}");
+    // Its first frames shown, so the compositor counts it as visible.
+    let _ = mgr.dispatch_until(Duration::from_millis(300), |_| false);
+    // A timeout first read now, while the panel shows.
+    let held = Duration::from_millis(400);
+    if inhibits {
+        let until_t = Instant::now() + held * 4;
+        while Instant::now() < until_t {
+            let _ = mgr.dispatch_until(Duration::from_millis(50), |_| false);
+            assert!(!after(held), "{kind}: idle while a shown panel inhibits it");
+        }
+        eprintln!("matrix: {kind} held idle back for {:?}", held * 4);
+    } else {
+        eprintln!("matrix: {kind} offers no zwp_idle_inhibit_manager_v1: no inhibitor");
+    }
+
+    // Off in place: no inhibitor, and the seat goes idle.
+    mgr.state_mut().apply_surface_change(
+        CAFFEINE,
+        SurfaceChange::Updated {
+            spec: spec(false),
+            recreate: false,
+        },
+    );
+    assert_eq!(shown(&mgr), Some(false), "{kind}");
+    until("idle without the inhibitor", || {
+        let _ = mgr.dispatch_until(Duration::from_millis(20), |_| false);
+        after(held).then_some(()).ok_or_else(|| "not idle".into())
+    });
+    mgr.state_mut()
+        .apply_surface_change(CAFFEINE, SurfaceChange::Removed);
+    let _ = mgr.dispatch_until(Duration::from_millis(100), |_| false);
+    b.idle.release(&rt);
     s.shutdown();
 }
 

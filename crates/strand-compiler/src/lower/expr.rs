@@ -426,6 +426,10 @@ impl Lowerer<'_> {
                     c.emit(Op::Local(*l), span);
                 }
             }
+            // (lockmon) `rec.running`: the action's run, read whole.
+            ExprKind::Def(d) if self.hir.def(*d).kind == DefKind::Action => {
+                c.emit(Op::ActionRun(*d), span);
+            }
             ExprKind::Def(d) => {
                 // A custom service (`service ppd from dbus …`) is held by
                 // its readers, as a builtin one is.
@@ -725,6 +729,14 @@ impl Lowerer<'_> {
                         },
                         span,
                     );
+                    return;
+                }
+                // (lockmon) `rec.stop()`: stops the action's commands.
+                if let ExprKind::Def(d) = receiver.kind
+                    && self.hir.def(d).kind == DefKind::Action
+                    && name == "stop"
+                {
+                    c.emit(Op::StopAction(d), span);
                     return;
                 }
                 self.expr(c, receiver);

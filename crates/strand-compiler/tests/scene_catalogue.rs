@@ -46,6 +46,8 @@ const COMPILER_SET: &[Prop] = &[
     Prop::NotRow,
     // flex.
     Prop::OnKey,
+    // lockmon.
+    Prop::Twin,
 ];
 
 /// Scene kinds the compiler makes from something other than an element:

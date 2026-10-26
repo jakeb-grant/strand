@@ -3446,6 +3446,54 @@ fn a_failing_actions_command_is_a_watch_notice() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (lockmon) A recorder's toggle: `rec.running` reads true once its
+/// command runs, `rec.stop()` ends it (SIGINT), and the bar shows it
+/// stopped, with no failure notice; `rec.started` holds its start.
+#[test]
+fn an_actions_run_shows_and_stop_ends_it() {
+    let dir = temp_dir("exec-run");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "permit exec \"sh\"\naction rec() [\"sh\", \"-c\", \"exec sleep 30\"]\nbar Top {\n  on click {\n    if rec.running {\n      rec.stop()\n    } else {\n      rec()\n    }\n  }\n  text rec.running ? join(\"\", \"on \", rec.started?.year ?? 0) : \"off\"\n}\n",
+    )
+    .unwrap();
+    let program = load(&dir);
+    let storage = Storage::in_dirs(dir.join("state"), &dir);
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let (heard, events) = std::sync::mpsc::channel();
+    let heard = std::sync::Mutex::new(heard);
+    let live = Live {
+        events_to: Some(ipc::EventSink::new(move |ev| {
+            let _ = heard.lock().unwrap().send(ev.clone());
+        })),
+        ..Live::default()
+    };
+    let t = std::thread::spawn(move || logic(program, storage, from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| s.texts() == ["off"]);
+    let a = m.scene.roots()[0];
+    let click = || ToLogic::Event {
+        input: None,
+        node: a,
+        event: NodeEvent::Click,
+    };
+    to_logic.send(click()).unwrap();
+    let year = chrono::Local::now().format("%Y").to_string();
+    m.until("running", |s| s.texts() == [format!("on {year}")]);
+    to_logic.send(click()).unwrap();
+    m.until("stopped", |s| s.texts() == ["off"]);
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    while let Ok(ev) = events.try_recv() {
+        assert_ne!(ev["event"], "notices", "a stop is no failure: {ev}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// (M6, decisions.md m6-w2-surface) A popup grabs by its cause: the diff
 /// a click's handler produces carries that click's serial
 /// (`SceneDiff::press`, and so does every diff after it until a hover

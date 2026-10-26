@@ -14,8 +14,8 @@
 //! strand starts it does not inherit strand's xdg-activation token or the
 //! variables that address this shell (`child::child_env`), and it gets
 //! back the transparent huge page setting strand inherited. Its
-//! thread waits for it and nothing else: it is never killed, since an
-//! app it opens may run for hours. A failure to start or a non-zero exit
+//! thread waits for it (asleep on its pidfd) and nothing else: it is
+//! never killed unasked, since an app it opens may run for hours. A failure to start or a non-zero exit
 //! comes back (the loop is pinged awake) as a log line and a `strand
 //! watch` notice naming the action, as a `file`'s `run:` failing does.
 //! The shell itself is fine, so it is not an overlay notice.
@@ -32,14 +32,24 @@
 //! was dropped first (superseded, or a handler let it go) has its
 //! process group ended: SIGTERM, then SIGKILL after
 //! `strand_services::custom::KILL_GRACE`.
+//!
+//! (lockmon) `rec.stop()` (an [`ExecRequest`] with `stop`) asks each
+//! command of the action running to stop and drops the re-run queued
+//! behind one: the thread that owns the command sends its process group
+//! SIGINT, then SIGTERM after [`STOP_GRACE`] while it still runs, then
+//! SIGKILL after another, and reaps it after, so no signal reaches a
+//! group whose id was handed on. A stopped command is no failure (no
+//! notice); a stopped call's `.error` says it was stopped. After each
+//! step logic is told how each action's run changed (`rec.running`,
+//! `rec.started`: [`Execs::runs`], `Instance::set_action_run`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::io::Read as _;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::json;
 use strand_compiler::vm::{ExecReply, ExecRequest};
@@ -50,15 +60,21 @@ use super::shell::Shell;
 /// A command's thread only starts it and waits.
 const STACK: usize = 64 * 1024;
 
+/// (lockmon) How long a stopped command has after SIGINT before SIGTERM,
+/// and after SIGTERM before SIGKILL (spec.md 5.7).
+pub(super) const STOP_GRACE: Duration = Duration::from_secs(2);
+
 /// A command that ended, as its thread reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Ended {
     /// The action's name.
     pub action: String,
-    /// Why it failed; `None`: it exited with success.
+    /// Why it failed; `None`: it exited with success, or was stopped.
     pub failed: Option<String>,
     /// Its exit code ([`Captured::exit`]).
     pub exit: i32,
+    /// (lockmon) `rec.stop()` ended it (no notice: it was asked to).
+    pub stopped: bool,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -69,12 +85,88 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// id, and what it printed or why it failed.
 type Outputs = Arc<Mutex<Vec<(u64, Captured)>>>;
 
+/// Nothing asked of a command's thread: it waits for the command.
+const GO: u8 = 0;
+/// Its call was dropped: SIGTERM, then SIGKILL ([`end_group`]).
+const DROPPED: u8 = 1;
+/// (lockmon) `rec.stop()`: SIGINT, SIGTERM, SIGKILL ([`stop_group`]).
+const STOPPED: u8 = 2;
+
+/// (lockmon) What a command's thread is asked to do with its command,
+/// from the logic thread: the first ask counts. The thread alone signals
+/// the command's group and reaps it, so a signal never reaches a
+/// process group whose id was handed on.
+pub(super) struct Halt {
+    why: AtomicU8,
+    /// Wakes a detached command's thread from its wait (an eventfd);
+    /// `None` when there is none, and that thread looks every
+    /// [`SLOW_TICK`].
+    wake: Option<rustix::fd::OwnedFd>,
+}
+
+impl Halt {
+    /// A command not asked anything yet, with a wake for a thread that
+    /// sleeps until its command ends (`wake`).
+    pub(super) fn new(wake: bool) -> Halt {
+        let wake = wake
+            .then(|| {
+                rustix::event::eventfd(
+                    0,
+                    rustix::event::EventfdFlags::CLOEXEC | rustix::event::EventfdFlags::NONBLOCK,
+                )
+                .ok()
+            })
+            .flatten();
+        Halt {
+            why: AtomicU8::new(GO),
+            wake,
+        }
+    }
+
+    fn ask(&self, why: u8) {
+        let _ = self
+            .why
+            .compare_exchange(GO, why, Ordering::SeqCst, Ordering::SeqCst);
+        if let Some(w) = &self.wake {
+            let _ = rustix::io::write(w, &1u64.to_ne_bytes());
+        }
+    }
+
+    /// `rec.stop()`: end it, SIGINT first.
+    pub(super) fn stop(&self) {
+        self.ask(STOPPED);
+    }
+
+    /// Its call was dropped: end it.
+    pub(super) fn drop_call(&self) {
+        self.ask(DROPPED);
+    }
+
+    fn why(&self) -> u8 {
+        self.why.load(Ordering::SeqCst)
+    }
+
+    /// Empties the wake, once looked at.
+    fn drain(&self) {
+        if let Some(w) = &self.wake {
+            let mut b = [0u8; 8];
+            let _ = rustix::io::read(w, &mut b);
+        }
+    }
+}
+
+/// (lockmon) A detached command running.
+struct Detached {
+    started: SystemTime,
+    halt: Arc<Halt>,
+}
+
 /// The commands started and the ones that ended since logic last looked.
 pub(super) struct Execs {
     ping: calloop::ping::Ping,
     ended: Arc<Mutex<Vec<Ended>>>,
     /// The actions whose command is running.
-    running: HashSet<String>,
+    running: HashMap<String, Detached>,
     /// The re-run queued behind each running one: the latest call.
     queued: HashMap<String, ExecRequest>,
     /// (flex) The commands of actions with a result, running.
@@ -85,6 +177,11 @@ pub(super) struct Execs {
     /// How long a command with a result has to answer
     /// ([`POLL_TIMEOUT`]; shorter in tests).
     timeout: Duration,
+    /// (lockmon) The actions whose run changed since [`Execs::runs`].
+    changed: BTreeSet<String>,
+    /// How long a stopped command has at each step ([`STOP_GRACE`];
+    /// shorter in tests).
+    grace: Duration,
 }
 
 /// (flex) A running command whose output answers its call.
@@ -95,8 +192,11 @@ struct Fetching {
     /// program's own).
     argv: Vec<String>,
     reply: ExecReply,
-    /// Set when its call was dropped: its thread ends it.
-    cancel: Arc<AtomicBool>,
+    /// Asked when its call was dropped or `rec.stop()`: its thread ends
+    /// it.
+    halt: Arc<Halt>,
+    /// (lockmon) When it started.
+    started: SystemTime,
 }
 
 /// A command's output answering its call, as [`Execs::answered`]
@@ -115,35 +215,64 @@ pub(super) struct Answered {
     pub answer: Result<strand_compiler::vm::Value, String>,
 }
 
+/// (lockmon) An action's run as [`Execs::runs`] reports it: whether a
+/// command of it runs, and when the one running longest started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RunState {
+    pub action: String,
+    pub running: bool,
+    pub started: Option<SystemTime>,
+}
+
 impl Execs {
     /// `ping` wakes the loop when a command ends.
     pub(super) fn new(ping: calloop::ping::Ping) -> Execs {
         Execs {
             ping,
             ended: Arc::default(),
-            running: HashSet::new(),
+            running: HashMap::new(),
             queued: HashMap::new(),
             fetching: Vec::new(),
             outputs: Arc::default(),
             next_id: 0,
             timeout: POLL_TIMEOUT,
+            changed: BTreeSet::new(),
+            grace: STOP_GRACE,
         }
     }
 
     /// Starts `req`'s command on a thread of its own, or (its action's
     /// command still running) queues it to run once that ends, in place
     /// of any re-run queued before. (flex) A command with a reply always
-    /// starts at once.
+    /// starts at once. (lockmon) A stop stops the action's commands.
     pub(super) fn start(&mut self, req: ExecRequest) {
+        if req.stop {
+            self.stop(&req.action);
+            return;
+        }
         if let Some(reply) = req.reply.clone() {
             self.fetch(req, reply);
             return;
         }
-        if self.running.contains(&req.action) {
+        if self.running.contains_key(&req.action) {
             self.queued.insert(req.action.clone(), req);
             return;
         }
         self.spawn(req);
+    }
+
+    /// (lockmon) `rec.stop()`: every command of `action` running is
+    /// asked to stop (its thread signals it), and the re-run queued
+    /// behind one is dropped. A call after the stop queues as usual,
+    /// started once the stopped command has ended.
+    fn stop(&mut self, action: &str) {
+        self.queued.remove(action);
+        if let Some(d) = self.running.get(action) {
+            d.halt.stop();
+        }
+        for f in self.fetching.iter().filter(|f| f.action == action) {
+            f.halt.stop();
+        }
     }
 
     /// The commands whose action is running or queued (tests).
@@ -156,26 +285,37 @@ impl Execs {
         let ended = self.ended.clone();
         let ping = self.ping.clone();
         let action = req.action.clone();
+        let halt = Arc::new(Halt::new(true));
+        let (h, grace) = (halt.clone(), self.grace);
         let spawned = std::thread::Builder::new()
             .name("strand-exec".into())
             .stack_size(STACK)
             .spawn(move || {
-                let (failed, exit) = run(&req.argv);
+                let (failed, exit, stopped) = run(&req.argv, &h, grace);
                 lock(&ended).push(Ended {
                     action: req.action,
                     failed,
                     exit,
+                    stopped,
                 });
                 ping.ping();
             });
         match spawned {
             Ok(_) => {
-                self.running.insert(action);
+                self.changed.insert(action.clone());
+                self.running.insert(
+                    action,
+                    Detached {
+                        started: SystemTime::now(),
+                        halt,
+                    },
+                );
             }
             Err(e) => lock(&self.ended).push(Ended {
                 action,
                 failed: Some(format!("no thread to start it on: {e}")),
                 exit: -1,
+                stopped: false,
             }),
         }
     }
@@ -184,15 +324,15 @@ impl Execs {
     fn fetch(&mut self, req: ExecRequest, reply: ExecReply) {
         let id = self.next_id;
         self.next_id += 1;
-        let cancel = Arc::new(AtomicBool::new(false));
+        let halt = Arc::new(Halt::new(false));
         let (outputs, ping) = (self.outputs.clone(), self.ping.clone());
-        let (c, timeout) = (cancel.clone(), self.timeout);
+        let (h, timeout, grace) = (halt.clone(), self.timeout, self.grace);
         let argv = req.argv.clone();
         let spawned = std::thread::Builder::new()
             .name("strand-exec".into())
             .stack_size(STACK)
             .spawn(move || {
-                let out = capture(&argv, &c, timeout);
+                let out = capture(&argv, &h, timeout, grace);
                 lock(&outputs).push((id, out));
                 ping.ping();
             });
@@ -200,12 +340,14 @@ impl Execs {
             reply.answer(Err(format!("no thread to start it on: {e}")));
             return;
         }
+        self.changed.insert(req.action.clone());
         self.fetching.push(Fetching {
             id,
             action: req.action,
             argv: req.argv,
             reply,
-            cancel,
+            halt,
+            started: SystemTime::now(),
         });
     }
 
@@ -223,6 +365,7 @@ impl Execs {
                 continue;
             };
             let f = self.fetching.swap_remove(i);
+            self.changed.insert(f.action.clone());
             if f.reply.abandoned() {
                 continue;
             }
@@ -238,11 +381,13 @@ impl Execs {
             });
         }
         // Calls dropped while their command runs: their threads end them.
+        let changed = &mut self.changed;
         self.fetching.retain(|f| {
             if !f.reply.abandoned() {
                 return true;
             }
-            f.cancel.store(true, Ordering::SeqCst);
+            f.halt.drop_call();
+            changed.insert(f.action.clone());
             // Its thread still reports; that output is dropped above.
             false
         });
@@ -254,22 +399,57 @@ impl Execs {
     pub(super) fn ended(&mut self) -> Vec<Ended> {
         let ended = std::mem::take(&mut *lock(&self.ended));
         for e in &ended {
-            if self.running.remove(&e.action)
-                && let Some(next) = self.queued.remove(&e.action)
-            {
-                self.spawn(next);
+            if self.running.remove(&e.action).is_some() {
+                self.changed.insert(e.action.clone());
+                if let Some(next) = self.queued.remove(&e.action) {
+                    self.spawn(next);
+                }
             }
         }
         ended
     }
+
+    /// (lockmon) Wakes the loop for one more step.
+    pub(super) fn wake(&self) {
+        self.ping.ping();
+    }
+
+    /// (lockmon) The runs that changed since the last call: whether a
+    /// command of each action runs (a detached one, or any with a
+    /// result), and when the one running longest started.
+    pub(super) fn runs(&mut self) -> Vec<RunState> {
+        std::mem::take(&mut self.changed)
+            .into_iter()
+            .map(|action| {
+                let started = self
+                    .running
+                    .get(&action)
+                    .map(|d| d.started)
+                    .into_iter()
+                    .chain(
+                        self.fetching
+                            .iter()
+                            .filter(|f| f.action == action)
+                            .map(|f| f.started),
+                    )
+                    .min();
+                RunState {
+                    running: started.is_some(),
+                    started,
+                    action,
+                }
+            })
+            .collect()
+    }
 }
 
-/// Runs `argv` (the program, then each argument as it is) to its end:
-/// `None` when it exited with success, else why not; and its exit code
-/// ([`Captured::exit`]).
-pub(super) fn run(argv: &[String]) -> (Option<String>, i32) {
+/// Runs `argv` (the program, then each argument as it is) to its end, or
+/// (lockmon) until `halt` stops it ([`stop_group`], `grace` at each
+/// step): `None` when it exited with success or was stopped, else why
+/// not; its exit code ([`Captured::exit`]); and whether it was stopped.
+pub(super) fn run(argv: &[String], halt: &Halt, grace: Duration) -> (Option<String>, i32, bool) {
     let Some((prog, args)) = argv.split_first() else {
-        return (Some("it has no command".into()), -1);
+        return (Some("it has no command".into()), -1, false);
     };
     let mut cmd = Command::new(prog);
     cmd.args(args)
@@ -287,12 +467,65 @@ pub(super) fn run(argv: &[String]) -> (Option<String>, i32) {
     }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return (Some(format!("could not start `{prog}`: {e}")), -1),
+        Err(e) => return (Some(format!("could not start `{prog}`: {e}")), -1, false),
     };
+    let stopped = wait_or_stop(&child, halt);
+    if stopped {
+        stop_group(i32::try_from(child.id()).unwrap_or(0), grace);
+    }
     match child.wait() {
-        Ok(s) if s.success() => (None, 0),
-        Ok(s) => (Some(format!("`{prog}` failed ({s})")), exit_code(s)),
-        Err(e) => (Some(format!("`{prog}` could not be waited for: {e}")), -1),
+        Ok(s) if stopped => (None, exit_code(s), true),
+        Ok(s) if s.success() => (None, 0, false),
+        Ok(s) => (Some(format!("`{prog}` failed ({s})")), exit_code(s), false),
+        Err(e) => (
+            Some(format!("`{prog}` could not be waited for: {e}")),
+            -1,
+            stopped,
+        ),
+    }
+}
+
+/// How often a detached command's thread looks at it when the kernel
+/// gives no pidfd or eventfd to sleep on.
+const SLOW_TICK: Duration = Duration::from_millis(250);
+
+/// (lockmon) Waits, without reaping it, until `child` ends (false) or
+/// `halt` asks it to stop while it still runs (true). It sleeps on the
+/// child's pidfd and `halt`'s wake, so an app that runs for hours costs
+/// no wake-ups.
+fn wait_or_stop(child: &std::process::Child, halt: &Halt) -> bool {
+    use rustix::event::{PollFd, PollFlags, poll};
+    let pid = i32::try_from(child.id()).unwrap_or(0);
+    let pidfd = rustix::process::pidfd_open(
+        rustix::process::Pid::from_child(child),
+        rustix::process::PidfdFlags::empty(),
+    )
+    .ok();
+    let slow = rustix::time::Timespec {
+        tv_sec: 0,
+        tv_nsec: i64::from(SLOW_TICK.subsec_nanos()),
+    };
+    loop {
+        if exited(pid) {
+            return false;
+        }
+        if halt.why() == STOPPED {
+            return true;
+        }
+        let mut fds = Vec::with_capacity(2);
+        if let Some(p) = &pidfd {
+            fds.push(PollFd::new(p, PollFlags::IN));
+        }
+        if let Some(w) = &halt.wake {
+            fds.push(PollFd::new(w, PollFlags::IN));
+        }
+        let timeout = (fds.len() < 2).then_some(&slow);
+        match poll(&mut fds, timeout) {
+            Ok(_) | Err(rustix::io::Errno::INTR) => {}
+            Err(_) => std::thread::sleep(SLOW_TICK),
+        }
+        drop(fds);
+        halt.drain();
     }
 }
 
@@ -318,10 +551,16 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 /// [`MAX_DOCUMENT`] bytes), or why not. It is given `timeout` to print
 /// its output and end, as a `from poll` command is (a command that
 /// hangs, or leaves a child holding its stdout, would otherwise hold its
-/// call pending for ever); `cancel` set (its call was dropped) ends it
-/// at once. This thread alone ends its process group, before it reaps
-/// the command, so the group's id cannot have been reused by then.
-pub(super) fn capture(argv: &[String], cancel: &AtomicBool, timeout: Duration) -> Captured {
+/// call pending for ever); `halt` asked (its call was dropped, or
+/// (lockmon) `rec.stop()` with `grace` at each step) ends it at once.
+/// This thread alone ends its process group, before it reaps the
+/// command, so the group's id cannot have been reused by then.
+pub(super) fn capture(
+    argv: &[String],
+    halt: &Halt,
+    timeout: Duration,
+    grace: Duration,
+) -> Captured {
     let failed = |why: String| Captured {
         out: Err(why),
         exit: -1,
@@ -355,7 +594,7 @@ pub(super) fn capture(argv: &[String], cancel: &AtomicBool, timeout: Duration) -
     let deadline = Instant::now() + timeout;
     let mut out = Vec::new();
     let read = match child.stdout.take() {
-        Some(stdout) => read_until(stdout, &mut out, deadline, cancel),
+        Some(stdout) => read_until(stdout, &mut out, deadline, halt),
         None => Ok(Reading::Done),
     };
     let ended = |child: &mut std::process::Child, why: String| {
@@ -363,6 +602,15 @@ pub(super) fn capture(argv: &[String], cancel: &AtomicBool, timeout: Duration) -
         Captured {
             out: Err(why),
             exit: -1,
+        }
+    };
+    // (lockmon) `rec.stop()`: SIGINT first; the call's error says so.
+    let stopped = |child: &mut std::process::Child| {
+        stop_group(group, grace);
+        let exit = child.wait().map_or(-1, exit_code);
+        Captured {
+            out: Err(format!("`{prog}` was stopped")),
+            exit,
         }
     };
     match read {
@@ -373,7 +621,8 @@ pub(super) fn capture(argv: &[String], cancel: &AtomicBool, timeout: Duration) -
                 format!("`{prog}` printed more than {MAX_DOCUMENT} bytes; ended"),
             );
         }
-        Ok(Reading::Cancelled) => {
+        Ok(Reading::Halted) if halt.why() == STOPPED => return stopped(&mut child),
+        Ok(Reading::Halted) => {
             return ended(&mut child, format!("`{prog}` was no longer needed"));
         }
         Ok(Reading::TimedOut) => {
@@ -393,7 +642,8 @@ pub(super) fn capture(argv: &[String], cancel: &AtomicBool, timeout: Duration) -
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => break s,
-            Ok(None) if cancel.load(Ordering::SeqCst) => {
+            Ok(None) if halt.why() == STOPPED => return stopped(&mut child),
+            Ok(None) if halt.why() != GO => {
                 return ended(&mut child, format!("`{prog}` was no longer needed"));
             }
             Ok(None) if Instant::now() >= deadline => {
@@ -437,25 +687,25 @@ enum Reading {
     Done,
     /// Past [`MAX_DOCUMENT`] bytes.
     TooMuch,
-    /// Its call was dropped.
-    Cancelled,
+    /// Its call was dropped, or (lockmon) it was stopped.
+    Halted,
     /// Its deadline passed.
     TimedOut,
 }
 
 /// Reads `stdout` into `out` until its end, [`MAX_DOCUMENT`] bytes,
-/// `deadline` or `cancel`, waiting at most [`TICK`] at a time.
+/// `deadline` or `halt`, waiting at most [`TICK`] at a time.
 fn read_until(
     mut stdout: std::process::ChildStdout,
     out: &mut Vec<u8>,
     deadline: Instant,
-    cancel: &AtomicBool,
+    halt: &Halt,
 ) -> std::io::Result<Reading> {
     use rustix::event::{PollFd, PollFlags, poll};
     let mut buf = [0u8; 8192];
     loop {
-        if cancel.load(Ordering::SeqCst) {
-            return Ok(Reading::Cancelled);
+        if halt.why() != GO {
+            return Ok(Reading::Halted);
         }
         let now = Instant::now();
         if now >= deadline {
@@ -511,6 +761,32 @@ fn end_group(child: &mut std::process::Child, pgid: i32) {
     let _ = child.wait();
 }
 
+/// (lockmon) `rec.stop()` on the command leading process group `pgid`,
+/// our unreaped child (the caller reaps it after): SIGINT to the group,
+/// then SIGTERM once `grace` has passed and the leader has not ended,
+/// then SIGKILL after another `grace`. A leader that ends at a step ends
+/// the escalation; the group's other members had each signal sent so
+/// far, as a terminal's Ctrl-C would send it.
+fn stop_group(pgid: i32, grace: Duration) {
+    if pgid <= 1 {
+        return;
+    }
+    for sig in [libc::SIGINT, libc::SIGTERM] {
+        // SAFETY: kill(2) on our child's own process group, whose leader
+        // we have not reaped; no memory is involved.
+        unsafe { libc::kill(-pgid, sig) };
+        let until = Instant::now() + grace;
+        while Instant::now() < until && !exited(pgid) {
+            std::thread::sleep(TICK);
+        }
+        if exited(pgid) {
+            return;
+        }
+    }
+    // SAFETY: as above; the leader is still unreaped.
+    unsafe { libc::kill(-pgid, libc::SIGKILL) };
+}
+
 /// Whether process `pid` (our child) has ended, without reaping it.
 fn exited(pid: i32) -> bool {
     let Ok(pid) = u32::try_from(pid) else {
@@ -535,6 +811,12 @@ impl Shell {
     /// and reports the ones that failed.
     pub(super) fn run_execs(&mut self) {
         for req in self.inst.take_execs() {
+            // (lockmon) A stop is the handler's, replayed with it; the
+            // commands' ends are recorded as they come.
+            if req.stop {
+                self.execs.start(req);
+                continue;
+            }
             // (report) Its start, never its arguments (their count).
             let t = strand_core::flight::now_ns();
             let argc = req.argv.len().saturating_sub(1);
@@ -548,6 +830,9 @@ impl Shell {
             self.recorder
                 .borrow_mut()
                 .action(t, &e.action, 0, false, e.exit);
+            if e.stopped {
+                log::info!("action {}: stopped (exit {})", e.action, e.exit);
+            }
             if let Some(why) = e.failed {
                 self.exec_notice(&e.action, &why);
             }
@@ -567,6 +852,18 @@ impl Shell {
             if let Some(why) = a.failed {
                 log::info!("action {}: {why}", a.action);
             }
+        }
+        // (lockmon) `rec.running` and `rec.started` as the commands now
+        // stand; the loop steps once more to show them.
+        let runs = self.execs.runs();
+        for r in &runs {
+            let started = r
+                .started
+                .map(|t| chrono::DateTime::<chrono::Local>::from(t).naive_local());
+            self.inst.set_action_run(&r.action, r.running, started);
+        }
+        if !runs.is_empty() {
+            self.execs.wake();
         }
     }
 
@@ -692,6 +989,7 @@ mod tests {
                 action: "probe".into(),
                 argv,
                 reply: Some(reply.clone()),
+                stop: false,
             };
             (reply, req)
         };
@@ -798,6 +1096,7 @@ mod tests {
                 action: "probe".into(),
                 argv,
                 reply: Some(reply),
+                stop: false,
             });
         }
         let start = Instant::now();
@@ -834,6 +1133,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// [`run`] to its end.
+    fn run_(argv: &[String]) -> (Option<String>, i32, bool) {
+        run(argv, &Halt::new(true), STOP_GRACE)
+    }
+
     /// Whether `pid` has ended and waits to be reaped.
     fn zombie(pid: i32) -> bool {
         std::fs::read_to_string(format!("/proc/{pid}/stat"))
@@ -844,6 +1148,216 @@ mod tests {
                     .map(|r| r.trim_start().starts_with('Z'))
             })
             .unwrap_or(false)
+    }
+
+    /// A loop that ticks (its ping source registered) and an `Execs` on
+    /// it, with `grace` for stopped commands.
+    fn looped(grace: Duration) -> (calloop::EventLoop<'static, ()>, Execs) {
+        let loop_ = calloop::EventLoop::<()>::try_new().unwrap();
+        let (ping, source) = calloop::ping::make_ping().unwrap();
+        loop_.handle().insert_source(source, |_, _, _| {}).unwrap();
+        let mut execs = Execs::new(ping);
+        execs.grace = grace;
+        (loop_, execs)
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("strand-exec-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn wait_for(what: &str, secs: u64, mut cond: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while !cond() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// (lockmon) `rec.stop()` on a detached command: its process group
+    /// gets SIGINT, then SIGTERM once the grace has passed and it still
+    /// runs, then SIGKILL; the re-run queued behind it is dropped, its
+    /// end is no failure, and its run reads running from its start to
+    /// its end. A command that ends on SIGINT ends at the first step.
+    #[test]
+    fn a_stopped_command_gets_sigint_then_sigterm_then_sigkill() {
+        let dir = scratch("stop");
+        let log = dir.join("log");
+        let pid_file = dir.join("pid");
+        // Ignores SIGINT and SIGTERM (saying so): only SIGKILL ends it.
+        let script = "trap 'echo int >> \"$0\"' INT; trap 'echo term >> \"$0\"' TERM; \
+                      echo $$ > \"$1\"; while :; do sleep 0.05; done";
+        let req = |action: &str, argv: Vec<String>| ExecRequest {
+            action: action.into(),
+            argv,
+            reply: None,
+            stop: false,
+        };
+        let stubborn: Vec<String> = [
+            "sh",
+            "-c",
+            script,
+            log.to_str().unwrap(),
+            pid_file.to_str().unwrap(),
+        ]
+        .map(String::from)
+        .to_vec();
+        let (mut loop_, mut execs) = looped(Duration::from_millis(400));
+        let before = SystemTime::now();
+        execs.start(req("rec", stubborn.clone()));
+        execs.start(req("rec", sh("echo rerun >> \"$0\"")));
+        assert_eq!(execs.busy(), (1, 1));
+        let runs = execs.runs();
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert!(runs[0].running && runs[0].action == "rec");
+        assert!(runs[0].started.is_some_and(|t| t >= before));
+        assert!(execs.runs().is_empty(), "reported once");
+        wait_for("it never started", 20, || {
+            std::fs::read_to_string(&pid_file).is_ok_and(|s| !s.trim().is_empty())
+        });
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let asked = Instant::now();
+        execs.start(ExecRequest {
+            action: "rec".into(),
+            argv: Vec::new(),
+            reply: None,
+            stop: true,
+        });
+        assert_eq!(execs.busy(), (1, 0), "the queued re-run is dropped");
+        let mut ended = Vec::new();
+        while ended.is_empty() {
+            assert!(asked.elapsed() < Duration::from_secs(20), "it never ended");
+            loop_
+                .dispatch(Some(Duration::from_millis(50)), &mut ())
+                .unwrap();
+            ended.extend(execs.ended());
+        }
+        let took = asked.elapsed();
+        assert!(took >= Duration::from_millis(800), "two graces: {took:?}");
+        assert_eq!(
+            ended,
+            [Ended {
+                action: "rec".into(),
+                failed: None,
+                exit: 128 + libc::SIGKILL,
+                stopped: true,
+            }]
+        );
+        let said = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(said, "int\nterm\n", "SIGINT, then SIGTERM, then SIGKILL");
+        // SAFETY: kill(2) with signal 0 only asks whether it is there.
+        assert!(unsafe { libc::kill(pid, 0) } != 0 || zombie(pid));
+        assert_eq!(execs.busy(), (0, 0), "no re-run");
+        let runs = execs.runs();
+        assert_eq!(
+            runs,
+            [RunState {
+                action: "rec".into(),
+                running: false,
+                started: None,
+            }]
+        );
+        // One that ends on SIGINT ends at once.
+        let asked = Instant::now();
+        execs.start(req("rec", sh("exec sleep 30")));
+        std::thread::sleep(Duration::from_millis(100));
+        execs.start(ExecRequest {
+            action: "rec".into(),
+            argv: Vec::new(),
+            reply: None,
+            stop: true,
+        });
+        let mut ended = Vec::new();
+        while ended.is_empty() {
+            assert!(asked.elapsed() < Duration::from_secs(20), "it never ended");
+            loop_
+                .dispatch(Some(Duration::from_millis(50)), &mut ())
+                .unwrap();
+            ended.extend(execs.ended());
+        }
+        assert!(asked.elapsed() < Duration::from_secs(5));
+        assert_eq!(ended[0].exit, 128 + libc::SIGINT);
+        assert!(ended[0].stopped && ended[0].failed.is_none());
+        // A stop with nothing running does nothing.
+        execs.start(ExecRequest {
+            action: "idle".into(),
+            argv: Vec::new(),
+            reply: None,
+            stop: true,
+        });
+        assert_eq!(execs.busy(), (0, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (lockmon) `rec.stop()` on an action with a result: each running
+    /// call's command is stopped (SIGINT first) and its call answers with
+    /// an error saying so; its run reads running while any call's
+    /// command runs, from the oldest one's start.
+    #[test]
+    fn a_stopped_call_answers_that_it_was_stopped() {
+        let (mut loop_, mut execs) = looped(Duration::from_millis(300));
+        let read = |reply: &ExecReply, out: &str| {
+            crate::services::custom::read_output(reply.types(), reply.ty(), out)
+        };
+        let (p, text) = program("text");
+        let mut replies = Vec::new();
+        let mut waits = Vec::new();
+        for _ in 0..2 {
+            let reply = ExecReply::new(p.clone(), text.clone());
+            waits.push(reply.wait());
+            replies.push(reply.clone());
+            execs.start(ExecRequest {
+                action: "probe".into(),
+                argv: sh("exec sleep 30"),
+                reply: Some(reply),
+                stop: false,
+            });
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let runs = execs.runs();
+        assert_eq!(runs.len(), 1);
+        assert!(runs[0].running);
+        let first = execs.fetching.iter().map(|f| f.started).min();
+        assert_eq!(runs[0].started, first, "the oldest call's start");
+        std::thread::sleep(Duration::from_millis(100));
+        let asked = Instant::now();
+        execs.start(ExecRequest {
+            action: "probe".into(),
+            argv: Vec::new(),
+            reply: None,
+            stop: true,
+        });
+        let mut answered = Vec::new();
+        while answered.len() < 2 {
+            assert!(asked.elapsed() < Duration::from_secs(20), "{answered:?}");
+            loop_
+                .dispatch(Some(Duration::from_millis(50)), &mut ())
+                .unwrap();
+            answered.extend(execs.answered(&read));
+        }
+        assert!(asked.elapsed() < Duration::from_secs(5));
+        for r in &replies {
+            assert_eq!(r.peek(), Some(Err("`sh` was stopped".to_string())));
+        }
+        assert!(
+            answered.iter().all(|a| a.exit == 128 + libc::SIGINT),
+            "{answered:?}"
+        );
+        assert_eq!(
+            execs.runs(),
+            [RunState {
+                action: "probe".into(),
+                running: false,
+                started: None,
+            }]
+        );
+        drop(waits);
     }
 
     /// (M6, the review of the owner's ruling) An action runs at most
@@ -872,6 +1386,7 @@ mod tests {
             .map(|s| s.to_string())
             .collect(),
             reply: None,
+            stop: false,
         };
         let mut loop_ = calloop::EventLoop::<()>::try_new().unwrap();
         let (ping, source) = calloop::ping::make_ping().unwrap();
@@ -926,11 +1441,14 @@ mod tests {
                 Ok("/run/strand-second.sock")
             );
             assert_eq!(
-                run(&sh("test -z \"${STRAND_SOCKET+x}${STRAND_STATE_DIR+x}\"")).0,
+                run_(&sh("test -z \"${STRAND_SOCKET+x}${STRAND_STATE_DIR+x}\"")).0,
                 None,
                 "inherited"
             );
-            assert_eq!(run(&sh("test \"$STRAND_TEST_EXEC_ENV_CHILD\" = 1")).0, None);
+            assert_eq!(
+                run_(&sh("test \"$STRAND_TEST_EXEC_ENV_CHILD\" = 1")).0,
+                None
+            );
             return;
         }
         let out = std::process::Command::new(std::env::current_exe().unwrap())
@@ -967,7 +1485,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        assert_eq!(run(&argv).0, None);
+        assert_eq!(run_(&argv).0, None);
         let text = std::fs::read_to_string(&out).unwrap();
         let ids: Vec<i32> = text
             .split_whitespace()
@@ -1002,12 +1520,12 @@ mod tests {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        assert_eq!(run(&argv).0, None);
+        assert_eq!(run_(&argv).0, None);
         assert_eq!(
             std::fs::read_to_string(&out).unwrap(),
             "two words\nit's \"quoted\"\n$HOME; rm -rf /\n"
         );
-        let (failed, exit) = run(&["sh".into(), "-c".into(), "exit 3".into()]);
+        let (failed, exit, _) = run_(&["sh".into(), "-c".into(), "exit 3".into()]);
         assert_eq!(exit, 3, "the real exit code");
         assert!(
             failed
@@ -1015,7 +1533,7 @@ mod tests {
                 .is_some_and(|f| f.starts_with("`sh` failed") && f.contains('3')),
             "{failed:?}"
         );
-        let missing = run(&["/nonexistent/strand-test-program".into()]).0;
+        let missing = run_(&["/nonexistent/strand-test-program".into()]).0;
         assert!(
             missing
                 .as_deref()

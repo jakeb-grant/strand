@@ -6,10 +6,15 @@
 //!   lock and one password field; a second `lock` is an error naming the
 //!   first.
 //! - `check::lock_prop`: the surface props that a lock cannot honour are
-//!   warnings rather than silently dropped: a lock covers every monitor
-//!   (`screens`), sits above everything on `ext-session-lock` (`layer`),
-//!   fills its monitor (`anchor`) and always has the keyboard
-//!   (`keyboard`).
+//!   warnings rather than silently dropped: a lock sits above everything
+//!   on `ext-session-lock` (`layer`), fills its monitor (`anchor`) and
+//!   always has the keyboard (`keyboard`). (lockmon) `screens:` picks
+//!   the monitors that show the lock's content, as on a bar (every other
+//!   one shows a solid), so it is no longer one of them.
+//! - `check::lock_state_screen` (lockmon, in the tree checker): a lock's
+//!   `state` is one for every monitor's instance, so its starting value
+//!   reads neither `screen` nor a `let` of the lock (each instance's
+//!   own).
 //! - `check::lock_no_auth`: something in the `lock` calls `auth.submit`,
 //!   in one of its handlers or timers or in a component it shows (a `fn`
 //!   is pure, so it cannot). Only an `auth` success unlocks, and a lock that
@@ -31,7 +36,6 @@ use super::Module;
 
 /// The surface props a `lock` ignores, and why.
 const IGNORED: &[(&str, &str)] = &[
-    ("screens", "a lock covers every monitor"),
     ("layer", "a lock is above everything, on `ext-session-lock`"),
     ("anchor", "a lock surface fills its monitor"),
     ("keyboard", "a lock always takes the keyboard"),
@@ -218,6 +222,65 @@ impl Walk<'_> {
                 Node::State(_) | Node::Slot(_) | Node::Set(..) | Node::Play(_) => {}
             }
         }
+    }
+}
+
+/// (lockmon) What [`first_in`] looks for: where an expression reads
+/// something, and what.
+pub(super) type Finder<'f> = dyn Fn(&hir::Expr) -> Option<(Span, String)> + 'f;
+
+/// (lockmon) The first `f` gives in statements `stmts`, walking every
+/// expression in them; a `play` statement (which plays on the element
+/// the statement runs for) gives `play`.
+pub(super) fn first_in(stmts: &[Stmt], f: &Finder<'_>) -> Option<(Span, String)> {
+    stmts.iter().find_map(|s| match &s.kind {
+        StmtKind::Let { value, .. } | StmtKind::Expr(value) => first_expr(value, f),
+        StmtKind::Assign { target, value, .. } => {
+            first_expr(target, f).or_else(|| first_expr(value, f))
+        }
+        StmtKind::If { cond, then, else_ } => first_expr(cond, f)
+            .or_else(|| first_in(then, f))
+            .or_else(|| first_in(else_, f)),
+        StmtKind::For { iter, body, .. } => first_expr(iter, f).or_else(|| first_in(body, f)),
+        StmtKind::Match { scrutinee, arms } => {
+            first_expr(scrutinee, f).or_else(|| arms.iter().find_map(|(_, body)| first_in(body, f)))
+        }
+        StmtKind::Play(_) => Some((s.span, "`play`, on its element".to_string())),
+        StmtKind::Error => None,
+    })
+}
+
+/// (lockmon) The first `f` gives in expression `e` or one inside it.
+pub(super) fn first_expr(e: &hir::Expr, f: &Finder<'_>) -> Option<(Span, String)> {
+    if let Some(t) = f(e) {
+        return Some(t);
+    }
+    let one = |x: &hir::Expr| first_expr(x, f);
+    match &e.kind {
+        ExprKind::Call { callee, args } => {
+            let c = match callee {
+                Callee::Method { receiver, .. } => one(receiver),
+                Callee::Value(v) => one(v),
+                _ => None,
+            };
+            c.or_else(|| args.iter().find_map(|a| one(&a.value)))
+        }
+        ExprKind::Field { base, .. } => one(base),
+        ExprKind::Index { base, index } => one(base).or_else(|| one(index)),
+        ExprKind::Unary { expr, .. } => one(expr),
+        ExprKind::Binary { lhs, rhs, .. } => one(lhs).or_else(|| one(rhs)),
+        ExprKind::Ternary { cond, then, else_ } => {
+            one(cond).or_else(|| one(then)).or_else(|| one(else_))
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            hir::LambdaBody::Expr(e) => one(e),
+            hir::LambdaBody::Block(b) => first_in(b, f),
+        },
+        ExprKind::Match { scrutinee, arms } => {
+            one(scrutinee).or_else(|| arms.iter().find_map(|(_, e)| one(e)))
+        }
+        ExprKind::List(v) | ExprKind::Commas(v) | ExprKind::Spaced(v) => v.iter().find_map(one),
+        _ => None,
     }
 }
 

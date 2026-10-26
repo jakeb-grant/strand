@@ -623,7 +623,9 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         _: u32,
     ) {
         self.stop_repeat();
-        let id = self.keyboard_target(surface).or(self.keyboard_focus);
+        // (lockmon) A solid lock surface's keys went to the content
+        // focused then, which the focused output no longer names.
+        let id = self.surface_for(surface).or(self.keyboard_focus);
         log::trace!("keyboard leave {id:?} (grab focus {:?})", self.grab_focus);
         if self.keyboard_focus == id {
             self.keyboard_focus = None;

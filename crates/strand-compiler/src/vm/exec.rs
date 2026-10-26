@@ -432,6 +432,14 @@ impl Machine {
                         self.stack.push(Value::Unit);
                     }
                 }
+                Op::ActionRun(def) => {
+                    let v = vm.action_run(rt, *def)?;
+                    self.stack.push(v);
+                }
+                Op::StopAction(def) => {
+                    vm.stop_action(*def)?;
+                    self.stack.push(Value::Unit);
+                }
                 Op::MakeRecord { ty, args } => {
                     let a = self.pop_args(&chunk.args[*args as usize]);
                     let def = vm.types().record(*ty);

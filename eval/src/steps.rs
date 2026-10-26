@@ -205,6 +205,12 @@ pub enum StepKind {
         method: String,
         answer: Result<String, String>,
     },
+    /// (lockmon) `end action <name>`: the oldest command of action
+    /// `name` the sandbox counts as running ends (the sandbox runs no
+    /// command: one runs from its call until this step or `stop()`).
+    EndAction {
+        action: String,
+    },
     // Perturbations.
     TextHold {
         filter: Option<String>,
@@ -783,6 +789,15 @@ fn parse_line(text: &str) -> Result<Option<StepKind>, String> {
                     configure: Some(st),
                 }
             }
+        }
+        "end" => {
+            let usage = "`end action <name>`";
+            if arg(1) != Some("action") || w[1].quoted {
+                return Err(format!("`end` takes {usage}"));
+            }
+            let action = need(2, usage)?.to_string();
+            only(3)?;
+            StepKind::EndAction { action }
         }
         "answer" => {
             let usage = "`answer <service.method> <JSON>`, `answer <service.method> error \

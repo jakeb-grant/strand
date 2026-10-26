@@ -205,6 +205,11 @@ pub enum Op {
         def: DefId,
         args: u32,
     },
+    /// (lockmon) Push a declared action's run (`rec.running`,
+    /// `rec.started`): an `ActionRun` record, tracked.
+    ActionRun(DefId),
+    /// (lockmon) `rec.stop()`: stop the action's commands; pushes `()`.
+    StopAction(DefId),
     /// Build a record (`Pin(app: a, label: "x")`).
     MakeRecord {
         ty: RecordId,
@@ -371,6 +376,8 @@ impl Chunk {
                     | Op::CallFn { .. }
                     | Op::CallValue { .. }
                     | Op::Exec { .. }
+                    | Op::ActionRun(_)
+                    | Op::StopAction(_)
                     | Op::Palette { .. }
                     | Op::Await
                     | Op::Keyed { .. }

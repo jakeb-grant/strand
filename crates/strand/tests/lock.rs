@@ -49,6 +49,7 @@
 
 #[path = "lock/proxy.rs"]
 mod proxy;
+mod support;
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
@@ -2609,4 +2610,369 @@ fn a_report_with_words_is_refused_while_locked() {
     vm.lock_passwords();
     let dir = vm.strand.report("after the unlock");
     assert!(dir.join("bundle.json").is_file());
+}
+
+// ---- (lockmon) the lock on every monitor -------------------------------------------
+
+/// (lockmon) [`CONFIG`] with each monitor's instance in its own shade:
+/// `HEADLESS-1`'s the colours above, every other monitor's a little
+/// redder ([`LOCK_BG2`] and the others), so a shot tells an instance
+/// from the solid (the solid has the first content's colour). Its text
+/// faults once `lock.zero` is 0 on every monitor but `HEADLESS-1`.
+const MULTI: &str = r#"export state locked = false
+export state zero = 1
+lock Gate {
+  state secret = ""
+  open: <-> locked
+  bg: screen.name == "HEADLESS-1" ? #2050d0 : #3050d0
+  when auth.failed { bg: screen.name == "HEADLESS-1" ? #a02040 : #b02040 }
+  when secret != "" { bg: screen.name == "HEADLESS-1" ? #20a050 : #30a050 }
+  input { type: password; text: <-> secret; focus: true
+    on activate { if secret != "" { auth.submit(secret) }; secret = "" }
+  }
+  text pct(10 / (screen.name == "HEADLESS-1" ? 1 : zero))
+}
+"#;
+const LOCK_BG2: [u8; 3] = [0x30, 0x50, 0xd0];
+const LOCK_REFUSED2: [u8; 3] = [0xb0, 0x20, 0x40];
+const LOCK_TYPED2: [u8; 3] = [0x30, 0xa0, 0x50];
+
+/// How many times strand's log says the session unlocked.
+fn unlocks(vm: &Vm) -> usize {
+    vm.strand
+        .log_text()
+        .matches("session lock: Unlocked")
+        .count()
+}
+
+/// (lockmon) The lock shows on every monitor, each instance its own
+/// (its shade, not the solid's), with one password: a wrong one is
+/// refused on both; half the right one typed, the pointer moved and
+/// clicked onto the other monitor, and the rest typed is one password
+/// that unlocks, once.
+#[test]
+fn the_lock_shows_on_every_monitor_with_one_password() {
+    let test = "lockmon_every";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::with(test, "", MULTI);
+    let second = vm.sway.plug();
+    vm.until(&second, "the desktop on the second output", Shot::desktop);
+    vm.lock();
+    vm.content();
+    vm.until_locked(&second, "the second monitor's own lock", true, |s| {
+        near(s.corner(), LOCK_BG2)
+    });
+    vm.keys.enter(WRONG);
+    for (o, bg) in [
+        ("HEADLESS-1", LOCK_REFUSED),
+        (second.as_str(), LOCK_REFUSED2),
+    ] {
+        vm.until_locked(o, "the wrong password refused", true, |s| {
+            near(s.corner(), bg)
+        });
+    }
+    vm.keys.type_text(&PASSWORD[..7]);
+    for (o, bg) in [("HEADLESS-1", LOCK_TYPED), (second.as_str(), LOCK_TYPED2)] {
+        vm.until_locked(o, "the typed half on every monitor", true, |s| {
+            near(s.corner(), bg)
+        });
+    }
+    let mut pointer = support::pointer::Pointer::new(&vm.sway.socket());
+    pointer.click(1280 + 640, 600, 2560, 720);
+    pointer.motion(1280 + 900, 650, 2560, 720);
+    vm.keys.type_text(&PASSWORD[7..]);
+    vm.until_locked(&second, "still typed after the pointer moved", true, |s| {
+        near(s.corner(), LOCK_TYPED2)
+    });
+    vm.keys.enter("");
+    for o in ["HEADLESS-1", second.as_str()] {
+        vm.until(o, "unlocked by the one password", Shot::desktop);
+    }
+    assert_eq!(unlocks(&vm), 1, "{}", vm.strand.log_text());
+    let log = vm.strand.log_text();
+    assert!(
+        !log.contains("showing the built-in password field") && !log.contains("shows the solid"),
+        "{log}"
+    );
+}
+
+/// (lockmon) sway 1.9 keeps the keys on the lock surface it focused
+/// first and moves them only when that surface goes: half the password
+/// typed on `HEADLESS-1`'s instance, `HEADLESS-1` unplugged, the keys
+/// move to the instance on the monitor plugged in while locked (which
+/// got its own instance, not the solid), and the rest typed there is one
+/// password with the first half.
+#[test]
+fn typing_survives_the_keys_moving_to_another_monitor() {
+    let test = "lockmon_moves";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::with(test, "", MULTI);
+    vm.lock();
+    vm.content();
+    let second = vm.sway.plug();
+    vm.until_locked(&second, "the plugged monitor's own lock", true, |s| {
+        near(s.corner(), LOCK_BG2)
+    });
+    vm.keys.type_text(&PASSWORD[..7]);
+    vm.until_locked(&second, "the typed half there too", true, |s| {
+        near(s.corner(), LOCK_TYPED2)
+    });
+    vm.sway.unplug("HEADLESS-1");
+    vm.until_locked(&second, "still the second's own lock", true, |s| {
+        near(s.corner(), LOCK_TYPED2)
+    });
+    vm.keys.enter(&PASSWORD[7..]);
+    vm.until(&second, "unlocked by the one password", Shot::desktop);
+    assert_eq!(unlocks(&vm), 1, "{}", vm.strand.log_text());
+}
+
+/// (lockmon) One monitor's instance faults (`10 / zero` there only): that
+/// monitor shows the solid (the first content's colour, never the
+/// desktop), the other keeps its lock, which still unlocks; nothing
+/// falls back to the built-in field.
+#[test]
+fn a_faulting_monitors_lock_shows_the_solid() {
+    let test = "lockmon_fault";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::with(test, "", MULTI);
+    let second = vm.sway.plug();
+    vm.until(&second, "the desktop on the second output", Shot::desktop);
+    vm.lock();
+    vm.content();
+    vm.until_locked(&second, "the second monitor's own lock", true, |s| {
+        near(s.corner(), LOCK_BG2)
+    });
+    vm.strand.cli(&["set", "lock.zero", "0"]);
+    vm.until_locked(&second, "the solid where the instance faulted", true, |s| {
+        near(s.corner(), LOCK_BG)
+    });
+    vm.until_log("one monitor's lock shows the solid");
+    vm.stays(
+        "HEADLESS-1",
+        "the first monitor's lock",
+        Duration::from_millis(500),
+        |s| near(s.corner(), LOCK_BG) && s.desktop_anywhere().is_none(),
+    );
+    vm.lock_passwords();
+    vm.until(&second, "the desktop on the second output", Shot::desktop);
+    let log = vm.strand.log_text();
+    assert!(
+        !log.contains("showing the built-in password field"),
+        "{log}"
+    );
+    assert_eq!(unlocks(&vm), 1, "{log}");
+}
+
+/// (lockmon review) A fault with no node of its own is still the lock's.
+/// In the lock's `screens:` pick it freezes every monitor's instance: the
+/// built-in field shows, and the right password unlocks (before, nothing
+/// saw it and the frozen lock ignored every key).
+#[test]
+fn a_fault_in_the_locks_screens_shows_the_fallback() {
+    let test = "lockmon_screens_fault";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let config = CONFIG.replace(
+        "  text pct(10 / zero)\n",
+        "  screens: 10 / zero > 0 ? [\"HEADLESS-1\"] : [\"none\"]\n",
+    );
+    let mut vm = Vm::with(test, "", &config);
+    vm.lock();
+    vm.content();
+    vm.strand.cli(&["set", "lock.zero", "0"]);
+    vm.fallback();
+    vm.log_has("a runtime fault froze the lock");
+    vm.fallback_passwords();
+    assert_eq!(unlocks(&vm), 1, "{}", vm.strand.log_text());
+}
+
+/// (lockmon review) A fault in an `if` of one monitor's instance (no
+/// node of its own): that monitor shows the solid, the other's lock
+/// carries on and unlocks.
+#[test]
+fn a_fault_in_one_monitors_if_shows_the_solid() {
+    let test = "lockmon_if_fault";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let config = MULTI.replace(
+        "  text pct(10 / (screen.name == \"HEADLESS-1\" ? 1 : zero))\n",
+        "  if 10 / (screen.name == \"HEADLESS-1\" ? 1 : zero) > 0 { text \"x\" }\n",
+    );
+    assert_ne!(config, MULTI);
+    let mut vm = Vm::with(test, "", &config);
+    let second = vm.sway.plug();
+    vm.until(&second, "the desktop on the second output", Shot::desktop);
+    vm.lock();
+    vm.content();
+    vm.until_locked(&second, "the second monitor's own lock", true, |s| {
+        near(s.corner(), LOCK_BG2)
+    });
+    vm.strand.cli(&["set", "lock.zero", "0"]);
+    vm.until_log("one monitor's lock shows the solid");
+    vm.until_locked(&second, "the solid where the instance faulted", true, |s| {
+        near(s.corner(), LOCK_BG)
+    });
+    vm.lock_passwords();
+    let log = vm.strand.log_text();
+    assert!(
+        !log.contains("showing the built-in password field"),
+        "{log}"
+    );
+    assert_eq!(unlocks(&vm), 1, "{log}");
+}
+
+/// strand's PSS (KiB), from `smaps_rollup`.
+fn pss_kib(pid: u32) -> u64 {
+    std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup"))
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.strip_prefix("Pss:"))
+        .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// (lockmon review) What the lock's content on a second monitor costs,
+/// a tripwire (the budgets catch regressions, never cap a config):
+/// strand's PSS locked on two 1280×720 monitors with [`MULTI`]'s content
+/// on both (the default) less the same with `screens: focused` (the
+/// second a solid). Measured in the lock VM on 2026-10-25: 7,185 KiB
+/// (57,900 less 50,715; about two 1280×720 shm buffers), so the gate is
+/// 10 MiB (decisions.md lockmon review).
+const SECOND_MONITOR_KIB: u64 = 10 * 1024;
+
+#[test]
+fn the_locks_second_monitor_costs_one_surface() {
+    let test = "lockmon_memory";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let measure = |tag: &str, source: &str| -> u64 {
+        let mut vm = Vm::with(&format!("{test}_{tag}"), "", source);
+        let second = vm.sway.plug();
+        vm.until(&second, "the desktop on the second output", Shot::desktop);
+        vm.lock();
+        vm.content();
+        let want = if tag == "every" { LOCK_BG2 } else { LOCK_BG };
+        vm.until_locked(&second, "the second monitor's lock", true, |s| {
+            near(s.corner(), want)
+        });
+        // Its frames and buffers settle.
+        std::thread::sleep(Duration::from_secs(2));
+        let pid = vm.strand.pid().expect("strand runs");
+        let pss = pss_kib(pid);
+        vm.lock_passwords();
+        pss
+    };
+    let every = measure("every", MULTI);
+    let focused = measure(
+        "focused",
+        &MULTI.replace(
+            "  open: <-> locked\n",
+            "  open: <-> locked\n  screens: focused\n",
+        ),
+    );
+    let cost = every.saturating_sub(focused);
+    eprintln!(
+        "lock memory: every monitor {every} KiB, focused only {focused} KiB: \
+         the second monitor's lock costs {cost} KiB"
+    );
+    assert!(every > 0 && focused > 0, "no PSS read");
+    assert!(
+        cost <= SECOND_MONITOR_KIB,
+        "the second monitor's lock costs {cost} KiB, over its {SECOND_MONITOR_KIB} KiB tripwire"
+    );
+}
+
+/// (lockmon) [`CONFIG`] with a still of its monitor in the lock.
+fn still_config() -> String {
+    CONFIG.replace(
+        "  text pct(10 / zero)\n",
+        "  text pct(10 / zero)\n  thumbnail screen { fit: cover; width: 320; height: 180 }\n",
+    )
+}
+
+impl Shot {
+    /// Pixels of the desktop's colour in row `y`.
+    fn desktop_in_row(&self, y: usize) -> usize {
+        (0..self.w)
+            .filter(|x| near(self.px(*x, y), DESKTOP))
+            .count()
+    }
+
+    /// Pixels of the desktop's colour anywhere.
+    fn desktop_pixels(&self) -> usize {
+        self.rgb
+            .chunks_exact(3)
+            .filter(|p| near([p[0], p[1], p[2]], DESKTOP))
+            .count()
+    }
+}
+
+/// (lockmon) A `thumbnail screen` inside the lock shows a still of its
+/// monitor from just before the lock covered it: the desktop's bar,
+/// scaled into the thumbnail (a still taken after would show black or
+/// the lock), on every monitor, while the session stays locked (the
+/// bar's own row is the lock's, but where the thumbnail is). A monitor
+/// plugged in while locked has no still: its thumbnail is empty.
+#[test]
+fn the_locks_thumbnail_is_a_still_from_before_the_lock() {
+    let test = "lockmon_still";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::with(test, "", &still_config());
+    let second = vm.sway.plug();
+    vm.until(&second, "the desktop on the second output", Shot::desktop);
+    vm.lock();
+    for o in ["HEADLESS-1", second.as_str()] {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let s = vm.sway.shot(o);
+            assert!(
+                s.desktop_in_row(10) < s.w / 2,
+                "{o}: the desktop shows while locked\n{}",
+                vm.strand.log_text()
+            );
+            // The bar is 36 px of 720: 9 rows of 320 in the still.
+            if near(s.corner(), LOCK_BG) && s.desktop_pixels() >= 320 * 6 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{o}: never the desktop's still in the lock ({} pixels): {}\n{}",
+                s.desktop_pixels(),
+                s.describe(),
+                vm.strand.log_text()
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    vm.log_has("2 of 2 screen stills before the lock");
+    let third = vm.sway.plug();
+    vm.until_locked(&third, "the plugged monitor's lock", true, |s| {
+        near(s.corner(), LOCK_BG)
+    });
+    vm.stays(
+        &third,
+        "a lock with no still",
+        Duration::from_millis(500),
+        |s| s.desktop_pixels() == 0,
+    );
+    // The password (the still is the desktop's colour, so the waits do
+    // not take it for the desktop).
+    vm.keys.type_text(PASSWORD);
+    vm.until("HEADLESS-1", "the typed password", |s| {
+        near(s.corner(), LOCK_TYPED) && s.desktop_in_row(10) < s.w / 2
+    });
+    vm.keys.enter("");
+    vm.until("HEADLESS-1", "unlocked", Shot::desktop);
+    assert!(vm.sway.shot("HEADLESS-1").desktop_in_row(10) > 1200);
 }

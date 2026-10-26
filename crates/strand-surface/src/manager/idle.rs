@@ -1,10 +1,17 @@
 //! (services-round) `inhibit_idle: true` on a surface: while it is shown
 //! the compositor does not go idle. Each of its Wayland surfaces (one per
 //! monitor, a popup's own) carries a `zwp_idle_inhibitor_v1`, made when
-//! the surface is or the spec turns it on, destroyed when the spec turns
-//! it off or the surface goes. The protocol makes an inhibitor count only
-//! while its surface is visible, which is what "while it is shown" means;
-//! a compositor without `zwp_idle_inhibit_manager_v1` gets none.
+//! the surface is mapped (its first buffer committed) or the spec turns
+//! it on, destroyed when the spec turns it off or the surface goes. The
+//! protocol makes an inhibitor count only while its surface is visible,
+//! which is what "while it is shown" means; a compositor without
+//! `zwp_idle_inhibit_manager_v1` gets none.
+//!
+//! (lockmon) Not before the surface is mapped: sway 1.12 counts a layer
+//! surface's inhibitor only while the surface is mapped, and one made
+//! with the surface, before its first buffer, never held it awake (the
+//! compositor matrix, `idle_follows_the_compositor_and_a_surface_holds_it_awake`;
+//! sway 1.9 counts any surface that is not a hidden window's).
 
 use wayland_protocols::wp::idle_inhibit::zv1::client::{
     zwp_idle_inhibit_manager_v1::{self, ZwpIdleInhibitManagerV1},
@@ -20,7 +27,8 @@ impl<H: SurfaceHost + 'static> State<H> {
             .surfaces
             .get(&id)
             .and_then(|s| self.specs.get(&s.node))
-            .is_some_and(|spec| spec.inhibit_idle && spec.open);
+            .is_some_and(|spec| spec.inhibit_idle && spec.open)
+            && self.surfaces.get(&id).is_some_and(Surface::mapped);
         match (want, self.inhibitors.contains_key(&id)) {
             (true, false) => {
                 let (Some(manager), Some(s)) = (&self.idle_inhibit, self.surfaces.get(&id)) else {

@@ -9,6 +9,9 @@
 //! painted red; a lock is proved by grim showing no red where the bar
 //! is, and by the lock's own colours: the content (blue) on the first
 //! output, the solid (green) on every other output, hotplugged ones too.
+//! (lockmon) A lock mounted once per monitor (`screens:` each pinned to
+//! its output) shows content on every output, and an instance the host
+//! gives up on shows the solid there.
 //! Unlocking takes an `UnlockToken`, minted here by `strand_auth::Client`
 //! from a fake helper that accepts (PAM itself is strand-auth's and the
 //! scenario's business).
@@ -129,6 +132,18 @@ fn lock_spec(open: bool) -> SurfaceSpec {
         [(strand_scene::Prop::Open, PropValue::Bool(open))]
             .into_iter()
             .collect();
+    SurfaceSpec::resolve(NodeKind::Lock, |p| props.get(&p))
+}
+
+/// (lockmon) An open `lock` instance pinned to output `name`, as the
+/// compiler mounts one per monitor (`screens:` its connector).
+fn lock_spec_on(name: &str) -> SurfaceSpec {
+    let props: HashMap<strand_scene::Prop, PropValue> = [
+        (strand_scene::Prop::Open, PropValue::Bool(true)),
+        (strand_scene::Prop::Screens, PropValue::Text(name.into())),
+    ]
+    .into_iter()
+    .collect();
     SurfaceSpec::resolve(NodeKind::Lock, |p| props.get(&p))
 }
 
@@ -879,8 +894,8 @@ fn a_lock_surface_is_never_handed_to_the_gpu() {
 }
 
 /// (services-round) `lock { inhibit_idle: true }`: the lock's content
-/// surface holds a `zwp_idle_inhibitor_v1` from the moment it is made, and
-/// turned off in place, lets it go.
+/// surface holds a `zwp_idle_inhibitor_v1` from the moment it is mapped
+/// (locked), and turned off in place, lets it go.
 #[test]
 fn a_lock_that_inhibits_idle_holds_an_inhibitor() {
     let test = "a_lock_that_inhibits_idle_holds_an_inhibitor";
@@ -894,13 +909,15 @@ fn a_lock_that_inhibits_idle_holds_an_inhibitor() {
     lock.state_mut()
         .apply_surface_change(LOCK, SurfaceChange::Created(inhibiting_lock_spec(true)));
     wait_lock(&mut lock, LockState::Locked);
-    let content = lock.state().lock_content().expect("a content surface");
-    assert!(
-        lock.state()
-            .surface(content)
-            .is_some_and(|i| i.inhibits_idle),
-        "the content inhibits idling"
-    );
+    // (lockmon) From its first frame: sway may say locked before it.
+    let ok = lock
+        .dispatch_until(WAIT, |s| {
+            s.lock_content()
+                .and_then(|c| s.surface(c))
+                .is_some_and(|i| i.inhibits_idle)
+        })
+        .unwrap();
+    assert!(ok, "the content inhibits idling");
     lock.state_mut().apply_surface_change(
         LOCK,
         SurfaceChange::Updated {
@@ -918,4 +935,252 @@ fn a_lock_that_inhibits_idle_holds_an_inhibitor() {
         "turned off in place"
     );
     assert!(lock.state_mut().unlock(token()));
+}
+
+/// A virtual pointer on sway's seat (`zwlr_virtual_pointer_v1`).
+struct VirtualPointer {
+    queue: wayland_client::EventQueue<Ptr>,
+    pointer: wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    time: u32,
+    _conn: wayland_client::Connection,
+}
+
+struct Ptr;
+
+mod ptr {
+    use super::Ptr;
+    use wayland_client::globals::GlobalListContents;
+    use wayland_client::protocol::wl_registry;
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Ptr {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Ptr: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Ptr: ignore ZwlrVirtualPointerV1);
+}
+
+impl VirtualPointer {
+    fn new(sway: &Sway) -> VirtualPointer {
+        use wayland_client::globals::registry_queue_init;
+        use wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
+        let conn = sway.connect();
+        let (globals, mut queue) = registry_queue_init::<Ptr>(&conn).unwrap();
+        let qh = queue.handle();
+        let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+        let pointer = manager.create_virtual_pointer(None, &qh, ());
+        queue.roundtrip(&mut Ptr).unwrap();
+        VirtualPointer {
+            queue,
+            pointer,
+            time: 0,
+            _conn: conn,
+        }
+    }
+
+    /// Moves to (`x`, `y`) of a `w`×`h` layout, and clicks there when
+    /// `click`.
+    fn to(&mut self, (x, y): (u32, u32), (w, h): (u32, u32), click: bool) {
+        use wayland_client::protocol::wl_pointer::ButtonState;
+        self.time += 10;
+        self.pointer.motion_absolute(self.time, x, y, w, h);
+        self.pointer.frame();
+        if click {
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                self.time += 10;
+                self.pointer.button(self.time, 0x110, state);
+                self.pointer.frame();
+            }
+        }
+        self.queue.roundtrip(&mut Ptr).unwrap();
+    }
+}
+
+/// (lockmon) A lock mounted once per monitor (the compiler pins each
+/// instance with `screens:` its output): every output shows content,
+/// none a solid; an output plugged in while locked shows the solid until
+/// its own instance comes, then that; an instance the host gives up on
+/// shows the solid on its output only (fail closed), and keys on that
+/// solid reach the content of the focused output, else the first.
+#[test]
+fn a_lock_instance_on_every_output() {
+    let test = "a_lock_instance_on_every_output";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    const ON_FIRST: NodeId = NodeId::new(20, 0);
+    const ON_SECOND: NodeId = NodeId::new(21, 0);
+    const ON_THIRD: NodeId = NodeId::new(22, 0);
+    let second = sway.create_output();
+    sway.msg(&["output", "HEADLESS-1", "pos", "0", "0"]);
+    sway.msg(&["output", &second, "pos", "1920", "0"]);
+    let mut desk = desktop(&sway, 2);
+    let mut lock = locker(&sway);
+    let _input = lock.take_input().unwrap();
+    for (node, output) in [(ON_FIRST, "HEADLESS-1"), (ON_SECOND, second.as_str())] {
+        lock.state_mut()
+            .apply_surface_change(node, SurfaceChange::Created(lock_spec_on(output)));
+    }
+    wait_lock(&mut lock, LockState::Locked);
+    let on_first = lock
+        .state()
+        .lock_content_on("HEADLESS-1")
+        .expect("content on HEADLESS-1");
+    let on_second = lock
+        .state()
+        .lock_content_on(&second)
+        .expect("content on the second");
+    assert_eq!(lock.state().lock_contents(), [on_first, on_second]);
+    let attached = &lock.state().host().attached;
+    assert!(attached.contains(&(on_first, ON_FIRST)), "{attached:?}");
+    assert!(attached.contains(&(on_second, ON_SECOND)), "{attached:?}");
+    assert!(lock.state().lock_solid_outputs().is_empty());
+    let painted = lock
+        .dispatch_until(WAIT, |s| {
+            s.lock_contents()
+                .iter()
+                .all(|c| s.surface(*c).is_some_and(|i| i.stats.commits > 0))
+        })
+        .unwrap();
+    assert!(painted, "both contents are painted");
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    for o in ["HEADLESS-1", second.as_str()] {
+        assert_eq!(shot(&sway, o), [BLUE, BLUE], "{o}: its own content");
+    }
+
+    // Keys reach whichever content the compositor focuses. sway 1.9
+    // focuses the first lock surface mapped and keeps it there: neither
+    // a click on another output nor `focus output` moves it; it moves
+    // only when that surface goes. The pointer still reaches the content
+    // under it.
+    let mut keyboard = VirtualKeyboard::new(&sway);
+    let mut pointer = VirtualPointer::new(&sway);
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    keyboard.tap();
+    let focused = lock
+        .state()
+        .keyboard_focus()
+        .expect("a lock surface has the keys");
+    assert!(
+        key_reached(&mut lock, 0, focused) && [on_first, on_second].contains(&focused),
+        "{:?}",
+        lock.state().host().input
+    );
+    let (other, other_x) = if focused == on_first {
+        (on_second, 1920 + 960)
+    } else {
+        (on_first, 960)
+    };
+    let from = lock.state().host().input.len();
+    // Off the middle, where the shots look.
+    pointer.to((other_x, 800), (3840, 1080), true);
+    settle(&mut lock, &mut desk, Duration::from_millis(200));
+    let clicked = lock.state().host().input[from..]
+        .iter()
+        .any(|e| matches!(e, InputEvent::PointerButton { surface, .. } if *surface == other));
+    assert!(clicked, "the click reached the content under it");
+    let from = lock.state().host().input.len();
+    keyboard.tap();
+    let keys = lock.state().keyboard_focus().expect("still focused");
+    assert!(key_reached(&mut lock, from, keys));
+
+    // A monitor plugged in while locked: the solid, then its instance.
+    let third = sway.create_output();
+    let ok = lock
+        .dispatch_until(WAIT, |s| s.lock_solid_outputs().contains(&third))
+        .unwrap();
+    assert!(ok, "the new output is covered at once");
+    lock.state_mut()
+        .apply_surface_change(ON_THIRD, SurfaceChange::Created(lock_spec_on(&third)));
+    let ok = lock
+        .dispatch_until(WAIT, |s| {
+            s.lock_solid_outputs().is_empty()
+                && s.lock_content_on(&third)
+                    .and_then(|c| s.surface(c))
+                    .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "the new output's instance shows there");
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    assert_eq!(shot(&sway, &third), [BLUE, BLUE], "{third}");
+
+    // The focused instance fails: the solid on its output, the others
+    // stay, and the keys move to a content still there.
+    let focused = lock.state().keyboard_focus().expect("a focused content");
+    let (failed, failed_on) = if focused == on_first {
+        (ON_FIRST, "HEADLESS-1".to_string())
+    } else {
+        (ON_SECOND, second.clone())
+    };
+    let kept = if focused == on_first {
+        second.clone()
+    } else {
+        "HEADLESS-1".to_string()
+    };
+    assert!(lock.state_mut().lock_instance_failed(failed));
+    assert!(!lock.state_mut().lock_instance_failed(failed), "once");
+    assert!(!lock.state_mut().lock_instance_failed(NodeId::new(99, 0)));
+    assert!(lock.state().host().detached.contains(&focused));
+    assert_eq!(
+        lock.state().lock_solid_outputs(),
+        std::slice::from_ref(&failed_on)
+    );
+    assert_eq!(lock.state().lock_content_on(&failed_on), None);
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    assert_eq!(
+        shot(&sway, &failed_on),
+        [GREEN, GREEN],
+        "the failed instance's output"
+    );
+    assert_eq!(shot(&sway, &kept), [BLUE, BLUE]);
+    assert!(lock.state().is_locked());
+    let from = lock.state().host().input.len();
+    keyboard.tap();
+    let reached = lock
+        .dispatch_until(WAIT, |s| {
+            s.host().input[from..].iter().any(|e| {
+                matches!(e, InputEvent::Key { surface, .. }
+                    if *surface != focused && s.lock_contents().contains(surface))
+            })
+        })
+        .unwrap();
+    assert!(
+        reached,
+        "the keys moved to a content: {:?}",
+        &lock.state().host().input[from..]
+    );
+
+    // Every instance's spec gone (logic gone): the contents stay for the
+    // fallback, nothing unlocks, and the failed output keeps its solid.
+    let contents = lock.state().lock_contents();
+    for node in [ON_FIRST, ON_SECOND, ON_THIRD] {
+        lock.state_mut()
+            .apply_surface_change(node, SurfaceChange::Removed);
+    }
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    assert!(lock.state().is_locked());
+    assert_eq!(lock.state().lock_contents(), contents);
+    assert_eq!(lock.state().lock_solid_outputs(), [failed_on]);
+    for o in ["HEADLESS-1", second.as_str(), third.as_str()] {
+        assert_ne!(shot(&sway, o)[0], RED, "{o}: still locked");
+    }
+    assert!(lock.state_mut().unlock(token()));
+    settle(&mut lock, &mut desk, Duration::from_millis(500));
+    assert!(lock.state().lock_contents().is_empty());
+    assert_eq!(shot(&sway, "HEADLESS-1")[0], RED);
 }

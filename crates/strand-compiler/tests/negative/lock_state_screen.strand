@@ -1,0 +1,10 @@
+// expect: check::lock_state_screen
+// A lock's state is one for every monitor: it cannot start from one
+// monitor's `screen`.
+export state locked = false
+lock {
+  open: <-> locked
+  state wide = screen.width
+  text "locked"
+  on key(k) { auth.submit(k.name) }
+}

@@ -871,7 +871,13 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
         }
         trimmer.run(now);
         trimmer.settle(now, mgr.state().host().renderer.in_motion());
-        let wait = [trimmer.wait(now), guard.wait(now, mgr.state())]
+        // (lockmon review) Stills from before a surface mapped go once
+        // they are old.
+        if let Some(f) = &mut mgr.state_mut().host_mut().feeds {
+            f.prune(now);
+        }
+        let stills = mgr.state().host().feeds.as_ref().and_then(|f| f.wait(now));
+        let wait = [trimmer.wait(now), guard.wait(now, mgr.state()), stills]
             .into_iter()
             .flatten()
             .min();

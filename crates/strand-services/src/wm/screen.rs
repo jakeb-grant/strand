@@ -87,6 +87,10 @@ pub fn capture_screen(
     let c = cancelled.clone();
     let connector = connector.to_string();
     let target = super::service::wayland_target();
+    // (lockmon review) Taken by whichever answers: the thread, or the
+    // failure to start it (so a caller waiting for the answer gets one).
+    let f = Arc::new(std::sync::Mutex::new(Some(f)));
+    let answer = f.clone();
     let spawned = std::thread::Builder::new()
         .name("strand-screenshot".into())
         .spawn(move || {
@@ -97,12 +101,17 @@ pub fn capture_screen(
                     None
                 }
             };
-            if !c.load(Ordering::SeqCst) {
+            if !c.load(Ordering::SeqCst)
+                && let Some(f) = answer.lock().ok().and_then(|mut f| f.take())
+            {
                 f(frame);
             }
         });
     if let Err(e) = spawned {
         log::warn!("screen shot: no thread: {e}");
+        if let Some(f) = f.lock().ok().and_then(|mut f| f.take()) {
+            f(None);
+        }
     }
     ScreenShot { cancelled }
 }

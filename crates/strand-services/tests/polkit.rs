@@ -383,9 +383,14 @@ fn a_request_is_answered_through_the_helper_and_asks_again_when_refused() {
     assert!(!w.state().2, "not busy");
     // A wrong answer: refused, and the dialog asks again.
     w.act("respond", &[text("wrong")]);
+    // `failed` and the prompt still stand from the refusal above: asking
+    // again is the second helper started and its question shown.
     w.until("refused by the helper, asking again", |w| {
         let (r, _, busy, failed, ..) = w.state();
-        failed && !busy && r.is_some_and(|r| r.prompt == "Password: ")
+        lines(&dir.path().join("helper.log")).len() == 2
+            && failed
+            && !busy
+            && r.is_some_and(|r| r.prompt == "Password: ")
     });
     assert_eq!(w.outcome("cookie-1"), "");
     w.act("respond", &[text("right")]);

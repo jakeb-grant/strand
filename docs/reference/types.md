@@ -26,6 +26,21 @@ Keyed by `ssid`.
 | `action connect()` | Joins it: with its saved connection if there is one, else a new one (for a `secure` network NetworkManager asks its secret agent for the password; iwd joins only a network it knows this way); an enterprise (802.1X) network with no saved profile is refused (it is set up in the system's network settings, or iwd's provisioning file). A failure, including one NetworkManager reports later (no password, a wrong one, a timeout), is `network.failed`. |
 | `action connect_with(password: text)` | Joins a `secure` network with `password` (its WPA key or WEP key), saved in its connection: a network menu's password field. On any other network it fails. A failure is `network.failed`. |
 
+### `ActionRun`
+
+(lockmon) A declared action's commands as they run, read through the
+action's name: `rec.running`, `rec.started` and `rec.stop()` for
+`action rec(…) […]`. Only an action's name reads as one.
+
+| Field | Type | |
+| --- | --- | --- |
+| `running` | `bool` | A command of it runs: true while any does (an action with a result may run several at once). |
+| `started` | `Date?` | When the command running longest started, to the minute; null while none runs. |
+
+| Method | |
+| --- | --- |
+| `action stop()` | Stops every command of it now running, and the re-run queued behind one: SIGINT to each one's process group, SIGTERM 2 s later, SIGKILL 2 s after that. |
+
 ### `App`
 
 An installed app, from its desktop entry (watched live).

@@ -495,12 +495,30 @@ locked. A config has at most one `lock`, and it needs no name.
   fingerprint reader, which then unlocks with no password at all. A
   lock that might meet one shows it:
   `if auth.message != "" { text auth.message }`.
-- Which monitors, which layer, where and how it takes the keyboard are
-  the session lock's to decide: every monitor, above everything,
-  filling it, always. Setting `screens`, `layer`, `anchor` or
-  `keyboard` on a `lock` is a warning that says so.
+- It shows on every monitor, like a bar, with `screen` in scope on
+  each, and on a monitor you plug in while locked too. Its `state` is
+  one for all of them: there is one password field however many
+  monitors show it, and your keys go to whichever monitor the
+  compositor gives them, so the dots you type show everywhere.
+  Because that `state` is shared, it cannot start from `screen` (`state
+  w = screen.width` in a lock is an error); read `screen` in props or a
+  `let` instead: `let big = screen.width > 2000`. Its timers and `on
+  change` handlers are the lock's too, so they run once, not once per
+  monitor: the `every 400ms` above steps the dots one at a time however
+  many monitors you have, and so it cannot read `screen` either. An
+  element's own handlers, such as the field's `on activate`, run on the
+  monitor where they happen. Each monitor's lock is a surface of its
+  own, about 7 MB on a 1280×720 monitor.
+  `screens: focused` puts it on the focused monitor only, with a plain
+  background in the lock's colour on the others.
+- Which layer, where and how it takes the keyboard are the session
+  lock's to decide: above everything, filling the monitor, always.
+  Setting `layer`, `anchor` or `keyboard` on a `lock` is a warning that
+  says so.
 - **It fails closed.** If anything in your lock faults, a built-in
-  password field appears in its place, so you can always unlock. Edits
+  password field appears in its place, so you can always unlock. A
+  fault on one monitor only leaves that monitor plain and the others
+  as they were. Edits
   to the lock that you save while locked wait until you unlock.
 
 **`every 400ms while auth.busy { … }`** is the repeating timer from the

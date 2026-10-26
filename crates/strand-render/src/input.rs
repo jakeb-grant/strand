@@ -449,6 +449,9 @@ pub struct Router {
     moved: HashSet<NodeId>,
     /// Each `input`'s writes still on their way through logic.
     edits: HashMap<NodeId, InFlight>,
+    /// (lockmon) Each `input` with twins (`Prop::Twin`: the lock's field
+    /// on every monitor) and their shared key.
+    twins: HashMap<NodeId, String>,
     /// The slider being dragged on each surface (the left button went
     /// down on it).
     dragging: HashMap<SurfaceId, NodeId>,
@@ -628,6 +631,25 @@ impl Router {
                     self.hover_popups.held.insert(*id);
                 } else {
                     self.hover_popups.held.remove(id);
+                }
+            }
+        }
+        // (lockmon) Inputs that share one text with their twins.
+        for op in &diff.ops {
+            if let SceneOp::SetProp {
+                id,
+                prop: Prop::Twin,
+                value,
+                ..
+            } = op
+            {
+                match value {
+                    PropValue::Text(k) => {
+                        self.twins.insert(*id, k.clone());
+                    }
+                    _ => {
+                        self.twins.remove(id);
+                    }
                 }
             }
         }
@@ -1953,6 +1975,7 @@ impl Router {
             live(*list) && live(*row) && tree.get(*row).is_some_and(|r| r.parent == Some(*list))
         });
         self.edits.retain(|n, _| live(*n));
+        self.twins.retain(|n, _| live(*n));
         self.focus.retain(|_, n| live(*n));
         self.pending_paste.retain(|_, n| live(*n));
     }
@@ -2242,6 +2265,12 @@ impl Router {
     /// pastes arriving) faster than logic answers build on the last
     /// write; once the scene shows it, or a text of logic's own, they
     /// build on the scene.
+    ///
+    /// (lockmon) An input with twins (the lock's field on each monitor,
+    /// one text between them) builds on the newest write any of them made
+    /// that logic has not answered yet: keys typed on one monitor right
+    /// after the keyboard moved there from another are never typed on the
+    /// text before the other's last keys.
     fn typed_text(&self, input: NodeId, scene: &dyn InputScene) -> (String, Caret, Vec<String>) {
         let text = match scene
             .tree()
@@ -2251,9 +2280,14 @@ impl Router {
             Some(PropValue::Text(t)) => t.clone(),
             _ => String::new(),
         };
-        let in_flight = self.edits.get(&input).filter(|e| {
-            e.latest != text && e.at.elapsed() < EDIT_IN_FLIGHT && e.pending.contains(&text)
-        });
+        let in_flight = self
+            .with_twins(input)
+            .into_iter()
+            .filter_map(|n| self.edits.get(&n))
+            .filter(|e| {
+                e.latest != text && e.at.elapsed() < EDIT_IN_FLIGHT && e.pending.contains(&text)
+            })
+            .max_by_key(|e| e.at);
         // (`observe` already dropped what logic answered.)
         let pending = in_flight.map_or_else(|| vec![text.clone()], |e| e.pending.clone());
         let now = in_flight.map_or(text, |e| e.latest.clone());
@@ -2264,8 +2298,24 @@ impl Router {
         (now, caret, pending)
     }
 
+    /// `input` and its twins (`Prop::Twin`), itself first.
+    fn with_twins(&self, input: NodeId) -> Vec<NodeId> {
+        let mut out = vec![input];
+        if let Some(key) = self.twins.get(&input) {
+            out.extend(
+                self.twins
+                    .iter()
+                    .filter(|(n, k)| **n != input && *k == key)
+                    .map(|(n, _)| *n),
+            );
+        }
+        out
+    }
+
     /// Applies a caret move or a text change to `input`: a change is
-    /// written (two-way `text`) and remembered as in flight.
+    /// written (two-way `text`) and remembered as in flight. (lockmon)
+    /// Its twins' carets follow, so keys typed on another monitor's
+    /// field go where the last ones went.
     fn apply_edit(
         &mut self,
         input: NodeId,
@@ -2274,9 +2324,15 @@ impl Router {
         scene: &mut dyn InputScene,
     ) {
         match edit {
-            Edit::Moved(c) => scene.set_caret(input, Some(c)),
+            Edit::Moved(c) => {
+                for n in self.with_twins(input) {
+                    scene.set_caret(n, Some(c));
+                }
+            }
             Edit::Changed(now, c) => {
-                scene.set_caret(input, Some(c));
+                for n in self.with_twins(input) {
+                    scene.set_caret(n, Some(c));
+                }
                 pending.push(now.clone());
                 self.edits.insert(
                     input,

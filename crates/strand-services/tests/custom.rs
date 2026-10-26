@@ -6,7 +6,8 @@
 //! one `line` event, none lost to the merge; (services-round) a `from
 //! dir` declaration lists a directory's files and follows them as they
 //! come, go, change and move, and the directory itself as it is created
-//! and removed.
+//! and removed; a `from file` rewritten in place (truncated, then
+//! written) never shows the empty file in between.
 
 mod support;
 
@@ -421,6 +422,87 @@ fn a_dir_is_listed_and_followed() {
     wait("the directory made again", Some(&[]));
     std::fs::write(dir.join("z.png"), b"z").unwrap();
     wait("a file in the new directory", Some(&["z.png"]));
+
+    client.release(&rt);
+    services.shutdown();
+    custom::forget(id);
+}
+
+/// A `from file` document rewritten in place, as `echo 5 > f` and a
+/// plain `write` do (truncated, then written), is read once it settles:
+/// the field goes from one value to the next, never through the empty
+/// file `MODIFY` shows in between; a file left empty is read empty.
+#[test]
+fn a_file_rewritten_in_place_never_shows_it_empty() {
+    use std::io::Write;
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let client = services.register_as::<Custom>(&rt, "mood");
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("mood.json");
+    std::fs::write(&path, r#"{"level": 1}"#).unwrap();
+    let id = custom::register(Spec {
+        name: "mood".into(),
+        source: Source::File { path: path.clone() },
+        fields: vec![FieldSpec {
+            name: "level".into(),
+            key: vec!["level".into()],
+            rw: false,
+        }],
+        actions: Vec::new(),
+    });
+    client.seed(&rt, |s| *s = Custom::seeded(id, 1)).unwrap();
+    client.acquire(&rt);
+    let level = || {
+        services.pump(&rt);
+        rt.flush();
+        client
+            .cells()
+            .values
+            .with_untracked(&rt, |v| v.get(&0i64).map(|v| v.value.clone()))
+            .ok()
+            .flatten()
+    };
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let wait = |want: Data| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let now = level();
+            // (Null is the seed, before the first read.)
+            if let Some(v) = now.as_ref().filter(|v| **v != Data::Null) {
+                let mut s = seen.lock().unwrap();
+                if s.last() != Some(v) {
+                    s.push(v.clone());
+                }
+            }
+            if now.as_ref() == Some(&want) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "never {want:?}: {now:?}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    wait(Data::Int(1));
+    for n in 2..=6 {
+        let mut f = std::fs::File::create(&path).unwrap();
+        // The truncated file stays empty a while before its bytes come,
+        // as a slow writer's would.
+        let until = Instant::now() + Duration::from_millis(15);
+        while Instant::now() < until {
+            let _ = level();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        write!(f, r#"{{"level": {n}}}"#).unwrap();
+        drop(f);
+        wait(Data::Int(n));
+    }
+    assert_eq!(
+        *seen.lock().unwrap(),
+        (1..=6).map(Data::Int).collect::<Vec<_>>(),
+        "one value after the other, never the empty file"
+    );
+    std::fs::write(&path, "").unwrap();
+    wait(Data::text(""));
 
     client.release(&rt);
     services.shutdown();

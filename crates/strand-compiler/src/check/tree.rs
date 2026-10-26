@@ -188,6 +188,7 @@ impl<'a> Checker<'a> {
             schema,
         });
         self.push_scope();
+        let mut screen = None;
         if let Some(sc) = schema {
             let per_screen = per_screen(&kind, &s.body.items);
             for (n, t) in &sc.scope {
@@ -196,12 +197,19 @@ impl<'a> Checker<'a> {
                 if n == "screen" && !per_screen {
                     continue;
                 }
-                self.bind_local(n, t.clone(), s.kind.span, LocalKind::ElementScope);
+                let l = self.bind_local(n, t.clone(), s.kind.span, LocalKind::ElementScope);
+                if n == "screen" {
+                    screen = Some(l);
+                }
             }
         }
         self.collect_ids(&s.body.items);
         let id = self.root_id(&s.body.items, node);
+        let first_ref = self.refs.len();
         let (props, children) = self.tree_items(&s.body.items, Place::Element { root: true });
+        if kind == "lock" {
+            self.lock_state_screen(&s.body.items, &children, screen, first_ref);
+        }
         self.surface_props(&kind, &props, &children);
         if kind == "window" {
             self.window_open(&props, &children, s.kind.span);
@@ -258,6 +266,186 @@ impl<'a> Checker<'a> {
             .find_schema_record("Node")
             .map_or(Ty::Error, Ty::Record);
         Some(self.bind_local(&name.name, node_ty, name.span, LocalKind::NodeId(node)))
+    }
+
+    /// (lockmon) `check::lock_state_screen`: a lock's `state`s are one for
+    /// every monitor's instance, declared once above them, so a starting
+    /// value that reads `screen` (each instance's own) or a `let` of the
+    /// lock (declared per instance) has no one value to start from.
+    fn lock_state_screen(
+        &mut self,
+        items: &'a [ast::Item],
+        children: &[hir::Node],
+        screen: Option<hir::LocalId>,
+        first_ref: usize,
+    ) {
+        fn starts<'b>(items: &'b [ast::Item], out: &mut Vec<(&'b ast::Ident, Span)>) {
+            for i in items {
+                match &i.kind {
+                    ItemKind::State(st) => {
+                        if let ast::StateInit::Value { value, .. } = &st.init {
+                            out.push((&st.name, value.span));
+                        }
+                    }
+                    ItemKind::Element(e) => {
+                        if let Some(b) = &e.block {
+                            starts(&b.items, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        fn lets(nodes: &[hir::Node], out: &mut Vec<DefId>) {
+            for n in nodes {
+                match n {
+                    hir::Node::Let(l) => out.push(l.def),
+                    hir::Node::Element(e) if !matches!(e.kind, ElementKind::Component(_)) => {
+                        lets(&e.children, out)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut states = Vec::new();
+        starts(items, &mut states);
+        let mut own = Vec::new();
+        lets(children, &mut own);
+        self.lock_logic_screen(children, screen, &own);
+        if states.is_empty() {
+            return;
+        }
+        let file = self.file();
+        let mut found = Vec::new();
+        for (name, value) in states {
+            let read = self.refs[first_ref.min(self.refs.len())..]
+                .iter()
+                .filter(|r| r.file == file)
+                .filter(|r| r.span.start >= value.start && r.span.end <= value.end)
+                .find_map(|r| match r.target {
+                    Target::Local(l) if Some(l) == screen => Some("`screen`".to_string()),
+                    Target::Def(d) if own.contains(&d) => Some(format!(
+                        "`{}`, a `let` of the lock",
+                        self.defs[d.0 as usize].name
+                    )),
+                    _ => None,
+                });
+            if let Some(what) = read {
+                found.push((name.name.clone(), value, what));
+            }
+        }
+        for (name, at, what) in found {
+            self.error(
+                "check::lock_state_screen",
+                format!("the lock's `state {name}` cannot start from {what}"),
+                at,
+                "read once for every monitor",
+            )
+            .help = Some(
+                "a lock's `state` is one for the lock on every monitor (so a password typed on \
+                 one is typed on all): start it from a value, and read `screen` in props or a \
+                 `let` instead"
+                    .to_string(),
+            );
+        }
+    }
+
+    /// (lockmon) `check::lock_state_screen` for the lock's own logic: its
+    /// timers and its `on change` and service handlers, in its body and
+    /// its elements (where its `state`s are), run once for the lock, not
+    /// once per monitor's instance (`instantiate::mount::lock_logic`),
+    /// so they read nothing one monitor's instance has: `screen`, a
+    /// `let` of the lock (`own`), an element of the lock (`self`, `hover`,
+    /// an `id:` name) or `play` on one.
+    fn lock_logic_screen(
+        &mut self,
+        children: &[hir::Node],
+        screen: Option<hir::LocalId>,
+        own: &[DefId],
+    ) {
+        fn logic<'b>(nodes: &'b [hir::Node], out: &mut Vec<(&'static str, &'b hir::Node)>) {
+            for n in nodes {
+                match n {
+                    hir::Node::Handler(h) => match &h.event {
+                        hir::Event::Element(_) => {}
+                        hir::Event::Change { .. } => out.push(("`on change`", n)),
+                        hir::Event::Service { .. } => out.push(("service handler", n)),
+                    },
+                    hir::Node::Timer(t) => out.push((
+                        match t.kind {
+                            hir::TimerKind::Every => "`every` timer",
+                            hir::TimerKind::After => "`after` timer",
+                        },
+                        n,
+                    )),
+                    hir::Node::Element(e) if !matches!(e.kind, ElementKind::Component(_)) => {
+                        logic(&e.children, out)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut found = Vec::new();
+        logic(children, &mut found);
+        let mut bad = Vec::new();
+        for (what, n) in found {
+            let read = |e: &hir::Expr| -> Option<(Span, String)> {
+                match &e.kind {
+                    hir::ExprKind::Local(l) if Some(*l) == screen => {
+                        Some((e.span, "`screen`".to_string()))
+                    }
+                    hir::ExprKind::Local(l)
+                        if matches!(self.locals[l.0 as usize].kind, LocalKind::NodeAlias(_)) =>
+                    {
+                        Some((e.span, "an element of the lock".to_string()))
+                    }
+                    hir::ExprKind::Node(_) => Some((e.span, "an element of the lock".to_string())),
+                    hir::ExprKind::Def(d) if own.contains(d) => Some((
+                        e.span,
+                        format!("`{}`, a `let` of the lock", self.defs[d.0 as usize].name),
+                    )),
+                    _ => None,
+                }
+            };
+            let hit = match n {
+                hir::Node::Handler(h) => {
+                    let head = match &h.event {
+                        hir::Event::Change { targets, debounce } => targets
+                            .iter()
+                            .chain(debounce.iter())
+                            .find_map(|e| super::lock::first_expr(e, &read)),
+                        _ => None,
+                    };
+                    head.or_else(|| super::lock::first_in(&h.body, &read))
+                }
+                hir::Node::Timer(t) => super::lock::first_expr(&t.duration, &read)
+                    .or_else(|| {
+                        t.while_
+                            .as_ref()
+                            .and_then(|w| super::lock::first_expr(w, &read))
+                    })
+                    .or_else(|| super::lock::first_in(&t.body, &read)),
+                _ => None,
+            };
+            if let Some(hit) = hit {
+                bad.push((what, hit));
+            }
+        }
+        for (what, (at, read)) in bad {
+            self.error(
+                "check::lock_state_screen",
+                format!("the lock's {what} runs once for every monitor, so it cannot read {read}"),
+                at,
+                "one monitor's",
+            )
+            .help = Some(
+                "a lock's timers and `on change` and service handlers run once for the lock, as \
+                 its `state`s are one (so a counter steps once, not once per monitor): read \
+                 `screen` and the lock's elements in props, a `let` or an element's own \
+                 handler (`on key`, `on activate`) instead"
+                    .to_string(),
+            );
+        }
     }
 
     /// Finds the `id:` names of a component or surface body, so they can be

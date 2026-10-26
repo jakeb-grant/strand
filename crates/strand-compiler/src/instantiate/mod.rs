@@ -316,6 +316,12 @@ pub(crate) struct Ctx {
     /// (report review) The instance-tree scopes of mounted `lock`
     /// surfaces (a per-screen one's prefix).
     pub(crate) lock_scopes: RefCell<std::collections::HashSet<Rc<str>>>,
+    /// (lockmon) Each mounted instance of the lock (`<prefix>[<screen>]`)
+    /// and its prefix, for [`SceneProp::Twin`] keys.
+    pub(crate) lock_instances: RefCell<HashMap<Rc<str>, Rc<str>>>,
+    /// (lockmon) The lock's own timers and handlers, run once for all
+    /// its instances ([`lock::LockLogic`]).
+    pub(crate) lock_logic: RefCell<Option<Rc<lock::LockLogic>>>,
     /// (history) The instance's kept graph histories (shared by every
     /// `Ctx` of its reloads; set by the boot).
     pub(crate) history: RefCell<Rc<history::Histories>>,
@@ -806,6 +812,8 @@ impl Ctx {
             cell_ids: RefCell::default(),
             secret_cells: RefCell::default(),
             lock_scopes: RefCell::default(),
+            lock_instances: RefCell::default(),
+            lock_logic: RefCell::default(),
             history: RefCell::default(),
             window_asks: RefCell::default(),
         });
@@ -1074,6 +1082,7 @@ impl Instance {
         }
         let warnings = program.warnings.clone();
         let vm = Vm::new(program, host);
+        vm.runs().declare(rt, &vm.prog);
         let theme = match storage.is_read_only() {
             true => crate::vm::theme::ThemeHost::read_only,
             false => crate::vm::theme::ThemeHost::new,
@@ -1267,6 +1276,9 @@ impl Instance {
         if let Some(t) = old.vm.theme() {
             vm.set_theme(t);
         }
+        // (lockmon) A reload never stops a command: the runs carry on.
+        vm.set_runs(old.vm.runs());
+        vm.runs().declare(&rt, &vm.prog);
         let ctx = Ctx::create(
             vm,
             em,
@@ -1504,6 +1516,8 @@ impl Instance {
         if let Some(t) = self.ctx.vm.theme() {
             vm.set_theme(t);
         }
+        vm.set_runs(self.ctx.vm.runs());
+        vm.runs().declare(&self.rt, &vm.prog);
         let ctx = Ctx::create(
             vm,
             em,
@@ -1588,6 +1602,27 @@ impl Instance {
     /// starts each detached, off the logic thread.
     pub fn take_execs(&self) -> Vec<crate::vm::ExecRequest> {
         self.ctx.vm.take_execs()
+    }
+
+    /// (lockmon) What the host says of declared action `action`'s
+    /// commands: whether one runs, and when the one running longest
+    /// started (local time; `rec.started` keeps it to the minute).
+    /// `rec.running` and `rec.started` read it on the next flush. An
+    /// action the program does not declare is ignored.
+    pub fn set_action_run(
+        &self,
+        action: &str,
+        running: bool,
+        started: Option<chrono::NaiveDateTime>,
+    ) {
+        self.ctx.vm.runs().set(&self.rt, action, running, started);
+    }
+
+    /// (lockmon) Whether a command of `action` runs, as last set with
+    /// [`Instance::set_action_run`]; `None` for an action the program
+    /// does not declare.
+    pub fn action_running(&self, action: &str) -> Option<bool> {
+        self.ctx.vm.runs().running(&self.rt, action)
     }
 
     /// Advance the logic clock to `now` and end the tick.
@@ -2188,6 +2223,26 @@ impl Instance {
             em.set(n, SceneProp::Border, fault_outline(), Transition::Instant);
         }
         frozen
+    }
+
+    /// (lockmon review) The scene nodes fault `err` takes out: the top
+    /// nodes of the scope it freezes (every instance of the lock, for a
+    /// fault in the lock's own scope: its `screens:` pick, its `state`s,
+    /// its timers and handlers; one monitor's lock for a fault inside
+    /// that instance, an `if`'s or a `for`'s included), else the node
+    /// whose prop or handler failed. Empty for a fault at the config's
+    /// top level with no node.
+    pub fn fault_nodes(&self, err: &RuntimeError) -> Vec<strand_scene::NodeId> {
+        let mut nodes = match err.scope {
+            Some(s) => self.ctx.em.borrow().scope_nodes(s),
+            None => Vec::new(),
+        };
+        if let Some(n) = err.node
+            && !nodes.contains(&n)
+        {
+            nodes.push(n);
+        }
+        nodes
     }
 
     /// Resume a scope [`Instance::freeze`] froze and take its outline off.

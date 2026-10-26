@@ -382,6 +382,19 @@ from it as a `from poll` service reads a command's output (JSON or
 `key=value` lines into the type's fields). In a handler, `let r = await
 calc(q)` waits for it.
 
+**An action's name tells whether it runs, and stops it.** A screen
+recorder runs until you stop it:
+`action rec(file: path) ["wf-recorder", "-f", file]`, with `permit exec
+"wf-recorder"`. `rec.running` is true while its command runs,
+`rec.started` is when it began (a `Date`, to the minute), and
+`rec.stop()` in a handler stops it the way Ctrl-C in a terminal would,
+so the recorder finishes its file; one that ignores that is ended after
+a few seconds. One button does both: `on click { if rec.running {
+rec.stop() } else { rec("/tmp/clip.mp4") } }`, and `text rec.running ?
+"Stop" : "Record"` labels it. An action with a result has the same
+three: `calc.running` while any of its calls runs, and `calc.stop()`
+ends them, each call's `.error` saying it was stopped.
+
 For a service none of these can describe, write it in Rust (section 7).
 
 ## 4. A control centre
@@ -719,9 +732,16 @@ steps.
 - **Thumbnails.** `thumbnail w` shows a window `w` live, while it is
   on screen, and `thumbnail screen` a still of a monitor, taken each
   time it is shown: `for s in screens.all key s.id { thumbnail s }` is
-  an overview of your monitors. A still is taken once the surface
-  showing it is drawn, so on its own monitor it shows that surface too,
-  and not behind a lock screen yet: there it would capture the lock.
+  an overview of your monitors. A still is taken just before the
+  surface showing it appears, so on its own monitor it shows what was
+  there; one that appears later in a surface already open is taken
+  then, and shows that surface. In a `lock`, `thumbnail screen` is the
+  desktop as it was just before the lock covered it, on each monitor's
+  lock; a monitor plugged in while locked has no still and shows
+  nothing. Mind what that shows: a locked screen is for whoever is at
+  the machine, and a lock's `thumbnail screen` shows them your desktop
+  as you left it, open windows and all, at the size you draw it. A
+  still is kept at 1280×720 at most, scaled up past that.
 - **SVG layers.** `svg "gauge.svg" { #needle { rotate: level * 270deg } }`
   draws an SVG and binds props to the element with `id="needle"` inside
   it: `rotate`, `scale`, `x`, `y`, `opacity` and `fill`. Draw a gauge

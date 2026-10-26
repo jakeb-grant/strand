@@ -2361,3 +2361,54 @@ fn a_window_replays_its_recorded_sized_axes_and_its_own_close() {
         "`w.close()` is the handler's own: {text}"
     );
 }
+
+/// (lockmon) A recorded command's end is replayed where it came (`end
+/// action rec`), so `rec.running` reads as it did; its start is the
+/// replayed handler's call.
+#[test]
+fn a_recorded_commands_end_is_replayed() {
+    let mut f = Fx::session();
+    let started = [0u8, 0, 0, 0, 0, 1];
+    let ended = [0u8, 0, 0, 0, 0, 0];
+    f.change(10 * S, kind::ACTION, "rec", &started, "");
+    f.change(12 * S, kind::ACTION, "rec", &ended, "");
+    let (_, p, text) = plan_of(&f.write("action-end"), &defaults());
+    let st = steps(&text);
+    assert_eq!(
+        st.iter().filter(|s| **s == "end action rec").count(),
+        1,
+        "{st:?}"
+    );
+    assert!(p.events.iter().any(|e| e.text == "action rec succeeded"));
+}
+
+/// (lockmon review) Three calls while a command runs are two commands
+/// live (one runs, one re-run queued), so two ends are recorded; the plan
+/// replays each end as an `end action` step at its time, and the sandbox
+/// keeps the runner's queue (`smoke.rs::an_actions_run_lasts_until_its_end`),
+/// so `rec.running` turns false at the second, as it did.
+#[test]
+fn each_recorded_end_of_a_queued_run_is_replayed_in_order() {
+    let mut f = Fx::session();
+    let started = [0u8, 0, 0, 0, 0, 1];
+    let ended = [0u8, 0, 0, 0, 0, 0];
+    f.change(10 * S, kind::ACTION, "rec", &started, "");
+    f.change(12 * S, kind::ACTION, "rec", &ended, "");
+    f.change(12 * S, kind::ACTION, "rec", &started, "");
+    f.change(15 * S, kind::ACTION, "rec", &ended, "");
+    let (_, _, text) = plan_of(&f.write("action-queued"), &defaults());
+    let st = steps(&text);
+    let ends: Vec<usize> = st
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| **s == "end action rec")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(ends.len(), 2, "{st:?}");
+    assert!(
+        st[ends[0] + 1..ends[1]]
+            .iter()
+            .any(|s| s.starts_with("frames")),
+        "the second end waits for its time: {st:?}"
+    );
+}

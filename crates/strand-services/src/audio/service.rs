@@ -1008,6 +1008,11 @@ mod tests {
     use super::*;
     use crate::{Keyed, Service};
 
+    /// The level asks are one process-wide table, and `asked(now, …)`
+    /// lapses and hides every device by the `now` it is given: the tests
+    /// that move time on take turns, or one lapses the other's device.
+    static ASKS: Mutex<()> = Mutex::new(());
+
     #[test]
     fn the_store_is_the_schema_record() {
         assert_eq!(<AudioStore as Service>::NAME, "audio");
@@ -1041,6 +1046,7 @@ mod tests {
 
     #[test]
     fn an_unasked_reading_ends_the_lease() {
+        let _turn = ASKS.lock().unwrap_or_else(|e| e.into_inner());
         let t0 = Instant::now();
         ask_levels(9_001);
         assert!(asked(t0, true).contains(&9_001));
@@ -1069,6 +1075,7 @@ mod tests {
     /// readers have gone, [`LEVELS_LEASE`] after the last.
     #[test]
     fn a_quiet_meter_stops_once_its_readers_go() {
+        let _turn = ASKS.lock().unwrap_or_else(|e| e.into_inner());
         ask_levels(9_101);
         ask_levels(9_101);
         let t0 = Instant::now();

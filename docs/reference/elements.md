@@ -417,8 +417,10 @@ Also every prop and event of [`node`](#node).
 element lock: surface
 ```
 
-The lock screen, on `ext-session-lock`. It is exempt from reload and
-fails closed.
+The lock screen, on `ext-session-lock`: on every monitor its
+`screens:` picks (every one by default), one instance a monitor
+sharing the lock's `state`s, timers and `on change` handlers. It is
+exempt from reload and fails closed.
 
 It is a surface, written at the top level of a file.
 
@@ -426,7 +428,7 @@ Also every prop and event of [`surface`](#surface).
 
 | In scope | Type | |
 | --- | --- | --- |
-| `screen` | `Screen` | The monitor its content shows on: the focused one, else the first. It follows the content when focus moves to another monitor. |
+| `screen` | `Screen` | The monitor this instance is on; with `screens: focused` (or a pick no plugged monitor matches), the focused one, else the first, changing in place as focus moves. |
 
 ### `lottie`
 
@@ -780,12 +782,13 @@ element thumbnail(Window | Screen -> source): node
 ```
 
 A live thumbnail of a window (`thumbnail w`), or a still of a screen,
-taken each time it is shown (`thumbnail screen`). Inside a `lock` a
-screen's still is taken after the session locks, so it shows black
-or the lock itself; a still from just before the lock is not done
-yet. On its own screen the still is taken once the surface showing
-it is drawn, so it holds that surface too (an overview shows itself,
-empty); a still from before the surface opens is not done yet either.
+taken each time it is shown (`thumbnail screen`). The still is taken
+before the surface showing it appears, so on its own screen it shows
+what was there, not that surface; one shown later in a surface
+already on screen is taken then, and holds that surface. Inside a
+`lock` it is the still taken just before the lock covered the
+screen; a monitor plugged in while locked has none, and shows
+nothing.
 
 It takes no children.
 

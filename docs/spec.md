@@ -263,9 +263,9 @@ and `on hide`, except that a `window` takes none of the props that
 place a layer surface (below).
 `attach:` and `scrim:` are accepted only on a `panel` (and on a
 `popup`); on a `bar`, `osd` or `lock` either one is a load error. On a
-`lock`, `screens:`, `layer:`, `anchor:` and `keyboard:` are warnings:
-`ext-session-lock` decides all four (every monitor, above everything,
-filling the monitor, the keyboard always).
+`lock`, `layer:`, `anchor:` and `keyboard:` are warnings:
+`ext-session-lock` decides all three (above everything, filling the
+monitor, the keyboard always).
 
 - **`bar Name { … }`** is on every monitor that its `screens:` picks
   (all of them by default). Each monitor gets its own instance, with the
@@ -288,7 +288,8 @@ filling the monitor, the keyboard always).
   error saying to add `screens: all`. A `screens:` expression that
   evaluates to `focused` keeps one instance that the compositor places
   on the focused monitor, its `screen` that monitor, changing in place
-  as focus moves (as the lock's does: nothing is mounted again).
+  as focus moves (as a lock's with `screens: focused` does: nothing is
+  mounted again).
   (decisions.md flex, 2026-10-24)
 - **`open:`** says whether a surface is shown. Bound two-way
   (`open: <-> open`), Escape, a click away and focus loss write `false`
@@ -452,15 +453,42 @@ filling the monitor, the keyboard always).
   true once the seat has had no input for `t`, and an inhibitor holds
   it back too (decisions.md services-round).
 - **`lock { … }`** is the lock screen, on `ext-session-lock`. A config
-  has at most one `lock`, across its files. Its content shows on the
-  focused monitor (else the first) and every other monitor shows a
-  solid; `screen` in it is that monitor, and it changes in place when
-  focus moves the content to another (nothing is mounted again, so
-  what was typed stays; decisions.md flex, 2026-10-24). A `lock` in which nothing
+  has at most one `lock`, across its files. It is on every monitor its
+  `screens:` picks (all of them by default), a monitor plugged in while
+  locked included, and each monitor's instance has `screen` (that
+  monitor) in scope, as a bar's has. Unlike a bar's, the lock's own
+  `state`s are one for every instance: there is one password, typed
+  into whichever monitor's lock the compositor gives the keys, and the
+  keys or the pointer moving to another monitor carry on the same
+  text. A lock `state` (in its body or its elements) therefore cannot
+  start from `screen` or from any `let` of the lock (a load error); its
+  `let`s, its elements' own state and the `state`s of its `if`/`match`
+  branches, components and `for` bodies are each instance's. Its timers
+  and its `on change` and service handlers, in its body and its
+  elements, run once for the lock as its `state`s are one (a counter
+  steps once, not once per monitor), from the first instance shown,
+  paused while none is; they cannot read `screen`, a `let` or an
+  element of the lock (a load error). An element's own handlers
+  (`on key`, `on activate`) run on that monitor's instance. Every monitor not picked
+  shows a solid in the lock's colour (its `bg`). `screens: focused`, or
+  a pick that names no plugged monitor, keeps one instance on the
+  focused monitor (else the first), whose `screen` changes in place
+  when focus moves the content to another (nothing is mounted again, so
+  what was typed stays; decisions.md flex, 2026-10-24, and lockmon,
+  2026-10-25). A `thumbnail screen` in a lock shows a still of that
+  monitor taken just before the lock covered it (the lock request waits
+  up to 500 ms for it, at most 1280×720, let go when the lock ends; only
+  monitors the lock's thumbnails show are taken); a monitor plugged in
+  while locked has none and its thumbnail shows nothing. A `lock` in which nothing
   calls `auth.submit` is a load error (it has no way out); a `popup` in
   a lock is a warning, since popups never open on a lock surface. The
   lock is exempt from reload (section 10.1) and **fails closed**: if
-  anything in it faults, a built-in password field is shown.
+  anything in it faults, a built-in password field is shown, on every
+  monitor that showed the lock; a fault inside one monitor's instance
+  alone (its runtime fault, which freezes that instance only, or its
+  first frame missing while another monitor's drew) shows the solid on
+  that monitor while the others carry on, and the field once none is
+  left.
   Authentication runs in a separate helper through the PAM service
   `strand`, or `login` with a one-time warning when `/etc/pam.d/strand`
   is missing. While a lock is shown PAM's conversation runs: the `auth`
@@ -599,7 +627,9 @@ filling the monitor, the keyboard always).
   are checked against the object's introspection. A field written
   `name: type rw = Property` is writable (section 8.1); without `rw` it
   is read-only.
-- `from file path { fields }` reads a file; `from listen command`
+- `from file path { fields }` reads a file, again whenever it changes
+  (a file a change leaves empty is read again 50 ms later, since a
+  rewrite in place truncates before it writes); `from listen command`
   reads the lines a command prints; `from poll command every T` runs a
   command, or reads a file, at an interval. Their fields are checked
   against the schema you declare.
@@ -730,6 +760,31 @@ filling the monitor, the keyboard always).
     and a log line, not a `strand watch` notice: the config reads
     `.error`, which names the exit status; what the program printed on
     stderr is only in strand's log.
+- (lockmon; decisions.md lockmon) An action declared with a command
+  has a run, read through its name as an `ActionRun`: `rec.running`
+  (`bool`) is true while a command of it runs (for an action with a
+  result, while any of its calls' commands does; several may run at
+  once); `rec.started` (`Date?`) is when the one running longest
+  started, to the minute, null while none runs; `rec.stop()` stops
+  them. `running` and `started` read as fields do, in a binding too,
+  tracked (`on change rec.running` fires as commands start and end);
+  they are the runtime's to say and never written (`check::read_only`).
+  `stop()` is an action, a handler's alone (section 8.3): every command
+  of the action now running is stopped and a re-run queued behind one
+  dropped. Each one's process group gets SIGINT, as a terminal's Ctrl-C
+  sends it, then SIGTERM 2 s later if its program has not ended, then
+  SIGKILL 2 s after that; strand's thread that started the command
+  sends these and reaps it, never signalling a group whose id was
+  handed on. A stopped command is no failure (no `strand watch`
+  notice); a stopped call of an action with a result has the `.error`
+  ``"`qalc` was stopped"``, which a handler awaiting it gets. A call
+  after the `stop()` queues behind the stopped command as any call
+  does, so `{ rec.stop(); rec(f) }` restarts it once it has ended. A
+  local or parameter of the action's name is that local, and a `from
+  dbus` service's actions (methods, `ppd.hold`) have no run. A reload
+  keeps every run: it never stops a command. A glitch report's replay
+  (section 13) runs no command: a command counts as running from its
+  call to where the recording says it ended, or to its `stop()`.
 - `strand check` lists every action's command, each parameter shown as
   `{name}` where it is one argument; the language server shows it on an
   action's hover. Both check its program against `permit exec`.

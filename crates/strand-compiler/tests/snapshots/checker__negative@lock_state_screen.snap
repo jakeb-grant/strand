@@ -1,0 +1,16 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::lock_state_screen
+
+  × the lock's `state wide` cannot start from `screen`
+   ╭─[lock_state_screen.strand:7:16]
+ 6 │   open: <-> locked
+ 7 │   state wide = screen.width
+   ·                ──────┬─────
+   ·                      ╰── read once for every monitor
+ 8 │   text "locked"
+   ╰────
+  help: a lock's `state` is one for the lock on every monitor (so a password typed on one is typed
+        on all): start it from a value, and read `screen` in props or a `let` instead

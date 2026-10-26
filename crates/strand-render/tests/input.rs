@@ -850,6 +850,107 @@ fn logic_clearing_an_input_wins_over_edits_in_flight() {
     assert_eq!(key(&mut f, &mut r, "d"), "d", "logic's own text wins");
 }
 
+/// (lockmon) The lock's password field on two monitors (twin inputs,
+/// `Prop::Twin`, one text between them): keys typed on the second
+/// monitor right after the keyboard moved there build on the first's
+/// writes still in flight, never on the text logic last sent, and the
+/// caret is one between them, so the password is never split or lost.
+#[test]
+fn twin_inputs_share_writes_in_flight_and_the_caret() {
+    use strand_scene::{NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let (l1, i1, l2, i2) = (
+        NodeId::new(0, 0),
+        NodeId::new(1, 0),
+        NodeId::new(2, 0),
+        NodeId::new(3, 0),
+    );
+    let mut d = SceneDiff::new();
+    for (l, i) in [(l1, i1), (l2, i2)] {
+        d.create(l, NodeKind::Lock, None, 0)
+            .create(i, NodeKind::Input, Some(l), 0)
+            .set(i, Prop::Text, PropValue::Text(String::new()))
+            .set(i, Prop::InputType, PropValue::Keyword("password".into()))
+            .set(i, Prop::Twin, PropValue::Text("/s1/s1/e4".into()))
+            .set(i, Prop::Focus, PropValue::Bool(true));
+    }
+    let mut f = R::default();
+    f.router.observe(&d);
+    assert!(r.apply(d).is_empty());
+    let (s1, s2) = (SurfaceId(1), SurfaceId(2));
+    f.attached(s1, l1);
+    f.attached(s2, l2);
+    let key = |f: &mut R, r: &mut Renderer, s: SurfaceId, name: &str, t: &str| {
+        f.input(
+            &InputEvent::Key {
+                surface: s,
+                key: KeyInput {
+                    name: name.into(),
+                    text: t.into(),
+                    state: ButtonState::Pressed,
+                    repeat: false,
+                    modifiers: Default::default(),
+                    time: 0,
+                    latin: None,
+                },
+            },
+            r,
+        );
+        f.drain().into_iter().find_map(|i| match i {
+            Intent::Write {
+                node,
+                value: PropValue::Text(t),
+                ..
+            } => Some((node, t)),
+            _ => None,
+        })
+    };
+    // Logic answers a write: both twins show the lock's one text.
+    let logic = |f: &mut R, r: &mut Renderer, t: &str| {
+        let mut d = SceneDiff::new();
+        d.set(i1, Prop::Text, PropValue::Text(t.into())).set(
+            i2,
+            Prop::Text,
+            PropValue::Text(t.into()),
+        );
+        f.router.observe(&d);
+        r.apply(d);
+    };
+    let to = |f: &mut R, r: &mut Renderer, from: SurfaceId, to: SurfaceId| {
+        f.input(&InputEvent::KeyboardLeave { surface: from }, r);
+        f.input(&InputEvent::KeyboardEnter { surface: to }, r);
+        f.drain();
+    };
+    f.input(&InputEvent::KeyboardEnter { surface: s1 }, &mut r);
+    f.drain();
+    assert_eq!(key(&mut f, &mut r, s1, "a", "a"), Some((i1, "a".into())));
+    assert_eq!(key(&mut f, &mut r, s1, "b", "b"), Some((i1, "ab".into())));
+    // The keyboard moves to the other monitor before logic answers.
+    to(&mut f, &mut r, s1, s2);
+    assert_eq!(
+        key(&mut f, &mut r, s2, "c", "c"),
+        Some((i2, "abc".into())),
+        "built on the other monitor's writes in flight"
+    );
+    logic(&mut f, &mut r, "a");
+    logic(&mut f, &mut r, "ab");
+    assert_eq!(key(&mut f, &mut r, s2, "d", "d"), Some((i2, "abcd".into())));
+    logic(&mut f, &mut r, "abc");
+    logic(&mut f, &mut r, "abcd");
+    // The caret moved on one monitor is where the other types.
+    assert_eq!(key(&mut f, &mut r, s2, "Left", ""), None);
+    to(&mut f, &mut r, s2, s1);
+    assert_eq!(
+        key(&mut f, &mut r, s1, "x", "x"),
+        Some((i1, "abcxd".into())),
+        "typed at the caret both share"
+    );
+}
+
 /// An axis frame with no motion (a touchpad finger lifted: `axis_stop`
 /// alone) delivers no `scroll`; detents alone scroll by wheel steps.
 #[test]

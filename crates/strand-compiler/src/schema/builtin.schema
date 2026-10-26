@@ -253,6 +253,22 @@ record File key path {
   size: int
 }
 
+/// (lockmon) A declared action's commands as they run, read through the
+/// action's name: `rec.running`, `rec.started` and `rec.stop()` for
+/// `action rec(…) […]`. Only an action's name reads as one.
+record ActionRun {
+  /// A command of it runs: true while any does (an action with a result
+  /// may run several at once).
+  running: bool
+  /// When the command running longest started, to the minute; null
+  /// while none runs.
+  started: Date?
+  /// Stops every command of it now running, and the re-run queued behind
+  /// one: SIGINT to each one's process group, SIGTERM 2 s later, SIGKILL
+  /// 2 s after that.
+  action stop()
+}
+
 /// A cell of a month grid, from `calendar.days(month)`.
 provisional record Day key date {
   /// The day's date.
@@ -1797,11 +1813,14 @@ element osd: surface {
   let screen: Screen
   flags surface
 }
-/// The lock screen, on `ext-session-lock`. It is exempt from reload and
-/// fails closed.
+/// The lock screen, on `ext-session-lock`: on every monitor its
+/// `screens:` picks (every one by default), one instance a monitor
+/// sharing the lock's `state`s, timers and `on change` handlers. It is
+/// exempt from reload and fails closed.
 element lock: surface {
-  /// The monitor its content shows on: the focused one, else the first.
-  /// It follows the content when focus moves to another monitor.
+  /// The monitor this instance is on; with `screens: focused` (or a
+  /// pick no plugged monitor matches), the focused one, else the first,
+  /// changing in place as focus moves.
   let screen: Screen
   flags surface
 }
@@ -2172,12 +2191,13 @@ element lottie(path -> source): node {
   flags leaf
 }
 /// A live thumbnail of a window (`thumbnail w`), or a still of a screen,
-/// taken each time it is shown (`thumbnail screen`). Inside a `lock` a
-/// screen's still is taken after the session locks, so it shows black
-/// or the lock itself; a still from just before the lock is not done
-/// yet. On its own screen the still is taken once the surface showing
-/// it is drawn, so it holds that surface too (an overview shows itself,
-/// empty); a still from before the surface opens is not done yet either.
+/// taken each time it is shown (`thumbnail screen`). The still is taken
+/// before the surface showing it appears, so on its own screen it shows
+/// what was there, not that surface; one shown later in a surface
+/// already on screen is taken then, and holds that surface. Inside a
+/// `lock` it is the still taken just before the lock covered the
+/// screen; a monitor plugged in while locked has none, and shows
+/// nothing.
 element thumbnail(Window | Screen -> source): node {
   /// How the thumbnail fills its box.
   fit: Fit

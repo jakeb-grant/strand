@@ -3,8 +3,11 @@
 //! **inside the lock VM only**. Anywhere else each test skips: they must
 //! never touch the host's polkit, PAM or login.
 //!
-//! - `polkit_agent_answers_polkitd` (scripts/lockvm/scenarios/polkit.sh
-//!   runs it as `tester`, password `strand-test`, in logind-shaped
+//! - `polkit_agent_answers_polkitd` (scripts/lockvm/scenarios/polkit.sh,
+//!   (lockmon) once against Ubuntu's polkit 124 and its setuid helper and
+//!   once, `STRAND_LOCK_VM_POLKIT=127`, against polkit 127 built from its
+//!   release and its helper behind `/run/polkit/agent-helper.socket`;
+//!   it runs it as `tester`, password `strand-test`, in logind-shaped
 //!   session `1`, with polkitd on the guest's system bus and two
 //!   administrators in group `sudo`): another agent holding the session
 //!   is left be until it goes; then `pkcheck` asks for the test actions
@@ -199,6 +202,25 @@ fn polkit_agent_answers_polkitd() {
         1000,
         "polkit.sh runs this as tester"
     );
+    // (lockmon) Which helper this run checks passwords with: Ubuntu's
+    // polkit 124 has only the setuid program; polkit 127 (POLKIT=127)
+    // has its socket, the setuid bit taken off 124's program, so the
+    // socket is the only way in.
+    let found = polkit::helper::Helper::find(None, None, 0).expect("a helper");
+    match std::env::var("STRAND_LOCK_VM_POLKIT").as_deref() {
+        Ok("127") => {
+            assert_eq!(
+                found.socket.as_deref(),
+                Some(std::path::Path::new(polkit::helper::SOCKET)),
+                "polkit 127's socket"
+            );
+            assert_eq!(found.program, None, "no setuid helper to fall back on");
+        }
+        _ => {
+            assert_eq!(found.socket, None, "polkit 124 has no socket");
+            assert!(found.program.is_some(), "124's setuid helper");
+        }
+    }
     let tokio = tokio();
     polkit::configure(None);
     let rt = Runtime::new();
