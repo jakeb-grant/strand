@@ -521,6 +521,11 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                     time: *time,
                 },
             };
+            // `STRAND_LOG=debug`: what the compositor told of the pointer,
+            // its moves left out (the compositor matrix reads it).
+            if !matches!(event, InputEvent::PointerMotion { .. }) {
+                log::debug!("pointer: {event:?}");
+            }
             self.send_input(event);
         }
         self.sync_cursors();

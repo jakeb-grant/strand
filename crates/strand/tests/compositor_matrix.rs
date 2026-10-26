@@ -2083,10 +2083,15 @@ fn a_window_moves_and_resizes_from_its_own_press() {
     let live = live();
     let dir = std::env::temp_dir().join(format!("strand-matrix-drag-{}", std::process::id()));
     let sock = dir.join("strand.sock");
+    // `debug`: a failure shows each press, release, enter and leave the
+    // compositor gave strand, and each move or resize handed to it.
     let (strand, log, _bus) = launch_strand(
         &dir,
         &[("drag.strand", DRAG_SRC)],
-        &[("STRAND_SOCKET", sock.clone().into_os_string())],
+        &[
+            ("STRAND_SOCKET", sock.clone().into_os_string()),
+            ("STRAND_LOG", "debug".into()),
+        ],
     );
     let mut d = Drag { strand, log, sock };
     let outputs = match &live {
@@ -2300,6 +2305,17 @@ fn a_window_moves_and_resizes_from_its_own_press() {
         }
     });
     let (b1, r1) = settled(&mut d, "moved");
+    let pointer_log = |d: &Drag| {
+        d.log_text()
+            .lines()
+            .filter(|l| l.contains("pointer: ") || l.contains("handed to the compositor"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    eprintln!(
+        "matrix: {kind}: what strand heard of the pointer by the move's end:\n{}",
+        pointer_log(&d)
+    );
 
     // `w.resize(bottom_right)`: smaller by the drag, its top-left kept
     // (smaller, so it stays on its output whatever the compositor gave).

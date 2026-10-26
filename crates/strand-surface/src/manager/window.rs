@@ -445,6 +445,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         // it nor a leave), so for strand the press ends here, as on a
         // leave: no click, and the next press is a press again.
         if handed {
+            log::debug!("{node:?}: {ask:?} handed to the compositor: the press ends here");
             self.send_input(InputEvent::PointerLeave { surface: id });
         }
         if let Err(e) = self.conn.flush() {
