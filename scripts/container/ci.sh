@@ -232,6 +232,10 @@ step "a glitch report replayed end to end (test-report-view.sh --e2e)" 30 bash s
 # scenarios and compared with the committed ones. GitHub's site job also
 # loads every page in a browser (scripts/site/shots.sh --all), which runs
 # on the host's Docker, not in this image: run it on the host after this.
+# GitHub's `wasm` job (the live examples, docs/live-examples.md) has no
+# step here either: this image has no wasm target, wasm-bindgen or
+# wasm-opt, and its browser check is a container of its own. Run it on
+# the host with scripts/wasm/ci.sh.
 job=site
 step "strand-site build --strand (the CLI page held to the binary)" 30 bash -c '
   cargo build -q -p strand --bin strand &&

@@ -1,7 +1,8 @@
 //! Tooltips (`tooltip: expr`): shown after the pointer rests, as a
 //! render-owned popup.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_scene::{NodeId, NodeKind, Prop, PropValue, TokenScope};
 

@@ -40,7 +40,8 @@
 //! `reduced_motion` snap everything.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_scene::motion::{channels_color, color_channels};
 use strand_scene::{

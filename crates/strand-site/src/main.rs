@@ -3,7 +3,8 @@
 //! `strand-site cli BIN` captures `BIN`'s help for that page
 //! (scripts/site/cli.sh); `strand-site media <name> <light-run>
 //! [<dark-run>]` renders an example's media from eval runs of its
-//! scenario (scripts/site/media.sh).
+//! scenario (scripts/site/media.sh); `strand-site live` prints every
+//! docs example as its live mode runs it (scripts/wasm/build.sh).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -15,7 +16,7 @@ fn repo() -> PathBuf {
 fn usage() -> ExitCode {
     eprintln!(
         "usage: strand-site build [--out DIR] [--strand BIN]\n       strand-site cli BIN\n       \
-         strand-site twin <name>\n       strand-site media [--check] <name> <light-run-dir> <dark-run-dir>"
+         strand-site twin <name>\n       strand-site live\n       strand-site media [--check] <name> <light-run-dir> <dark-run-dir>"
     );
     ExitCode::from(2)
 }
@@ -90,6 +91,20 @@ fn main() -> ExitCode {
             };
             match done {
                 Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Some("live") => {
+            // Every docs example as its figure's live mode runs it, for
+            // the tools that build the live examples (scripts/wasm/build.sh).
+            match strand_site::example::all_live(&root) {
+                Ok(v) => {
+                    println!("{v}");
+                    ExitCode::SUCCESS
+                }
                 Err(e) => {
                     eprintln!("error: {e}");
                     ExitCode::FAILURE

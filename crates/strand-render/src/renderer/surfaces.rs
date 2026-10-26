@@ -2,7 +2,8 @@
 //! hit testing their last frame.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_scene::{Damage, LogicalPoint, LogicalRect, NodeId, Scale, Size, SurfaceId};
 

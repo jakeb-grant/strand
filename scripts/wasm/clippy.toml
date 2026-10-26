@@ -1,0 +1,12 @@
+# The live examples' lint (scripts/wasm/build.sh runs clippy with
+# CLIPPY_CONF_DIR set here, for wasm32-unknown-unknown, on every
+# workspace crate strand-web builds; docs/live-examples.md). On that
+# target std has no clock: these panic at their first call, which no
+# native test sees. The render path names its clock through
+# strand_scene::time (or strand_core::time), which is std's natively
+# and the page's on wasm; a call that resolves to std's here is one
+# that would panic in the browser.
+disallowed-methods = [
+  { path = "std::time::Instant::now", reason = "panics on wasm32-unknown-unknown: use strand_scene::time::Instant (strand_core::time in strand-core), which reads the page's clock there" },
+  { path = "std::time::SystemTime::now", reason = "panics on wasm32-unknown-unknown: use strand_scene::time::system_now() (strand_core::time::system_now() in strand-core)" },
+]

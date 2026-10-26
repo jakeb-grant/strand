@@ -12,7 +12,7 @@ default = ["gpu"]
 # The GPU backend: promotion, lowering to strand-gpu's frames, shader
 # passes (docs/architecture.md, "`strand-gpu`").
 gpu = ["dep:strand-gpu", "dep:log"]
-# The evaluation sandbox's frame trace, text hold and router clock
+# The evaluation sandbox's frame trace and text hold
 # (eval/, docs/decisions.md eval-sandbox). Never enabled by a crate in
 # this workspace; scripts/eval/check-isolation.sh checks it.
 eval-hooks = []

@@ -556,7 +556,50 @@ strand-site  the documentation site's generator (site/ to target/site):
              strand-compiler, strand-scene, strand-theme (contrast maths)
              and tree-sitter-strand (the highlight queries)
   ^-- nothing
+
+strand-web  (live examples, docs/live-examples.md) the render path in
+            a browser: a cdylib + rlib on strand-compiler (no `shaders`),
+            strand-core, strand-scene (its `placement`, the compositor's
+            side), strand-text, strand-icons, strand-render (no `gpu`, no
+            `eval-hooks`) and strand-services-schema, never on
+            strand-surface (Wayland); wasm-bindgen only when built for
+            wasm; blake3 for the frames' hashes; its tests depend on
+            strand-site (the examples as the site carries them)
+  ^-- nothing
 ```
+
+(live examples) `strand_scene::placement` is the pure half of the
+compositor's side: where a bar, panel or OSD goes on its output (a
+`LayerConfig`), how a window is named and sized (`WindowConfig`), where
+a popup opens from its anchor (`PopupConfig`, `popup_shift`), the scrims
+and the overhang; no Wayland. It lived in strand-surface until the web
+host needed it too; strand-surface re-exports it as
+`strand_surface::placement`, so its manager and every caller are as they
+were, and its tests run once, in strand-scene. It logs with `log`, which
+strand-scene gains for it.
+
+(live examples) On `target_family = "wasm"` the render path names its
+monotonic clock through `strand_scene::time::Instant` (strand-core: its
+own `time::Instant`), which is web-time's `Instant` there and
+`std::time::Instant` natively; so `Renderer::set_now`,
+`Router::set_now`, `Renderer::next_wake` and every other signature that
+takes or returns an `Instant` take web-time's on wasm and std's,
+unchanged, natively. The wall clock stays `std::time::SystemTime` on
+both; `strand_scene::time::system_now()` reads it. std's
+`Instant::now()` and `SystemTime::now()` panic on wasm32-unknown-unknown,
+so a call that resolves to either there fails `scripts/wasm/lint.sh`
+(clippy's `disallowed-methods`, from `scripts/wasm/clippy.toml`, for that
+target on every workspace crate strand-web builds; CI's `wasm` job).
+
+(live examples) A host without a file system supplies the icon theme's
+files: `strand_icons::set_files(HashMap<PathBuf, Arc<[u8]>>)` puts a
+table of files (by absolute path) in front of the disk for every lookup
+(an empty table: none, the disk alone), and `strand_icons::file(&Path)
+-> Option<Arc<[u8]>>` reads one; the lookup reads index.theme, theme
+directories and icon files through it, and strand-render's image reader
+(`image::read_capped`) takes a supplied file before the disk. The web
+host points the base directories at one that no disk has
+(`set_base_dirs`) and supplies the files the docs examples draw.
 
 `strand-site` reads `site/SUMMARY.md` for the sidebar, renders
 `site/*.md`, `docs/guide/*.md` and the reference strand-dev's generator
@@ -608,6 +651,27 @@ that changes only pixels fails `media.sh --check`, which draws the media
 again and compares the frames' hashes (CI's `site` job, with the build,
 strand-site's tests and `scripts/site/shots.sh --all`, every page in
 headless Chromium).
+
+(live examples, docs/live-examples.md) Each example figure also carries
+what its live mode runs, as JSON in a `<script type="application/json"
+class="ex-live-data">` (`example::live`: the scenario's name, id,
+config files, `[services]` as `[path, text]` pairs, screen, rate and
+steps section; a scenario header key the web host would not honour is
+a build error), and `strand-site live` prints every example's, for
+`scripts/wasm/build.sh`. A ```` ```playground name… ```` block writes
+the playground (`site/playground.md`) with the named examples' data.
+Every page loads `wasm/manifest.js` before `site.js`; the build writes
+it as `window.STRAND_WASM = null;`, so the site needs no wasm tooling,
+and the pages offer nothing live. `scripts/wasm/site.sh` adds a
+WebAssembly build to a built site: `wasm/` with the module, its glue
+and the icon files named by content hash, the two
+fonts, their licences, and the manifest written again naming them.
+`site.js` then offers "Try it live" on each figure, over http only, and
+loads `assets/live.js`, the module and its assets only when the reader
+asks (the playground: on arrival). The module is built with
+fearless_simd's wasm multiply-add patched to round once, as natively
+(`scripts/wasm/exact-fma.py`, passed to cargo on the command line, so
+no native build and no manifest in the workspace sees it).
 
 `strand-fake-wayland` (M4) is a test fixture, not part of the runtime: no
 root crate depends on it outside `[dev-dependencies]`
@@ -1018,13 +1082,9 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     trace's switch, and a hold on the layouts inline shaping makes, which
     stay pending, as a late text worker's do, until released through the
     usual delivery;
-  - `Renderer::set_now(Option<Instant>)`: the time the renderer's own
-    timers read in place of the wall clock (a tooltip's delay, a capped
-    clock's ticks, so `next_wake` answers on it), through the private
-    `Renderer::now`, which is `Instant::now()` without the feature or
-    unset; and `take_inline_shaped() -> u32`, the layouts inline shaping
-    delivered at once since the last call (each one a text worker would
-    have woken the host's loop for);
+  - (live examples: no longer behind the feature) `Renderer::set_now`
+    and `take_inline_shaped`, and `Router::set_now`, are public on every
+    build: see "Virtual clocks" below;
   - (eval-refs, the `redraw` check) `Renderer::set_keep_frames(bool)`:
     keep each surface's last painted frame as drawn (its display list,
     passes, size, scale and crossfade weight, in the probe);
@@ -1043,12 +1103,23 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
     arithmetic. All three read the renderer only. And
     `set_damage_inset(u32)`, a mutant only eval/tests turns on: each
     frame's own damage shrunk by that many pixels on every side;
-  - `Router::set_now(Option<Instant>)`: the time the router reads for
-    hover delays, grace and edits in place of the wall clock;
   - the trace is built in `flatten/probe.rs` from the locals
     `Flattener::node` already has (`Animator::motions` reads motion
     state without sampling), into `Flattened::trace`.
   Their only consumer is `eval/`.
+- (live examples) Virtual clocks, on every build, for a host that runs
+  the renderer on a clock of its own (eval's driver and strand-web; the
+  shell never sets them): `Renderer::set_now(Option<Instant>)`, the time
+  the renderer's own timers read in place of the wall clock (a tooltip's
+  delay, a capped clock's ticks, so `next_wake` answers on it), through
+  the private `Renderer::now`, which is `Instant::now()` while unset;
+  `Renderer::take_inline_shaped() -> u32`, the layouts inline shaping
+  delivered at once since the last call (each one a text worker would
+  have woken the host's loop for); and `Router::set_now(Option<Instant>)`,
+  the time the router reads for hover delays, grace and edits. They
+  change what a frame draws only through the time they set, which is
+  why they need no feature: a host that never calls them reads the wall
+  clock as before (decisions.md, live-examples).
 
 ## M5 interfaces (wave 0a)
 

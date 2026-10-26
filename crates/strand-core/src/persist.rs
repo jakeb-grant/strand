@@ -364,7 +364,7 @@ struct Queue {
     next_seq: u64,
     /// Files this store touched or wrote recently, and when (see
     /// [`REFRESHED_FOR`]).
-    refreshed: std::collections::HashMap<PathBuf, std::time::Instant>,
+    refreshed: std::collections::HashMap<PathBuf, crate::time::Instant>,
     /// The operation the IO thread is performing.
     in_flight: Option<(PathBuf, Op)>,
     stop: bool,
@@ -395,7 +395,7 @@ impl Queue {
         let seq = self.next_seq;
         if matches!(job.op, Op::Write { .. } | Op::Touch) {
             self.refreshed
-                .insert(file.clone(), std::time::Instant::now());
+                .insert(file.clone(), crate::time::Instant::now());
         }
         self.order.push_back((seq, file.clone()));
         self.ops.insert(file, (seq, job));
@@ -524,10 +524,10 @@ impl Shared {
 
     /// Wait until nothing is queued or in flight; false on timeout.
     fn wait_idle(&self, timeout: Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
+        let deadline = crate::time::Instant::now() + timeout;
         let mut q = self.lock();
         while !q.ops.is_empty() || q.in_flight.is_some() {
-            let now = std::time::Instant::now();
+            let now = crate::time::Instant::now();
             if now >= deadline {
                 return false;
             }
@@ -542,7 +542,7 @@ impl Shared {
 
     /// The IO thread.
     fn run(&self) {
-        let mut last_sweep = std::time::Instant::now();
+        let mut last_sweep = crate::time::Instant::now();
         loop {
             let next = {
                 let mut q = self.lock();
@@ -577,7 +577,7 @@ impl Shared {
             };
             let Some((file, job, sweep)) = next else {
                 self.sweep_unclaimed();
-                last_sweep = std::time::Instant::now();
+                last_sweep = crate::time::Instant::now();
                 continue;
             };
             if sweep && !self.read_only {
@@ -748,7 +748,7 @@ fn is_instance_file(name: &str) -> bool {
 /// missing).
 fn touch(file: &Path) {
     if let Ok(f) = fs::OpenOptions::new().write(true).open(file) {
-        let _ = f.set_modified(std::time::SystemTime::now());
+        let _ = f.set_modified(crate::time::system_now());
     }
 }
 
@@ -1335,15 +1335,18 @@ pub(crate) fn sweep_temps(dir: &Path, only: Option<&str>) {
 
 /// Create `dir` (and parents) readable only by the user.
 pub(crate) fn create_private_dir(dir: &Path) -> Result<(), PersistError> {
+    #[cfg(not(target_family = "wasm"))]
     use std::os::unix::fs::DirBuilderExt;
     if dir.is_dir() {
         return Ok(());
     }
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .map_err(|e| io_error(dir, &e))
+    let mut b = fs::DirBuilder::new();
+    b.recursive(true);
+    // (wasm-spike) A browser has no file system or modes: the create
+    // fails there with `Unsupported`, which persistence reports.
+    #[cfg(not(target_family = "wasm"))]
+    b.mode(0o700);
+    b.create(dir).map_err(|e| io_error(dir, &e))
 }
 
 /// Parse a persisted file: magic, `default <hex>`, `check <hex>`, a blank
@@ -2331,8 +2334,8 @@ mod tests {
         let store = PersistStore::build(dir.clone(), None, Duration::from_millis(20));
         // A cell claims a file (without touching it): the store is in use.
         store.claim(&claimed, false);
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while gone.exists() && std::time::Instant::now() < deadline {
+        let deadline = crate::time::Instant::now() + Duration::from_secs(5);
+        while gone.exists() && crate::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!gone.exists(), "swept while running");

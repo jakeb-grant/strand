@@ -3,7 +3,8 @@
 //! [`Painter`](strand_scene::Painter) itself.
 
 use std::collections::{BTreeMap, HashSet};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_scene::{Damage, NodeId, PaintTarget, Painter, Rect, SurfaceId};
 

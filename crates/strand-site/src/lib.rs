@@ -353,6 +353,9 @@ pub fn build_with(root: &Path, out: &Path, opts: &Options) -> Result<Report, Vec
     if let Err(e) = write("theme.css", &theme::css(), &mut report) {
         fail.push(e);
     }
+    if let Err(e) = write(example::MANIFEST, &example::manifest_none(), &mut report) {
+        fail.push(e);
+    }
     match search::script(&index) {
         Ok(js) => {
             if let Err(e) = write(search::OUT, &js, &mut report) {

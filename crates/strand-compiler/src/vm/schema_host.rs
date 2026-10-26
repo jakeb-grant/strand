@@ -200,7 +200,7 @@ impl SchemaHost {
     /// The runtime host: the real clock and calendar in local time, every
     /// other service at its defaults until M3.
     pub fn real(rt: &Runtime, types: &TypeTable) -> SchemaHost {
-        let clock = Clock::new(rt, types, Zone::Local, SystemTime::now());
+        let clock = Clock::new(rt, types, Zone::Local, strand_scene::time::system_now());
         SchemaHost::new(rt, types, Some(clock))
     }
 

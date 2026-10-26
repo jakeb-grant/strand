@@ -2066,7 +2066,7 @@ mod tests {
             );
             table.insert_contrast("fg", surfaces.iter().map(|s| s.to_string()).collect());
             let before = guard_solves();
-            let start = std::time::Instant::now();
+            let start = crate::time::Instant::now();
             let levels = [&table];
             for _ in 0..50 {
                 let scope = TokenScope::new(&levels);

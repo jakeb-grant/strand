@@ -26,6 +26,12 @@ blake3 = "1.8.7"
 stacker = "0.1.25"
 similar = "2.7.0"
 
+# (wasm-spike) On wasm, similar's diff deadline takes web-time's
+# `Instant`, the one strand-scene's `time` names there
+# (docs/live-examples.md).
+[target.'cfg(target_family = "wasm")'.dependencies]
+similar = { version = "2.7.0", features = ["wasm32_web_time"] }
+
 [dev-dependencies]
 insta = "1.49.0"
 proptest = "1.11.0"

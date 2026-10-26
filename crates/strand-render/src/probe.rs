@@ -640,13 +640,6 @@ pub(crate) struct Probe {
     /// The hold: `None` holds nothing.
     pub(crate) hold: Option<HoldPick>,
     pub(crate) held: Vec<(HeldText, TextLayout)>,
-    /// The time the renderer's own timers read in place of the wall
-    /// clock (`Renderer::set_now`).
-    pub(crate) now: Option<std::time::Instant>,
-    /// Layouts inline shaping delivered at once since the last
-    /// `Renderer::take_inline_shaped`: each is one a text worker would
-    /// have woken the loop for.
-    pub(crate) shaped: u32,
     /// Keep each surface's last frame as drawn (`Renderer::set_keep_frames`).
     pub(crate) keep: bool,
     /// Each surface's last frame as drawn, while `keep` is on.
@@ -664,8 +657,6 @@ impl std::fmt::Debug for Probe {
             .field("frames", &self.frames.len())
             .field("hold", &self.hold.is_some())
             .field("held", &self.held.len())
-            .field("now", &self.now)
-            .field("shaped", &self.shaped)
             .field("keep", &self.keep)
             .field("last", &self.last.len())
             .field("damage_inset", &self.damage_inset)

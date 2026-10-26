@@ -9,7 +9,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 /// How long dropping a [`FileWriter`] waits for its queued writes.
 pub const DROP_WAIT: Duration = Duration::from_secs(1);

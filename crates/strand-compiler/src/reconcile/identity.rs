@@ -736,7 +736,7 @@ fn token_image(old: &[u64], new: &[u64]) -> Vec<Option<usize>> {
     if om.is_empty() || nm.is_empty() {
         return image;
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+    let deadline = strand_scene::time::Instant::now() + std::time::Duration::from_millis(50);
     let ops =
         similar::capture_diff_slices_deadline(similar::Algorithm::Myers, om, nm, Some(deadline));
     for op in ops {

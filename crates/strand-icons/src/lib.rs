@@ -18,11 +18,16 @@
 //! size matches exactly, else the closest; then the base directories
 //! themselves (`/usr/share/pixmaps`). PNG before SVG; XPM is never
 //! returned (nothing here draws it).
+//!
+//! (live-examples) A host without a file system (the web host,
+//! strand-web) supplies the theme files it has by path ([`set_files`]):
+//! lookups see them as files on disk, and the renderer reads an icon's
+//! bytes from them ([`file`]) before the disk.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError, RwLock};
 
 /// File extensions an icon may have, in the order they are preferred.
 pub const EXTENSIONS: [&str; 2] = ["png", "svg"];
@@ -399,17 +404,67 @@ pub fn base_dirs() -> Vec<PathBuf> {
     state().bases.clone().unwrap_or_else(default_base_dirs)
 }
 
+/// (live-examples) The files a host supplies by path, with no file
+/// system to read them from.
+type Supplied = Arc<HashMap<PathBuf, Arc<[u8]>>>;
+
+static SUPPLIED: LazyLock<RwLock<Option<Supplied>>> = LazyLock::new(|| RwLock::new(None));
+
+/// (live-examples) The files a host without a file system supplies, by
+/// absolute path (the web host: the theme files its examples draw from,
+/// `index.theme` included): from now on a lookup sees each as a file and
+/// each folder above one as a folder, before the disk, and [`file`]
+/// gives its bytes. An empty map supplies none. Invalidates.
+pub fn set_files(files: HashMap<PathBuf, Arc<[u8]>>) {
+    let files = (!files.is_empty()).then(|| Arc::new(files));
+    *SUPPLIED.write().unwrap_or_else(PoisonError::into_inner) = files;
+    invalidate();
+}
+
+/// The bytes of `path` if a host supplied it ([`set_files`]).
+pub fn file(path: &Path) -> Option<Arc<[u8]>> {
+    SUPPLIED
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()?
+        .get(path)
+        .cloned()
+}
+
+fn supplied_dir(path: &Path) -> bool {
+    SUPPLIED
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|f| f.keys().any(|k| k != path && k.starts_with(path)))
+}
+
+fn is_file(path: &Path) -> bool {
+    file(path).is_some() || path.is_file()
+}
+
+fn is_dir(path: &Path) -> bool {
+    supplied_dir(path) || path.is_dir()
+}
+
+fn read_text(path: &Path) -> Option<String> {
+    match file(path) {
+        Some(b) => String::from_utf8(b.to_vec()).ok(),
+        None => std::fs::read_to_string(path).ok(),
+    }
+}
+
 fn load_theme(bases: &[PathBuf], name: &str) -> Option<Theme> {
     let roots: Vec<PathBuf> = bases
         .iter()
         .map(|b| b.join(name))
-        .filter(|r| r.is_dir())
+        .filter(|r| is_dir(r))
         .collect();
     // The first `index.theme` found describes it (spec: "the first one
     // found in the base directories").
     let (inherits, dirs) = roots
         .iter()
-        .find_map(|r| std::fs::read_to_string(r.join("index.theme")).ok())
+        .find_map(|r| read_text(&r.join("index.theme")))
         .and_then(|t| parse_index(&t))?;
     Some(Theme {
         inherits,
@@ -475,7 +530,7 @@ fn chain(bases: &[PathBuf], name: &str, epoch: u64) -> Vec<Arc<Theme>> {
 fn file_in(root: &Path, dir: &str, name: &str) -> Option<PathBuf> {
     EXTENSIONS.iter().find_map(|ext| {
         let p = root.join(dir).join(format!("{name}.{ext}"));
-        p.is_file().then_some(p)
+        is_file(&p).then_some(p)
     })
 }
 
@@ -719,6 +774,52 @@ mod tests {
         );
         set_base_dirs(None);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// (live-examples) Files a host supplies are found as files on disk
+    /// are, in a base directory that does not exist: the theme's index,
+    /// its folders and its icons; and their bytes are given back. With
+    /// none supplied, the same lookup finds nothing.
+    #[test]
+    fn supplied_files_are_found_where_no_disk_has_them() {
+        let _serial = serial();
+        let base = PathBuf::from(format!("/nonexistent-strand-icons-{}", std::process::id()));
+        let svg: Arc<[u8]> = Arc::from(&b"<svg/>"[..]);
+        let files: HashMap<PathBuf, Arc<[u8]>> = [
+            (base.join("T/index.theme"), Arc::from(INDEX.as_bytes())),
+            (
+                base.join("T/scalable/apps/vector-symbolic.svg"),
+                svg.clone(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        set_base_dirs(Some(vec![base.clone()]));
+        assert_eq!(
+            resolve("vector", 24, 2, Some("T")),
+            None,
+            "nothing supplied yet"
+        );
+        set_files(files);
+        assert!(theme_exists("T"));
+        let found = resolve("vector", 24, 2, Some("T"));
+        assert_eq!(
+            found,
+            Some(base.join("T/scalable/apps/vector-symbolic.svg"))
+        );
+        assert_eq!(file(&found.unwrap()).as_deref(), Some(&svg[..]));
+        assert_eq!(
+            file(&base.join("T/scalable/apps")),
+            None,
+            "a folder has no bytes"
+        );
+        set_files(HashMap::new());
+        assert_eq!(
+            resolve("vector", 24, 2, Some("T")),
+            None,
+            "none supplied again"
+        );
+        set_base_dirs(None);
     }
 
     /// A lookup whose `index.theme` read hangs (a slow file system; here

@@ -17,9 +17,10 @@
 //! Every record's time is nanoseconds since one process-wide epoch
 //! ([`epoch`]), so the main thread's ring and the logic thread's compare.
 
+use crate::time::Instant;
 use std::fmt;
 use std::sync::OnceLock;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 /// The dump's first eight bytes.
 pub const MAGIC: &[u8; 8] = b"STRNDFLT";
@@ -206,7 +207,7 @@ static EPOCH: OnceLock<(Instant, i64)> = OnceLock::new();
 
 fn the_epoch() -> &'static (Instant, i64) {
     EPOCH.get_or_init(|| {
-        let wall = SystemTime::now()
+        let wall = crate::time::system_now()
             .duration_since(UNIX_EPOCH)
             .map(|d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
             .unwrap_or(0);

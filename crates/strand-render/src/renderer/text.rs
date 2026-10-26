@@ -3,7 +3,8 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_scene::{NodeId, NodeKind, Scale, SurfaceId};
 use strand_text::{TextEngine, TextError, TextKey, TextLayout, TextRequest, TextWorker};
@@ -616,6 +617,7 @@ impl Renderer {
                     let Some(layout) = self.probe_hold(*node, &spec.text, layout) else {
                         continue;
                     };
+                    self.inline_shaped = self.inline_shaped.saturating_add(1);
                     self.deliver(layout);
                     delivered = true;
                 }

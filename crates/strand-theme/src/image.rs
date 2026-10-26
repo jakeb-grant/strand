@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, BufRead, Seek};
+#[cfg(not(target_family = "wasm"))]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -23,7 +24,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use material_colors::color::Rgb;
 use strand_scene::Color;
@@ -480,6 +482,20 @@ impl Stamp {
         Ok(Stamp::of_metadata(&m))
     }
 
+    /// (wasm-spike) A browser has no file system: `std::fs::metadata`
+    /// fails there before this is reached, so only the length is kept.
+    #[cfg(target_family = "wasm")]
+    fn of_metadata(m: &std::fs::Metadata) -> Stamp {
+        Stamp {
+            dev: 0,
+            ino: 0,
+            len: m.len(),
+            mtime_ns: 0,
+            ctime_ns: 0,
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
     fn of_metadata(m: &std::fs::Metadata) -> Stamp {
         Stamp {
             dev: m.dev(),
@@ -1150,9 +1166,9 @@ impl Quantiser {
     /// Waits up to `timeout` for every job to finish (tests, `strand
     /// check`). Returns whether none is left.
     pub fn wait(&mut self, timeout: Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
+        let deadline = strand_scene::time::Instant::now() + timeout;
         while self.busy() {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let left = deadline.saturating_duration_since(strand_scene::time::Instant::now());
             match self.done.recv_timeout(left) {
                 Ok(d) => self.take(d),
                 Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return false,

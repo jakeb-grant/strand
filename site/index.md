@@ -41,7 +41,10 @@ running, and an overlay points at the line.
 
 Change a value and its prop moves there. Spring curves are theme tokens
 you can retune, and a prop can choose its own after `~`. These frames
-are Strand's own, drawn one at a time on a virtual clock.
+are Strand's own, drawn one at a time on a virtual clock. Try it live
+runs the same config in your browser, Strand's compiler and renderer
+built to WebAssembly, and draws the same frames, pixel for pixel; edit
+the config and it runs again.
 
 </div>
 

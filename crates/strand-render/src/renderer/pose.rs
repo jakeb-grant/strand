@@ -3,7 +3,8 @@
 //! the compositor applies ([`crate::pose`]).
 
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_scene::{NodeId, SurfaceId};
 

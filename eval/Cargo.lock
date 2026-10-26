@@ -653,9 +653,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi",
  "wasip2",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1936,6 +1938,9 @@ name = "similar"
 version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+dependencies = [
+ "web-time",
+]
 
 [[package]]
 name = "simplecss"
@@ -2077,6 +2082,7 @@ dependencies = [
  "serde_json",
  "slotmap",
  "toml_edit",
+ "web-time",
 ]
 
 [[package]]
@@ -2164,7 +2170,9 @@ dependencies = [
 name = "strand-scene"
 version = "0.0.0"
 dependencies = [
+ "log",
  "rustix",
+ "web-time",
 ]
 
 [[package]]
@@ -2202,6 +2210,7 @@ name = "strand-theme"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "getrandom",
  "image-webp",
  "jpeg-decoder",
  "libc",
@@ -2862,6 +2871,16 @@ name = "web-sys"
 version = "0.3.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88261b9deccee56594c11a3460c462c41f58d148598fe70ad77070126a68aba4"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "web-time"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",

@@ -370,6 +370,76 @@ jobs:
             target/site-shots/
           if-no-files-found: ignore
 
+  # The site's live examples (docs/live-examples.md): the render path
+  # linted for wasm32-unknown-unknown (no call to std's clock, which
+  # panics in a browser: scripts/wasm/lint.sh), strand-web built with
+  # vello_cpu's multiply-adds fused as natively (scripts/wasm/exact-fma.py)
+  # and held to its size budget (2.5 MB brotli, a tripwire), the site built and the build added to it
+  # (scripts/wasm/site.sh), and every docs example run live in headless
+  # Chromium, no network, its frames held to the frames eval drew for
+  # the site, pixel for pixel, in both modes (scripts/wasm/check-browser.sh,
+  # eval's pinned Playwright image on the runner's Docker). The artifact
+  # `site-live` is the site to publish: target/site with its wasm/.
+  # The tools are scripts/wasm/Dockerfile's, at the same versions:
+  # wasm-bindgen-cli matching the crate in Cargo.lock, binaryen 124.
+  wasm:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      WASM_BINDGEN_VERSION: 0.2.129
+      BINARYEN_VERSION: "124"
+      BINARYEN_SHA256: 0290c3779fedf592b8da0ded3032ff55c41a2b7bfa2d6bf7b7bac6f0e6e28963
+      # getrandom 0.3's browser backend (scripts/wasm/run.sh sets the same).
+      CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: --cfg getrandom_backend="wasm_js"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          tier: headers
+          cache-key: wasm
+      - name: The wasm target, wasm-bindgen-cli, wasm-opt, brotli and the icons
+        run: |
+          rustup target add wasm32-unknown-unknown
+          grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep -q "version = \"$WASM_BINDGEN_VERSION\"" \
+            || { echo "::error::Cargo.lock's wasm-bindgen is not $WASM_BINDGEN_VERSION: bump it here and in scripts/wasm/Dockerfile"; exit 1; }
+          sudo apt-get install -y --no-install-recommends brotli adwaita-icon-theme
+          curl --proto '=https' --tlsv1.2 -sSfL -o /tmp/binaryen.tar.gz \
+            "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-x86_64-linux.tar.gz"
+          echo "${BINARYEN_SHA256}  /tmp/binaryen.tar.gz" | sha256sum -c -
+          sudo tar -xzf /tmp/binaryen.tar.gz -C /opt
+          echo "/opt/binaryen-version_${BINARYEN_VERSION}/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        id: bindgen
+        with:
+          path: ~/.cargo-tools/wasm-bindgen
+          key: wasm-bindgen-cli-${{ env.WASM_BINDGEN_VERSION }}-rust-1.97.0
+      - name: wasm-bindgen-cli
+        run: |
+          if [ "${{ steps.bindgen.outputs.cache-hit }}" != true ]; then
+            cargo install --locked --root ~/.cargo-tools/wasm-bindgen wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
+          fi
+          echo "$HOME/.cargo-tools/wasm-bindgen/bin" >> "$GITHUB_PATH"
+      - name: Lint, build and size the live examples
+        run: |
+          wasm-opt --version
+          wasm-bindgen --version
+          bash scripts/wasm/build.sh
+      - name: Build the site and add the live examples
+        run: |
+          cargo run -q -p strand-site -- build
+          bash scripts/wasm/site.sh
+      - run: scripts/wasm/check-browser.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: site-live
+          path: |
+            target/site/
+            target/site-shots/live/
+            target/wasm/pkg/sizes.json
+          if-no-files-found: ignore
+
   # M3 exit: "runs on Hyprland, niri and sway". The stores and design.md's
   # bar in `strand run` against each live compositor, compared with what
   # its own CLI reports (crates/strand/tests/compositor_matrix.rs, run by

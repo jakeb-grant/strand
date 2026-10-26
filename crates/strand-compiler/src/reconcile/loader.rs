@@ -31,7 +31,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use super::{Build, COMPILER_VERSION};
 use crate::diagnostic::Diagnostic;

@@ -14,10 +14,12 @@ pub mod id;
 pub mod input;
 pub mod motion;
 pub mod paint;
+pub mod placement;
 pub mod protocol;
 pub mod provenance;
 pub mod shader;
 pub mod surface;
+pub mod time;
 pub mod tokens;
 
 pub use backend::{AdapterInfo, Backend, BackendChange, GpuStatus};

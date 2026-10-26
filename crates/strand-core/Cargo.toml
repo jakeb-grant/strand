@@ -15,6 +15,11 @@ slotmap = "1.1.1"
 # strand-services and the binary).
 serde_json = "1.0.151"
 
+# (wasm-spike) A browser's clock for `Instant` and the wall time
+# (src/time.rs; docs/live-examples.md).
+[target.'cfg(target_family = "wasm")'.dependencies]
+web-time = "1.1.0"
+
 [dev-dependencies]
 proptest = "1.11.0"
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }

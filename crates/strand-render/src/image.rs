@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use strand_scene::time::Instant;
 
 use strand_scene::SurfaceId;
 use strand_text::HookGate;
@@ -388,6 +388,14 @@ pub(crate) fn read_local(src: &str, max: u64) -> Result<Vec<u8>, ImageError> {
 /// [`ImageError::TooLarge`] instead of read to its end.
 fn read_capped(path: &Path, max: u64) -> Result<Vec<u8>, ImageError> {
     use std::io::Read as _;
+    // (live-examples) A file the host supplied, with no file system
+    // (`strand_icons::set_files`, the web host's icon theme).
+    if let Some(bytes) = strand_icons::file(path) {
+        if bytes.len() as u64 > max {
+            return Err(ImageError::TooLarge);
+        }
+        return Ok(bytes.to_vec());
+    }
     let io = |e: std::io::Error| ImageError::Io(e.to_string());
     // Refused before opening: a FIFO would block the open.
     if !std::fs::metadata(path).map_err(io)?.is_file() {
@@ -1972,6 +1980,23 @@ mod tests {
         let data = format!("data:image/svg+xml;base64,{}", base64(red.as_bytes()));
         assert_eq!(alpha(&outer(&data)), 255, "a data URL");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (live-examples) A file a host supplied (`strand_icons::set_files`,
+    /// the web host with no file system) is read from there, within the
+    /// same limit; the disk has no such file.
+    #[test]
+    fn a_supplied_file_is_read_without_the_disk() {
+        let path = PathBuf::from(format!(
+            "/nonexistent-strand-render-{}/a.svg",
+            std::process::id()
+        ));
+        assert!(read_capped(&path, 1 << 20).is_err(), "not on disk");
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>"#;
+        strand_icons::set_files([(path.clone(), std::sync::Arc::from(&svg[..]))].into());
+        assert_eq!(read_capped(&path, 1 << 20).unwrap(), svg.to_vec());
+        assert!(matches!(read_capped(&path, 8), Err(ImageError::TooLarge)));
+        strand_icons::set_files(Default::default());
     }
 
     /// (m4-audit) An image, SVG or Lottie path (a notification's

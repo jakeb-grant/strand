@@ -11,6 +11,7 @@
 //! A path that is missing or unreadable is not reported: the service
 //! waits for its file at runtime.
 
+#[cfg(not(target_family = "wasm"))]
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -72,8 +73,15 @@ fn resolve(path: &str, config_dir: Option<&Path>) -> Option<PathBuf> {
     Some(p)
 }
 
+/// (wasm-spike) A browser has no files, so none is a program.
+#[cfg(target_family = "wasm")]
+pub fn is_program(_: &Path) -> bool {
+    false
+}
+
 /// An executable regular file that starts like a program (a script's
 /// `#!` or an ELF header): the runtime's rule for refusing to read it.
+#[cfg(not(target_family = "wasm"))]
 pub fn is_program(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     // A stat first: only a regular file is opened (a FIFO's open would

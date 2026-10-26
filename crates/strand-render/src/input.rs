@@ -12,7 +12,8 @@
 //! and drop (M4) reach the same state.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use strand_scene::time::Instant;
 
 use strand_scene::input::button;
 use strand_scene::{
@@ -487,9 +488,8 @@ pub struct Router {
     /// moves to each when routing settles, on a surface that holds the
     /// keyboard.
     focus_turned: Vec<NodeId>,
-    /// (eval-sandbox) The time the router reads in place of the wall
-    /// clock ([`Router::set_now`]).
-    #[cfg(feature = "eval-hooks")]
+    /// The time the router reads in place of the wall clock
+    /// ([`Router::set_now`]): a host on a virtual clock's.
     now: Option<Instant>,
 }
 
@@ -885,18 +885,16 @@ impl Router {
         self.flush(scene)
     }
 
-    /// (eval-sandbox) Reads `now` in place of the wall clock (`None`:
-    /// the wall clock again): hover delays and grace run on the
-    /// evaluation sandbox's virtual time (docs/decisions.md
-    /// eval-sandbox).
-    #[cfg(feature = "eval-hooks")]
+    /// Reads `now` in place of the wall clock (`None`: the wall clock
+    /// again): hover delays and grace run on the time of a host that
+    /// runs on a virtual clock, the evaluation sandbox's and the web
+    /// host's (docs/decisions.md eval-sandbox, live-examples).
     pub fn set_now(&mut self, now: Option<Instant>) {
         self.now = now;
     }
 
     /// The time hover delays, grace and edits are measured by.
     fn now(&self) -> Instant {
-        #[cfg(feature = "eval-hooks")]
         if let Some(now) = self.now {
             return now;
         }

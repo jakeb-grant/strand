@@ -1,6 +1,6 @@
 //! Applying logic's scene diffs, and the motions each op starts.
 
-use std::time::Instant;
+use strand_scene::time::Instant;
 
 use strand_scene::{NodeId, NodeKind, Prop, PropValue, SceneDiff, SceneOp, TokenScope};
 

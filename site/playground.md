@@ -1,0 +1,22 @@
+# Playground
+
+Every example on this site, running in your browser: Strand's compiler
+and renderer, built to WebAssembly, run each one's config the way eval
+runs it, with the mock services the docs use and the steps its scenario
+plays. Pick an example, press its steps or replay them, point at it and
+click, and edit its config: it runs again as you type, and a mistake
+shows what `strand check` would print.
+
+```playground hello springs osd toasts swap
+```
+
+## What runs here
+
+The examples draw with the CPU renderer, the same code that draws a bar
+on your screen, into a canvas. Time is a virtual clock that ticks every
+1/60 s of real time, so motion runs at the speed it would on your
+desktop. Bars, panels, OSDs and popups are shown; windows and lock
+screens are not, nor is the GPU's work. Service values are the mock's,
+the icons are the few files the examples draw, and the fonts are the
+two faces Strand's tests use. Nothing is downloaded until you open an
+example live or this page.

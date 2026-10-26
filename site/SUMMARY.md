@@ -43,6 +43,7 @@
 - [The strand command](@tools/cli)
 - [Inspector](tools/inspector.md)
 - [Reporting a glitch](tools/reporting.md)
+- [Playground](playground.md)
 
 ## Reference
 - [Elements](@reference/elements)

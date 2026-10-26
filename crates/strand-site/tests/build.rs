@@ -51,6 +51,34 @@ fn the_site_builds_with_no_problems() {
     for cmd in ["strand check", "strand compositor-rules", "strand replay"] {
         assert!(cli.contains(cmd), "no {cmd}");
     }
+    // (live examples) Each figure carries what its live mode runs, the
+    // playground every example named, and the site needs no wasm build:
+    // its manifest names none until scripts/wasm/site.sh adds one.
+    let live = home
+        .split("<script type=\"application/json\" class=\"ex-live-data\">")
+        .nth(1)
+        .and_then(|r| r.split("</script>").next())
+        .expect("the home page's figures carry their live data");
+    let live: serde_json::Value = serde_json::from_str(live).unwrap();
+    assert_eq!(live["id"], "docs-hello");
+    assert!(live["files"][0][1].as_str().unwrap().contains("bar "));
+    assert!(home.contains("<script src=\"wasm/manifest.js\" defer></script>"));
+    assert_eq!(
+        std::fs::read_to_string(out.join("wasm/manifest.js")).unwrap(),
+        strand_site::example::manifest_none()
+    );
+    let playground = std::fs::read_to_string(out.join("playground.html")).unwrap();
+    let data = playground
+        .split("class=\"pg-data\">")
+        .nth(1)
+        .and_then(|r| r.split("</script>").next())
+        .unwrap();
+    let names: Vec<String> = serde_json::from_str::<Vec<serde_json::Value>>(data)
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names, ["hello", "springs", "osd", "toasts", "swap"]);
     // The search index has every page, its headings with their anchors.
     let index = std::fs::read_to_string(out.join("search-index.js")).unwrap();
     assert!(index.contains("\"u\":\"guide/level-2.html#"));

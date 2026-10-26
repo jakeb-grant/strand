@@ -172,7 +172,7 @@ impl Renderer {
 
     pub(super) fn flatten_tokens(&mut self, id: SurfaceId) -> Flattened {
         let layouts = self.shaped();
-        let laying = std::time::Instant::now();
+        let laying = strand_scene::time::Instant::now();
         self.lay_out(id, &layouts);
         self.layout_spent += laying.elapsed();
         // (M4) A GPU-presented surface paints its poses (`Extras`).
