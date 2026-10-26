@@ -16,9 +16,10 @@ problem is not here, run the shell with more logging (see
   `wl_compositor`, or `wl_shm`). Your compositor cannot show a shell:
   Strand needs layer shell. [Install](../start/install.md#what-the-compositor-needs)
   lists what it needs and the compositors CI runs on.
-- **"… is not a directory".** The config directory does not exist.
-  `strand new` makes one with a starter bar, or give `strand run` the
-  directory you meant.
+- **"… does not exist".** The config directory is not there. The
+  message names the `strand new` command that makes it, with a starter
+  bar; or give `strand run` the directory you meant. A path that is a
+  file is "… is not a directory".
 - **"no config directory (set XDG\_CONFIG\_HOME or HOME)".** Neither
   variable names a directory to look in. Set one, or give the
   directory.
@@ -84,11 +85,12 @@ it happened. The next reload of a fixed config takes the outline away.
 ## The lock screen warns or will not lock
 
 - **"no `strand-auth` helper is installed".** The lock checks passwords
-  in a separate helper, `strand-auth`, and Strand finds none. `strand
-  run` says so at every start, and `strand check` reports an error on a
-  config with a `lock`, since such a lock could not be unlocked but
-  from a TTY. Build the helper and put it beside `strand`, as
-  [Install](../start/install.md#build-it) shows.
+  in a separate helper, `strand-auth`, and Strand finds none. For a
+  config with a `lock`, `strand run` says so at start, or when a reload
+  adds the `lock`, and `strand check` reports an error, since such a
+  lock could not be unlocked but from a TTY. Both name the directory to
+  put the helper in, beside `strand`; [Install](../start/install.md#build-it)
+  shows how to build it.
 - **"the compositor does not offer ext-session-lock".** A `lock` cannot
   lock the session on this compositor.
 

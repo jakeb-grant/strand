@@ -308,6 +308,7 @@ pub fn logic(
         report_ping,
         written: Default::default(),
         saving: Vec::new(),
+        has_lock: false,
     };
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good
@@ -329,6 +330,7 @@ pub fn logic(
     for s in early_gpu {
         shell.gpu_status(s);
     }
+    shell.tell_lock_helper();
     shell.watch_settings();
     let start = Instant::now();
     // The reduced-motion preference render last heard of.

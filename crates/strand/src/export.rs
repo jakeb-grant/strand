@@ -24,7 +24,7 @@ use strand_compiler::vm::{Num, Value};
 use strand_core::Runtime;
 use strand_scene::{Color, TokenTable};
 
-const USAGE: &str = "usage: strand export json | base24 | --template <file> \
+pub(crate) const USAGE: &str = "usage: strand export json | base24 | --template <file> \
                      [--palette '<expr>'] [-o <file>]";
 
 /// How long the offline mount waits for a wallpaper to be quantised.

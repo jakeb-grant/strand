@@ -195,11 +195,14 @@ fn unknown_service(schema: &Schema, config: Option<&Program>, service: &str) -> 
     format!("no service `{service}`{hint}")
 }
 
+/// `strand call`'s usage.
+pub(crate) const CALL_USAGE: &str = "usage: strand call [--json] <service.action> [args…]";
+
 /// `strand call [--json] <service.action> [args…]`.
 pub fn call_cli(args: &[String]) -> Result<String, String> {
     let (json, rest) = json_flag(args);
     let Some((target, args)) = rest.split_first() else {
-        return Err("usage: strand call [--json] <service.action> [args…]".into());
+        return Err(CALL_USAGE.into());
     };
     let answer: Json = ask(&Request::Call {
         target: target.to_string(),

@@ -535,6 +535,12 @@ impl<'a> Checker<'a> {
             self.add_ref(span, Target::Builtin(name.to_string()));
             return mk(ExprKind::Value(name.to_string()), t.clone());
         }
+        // `options: Edge`: a schema enum itself, as a config enum's name
+        // reads (`options: Look`). A config declaration of the name was
+        // found above and wins.
+        if let Some(e) = self.schema.types.find_enum(name) {
+            return mk(ExprKind::EnumType(e), Ty::EnumType(e));
+        }
         let fallback = if expected.is_none_or(|t| t.is_lenient()) {
             self.unique_variant(name)
         } else {

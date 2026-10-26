@@ -274,7 +274,7 @@ pub fn load(dir: &Path) -> Result<Build, String> {
     })
 }
 
-const USAGE: &str = "usage: strand compositor-rules [dir] [--classic]\n\n\
+pub(crate) const USAGE: &str = "usage: strand compositor-rules [dir] [--classic]\n\n\
     Prints Hyprland layer rules that blur behind the surfaces of the config \
     at dir (default $XDG_CONFIG_HOME/strand) that ask for `blur`, matched by \
     their strand-<Name> namespaces, for you to paste into your Hyprland \

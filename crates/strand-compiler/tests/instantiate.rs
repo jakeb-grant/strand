@@ -2293,6 +2293,38 @@ fn surfaces_show_hide_and_hold_services_while_shown() {
     assert_eq!(shell.host.readers("battery"), 1);
 }
 
+/// `segmented { options: Edge }`: a builtin enum names its options as a
+/// config enum does (`options: Look`), and a click writes the chosen
+/// variant through to the settings field.
+#[test]
+fn a_builtin_enum_gives_a_segmented_its_options() {
+    let dir = temp_dir("settings-edge");
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let storage = Storage::in_dirs(dir.join("state"), &config);
+    let src = "state prefs from \"prefs.toml\" { position: Edge = top }\nbar B { segmented { options: Edge; value: <-> prefs.position } }\n";
+    let mut shell = boot_with(
+        &[("t.strand", src)],
+        |rt, host| screens(rt, host, &["DP-1"]),
+        storage,
+    );
+    let rendered = shell.scene.render();
+    assert!(
+        rendered.contains("options=[top, bottom, left, right]"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("value=top"), "{rendered}");
+    let seg = shell.scene.of_kind(NodeKind::Segmented)[0];
+    shell
+        .inst
+        .write(seg, Prop::Value, PropValue::Keyword("left".into()))
+        .unwrap();
+    shell.flush();
+    let rendered = shell.scene.render();
+    assert!(rendered.contains("value=left"), "{rendered}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Settings files are read through core (overlay > file > default) and
 /// written back field by field.
 #[test]

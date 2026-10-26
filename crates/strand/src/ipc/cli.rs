@@ -43,12 +43,19 @@ pub fn request(
     serde_json::from_str(&line).map_err(|e| format!("bad answer {line:?}: {e}"))
 }
 
+/// `strand reload`'s usage.
+pub(crate) const RELOAD_USAGE: &str = "usage: strand reload [--hard]";
+/// `strand set`'s usage.
+pub(crate) const SET_USAGE: &str = "usage: strand set <file.name> <value>";
+/// `strand watch`'s usage.
+pub(crate) const WATCH_USAGE: &str = "usage: strand watch [--json]";
+
 /// `strand reload [--hard]`.
 pub fn reload_cli(args: &[String]) -> Result<String, String> {
     let hard = match args {
         [] => false,
         [a] if a == "--hard" => true,
-        _ => return Err("usage: strand reload [--hard]".into()),
+        _ => return Err(RELOAD_USAGE.into()),
     };
     let mut conn = BufReader::new(connect()?);
     let answer = request(
@@ -69,7 +76,7 @@ pub fn reload_cli(args: &[String]) -> Result<String, String> {
 /// `strand set <path> <value>` (`strand set theme.look mocha`).
 pub fn set_cli(args: &[String]) -> Result<String, String> {
     let [path, value] = args else {
-        return Err("usage: strand set <file.name> <value>".into());
+        return Err(SET_USAGE.into());
     };
     let mut conn = BufReader::new(connect()?);
     let answer = request(
@@ -95,7 +102,7 @@ pub fn watch_cli(args: &[String], out: &mut dyn Write) -> Result<(), String> {
     let json = match args {
         [] => false,
         [a] if a == "--json" => true,
-        _ => return Err("usage: strand watch [--json]".into()),
+        _ => return Err(WATCH_USAGE.into()),
     };
     let mut conn = BufReader::new(connect()?);
     let answer = request(&mut conn, &Request::Watch, Duration::from_secs(10))?;

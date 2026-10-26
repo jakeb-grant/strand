@@ -962,29 +962,51 @@ pub(super) struct Guard {
 /// What `strand run` says at start (a WARN and a `strand watch` notice)
 /// when a `lock` could not work, so the user hears it before the first
 /// lock rather than at it (decisions.md, m4-audit); a mocked run never
-/// locks. No `strand-auth` helper (`cargo install --path crates/strand`
-/// alone): the session lock still takes when asked, since a lock that
-/// does not lock fails open, but no password can end it, the fallback's
-/// included. No `ext-session-lock`: a lock never locks.
-pub(super) fn start_notices(helper: bool, supported: bool, mocked: bool) -> Vec<&'static str> {
-    if mocked {
+/// locks. No `ext-session-lock`: a lock never locks. A missing helper is
+/// [`helper_notice`]'s, said only for a config that has a `lock`.
+pub(super) fn start_notices(supported: bool, mocked: bool) -> Vec<&'static str> {
+    if mocked || supported {
         return Vec::new();
     }
-    let mut out = Vec::new();
-    if !helper {
-        out.push(
-            "lock: no `strand-auth` helper is installed: a `lock` would lock the session \
-             with no way to unlock it but a TTY: install it \
-             (`cargo install --locked --path crates/strand-auth`)",
-        );
+    vec![
+        "lock: the compositor does not offer ext-session-lock: a `lock` cannot lock \
+         the session here",
+    ]
+}
+
+/// The WARN and `strand watch` notice for a config whose build has a
+/// `lock` (`lock_now`) when the one before had none (`lock_before`: the
+/// boot's is "none") and no `strand-auth` helper is installed (`helper`:
+/// `cargo install --path crates/strand` alone): the session lock still
+/// takes when asked, since a lock that does not lock fails open, but no
+/// password can end it, the fallback's included. A config without a
+/// `lock` hears nothing (strand-fixes); one that a reload gives a lock
+/// hears it then. `exe`: the running strand, beside which the hint puts
+/// the helper.
+pub(super) fn helper_notice(
+    lock_now: bool,
+    lock_before: bool,
+    helper: bool,
+    mocked: bool,
+    exe: Option<&Path>,
+) -> Option<String> {
+    if mocked || helper || !lock_now || lock_before {
+        return None;
     }
-    if !supported {
-        out.push(
-            "lock: the compositor does not offer ext-session-lock: a `lock` cannot lock \
-             the session here",
-        );
-    }
-    out
+    Some(format!(
+        "lock: no `strand-auth` helper is installed: this config's `lock` would lock the \
+         session with no way to unlock it but a TTY; install it: {}",
+        crate::check::helper_install_hint(exe)
+    ))
+}
+
+/// Whether `program` has a `lock` (one is declared at the top of a file).
+pub(super) fn has_lock(program: &strand_compiler::lower::Program) -> bool {
+    program.files.iter().any(|f| {
+        f.items.iter().any(
+            |n| matches!(n, strand_compiler::lower::Node::Surface(s) if s.kind == NodeKind::Lock),
+        )
+    })
 }
 
 /// `$XDG_RUNTIME_DIR/strand-<WAYLAND_DISPLAY>.locked`.
@@ -1623,19 +1645,47 @@ mod tests {
     use strand_scene::{ButtonState, KeyInput, Modifiers, Scale, Size};
     use strand_surface::SurfaceHost as _;
 
-    /// (m4-audit) Without a helper, or on a compositor without
-    /// ext-session-lock, `strand run` warns at start (a log line and a
-    /// `strand watch` notice) instead of at the first lock; with both, or
-    /// under the mock, it says nothing.
+    /// (m4-audit) On a compositor without ext-session-lock, `strand run`
+    /// warns at start (a log line and a `strand watch` notice) instead of
+    /// at the first lock; with it, or under the mock, it says nothing.
     #[test]
     fn what_cannot_lock_is_said_at_start() {
-        let both = start_notices(false, false, false);
-        assert_eq!(both.len(), 2);
-        assert!(both[0].contains("strand-auth") && both[0].contains("TTY"));
-        assert!(both[1].contains("ext-session-lock"));
-        assert_eq!(start_notices(true, false, false), &both[1..]);
-        assert!(start_notices(true, true, false).is_empty());
-        assert!(start_notices(false, false, true).is_empty());
+        let said = start_notices(false, false);
+        assert_eq!(said.len(), 1);
+        assert!(said[0].contains("ext-session-lock"));
+        assert!(start_notices(true, false).is_empty());
+        assert!(start_notices(false, true).is_empty());
+    }
+
+    /// (strand-fixes) No helper is said only for a config with a `lock`:
+    /// at boot, or when a reload gives it one, once per lock gained; never
+    /// with the helper or under the mock. The hint names the directory
+    /// beside the running strand.
+    #[test]
+    fn no_helper_is_said_only_for_a_config_with_a_lock() {
+        let exe = Path::new("/opt/shell/bin/strand");
+        let said = helper_notice(true, false, false, false, Some(exe)).unwrap();
+        assert!(
+            said.contains("strand-auth") && said.contains("TTY"),
+            "{said}"
+        );
+        assert!(said.contains("--root /opt/shell"), "{said}");
+        // No lock: nothing, at boot or after a reload.
+        assert_eq!(helper_notice(false, false, false, false, Some(exe)), None);
+        // A reload that keeps the lock says nothing again.
+        assert_eq!(helper_notice(true, true, false, false, Some(exe)), None);
+        assert_eq!(helper_notice(true, false, true, false, Some(exe)), None);
+        assert_eq!(helper_notice(true, false, false, true, Some(exe)), None);
+        // Which configs have one.
+        let compile = |src: &str| {
+            let mut map = strand_compiler::SourceMap::new();
+            map.add("t.strand", src.to_string());
+            strand_compiler::reconcile::Build::compile(None, map).unwrap()
+        };
+        assert!(!has_lock(&compile("bar B { text \"hi\" }\n").program));
+        assert!(has_lock(
+            &compile("lock L {\n  on key(k) { auth.submit(k.name) }\n  text \"l\"\n}\n").program
+        ));
     }
 
     fn key(name: &str, text: &str) -> InputEvent {

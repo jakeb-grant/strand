@@ -80,8 +80,9 @@ are not steps.
 
 ## What you need
 
-- A Wayland compositor with layer-shell: sway, Hyprland, niri, labwc,
-  river or similar. GNOME does not offer layer-shell.
+- A Wayland compositor with layer-shell, such as sway, Hyprland, niri
+  or labwc, the four CI runs Strand on. GNOME does not offer
+  layer-shell.
 - The `strand` binary on your `PATH`. There is no release yet, so
   either build it from a checkout of the repository with
   `cargo build --release -p strand` (it lands in

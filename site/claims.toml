@@ -50,32 +50,32 @@ proof  = "grep: the only #[link(name = \"pam\")] in crates/"
 [[claim]]
 page   = "site/start/install.md"
 text   = "`strand --version` prints `strand 0.0.0`."
-source = ["crates/strand/src/entry.rs:111", "Cargo.toml:8"]
+source = ["crates/strand/src/entry.rs:155", "Cargo.toml:8"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/start/install.md"
-text   = "`/usr/libexec/strand`, `/usr/lib/strand` and `/usr/local/libexec/strand`."
-source = ["crates/strand-auth/src/client.rs:281"]
-proof  = "read: default_helper tries beside the executable first"
+text   = "`/usr/libexec/strand`, `/usr/lib/strand` and `/usr/local/libexec/strand`, and nowhere else: never on your `PATH`, since it is the program your password is handed to."
+source = ["crates/strand-auth/src/client.rs:266", "crates/strand/src/check.rs:346"]
+proof  = "read: default_helper tries beside the executable first, then the three directories, and nothing else"
 
 [[claim]]
 page   = "site/start/install.md"
-text   = "Without it, `strand run` warns at every start that a `lock` would have"
-source = ["crates/strand/src/run/lock.rs:969", "crates/strand/src/run/mod.rs:748"]
-proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): a strand copied alone into a directory warned with a lock-less config"
+text   = "When a config has a `lock` and there is no helper, `strand run` warns at start, or at the reload that adds the `lock`, that the lock would have no way to unlock, and `strand check` reports an error for the config."
+source = ["crates/strand/src/run/lock.rs:986", "crates/strand/src/run/shell.rs:410", "crates/strand/src/check.rs:317"]
+proof  = "crates/strand/src/run/lock.rs::tests::no_helper_is_said_only_for_a_config_with_a_lock; crates/strand/src/check.rs::tests::a_lock_without_the_helper_is_an_error"
 
 [[claim]]
 page   = "site/start/install.md"
-text   = "no way to unlock, and `strand check` reports an error for a config that"
-source = ["crates/strand/src/check.rs:317"]
-proof  = "crates/strand/src/check.rs::tests::a_lock_without_the_helper_is_an_error; ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
+text   = "Both say where to put the helper: beside the `strand` that is running, with `cargo install --locked --path crates/strand-auth --root <prefix>` when that `strand` is in `<prefix>/bin`, else by copying `target/release/strand-auth` into its directory."
+source = ["crates/strand/src/check.rs:352"]
+proof  = "crates/strand/src/check.rs::tests::the_helper_hint_names_the_directory_beside_strand"
 
 [[claim]]
 page   = "site/start/install.md"
-text   = "has a `lock`. A shell with no lock screen runs without the helper."
-source = ["crates/strand/src/check.rs:317"]
-proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): the hello bar ran without the helper"
+text   = "A shell with no lock screen runs without the helper and says nothing about it."
+source = ["crates/strand/src/run/shell.rs:410", "crates/strand/src/check.rs:317"]
+proof  = "crates/strand/src/run/lock.rs::tests::no_helper_is_said_only_for_a_config_with_a_lock"
 
 [[claim]]
 page   = "site/start/install.md"
@@ -140,7 +140,7 @@ proof  = "read"
 [[claim]]
 page   = "site/start/install.md"
 text   = "a `lock` cannot lock the session, and `strand run` warns at start"
-source = ["crates/strand/src/run/lock.rs:981"]
+source = ["crates/strand/src/run/lock.rs:971"]
 proof  = "read"
 
 [[claim]]
@@ -170,7 +170,7 @@ proof  = "read: each is bound with .ok()"
 [[claim]]
 page   = "site/start/install.md"
 text   = "`xdg_activation_v1`. `strand report` lists every global your"
-source = ["crates/strand/src/report/mod.rs:296"]
+source = ["crates/strand/src/report/mod.rs:298"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): 44 globals with their versions"
 
 [[claim]]
@@ -212,7 +212,7 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 [[claim]]
 page   = "site/start/running.md"
 text   = "directory uses that one when you give none."
-source = ["crates/strand/src/entry.rs:222", "crates/strand/src/fmt.rs:78", "crates/strand/src/new.rs:94"]
+source = ["crates/strand/src/entry.rs:272", "crates/strand/src/fmt.rs:78", "crates/strand/src/new.rs:97"]
 proof  = "read"
 
 [[claim]]
@@ -248,7 +248,7 @@ proof  = "crates/strand/src/new.rs::tests::a_new_or_empty_dir_gets_the_template"
 [[claim]]
 page   = "site/start/running.md"
 text   = "start it with `strand run`"
-source = ["crates/strand/src/new.rs:104"]
+source = ["crates/strand/src/new.rs:107"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
@@ -278,8 +278,14 @@ proof  = "read"
 [[claim]]
 page   = "site/start/running.md"
 text   = "nothing to show and waits: the first file you save there appears."
-source = ["crates/strand/src/run/mod.rs:626"]
+source = ["crates/strand/src/run/mod.rs:647"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): an empty directory, then a saved bar.strand, which `strand report` then listed"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "It says so once as it starts, in its log: \"… nothing to run yet: no .strand file\"."
+source = ["crates/strand/src/run/mod.rs:608", "crates/strand/src/run/mod.rs:649"]
+proof  = "crates/strand/src/run/tests.rs::an_empty_config_has_nothing_to_run"
 
 [[claim]]
 page   = "site/start/running.md"
@@ -308,19 +314,19 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 [[claim]]
 page   = "site/start/running.md"
 text   = "default). A config that is broken when the shell starts runs that last"
-source = ["crates/strand/src/run/logic.rs:313"]
+source = ["crates/strand/src/run/logic.rs:314"]
 proof  = "read"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "good version, with the overlay up. With no last good version yet, only"
-source = ["crates/strand/src/run/logic.rs:313"]
+source = ["crates/strand/src/run/logic.rs:314"]
 proof  = "crates/strand/src/run/tests.rs::a_config_broken_at_first_boot_runs_once_fixed"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "an error status when it finds an error, so it works in scripts and"
-source = ["crates/strand/src/entry.rs:183"]
+source = ["crates/strand/src/entry.rs:233"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): exit 1 with errors, 0 when clean"
 
 [[claim]]
@@ -368,7 +374,7 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 [[claim]]
 page   = "site/start/running.md"
 text   = "`strand watch` connects to the running shell and prints each event"
-source = ["crates/strand/src/ipc/cli.rs:94", "crates/strand/src/ipc/describe.rs:7"]
+source = ["crates/strand/src/ipc/cli.rs:101", "crates/strand/src/ipc/describe.rs:7"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
@@ -386,13 +392,13 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 [[claim]]
 page   = "site/start/running.md"
 text   = "line, for scripts. Its first line, `{\"event\":\"watching\",\"v\":1}`, says"
-source = ["crates/strand/src/ipc/cli.rs:111"]
+source = ["crates/strand/src/ipc/cli.rs:118"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "the config now and prints that reload's event as `strand watch` does."
-source = ["crates/strand/src/ipc/cli.rs:47"]
+source = ["crates/strand/src/ipc/cli.rs:54"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): printed `reload (1.5 ms): no change`"
 
 [[claim]]
@@ -422,13 +428,13 @@ proof  = "read"
 [[claim]]
 page   = "site/start/running.md"
 text   = "- `strand toggle <path>` flips an exported `bool` state."
-source = ["crates/strand/src/ipc/query.rs:66"]
+source = ["crates/strand/src/ipc/query.rs:71"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): launcher.open false, then true"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "- `strand get <path>` prints an exported value, a settings field or a"
-source = ["crates/strand/src/ipc/query.rs:52"]
+source = ["crates/strand/src/ipc/query.rs:57"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
@@ -470,7 +476,7 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 [[claim]]
 page   = "site/start/running.md"
 text   = "- niri: `spawn-at-startup \"strand\" \"run\"`"
-source = ["crates/strand/src/entry.rs:120"]
+source = ["crates/strand/src/entry.rs:164"]
 proof  = "niri's config syntax; strand run takes no other argument"
 
 [[claim]]
@@ -776,7 +782,7 @@ proof  = "crates/strand-dev/tests/inspect.rs::a_read_only_target_is_refused_offe
 [[claim]]
 page   = "site/tools/reporting.md"
 text   = "saved a glitch report to /home/you/.local/state/strand/reports/2026-10-26_19-51-11"
-source = ["crates/strand/src/report/mod.rs:274"]
+source = ["crates/strand/src/report/mod.rs:276"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
@@ -848,19 +854,19 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 [[claim]]
 page   = "site/tools/reporting.md"
 text   = "bug about your hardware or compositor. `--json` prints it as JSON."
-source = ["crates/strand/src/report/mod.rs:244"]
+source = ["crates/strand/src/report/mod.rs:247"]
 proof  = "read"
 
 [[claim]]
 page   = "site/tools/reporting.md"
 text   = "`strand replay` replays the newest report, or the folder you name, in"
-source = ["crates/strand/src/report/replay.rs:28"]
+source = ["crates/strand/src/report/replay.rs:36"]
 proof  = "crates/strand/tests/replay_handoff.rs::path_is_the_fallback_and_the_newest_report_the_default"
 
 [[claim]]
 page   = "site/tools/reporting.md"
 text   = "Without it, `strand replay` says so and stops."
-source = ["crates/strand/src/report/replay.rs:101"]
+source = ["crates/strand/src/report/replay.rs:109"]
 proof  = "crates/strand/tests/replay_handoff.rs::without_strand_eval_it_says_so_plainly; ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
@@ -914,13 +920,13 @@ proof  = "eval/tests/clip.rs::a_clip_names_nodes_by_key_id_and_config_line"
 [[claim]]
 page   = "site/tools/reporting.md"
 text   = "`--save clip.zip` writes the `.zip`. The viewer shows this command for"
-source = ["crates/strand/src/report/replay.rs:69"]
+source = ["crates/strand/src/report/replay.rs:77"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): --save wrote the .zip"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "`strand run` prints why it stopped and exits with an error status."
-source = ["crates/strand/src/entry.rs:233"]
+source = ["crates/strand/src/entry.rs:283"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): exit 1"
 
 [[claim]]
@@ -931,14 +937,20 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
-text   = "- **\"… is not a directory\".** The config directory does not exist."
-source = ["crates/strand/src/run/mod.rs:596"]
-proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): `strand run <missing>` said `… is not a directory`"
+text   = "- **\"… does not exist\".** The config directory is not there. The message names the `strand new` command that makes it, with a starter bar;"
+source = ["crates/strand/src/run/mod.rs:593", "crates/strand/src/new.rs:94"]
+proof  = "crates/strand/tests/m5/cli.rs::run_names_a_missing_config_dir_plainly"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "A path that is a file is \"… is not a directory\"."
+source = ["crates/strand/src/run/mod.rs:593"]
+proof  = "crates/strand/tests/m5/cli.rs::run_names_a_missing_config_dir_plainly"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "- **\"no config directory (set XDG\\_CONFIG\\_HOME or HOME)\".** Neither"
-source = ["crates/strand/src/entry.rs:232"]
+source = ["crates/strand/src/entry.rs:282"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
@@ -1009,14 +1021,20 @@ proof  = "read"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
-text   = "run` says so at every start, and `strand check` reports an error on a"
-source = ["crates/strand/src/run/lock.rs:969", "crates/strand/src/check.rs:317"]
-proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
+text   = "For a config with a `lock`, `strand run` says so at start, or when a reload adds the `lock`, and `strand check` reports an error,"
+source = ["crates/strand/src/run/lock.rs:986", "crates/strand/src/run/shell.rs:410", "crates/strand/src/check.rs:317"]
+proof  = "crates/strand/src/run/lock.rs::tests::no_helper_is_said_only_for_a_config_with_a_lock; crates/strand/src/check.rs::tests::a_lock_without_the_helper_is_an_error"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "Both name the directory to put the helper in, beside `strand`;"
+source = ["crates/strand/src/check.rs:352"]
+proof  = "crates/strand/src/check.rs::tests::the_helper_hint_names_the_directory_beside_strand"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "- **\"the compositor does not offer ext-session-lock\".** A `lock` cannot"
-source = ["crates/strand/src/run/lock.rs:983"]
+source = ["crates/strand/src/run/lock.rs:971"]
 proof  = "read"
 
 [[claim]]
@@ -1104,7 +1122,7 @@ proof  = "crates/strand-render/tests/motion.rs::colours_spring_in_oklab, ::size_
 [[claim]]
 page   = "site/index.md"
 text   = "saving a file never restarts the shell"
-source = ["docs/spec.md:1877"]
+source = ["docs/spec.md:1880"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_prop_edit_patches_in_place_and_keeps_state"
 
 [[claim]]
@@ -1116,13 +1134,13 @@ proof  = "crates/strand-render/tests/motion.rs::an_idle_bar_does_no_work_after_a
 [[claim]]
 page   = "site/index.md"
 text   = "what you changed animates to its new value,"
-source = ["docs/spec.md:1882"]
+source = ["docs/spec.md:1885"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_prop_edit_patches_in_place_and_keeps_state"
 
 [[claim]]
 page   = "site/index.md"
 text   = "A save that does not check leaves the last good"
-source = ["docs/spec.md:1964", "crates/strand/src/overlay.rs:23"]
+source = ["docs/spec.md:1967", "crates/strand/src/overlay.rs:23"]
 proof  = "crates/strand-compiler/tests/reload.rs::random_edits_land_on_a_cold_boot (held-back sets); overlay QUIET 250 ms"
 
 [[claim]]
@@ -1164,7 +1182,7 @@ proof  = "strand check in the container (scripts/container/run.sh) on a probe co
 [[claim]]
 page   = "site/index.md"
 text   = "and usually how to fix it"
-source = ["crates/strand-compiler/src/check/expr.rs:1130"]
+source = ["crates/strand-compiler/src/check/expr.rs:1136"]
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: `battery.precent` gives `did you mean `percent``"
 
 [[claim]]
@@ -1176,7 +1194,7 @@ proof  = "crates/strand-compiler/tests/instantiate.rs::the_hello_bar_clock_ticks
 [[claim]]
 page   = "site/index.md"
 text   = "A surface repaints only what changed"
-source = ["crates/strand/src/demo/mod.rs:377"]
+source = ["crates/strand/src/demo/mod.rs:381"]
 proof  = "crates/strand/src/demo/mod.rs::a_minute_tick_repaints_at_most_2000_px2"
 
 [[claim]]
@@ -1308,7 +1326,7 @@ proof  = "crates/strand-render/tests/motion.rs::paint_only_springs_never_relayou
 [[claim]]
 page   = "site/concepts/language.md"
 text   = "(`$XDG_CONFIG_HOME/strand`) unless you name another one to `strand"
-source = ["crates/strand/src/entry.rs:224"]
+source = ["crates/strand/src/entry.rs:274"]
 proof  = "read: `strand run [dir]`, default from XDG_CONFIG_HOME, else HOME/.config"
 
 [[claim]]
@@ -1422,13 +1440,13 @@ proof  = "crates/strand-compiler/tests/vm.rs::await_waits_for_a_pending_load (tw
 [[claim]]
 page   = "site/concepts/language.md"
 text   = "with a did-you-mean, a wrong type, a `null` not handled"
-source = ["crates/strand-compiler/src/check/expr.rs:1130"]
+source = ["crates/strand-compiler/src/check/expr.rs:1136"]
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config"
 
 [[claim]]
 page   = "site/concepts/language.md"
 text   = "shell checks each save the same way, and keeps running the last good"
-source = ["docs/spec.md:1974"]
+source = ["docs/spec.md:1977"]
 proof  = "crates/strand-compiler/tests/reload.rs::random_edits_land_on_a_cold_boot"
 
 [[claim]]
@@ -1500,7 +1518,7 @@ proof  = "strand check in the container (scripts/container/run.sh) on a probe co
 [[claim]]
 page   = "site/concepts/state.md"
 text   = "`.pending` is true while a load runs, and `.error` says why the last"
-source = ["crates/strand-compiler/src/check/expr.rs:1237"]
+source = ["crates/strand-compiler/src/check/expr.rs:1243"]
 proof  = "read"
 
 [[claim]]
@@ -1572,13 +1590,13 @@ proof  = "read: input handlers, `<->` and CLI writes are not counted"
 [[claim]]
 page   = "site/concepts/theming.md"
 text   = "The colour roles: Material 3's roles one to one, plus 13 hue roles"
-source = ["crates/strand-theme/src/role.rs:3", "docs/spec.md:1688"]
+source = ["crates/strand-theme/src/role.rs:3", "docs/spec.md:1691"]
 proof  = "read: docs/reference/tokens.md lists them"
 
 [[claim]]
 page   = "site/concepts/theming.md"
 text   = "a brighter one of each but orange"
-source = ["docs/spec.md:1688", "docs/reference/tokens.md:17"]
+source = ["docs/spec.md:1691", "docs/reference/tokens.md:17"]
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: `$bright_orange` is check::unknown_token"
 
 [[claim]]
@@ -1590,7 +1608,7 @@ proof  = "read: harmonised by half the hue difference, at most 15 degrees"
 [[claim]]
 page   = "site/concepts/theming.md"
 text   = "each bright one is its base made lighter in a dark"
-source = ["docs/spec.md:1734"]
+source = ["docs/spec.md:1737"]
 proof  = "read: crates/strand-theme/src/palette.rs:301 (fill_hues)"
 
 [[claim]]
@@ -1602,31 +1620,31 @@ proof  = "read: default_palette reads system.dark, system.accent, system.contras
 [[claim]]
 page   = "site/concepts/theming.md"
 text   = "`import(\"…\")` reads a published scheme: Catppuccin, base16 and base24"
-source = ["docs/spec.md:1721", "crates/strand-theme/src/import.rs"]
+source = ["docs/spec.md:1724", "crates/strand-theme/src/import.rs"]
 proof  = "read"
 
 [[claim]]
 page   = "site/concepts/theming.md"
 text   = "takes the rest from"
-source = ["docs/spec.md:1719"]
+source = ["docs/spec.md:1722"]
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: a set naming only `space` with `$radius.lg`, `$font.ui`, `$fg.muted` checks clean"
 
 [[claim]]
 page   = "site/concepts/theming.md"
 text   = "changing a token it inherits needs the word `override`"
-source = ["docs/spec.md:1684"]
+source = ["docs/spec.md:1687"]
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: redefining without `override` gives check::override_needed; a misspelt `override spcae` gives check::unknown_token with did-you-mean"
 
 [[claim]]
 page   = "site/concepts/theming.md"
 text   = "Both are expressions, so the choice is live"
-source = ["docs/spec.md:1696"]
+source = ["docs/spec.md:1699"]
 proof  = "crates/strand-compiler/tests/theme.rs; the page's theme.strand checks"
 
 [[claim]]
 page   = "site/concepts/theming.md"
 text   = "is re-evaluated whenever `$fg` changes"
-source = ["docs/spec.md:1680", "crates/strand-render/src/renderer/swap.rs:8"]
+source = ["docs/spec.md:1683", "crates/strand-render/src/renderer/swap.rs:8"]
 proof  = "read"
 
 [[claim]]
@@ -1638,19 +1656,19 @@ proof  = "strand check in the container (scripts/container/run.sh) on a probe co
 [[claim]]
 page   = "site/concepts/theming.md"
 text   = "A raw hex colour in a prop is a warning"
-source = ["docs/spec.md:1699"]
+source = ["docs/spec.md:1702"]
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: `color: #ff0000` gives check::raw_color (warning); a settings default and `material(seed: #…)` do not"
 
 [[claim]]
 page   = "site/concepts/theming.md"
 text   = "is not a loop."
-source = ["docs/spec.md:1706"]
+source = ["docs/spec.md:1709"]
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: `set { $surface: $surface.mix($accent, 4%) }` checks clean"
 
 [[claim]]
 page   = "site/concepts/theming.md"
 text   = "`set { $Tile.pad: $space.2 }` around some tiles"
-source = ["docs/spec.md:1709"]
+source = ["docs/spec.md:1712"]
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: component tokens and a `set` of them check clean"
 
 [[claim]]
@@ -1680,7 +1698,7 @@ proof  = "read"
 [[claim]]
 page   = "site/concepts/theming.md"
 text   = "are written once, with the new"
-source = ["docs/spec.md:1814"]
+source = ["docs/spec.md:1817"]
 proof  = "read: a file is written when its rendered bytes differ, from the resolved table"
 
 [[claim]]
@@ -1944,7 +1962,7 @@ proof  = "crates/strand/tests/lock.rs::runtime_fault_in_the_lock_shows_the_fallb
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "A save that changes it waits until you unlock."
-source = ["docs/spec.md:1891"]
+source = ["docs/spec.md:1894"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_lock_edit_is_deferred_while_shown"
 
 [[claim]]
@@ -1974,7 +1992,7 @@ proof  = "strand check in the container (scripts/container/run.sh) on a probe co
 [[claim]]
 page   = "site/concepts/services.md"
 text   = "the service's `available` field says whether it answers"
-source = ["docs/spec.md:2022"]
+source = ["docs/spec.md:2025"]
 proof  = "read: `available` on network, bluetooth, session, brightness in the reference"
 
 [[claim]]
@@ -2016,97 +2034,97 @@ proof  = "crates/strand-compiler/tests/flex.rs::an_action_with_a_result_is_loade
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A token's value | The colours spring to it | Yes |"
-source = ["docs/spec.md:1884"]
+source = ["docs/spec.md:1887"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_token_edit_swaps_the_table"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A prop or binding | Patched in place; animates from where it is | Yes |"
-source = ["docs/spec.md:1885"]
+source = ["docs/spec.md:1888"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_prop_edit_patches_in_place_and_keeps_state"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A node added or removed |"
-source = ["docs/spec.md:1886"]
+source = ["docs/spec.md:1889"]
 proof  = "crates/strand-compiler/tests/reload.rs::nodes_added_and_removed"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A `state`'s default | Taken only if the value was never changed |"
-source = ["docs/spec.md:1887"]
+source = ["docs/spec.md:1890"]
 proof  = "crates/strand-compiler/tests/reload.rs::state_defaults_are_adopted_only_if_unchanged"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A `state`'s name or type | That one cell resets, with a warning |"
-source = ["docs/spec.md:1888"]
+source = ["docs/spec.md:1891"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_renamed_or_retyped_cell_resets"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A handler's code | Restarted;"
-source = ["docs/spec.md:1889"]
+source = ["docs/spec.md:1892"]
 proof  = "crates/strand-compiler/tests/reload.rs::handler_restart_cancels_its_await"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A timer's duration | The time left is rescaled | Yes |"
-source = ["docs/spec.md:1890"]
+source = ["docs/spec.md:1893"]
 proof  = "crates/strand-compiler/tests/reload.rs::timer_duration_rescales"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A surface's layer, namespace or kind | Only that surface is made again | Yes |"
-source = ["docs/spec.md:1891"]
+source = ["docs/spec.md:1894"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_surface_layer_change_recreates_only_it, ::a_surface_namespace_or_kind_change_recreates_only_it_with_its_state"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A custom service's declaration | Only that service restarts; built-ins never do | Yes |"
-source = ["docs/spec.md:1892"]
+source = ["docs/spec.md:1895"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_changed_service_declaration_restarts_only_it"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| Anything in the `lock` | Waits until you unlock | Yes |"
-source = ["docs/spec.md:1893"]
+source = ["docs/spec.md:1896"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_lock_edit_is_deferred_while_shown"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "A handler counts as changed when its own code changed"
-source = ["docs/spec.md:1895"]
+source = ["docs/spec.md:1898"]
 proof  = "read"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "wrapping it in a"
-source = ["docs/spec.md:1909"]
+source = ["docs/spec.md:1912"]
 proof  = "crates/strand-compiler/tests/reload.rs::wrapping_moves_a_node"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "so renaming a"
-source = ["docs/spec.md:1900"]
+source = ["docs/spec.md:1903"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_surface_namespace_or_kind_change_recreates_only_it_with_its_state"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "monitor and survives a reload"
-source = ["docs/spec.md:1918"]
+source = ["docs/spec.md:1921"]
 proof  = "crates/strand-compiler/tests/reload.rs::per_monitor_state_survives_a_reload"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "launcher.query: kept \"fir\" (default changed) [reset]"
-source = ["docs/spec.md:1929"]
+source = ["docs/spec.md:1932"]
 proof  = "read"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "A value a reload writes never fires `on change`"
-source = ["docs/spec.md:1932"]
+source = ["docs/spec.md:1935"]
 proof  = "crates/strand-compiler/tests/reload.rs::on_change_does_not_fire_on_reload"
 
 [[claim]]
@@ -2118,19 +2136,19 @@ proof  = "crates/strand-watch/src/core.rs (deadline t0 + 15 ms test)"
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "A file whose content did not change stops here."
-source = ["docs/spec.md:1966"]
-proof  = "read"
-
-[[claim]]
-page   = "site/concepts/live-reload.md"
-text   = "The largest set of changes that checks clean is applied in one"
 source = ["docs/spec.md:1969"]
 proof  = "read"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
+text   = "The largest set of changes that checks clean is applied in one"
+source = ["docs/spec.md:1972"]
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/live-reload.md"
 text   = "a config that is broken when Strand starts runs"
-source = ["docs/spec.md:1973"]
+source = ["docs/spec.md:1976"]
 proof  = "crates/strand-compiler/tests/reload.rs::reloads_land_on_a_cold_boot"
 
 [[claim]]
@@ -2148,25 +2166,25 @@ proof  = "read: editor_command"
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "freezes only its own component, outlined in red"
-source = ["docs/spec.md:2010"]
+source = ["docs/spec.md:2013"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_fault_outlines_its_component_until_the_fixing_reload"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "resets that one cell to its default when"
-source = ["docs/spec.md:1945"]
+source = ["docs/spec.md:1948"]
 proof  = "crates/strand-compiler/tests/reload.rs::at_reset_resets_one_cell"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "drops every state that is not `persist`"
-source = ["docs/spec.md:1955"]
+source = ["docs/spec.md:1958"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_hard_reload_drops_state_and_recreates_surfaces"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "`strand watch --json` gives the same as JSON lines."
-source = ["crates/strand/src/ipc/cli.rs:94", "crates/strand/src/ipc/describe.rs:7"]
+source = ["crates/strand/src/ipc/cli.rs:101", "crates/strand/src/ipc/describe.rs:7"]
 proof  = "read"
 
 [[claim]]
@@ -2184,7 +2202,7 @@ proof  = "read: python-dbusmock's UPower, NetworkManager and logind; a private P
 [[claim]]
 page   = "site/concepts/performance.md"
 text   = "repaints at most 2,000 px²"
-source = ["crates/strand/src/demo/mod.rs:377"]
+source = ["crates/strand/src/demo/mod.rs:381"]
 proof  = "crates/strand/src/demo/mod.rs::a_minute_tick_repaints_at_most_2000_px2"
 
 [[claim]]
@@ -2352,7 +2370,7 @@ proof  = "read"
 [[claim]]
 page   = "site/how-to/launcher.md"
 text   = "`strand toggle` flips an exported `bool` state."
-source = ["crates/strand/src/entry.rs:33", "docs/spec.md:2051"]
+source = ["crates/strand/src/entry.rs:33", "docs/spec.md:2054"]
 proof  = "crates/strand-compiler/tests/token_overlay.rs (Instance::toggle)"
 
 [[claim]]
@@ -2514,7 +2532,7 @@ proof  = "crates/strand/src/run/tests.rs::the_theme_follows_the_portal_the_wallp
 [[claim]]
 page   = "site/how-to/wallpaper-theme.md"
 text   = "Strand makes it the first time a value is"
-source = ["docs/spec.md:1992"]
+source = ["docs/spec.md:1995"]
 proof  = "read"
 
 [[claim]]
@@ -2526,7 +2544,7 @@ proof  = "crates/strand/src/run/tests.rs::the_theme_follows_the_portal_the_wallp
 [[claim]]
 page   = "site/how-to/wallpaper-theme.md"
 text   = "`#rrggbb` and rewrites it after every switch"
-source = ["crates/strand-compiler/src/template/render.rs:134", "docs/spec.md:1814"]
+source = ["crates/strand-compiler/src/template/render.rs:134", "docs/spec.md:1817"]
 proof  = "read"
 
 [[claim]]
@@ -2544,7 +2562,7 @@ proof  = "read"
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "A relative path is beside your config; `~/…` is in your home"
-source = ["docs/spec.md:1977"]
+source = ["docs/spec.md:1980"]
 proof  = "read"
 
 [[claim]]
@@ -2592,7 +2610,7 @@ proof  = "read"
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "a missing file"
-source = ["docs/spec.md:1993"]
+source = ["docs/spec.md:1996"]
 proof  = "read"
 
 [[claim]]
@@ -2609,9 +2627,9 @@ proof  = "read: a read-only target gets an overlay in the state directory, with 
 
 [[claim]]
 page   = "site/how-to/settings-file.md"
-text   = "`segmented { options: [Edge.top, Edge.bottom];"
-source = ["crates/strand-compiler/src/schema/builtin.schema:2068"]
-proof  = "strand check in the container (scripts/container/run.sh) on a probe config: checks clean (`options: Edge` does not: see the result's code_bugs)"
+text   = "`segmented { options: Edge; value: <-> prefs.position }` is a picker for the edge, a segment for each of `Edge`'s variants; `options: [Edge.top, Edge.bottom]` offers only those two."
+source = ["crates/strand-compiler/src/schema/builtin.schema:2068", "crates/strand-compiler/src/check/expr.rs:538"]
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_builtin_enum_gives_a_segmented_its_options; `options: [Edge.top, Edge.bottom]` checked clean in the container (fact-check)"
 
 [[claim]]
 page   = "site/how-to/settings-file.md"

@@ -237,19 +237,21 @@ fn pss_kb(rollup: &str) -> Option<u64> {
     })
 }
 
+/// `strand report`'s usage.
+pub(crate) const USAGE: &str = "usage: strand report [--json] [what you saw…]";
+
 /// `strand report [--json] [words…]`'s arguments: `--json`, and the
 /// words (every other argument, joined by spaces; none for the bare
 /// form). An argument starting with `-` other than `--json` is refused,
 /// so a mistyped flag is not saved as words.
 pub(crate) fn parse_args(args: &[String]) -> Result<(bool, Option<String>), String> {
-    let usage = "usage: strand report [--json] [what you saw…]";
     let mut json = false;
     let mut words: Vec<&str> = Vec::new();
     for a in args {
         if a == "--json" {
             json = true;
         } else if a.starts_with('-') && words.is_empty() {
-            return Err(usage.into());
+            return Err(USAGE.into());
         } else {
             words.push(a.as_str());
         }
