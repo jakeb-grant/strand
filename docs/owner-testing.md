@@ -641,6 +641,19 @@ Bugs 13 to 16 are the owner's own, on Hyprland with the island test bar
     open the island with a notification waiting and turn Focus on and
     off; nothing but the glyph and the count changes place.
 
+26. **The island's sliders stuck at 0 and ignored the mouse.** (fixed,
+    2026-10-26; found 2026-10-26 by the owner on Hyprland, report
+    2026-10-26_00-45-36.) Volume, microphone and brightness showed only
+    a knob with no track or fill, and dragging across did nothing.
+    Cause: flex's upright sliders (3eb9435b) read the written `width:
+    0` beside `height: 14` as a slider taller than wide, so each was
+    drawn and dragged as an upright 14 px slider. A slider growing from
+    a written 0 now runs along the axis it grows on
+    (`crates/strand-compiler/tests/controls.rs::a_slider_growing_from_zero_runs_along_its_growth`,
+    which fails on `main`). decisions.md slider-fix. Check on Hyprland:
+    open the island's levels; each slider shows its fill and follows a
+    drag across.
+
 ## Capability gaps
 
 1. **A handler cannot run a command.** No power menu (suspend,

@@ -2000,7 +2000,8 @@ element button(text -> text): node {}
 /// writes values in its `range`: `slider { value: <-> percent; range: 0,
 /// 100 }`. Laid out taller than wide (`width: 24; height: 160`), it runs
 /// upward: its value grows from the bottom (its written `width` and
-/// `height` decide, else its laid-out box; a drag keeps the way it
+/// `height` decide, else its laid-out box; one growing from a written 0,
+/// `width: 0; grow: 1`, runs along that axis; a drag keeps the way it
 /// began).
 element slider: node {
   /// Its value, in `range` (0 to 1 when unset), bound two-way; a value

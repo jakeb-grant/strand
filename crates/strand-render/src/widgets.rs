@@ -100,9 +100,11 @@ pub fn slider_knob_radius(active: bool) -> f64 {
 
 /// (flex) Whether a `slider` or `meter` drawn `w` × `h` runs upward: by
 /// the box it comes to rest in, so one whose size springs through a
-/// square (a width growing from 0) does not turn part-way. A `width` and
-/// `height` (or a `size`) written as lengths are that box; else it is
-/// the box as laid out now.
+/// square (a width growing from 0) does not turn part-way. One that
+/// grows from a written 0 on one axis (`width: 0; grow: 1`, sharing
+/// what is left of its row) runs along that axis: the 0 is where it
+/// starts, not its size. Else a `width` and `height` (or a `size`)
+/// written as lengths are that box; else it is the box as laid out now.
 pub fn upright(node: &crate::tree::Node, w: f64, h: f64) -> bool {
     use strand_scene::{Length, Prop};
     let fixed = |p: Prop| match node.get(p) {
@@ -111,6 +113,13 @@ pub fn upright(node: &crate::tree::Node, w: f64, h: f64) -> bool {
         }
         _ => None,
     };
+    let grows = fixed(Prop::Grow).is_some_and(|g| g > 0.0);
+    let shares = |p: Prop| grows && fixed(p) == Some(0.0);
+    match (shares(Prop::Width), shares(Prop::Height)) {
+        (true, false) => return false,
+        (false, true) => return true,
+        _ => {}
+    }
     let size = fixed(Prop::Size);
     match (fixed(Prop::Width).or(size), fixed(Prop::Height).or(size)) {
         (Some(w), Some(h)) => h > w,

@@ -78,6 +78,46 @@ fn a_tall_slider_and_meter_run_upward() {
     assert_matches_ref("controls_sliders", shot.0, &shot.1, 2);
 }
 
+/// A slider or meter that starts from a written 0 and grows (`width: 0;
+/// grow: 1`, sharing what is left of its row) runs along the axis it
+/// grows on, though the 0 written there is less than its other side: a
+/// 14 px tall slider sharing a row runs across, fills across and drags
+/// across, and one sharing a column runs upward.
+#[test]
+fn a_slider_growing_from_zero_runs_along_its_growth() {
+    let mut sh = Shell::new(
+        "export state a = 0.5\n\
+         export state b = 0.5\n\
+         panel P { anchor: top_left; width: 300; height: 200\n\
+           col { width: 300; height: 200; bg: #101418\n\
+             row { width: 300; height: 20\n\
+               slider { value: <-> a; width: 0; grow: 1; height: 14; color: #5b8def; track: #2a3038 }\n\
+             }\n\
+             col { width: 20; height: 180; align: start\n\
+               slider { value: <-> b; height: 0; grow: 1; width: 14; color: #6fbf73; track: #2a3038 }\n\
+             }\n\
+           }\n\
+         }\n",
+    );
+    let shot = sh.shot("P");
+    // Across: filled on the left half, the track on the right.
+    assert!(blue(px(&shot, 60, 10)), "filled across");
+    assert!(!blue(px(&shot, 240, 10)), "the track across");
+    // The 300 px slider's knob runs from x 8 (0) to 292 (1).
+    sh.move_to(8.0 + 0.8 * 284.0, 10.0);
+    sh.button(true);
+    near(sh.num("a"), 0.8, 0.002, "dragged across");
+    sh.button(false);
+    // The column's slider (14 × 180 at 0, 20) runs upward: its top is 1
+    // and its bottom 0, whatever the pointer's x.
+    sh.move_to(7.0, 21.0);
+    sh.button(true);
+    near(sh.num("b"), 1.0, 1e-6, "upward: the top");
+    sh.move_to(7.0, 199.0);
+    near(sh.num("b"), 0.0, 1e-6, "upward: the bottom");
+    sh.button(false);
+}
+
 /// `step:` moves a dragged slider in whole steps of its range's units,
 /// the knob and what it writes alike.
 #[test]

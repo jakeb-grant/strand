@@ -3282,9 +3282,10 @@ re-base, if it needs one, is a dated decisions.md entry.
     drag to `lo + n·step` before `Intent::Write`, computed in `f64` and
     rounded to the decimals `lo` and `step` are written with
     (`Range::snap`). A `slider` or `meter` is upright when
-    `widgets::upright(node, w, h)` says so: its written `Width` and
-    `Height` (or `Size`) where both are lengths, else its laid-out box
-    taller than wide; the Router latches it for a drag
+    `widgets::upright(node, w, h)` says so: with `Grow` above 0, a
+    written 0 on one axis makes it run along that one; else its
+    written `Width` and `Height` (or `Size`) where both are lengths,
+    else its laid-out box taller than wide; the Router latches it for a drag
     (`Router::drag_upright`), and an upright meter draws no wave.
   - **Layout and input props** (flex). `Prop::Wrap` on a `row` or
     `col` is taffy `flex_wrap` with `align_content: flex-start`.
