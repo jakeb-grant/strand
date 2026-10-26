@@ -41,6 +41,33 @@ pub fn pages(schema: &Schema) -> Pages {
     out
 }
 
+/// One element's or prop group's section of `elements.md`, heading
+/// included, for a page of its own (the site's, `strand-site`). Its links
+/// to other elements and groups are `elements.md`'s `#<anchor>`s.
+pub fn element(schema: &Schema, name: &str) -> Option<String> {
+    let mut o = String::new();
+    if let Some(e) = schema.elements.get(name) {
+        element_section(&mut o, schema, name, e, false);
+    } else {
+        element_section(&mut o, schema, name, schema.groups.get(name)?, true);
+    }
+    Some(o)
+}
+
+/// Every element's and prop group's name, as `elements.md` lists them
+/// (groups first), each with whether it is a group.
+pub fn element_names(schema: &Schema) -> Vec<(&str, bool)> {
+    let groups = schema.groups.keys().map(|n| (n.as_str(), true));
+    groups
+        .chain(schema.elements.keys().map(|n| (n.as_str(), false)))
+        .collect()
+}
+
+/// `heading` as `elements.md`'s links to it write its anchor.
+pub fn anchor_of(heading: &str) -> String {
+    anchor(heading)
+}
+
 /// Writes `pages` into `dir` (made if missing) and removes any other
 /// generated `.md` file there, so a page that is no longer generated goes.
 /// Returns the names of the files it changed or removed.

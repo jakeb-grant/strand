@@ -9,7 +9,9 @@
 # A change to the root Cargo.toml, Cargo.lock or .cargo/ tests every
 # crate. A change under docs/ adds the crates whose tests read the docs
 # (strand-dev's reference, strand-compiler's spec and design snippets,
-# strand's guide and architecture checks). Other files outside crates/
+# strand's guide and architecture checks, strand-site's whole-site
+# build), and so does a change to the site's own sources (site/,
+# eval/scenarios/docs/). Other files outside crates/
 # (scripts, .github) test nothing here; ci covers them.
 #
 # The animation evaluation sandbox (eval/, its own workspace) is the
@@ -76,7 +78,8 @@ while IFS= read -r f; do
   case "$f" in
     Cargo.toml | Cargo.lock) all=1 eval=1 ;;
     .cargo/*) all=1 ;;
-    docs/*) pick[strand-dev]=1; pick[strand-compiler]=1; pick[strand]=1 ;;
+    docs/*) pick[strand-dev]=1; pick[strand-compiler]=1; pick[strand]=1; pick[strand-site]=1 ;;
+    site/* | eval/scenarios/docs/*) pick[strand-site]=1 ;;
     crates/*)
       while read -r dir name; do
         case "$f" in "$dir"/*) pick[$name]=1 ;; esac

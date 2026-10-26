@@ -1,0 +1,30 @@
+[package]
+name = "strand-site"
+description = "The documentation site's generator (site/ to target/site): a developer tool, never shipped"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Strand blocks are checked as the language server checks them offline,
+# and the reference pages come from its generator (docs/architecture.md,
+# "strand-site").
+strand-dev = { path = "../strand-dev" }
+strand-compiler = { workspace = true, features = ["shaders"] }
+strand-scene.workspace = true
+# The site's colours: the built-in theme's palette, light and dark.
+strand-theme.workspace = true
+# Strand code is highlighted by the editor grammar's own queries.
+tree-sitter = "0.27.0"
+tree-sitter-strand = { path = "../strand-dev/tree-sitter-strand" }
+pulldown-cmark = { version = "0.13.5", default-features = false, features = ["html"] }
+# The example media: eval's trace.json in, frame strips and their timing out.
+serde_json = "1.0.151"
+png = "0.18.1"
+# Ties each example's media to the scenario text it was rendered from.
+blake3 = "1.8.7"
+
+[lints]
+workspace = true

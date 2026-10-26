@@ -1,0 +1,55 @@
+id     = "docs-springs"
+about  = """The site's springs page (site/concepts/motion.md): three knobs
+move when `on` flips, on the default `$motion.spatial`, on `~ $motion.bouncy`
+and on a timed `~ 300ms`. Its config is the page's code block, word for
+word, and its frames are the page's pictures."""
+screen = { width = 360, height = 200, scale = 2.0 }
+
+=== shell.strand
+state on = false
+
+bar Springs {
+  height: 128
+  bg: $surface
+  col { pad: 16, 20; gap: 14
+    row { gap: 12; align: center
+      text "default" { width: 64; color: $fg.muted }
+      box { width: 220; height: 24; radius: 12; bg: $surface.hi
+        box {
+          id: spatial
+          width: 24; height: 24; radius: 12; bg: $accent
+          x: on ? 196 : 0
+        }
+      }
+    }
+    row { gap: 12; align: center
+      text "bouncy" { width: 64; color: $fg.muted }
+      box { width: 220; height: 24; radius: 12; bg: $surface.hi
+        box {
+          id: bouncy
+          width: 24; height: 24; radius: 12; bg: $accent
+          x: on ? 196 : 0 ~ $motion.bouncy
+        }
+      }
+    }
+    row { gap: 12; align: center
+      text "300ms" { width: 64; color: $fg.muted }
+      box { width: 220; height: 24; radius: 12; bg: $surface.hi
+        box {
+          id: timed
+          width: 24; height: 24; radius: 12; bg: $accent
+          x: on ? 196 : 0 ~ 300ms
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark there
+set on true
+rest
+mark back
+set on false
+rest

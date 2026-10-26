@@ -2349,6 +2349,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulldown-cmark"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "278e9268c93b9e498a2da46c34d90ba93a3255eb99009646398f34bc73ab36eb"
+dependencies = [
+ "bitflags 2.13.2",
+ "memchr",
+ "pulldown-cmark-escape",
+ "unicase",
+]
+
+[[package]]
+name = "pulldown-cmark-escape"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
+
+[[package]]
 name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3186,6 +3204,22 @@ dependencies = [
 [[package]]
 name = "strand-services-schema"
 version = "0.0.0"
+
+[[package]]
+name = "strand-site"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "png",
+ "pulldown-cmark",
+ "serde_json",
+ "strand-compiler",
+ "strand-dev",
+ "strand-scene",
+ "strand-theme",
+ "tree-sitter",
+ "tree-sitter-strand",
+]
 
 [[package]]
 name = "strand-surface"

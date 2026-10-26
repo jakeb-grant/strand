@@ -1,0 +1,10 @@
+# The claims ledger: every factual claim the site's own pages (site/**.md)
+# make about Strand, with where it is proven. strand-site checks that each
+# `text` occurs in its page and that each `source` exists; the people who
+# fact-check the site check that the source says what the text says.
+#
+# [[claim]]
+# page   = "site/concepts/motion.md"       # the page, from the repository root
+# text   = "Below a ratio of 1 it overshoots"  # words exactly as on the page
+# source = ["crates/strand-core/src/anim.rs:120", "docs/design.md#motion-and-time"]
+# proof  = "crates/strand-core/tests/springs.rs::underdamped_overshoots"  # a test, or how it was seen

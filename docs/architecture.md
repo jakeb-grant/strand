@@ -549,7 +549,29 @@ eval/ (strand-eval)  the animation evaluation sandbox: its own Cargo
                      and for its surface leg strand-surface (default
                      features, `gpu` among them) and strand-fake-wayland
   ^-- nothing: no crate under crates/ depends on it
+
+strand-site  the documentation site's generator (site/ to target/site):
+             a developer tool, never shipped or installed; depends on
+             strand-dev (the reference generator, the offline check),
+             strand-compiler, strand-scene, strand-theme (contrast maths)
+             and tree-sitter-strand (the highlight queries)
+  ^-- nothing
 ```
+
+`strand-site` reads `site/SUMMARY.md` for the sidebar, renders
+`site/*.md`, `docs/guide/*.md` and one page per element from the schema
+(`strand_dev::reference::element`, the same text as
+`docs/reference/elements.md`), and writes plain HTML with relative links,
+so the site works from `file://` and from any host. It fails, writing
+nothing, on any link or anchor that reaches no page or file, any
+`strand file=` block or example config that does not check clean or is
+not `strand fmt`-formatted, a ```` ```strand-check ```` block that checks
+clean, an example whose media were rendered from other scenario text
+than it has now, and a text colour under 4.5:1 on its background;
+`tests/build.rs` builds the whole site. Examples are scenarios under
+`eval/scenarios/docs/`, rendered by `strand-eval` (`scripts/site/media.sh`)
+into frame strips and tracks in `site/media/`; the generator reads the
+committed media and never runs the renderer.
 
 `strand-fake-wayland` (M4) is a test fixture, not part of the runtime: no
 root crate depends on it outside `[dev-dependencies]`
@@ -1563,7 +1585,8 @@ zero-width span (an insertion) is allowed.
   `LANGUAGE` (a `tree_sitter_language::LanguageFn`, which
   `tree_sitter::Language` takes) and the queries as strings. strand-dev uses it only as a
   dev-dependency (the conformance tests), so neither the runtime binary
-  nor `strand-dev lsp` links it. The root `Cargo.toml` lists it in
+  nor `strand-dev lsp` links it; `strand-site`, which ships in no
+  binary, links it to highlight the site's code with `highlights.scm`. The root `Cargo.toml` lists it in
   `members` explicitly, since `crates/*` does not reach it. A pinned
   prebuilt tree-sitter CLI (0.27.0, with its sha256) runs only in CI's
   lint job and the container image: `scripts/check-tree-sitter.sh`
