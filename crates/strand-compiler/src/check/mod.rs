@@ -35,6 +35,7 @@ mod lock;
 pub mod names;
 pub mod paths;
 mod prepin;
+mod secrets;
 pub mod shaders;
 mod stmt;
 mod surfaces;
@@ -772,6 +773,12 @@ impl<'a> Checker<'a> {
         // clean: a misspelt `auth.submit` already has its own error.
         let clean = !self.diags.iter().any(Diagnostic::is_error);
         self.diags.extend(lock::way_out(&files, clean));
+        // (oi-lock) Where a password flows, on a program that checked
+        // clean: an error's `Ty::Error` would hide what a value is.
+        if clean {
+            self.diags
+                .extend(secrets::flow(&files, &self.defs, &self.locals, &self.types));
+        }
         // (M5) `file`s' `text:` holes read tokens the config has.
         let all = self.tokens.all_types(self.schema);
         self.diags

@@ -194,6 +194,10 @@ pub struct NodeState {
     /// rest. Made on first use ([`NodeState::window`]): only a window's
     /// root is ever told it.
     pub window_cell: std::cell::OnceCell<WindowSignals>,
+    /// (oi-lock) A `thumbnail` with nothing to show, `t.blank`: the
+    /// binary says so as it feeds it. Made on first use
+    /// ([`NodeState::blank`]): only thumbnails are ever told it.
+    pub blank_cell: std::cell::OnceCell<Signal<bool>>,
     /// (M6) For a conditional id (`when c { id: name }`), the element it
     /// names now: `Value::Node`, or `Null` while no condition holds.
     /// Made on first use ([`NodeState::alias`]).
@@ -256,6 +260,17 @@ impl NodeState {
                 tiled: rt.signal(false),
                 decorated: rt.signal(false),
             };
+            match self.scope {
+                Some(o) => rt.with_owner(o, make).unwrap_or_else(|_| make(rt)),
+                None => make(rt),
+            }
+        })
+    }
+
+    /// (oi-lock) `t.blank`'s signal, made on first use.
+    pub fn blank(&self, rt: &strand_core::Runtime) -> Signal<bool> {
+        *self.blank_cell.get_or_init(|| {
+            let make = |rt: &strand_core::Runtime| rt.signal(false);
             match self.scope {
                 Some(o) => rt.with_owner(o, make).unwrap_or_else(|_| make(rt)),
                 None => make(rt),

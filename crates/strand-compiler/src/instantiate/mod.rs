@@ -109,6 +109,10 @@ pub enum NodeFlag {
     Fullscreen,
     Tiled,
     Decorated,
+    /// (oi-lock) A `thumbnail` has nothing to show (`t.blank`): its
+    /// window went, its screen could not be captured, or inside a lock
+    /// its monitor has no still from before the lock.
+    Blank,
 }
 
 /// A runtime error, located: the error overlay's red outline and
@@ -1861,6 +1865,7 @@ impl Instance {
                 NodeFlag::Fullscreen => s.window(&self.rt).fullscreen,
                 NodeFlag::Tiled => s.window(&self.rt).tiled,
                 NodeFlag::Decorated => s.window(&self.rt).decorated,
+                NodeFlag::Blank => s.blank(&self.rt),
             };
             let _ = sig.set(&self.rt, on);
         }

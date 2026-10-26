@@ -613,6 +613,9 @@ mod keyboard {
     }
 
     const RETURN: u32 = 28;
+    /// (oi-lock) Tab, which focuses the lock's field when it has no
+    /// `focus: true`.
+    const TAB: u32 = 15;
 
     pub struct Keyboard {
         _conn: Connection,
@@ -634,7 +637,7 @@ mod keyboard {
             let keys = ('a'..='z')
                 .chain(['-'])
                 .filter_map(key)
-                .chain([(RETURN, "Return".to_string())]);
+                .chain([(RETURN, "Return".to_string()), (TAB, "Tab".to_string())]);
             for (k, sym) in keys {
                 let k = k + 8;
                 codes.push_str(&format!("<K{k}> = {k}; "));
@@ -685,6 +688,11 @@ mod keyboard {
         pub fn enter(&mut self, text: &str) {
             self.type_text(text);
             self.tap(RETURN);
+        }
+
+        /// (oi-lock) Presses Tab.
+        pub fn tab(&mut self) {
+            self.tap(TAB);
         }
 
         /// (gap 31) Sets the locked modifiers: [`CAPS_LOCK`] (`Lock`)
@@ -2730,6 +2738,72 @@ fn typing_survives_the_keys_moving_to_another_monitor() {
     assert_eq!(unlocks(&vm), 1, "{}", vm.strand.log_text());
 }
 
+/// (oi-lock) Keys reach the password on whichever monitor has them, and
+/// carry on when the keyboard moves mid-typing, with a field that has
+/// no `focus: true` (Tab focuses it): Tab and the first letters on the
+/// monitor sway gave the keys, `HEADLESS-1` unplugged (the keys stay or
+/// move to the second), more letters, a third monitor plugged in while
+/// locked, the second unplugged (the keys move to the third, for sure),
+/// and the rest typed there is one password that unlocks, once. Before,
+/// the keys entering another monitor's lock went to its surface, not
+/// its field, and the rest of the password was lost.
+#[test]
+fn the_keys_carry_the_password_to_whichever_monitor_has_them() {
+    let test = "oilock_keys";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let config = MULTI.replace("; focus: true\n", "\n");
+    assert_ne!(config, MULTI);
+    let mut vm = Vm::with(test, "", &config);
+    let second = vm.sway.plug();
+    vm.until(&second, "the desktop on the second output", Shot::desktop);
+    vm.lock();
+    vm.content();
+    vm.until_locked(&second, "the second monitor's own lock", true, |s| {
+        near(s.corner(), LOCK_BG2)
+    });
+    // No field has the keys yet: a letter goes nowhere.
+    vm.keys.type_text("x");
+    for (o, bg) in [("HEADLESS-1", LOCK_BG), (second.as_str(), LOCK_BG2)] {
+        vm.stays(
+            o,
+            "a lock with nothing typed",
+            Duration::from_millis(300),
+            |s| near(s.corner(), bg),
+        );
+    }
+    vm.keys.tab();
+    vm.keys.type_text(&PASSWORD[..4]);
+    for (o, bg) in [("HEADLESS-1", LOCK_TYPED), (second.as_str(), LOCK_TYPED2)] {
+        vm.until_locked(o, "the first letters on every monitor", true, |s| {
+            near(s.corner(), bg)
+        });
+    }
+    vm.sway.unplug("HEADLESS-1");
+    vm.until_locked(
+        &second,
+        "still typed after the first monitor went",
+        true,
+        |s| near(s.corner(), LOCK_TYPED2),
+    );
+    vm.keys.type_text(&PASSWORD[4..7]);
+    let third = vm.sway.plug();
+    vm.until_locked(&third, "the typed text on the plugged monitor", true, |s| {
+        near(s.corner(), LOCK_TYPED2)
+    });
+    vm.sway.unplug(&second);
+    vm.until_locked(
+        &third,
+        "still typed after the second monitor went",
+        true,
+        |s| near(s.corner(), LOCK_TYPED2),
+    );
+    vm.keys.enter(&PASSWORD[7..]);
+    vm.until(&third, "unlocked by the one password", Shot::desktop);
+    assert_eq!(unlocks(&vm), 1, "{}", vm.strand.log_text());
+}
+
 /// (lockmon) One monitor's instance faults (`10 / zero` there only): that
 /// monitor shows the solid (the first content's colour, never the
 /// desktop), the other keeps its lock, which still unlocks; nothing
@@ -2891,13 +2965,18 @@ fn the_locks_second_monitor_costs_one_surface() {
     );
 }
 
-/// (lockmon) [`CONFIG`] with a still of its monitor in the lock.
+/// (lockmon) [`CONFIG`] with a still of its monitor in the lock, and
+/// (oi-lock) a [`MARK`] square shown only where the still is `blank`.
 fn still_config() -> String {
     CONFIG.replace(
         "  text pct(10 / zero)\n",
-        "  text pct(10 / zero)\n  thumbnail screen { fit: cover; width: 320; height: 180 }\n",
+        "  text pct(10 / zero)\n  thumbnail screen { id: still; fit: cover; width: 320; height: 180 }\n  \
+         box { width: 64; height: 64; bg: #c040c0; opacity: still.blank ? 1 : 0 }\n",
     )
 }
+
+/// (oi-lock) [`still_config`]'s square where a monitor has no still.
+const MARK: [u8; 3] = [0xc0, 0x40, 0xc0];
 
 impl Shot {
     /// Pixels of the desktop's colour in row `y`.
@@ -2909,9 +2988,14 @@ impl Shot {
 
     /// Pixels of the desktop's colour anywhere.
     fn desktop_pixels(&self) -> usize {
+        self.pixels_of(DESKTOP)
+    }
+
+    /// Pixels of colour `c` anywhere.
+    fn pixels_of(&self, c: [u8; 3]) -> usize {
         self.rgb
             .chunks_exact(3)
-            .filter(|p| near([p[0], p[1], p[2]], DESKTOP))
+            .filter(|p| near([p[0], p[1], p[2]], c))
             .count()
     }
 }
@@ -2922,6 +3006,11 @@ impl Shot {
 /// the lock), on every monitor, while the session stays locked (the
 /// bar's own row is the lock's, but where the thumbnail is). A monitor
 /// plugged in while locked has no still: its thumbnail is empty.
+///
+/// (oi-lock) The plugged monitor's thumbnail draws nothing, so the
+/// lock's own `bg` shows where it is, from the first shot of its lock on
+/// (no desktop, no black or other block where the still would be), and
+/// the config tells: `still.blank` shows [`MARK`] there and only there.
 #[test]
 fn the_locks_thumbnail_is_a_still_from_before_the_lock() {
     let test = "lockmon_still";
@@ -2956,15 +3045,57 @@ fn the_locks_thumbnail_is_a_still_from_before_the_lock() {
         }
     }
     vm.log_has("2 of 2 screen stills before the lock");
+    // (oi-lock) Not blank where a still shows.
+    for o in ["HEADLESS-1", second.as_str()] {
+        vm.stays(
+            o,
+            "a lock with its still",
+            Duration::from_millis(300),
+            |s| s.pixels_of(MARK) == 0,
+        );
+    }
     let third = vm.sway.plug();
-    vm.until_locked(&third, "the plugged monitor's lock", true, |s| {
+    // Every shot once its lock shows: the lock's colour where the still
+    // would be (the 1280×720 lock holds nothing but its colour, the
+    // field, a short text and the square: a 320×180 block of anything
+    // else would be 57,600 pixels).
+    let lock_only = |s: &Shot| {
+        let other = (s.rgb.len() / 3)
+            .saturating_sub(s.pixels_of(LOCK_BG))
+            .saturating_sub(s.pixels_of(MARK));
+        s.desktop_pixels() == 0 && other < 20_000
+    };
+    let first = vm.until_locked(&third, "the plugged monitor's lock", true, |s| {
         near(s.corner(), LOCK_BG)
+    });
+    assert!(
+        lock_only(&first),
+        "{third}: its first lock frame is not the lock's colour where the still would be: {}\n{}",
+        first.describe(),
+        vm.strand.log_text()
+    );
+    // Every shot until the square shows is the lock's colour too: no
+    // stale, black or garbage block in between.
+    vm.until_locked(&third, "the square of a blank still", true, |s| {
+        assert!(
+            lock_only(s),
+            "{third}: a lock frame is not the lock's colour where the still would be: {}\n{}",
+            s.describe(),
+            vm.strand.log_text()
+        );
+        s.pixels_of(MARK) >= 64 * 64 * 9 / 10
     });
     vm.stays(
         &third,
         "a lock with no still",
         Duration::from_millis(500),
-        |s| s.desktop_pixels() == 0,
+        |s| lock_only(s) && s.pixels_of(MARK) >= 64 * 64 * 9 / 10,
+    );
+    vm.stays(
+        "HEADLESS-1",
+        "still not blank",
+        Duration::from_millis(300),
+        |s| s.pixels_of(MARK) == 0,
     );
     // The password (the still is the desktop's colour, so the waits do
     // not take it for the desktop).

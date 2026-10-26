@@ -499,7 +499,9 @@ locked. A config has at most one `lock`, and it needs no name.
   each, and on a monitor you plug in while locked too. Its `state` is
   one for all of them: there is one password field however many
   monitors show it, and your keys go to whichever monitor the
-  compositor gives them, so the dots you type show everywhere.
+  compositor gives them, so the dots you type show everywhere; when
+  the compositor moves the keys to another monitor, they carry on in
+  the field.
   Because that `state` is shared, it cannot start from `screen` (`state
   w = screen.width` in a lock is an error); read `screen` in props or a
   `let` instead: `let big = screen.width > 2000`. Its timers and `on
@@ -601,7 +603,10 @@ bar line below if you add it) and Strand is no agent.
   request went is dropped, never given to the next. Pass the password
   to nothing else: your config sees what is typed into it, and a
   declared action's arguments can be read by every user in the process
-  list.
+  list. `strand check` warns when a password reaches something that
+  shows, keeps or sends it (a `text`, an exported or persisted state,
+  a command, another service), however many `let`s and components it
+  passes through; `answer.len` and `answer != ""` are fine to show.
 - `polkit.cancel()` refuses, and the program is told so.
 - `polkit.busy` is true while an answer is checked, and `polkit.failed`
   once one was refused.

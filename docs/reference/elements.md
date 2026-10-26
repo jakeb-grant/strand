@@ -372,7 +372,7 @@ Also every prop and event of [`node`](#node).
 | --- | --- | --- |
 | `text` | `<-> text` | Its text, bound two-way. |
 | `placeholder` | `text` | Shown while it is empty. |
-| `type` | `InputKind` | `password` masks it. |
+| `type` | `InputKind` | `password` masks it, and the text it binds is a password: `check::secret_flow` warns where that reaches anything that shows, keeps or sends it, other than `auth.submit`, `polkit.respond`, `greetd.submit` and a network's `connect_with` (its length and whether it is empty are free to show). |
 | `focus` | `bool` | Takes keyboard focus when shown, and again whenever it turns true while its surface has the keyboard (`focus: mode == search`). Tab and Shift+Tab move focus between a surface's inputs and lists, unless an `on key` around the focused one hears keys: then Tab is that handler's. |
 | `nav` | `Node` | Routes arrow keys to a `list`: `nav: results`. |
 
@@ -787,8 +787,10 @@ before the surface showing it appears, so on its own screen it shows
 what was there, not that surface; one shown later in a surface
 already on screen is taken then, and holds that surface. Inside a
 `lock` it is the still taken just before the lock covered the
-screen; a monitor plugged in while locked has none, and shows
-nothing.
+screen; a monitor plugged in while locked (a replug included) has
+none, and draws nothing, so the lock's own `bg` shows there. With
+nothing to show it is `blank` (`thumbnail screen { id: still }`, then
+`when still.blank { … }`).
 
 It takes no children.
 

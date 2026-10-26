@@ -614,7 +614,7 @@ mod tests {
         // and so do builtin methods.
         for (text, rec, fields) in [
             ("record Range { start: text }", "Range", 2),
-            ("record Node { x: int }", "Node", 13),
+            ("record Node { x: int }", "Node", 14),
         ] {
             let mut s = Schema::builtin().clone();
             let err = s.extend(text).expect_err(text);

@@ -350,3 +350,31 @@ fn an_id_on_a_surface_names_its_root() {
         codes(src)
     );
 }
+
+/// (oi-lock) A `thumbnail` told it has nothing to show reads `blank` on
+/// its id, and keeps it across a reload: the binary says it again only
+/// when it changes.
+#[test]
+fn a_thumbnails_blank_reads_on_its_id_and_survives_a_reload() {
+    const STILL: &str = "bar Top {\n  thumbnail screen { id: still; width: 64; height: 36 }\n  \
+        text still.blank ? \"blank\" : \"shown\"\n  text \"edit\"\n}\n";
+    let count = |sh: &Shell, t: &str| sh.scene.texts().iter().filter(|x| *x == t).count();
+    let mut sh = boot(STILL);
+    let stills = sh.scene.of_kind(NodeKind::Thumbnail);
+    assert_eq!(stills.len(), 2, "{}", sh.scene.render());
+    assert_eq!(count(&sh, "shown"), 2);
+    sh.inst.set_flag(stills[0], NodeFlag::Blank, true);
+    sh.flush();
+    assert_eq!((count(&sh, "blank"), count(&sh, "shown")), (1, 1));
+    sh.inst.set_flag(stills[0], NodeFlag::Blank, false);
+    sh.flush();
+    assert_eq!(count(&sh, "shown"), 2);
+    sh.inst.set_flag(stills[0], NodeFlag::Blank, true);
+    sh.flush();
+    // An edit elsewhere: the same thumbnail, still blank, with no word
+    // from the binary.
+    sh.reload(&STILL.replace("\"edit\"", "\"edited\""));
+    assert_eq!(count(&sh, "edited"), 2, "{}", sh.scene.render());
+    assert_eq!(sh.scene.of_kind(NodeKind::Thumbnail), stills);
+    assert_eq!((count(&sh, "blank"), count(&sh, "shown")), (1, 1));
+}

@@ -1596,6 +1596,12 @@ impl Ctx {
                     }
                 }
             }
+            // (oi-lock) So does a thumbnail told it has nothing to show.
+            if let Some(a) = was.blank_cell.get()
+                && let Ok(true) = a.get_untracked(rt)
+            {
+                let _ = state.blank(rt).set(rt, true);
+            }
         }
         state.scene.set(Some(id));
         if self.vm.prog.pointer_watch.contains(&e.node) {

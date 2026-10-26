@@ -951,6 +951,91 @@ fn twin_inputs_share_writes_in_flight_and_the_caret() {
     );
 }
 
+/// (oi-lock) A lock field without `focus: true`, focused by Tab on one
+/// monitor: the keyboard moving to another monitor's lock lands in that
+/// monitor's twin of the field, so the rest of the password is typed
+/// into it (before, the keys went to the surface and were lost).
+#[test]
+fn the_keyboard_entering_another_monitors_lock_finds_the_field() {
+    use strand_scene::{NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let (l1, i1, l2, i2) = (
+        NodeId::new(0, 0),
+        NodeId::new(1, 0),
+        NodeId::new(2, 0),
+        NodeId::new(3, 0),
+    );
+    let mut d = SceneDiff::new();
+    for (l, i) in [(l1, i1), (l2, i2)] {
+        d.create(l, NodeKind::Lock, None, 0)
+            .create(i, NodeKind::Input, Some(l), 0)
+            .set(i, Prop::Text, PropValue::Text(String::new()))
+            .set(i, Prop::InputType, PropValue::Keyword("password".into()))
+            .set(i, Prop::Twin, PropValue::Text("/s1/s1/e4".into()));
+    }
+    let mut f = R::default();
+    f.router.observe(&d);
+    assert!(r.apply(d).is_empty());
+    let (s1, s2) = (SurfaceId(1), SurfaceId(2));
+    f.attached(s1, l1);
+    f.attached(s2, l2);
+    let key = |f: &mut R, r: &mut Renderer, s: SurfaceId, name: &str, t: &str| {
+        f.input(
+            &InputEvent::Key {
+                surface: s,
+                key: KeyInput {
+                    name: name.into(),
+                    text: t.into(),
+                    state: ButtonState::Pressed,
+                    repeat: false,
+                    modifiers: Default::default(),
+                    time: 0,
+                    latin: None,
+                },
+            },
+            r,
+        );
+        f.drain().into_iter().find_map(|i| match i {
+            Intent::Write {
+                node,
+                value: PropValue::Text(t),
+                ..
+            } => Some((node, t)),
+            _ => None,
+        })
+    };
+    let to = |f: &mut R, r: &mut Renderer, from: SurfaceId, to: SurfaceId| {
+        f.input(&InputEvent::KeyboardLeave { surface: from }, r);
+        f.input(&InputEvent::KeyboardEnter { surface: to }, r);
+        f.drain();
+    };
+    f.input(&InputEvent::KeyboardEnter { surface: s1 }, &mut r);
+    f.drain();
+    assert_eq!(
+        key(&mut f, &mut r, s1, "a", "a"),
+        None,
+        "no field has focus"
+    );
+    key(&mut f, &mut r, s1, "Tab", "");
+    assert_eq!(key(&mut f, &mut r, s1, "a", "a"), Some((i1, "a".into())));
+    to(&mut f, &mut r, s1, s2);
+    assert_eq!(
+        key(&mut f, &mut r, s2, "b", "b"),
+        Some((i2, "ab".into())),
+        "typed into this monitor's field"
+    );
+    // The keys back on the first monitor, then on with no leave between
+    // (its output went): still the field.
+    to(&mut f, &mut r, s2, s1);
+    f.input(&InputEvent::KeyboardEnter { surface: s2 }, &mut r);
+    f.drain();
+    assert_eq!(key(&mut f, &mut r, s2, "c", "c"), Some((i2, "abc".into())));
+}
+
 /// An axis frame with no motion (a touchpad finger lifted: `axis_stop`
 /// alone) delivers no `scroll`; detents alone scroll by wheel steps.
 #[test]

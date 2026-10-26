@@ -30,7 +30,14 @@
 //!   bounded by [`LOCK_STILL_WAIT`]), and the lock's thumbnails show only
 //!   those: never a frame taken while locked (it would show the lock).
 //!   A monitor with none (plugged in while locked, or no frame in time)
-//!   shows an empty thumbnail. They are dropped when the lock ends.
+//!   shows an empty thumbnail. They are dropped when the lock ends, and
+//!   (oi-lock) one is dropped when its monitor goes or changes connector
+//!   during the lock, so a monitor plugged in while locked never shows
+//!   a still of another (or of itself from before it was unplugged).
+//!
+//! (oi-lock) A thumbnail fed nothing (its window gone, its screen not
+//! captured, a lock still missing) reads `blank` in logic, told through
+//! `ToLogic::Flag` only when it changes ([`fed`]).
 //!
 //! A tap lives exactly while its node is visible, so a hidden spectrum
 //! costs no metering and no FFT and a hidden thumbnail no capture; one
@@ -143,6 +150,9 @@ pub(crate) struct Feeds {
     stills: HashMap<String, (Instant, Option<CaptureFrame>)>,
     shooting: HashMap<String, (u64, ScreenShot, Instant)>,
     held: HashMap<SurfaceId, (Instant, Vec<String>)>,
+    /// (oi-lock) Whether each tapped thumbnail was last told it is
+    /// `blank`, so logic hears only a change, not every frame.
+    blank: HashMap<NodeId, bool>,
 }
 
 impl std::fmt::Debug for Feeds {
@@ -178,7 +188,14 @@ impl Feeds {
             stills: HashMap::new(),
             shooting: HashMap::new(),
             held: HashMap::new(),
+            blank: HashMap::new(),
         }
+    }
+
+    /// (oi-lock) Thumbnail `node` was fed a frame (`blank` false) or
+    /// nothing (true): whether that changes what logic was last told.
+    pub(crate) fn blank_changed(&mut self, node: NodeId, blank: bool) -> bool {
+        self.blank.insert(node, blank) != Some(blank)
     }
 
     /// (lockmon) The connectors of the plugged screens a `thumbnail` in
@@ -297,8 +314,9 @@ impl Feeds {
                 SHOT_GIVE_UP.as_secs()
             );
             self.shooting.remove(&c);
-            for (want, _, tap) in self.taps.values_mut() {
+            for (node, (want, n, tap)) in &mut self.taps {
                 if matches!((&*want, &*tap), (Want::Screen(w, _), Tap::Waiting) if *w == c) {
+                    let _ = self.tx.send(Fed::Frame(*node, *n, None));
                     *tap = Tap::Still;
                 }
             }
@@ -379,9 +397,13 @@ impl Feeds {
             if let (Want::Screen(c, max), Tap::Waiting) = (&*want, &*tap)
                 && *c == connector
             {
-                if let Some(f) = &frame {
-                    let _ = self.tx.send(Fed::Frame(*node, *n, Some(scaled(f, *max))));
-                }
+                // (oi-lock) None too: it clears a frame kept from an
+                // earlier show, and the thumbnail reads `blank`.
+                let _ = self.tx.send(Fed::Frame(
+                    *node,
+                    *n,
+                    frame.as_ref().map(|f| scaled(f, *max)),
+                ));
                 *tap = Tap::Still;
             }
         }
@@ -394,14 +416,22 @@ impl Feeds {
 
     /// (services-round) Monitor `id` (a `Screen`'s id) is plugged in as
     /// `connector` (`None`: unplugged, or no connector named).
+    ///
+    /// (oi-lock) A lock still belongs to the monitor that was on its
+    /// connector when the lock began: once that monitor goes, or moves to
+    /// another connector, its still goes too, so a monitor plugged in
+    /// while locked (a replug of the same one included, or another on the
+    /// same port) has none and never shows a still of what was there.
     pub(crate) fn screen(&mut self, id: &str, connector: Option<&str>) {
-        match connector {
-            Some(c) => {
-                self.screens.insert(id.to_string(), c.to_string());
-            }
-            None => {
-                self.screens.remove(id);
-            }
+        let old = match connector {
+            Some(c) => self.screens.insert(id.to_string(), c.to_string()),
+            None => self.screens.remove(id),
+        };
+        if let Some(old) = old
+            && connector != Some(old.as_str())
+            && self.lock_stills.remove(&old).is_some()
+        {
+            log::info!("lock: screen {old} went, and its still from before the lock with it");
         }
     }
 
@@ -431,6 +461,8 @@ impl Feeds {
             }
         }
         let mut lost = Vec::new();
+        // (oi-lock) A thumbnail hidden or gone is told again when next fed.
+        self.blank.retain(|node, _| want.contains_key(node));
         self.taps.retain(|node, (had, ..)| {
             let keep = want.get(node) == Some(had);
             if !keep && !want.contains_key(node) && matches!(had, Want::Spectrum(_)) {
@@ -566,13 +598,25 @@ pub(crate) fn sync(renderer: &mut strand_render::Renderer, feeds: &mut Feeds) {
 /// the others idle) is stopped here, at its first send; what it sent, and
 /// anything else from a tap that is no longer its node's, is dropped
 /// without a repaint.
+///
+/// (oi-lock) A thumbnail fed nothing reads `blank` (`t.blank`), and one
+/// fed a frame no longer does: logic is told when that changes.
 pub(super) fn fed(state: &mut strand_surface::State<crate::demo::host::Host>, fed: Fed) {
     let host = state.host_mut();
     let Some(feeds) = &mut host.feeds else {
         return;
     };
+    let blank = match &fed {
+        Fed::Frame(node, _, frame) => Some((*node, frame.is_none())),
+        _ => None,
+    };
     if !deliver(&mut host.renderer, feeds, fed) {
         return;
+    }
+    if let Some((node, blank)) = blank
+        && feeds.blank_changed(node, blank)
+    {
+        host.thumbnail_blank(node, blank);
     }
     state.poll();
 }
@@ -774,6 +818,69 @@ mod tests {
         f.take_lock_stills(&[], Duration::ZERO);
         f.demand(vec![thumbnail(1, "Dell", (2, 1))]);
         assert_eq!(frames(&rx), [(a, None)]);
+    }
+
+    /// (oi-lock) A still belongs to the monitor on its connector when the
+    /// lock began: a monitor plugged in while locked has none, and so
+    /// has one that took the port of a monitor unplugged while locked,
+    /// or the same monitor plugged back (it reads `blank`, never a still
+    /// of what that port showed before). A monitor that only changed
+    /// (its scale) keeps its still.
+    #[test]
+    fn a_monitor_plugged_in_while_locked_has_no_still() {
+        let (tx, rx) = calloop::channel::channel();
+        let mut f = Feeds::new(tx);
+        let (a, b) = (NodeId::new(1, 0), NodeId::new(2, 0));
+        f.screen("Dell", Some("DP-1"));
+        f.screen("BOE", Some("eDP-1"));
+        f.lock_stills.insert("DP-1".into(), still(9));
+        f.lock_stills.insert("eDP-1".into(), still(8));
+        f.lock_nodes = [a, b].into_iter().collect();
+        // A change that keeps the connector keeps the still.
+        f.screen("BOE", Some("eDP-1"));
+        assert!(f.lock_stills.contains_key("eDP-1"));
+        // Dell unplugged, then another monitor on its port.
+        f.screen("Dell", None);
+        assert!(!f.lock_stills.contains_key("DP-1"));
+        f.screen("LG", Some("DP-1"));
+        f.demand(vec![thumbnail(1, "LG", (2, 1))]);
+        assert_eq!(frames(&rx), [(a, None)], "not Dell's still");
+        // BOE moved to another port: its old port's still goes with it.
+        f.screen("BOE", Some("DP-2"));
+        assert!(f.lock_stills.is_empty());
+        f.demand(vec![
+            thumbnail(1, "LG", (2, 1)),
+            thumbnail(2, "BOE", (2, 1)),
+        ]);
+        assert_eq!(frames(&rx), [(b, None)]);
+        // What logic is told: a change only.
+        assert!(f.blank_changed(a, true));
+        assert!(!f.blank_changed(a, true), "told once");
+        assert!(f.blank_changed(a, false), "a frame came");
+        f.demand(vec![thumbnail(2, "BOE", (2, 1))]);
+        assert!(f.blank_changed(a, false), "hidden: told again when fed");
+    }
+
+    /// (oi-lock) A still from before a surface mapped that failed feeds
+    /// its waiting thumbnail nothing, which clears a frame kept from an
+    /// earlier show (it is `blank`), as does a shot given up.
+    #[test]
+    fn a_failed_still_feeds_its_thumbnail_nothing() {
+        let (tx, rx) = calloop::channel::channel();
+        let mut f = Feeds::new(tx);
+        let a = NodeId::new(1, 0);
+        f.screen("Dell", Some("DP-1"));
+        f.before_map(SurfaceId(4), vec!["DP-1".into()]);
+        let shot = f.shooting["DP-1"].0;
+        f.demand(vec![thumbnail(1, "Dell", (2, 1))]);
+        assert!(f.still("DP-1".into(), shot, None));
+        assert_eq!(frames(&rx), [(a, None)]);
+        f.demand(vec![]);
+        f.stills.clear();
+        f.before_map(SurfaceId(4), vec!["DP-1".into()]);
+        f.demand(vec![thumbnail(1, "Dell", (2, 1))]);
+        f.prune(Instant::now() + SHOT_GIVE_UP);
+        assert_eq!(frames(&rx), [(a, None)], "given up");
     }
 
     /// (lockmon review) A still from before a surface mapped goes once

@@ -399,6 +399,7 @@ impl Env {
             rect_cell: Default::default(),
             pointer_cell: Default::default(),
             window_cell: Default::default(),
+            blank_cell: Default::default(),
             alias_cell: Default::default(),
             claims: Default::default(),
             holders: Default::default(),
