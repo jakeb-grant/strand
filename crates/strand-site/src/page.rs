@@ -47,8 +47,17 @@ const THEME_SWITCH: &str = "<div class=\"seg theme\" role=\"group\" aria-label=\
 <button type=\"button\" data-theme=\"dark\" title=\"Dark\" aria-label=\"Dark\" aria-pressed=\"false\">\
 <svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z\"/></svg></button></div>";
 
-fn head(o: &mut String, title: &str, out: &str, description: &str) {
+fn head(o: &mut String, title: &str, out: &str, description: &str, markdown: bool) {
     let r = root(out);
+    // The page as markdown, for a reader that wants it (llms.rs).
+    let alternate = if markdown {
+        format!(
+            "<link rel=\"alternate\" type=\"text/markdown\" href=\"{}\">\n",
+            crate::llms::md_path(out.rsplit('/').next().unwrap_or(out))
+        )
+    } else {
+        String::new()
+    };
     let _ = write!(
         o,
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
@@ -56,6 +65,7 @@ fn head(o: &mut String, title: &str, out: &str, description: &str) {
          <title>{}</title>\n<meta name=\"description\" content=\"{}\">\n{THEME_BOOT}\n\
          <link rel=\"stylesheet\" href=\"{r}theme.css\">\n<link rel=\"stylesheet\" href=\"{r}assets/site.css\">\n\
          <link rel=\"icon\" href=\"{r}assets/mark.svg\" type=\"image/svg+xml\">\n\
+         {alternate}<link rel=\"help\" type=\"text/markdown\" href=\"{r}llms.txt\" title=\"llms.txt\">\n\
          <script src=\"{r}{manifest}\" defer></script>\n\
          <script src=\"{r}assets/site.js\" defer></script>\n</head>\n",
         esc(title),
@@ -127,6 +137,7 @@ pub fn doc(p: &Page) -> String {
         &format!("{} · Strand", p.title),
         p.out,
         &format!("{} — Strand, a toolkit for Wayland shells.", p.title),
+        true,
     );
     o.push_str("<body class=\"doc\">\n");
     topbar(&mut o, p.out, section_of(p.out));
@@ -170,16 +181,22 @@ pub fn doc(p: &Page) -> String {
         );
     }
     o.push_str("</footer>");
+    // The page as markdown, and the whole site's for language models
+    // (llms.rs); under the page where the contents column is hidden.
+    let md = crate::llms::md_path(p.out.rsplit('/').next().unwrap_or(p.out));
+    let r = root(p.out);
+    let llm = format!(
+        "<a href=\"{md}\">This page as Markdown</a><a href=\"{r}{}\">llms.txt</a>",
+        crate::llms::INDEX
+    );
+    o.push_str("<p class=\"edit\">");
     if let Some(src) = p.source {
-        let _ = write!(
-            o,
-            "<p class=\"edit\"><a href=\"{GITHUB_BLOB}{src}\">This page on GitHub: {}</a></p>",
-            esc(src)
-        );
+        let _ = write!(o, "<a href=\"{GITHUB_BLOB}{src}\">This page on GitHub</a>");
     }
     let _ = write!(
         o,
-        "</main><aside class=\"aside\">{}</aside></div>\n</body>\n</html>\n",
+        "{llm}</p></main><aside class=\"aside\"><div class=\"aside-in\">{}\
+         <p class=\"page-md\">{llm}</p></div></aside></div>\n</body>\n</html>\n",
         p.toc
     );
     o
@@ -193,6 +210,7 @@ pub fn home(body: &str, out: &str) -> String {
         "Strand",
         out,
         "Strand is a toolkit for Wayland shells: bars, launchers, lock screens and panels in one small typed language that animates, reloads live and stays idle.",
+        false,
     );
     o.push_str("<body class=\"home\">\n");
     topbar(&mut o, out, "");

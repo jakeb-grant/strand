@@ -554,10 +554,40 @@ pre {
   min-width: 0;
 }
 
-.toc {
+.aside-in {
   position: sticky;
   top: calc(var(--top-h) + 44px);
+}
+
+.toc {
   font-size: 0.8125rem;
+}
+
+/* The page as markdown and llms.txt, under the contents. */
+.page-md {
+  display: grid;
+  gap: 2px;
+  margin: 20px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 0.8125rem;
+}
+
+.toc:empty + .page-md,
+.aside-in > .page-md:first-child {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+.page-md a {
+  padding: 3px 0;
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.page-md a:hover {
+  color: var(--ink);
 }
 
 .toc-title {
@@ -1305,8 +1335,21 @@ pre {
   margin-top: 28px;
 }
 
+.edit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+}
+
 .edit a {
   color: var(--ink-2);
+}
+
+/* Beside the contents, the markdown links are in the contents column. */
+@media (min-width: 1181px) {
+  .edit a:not(:first-child) {
+    display: none;
+  }
 }
 
 /* ---- Reference index ------------------------------------------------- */

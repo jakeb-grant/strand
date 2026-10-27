@@ -73,4 +73,6 @@ bar Top {
 
 <p class="note">Strand runs on sway, Hyprland, niri and labwc, and every build is tested on all four.</p>
 
+<p class="note">Using an AI assistant? Every page is also plain Markdown: point it at <a href="llms.txt">llms.txt</a>, or give it <a href="llms-full.txt">the whole docs in one file</a>.</p>
+
 </section>

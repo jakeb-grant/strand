@@ -19,6 +19,16 @@ use crate::nav::normalise;
 pub const INDEX: &str = "llms.txt";
 pub const FULL: &str = "llms-full.txt";
 
+/// Whether the build writes `target` here: llms.txt, llms-full.txt or
+/// the markdown of a page in `pages` (not the home page's).
+pub fn written(target: &str, pages: &std::collections::HashSet<&str>) -> bool {
+    target == INDEX
+        || target == FULL
+        || target
+            .strip_suffix(".md")
+            .is_some_and(|p| p != "index.html" && pages.contains(p))
+}
+
 /// The markdown copy of the page at `out`.
 pub fn md_path(out: &str) -> String {
     format!("{out}.md")

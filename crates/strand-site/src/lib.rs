@@ -289,7 +289,11 @@ pub fn build_with(root: &Path, out: &Path, opts: &Options) -> Result<Report, Vec
             };
             let ok = match anchors.get(target.as_str()) {
                 Some(a) => fragment.is_empty() || a.contains(fragment),
-                None => fragment.is_empty() && root.join("site").join(&target).is_file(),
+                None => {
+                    fragment.is_empty()
+                        && (root.join("site").join(&target).is_file()
+                            || llms::written(&target, &published))
+                }
             };
             if !ok {
                 errors.push(format!(
