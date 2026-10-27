@@ -4,8 +4,8 @@
 //! sentence) and `llms-full.txt` (every page in one file). The markdown
 //! is what the page shows: repo-only spans are left out, links go to
 //! the other pages' markdown, a docs example is its config, and a
-//! playground is left out. Links are relative, so they hold wherever
-//! the site is served.
+//! playground is left out. Links are from the site's root
+//! (`/guide/level-1.html.md`), so they hold on any host.
 
 use std::ops::Range;
 use std::path::Path;
@@ -14,6 +14,7 @@ use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
 
 use crate::example;
 use crate::markdown::{Ctx, Rendered, options, resolve, shown};
+use crate::nav::normalise;
 
 pub const INDEX: &str = "llms.txt";
 pub const FULL: &str = "llms-full.txt";
@@ -32,7 +33,10 @@ pub fn page(text: &str, ctx: &Ctx, errors: &mut Vec<String>) -> String {
     for (ev, range) in Parser::new_ext(&text, options()).into_offset_iter() {
         match ev {
             Event::Start(Tag::Link { dest_url, .. }) => {
-                let href = to_markdown(&resolve(ctx, &dest_url, &mut scratch, &mut ignored));
+                let href = to_markdown(
+                    ctx.out,
+                    &resolve(ctx, &dest_url, &mut scratch, &mut ignored),
+                );
                 let raw = &text[range.clone()];
                 let from = format!("]({dest_url}");
                 if href != *dest_url
@@ -58,19 +62,26 @@ pub fn page(text: &str, ctx: &Ctx, errors: &mut Vec<String>) -> String {
     out.trim().to_string() + "\n"
 }
 
-/// A link to a page of the site goes to its markdown.
-fn to_markdown(href: &str) -> String {
-    if href.contains("://") {
+/// A link from the page at `from` to a page of the site goes to its
+/// markdown, and every link in the site is from the site's root
+/// (`/guide/level-1.html.md`): it holds on any host, and still reads
+/// when the text is pasted without its address.
+fn to_markdown(from: &str, href: &str) -> String {
+    if href.contains("://") || href.starts_with('#') || href.starts_with("mailto:") {
         return href.to_string();
     }
     let (path, hash) = match href.split_once('#') {
         Some((p, h)) => (p, format!("#{h}")),
         None => (href, String::new()),
     };
-    if path.ends_with(".html") {
-        format!("{}{hash}", md_path(path))
+    let dir = from.rsplit_once('/').map_or("", |(d, _)| d);
+    let Ok(target) = normalise(&format!("{dir}/{path}")) else {
+        return href.to_string();
+    };
+    if target.ends_with(".html") {
+        format!("/{}{hash}", md_path(&target))
     } else {
-        href.to_string()
+        format!("/{target}{hash}")
     }
 }
 
@@ -157,16 +168,16 @@ pub fn index(sections: &[Section]) -> String {
          and panels written in one small typed language. Values animate on springs, saving a \
          file updates the running shell without restarting it, and an idle shell does no work.\n\n\
          Every page below is markdown (the HTML page's address with `.md` added); \
-         [llms-full.txt](llms-full.txt) is all of them in one file. Strand configs are `.strand` \
+         [llms-full.txt](/llms-full.txt) is all of them in one file. Strand configs are `.strand` \
          files; `strand check` checks one and `strand run` runs it.\n",
     );
     for (title, pages) in sections {
         o.push_str(&format!("\n## {title}\n\n"));
         for (label, out, about) in pages {
             if about.is_empty() {
-                o.push_str(&format!("- [{label}]({})\n", md_path(out)));
+                o.push_str(&format!("- [{label}](/{})\n", md_path(out)));
             } else {
-                o.push_str(&format!("- [{label}]({}): {about}\n", md_path(out)));
+                o.push_str(&format!("- [{label}](/{}): {about}\n", md_path(out)));
             }
         }
     }
@@ -189,19 +200,20 @@ mod tests {
 
     #[test]
     fn links_to_pages_go_to_their_markdown() {
+        let from = "guide/level-1.html";
         assert_eq!(
-            to_markdown("../concepts/motion.html#springs"),
-            "../concepts/motion.html.md#springs"
+            to_markdown(from, "../concepts/motion.html#springs"),
+            "/concepts/motion.html.md#springs"
         );
-        assert_eq!(to_markdown("level-2.html"), "level-2.html.md");
-        assert_eq!(to_markdown("#springs"), "#springs");
+        assert_eq!(to_markdown(from, "level-2.html"), "/guide/level-2.html.md");
+        assert_eq!(to_markdown(from, "#springs"), "#springs");
         assert_eq!(
-            to_markdown("https://github.com/x/y.html"),
+            to_markdown(from, "https://github.com/x/y.html"),
             "https://github.com/x/y.html"
         );
         assert_eq!(
-            to_markdown("../media/hello-light.png"),
-            "../media/hello-light.png"
+            to_markdown(from, "../media/hello-light.png"),
+            "/media/hello-light.png"
         );
     }
 
@@ -234,7 +246,7 @@ mod tests {
         let t = index(&s);
         assert!(t.starts_with("# Strand\n\n> "), "{t}");
         assert!(
-            t.contains("## Guide\n\n- [1. The hello bar](guide/level-1.html.md): A bar.\n"),
+            t.contains("## Guide\n\n- [1. The hello bar](/guide/level-1.html.md): A bar.\n"),
             "{t}"
         );
     }

@@ -627,7 +627,8 @@ beside its HTML (`guide/level-1.html.md`: what the page shows, repo-only
 spans left out, links to the other pages' markdown, a docs example as
 its config), `llms.txt` (a summary, then the sidebar's sections, each
 page with its first sentence) and `llms-full.txt` (every page in one
-file), all with relative links (`llms.rs`).
+file), all with links from the site's root (`/guide/level-1.html.md`,
+so they hold on any host; `llms.rs`).
 
 It fails, writing nothing, on any link or anchor that reaches no page or
 file, any `strand file=` block or example config that does not check

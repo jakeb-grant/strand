@@ -48,8 +48,9 @@ fn the_site_builds_with_no_problems() {
     assert!(llms.starts_with("# Strand\n\n> "), "{llms}");
     for line in llms.lines().filter(|l| l.starts_with("- [")) {
         let md = line.split_once("](").unwrap().1.split_once(')').unwrap().0;
+        assert!(md.starts_with('/'), "links are from the root: {md}");
         assert!(
-            out.join(md).is_file(),
+            out.join(&md[1..]).is_file(),
             "llms.txt lists {md}, which is not written"
         );
     }
