@@ -37,12 +37,13 @@ trap 'docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
 curl() { docker run --rm --network "container:$NAME" "$CURL" "$@"; }
 curl -sS --retry 20 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:8080/
 FAILED=0
-# [CACHE=…] expect PATH STATUS TYPE [ENCODING]: the response's status,
-# Content-Type, Content-Encoding (gzip asked for; none when not given)
-# and, when CACHE is set, Cache-Control.
+# [CACHE=…] [ACCEPT=…] expect PATH STATUS TYPE [ENCODING]: the
+# response's status, Content-Type, Content-Encoding (asked for ACCEPT,
+# by default brotli or gzip; none when not given) and, when CACHE is
+# set, Cache-Control.
 expect() {
   local got want
-  got=$(curl -s -o /dev/null -H 'Accept-Encoding: gzip' \
+  got=$(curl -s -o /dev/null -H "Accept-Encoding: ${ACCEPT:-br, gzip}" \
     -w '%{http_code} | %{content_type} | %header{content-encoding} | %header{cache-control}' \
     "http://127.0.0.1:8080$1")
   want="$2 | $3 | ${4-} | ${CACHE-}"
@@ -55,16 +56,16 @@ expect() {
   fi
 }
 WASM=$(cd "$OUT/site" && ls wasm/strand_web_bg.*.wasm | head -1)
-HOUR="public, max-age=3600"
-CACHE=no-cache expect / 200 "text/html; charset=utf-8" gzip
-CACHE=no-cache expect /guide/level-1.html 200 "text/html; charset=utf-8" gzip
-CACHE=no-cache expect /llms.txt 200 "text/plain; charset=utf-8" gzip
-CACHE=no-cache expect /guide/level-1.html.md 200 "text/markdown; charset=utf-8" gzip
+CACHE=no-cache expect / 200 "text/html; charset=utf-8" br
+CACHE=no-cache expect /guide/level-1.html 200 "text/html; charset=utf-8" br
+CACHE=no-cache ACCEPT=gzip expect /guide/level-1.html 200 "text/html; charset=utf-8" gzip
+CACHE=no-cache expect /llms.txt 200 "text/plain; charset=utf-8" br
+CACHE=no-cache expect /guide/level-1.html.md 200 "text/markdown; charset=utf-8" br
 # Under 512 bytes, Caddy's least worth compressing.
 CACHE=no-cache expect /wasm/manifest.js 200 "text/javascript; charset=utf-8"
-CACHE=$HOUR expect /assets/site.css 200 "text/css; charset=utf-8" gzip
-CACHE="public, max-age=31536000, immutable" expect "/$WASM" 200 "application/wasm" gzip
-CACHE=$HOUR expect /media/hello-light.png 200 "image/png"
+CACHE=no-cache expect /assets/site.css 200 "text/css; charset=utf-8" br
+CACHE="public, max-age=31536000, immutable" expect "/$WASM" 200 "application/wasm" br
+CACHE=no-cache expect /media/hello-light.png 200 "image/png"
 expect /no-such-page.html 404 "text/html; charset=utf-8"
 [ $FAILED = 0 ] || exit 1
 echo "package: the server answers as the site needs"

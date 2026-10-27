@@ -2220,7 +2220,7 @@ fn the_supervisor_gives_up_as_systemd_does_unless_the_unit_lifts_the_limit() {
         "it backs off, to a bounded delay: {documented:?}"
     );
     // (m4-audit) systemd looks a bare ExecStart name up on its own fixed
-    // path, never ~/.cargo/bin where README's `cargo install` puts strand:
+    // path, never ~/.cargo/bin where docs/development.md's `cargo install` puts strand:
     // the unit names the binary by an absolute path (`%h` is the home).
     let exec = documented_unit()
         .lines()

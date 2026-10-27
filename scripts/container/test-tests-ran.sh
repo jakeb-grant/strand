@@ -45,7 +45,7 @@ expect 2 "no command"
 # The live docs cite the strand lib's tests with --lib: since the lib/bin
 # split, `-p strand --bin strand <filter>` runs 0 tests and passes.
 ROOT=$(cd "$HERE/../.." && pwd)
-for doc in README.md docs/features.md; do
+for doc in README.md docs/development.md docs/features.md; do
   if tr '\n' ' ' <"$ROOT/$doc" | grep -Eq -- '-p +strand +--bin +strand +[a-z_]'; then
     echo "FAIL $doc cites a strand test with --bin strand (runs 0 tests); use --lib"
     bad=1

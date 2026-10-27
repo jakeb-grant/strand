@@ -458,7 +458,7 @@ thread, promotion and the surface hand-off are in "`strand-gpu`";
   `ExecStart` names the binary by an absolute path: systemd looks a bare
   name up on its own fixed path (`/usr/local/bin`, `/usr/bin`, ...), never
   the user's `$PATH`, so a bare `strand` would not find the
-  `~/.cargo/bin` install README describes and the unit would never start
+  `~/.cargo/bin` install docs/development.md describes and the unit would never start
   it. `%h` is the user's home; a package that installs to `/usr/bin`
   writes `ExecStart=/usr/bin/strand run`.
 

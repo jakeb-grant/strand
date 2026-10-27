@@ -58,7 +58,7 @@ jobs:
     # A hang fails instead of holding the runner for GitHub's default 6 h.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
           tier: headers
@@ -120,7 +120,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: cargo test -p strand-services --no-default-features --lib
       # The reload fuzzer runs on its own below (timing-sensitive saves),
@@ -160,7 +160,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # One dependency cache for both release jobs; this one saves it.
       - uses: ./.github/actions/setup
         with:
@@ -206,7 +206,7 @@ jobs:
       # measured, as a workflow artifact. Not a release: no version, tag
       # or notes.
       - run: cp target/release/strand "$RUNNER_TEMP/trial/strand-cpu"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: strand-release-binaries
           path: |
@@ -227,14 +227,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
           cache-key: release
           cache-save: "false"
       - run: cargo test --release -p strand --test acceptance -- --nocapture --test-threads=1
       # A screenshot that missed its reference, with its diff.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: acceptance-shots
@@ -249,7 +249,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       # A theme swap within design.md's 5 ms of work (logic's re-resolve,
       # the render thread's springs and contrast check, the token graph
@@ -311,7 +311,7 @@ jobs:
     steps:
       # Full history: refs-check holds a reference changed since the
       # merge base with main to an updated note (scripts/eval/ci.sh step 5).
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: ./.github/actions/setup
@@ -321,7 +321,7 @@ jobs:
       # The report: every scenario's trace, checks, frames and viewer, and
       # the matrix's grid and summary (a changed cell is approved from a
       # local run, scripts/container/run.sh eval matrix-all).
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: eval-report
@@ -348,7 +348,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
           cache-key: site
@@ -361,7 +361,7 @@ jobs:
         env:
           SITE_DIRECT: "1"
       - run: scripts/site/shots.sh --all
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: site
@@ -393,7 +393,7 @@ jobs:
       # getrandom 0.3's browser backend (scripts/wasm/run.sh sets the same).
       CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: --cfg getrandom_backend="wasm_js"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
           tier: headers
@@ -409,7 +409,7 @@ jobs:
           echo "${BINARYEN_SHA256}  /tmp/binaryen.tar.gz" | sha256sum -c -
           sudo tar -xzf /tmp/binaryen.tar.gz -C /opt
           echo "/opt/binaryen-version_${BINARYEN_VERSION}/bin" >> "$GITHUB_PATH"
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: bindgen
         with:
           path: ~/.cargo-tools/wasm-bindgen
@@ -430,7 +430,7 @@ jobs:
           cargo run -q -p strand-site -- build
           bash scripts/wasm/site.sh
       - run: scripts/wasm/check-browser.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: site-live
@@ -459,7 +459,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build headers
         run: |
           sudo apt-get update
@@ -507,7 +507,7 @@ jobs:
       - name: Compositor versions and results
         if: always()
         run: cat target/matrix/summary.md >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: compositor-matrix
@@ -531,11 +531,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Lock paths changed
         id: paths
         if: (github.event_name == 'push' && github.ref_type == 'branch') || github.event_name == 'pull_request'
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             lock:
@@ -680,9 +680,9 @@ jobs:
           else
             echo "go=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.token.outputs.go == 'true'
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: steps.token.outputs.go == 'true'
         with:
           name: site-live
@@ -708,7 +708,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       # The M1 exit gate: 10,000 random edits, each saved in all five
       # editor styles into a live pipeline on tmpfs (/dev/shm), and in
