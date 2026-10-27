@@ -57,3 +57,10 @@ cargo build --release -p strand -p strand-auth
 and the test suite. [`docs/design.md`](docs/design.md) is the source of
 truth for how Strand behaves, and
 [`docs/decisions.md`](docs/decisions.md) records why.
+
+## License
+
+Strand is licensed under either of the [Apache License, Version
+2.0](LICENSE-APACHE) or the [MIT license](LICENSE-MIT), at your option.
+Unless you say otherwise, any contribution you submit for inclusion in
+Strand is licensed the same way, with no additional terms or conditions.

@@ -10,6 +10,7 @@ edition = "2024"
 # material-colors 0.5 (strand-theme) needs Rust 1.97; CI pins 1.97.0.
 rust-version = "1.97"
 repository = "https://github.com/jakeb-grant/strand"
+license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]

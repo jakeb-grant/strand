@@ -4,6 +4,7 @@ description = "Animation evaluation sandbox: scenario scripts on a virtual clock
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.97"
+license = "MIT OR Apache-2.0"
 publish = false
 
 # Its own workspace, not a member of the root one: root `--workspace`
