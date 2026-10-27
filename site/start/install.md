@@ -2,15 +2,15 @@
 
 Strand has no packaged release yet. There is no distribution package,
 no tagged version and no crate on crates.io. You build it from a
-checkout of the repository, or take the binaries a CI run keeps.
+checkout of the repository, or take the
+[prebuilt binaries](#prebuilt-binaries) GitHub keeps.
 
 ## What you need to build it
 
-- **Rust 1.97 or newer.** The workspace sets `rust-version = "1.97"`,
-  and CI builds with Rust 1.97.0.
+- **Rust 1.97 or newer.** The workspace sets `rust-version = "1.97"`.
 - **The development files of fontconfig, xkbcommon, Wayland, PipeWire
   (with SPA) and PAM**, found through `pkg-config`, plus clang and
-  libclang. On Ubuntu 24.04 these are the packages CI installs:
+  libclang. On Ubuntu 24.04:
 
 ```sh
 sudo apt-get install pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev \
@@ -80,15 +80,15 @@ Two more programs live in the same repository, outside the shell:
   workspace of its own, so it lands in `eval/target/release/`. See
   [Reporting a glitch](../tools/reporting.md).
 
-## Binaries from CI
+## Prebuilt binaries
 
-Each CI run that measures the memory budgets keeps the two release
-binaries it measured as a workflow artifact named
-`strand-release-binaries`, for 30 days: `strand-gpu`, the default
-build, and `strand-cpu`, the build without the GPU backend. Both are
-built on Ubuntu 24.04. To use one, download the artifact from a green
-run's page on GitHub, rename `strand-gpu` to `strand`, make it
-executable and put it on your `PATH`.
+Every build of the repository on GitHub keeps its release binaries for
+30 days, as a workflow artifact named `strand-release-binaries`:
+`strand-gpu`, the default build, and `strand-cpu`, the build without
+the GPU backend. Both are built on Ubuntu 24.04. To use one, download
+the artifact from a green run's page under the repository's Actions
+tab, rename `strand-gpu` to `strand`, make it executable and put it on
+your `PATH`.
 
 The artifact holds no `strand-auth`, `strand-dev` or `strand-eval`. A
 lock screen still needs the helper built from source.
@@ -125,7 +125,13 @@ windows and workspaces come from the standard protocols:
 `ext-foreign-toplevel-list-v1`, `zwlr_foreign_toplevel_management_v1`
 and `ext-workspace-v1`.
 
-## Compositors CI runs on
+## Compositors
+
+Strand is tested on **sway**, **Hyprland**, **niri** and **labwc** on
+every change.
+
+<!-- repo-only -->
+### Compositors CI runs on
 
 CI's `compositors` job runs the compositor matrix test on **sway**,
 **niri**, **Hyprland** and **labwc**, installed from `archlinux:latest`,
@@ -133,5 +139,6 @@ on every push and every night. It checks what the `workspaces` and
 `windows` services report on each of them, and on sway, niri and
 Hyprland it runs the design document's bar in `strand run`. The rest
 of the test suite runs on a headless sway 1.9 on Ubuntu 24.04.
+<!-- /repo-only -->
 
 Next: [Running a shell](running.md).

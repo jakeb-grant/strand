@@ -2,8 +2,7 @@
 
 A search box in the middle of the screen that finds your apps as you
 type, best match first, and starts the one you pick. A key opens it;
-Escape, a click elsewhere or focus moving away closes it. This is
-design.md's launcher (b); the guide's
+Escape, a click elsewhere or focus moving away closes it. The guide's
 [level 4](../../docs/guide/level-4.md#an-app-launcher) explains each
 line of it.
 

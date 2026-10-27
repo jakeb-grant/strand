@@ -16,6 +16,6 @@ on your screen, into a canvas. Time is a virtual clock that ticks every
 1/60 s of real time, so motion runs at the speed it would on your
 desktop. Bars, panels, OSDs and popups are shown; windows and lock
 screens are not, nor is the GPU's work. Service values are the mock's,
-the icons are the few files the examples draw, and the fonts are the
-two faces Strand's tests use. Nothing is downloaded until you open an
+the icons are the few files the examples draw, and the fonts are
+Liberation Sans, regular and bold. Nothing is downloaded until you open an
 example live or this page.

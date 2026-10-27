@@ -146,6 +146,5 @@ hand-written `src/scanner.c`), and four queries in `queries/`:
 - `locals.scm`, the scopes, definitions and references.
 
 All four use nvim-treesitter's capture names. The grammar follows
-[`docs/grammar.md`](../../docs/grammar.md), and CI checks that the
-committed generated files are what tree-sitter 0.27.0 makes of
-`grammar.js`.
+[`docs/grammar.md`](../../docs/grammar.md), and its generated files are
+tree-sitter 0.27.0's.

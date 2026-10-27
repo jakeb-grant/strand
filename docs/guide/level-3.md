@@ -3,8 +3,8 @@
 You learn: `state`, `<->`, `if`, `popup`, `enter`.
 You build: a clock that opens a calendar, a volume control with a slider
 that slides out on hover, and a battery that shows only when there is
-one. At the end of this level your bar is design.md's bar (a), split
-into one file per component.
+one. At the end of this level your bar is complete, split into one file
+per component.
 
 ## A clock with a calendar
 
@@ -286,7 +286,7 @@ it glide aside. Close it and the dot shrinks away.
 
 ## What you have
 
-The bar from design.md, on every monitor: workspace dots, the focused
+The whole bar, on every monitor: workspace dots, the focused
 window's title, a clock with its calendar, volume, battery and tray, in
 five files and about 80 lines.
 

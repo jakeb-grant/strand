@@ -19,14 +19,8 @@ proof  = "publish = false; `git tag` and `git ls-remote --tags origin` list no t
 
 [[claim]]
 page   = "site/start/install.md"
-text   = "The workspace sets `rust-version = \"1.97\"`,"
+text   = 'The workspace sets `rust-version = "1.97"`.'
 source = ["Cargo.toml:11"]
-proof  = "read"
-
-[[claim]]
-page   = "site/start/install.md"
-text   = "and CI builds with Rust 1.97.0."
-source = [".github/workflows/ci.yml:360", "scripts/container/Dockerfile"]
 proof  = "read"
 
 [[claim]]
@@ -97,7 +91,7 @@ proof  = "its own [workspace], so cargo puts its target/ beside its manifest"
 
 [[claim]]
 page   = "site/start/install.md"
-text   = "`strand-release-binaries`, for 30 days: `strand-gpu`, the default"
+text   = "30 days, as a workflow artifact named `strand-release-binaries`:"
 source = [".github/workflows/ci.yml:211", ".github/workflows/ci.yml:216", ".github/workflows/ci.yml:190"]
 proof  = "read"
 
@@ -181,26 +175,8 @@ proof  = "crates/strand/tests/compositor_matrix.rs::the_stores_follow_a_composit
 
 [[claim]]
 page   = "site/start/install.md"
-text   = "CI's `compositors` job runs the compositor matrix test on **sway**,"
+text   = "Strand is tested on **sway**, **Hyprland**, **niri** and **labwc** on every change."
 source = [".github/workflows/ci.yml:348", "scripts/compositor-matrix-ci.sh:28"]
-proof  = "read"
-
-[[claim]]
-page   = "site/start/install.md"
-text   = "on every push and every night. It checks what the `workspaces` and"
-source = [".github/workflows/ci.yml:3", ".github/workflows/ci.yml:9"]
-proof  = "the job has no `if:`, so push, pull_request and the schedule run it"
-
-[[claim]]
-page   = "site/start/install.md"
-text   = "Hyprland it runs the design document's bar in `strand run`. The rest"
-source = ["crates/strand/tests/compositor_matrix.rs:1", "crates/strand/tests/compositor_matrix.rs:776"]
-proof  = "read"
-
-[[claim]]
-page   = "site/start/install.md"
-text   = "of the test suite runs on a headless sway 1.9 on Ubuntu 24.04."
-source = ["scripts/container/Dockerfile:6", ".github/workflows/ci.yml:57"]
 proof  = "read"
 
 [[claim]]
@@ -661,7 +637,7 @@ proof  = "read"
 
 [[claim]]
 page   = "site/tools/editor.md"
-text   = "committed generated files are what tree-sitter 0.27.0 makes of"
+text   = "its generated files are tree-sitter 0.27.0's."
 source = [".github/workflows/ci.yml:87", "scripts/check-tree-sitter.sh:5"]
 proof  = "read"
 
@@ -703,7 +679,7 @@ proof  = "crates/strand/tests/lock.rs::the_inspector_cannot_pick_while_locked"
 
 [[claim]]
 page   = "site/tools/inspector.md"
-text   = "The inspector's own test draws this pane for a `box`:"
+text   = "For a `box`, the pane looks like this:"
 source = ["crates/strand-dev/src/inspect/pane.rs:118"]
 proof  = "crates/strand-dev/src/inspect/pane.rs::tests::a_pane_shows_identity_layout_chain_and_badges"
 
@@ -2123,18 +2099,6 @@ proof  = "read"
 
 [[claim]]
 page   = "site/concepts/performance.md"
-text   = "over 10 seconds between two minute ticks, no thread of"
-source = ["crates/strand/tests/budgets.rs:26"]
-proof  = "crates/strand/tests/budgets.rs::the_design_bar_on_the_real_services_keeps_the_budget"
-
-[[claim]]
-page   = "site/concepts/performance.md"
-text   = "NetworkManager and logind as mocks on a private bus, a private"
-source = ["crates/strand/tests/budgets.rs:7"]
-proof  = "read: python-dbusmock's UPower, NetworkManager and logind; a private PipeWire with WirePlumber"
-
-[[claim]]
-page   = "site/concepts/performance.md"
 text   = "repaints at most 2,000 px²"
 source = ["crates/strand/src/demo/mod.rs:381"]
 proof  = "crates/strand/src/demo/mod.rs::a_minute_tick_repaints_at_most_2000_px2"
@@ -2189,73 +2153,13 @@ proof  = "read"
 
 [[claim]]
 page   = "site/concepts/performance.md"
-text   = "| design.md's bar on two monitors, no GPU | 42 MiB | 48 MiB |"
-source = ["crates/strand/tests/budgets.rs:109"]
-proof  = "crates/strand/tests/budgets.rs::the_design_bar_with_no_gpu_keeps_the_cold_budget"
-
-[[claim]]
-page   = "site/concepts/performance.md"
-text   = "| 76 MiB | 104 MiB |"
-source = ["crates/strand/tests/budgets.rs:126"]
-proof  = "crates/strand/tests/budgets.rs::the_full_shell_with_no_gpu_keeps_the_cold_budget"
-
-[[claim]]
-page   = "site/concepts/performance.md"
-text   = "| 242 MiB | 252 MiB |"
-source = ["crates/strand/tests/budgets.rs:144"]
-proof  = "crates/strand/tests/budgets.rs::the_design_bar_on_the_real_services_keeps_the_budget"
-
-[[claim]]
-page   = "site/concepts/performance.md"
-text   = "| 296 MiB | 324 MiB |"
-source = ["crates/strand/tests/budgets.rs:146"]
-proof  = "crates/strand/tests/budgets.rs::the_full_shell_on_the_real_services_is_measured"
-
-[[claim]]
-page   = "site/concepts/performance.md"
-text   = "Each figure warns above its target and"
-source = ["crates/strand/tests/budgets.rs:1585"]
-proof  = "read: warn_over_target, release builds only"
-
-[[claim]]
-page   = "site/concepts/performance.md"
-text   = "Most of each warm figure is lavapipe itself"
-source = ["crates/strand/tests/budgets.rs:128"]
-proof  = "read: lavapipe, LLVM and the device's memory about 190 MB of each figure; warm gates = measurement plus the cold gates' headroom"
-
-[[claim]]
-page   = "site/concepts/performance.md"
-text   = "| 35 ms at p95 |"
-source = ["crates/strand/src/bench.rs:847", ".github/workflows/ci.yml:266"]
-proof  = "crates/strand/src/bench.rs::reload_latency_to_the_presented_frame"
-
-[[claim]]
-page   = "site/concepts/performance.md"
-text   = "| 50 ms at p95 |"
-source = ["crates/strand/src/bench.rs:853"]
-proof  = "crates/strand/src/bench.rs::reload_latency_to_the_presented_frame"
-
-[[claim]]
-page   = "site/concepts/performance.md"
-text   = "under 5 ms (median)"
-source = ["crates/strand-render/tests/theme_swap_bench.rs:67", ".github/workflows/ci.yml:257"]
-proof  = "crates/strand-render/tests/theme_swap_bench.rs::a_theme_swap_is_under_five_milliseconds_of_work"
-
-[[claim]]
-page   = "site/concepts/performance.md"
-text   = "median within a 120 Hz frame, p95 within a 60 Hz one"
-source = ["crates/strand-render/tests/anim_bench.rs:1827", ".github/workflows/ci.yml:287"]
-proof  = "crates/strand-render/tests/anim_bench.rs::animated_cpu_frames_hold_their_gates"
-
-[[claim]]
-page   = "site/concepts/performance.md"
 text   = "last 600 paints"
 source = ["crates/strand/src/report/mod.rs:3"]
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/calendar-popup.md"
-text   = "clock of design.md's bar (a), with one `when` added"
+text   = "clock of the guide's bar, with one `when` added"
 source = ["docs/design.md:196"]
 proof  = "read: design.md's Clock and Calendar, plus `id: cal` and `when cal.open`"
 
@@ -2702,7 +2606,7 @@ proof  = "crates/strand-web/tests/live.rs::a_click_opens_a_popup_below_its_bar; 
 
 [[claim]]
 page   = "site/playground.md"
-text   = "the icons are the few files the examples draw, and the fonts are the two faces Strand's tests use."
+text   = "the icons are the few files the examples draw, and the fonts are Liberation Sans, regular and bold."
 source = ["crates/strand-web/src/live.rs:121", "scripts/wasm/build.sh:81"]
 proof  = "crates/strand-web/tests/live.rs::every_docs_example_draws_every_frame_eval_drew (icons supplied only from the files the examples draw); ::the_osd_without_its_icon_is_not_what_eval_drew"
 

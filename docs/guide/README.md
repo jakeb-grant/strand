@@ -23,10 +23,14 @@ any level, everything you have written still works.
 
 ## Every construct and its level
 
-The table above is design.md's learning ladder. The constructs its "You
-learn" column does not name are taught at these levels, as the ladder's
-"Also taught there" column says (decisions.md, m5-docs, one paragraph
-each).
+The constructs the "You learn" column does not name are taught at
+these levels.
+
+<!-- repo-only -->
+The table above is design.md's learning ladder; the table below is the
+ladder's "Also taught there" column (decisions.md, m5-docs, one
+paragraph each).
+<!-- /repo-only -->
 
 | Level | Also taught here |
 | --- | --- |
@@ -49,7 +53,10 @@ component Dot(ws: Workspace) { … }
 ````
 
 Steps run in page order, level 1 first. A file a step does not show
-stays as it was. `crates/strand-dev/tests/guide.rs` applies every
+stays as it was.
+
+<!-- repo-only -->
+`crates/strand-dev/tests/guide.rs` applies every
 step in that order to one config directory and checks it as
 `strand check` does after each one (`every_guide_block_checks`), so a
 block that does not check, or that `strand fmt` would change, fails the
@@ -63,6 +70,7 @@ further for levels 1 to 3: it runs `strand new`, saves each block into
 a running shell on two monitors, and checks after every step that
 `strand check` is clean, which state cells the save kept, and each
 monitor's bar against a reference picture.
+<!-- /repo-only -->
 
 A step can also need a file that is not `.strand`, such as level 5's
 template. Its block is tagged with its own language and the same
@@ -81,15 +89,15 @@ are not steps.
 ## What you need
 
 - A Wayland compositor with layer-shell, such as sway, Hyprland, niri
-  or labwc, the four CI runs Strand on. GNOME does not offer
+  or labwc, the four Strand is tested on. GNOME does not offer
   layer-shell.
 - The `strand` binary on your `PATH`. There is no release yet, so
   either build it from a checkout of the repository with
   `cargo build --release -p strand` (it lands in
-  `target/release/strand`), or take the `strand-release-binaries`
-  artifact of a green run of its CI workflow on GitHub and rename
-  `strand-gpu` in it to `strand` (`strand-cpu` is the same without the
-  GPU backend). `strand --version` tells you it is found.
+  `target/release/strand`), or take the
+  [prebuilt binaries](../../site/start/install.md#prebuilt-binaries)
+  and rename `strand-gpu` in them to `strand` (`strand-cpu` is the
+  same without the GPU backend). `strand --version` tells you it is found.
 
 Then start at [level 1](level-1.md).
 

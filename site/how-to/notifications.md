@@ -2,8 +2,7 @@
 
 Cards at the top right of the focused monitor, one per notification,
 that slide in when a notification arrives and out when it goes. Strand
-is the notification server, so nothing else needs to run. This is
-design.md's notification stack (c); the guide's
+is the notification server, so nothing else needs to run. The guide's
 [level 4](../../docs/guide/level-4.md#notifications) explains it line
 by line.
 

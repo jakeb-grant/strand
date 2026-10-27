@@ -28,7 +28,11 @@ is never picked, and pick mode ends when the screen locks.
 
 ## The pane
 
-The inspector's own test draws this pane for a `box`:
+For a `box`, the pane looks like this:
+
+<!-- repo-only -->
+The inspector's own test draws this pane.
+<!-- /repo-only -->
 
 ```text
 box 4.0  /c/bar.strand:3:5

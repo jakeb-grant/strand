@@ -2,8 +2,7 @@
 
 A pill near the bottom of the screen that shows the volume or the
 screen brightness when either changes, and fades away a moment after
-you stop. It never shows when you log in or save a file. This is
-design.md's OSD (d); the guide's
+you stop. It never shows when you log in or save a file. The guide's
 [level 4](../../docs/guide/level-4.md#an-osd-for-volume-and-brightness)
 explains each line.
 

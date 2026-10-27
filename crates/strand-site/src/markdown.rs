@@ -16,6 +16,12 @@
 //!
 //! A ```` ```strand ```` block that says none of these fails the build, so
 //! nothing reads as checked that is not.
+//!
+//! Lines between `<!-- repo-only -->` and `<!-- /repo-only -->`, each
+//! on a line of its own outside a code block, are for readers of the
+//! repository only ([`shown`]): how the project tests or holds what the
+//! page says. The site leaves them out of the page, its contents, its
+//! anchors and the search, and the claims ledger does not find them.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -378,7 +384,58 @@ fn html_ids(html: &str, anchors: &mut HashSet<String>) {
 }
 
 /// Renders `text`, a page's markdown.
+/// The marker lines of a repository-only span.
+pub const REPO_ONLY: &str = "<!-- repo-only -->";
+pub const REPO_ONLY_END: &str = "<!-- /repo-only -->";
+
+/// `text` as the site shows it: without its repository-only spans (the
+/// module's header). A marker that opens inside a span, closes none or
+/// is never closed is an error, with the line it is on.
+pub fn shown(text: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(text.len());
+    // The fence a code block opened with, while in one.
+    let mut fence: Option<String> = None;
+    let mut open: Option<usize> = None;
+    for (i, line) in text.split_inclusive('\n').enumerate() {
+        let t = line.trim();
+        if let Some(f) = &fence {
+            if t.starts_with(f.as_str()) && t.chars().all(|c| c == f.as_bytes()[0] as char) {
+                fence = None;
+            }
+        } else if t.starts_with("```") || t.starts_with("~~~") {
+            let c = t.as_bytes()[0] as char;
+            fence = Some(t.chars().take_while(|&x| x == c).collect());
+        } else if t == REPO_ONLY {
+            if let Some(at) = open {
+                return Err(format!(
+                    "line {}: `{REPO_ONLY}` inside the one opened on line {at}",
+                    i + 1
+                ));
+            }
+            open = Some(i + 1);
+            continue;
+        } else if t == REPO_ONLY_END {
+            if open.take().is_none() {
+                return Err(format!("line {}: `{REPO_ONLY_END}` closes nothing", i + 1));
+            }
+            continue;
+        }
+        if open.is_none() {
+            out.push_str(line);
+        }
+    }
+    match open {
+        Some(at) => Err(format!("line {at}: `{REPO_ONLY}` is never closed")),
+        None => Ok(out),
+    }
+}
+
 pub fn render(text: &str, ctx: &Ctx, errors: &mut Vec<String>) -> Rendered {
+    let shown = shown(text).unwrap_or_else(|e| {
+        errors.push(format!("{}: {e}", ctx.source));
+        text.to_string()
+    });
+    let text = shown.as_str();
     let mut r = Rendered::default();
     let mut in_link = 0usize;
     let mut ids: HashMap<String, usize> = HashMap::new();
@@ -591,6 +648,48 @@ mod tests {
                 .iter()
                 .any(|l| l.page == "guide/level-2.html" && l.fragment == "tokens")
         );
+    }
+
+    #[test]
+    fn a_repo_only_span_is_left_out_of_the_page_its_contents_and_the_search() {
+        let (r, errors) = run("# Title\n\n## Shown\n\nFor you.\n\n<!-- repo-only -->\n\
+             ## What CI holds\n\nThe gate's test.\n<!-- /repo-only -->\n\n## Also shown\n\n\
+             ```sh\n<!-- repo-only -->\n```\n");
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(
+            r.html.contains("For you.") && !r.html.contains("CI holds") && !r.html.contains("gate")
+        );
+        let ids: Vec<&str> = r.toc.iter().map(|(_, _, id)| id.as_str()).collect();
+        assert_eq!(ids, ["shown", "also-shown"]);
+        assert!(
+            r.sections
+                .iter()
+                .all(|s| !s.heading.contains("CI") && !s.text.contains("gate"))
+        );
+        // A marker in a code block is the block's text.
+        assert!(r.html.contains("repo-only"), "{}", r.html);
+    }
+
+    #[test]
+    fn a_repo_only_marker_out_of_place_fails() {
+        for (text, why) in [
+            (
+                "a\n<!-- repo-only -->\nb\n",
+                "line 2: `<!-- repo-only -->` is never closed",
+            ),
+            (
+                "a\n<!-- /repo-only -->\n",
+                "line 2: `<!-- /repo-only -->` closes nothing",
+            ),
+            (
+                "<!-- repo-only -->\n<!-- repo-only -->\n<!-- /repo-only -->\n",
+                "line 2: `<!-- repo-only -->` inside the one opened on line 1",
+            ),
+        ] {
+            let (_, errors) = run(text);
+            assert_eq!(errors.len(), 1, "{text}: {errors:?}");
+            assert!(errors[0].contains(why), "{text}: {errors:?}");
+        }
     }
 
     #[test]

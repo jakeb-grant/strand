@@ -1,9 +1,13 @@
 # Performance
 
 Strand aims to be fast when something moves and to cost nothing when
-nothing does. This page says how it gets there, and which numbers CI
-checks on every push. Each number here is named with the test that
-holds it.
+nothing does. This page says how it gets there, and how to measure
+your own shell.
+
+<!-- repo-only -->
+It also says which numbers CI checks on every push. Each number here
+is named with the test that holds it.
+<!-- /repo-only -->
 
 ## An idle shell does no work
 
@@ -14,6 +18,7 @@ as often as what you read from it changes: a clock that shows minutes
 wakes it once a minute, and the battery when the battery changes.
 Services nobody reads are not running at all.
 
+<!-- repo-only -->
 CI holds this on design.md's bar running on real services (UPower,
 NetworkManager and logind as mocks on a private bus, a private
 PipeWire, under a headless sway): over 10 seconds between two minute ticks, no thread of
@@ -21,6 +26,7 @@ Strand's wakes and no frame is drawn, and the next tick wakes it in one
 burst. The test is
 `the_design_bar_on_the_real_services_keeps_the_budget` in
 [crates/strand/tests/budgets.rs](../../crates/strand/tests/budgets.rs).
+<!-- /repo-only -->
 
 ## Only what changed is painted
 
@@ -28,9 +34,12 @@ Each frame repaints only the area that changed, its **damage**. When
 the clock ticks, Strand repaints the clock's text, not the bar. On the
 demo bar (`strand run --demo`), 2560 px wide at scale 1 and 1.25, a
 minute tick, even one that
-changes every digit and the text's width, repaints at most 2,000 px²
-(`a_minute_tick_repaints_at_most_2000_px2` in
-[crates/strand/src/demo/mod.rs](../../crates/strand/src/demo/mod.rs)).
+changes every digit and the text's width, repaints at most 2,000 px².
+
+<!-- repo-only -->
+The test is `a_minute_tick_repaints_at_most_2000_px2` in
+[crates/strand/src/demo/mod.rs](../../crates/strand/src/demo/mod.rs).
+<!-- /repo-only -->
 
 Layout is just as narrow. `x`, `y`, `scale`, `rotate` and `opacity`
 never lay the tree out again, and a size that springs lays out only the
@@ -58,13 +67,23 @@ a large area animates, the GPU is faster, so a surface moves to it:
   Strand never asks for one. After 3 lost devices in one run the GPU
   stays off until Strand restarts, and everything is drawn on the CPU.
 
+<!-- repo-only -->
 These rules are in
 [crates/strand-render/src/promote.rs](../../crates/strand-render/src/promote.rs),
 with tests such as `a_panel_opening_is_promoted_at_its_first_frame`,
 `a_settled_surface_goes_back_after_the_settle_period` and
-`the_third_lost_device_turns_the_gpu_off`. `strand report` shows each
+`the_third_lost_device_turns_the_gpu_off`.
+<!-- /repo-only -->
+
+`strand report` shows each
 surface's backend and why.
 
+Strand's own build is held to memory and speed budgets, set in
+[design.md](../../docs/design.md#rendering-performance-and-memory-budget).
+They catch a change that makes Strand slower or bigger, and are never
+a limit on what your shell may do.
+
+<!-- repo-only -->
 ## What CI holds
 
 The memory figures are PSS, the memory a process really uses with
@@ -94,6 +113,7 @@ GitHub's `timing` job holds the speed gates, on an optimised build:
 | A save to the frame on screen, markup edit | 50 ms at p95 | the same test |
 | A theme swap's work, all its frames together | under 5 ms (median) | `a_theme_swap_is_under_five_milliseconds_of_work` in [theme_swap_bench.rs](../../crates/strand-render/tests/theme_swap_bench.rs) |
 | Animated CPU frames (a masked cover, a morph, a scrolled list, a palette spring, …) | median within a 120 Hz frame, p95 within a 60 Hz one | `animated_cpu_frames_hold_their_gates` in [anim_bench.rs](../../crates/strand-render/tests/anim_bench.rs) |
+<!-- /repo-only -->
 
 ## Measuring your own shell
 

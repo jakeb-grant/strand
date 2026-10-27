@@ -6,7 +6,8 @@
 //! file, or `path.md#anchor` with the heading there), when a `proof` that
 //! names a test (`path.rs::name`) names no such function, and when an
 //! entry lacks `page`, `text` or `source`, or has a key the format does
-//! not know. Whether the source says what the text says is for the
+//! not know. A page's repository-only spans
+//! ([`crate::markdown::shown`]) are not on it. Whether the source says what the text says is for the
 //! people who check the site: the ledger only keeps a claim from
 //! outliving the words it was written for or the code it points at.
 
@@ -287,6 +288,9 @@ pub fn check(root: &Path) -> Vec<String> {
         }
         match std::fs::read_to_string(root.join(&c.page)) {
             Ok(md) => {
+                // What the page shows: a repository-only span's words are
+                // not the site's (a broken marker is the build's error).
+                let md = crate::markdown::shown(&md).unwrap_or(md);
                 if !collapse(&md).contains(&collapse(&c.text)) {
                     errors.push(format!("{at}: {} does not say it", c.page));
                 }
@@ -434,6 +438,26 @@ mod tests {
         );
         assert_eq!(e.len(), 1, "{e:?}");
         assert!(e[0].contains("not a page the site publishes"), "{e:?}");
+    }
+
+    #[test]
+    fn a_text_only_in_a_repo_only_span_is_not_on_the_page() {
+        let d = repo(&format!(
+            "[[claim]]\n{PAGE}text = \"it settles\"\nsource = \"src/anim.rs\"\n\n\
+             [[claim]]\n{PAGE}text = \"CI holds it\"\nsource = \"src/anim.rs\"\n"
+        ));
+        std::fs::write(
+            d.join("site/concepts/motion.md"),
+            "# Motion\n\nit settles.\n\n<!-- repo-only -->\nCI holds it.\n<!-- /repo-only -->\n",
+        )
+        .unwrap();
+        let e = check(&d);
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert!(
+            e[0].contains("\"CI holds it\"") && e[0].contains("does not say it"),
+            "{e:?}"
+        );
     }
 
     #[test]

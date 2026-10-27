@@ -3,7 +3,12 @@
 <!-- The sidebar, in order: `## Section`, then `- [Label](path from site/)`;
      `@reference/…` are the generated reference's pages and `@tools/cli`
      the page made from `strand --help`. Each
-     section's pages are owned by one writer; see each page's source. -->
+     section's pages are owned by one writer; see each page's source.
+     The pages teach using Strand. What is there for the repository's
+     readers (how the project tests or holds what a page says: CI jobs,
+     test names, budgets) goes between two HTML comments, `repo-only`
+     and `/repo-only`, each on a line of its own; the site leaves it out
+     of the page, its contents and the search (markdown.rs, `shown`). -->
 
 ## Start
 - [Install](start/install.md)

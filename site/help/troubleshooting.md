@@ -15,7 +15,7 @@ problem is not here, run the shell with more logging (see
 - **"the compositor does not offer zwlr\_layer\_shell\_v1"** (or
   `wl_compositor`, or `wl_shm`). Your compositor cannot show a shell:
   Strand needs layer shell. [Install](../start/install.md#what-the-compositor-needs)
-  lists what it needs and the compositors CI runs on.
+  lists what it needs and the compositors Strand is tested on.
 - **"… does not exist".** The config directory is not there. The
   message names the `strand new` command that makes it, with a starter
   bar; or give `strand run` the directory you meant. A path that is a
