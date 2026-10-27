@@ -667,11 +667,18 @@ pub fn figure(
     }
     let _ = write!(
         o,
-        "<figcaption>Drawn by Strand from {which}.</figcaption>\
-         <script type=\"application/json\" class=\"ex-live-data\">{}</script></figure>",
+        "<figcaption>Drawn by Strand from {which}.</figcaption>{}</figure>",
         // What live mode runs (docs/live-examples.md), read by the
-        // page's script only when the reader asks for it.
-        script_json(live),
+        // page's script only when the reader asks for it; none for a
+        // recording alone.
+        if live.is_null() {
+            String::new()
+        } else {
+            format!(
+                "<script type=\"application/json\" class=\"ex-live-data\">{}</script>",
+                script_json(live)
+            )
+        },
         which = if code {
             "this config"
         } else {

@@ -11,9 +11,9 @@ below that does not hold:
   frame eval drew for the site (media/<name>.json, held to the approved
   reference recordings), frame for frame, as tests/live.rs holds them
   natively;
-- Next step runs a step that changes the example, Play plays the steps
-  again, Restart starts over without them, Back to recording brings the
-  player back;
+- Next step names the step it runs and runs a step that changes the
+  example, Play plays the steps again (and says Playing while they
+  run), Back to recording brings the player back;
 - an edit with an error shows its diagnostic, a fixed one runs again,
   Reset puts the config back;
 - from file:// no figure offers live mode, and the playground says why;
@@ -91,11 +91,14 @@ def main() -> int:
     problems = []
     out = {"examples": {}}
 
-    # Each example's first page, the home page first.
+    # Each example's first page that offers it live (a recording alone,
+    # the home page's, does not), the home page first.
     pages = {}
     for p in sorted(site.rglob("*.html"), key=lambda p: (str(p.relative_to(site)) != "index.html", str(p))):
-        for name in re.findall(r'<figure class="example[^"]*" id="example-([a-z0-9-]+)"', p.read_text()):
-            pages.setdefault(name, str(p.relative_to(site)))
+        for fig in re.findall(r'<figure class="example[^"]*" id="example-[a-z0-9-]+".*?</figure>', p.read_text(), re.S):
+            if 'class="ex-live-data"' in fig:
+                name = re.match(r'.*?id="example-([a-z0-9-]+)"', fig).group(1)
+                pages.setdefault(name, str(p.relative_to(site)))
     if not pages:
         problems.append("no page has an example figure")
 
@@ -176,7 +179,7 @@ def main() -> int:
                 n_acts = 0
             for i in range(n_acts):
                 painted0 = page.evaluate(painted, fid)
-                if not (nxt.get_attribute("title") or ""):
+                if not (nxt.get_attribute("title") or "") or not nxt.locator(".lv-next-what").inner_text().strip():
                     problems.append(f"{name}: Next step does not name the step it runs")
                 nxt.click()
                 page.wait_for_timeout(600)
@@ -185,15 +188,18 @@ def main() -> int:
                     break
             if not acted:
                 problems.append(f"{name}: no step Next step ran changed the example")
-            # Play boots the example again and plays its steps; Restart
-            # boots it again without them.
-            for button, what in (("lv-replay", "Play"), ("lv-restart", "Restart")):
-                starts = page.evaluate("(id) => window.StrandLive.figures.get(id).starts", fid)
-                page.locator(f"#{fid} .{button}").click()
-                if page.evaluate("(id) => window.StrandLive.figures.get(id).starts", fid) != starts + 1:
-                    problems.append(f"{name}: {what} does not start the example again")
-            if page.evaluate("(id) => window.StrandLive.figures.get(id).playing", fid):
-                problems.append(f"{name}: Restart plays the steps")
+            # Play boots the example again and plays its steps, and says
+            # so until they end.
+            starts = page.evaluate("(id) => window.StrandLive.figures.get(id).starts", fid)
+            play = page.locator(f"#{fid} .lv-replay")
+            play.click()
+            if page.evaluate("(id) => window.StrandLive.figures.get(id).starts", fid) != starts + 1:
+                problems.append(f"{name}: Play does not start the example again")
+            if page.evaluate("(id) => window.StrandLive.figures.get(id).playing", fid) and play.inner_text().strip() != "Playing":
+                problems.append(f"{name}: Play does not say the steps are playing")
+            page.wait_for_function("(id) => !window.StrandLive.figures.get(id).playing", arg=fid, timeout=30000)
+            if play.inner_text().strip() != "Play" or play.is_disabled():
+                problems.append(f"{name}: Play does not come back when the steps end")
             # Back to recording: the player again, the canvas gone.
             page.locator(f"#{fid} .lv-back").click()
             if page.locator(f"#{fid} .lv-canvas").count() or not page.locator(f"#{fid} .ex-stage .ex-sprite").first.is_visible():
@@ -274,6 +280,17 @@ def main() -> int:
                         page.wait_for_timeout(250)
                         if scheme == "light":
                             page.locator(".playground").screenshot(path=str(shots / f"playground-{i}.png"))
+                            # An example no page offers live (the home page's
+                            # are recordings) is held to eval's frames here.
+                            name = page.evaluate("window.StrandLive.figures.get('playground').data.name")
+                            if name not in pages and (site / "media" / f"{name}.json").is_file():
+                                want = eval_frames(json.loads((site / "media" / f"{name}.json").read_text()))
+                                res = {"page": "playground.html"}
+                                for mode, dark in (("light", False), ("dark", True)):
+                                    r = page.evaluate("(dark) => window.StrandLive.figures.get('playground').check(dark)", dark)
+                                    res[f"{mode}_frames_equal"] = compare(name, mode, live_frames(r["paints"]), want[mode], problems)
+                                    res[f"{mode}_frames"] = len(want[mode])
+                                out["examples"][name] = res
                     page.screenshot(path=str(shots / f"playground-{scheme}.png"), full_page=True)
                     ctx.close()
 

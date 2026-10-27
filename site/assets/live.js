@@ -70,6 +70,25 @@
     return b;
   }
 
+  /**
+   * A step that acts, as its button names it: `set on true` is
+   * "on = true"; a list is its length ("notifications.popups = 2 items")
+   * and a long value is cut.
+   */
+  function stepLabel(text) {
+    const m = /^set\s+(\S+)\s+(.*)$/.exec(text.trim());
+    if (!m) return text;
+    let value = m[2];
+    try {
+      const v = JSON.parse(value);
+      if (Array.isArray(v)) value = v.length === 1 ? "1 item" : `${v.length} items`;
+    } catch (e) {
+      // Not JSON: a word or a number, shown as written.
+    }
+    if (value.length > 24) value = value.slice(0, 23) + "…";
+    return `${m[1]} = ${value}`;
+  }
+
   const PLAY_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3v10l8.5-5z"/></svg>';
 
   // ---- A light editor: a textarea over the same text, highlighted as
@@ -183,23 +202,29 @@
       this.empty = el("p", "lv-empty");
       parts.stage.append(this.canvas, this.empty);
       const c = parts.controls;
-      this.replay = button("btn icon lv-replay", "", "Play the steps");
+      // Play runs the example from the start with its steps, as the
+      // recording did; it says "Playing" while they run.
+      this.replay = button("btn lv-replay");
       this.replay.innerHTML = PLAY_ICON;
-      this.replay.title = "Play the steps from the start";
+      this.replayText = el("span", "", "Play");
+      this.replay.append(this.replayText);
+      this.replay.title = "Run the example again from the start, with its steps";
       this.replay.addEventListener("click", () => this.start());
-      // The steps that act, run one at a time; the button's tooltip
-      // names the one it runs.
+      // The steps that act, run one at a time: the button names the one
+      // it runs ("on = true"), and its tooltip the step as written.
       this.acts = [];
       this.steps.forEach((s, i) => {
         if (s.acts) this.acts.push(i);
       });
       this.nextAct = 0;
-      this.next = button("btn lv-next", "Next step");
+      this.next = button("btn lv-next");
+      this.nextWhat = el("code", "lv-next-what");
+      this.next.append(el("span", "", "Next step"), this.nextWhat);
       this.next.addEventListener("click", () => this.act(this.acts[this.nextAct]));
       this.next.hidden = !this.acts.length;
-      this.restart = button("btn quiet lv-restart", "Restart", "Start the example again, before its steps");
-      this.restart.addEventListener("click", () => this.start(false));
-      c.append(this.replay, this.next, this.restart);
+      // With no step that acts, Play would only start it over: none.
+      this.replay.hidden = !this.acts.length;
+      c.append(this.replay, this.next);
       this.empty.textContent = this.acts.length
         ? "Nothing is on screen now. Next step runs the example's next step."
         : "Nothing is on screen now.";
@@ -294,6 +319,7 @@
       this.setNext(0);
       this.status.textContent = "";
       this.parts.root.classList.remove("lv-failed");
+      this.sync();
       this.note([live.warnings(), reducedQuery.matches ? "Reduced motion is on, as on your desktop: motion snaps." : ""]);
       this.wake();
       return true;
@@ -326,14 +352,23 @@
         return;
       }
       this.setNext(this.nextAct + 1);
+      this.sync();
       this.wake(2);
+    }
+
+    /** Play says whether the steps are running. */
+    sync() {
+      this.replay.disabled = this.playing;
+      this.replayText.textContent = this.playing ? "Playing" : "Play";
     }
 
     /** Which step Next step runs: the `i`th that acts, round again. */
     setNext(i) {
       if (!this.acts.length) return;
       this.nextAct = i % this.acts.length;
-      this.next.title = this.steps[this.acts[this.nextAct]].text;
+      const text = this.steps[this.acts[this.nextAct]].text;
+      this.next.title = text;
+      this.nextWhat.textContent = stepLabel(text);
     }
 
     /**
@@ -366,6 +401,7 @@
             const at = live.advance();
             if (at < 0) {
               this.playing = false;
+              this.sync();
               if (!live.at_rest()) live.tick();
             } else this.mark(at);
           } else if (this.owed > 0 || !live.at_rest()) {
@@ -489,6 +525,7 @@
     const bar = view.querySelector(".ex-controls");
     if (bar) bar.after(controls);
     else view.append(controls);
+    edit.prepend(el("p", "lv-hint", "Running in your browser. Edit the config and it runs again."));
     fig.querySelector("figcaption").before(edit);
     fig.classList.add("is-live");
     fig.dispatchEvent(new CustomEvent("strand-live", { detail: true }));

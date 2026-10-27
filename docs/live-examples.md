@@ -25,10 +25,14 @@ The decisions are in docs/decisions.md under `live-examples`.
   the browser check holds every page to that.
 - Live, the canvas takes the frames' place and one bar the player's:
   **Play** boots the example again and plays its steps (as entering live
-  mode does); **Next step** runs the scenario's next step that acts
-  (its command is the button's tooltip), round again after the last;
-  **Restart** boots it again without its steps; **Back to recording**
-  goes back to the player. A stage with nothing on screen and nothing
+  mode does), and reads **Playing** while they run; **Next step** runs
+  the scenario's next step that acts, round again after the last, and
+  names it (`set on true` is `on = true`, a list its length; the
+  command as written is its tooltip); **Back to recording** goes back
+  to the player. A line over the config says it runs in the browser
+  and runs again when edited. A figure written ```` ```example NAME
+  recording ```` (the home page's) shows the frames alone, with no
+  offer to run it live. A stage with nothing on screen and nothing
   coming says so, and that Next step runs the next step. The config
   is in an editor (a textarea over its own text, highlighted with the
   site's `hl-` classes). An edit runs again after 350 ms; a broken one shows

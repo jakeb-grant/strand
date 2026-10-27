@@ -1139,6 +1139,25 @@ pre {
   touch-action: none;
 }
 
+/* Next step names the step it runs, in code, cut when long. */
+.lv-next-what {
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0;
+  background: none;
+  color: var(--ink-2);
+  font-size: 0.8125rem;
+}
+
+/* Over the live config: what live mode is, in one line. */
+.lv-hint {
+  margin: 12px 0 8px;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
 .lv-controls .lv-back {
   margin-left: auto;
   /* "Back" and " to recording" read as one label: no gap between. */
@@ -1288,7 +1307,8 @@ pre {
   .ex-bar {
     flex-wrap: wrap;
   }
-  .lv-wide {
+  .lv-wide,
+  .lv-next-what {
     display: none;
   }
 }

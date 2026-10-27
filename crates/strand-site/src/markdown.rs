@@ -334,7 +334,13 @@ fn code_block(
                         .iter()
                         .any(|(pf, pb)| pf == f && pb.trim_end() == b.trim_end())
                 });
-                let live = example::live(&s)?;
+                // `recording` shows the frames alone, with no offer to
+                // run it live (the home page: a plain showcase).
+                let live = if words.get(2) == Some(&"recording") {
+                    serde_json::Value::Null
+                } else {
+                    example::live(&s)?
+                };
                 Ok(example::figure(
                     &s,
                     &m,
