@@ -107,6 +107,10 @@ bar Top {
 }
 ```
 
+```example guide-1
+```
+
+
 The bar grows to its new height and nothing restarts. Three new things:
 
 - **A node's own props go in its block.** `split { pad: 0, 12 … }` sets
@@ -116,8 +120,9 @@ The bar grows to its new height and nothing restarts. Three new things:
   right, bottom, left). Commas, not spaces, separate the values, so
   `a - 1` and `a -1` can never mean different things.
 - **A positional and a block can go together.** `text … { max_width:
-  40%; ellipsis: end }` keeps the title under 40% of the bar's width and
-  cuts it with `…` at the end.
+  40%; ellipsis: end }` keeps the title under 40% of its container,
+  `start` (the bar's left side, up to the clock), and cuts it with `…`
+  at the end.
 
 Every visual change you make animates: change `height: 36` back to
 `height: 32`, save, and the bar springs to its new size. Animation is on

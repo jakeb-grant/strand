@@ -7,6 +7,28 @@
   var root = document.documentElement;
   root.classList.add("js");
   var reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  // An example's moving strip (`data-src`), loaded once it is near the
+  // screen: its figure then draws it in the still frame's hole.
+  var near = "IntersectionObserver" in window ? new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        near.unobserve(e.target);
+        load(e.target);
+      }
+    });
+  }, { rootMargin: "800px 0px" }) : null;
+  function load(el) {
+    var img = new Image();
+    img.onload = function () {
+      el.style.backgroundImage = "url('" + el.dataset.src + "')";
+      el.parentNode.classList.add("ex-loaded");
+    };
+    img.src = el.dataset.src;
+  }
+  function lazy(el) {
+    if (near) near.observe(el);
+    else load(el);
+  }
   // The site's root, from this script's own URL (assets/site.js): it
   // works from disk as from a server.
   var siteRoot = document.currentScript ? new URL("../", document.currentScript.src) : new URL("./", location.href);
@@ -300,6 +322,10 @@
     var sprites = Array.prototype.map.call(fig.querySelectorAll(".ex-moving"), function (el) {
       return { el: el, count: Number(el.dataset.count), ticks: el.dataset.ticks.split(",").map(Number) };
     });
+    // A strip loads when its figure nears the screen in the mode shown
+    // (a hidden mode's never intersects); until then the first frame
+    // shows whole.
+    sprites.forEach(function (s) { lazy(s.el); });
     var scrub = fig.querySelector(".ex-scrub");
     var out = fig.querySelector(".ex-time");
     var play = fig.querySelector(".ex-play");

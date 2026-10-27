@@ -193,6 +193,10 @@ bar Top {
 }
 ```
 
+```example guide-2
+```
+
+
 Each tray item is an `image` of its icon. A left click activates the
 app; **`on secondary`** is the other button. Here it calls
 `item.menu.open()`, which tells the app its menu is opening and sets

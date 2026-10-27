@@ -1,0 +1,56 @@
+id     = "docs-guide-4-settings"
+about  = """Guide level 4's settings window (docs/guide/level-4.md), word for
+word, on the sandbox's stand-in compositor, configured (`window`) as one that
+draws no title bar, so the window draws its own from its first frame. Toggled open, it shows the volume and
+brightness sliders; the volume is then turned up, and its knob springs
+to the new level, and muted, so its button reads Unmute."""
+screen = { width = 440, height = 300, scale = 2.0 }
+
+[services]
+"system.accent" = "#a13c1c"
+"audio.sink.volume" = 0.3
+"audio.sink.muted" = false
+"brightness.available" = true
+"brightness.level" = 0.65
+
+=== settings.strand
+// settings.strand. Bind a key to: strand toggle settings.open
+export state open = false
+
+window Settings {
+  open: <-> open                                  // its close button writes false
+  title: "Settings"
+  width: 360
+  bg: $surface; font: $font.ui; color: $fg
+  id: w
+  col { pad: $space.4; gap: $space.3
+    if !w.decorated {                             // no title bar from the compositor
+      row { id: bar; align: center
+        on change bar.pressed { if bar.pressed { w.move() } }   // drag the title bar to move it
+        text "Settings" { grow: 1; font: $font.title }
+        button "Close" { on click { w.close() } }
+      }
+    }
+    text "Volume" { color: $fg.muted }
+    row { gap: $space.2; align: center
+      slider { grow: 1; value: <-> audio.sink.volume }
+      button audio.sink.muted ? "Unmute" : "Mute" { on click { audio.sink.muted = !audio.sink.muted } }
+    }
+    if brightness.available {
+      text "Brightness" { color: $fg.muted }
+      slider { value: <-> brightness.level }
+    }
+  }
+}
+=== steps
+rest
+mark open
+set open true
+window #w _,_ activated
+rest
+mark louder
+set audio.sink.volume 0.75
+rest
+mark mute
+set audio.sink.muted true
+rest

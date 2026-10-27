@@ -1,0 +1,38 @@
+id     = "docs-settings"
+about  = """The settings-file how-to (site/how-to/settings-file.md): its bar,
+word for word, with no prefs.toml yet, so every field has its default (a top
+bar, a palette from #7aa2f7, no seconds). A click on "Show seconds" writes
+`seconds` and the clock shows them as they tick; a second click hides them."""
+screen = { width = 360, height = 100, scale = 2.0 }
+
+[services]
+"system.accent" = "#a13c1c"
+
+=== bar.strand
+// bar.strand: the bar's choices live in prefs.toml beside this file
+state prefs from "prefs.toml" {
+  seconds: bool = false; position: Edge = top; accent: color = #7aa2f7
+}
+use palette material(seed: prefs.accent, dark: system.dark)
+
+bar Top {
+  edge: prefs.position; height: 32
+  bg: $surface; font: $font.ui; color: $fg
+  split { pad: 0, $space.3
+    center { text clock.format(prefs.seconds ? "%H:%M:%S" : "%H:%M") }
+    end {
+      button prefs.seconds ? "Hide seconds" : "Show seconds" {
+        on click { prefs.seconds = !prefs.seconds }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark show
+click 300,16 on bar
+wait 1500
+mark hide
+click 300,16 on bar
+wait 600

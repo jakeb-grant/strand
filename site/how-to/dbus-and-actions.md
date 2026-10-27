@@ -46,6 +46,13 @@ bar Top {
 }
 ```
 
+Here is the bar with the power profile given as `balanced` and `calc`
+answered as qalc would answer it. "2 + 2" is typed, then Record is
+clicked:
+
+```example dbus
+```
+
 ## A D-Bus object as a service
 
 `service ppd from dbus system "net.hadess.PowerProfiles" { … }` is the

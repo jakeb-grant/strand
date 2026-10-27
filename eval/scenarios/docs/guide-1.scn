@@ -1,0 +1,30 @@
+id     = "docs-guide-1"
+about  = """The guide's level 1 (docs/guide/level-1.md): the hello bar as
+"Change it" leaves it, word for word, on a 640 px screen at scale 2. The
+focused window changes from a short title to a longer one, which is cut
+with an ellipsis at 40% of `start` while the clock stays centred."""
+screen = { width = 640, height = 360, scale = 2.0 }
+
+[services]
+"system.accent" = "#a13c1c"
+"battery.percent" = 0.82
+"windows.focused" = '{"id": "1", "title": "Files", "app_id": "editor", "icon": "", "workspace": 1, "focused": true, "minimized": false, "maximized": false, "fullscreen": false, "urgent": false, "app": null, "rect": null}'
+
+=== bar.strand
+// bar.strand: a bar on every monitor. Every .strand file in this
+// directory is part of your shell; save one and the change is live.
+// Next steps: https://github.com/jakeb-grant/strand/blob/main/docs/guide/README.md
+bar Top {
+  edge: top; height: 36
+  split { pad: 0, 12
+    start  { text windows.focused?.title ?? "" { max_width: 40%; ellipsis: end } }
+    center { text clock.format("%H:%M") }
+    end    { text pct(battery.percent) }
+  }
+}
+
+=== steps
+rest
+mark long-title
+set windows.focused {"id": "1", "title": "README.md — Strand", "app_id": "editor", "icon": "", "workspace": 1, "focused": true, "minimized": false, "maximized": false, "fullscreen": false, "urgent": false, "app": null, "rect": null}
+rest

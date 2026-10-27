@@ -1,0 +1,53 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-dbus-dark"
+verdict good
+note "the D-Bus how-to's two files with the profile given and calc answered: 2, 2 +, 2 + 2 typed with the result beside it (2, then 4), a click on Record makes it Stop; checked in light and dark"
+date 2026-10-27
+rev "06f5c019+changes"
+approver "claude"
+scenario 1ddb7191ec8552ca
+seal fc57957a1bc9f851
+S1 0 - "bar Top"
+N0 "|bar.strand:11:5|[Mock | DP-1]#0" "center@bar.strand:11"
+N1 "|bar.strand:12:7|[Mock | DP-1]#0" "input(\"\")"
+N2 "|bar.strand:13:7|[Mock | DP-1]#0" "text(\"\")"
+N3 "|bar.strand:15:5|[Mock | DP-1]#0" "end@bar.strand:15"
+N4 "|bar.strand:16:7|[Mock | DP-1]#0" "button(\"balanced\")"
+N5 "|bar.strand:17:7|[Mock | DP-1]#1" "button(\"Record\")"
+N6 "|bar.strand:3:1|[Mock | DP-1]#0" "bar@bar.strand:3"
+N7 "|bar.strand:6:3|[Mock | DP-1]#0" "split@bar.strand:6"
+N8 "|bar.strand:7:5|[Mock | DP-1]#0" "start@bar.strand:7"
+N9 "|bar.strand:8:7|[Mock | DP-1]#0" "button(\"1\")"
+N10 "|bar.strand:9:7|[Mock | DP-1]#1" "button(\"2\")"
+k0 p1
+s1 z=640,32
+n0 x=236 y=0 w=168 h=32 ord=5
+n1 x=236 y=8 w=160 h=17 txt=S ord=6 ink=236.5,10,28.5,9.5 fg=f1dfdaa6 gl=["2\u0020+\u00202"]
+n2 x=404 y=16 w=0 h=0 txt=S ord=7
+n3 x=404 y=0 w=224 h=32 ord=8
+n4 x=485 y=5 w=73 h=23 txt=S ord=9 ink=495.5,11,51.5,10 bg=281e1cff fg=f1dfdaff gl=["balanced"]
+n5 x=566 y=5 w=62 h=23 txt=S ord=10 ink=577,11,40.5,10 bg=281e1cff fg=f1dfdaff gl=["Record"]
+n6 x=0 y=0 w=640 h=32 bg=1a110fff
+n7 x=0 y=0 w=640 h=32 ord=1
+n8 x=12 y=0 w=224 h=32 ord=2
+n9 x=12 y=5 w=28 h=23 txt=S ord=3 ink=23,11.5,6.5,9 bg=281e1cff fg=f1dfdaff gl=["1"]
+n10 x=48 y=5 w=28 h=23 txt=S ord=4 ink=59,11,6.5,9.5 bg=281e1cff fg=f1dfdaff gl=["2"]
+k1
+n1 ink=236.5,10,6.5,9.5 fg=f1dfdaff gl=["2"]
+k2
+n0 x=232 w=176
+n1 x=232 ink=232.5,10,6.5,9.5
+n2 x=400 y=9 w=8 h=15 ink=400.5,11,6.5,9.5 fg=f1dfdaa6 gl=["2"]
+n3 x=408 w=220
+n8 w=220
+k11
+n1 ink=232.5,10,17.5,9.5 gl=["2\u0020+"]
+k21
+n1 ink=232.5,10,28.5,9.5 gl=["2\u0020+\u00202"]
+k22
+n2 ink=400,11.5,7,9 gl=["4"]
+k40
+n5 bg=281e1cff/f1dfda14
+k41
+n4 x=500 ink=510.5,11,51.5,10
+n5 x=581 w=47 ink=591.5,11,26,12.5 gl=["Stop"]

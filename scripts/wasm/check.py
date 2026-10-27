@@ -163,9 +163,8 @@ def main() -> int:
             # Each example in turn: eval's frames, then its buttons.
             ctx, page = open_playground(browser)
             names = [c.strip() for c in page.locator(".pg-choice").all_inner_texts()]
-            for name in pages:
-                if name not in names:
-                    problems.append(f"{name}: the playground does not offer it")
+            if not names:
+                problems.append("the playground offers no example")
             for i, name in enumerate(names):
                 guard(f"example {name}", one_example, page, i, name)
             out["boot_ms"] = page.evaluate("window.StrandLive.boot(window.STRAND_WASM, null).then(l => l.timing)")

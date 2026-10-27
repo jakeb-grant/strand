@@ -1,0 +1,69 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-surfaces"
+verdict good
+note "the surfaces page's bar (workspaces of DP-1, the screen's name) and its dock panel half the screen wide at the bottom; the active workspace moves 1 -> 2; checked in light and dark"
+date 2026-10-27
+rev "06f5c019+changes"
+approver "claude"
+scenario f465e91c075ea7ed
+seal ec3ffa2aafae8dfa
+S1 0 - "bar Top"
+S2 0 - "panel Dock"
+N0 "|bar.strand:13:11|[Mock | DP-1]#0" "text(\"DP-1\")"
+N1 "|bar.strand:13:5|[Mock | DP-1]#0" "end@bar.strand:13"
+N2 "|bar.strand:1:1|[Mock | DP-1]#0" "bar@bar.strand:1"
+N3 "|bar.strand:4:3|[Mock | DP-1]#0" "split@bar.strand:4"
+N4 "|bar.strand:5:5|[Mock | DP-1]#0" "start@bar.strand:5"
+N5 "|bar.strand:7:9|[Mock | DP-1][1]#0" "text(\"1\")"
+N6 "|bar.strand:7:9|[Mock | DP-1][2]#1" "text(\"2\")"
+N7 "|bar.strand:7:9|[Mock | DP-1][3]#2" "text(\"3\")"
+N8 "|dock.strand:1:1|[Mock | DP-1]#0" "panel@dock.strand:1"
+N9 "|dock.strand:3:3|[Mock | DP-1]#0" "row@dock.strand:3"
+k0 p1,2
+s1 z=480,32
+s2 z=240,48 o=120,144
+n0 x=438 y=9 w=30 h=15 txt=S ord=7 ink=439,11.5,28,9 fg=23191759 gl=["DP-1"]
+n1 x=240 y=0 w=228 h=32 ord=6
+n2 x=0 y=0 w=480 h=32 bg=fff8f6ff
+n3 x=0 y=0 w=480 h=32 ord=1
+n4 x=12 y=0 w=228 h=32 ord=2
+n5 x=12 y=9 w=8 h=15 txt=S ord=3 ink=12.5,11.5,6.5,9 fg=8f4c37ff gl=["1"]
+n6 x=28 y=9 w=8 h=15 txt=S ord=4 ink=28.5,11,6.5,9.5 fg=231917a6 gl=["2"]
+n7 x=44 y=9 w=8 h=15 txt=S ord=5 ink=44,11,7,10 fg=231917a6 gl=["3"]
+n8 srf=2 x=0 y=0 w=240 h=48
+n9 srf=2 x=0 y=0 w=240 h=48 ord=1 bg=fff8f6ff
+k1 p1
+n5 fg=834734f2
+n6 fg=37231eb3
+k2
+n5 fg=6e3d2edd
+n6 fg=553127c8
+k3
+n5 fg=583328ca
+n6 fg=6c3c2ddb
+k4
+n5 fg=462a22bc
+n6 fg=7a4231e8
+k5
+n5 fg=39241eb4
+n6 fg=834634f1
+k6
+n5 fg=30201bae
+n6 fg=884935f7
+k7
+n5 fg=2b1d1aab
+n6 fg=8b4a36fa
+k8
+n5 fg=271b19a8
+n6 fg=8d4b36fc
+k9
+n5 fg=261a18a7
+n6 fg=8e4b37fd
+k10
+n5 fg=241a17a7
+n6 fg=8e4c37fe
+k11
+n5 fg=241917a6
+n6 fg=8f4c37ff
+k12
+n5 fg=231917a6

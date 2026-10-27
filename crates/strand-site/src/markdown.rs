@@ -82,6 +82,10 @@ pub struct Rendered {
     pub links: Vec<LinkRef>,
     /// The page's `strand file=` blocks, in order.
     pub config: Vec<(String, String)>,
+    /// The page's `strand level=N file=` blocks (a guide's steps, which
+    /// its own test checks level by level, not as one config): a figure
+    /// drawing one of them says so rather than show it again.
+    pub steps: Vec<(String, String)>,
     /// Plain text, for search.
     pub text: String,
     /// The same text split at each `##` and `###` heading, for search:
@@ -239,6 +243,7 @@ fn code_block(
             let html = ctx.hl.html(body);
             if attrs.contains_key("level") {
                 let file = attrs.get("file").copied().unwrap_or("");
+                r.steps.push((file.to_string(), body.to_string()));
                 code_box(&esc(file), "strand", &html)
             } else if let Some(file) = attrs.get("file") {
                 r.config.push(((*file).to_string(), body.to_string()));
@@ -333,6 +338,7 @@ fn code_block(
                 let shown = s.files.iter().all(|(f, b)| {
                     r.config
                         .iter()
+                        .chain(&r.steps)
                         .any(|(pf, pb)| pf == f && pb.trim_end() == b.trim_end())
                 });
                 Ok(example::figure(

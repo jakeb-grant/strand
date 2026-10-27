@@ -46,7 +46,7 @@ fn frames(run: &Run) -> Result<&Vec<Value>, String> {
         .ok_or_else(|| format!("{}: no frames", run.dir.display()))
 }
 
-/// The one surface's id (an example draws one).
+/// The one surface's id (of a run that draws one).
 fn surface(run: &Run) -> Result<String, String> {
     let s = run.trace["surfaces"]
         .as_array()
@@ -205,6 +205,10 @@ pub fn write_strip(path: &Path, frames: &[Image]) -> Result<(), String> {
 /// however the browser scales the two.
 const MARGIN: u32 = 8;
 
+/// How far inside the moving box the still frame's hole starts, in the
+/// frames' px: the width of the band both draw (`moving_box`).
+pub const RING: u32 = 3;
+
 /// The box (x, y, w, h) holding every pixel in which any frame differs
 /// from the first, widened by [`MARGIN`] within the frame; `None` when
 /// none differs.
@@ -230,10 +234,48 @@ pub fn moving_box(frames: &[Image]) -> Option<(u32, u32, u32, u32)> {
     if x0 == u32::MAX {
         return None;
     }
-    let x0 = x0.saturating_sub(MARGIN);
-    let y0 = y0.saturating_sub(MARGIN);
-    let x1 = (x1 + MARGIN).min(base.w - 1);
-    let y1 = (y1 + MARGIN).min(base.h - 1);
+    let mut x0 = x0.saturating_sub(MARGIN);
+    let mut y0 = y0.saturating_sub(MARGIN);
+    let mut x1 = (x1 + MARGIN).min(base.w - 1);
+    let mut y1 = (y1 + MARGIN).min(base.h - 1);
+    // The page draws the moving part over the still frame, which has a
+    // hole RING px inside the box's edge (example.rs, `hole`): both are
+    // scaled to the page's pixels, so the moving part's own edge is soft,
+    // and the still under that ring covers it. The ring is drawn twice,
+    // which is seamless where its pixels are clear or solid in every
+    // frame, so the box grows until they are (a bar's shadow, a glass
+    // surface: the box goes past them). At the frame's edge there is no
+    // ring and nothing to cover.
+    let soft = |x: u32, y: u32| {
+        frames.iter().any(|f| {
+            let a = f.rgba[((y * f.w + x) * 4 + 3) as usize];
+            a != 0 && a != 255
+        })
+    };
+    let ring = |from: u32, to: u32| from..=to.min(from + RING - 1);
+    let ring_back = |from: u32, to: u32| from.saturating_sub(RING - 1).max(to)..=from;
+    loop {
+        let mut grew = false;
+        if x0 > 0 && ring(x0, x1).any(|x| (y0..=y1).any(|y| soft(x, y))) {
+            x0 -= 1;
+            grew = true;
+        }
+        if x1 + 1 < base.w && ring_back(x1, x0).any(|x| (y0..=y1).any(|y| soft(x, y))) {
+            x1 += 1;
+            grew = true;
+        }
+        if y0 > 0 && ring(y0, y1).any(|y| (x0..=x1).any(|x| soft(x, y))) {
+            y0 -= 1;
+            grew = true;
+        }
+        if y1 + 1 < base.h && ring_back(y1, y0).any(|y| (x0..=x1).any(|x| soft(x, y))) {
+            y1 += 1;
+            grew = true;
+        }
+        if !grew {
+            break;
+        }
+    }
     Some((x0, y0, x1 - x0 + 1, y1 - y0 + 1))
 }
 
@@ -246,7 +288,11 @@ fn file_hash(path: &Path) -> Result<String, String> {
 /// when anything moves, the part that changes of every distinct frame,
 /// one under another (`<name>-<mode>-moving.png`), with which of them
 /// each tick shows, each frame's pixel hash and each file's hash.
-fn strip(run: &Run, out: &Path, name: &str, mode: &str) -> Result<(Value, [f64; 2]), String> {
+/// Each tick's frame of a run that draws one surface: its buffers as
+/// they are. Its ticks index the distinct buffers, and the size is the
+/// surface's, in logical px.
+#[allow(clippy::type_complexity)]
+fn one(run: &Run) -> Result<(Vec<usize>, Vec<Image>, [f64; 2]), String> {
     let sid = surface(run)?;
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
@@ -277,6 +323,153 @@ fn strip(run: &Run, out: &Path, name: &str, mode: &str) -> Result<(Value, [f64; 
         .iter()
         .map(|p| decode(&run.dir.join(p)))
         .collect::<Result<_, _>>()?;
+    let size = frames(run)?[0]["sizes"][&sid]
+        .as_array()
+        .and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]))
+        .ok_or("a frame with no size")?;
+    Ok((ticks, images, size))
+}
+
+/// Each tick's frame of a run that draws several surfaces (a bar and
+/// its popup): the shown surfaces' latest buffers, each where it lies on
+/// the output (`origins`), in the order the run made them (a popup over
+/// its parent), on one transparent picture as large as every place they
+/// held. Its ticks index the distinct pictures, and the size is in
+/// logical px.
+#[allow(clippy::type_complexity)]
+fn composed(run: &Run) -> Result<(Vec<usize>, Vec<Image>, [f64; 2]), String> {
+    let scale = run.trace["scenario"]["scale"].as_f64().unwrap_or(1.0);
+    let mut cache: HashMap<String, Image> = HashMap::new();
+    let mut latest: HashMap<String, String> = HashMap::new();
+    // Per tick, the shown surfaces as (id, buffer, x, y) in device px.
+    let mut ticks: Vec<Vec<(u64, String, i64, i64)>> = Vec::new();
+    for f in frames(run)? {
+        if let Some(png) = f["png"].as_object() {
+            for (sid, p) in png {
+                if let Some(p) = p.as_str() {
+                    latest.insert(sid.clone(), p.to_string());
+                }
+            }
+        }
+        let mut shown = Vec::new();
+        for (sid, _) in f["sizes"].as_object().into_iter().flatten() {
+            let Some(p) = latest.get(sid) else { continue };
+            if !cache.contains_key(p) {
+                cache.insert(p.clone(), decode(&run.dir.join(p))?);
+            }
+            let o = &f["origins"][sid];
+            let at = |i: usize| (o[i].as_f64().unwrap_or(0.0) * scale).round() as i64;
+            shown.push((sid.parse().unwrap_or(0), p.clone(), at(0), at(1)));
+        }
+        shown.sort();
+        ticks.push(shown);
+    }
+    let (mut x0, mut y0, mut x1, mut y1) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+    for (_, p, x, y) in ticks.iter().flatten() {
+        let img = &cache[p];
+        x0 = x0.min(*x);
+        y0 = y0.min(*y);
+        x1 = x1.max(x + i64::from(img.w));
+        y1 = y1.max(y + i64::from(img.h));
+    }
+    if x0 >= x1 || y0 >= y1 {
+        return Err(format!(
+            "{}: the first tick has no frame; run with --frames all",
+            run.dir.display()
+        ));
+    }
+    let (w, h) = ((x1 - x0) as u32, (y1 - y0) as u32);
+    let mut index: HashMap<Vec<(u64, String, i64, i64)>, usize> = HashMap::new();
+    let mut images = Vec::new();
+    let mut at = Vec::new();
+    for shown in ticks {
+        let next = images.len();
+        let i = match index.get(&shown) {
+            Some(&i) => i,
+            None => {
+                let mut pic = Image {
+                    w,
+                    h,
+                    rgba: vec![0; (w * h * 4) as usize],
+                };
+                for (_, p, x, y) in &shown {
+                    over(&mut pic, &cache[p], (x - x0) as u32, (y - y0) as u32);
+                }
+                images.push(pic);
+                index.insert(shown, next);
+                next
+            }
+        };
+        at.push(i);
+    }
+    Ok((at, images, [f64::from(w) / scale, f64::from(h) / scale]))
+}
+
+/// `top` drawn over `pic` at (`x`, `y`), straight alpha, source over.
+fn over(pic: &mut Image, top: &Image, x: u32, y: u32) {
+    for row in 0..top.h {
+        for col in 0..top.w {
+            let s = ((row * top.w + col) * 4) as usize;
+            let d = (((y + row) * pic.w + x + col) * 4) as usize;
+            let sa = f32::from(top.rgba[s + 3]) / 255.0;
+            if sa == 0.0 {
+                continue;
+            }
+            let da = f32::from(pic.rgba[d + 3]) / 255.0;
+            if sa == 1.0 || da == 0.0 {
+                pic.rgba[d..d + 4].copy_from_slice(&top.rgba[s..s + 4]);
+                continue;
+            }
+            let oa = sa + da * (1.0 - sa);
+            for c in 0..3 {
+                let v = (f32::from(top.rgba[s + c]) * sa
+                    + f32::from(pic.rgba[d + c]) * da * (1.0 - sa))
+                    / oa;
+                pic.rgba[d + c] = v.round().clamp(0.0, 255.0) as u8;
+            }
+            pic.rgba[d + 3] = (oa * 255.0).round() as u8;
+        }
+    }
+}
+
+/// The ticks a run painted (`k`), one per frame of its trace.
+fn painted(run: &Run) -> Result<Vec<u64>, String> {
+    Ok(frames(run)?
+        .iter()
+        .map(|f| f["k"].as_u64().unwrap_or(0))
+        .collect())
+}
+
+/// `per_frame` (one value per frame of `run`) on the `timeline`'s ticks:
+/// at each, the value of the run's last frame at or before it, since a
+/// tick it did not paint shows what it painted last. The two modes'
+/// runs share the steps' ticks, but a spring may settle a tick or two
+/// sooner in one (a colour nearer its target in the dark).
+fn on_timeline<T: Clone>(run: &Run, per_frame: &[T], timeline: &[u64]) -> Result<Vec<T>, String> {
+    let ks = painted(run)?;
+    let mut j = 0;
+    let mut out = Vec::with_capacity(timeline.len());
+    for &k in timeline {
+        while j + 1 < ks.len() && ks[j + 1] <= k {
+            j += 1;
+        }
+        out.push(per_frame.get(j).cloned().ok_or("no frames")?);
+    }
+    Ok(out)
+}
+
+fn strip(
+    run: &Run,
+    timeline: &[u64],
+    out: &Path,
+    name: &str,
+    mode: &str,
+) -> Result<(Value, [f64; 2]), String> {
+    let several = run.trace["surfaces"]
+        .as_array()
+        .is_some_and(|s| s.len() > 1);
+    let (ticks, images, size) = if several { composed(run)? } else { one(run)? };
+    let ticks = on_timeline(run, &ticks, timeline)?;
     let first = images.first().ok_or("no frames")?;
     if images.iter().any(|f| f.w != first.w || f.h != first.h) {
         return Err(format!("{}: frames of different sizes", run.dir.display()));
@@ -301,10 +494,6 @@ fn strip(run: &Run, out: &Path, name: &str, mode: &str) -> Result<(Value, [f64; 
         v["box"] = json!([x, y, w, h]);
     }
     v["files"] = Value::Object(files);
-    let size = frames(run)?[0]["sizes"][&sid]
-        .as_array()
-        .and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]))
-        .ok_or("a frame with no size")?;
     Ok((v, size))
 }
 
@@ -342,7 +531,7 @@ fn num(v: f64) -> String {
 
 /// Each node whose `x` or `y` springs: its value per tick (written plus
 /// the spring's part, as the trace records them), and its curve.
-fn tracks(run: &Run) -> Result<Vec<Value>, String> {
+fn tracks(run: &Run, timeline: &[u64]) -> Result<Vec<Value>, String> {
     let cols: Vec<&str> = run.trace["cols"]
         .as_array()
         .ok_or("no cols")?
@@ -398,6 +587,7 @@ fn tracks(run: &Run) -> Result<Vec<Value>, String> {
             }
             values.push((last * 100.0).round() / 100.0);
         }
+        let values = on_timeline(run, &values, timeline)?;
         let node = match nodes[&key]["id"].as_str() {
             Some(id) => format!("#{id}"),
             None => nodes[&key]["label"].as_str().unwrap_or(&key).to_string(),
@@ -407,8 +597,9 @@ fn tracks(run: &Run) -> Result<Vec<Value>, String> {
     Ok(out)
 }
 
-/// The steps that act (not `rest`, `mark` or `expect`), at their ticks.
-fn marks(run: &Run) -> Vec<Value> {
+/// The steps that act (not `rest`, `mark` or `expect`), each at the
+/// first frame of the `timeline` from its tick on.
+fn marks(run: &Run, timeline: &[u64]) -> Vec<Value> {
     run.trace["events"]
         .as_array()
         .into_iter()
@@ -420,7 +611,11 @@ fn marks(run: &Run) -> Vec<Value> {
                 word,
                 "rest" | "mark" | "expect" | "intend" | "frames" | "wait"
             ))
-            .then(|| json!({ "k": e["k"], "text": text }))
+            .then(|| {
+                let k = e["k"].as_u64().unwrap_or(0);
+                let at = timeline.partition_point(|&t| t < k);
+                json!({ "k": at, "text": text })
+            })
         })
         .collect()
 }
@@ -440,25 +635,28 @@ pub fn render_into(
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let light = read_run(light)?;
     let dark = read_run(dark)?;
-    let t0 = frames(&light)?[0]["t_ns"].as_f64().unwrap_or(0.0);
-    let t: Vec<f64> = frames(&light)?
-        .iter()
-        .map(|f| ((f["t_ns"].as_f64().unwrap_or(t0) - t0) / 1e6 * 10.0).round() / 10.0)
-        .collect();
-    if frames(&dark)?.len() != t.len() {
-        return Err(format!(
-            "example `{name}`: the dark run has {} ticks, the light {}",
-            frames(&dark)?.len(),
-            t.len()
-        ));
+    // The timeline: every tick either mode painted, in order, at its
+    // time on the shared virtual clock.
+    let mut when: std::collections::BTreeMap<u64, f64> = std::collections::BTreeMap::new();
+    for run in [&light, &dark] {
+        for f in frames(run)? {
+            when.entry(f["k"].as_u64().unwrap_or(0))
+                .or_insert(f["t_ns"].as_f64().unwrap_or(0.0));
+        }
     }
+    let timeline: Vec<u64> = when.keys().copied().collect();
+    let t0 = when.values().next().copied().unwrap_or(0.0);
+    let t: Vec<f64> = when
+        .values()
+        .map(|ns| ((ns - t0) / 1e6 * 10.0).round() / 10.0)
+        .collect();
     let mut modes = serde_json::Map::new();
     let mut size = [0.0, 0.0];
     for (mode, run, id) in [
         ("light", &light, s.id.clone()),
         ("dark", &dark, example::dark_id(&s.id)),
     ] {
-        let (mut v, sz) = strip(run, out, name, mode)?;
+        let (mut v, sz) = strip(run, &timeline, out, name, mode)?;
         if mode == "light" {
             size = sz;
         }
@@ -473,8 +671,8 @@ pub fn render_into(
         "scale": light.trace["scenario"]["scale"],
         "size": size,
         "t": t,
-        "marks": marks(&light),
-        "tracks": tracks(&light)?,
+        "marks": marks(&light, &timeline),
+        "tracks": tracks(&light, &timeline)?,
         "modes": modes,
     });
     let path = out.join(format!("{name}.json"));
@@ -568,6 +766,25 @@ mod tests {
             assert_eq!(back.h, frames[0].h * frames.len() as u32, "{n}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_moving_box_ends_on_clear_or_solid_pixels() {
+        // A solid bar over a soft shadow (rows 10 to 13, half alpha), on
+        // clear: a change on the bar grows the box past the shadow's
+        // rows and across it, so no ring of the box lies on it.
+        let draw = |dot: bool| {
+            image(60, 40, move |x, y| match y {
+                0..10 if dot && (28..32).contains(&x) && (4..6).contains(&y) => [255, 0, 0, 255],
+                0..10 => [20, 20, 20, 255],
+                10..14 => [0, 0, 0, 128],
+                _ => [0, 0, 0, 0],
+            })
+        };
+        let (x, y, w, h) = moving_box(&[draw(false), draw(true)]).unwrap();
+        assert_eq!((x, y), (0, 0));
+        // Below the shadow, RING clear rows end the box.
+        assert_eq!((x + w, y + h), (60, 14 + RING), "{:?}", (x, y, w, h));
     }
 
     #[test]

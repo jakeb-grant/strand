@@ -36,7 +36,10 @@ bar Volume {
 
 `level` is derived from two service fields. The text shows it and
 changes when either does. A click writes `open`, and the slider
-appears.
+appears. Here the volume then changes from outside, and both follow:
+
+```example state
+```
 
 ## Bindings record what they read
 

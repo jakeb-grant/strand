@@ -45,6 +45,9 @@ Nothing shows yet. Scroll on the bar's volume row, or drag its slider:
 a pill with the level fades in near the bottom of the screen, follows
 the volume while you move it, and fades out a little after you stop.
 
+```example osd
+```
+
 **Keys stay in your compositor.** Strand does not grab keys. Bind your
 volume and brightness keys to the command line instead:
 
@@ -371,6 +374,9 @@ accent colour, the apps you use most near the top. Arrow keys move the
 selection, Return launches it, Escape or a click elsewhere closes the
 launcher. Open it again and the box is empty.
 
+```example guide-4-launcher
+```
+
 **`apps.search(query)` returns an `Async`.** Searching takes a moment,
 so the result is not a list but an `Async<[Hit]>`, a value that is
 still arriving. It keeps its last result while the next search runs,
@@ -584,6 +590,9 @@ A dialog opens in the middle of the screen with what the program wants
 and whose password it needs. Type it and press Return: `pkexec` goes
 ahead. A wrong one says so and asks again; Cancel tells the program no.
 
+```example guide-4-polkit
+```
+
 **Reading `polkit` makes Strand the agent.** While a config reads the
 `polkit` service, Strand registers with polkit as your session's
 agent, and stops five seconds after nothing reads it any more, as
@@ -760,6 +769,9 @@ tiling compositor tiles it beside your other windows and a floating
 one places it; you move, resize, maximise and close it the way you do
 every window, and it shows in your task bar and Alt+Tab. Drag the
 volume slider and the bar's speaker follows.
+
+```example guide-4-settings
+```
 
 **`window Settings { … }` is an app's window**, where `panel` is a
 part of the shell.

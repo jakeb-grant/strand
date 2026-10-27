@@ -942,11 +942,28 @@ pre {
 /* The first frame whole, and over it the part that changes: a strip of
    that part of every distinct frame, one under another, from which the
    player picks one by its place in the strip. */
-.ex-sprite {
+.ex-sprite,
+.ex-still {
   position: absolute;
   inset: 0;
+}
+
+.ex-still {
   background-size: 100% 100%;
   background-repeat: no-repeat;
+}
+
+/* The still frame without the part that changes (example.rs, `hole`),
+   once that part has loaded: it is drawn there alone, so see-through
+   pixels are not doubled. */
+.ex-loaded > .ex-holed {
+  -webkit-mask:
+    linear-gradient(#000 0 0) var(--hole-x) var(--hole-y) / var(--hole-w) var(--hole-h) no-repeat,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) var(--hole-x) var(--hole-y) / var(--hole-w) var(--hole-h) no-repeat exclude,
+    linear-gradient(#000 0 0);
 }
 
 .ex-moving {

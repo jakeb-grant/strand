@@ -290,6 +290,12 @@ The whole bar, on every monitor: workspace dots, the focused
 window's title, a clock with its calendar, volume, battery and tray, in
 five files and about 80 lines.
 
+```example guide-3
+```
+
+```example guide-3-calendar
+```
+
 | File | Holds |
 | --- | --- |
 | `bar.strand` | the `Top` bar |

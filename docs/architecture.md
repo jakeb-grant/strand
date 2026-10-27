@@ -659,6 +659,25 @@ again and compares the frames' hashes (CI's `site` job, with the build,
 strand-site's tests and `scripts/site/shots.sh --all`, every page in
 headless Chromium).
 
+Keeping the figures current, in practice:
+
+- **A new figure**: write `eval/scenarios/docs/<name>.scn` (the page's
+  files word for word, `"system.accent" = "#a13c1c"`, fixed `wait` or
+  `frames` steps rather than a `rest` the two modes would end apart),
+  put ```` ```example <name> ```` on the page, and run
+  `scripts/site/media.sh <name>`. Its first run fails for want of an
+  approved recording; look at the frames in `target/site-media/<name>/`,
+  light and dark, approve both
+  (`scripts/container/run.sh eval approve target/site-media/<name>/<id>`
+  and `…/<id>-dark`), and run it again.
+- **A changed scenario or page config**: the build names the example;
+  run `scripts/site/media.sh <name>` (approving again if the run left its
+  recording).
+- **A renderer change**: eval's gate fails on the recordings it alters;
+  once they are approved, `scripts/site/media.sh` with no name renders
+  every figure again. `media.sh --check` (CI's `site` job) catches a
+  change that moves only pixels.
+
 (live examples, docs/live-examples.md) Only the playground
 (`site/playground.md`) runs examples live; an example figure is its
 recorded frames. A ```` ```playground name… ```` block writes what each

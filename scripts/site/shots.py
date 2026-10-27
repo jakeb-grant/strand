@@ -40,8 +40,9 @@ def main() -> int:
         page.on("requestfailed", lambda r, w=where: problems.append(f"{w}: failed: {r.url}"))
 
     def players(browser, rel):
-        """Each example player shows another picture at its middle frame
-        than at its first, and its moving part stays inside the stage."""
+        """Each example player shows another picture at its middle or last
+        frame than at its first, and its moving part stays inside the
+        stage."""
         where = f"{rel} [players]"
         ctx = browser.new_context(viewport={"width": 1440, "height": 900}, device_scale_factor=1, reduced_motion="reduce")
         page = ctx.new_page()
@@ -52,16 +53,30 @@ def main() -> int:
             fig = figs.nth(i)
             fid = fig.get_attribute("id") or str(i)
             fig.scroll_into_view_if_needed()
+            # Its moving strip loads once it is near the screen.
+            fig.locator(".ex-loaded").first.wait_for(state="attached", timeout=10000)
             stage = fig.locator(".ex-stage")
-            first = stage.screenshot()
             top = int(fig.locator(".ex-scrub").get_attribute("max") or "0")
-            fig.locator(".ex-scrub").evaluate(
-                "(el, v) => { el.value = String(v); el.dispatchEvent(new Event('input')); }", top // 6)
-            page.wait_for_timeout(100)
+
+            def scrub(v):
+                fig.locator(".ex-scrub").evaluate(
+                    "(el, v) => { el.value = String(v); el.dispatchEvent(new Event('input')); }", v)
+                page.wait_for_timeout(100)
+
+            # Its first frame against its middle and its last (not the
+            # poster, which may be either; a figure that goes there and
+            # back may end as it began).
+            scrub(0)
+            first = stage.screenshot()
             name = rel.replace("/", "_").removesuffix(".html")
-            fig.screenshot(path=str(shots / f"{name}-{fid}-frame.png"))
-            if stage.screenshot() == first:
-                problems.append(f"{where}: {fid}: its frame {top // 6} looks like its first")
+            differs = False
+            for v in sorted({max(1, top // 2), top}):
+                scrub(v)
+                if v == max(1, top // 2):
+                    fig.screenshot(path=str(shots / f"{name}-{fid}-frame.png"))
+                differs = differs or stage.screenshot() != first
+            if not differs:
+                problems.append(f"{where}: {fid}: its middle and last frames look like its first")
             inside = page.evaluate(
                 """(id) => { const f = document.getElementById(id); const s = f.querySelector('.ex-stage').getBoundingClientRect();
                 return [...f.querySelectorAll('.ex-moving')].every(m => { if (!m.offsetParent) return true;

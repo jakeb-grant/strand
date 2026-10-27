@@ -485,6 +485,9 @@ use (click one to switch) and Bluetooth. Pick "mocha" and the panel itself chang
 you watch. "Devices ›" slides to a second page that lists your Bluetooth
 devices; "‹" slides back.
 
+```example guide-5-control
+```
+
 **`pages current: view { page main { … }; page devices { … } }`** shows
 one page at a time: the `page` whose name is `view`'s value. Changing
 `view` slides from one to the other. A page that is not shown is taken
@@ -579,6 +582,9 @@ grows with a bounce; click it and it hops while the app starts. Drag an
 icon along the dock and the others glide out of its way. Right-click
 one to unpin it. Your order is kept across restarts.
 
+```example guide-5-dock
+```
+
 An app id is its desktop file's name without `.desktop`
 (`org.gnome.Nautilus`). A pin whose app is not installed shows a faded
 generic icon, so you can still drag it or right-click it away.
@@ -669,6 +675,9 @@ bar Dock {
 Run your pointer along the dock: the icon under it is 1.4 times its
 size and its neighbours a little less, by how far they are, so the
 swell follows the pointer instead of jumping from icon to icon.
+
+```example guide-5-dock-swell
+```
 
 **`icons.pointer` is where the pointer is in the row**, a point with
 `x` and `y` measured from the row's top-left corner, or `null` while

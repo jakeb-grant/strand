@@ -1,0 +1,118 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-guide-2-dark"
+verdict good
+note "Guide level 2's themed bar with dots and tray: the wide accent dot springs from workspace 1 to 3 and back, tray icons drawn; looked at every frame, light and dark."
+date 2026-10-27
+rev "06f5c019+changes"
+approver "claude"
+scenario 1067593206acc3b0
+seal 8b3daccef756ff18
+S1 0 - "bar Top"
+N0 "|bar.strand:11:7|[Mock | DP-1]#0" "text(\"Terminal\")"
+N1 "|bar.strand:13:14|[Mock | DP-1]#0" "text(\"09:41\")"
+N2 "|bar.strand:13:5|[Mock | DP-1]#0" "center@bar.strand:13"
+N3 "|bar.strand:14:5|[Mock | DP-1]#0" "end@bar.strand:14"
+N4 "|bar.strand:15:7|[Mock | DP-1]#0" "text(\"82%\")"
+N5 "|bar.strand:17:9|[Mock | DP-1][bt]#1" "image@bar.strand:17"
+N6 "|bar.strand:17:9|[Mock | DP-1][nm]#0" "image@bar.strand:17"
+N7 "|bar.strand:2:1|[Mock | DP-1]#0" "bar@bar.strand:2"
+N8 "|bar.strand:6:3|[Mock | DP-1]#0" "split@bar.strand:6"
+N9 "|bar.strand:7:5|[Mock | DP-1]#0" "start@bar.strand:7"
+N10 "|bar.strand:8:7|[Mock | DP-1]#0" "row@bar.strand:8"
+N11 "|dot.strand:2:3|[Mock | DP-1][1]#0" "box@dot.strand:2"
+N12 "|dot.strand:2:3|[Mock | DP-1][2]#1" "box@dot.strand:2"
+N13 "|dot.strand:2:3|[Mock | DP-1][3]#2" "box@dot.strand:2"
+N14 "|dot.strand:2:3|[Mock | DP-1][4]#3" "box@dot.strand:2"
+k0 p1
+s1 z=640,59
+n0 x=92 y=19 w=50 h=15 txt=S ord=8 ink=92,21,48.5,10 fg=f1dfdaa6 gl=["Terminal"]
+n1 x=304 y=19 w=33 h=15 txt=S ord=10 ink=304.5,21,31.5,10 fg=f1dfdaff gl=["09:41"]
+n2 x=304 y=8 w=33 h=36 ord=9
+n3 x=337 y=8 w=283 h=36 ord=11
+n4 x=537 y=19 w=27 h=15 txt=S ord=12 ink=537.5,21,25.5,10 fg=f1dfdaff gl=["82%"]
+n5 x=604 y=18 w=16 h=16 ord=14 im=0,0,16,16@32,32+f1dfdaff
+n6 x=576 y=18 w=16 h=16 ord=13 im=0,0,16,16@32,32+f1dfdaff
+n7 x=8 y=8 w=624 h=36 bg=1a110fde sh=00000040@-4.5,-2.5,649,61
+n8 x=8 y=8 w=624 h=36 ord=1
+n9 x=20 y=8 w=284 h=36 ord=2
+n10 x=20 y=22 w=60 h=8 ord=3
+n11 x=20 y=22 w=24 h=8 ord=4 bg=ffb59fff
+n12 x=48 y=22 w=8 h=8 ord=5 bg=f1dfdaa6
+n13 x=60 y=22 w=8 h=8 ord=6 bg=f1dfdaa6
+n14 x=72 y=22 w=8 h=8 ord=7 bg=f1dfda40
+k1
+n11 w=20 bg=feb9a5f2
+n12 x=44
+n13 x=56 w=12 bg=f5d7ceb3
+k2
+n11 w=14 bg=fcc1b0dd
+n12 x=38
+n13 x=50 w=18 bg=f9cbbdc8
+k3
+n11 w=10 bg=f9cabcca
+n12 x=34
+n13 x=46 w=22 bg=fcc2b1db
+k4
+n11 w=8 bg=f7d1c6bc
+n12 x=32
+n13 x=44 w=24 bg=fdbdaae8
+k5
+n11 bg=f5d6cdb4
+n13 bg=febaa5f1
+k6
+n11 bg=f3dad2ae
+n13 bg=feb8a3f7
+k7
+n11 bg=f2dcd5ab
+n13 bg=ffb7a1fa
+k8
+n11 bg=f2ddd7a8
+n13 bg=ffb6a0fc
+k9
+n11 bg=f1ded8a7
+n13 bg=ffb5a0fd
+k10
+n11 bg=f1ded9a7
+n13 bg=ffb59ffe
+k11
+n11 bg=f1dfdaa6
+n13 bg=ffb59fff
+k12
+k13
+n11 w=12 bg=f5d7ceb3
+n12 x=36
+n13 x=48 w=20 bg=feb9a5f2
+k14
+n11 w=18 bg=f9cbbdc8
+n12 x=42
+n13 x=54 w=14 bg=fcc1b0dd
+k15
+n11 w=22 bg=fcc2b1db
+n12 x=46
+n13 x=58 w=10 bg=f9cabcca
+k16
+n11 w=24 bg=fdbdaae8
+n12 x=48
+n13 x=60 w=8 bg=f7d1c6bc
+k17
+n11 bg=febaa5f1
+n13 bg=f5d6cdb4
+k18
+n11 bg=feb8a3f7
+n13 bg=f3dad2ae
+k19
+n11 bg=ffb7a1fa
+n13 bg=f2dcd5ab
+k20
+n11 bg=ffb6a0fc
+n13 bg=f2ddd7a8
+k21
+n11 bg=ffb5a0fd
+n13 bg=f1ded8a7
+k22
+n11 bg=ffb59ffe
+n13 bg=f1ded9a7
+k23
+n11 bg=ffb59fff
+n13 bg=f1dfdaa6
+k24

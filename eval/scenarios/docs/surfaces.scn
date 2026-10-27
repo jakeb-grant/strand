@@ -1,0 +1,39 @@
+id     = "docs-surfaces"
+about  = """The surfaces page's two files (site/concepts/surfaces.md), word for
+word, on one screen: the bar lists the screen's workspaces and names the
+screen, and the dock is a panel half the screen wide at the bottom. The
+active workspace moves from 1 to 2."""
+screen = { width = 480, height = 200, scale = 2.0 }
+
+[services]
+"system.accent" = "#a13c1c"
+"workspaces.all" = "[{\"id\": 1, \"name\": \"1\", \"focused\": true, \"active\": true, \"occupied\": true, \"urgent\": false, \"screen\": \"DP-1\", \"windows\": []}, {\"id\": 2, \"name\": \"2\", \"focused\": false, \"active\": false, \"occupied\": true, \"urgent\": false, \"screen\": \"DP-1\", \"windows\": []}, {\"id\": 3, \"name\": \"3\", \"focused\": false, \"active\": false, \"occupied\": true, \"urgent\": false, \"screen\": \"DP-1\", \"windows\": []}]"
+
+=== bar.strand
+bar Top {
+  edge: top; height: 32
+  bg: $surface; font: $font.ui; color: $fg
+  split { pad: 0, $space.3
+    start { gap: $space.2
+      for ws in workspaces.all.filter(w => w.screen == screen.name) {
+        text ws.name { color: $fg.muted
+          when ws.active { color: $accent }
+          on click { ws.focus() }
+        }
+      }
+    }
+    end { text screen.name { color: $fg.faint } }
+  }
+}
+
+=== dock.strand
+panel Dock {
+  screens: all; anchor: bottom; margin: 0, 0, $space.2
+  row { width: screen.width / 2; height: 48; radius: $radius.lg; bg: $surface }
+}
+
+=== steps
+rest
+mark workspace-2
+set workspaces.all [{"id": 1, "name": "1", "focused": false, "active": false, "occupied": true, "urgent": false, "screen": "DP-1", "windows": []}, {"id": 2, "name": "2", "focused": true, "active": true, "occupied": true, "urgent": false, "screen": "DP-1", "windows": []}, {"id": 3, "name": "3", "focused": false, "active": false, "occupied": true, "urgent": false, "screen": "DP-1", "windows": []}]
+wait 600

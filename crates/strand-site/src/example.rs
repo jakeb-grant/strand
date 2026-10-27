@@ -218,8 +218,8 @@ pub const PLAYGROUND: &str = "site/playground.md";
 /// (a figure on another page is its frames, and its scenario may use
 /// what the web host cannot run: a click, a header key it refuses).
 pub fn playground_names(root: &Path) -> Result<Vec<String>, String> {
-    let text = std::fs::read_to_string(root.join(PLAYGROUND))
-        .map_err(|e| format!("{PLAYGROUND}: {e}"))?;
+    let text =
+        std::fs::read_to_string(root.join(PLAYGROUND)).map_err(|e| format!("{PLAYGROUND}: {e}"))?;
     let line = text
         .lines()
         .find_map(|l| l.strip_prefix("```playground "))
@@ -583,25 +583,60 @@ pub fn figure(s: &Scenario, media: &Value, hl: &Highlighter, root: &str, code: b
     );
 
     // Each mode's first frame, and over it the part that changes, from
-    // a strip of every distinct frame's.
+    // a strip of every distinct frame's, which the page's script loads
+    // once the figure nears the screen in the mode shown (without the
+    // script, the first frame is the picture).
     for mode in ["light", "dark"] {
         let m = &media["modes"][mode];
         let Some(base) = m["base"].as_str() else {
             continue;
         };
-        let _ = write!(
-            o,
-            "<div class=\"ex-sprite ex-{mode}\" style=\"background-image: url('{root}media/{base}')\">"
-        );
         let frame = nums(&m["frame"]);
         let bx = nums(&m["box"]);
+        let pc = |a: f64, b: f64| format!("{:.4}%", 100.0 * a / b);
+        // The still frame has a hole where the moving part goes, so a
+        // see-through pixel there (a glass bar, a shadow) is drawn once,
+        // not the still's and the moving part's over each other. A
+        // mask's position in % is of the room around it, as a
+        // background's is.
+        let hole = match (frame.as_slice(), bx.as_slice()) {
+            ([fw, fh], [x, y, w, h]) if m["sprite"].is_string() => {
+                // RING px inside the box, except where it meets the
+                // frame's edge (media.rs, `moving_box`).
+                let r = f64::from(crate::media::RING);
+                let (l, t) = (
+                    if *x > 0.0 { r } else { 0.0 },
+                    if *y > 0.0 { r } else { 0.0 },
+                );
+                let rr = if x + w < *fw { r } else { 0.0 };
+                let rb = if y + h < *fh { r } else { 0.0 };
+                let (x, y, w, h) = (x + l, y + t, (w - l - rr).max(0.0), (h - t - rb).max(0.0));
+                let (x, y, w, h) = (&x, &y, &w, &h);
+                let at = |a: f64, room: f64| {
+                    if room > 0.0 { pc(a, room) } else { "0%".into() }
+                };
+                format!(
+                    "; --hole-x: {}; --hole-y: {}; --hole-w: {}; --hole-h: {}",
+                    at(*x, fw - w),
+                    at(*y, fh - h),
+                    pc(*w, *fw),
+                    pc(*h, *fh)
+                )
+            }
+            _ => String::new(),
+        };
+        let _ = write!(
+            o,
+            "<div class=\"ex-sprite ex-{mode}\"><div class=\"ex-still{}\" \
+             style=\"background-image: url('{root}media/{base}'){hole}\"></div>",
+            if hole.is_empty() { "" } else { " ex-holed" }
+        );
         if let (Some(sprite), Some(count), [fw, fh], [x, y, w, h]) = (
             m["sprite"].as_str(),
             m["count"].as_u64(),
             frame.as_slice(),
             bx.as_slice(),
         ) {
-            let pc = |a: f64, b: f64| format!("{:.4}%", 100.0 * a / b);
             let at = nums(&m["ticks"]);
             // Without the script, the poster's frame is what shows.
             let i = at.get(shown).copied().unwrap_or(0.0);
@@ -613,7 +648,7 @@ pub fn figure(s: &Scenario, media: &Value, hl: &Highlighter, root: &str, code: b
             let _ = write!(
                 o,
                 "<div class=\"ex-moving\" style=\"left: {}; top: {}; width: {}; height: {}; \
-                 background-image: url('{root}media/{sprite}'); background-position: 0 {y_at:.4}%\" \
+                 background-position: 0 {y_at:.4}%\" data-src=\"{root}media/{sprite}\" \
                  data-count=\"{count}\" data-ticks=\"{}\"></div>",
                 pc(*x, *fw),
                 pc(*y, *fh),

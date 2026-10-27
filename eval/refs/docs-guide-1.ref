@@ -1,0 +1,30 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-guide-1"
+verdict good
+note "Guide level 1's bar as 'Change it' leaves it: a short title, then a longer one cut with an ellipsis at 40% of start; clock centred, battery at the end. Looked at both frames."
+date 2026-10-27
+rev "06f5c019+changes"
+approver "claude"
+scenario 5807018ef45b675c
+seal 065210bb9a5c4900
+S1 0 - "bar Top"
+N0 "|bar.strand:4:1|[Mock | DP-1]#0" "bar@bar.strand:4"
+N1 "|bar.strand:6:3|[Mock | DP-1]#0" "split@bar.strand:6"
+N2 "|bar.strand:7:14|[Mock | DP-1]#0" "text(\"Files\")"
+N3 "|bar.strand:7:5|[Mock | DP-1]#0" "start@bar.strand:7"
+N4 "|bar.strand:8:14|[Mock | DP-1]#0" "text(\"09:41\")"
+N5 "|bar.strand:8:5|[Mock | DP-1]#0" "center@bar.strand:8"
+N6 "|bar.strand:9:14|[Mock | DP-1]#0" "text(\"82%\")"
+N7 "|bar.strand:9:5|[Mock | DP-1]#0" "end@bar.strand:9"
+k0 p1
+s1 z=640,36
+n0 x=0 y=0 w=640 h=36 bg=fff8f6ff
+n1 x=0 y=0 w=640 h=36 ord=1
+n2 x=12 y=11 w=28 h=15 txt=S ord=3 ink=13,13,26.5,10 fg=231917ff gl=["Files"]
+n3 x=12 y=0 w=292 h=36 ord=2
+n4 x=304 y=11 w=33 h=15 txt=S ord=5 ink=304.5,13,31.5,10 fg=231917ff gl=["09:41"]
+n5 x=304 y=0 w=33 h=36 ord=4
+n6 x=601 y=11 w=27 h=15 txt=S ord=7 ink=601.5,13,25.5,10 fg=231917ff gl=["82%"]
+n7 x=337 y=0 w=291 h=36 ord=6
+k1
+n2 w=117 ink=13,13,104.5,10 fit=117 gl=["README.md\u0020—\u0020Strand"]

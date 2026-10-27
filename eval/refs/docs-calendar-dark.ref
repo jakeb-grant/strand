@@ -1,0 +1,479 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-calendar-dark"
+verdict good
+note "the calendar how-to's two files: a click on the clock opens the month calendar under it with the clock lit, › moves to November, a click on the clock closes it; fixed 400 ms waits; checked in light and dark"
+date 2026-10-27
+rev "06f5c019+changes"
+approver "claude"
+scenario dcc57fc345d6bfac
+seal 94a77d5cbb3a5bc1
+S1 0 - "bar Top"
+S2 1 51 "popup#cal"
+N0 "|bar.strand:2:1|[Mock | DP-1]#0" "bar@bar.strand:2"
+N1 "|bar.strand:5:3|[Mock | DP-1]#0" "split@bar.strand:5"
+N2 "|bar.strand:6:5|[Mock | DP-1]#0" "center@bar.strand:6"
+N3 "|clock.strand:3:3|[Mock | DP-1]#0" "text(\"Mon 05  09:41\")"
+N4 "cal|clock.strand:6:5|[Mock | DP-1]#0" "popup#cal"
+N5 "|clock.strand:12:3|[Mock | DP-1]#0" "col@clock.strand:12"
+N6 "|clock.strand:13:5|[Mock | DP-1]#0" "row@clock.strand:13"
+N7 "|clock.strand:14:7|[Mock | DP-1]#0" "button(\"‹\")"
+N8 "|clock.strand:15:7|[Mock | DP-1]#0" "text(\"October 2026\")"
+N9 "|clock.strand:16:7|[Mock | DP-1]#1" "button(\"›\")"
+N10 "|clock.strand:18:5|[Mock | DP-1]#0" "grid@clock.strand:18"
+N11 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 1, weekday: 4, hour: , minute:  }]#3" "text(\" 1\")"
+N12 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 10, weekday: 6, hour: , minute:  }]#12" "text(\"10\")"
+N13 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 11, weekday: 7, hour: , minute:  }]#13" "text(\"11\")"
+N14 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 12, weekday: 1, hour: , minute:  }]#14" "text(\"12\")"
+N15 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 13, weekday: 2, hour: , minute:  }]#15" "text(\"13\")"
+N16 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 14, weekday: 3, hour: , minute:  }]#16" "text(\"14\")"
+N17 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 15, weekday: 4, hour: , minute:  }]#17" "text(\"15\")"
+N18 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 16, weekday: 5, hour: , minute:  }]#18" "text(\"16\")"
+N19 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 17, weekday: 6, hour: , minute:  }]#19" "text(\"17\")"
+N20 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 18, weekday: 7, hour: , minute:  }]#20" "text(\"18\")"
+N21 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 19, weekday: 1, hour: , minute:  }]#21" "text(\"19\")"
+N22 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 2, weekday: 5, hour: , minute:  }]#4" "text(\" 2\")"
+N23 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 20, weekday: 2, hour: , minute:  }]#22" "text(\"20\")"
+N24 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 21, weekday: 3, hour: , minute:  }]#23" "text(\"21\")"
+N25 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 22, weekday: 4, hour: , minute:  }]#24" "text(\"22\")"
+N26 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 23, weekday: 5, hour: , minute:  }]#25" "text(\"23\")"
+N27 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 24, weekday: 6, hour: , minute:  }]#26" "text(\"24\")"
+N28 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 25, weekday: 7, hour: , minute:  }]#27" "text(\"25\")"
+N29 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 26, weekday: 1, hour: , minute:  }]#28" "text(\"26\")"
+N30 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 27, weekday: 2, hour: , minute:  }]#29" "text(\"27\")"
+N31 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 28, weekday: 3, hour: , minute:  }]#30" "text(\"28\")"
+N32 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 29, weekday: 4, hour: , minute:  }]#31" "text(\"29\")"
+N33 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 3, weekday: 6, hour: , minute:  }]#5" "text(\" 3\")"
+N34 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 30, weekday: 5, hour: , minute:  }]#32" "text(\"30\")"
+N35 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 31, weekday: 6, hour: , minute:  }]#33" "text(\"31\")"
+N36 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 4, weekday: 7, hour: , minute:  }]#6" "text(\" 4\")"
+N37 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 5, weekday: 1, hour: , minute:  }]#7" "text(\" 5\")"
+N38 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 6, weekday: 2, hour: , minute:  }]#8" "text(\" 6\")"
+N39 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 7, weekday: 3, hour: , minute:  }]#9" "text(\" 7\")"
+N40 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 8, weekday: 4, hour: , minute:  }]#10" "text(\" 8\")"
+N41 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 10, day: 9, weekday: 5, hour: , minute:  }]#11" "text(\" 9\")"
+N42 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 1, weekday: 7, hour: , minute:  }]#34" "text(\" 1\")"
+N43 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 2, weekday: 1, hour: , minute:  }]#35" "text(\" 2\")"
+N44 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 3, weekday: 2, hour: , minute:  }]#36" "text(\" 3\")"
+N45 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 4, weekday: 3, hour: , minute:  }]#37" "text(\" 4\")"
+N46 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 5, weekday: 4, hour: , minute:  }]#38" "text(\" 5\")"
+N47 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 6, weekday: 5, hour: , minute:  }]#39" "text(\" 6\")"
+N48 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 7, weekday: 6, hour: , minute:  }]#40" "text(\" 7\")"
+N49 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 8, weekday: 7, hour: , minute:  }]#41" "text(\" 8\")"
+N50 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 9, day: 28, weekday: 1, hour: , minute:  }]#0" "text(\"28\")"
+N51 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 9, day: 29, weekday: 2, hour: , minute:  }]#1" "text(\"29\")"
+N52 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 9, day: 30, weekday: 3, hour: , minute:  }]#2" "text(\"30\")"
+N53 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 10, weekday: 2, hour: , minute:  }]#15" "text(\"10\")"
+N54 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 11, weekday: 3, hour: , minute:  }]#16" "text(\"11\")"
+N55 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 12, weekday: 4, hour: , minute:  }]#17" "text(\"12\")"
+N56 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 13, weekday: 5, hour: , minute:  }]#18" "text(\"13\")"
+N57 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 14, weekday: 6, hour: , minute:  }]#19" "text(\"14\")"
+N58 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 15, weekday: 7, hour: , minute:  }]#20" "text(\"15\")"
+N59 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 16, weekday: 1, hour: , minute:  }]#21" "text(\"16\")"
+N60 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 17, weekday: 2, hour: , minute:  }]#22" "text(\"17\")"
+N61 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 18, weekday: 3, hour: , minute:  }]#23" "text(\"18\")"
+N62 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 19, weekday: 4, hour: , minute:  }]#24" "text(\"19\")"
+N63 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 20, weekday: 5, hour: , minute:  }]#25" "text(\"20\")"
+N64 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 21, weekday: 6, hour: , minute:  }]#26" "text(\"21\")"
+N65 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 22, weekday: 7, hour: , minute:  }]#27" "text(\"22\")"
+N66 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 23, weekday: 1, hour: , minute:  }]#28" "text(\"23\")"
+N67 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 24, weekday: 2, hour: , minute:  }]#29" "text(\"24\")"
+N68 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 25, weekday: 3, hour: , minute:  }]#30" "text(\"25\")"
+N69 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 26, weekday: 4, hour: , minute:  }]#31" "text(\"26\")"
+N70 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 27, weekday: 5, hour: , minute:  }]#32" "text(\"27\")"
+N71 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 28, weekday: 6, hour: , minute:  }]#33" "text(\"28\")"
+N72 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 29, weekday: 7, hour: , minute:  }]#34" "text(\"29\")"
+N73 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 30, weekday: 1, hour: , minute:  }]#35" "text(\"30\")"
+N74 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 11, day: 9, weekday: 1, hour: , minute:  }]#14" "text(\" 9\")"
+N75 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 12, day: 1, weekday: 2, hour: , minute:  }]#36" "text(\" 1\")"
+N76 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 12, day: 2, weekday: 3, hour: , minute:  }]#37" "text(\" 2\")"
+N77 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 12, day: 3, weekday: 4, hour: , minute:  }]#38" "text(\" 3\")"
+N78 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 12, day: 4, weekday: 5, hour: , minute:  }]#39" "text(\" 4\")"
+N79 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 12, day: 5, weekday: 6, hour: , minute:  }]#40" "text(\" 5\")"
+N80 "|clock.strand:20:9|[Mock | DP-1][Date { year: 2026, month: 12, day: 6, weekday: 7, hour: , minute:  }]#41" "text(\" 6\")"
+k0 p1
+s1 z=360,36
+n0 x=0 y=0 w=360 h=36 bg=1a110fff
+n1 x=0 y=0 w=360 h=36 ord=1
+n2 x=138 y=0 w=84 h=36 ord=2
+n3 x=138 y=11 w=84 h=15 txt=S ord=3 ink=139,13,81.5,10 fg=f1dfdaff gl=["Mon\u002005\u0020\u002009:41"]
+k1 p1,2
+s2 z=318,317 o=21,13
+n3 fg=f4d9d2ff
+n4 srf=2 x=37 y=29 w=244 h=243
+n5 srf=2 x=37 y=29 w=244 h=243 ord=1 bg=1a110fff sh=0000004d@0.5,0.5,317,316/00000033@33.5,26.5,251,250
+n6 srf=2 x=49 y=41 w=220 h=23 ord=2
+n7 srf=2 x=49 y=41 w=25 h=23 txt=S ord=3 ink=60,50.5,3.5,5.5 bg=281e1cff fg=ffb59fff gl=["‹"]
+n8 srf=2 x=74 y=45 w=170 h=15 txt=S ord=4 ink=120,47,78,10 fg=ffb59fff gl=["October\u00202026"]
+n9 srf=2 x=244 y=41 w=25 h=23 txt=S ord=5 ink=255,50.5,3.5,5.5 bg=281e1cff fg=ffb59fff gl=["›"]
+n10 srf=2 x=49 y=72 w=220 h=188 ord=6
+n11 srf=2 x=145 y=72 w=28 h=28 txt=S ord=10 ink=158,81,6,9 fg=ffb59fff gl=["\u00201"]
+n12 srf=2 x=209 y=104 w=28 h=28 txt=S ord=19 ink=216.5,112.5,13.5,10 fg=ffb59fff gl=["10"]
+n13 srf=2 x=241 y=104 w=28 h=28 txt=S ord=20 ink=249,113,12.5,9 fg=ffb59fff gl=["11"]
+n14 srf=2 x=49 y=136 w=28 h=28 txt=S ord=21 ink=56.5,144.5,13.5,9.5 fg=ffb59fff gl=["12"]
+n15 srf=2 x=81 y=136 w=28 h=28 txt=S ord=22 ink=88.5,144.5,13.5,10 fg=ffb59fff gl=["13"]
+n16 srf=2 x=113 y=136 w=28 h=28 txt=S ord=23 ink=120.5,145,14,9 fg=ffb59fff gl=["14"]
+n17 srf=2 x=145 y=136 w=28 h=28 txt=S ord=24 ink=152.5,145,13.5,9.5 fg=ffb59fff gl=["15"]
+n18 srf=2 x=177 y=136 w=28 h=28 txt=S ord=25 ink=184.5,144.5,13.5,10 fg=ffb59fff gl=["16"]
+n19 srf=2 x=209 y=136 w=28 h=28 txt=S ord=26 ink=216.5,145,13.5,9 fg=ffb59fff gl=["17"]
+n20 srf=2 x=241 y=136 w=28 h=28 txt=S ord=27 ink=248.5,144.5,13.5,10 fg=ffb59fff gl=["18"]
+n21 srf=2 x=49 y=168 w=28 h=28 txt=S ord=28 ink=56.5,176.5,13.5,10 fg=ffb59fff gl=["19"]
+n22 srf=2 x=177 y=72 w=28 h=28 txt=S ord=11 ink=189.5,80.5,6.5,9.5 fg=ffb59fff gl=["\u00202"]
+n23 srf=2 x=81 y=168 w=28 h=28 txt=S ord=29 ink=88.5,176.5,13.5,10 fg=ffb59fff gl=["20"]
+n24 srf=2 x=113 y=168 w=28 h=28 txt=S ord=30 ink=120.5,176.5,13.5,9.5 fg=ffb59fff gl=["21"]
+n25 srf=2 x=145 y=168 w=28 h=28 txt=S ord=31 ink=152.5,176.5,13.5,9.5 fg=ffb59fff gl=["22"]
+n26 srf=2 x=177 y=168 w=28 h=28 txt=S ord=32 ink=184.5,176.5,13.5,10 fg=ffb59fff gl=["23"]
+n27 srf=2 x=209 y=168 w=28 h=28 txt=S ord=33 ink=216.5,176.5,14,9.5 fg=ffb59fff gl=["24"]
+n28 srf=2 x=241 y=168 w=28 h=28 txt=S ord=34 ink=248.5,176.5,13.5,10 fg=ffb59fff gl=["25"]
+n29 srf=2 x=49 y=200 w=28 h=28 txt=S ord=35 ink=56.5,208.5,13.5,10 fg=ffb59fff gl=["26"]
+n30 srf=2 x=81 y=200 w=28 h=28 txt=S ord=36 ink=88.5,208.5,13.5,9.5 fg=ffb59fff gl=["27"]
+n31 srf=2 x=113 y=200 w=28 h=28 txt=S ord=37 ink=120.5,208.5,13.5,10 fg=ffb59fff gl=["28"]
+n32 srf=2 x=145 y=200 w=28 h=28 txt=S ord=38 ink=152.5,208.5,13.5,10 fg=ffb59fff gl=["29"]
+n33 srf=2 x=209 y=72 w=28 h=28 txt=S ord=12 ink=221.5,80.5,6.5,10 fg=ffb59fff gl=["\u00203"]
+n34 srf=2 x=177 y=200 w=28 h=28 txt=S ord=39 ink=184,208.5,14,10 fg=ffb59fff gl=["30"]
+n35 srf=2 x=209 y=200 w=28 h=28 txt=S ord=40 ink=216,208.5,14,10 fg=ffb59fff gl=["31"]
+n36 srf=2 x=241 y=72 w=28 h=28 txt=S ord=13 ink=253,81,7,9 fg=ffb59fff gl=["\u00204"]
+n37 srf=2 x=49 y=104 w=28 h=28 txt=S ord=14 ink=61.5,113,6.5,9.5 bg=ffb59fff fg=561f0eff gl=["\u00205"]
+n38 srf=2 x=81 y=104 w=28 h=28 txt=S ord=15 ink=93.5,112.5,6.5,10 fg=ffb59fff gl=["\u00206"]
+n39 srf=2 x=113 y=104 w=28 h=28 txt=S ord=16 ink=125.5,113,6.5,9 fg=ffb59fff gl=["\u00207"]
+n40 srf=2 x=145 y=104 w=28 h=28 txt=S ord=17 ink=157.5,112.5,6.5,10 fg=ffb59fff gl=["\u00208"]
+n41 srf=2 x=177 y=104 w=28 h=28 txt=S ord=18 ink=189.5,112.5,6.5,10 fg=ffb59fff gl=["\u00209"]
+n42 srf=2 x=241 y=200 w=28 h=28 txt=S ord=41 ink=254,209,6,9 fg=f1dfda59 gl=["\u00201"]
+n43 srf=2 x=49 y=232 w=28 h=28 txt=S ord=42 ink=61.5,240.5,6.5,9.5 fg=f1dfda59 gl=["\u00202"]
+n44 srf=2 x=81 y=232 w=28 h=28 txt=S ord=43 ink=93.5,240.5,6.5,10 fg=f1dfda59 gl=["\u00203"]
+n45 srf=2 x=113 y=232 w=28 h=28 txt=S ord=44 ink=125,241,7,9 fg=f1dfda59 gl=["\u00204"]
+n46 srf=2 x=145 y=232 w=28 h=28 txt=S ord=45 ink=157.5,241,6.5,9.5 fg=f1dfda59 gl=["\u00205"]
+n47 srf=2 x=177 y=232 w=28 h=28 txt=S ord=46 ink=189.5,240.5,6.5,10 fg=f1dfda59 gl=["\u00206"]
+n48 srf=2 x=209 y=232 w=28 h=28 txt=S ord=47 ink=221.5,241,6.5,9 fg=f1dfda59 gl=["\u00207"]
+n49 srf=2 x=241 y=232 w=28 h=28 txt=S ord=48 ink=253.5,240.5,6.5,10 fg=f1dfda59 gl=["\u00208"]
+n50 srf=2 x=49 y=72 w=28 h=28 txt=S ord=7 ink=56.5,80.5,13.5,10 fg=f1dfda59 gl=["28"]
+n51 srf=2 x=81 y=72 w=28 h=28 txt=S ord=8 ink=88.5,80.5,13.5,10 fg=f1dfda59 gl=["29"]
+n52 srf=2 x=113 y=72 w=28 h=28 txt=S ord=9 ink=120,80.5,14,10 fg=f1dfda59 gl=["30"]
+k2 p1
+n3 fg=f7cfc3ff
+k3
+n3 fg=fac6b7ff
+k4
+n3 fg=fcc0aeff
+k5
+n3 fg=fdbca8ff
+k6
+n3 fg=feb9a4ff
+k7
+n3 fg=feb7a2ff
+k8
+n3 fg=ffb6a1ff
+k9
+n3 fg=ffb59fff
+k26 p2
+n8 ink=114,47,91,10 gl=["November\u00202026"]
+n9 bg=281e1cff/ffb59f14
+n11 -
+n12 -
+n13 -
+n14 -
+n15 -
+n16 -
+n17 -
+n18 -
+n19 -
+n20 -
+n21 -
+n22 -
+n23 -
+n24 -
+n25 -
+n26 -
+n27 -
+n28 -
+n29 y=167 ord=7 ink=56.5,175.5,13.5,10 fg=feb7a2e7
+n30 y=167 ord=8 ink=88.5,175.5,13.5,9.5 fg=feb7a2e7
+n31 y=167 ord=9 ink=120.5,175.5,13.5,10 fg=feb7a2e7
+n32 y=167 ord=10 ink=152.5,175.5,13.5,10 fg=feb7a2e7
+n33 -
+n34 y=167 ord=11 ink=184,175.5,14,10 fg=feb7a2e7
+n35 y=167 ord=12 ink=216,175.5,14,10 fg=feb7a2e7
+n36 -
+n37 -
+n38 -
+n39 -
+n40 -
+n41 -
+n42 y=167 ord=13 ink=254,176,6,9 fg=f6d2c771
+n43 y=199 ord=14 ink=61.5,207.5,6.5,9.5 fg=f6d2c771
+n44 y=199 ord=15 ink=93.5,207.5,6.5,10 fg=f6d2c771
+n45 y=199 ord=16 ink=125,208,7,9 fg=f6d2c771
+n46 y=199 ord=17 ink=157.5,208,6.5,9.5 fg=f6d2c771
+n47 y=199 ord=18 ink=189.5,207.5,6.5,10 fg=f6d2c771
+n48 y=199 ord=19 ink=221.5,208,6.5,9 fg=f6d2c771
+n49 y=199 ord=20 ink=253.5,207.5,6.5,10 fg=f6d2c771
+n50 -
+n51 -
+n52 -
+n53 srf=2 x=81 y=136 w=28 h=28 txt=S ord=22 ink=88.5,144.5,13.5,10 fg=ffb59fff gl=["10"]
+n54 srf=2 x=113 y=136 w=28 h=28 txt=S ord=23 ink=121,145,12.5,9 fg=ffb59fff gl=["11"]
+n55 srf=2 x=145 y=136 w=28 h=28 txt=S ord=24 ink=152.5,144.5,13.5,9.5 fg=ffb59fff gl=["12"]
+n56 srf=2 x=177 y=136 w=28 h=28 txt=S ord=25 ink=184.5,144.5,13.5,10 fg=ffb59fff gl=["13"]
+n57 srf=2 x=209 y=136 w=28 h=28 txt=S ord=26 ink=216.5,145,14,9 fg=ffb59fff gl=["14"]
+n58 srf=2 x=241 y=136 w=28 h=28 txt=S ord=27 ink=248.5,145,13.5,9.5 fg=ffb59fff gl=["15"]
+n59 srf=2 x=49 y=168 w=28 h=28 txt=S ord=28 ink=56.5,176.5,13.5,10 fg=ffb59fff gl=["16"]
+n60 srf=2 x=81 y=168 w=28 h=28 txt=S ord=29 ink=88.5,177,13.5,9 fg=ffb59fff gl=["17"]
+n61 srf=2 x=113 y=168 w=28 h=28 txt=S ord=30 ink=120.5,176.5,13.5,10 fg=ffb59fff gl=["18"]
+n62 srf=2 x=145 y=168 w=28 h=28 txt=S ord=31 ink=152.5,176.5,13.5,10 fg=ffb59fff gl=["19"]
+n63 srf=2 x=177 y=168 w=28 h=28 txt=S ord=32 ink=184.5,176.5,13.5,10 fg=ffb59fff gl=["20"]
+n64 srf=2 x=209 y=168 w=28 h=28 txt=S ord=33 ink=216.5,176.5,13.5,9.5 fg=ffb59fff gl=["21"]
+n65 srf=2 x=241 y=168 w=28 h=28 txt=S ord=34 ink=248.5,176.5,13.5,9.5 fg=ffb59fff gl=["22"]
+n66 srf=2 x=49 y=200 w=28 h=28 txt=S ord=35 ink=56.5,208.5,13.5,10 fg=ffb59fff gl=["23"]
+n67 srf=2 x=81 y=200 w=28 h=28 txt=S ord=36 ink=88.5,208.5,14,9.5 fg=ffb59fff gl=["24"]
+n68 srf=2 x=113 y=200 w=28 h=28 txt=S ord=37 ink=120.5,208.5,13.5,10 fg=ffb59fff gl=["25"]
+n69 srf=2 x=145 y=200 w=28 h=28 txt=S ord=38 ink=152.5,208.5,13.5,10 fg=ffb59fff gl=["26"]
+n70 srf=2 x=177 y=200 w=28 h=28 txt=S ord=39 ink=184.5,208.5,13.5,9.5 fg=ffb59fff gl=["27"]
+n71 srf=2 x=209 y=200 w=28 h=28 txt=S ord=40 ink=216.5,208.5,13.5,10 fg=ffb59fff gl=["28"]
+n72 srf=2 x=241 y=200 w=28 h=28 txt=S ord=41 ink=248.5,208.5,13.5,10 fg=ffb59fff gl=["29"]
+n73 srf=2 x=49 y=232 w=28 h=28 txt=S ord=42 ink=56,240.5,14,10 fg=ffb59fff gl=["30"]
+n74 srf=2 x=49 y=136 w=28 h=28 txt=S ord=21 ink=61.5,144.5,6.5,10 fg=ffb59fff gl=["\u00209"]
+n75 srf=2 x=81 y=232 w=28 h=28 txt=S ord=43 ink=94,241,6,9 fg=f1dfda59 gl=["\u00201"]
+n76 srf=2 x=113 y=232 w=28 h=28 txt=S ord=44 ink=125.5,240.5,6.5,9.5 fg=f1dfda59 gl=["\u00202"]
+n77 srf=2 x=145 y=232 w=28 h=28 txt=S ord=45 ink=157.5,240.5,6.5,10 fg=f1dfda59 gl=["\u00203"]
+n78 srf=2 x=177 y=232 w=28 h=28 txt=S ord=46 ink=189,241,7,9 fg=f1dfda59 gl=["\u00204"]
+n79 srf=2 x=209 y=232 w=28 h=28 txt=S ord=47 ink=221.5,241,6.5,9.5 fg=f1dfda59 gl=["\u00205"]
+n80 srf=2 x=241 y=232 w=28 h=28 txt=S ord=48 ink=253.5,240.5,6.5,10 fg=f1dfda59 gl=["\u00206"]
+k27
+n29 y=118 ink=56.5,126.5,13.5,10 fg=fdbdaabf
+n30 y=118 ink=88.5,126.5,13.5,9.5 fg=fdbdaabf
+n31 y=118 ink=120.5,126.5,13.5,10 fg=fdbdaabf
+n32 y=118 ink=152.5,126.5,13.5,10 fg=fdbdaabf
+n34 y=118 ink=184,126.5,14,10 fg=fdbdaabf
+n35 y=118 ink=216,126.5,14,10 fg=fdbdaabf
+n42 y=118 ink=254,127,6,9 fg=fbc4b499
+n43 y=150 ink=61.5,158.5,6.5,9.5 fg=fbc4b499
+n44 y=150 ink=93.5,158.5,6.5,10 fg=fbc4b499
+n45 y=150 ink=125,159,7,9 fg=fbc4b499
+n46 y=150 ink=157.5,159,6.5,9.5 fg=fbc4b499
+n47 y=150 ink=189.5,158.5,6.5,10 fg=fbc4b499
+n48 y=150 ink=221.5,159,6.5,9 fg=fbc4b499
+n49 y=150 ink=253.5,158.5,6.5,10 fg=fbc4b499
+k28
+n29 y=86 ink=56.5,94.5,13.5,10 fg=fbc4b39d
+n30 y=86 ink=88.5,94.5,13.5,9.5 fg=fbc4b39d
+n31 y=86 ink=120.5,94.5,13.5,10 fg=fbc4b39d
+n32 y=86 ink=152.5,94.5,13.5,10 fg=fbc4b39d
+n34 y=86 ink=184,94.5,14,10 fg=fbc4b39d
+n35 y=86 ink=216,94.5,14,10 fg=fbc4b39d
+n42 y=86 ink=254,95,6,9 fg=fdbdaabc
+n43 y=118 ink=61.5,126.5,6.5,9.5 fg=fdbdaabc
+n44 y=118 ink=93.5,126.5,6.5,10 fg=fdbdaabc
+n45 y=118 ink=125,127,7,9 fg=fdbdaabc
+n46 y=118 ink=157.5,127,6.5,9.5 fg=fdbdaabc
+n47 y=118 ink=189.5,126.5,6.5,10 fg=fdbdaabc
+n48 y=118 ink=221.5,127,6.5,9 fg=fdbdaabc
+n49 y=118 ink=253.5,126.5,6.5,10 fg=fdbdaabc
+k29
+n29 y=72 ink=56.5,80.5,13.5,10 fg=f9cbbd83
+n30 y=72 ink=88.5,80.5,13.5,9.5 fg=f9cbbd83
+n31 y=72 ink=120.5,80.5,13.5,10 fg=f9cbbd83
+n32 y=72 ink=152.5,80.5,13.5,10 fg=f9cbbd83
+n34 y=72 ink=184,80.5,14,10 fg=f9cbbd83
+n35 y=72 ink=216,80.5,14,10 fg=f9cbbd83
+n42 y=72 ink=254,81,6,9 fg=febaa5d5
+n43 y=104 ink=61.5,112.5,6.5,9.5 fg=febaa5d5
+n44 y=104 ink=93.5,112.5,6.5,10 fg=febaa5d5
+n45 y=104 ink=125,113,7,9 fg=febaa5d5
+n46 y=104 ink=157.5,113,6.5,9.5 fg=febaa5d5
+n47 y=104 ink=189.5,112.5,6.5,10 fg=febaa5d5
+n48 y=104 ink=221.5,113,6.5,9 fg=febaa5d5
+n49 y=104 ink=253.5,112.5,6.5,10 fg=febaa5d5
+k30
+n29 y=68 ink=56.5,76.5,13.5,10 fg=f7d1c673
+n30 y=68 ink=88.5,76.5,13.5,9.5 fg=f7d1c673
+n31 y=68 ink=120.5,76.5,13.5,10 fg=f7d1c673
+n32 y=68 ink=152.5,76.5,13.5,10 fg=f7d1c673
+n34 y=68 ink=184,76.5,14,10 fg=f7d1c673
+n35 y=68 ink=216,76.5,14,10 fg=f7d1c673
+n42 y=68 ink=254,77,6,9 fg=feb8a3e5
+n43 y=100 ink=61.5,108.5,6.5,9.5 fg=feb8a3e5
+n44 y=100 ink=93.5,108.5,6.5,10 fg=feb8a3e5
+n45 y=100 ink=125,109,7,9 fg=feb8a3e5
+n46 y=100 ink=157.5,109,6.5,9.5 fg=feb8a3e5
+n47 y=100 ink=189.5,108.5,6.5,10 fg=feb8a3e5
+n48 y=100 ink=221.5,109,6.5,9 fg=feb8a3e5
+n49 y=100 ink=253.5,108.5,6.5,10 fg=feb8a3e5
+k31
+n29 y=69 ink=56.5,77.5,13.5,10 fg=f5d6cd68
+n30 y=69 ink=88.5,77.5,13.5,9.5 fg=f5d6cd68
+n31 y=69 ink=120.5,77.5,13.5,10 fg=f5d6cd68
+n32 y=69 ink=152.5,77.5,13.5,10 fg=f5d6cd68
+n34 y=69 ink=184,77.5,14,10 fg=f5d6cd68
+n35 y=69 ink=216,77.5,14,10 fg=f5d6cd68
+n42 y=69 ink=254,78,6,9 fg=ffb6a1f0
+n43 y=101 ink=61.5,109.5,6.5,9.5 fg=ffb6a1f0
+n44 y=101 ink=93.5,109.5,6.5,10 fg=ffb6a1f0
+n45 y=101 ink=125,110,7,9 fg=ffb6a1f0
+n46 y=101 ink=157.5,110,6.5,9.5 fg=ffb6a1f0
+n47 y=101 ink=189.5,109.5,6.5,10 fg=ffb6a1f0
+n48 y=101 ink=221.5,110,6.5,9 fg=ffb6a1f0
+n49 y=101 ink=253.5,109.5,6.5,10 fg=ffb6a1f0
+k32
+n29 y=70 ink=56.5,78.5,13.5,10 fg=f3d9d262
+n30 y=70 ink=88.5,78.5,13.5,9.5 fg=f3d9d262
+n31 y=70 ink=120.5,78.5,13.5,10 fg=f3d9d262
+n32 y=70 ink=152.5,78.5,13.5,10 fg=f3d9d262
+n34 y=70 ink=184,78.5,14,10 fg=f3d9d262
+n35 y=70 ink=216,78.5,14,10 fg=f3d9d262
+n42 y=70 ink=254,79,6,9 fg=ffb6a0f6
+n43 y=102 ink=61.5,110.5,6.5,9.5 fg=ffb6a0f6
+n44 y=102 ink=93.5,110.5,6.5,10 fg=ffb6a0f6
+n45 y=102 ink=125,111,7,9 fg=ffb6a0f6
+n46 y=102 ink=157.5,111,6.5,9.5 fg=ffb6a0f6
+n47 y=102 ink=189.5,110.5,6.5,10 fg=ffb6a0f6
+n48 y=102 ink=221.5,111,6.5,9 fg=ffb6a0f6
+n49 y=102 ink=253.5,110.5,6.5,10 fg=ffb6a0f6
+k33
+n29 y=71 ink=56.5,79.5,13.5,10 fg=f2dcd55e
+n30 y=71 ink=88.5,79.5,13.5,9.5 fg=f2dcd55e
+n31 y=71 ink=120.5,79.5,13.5,10 fg=f2dcd55e
+n32 y=71 ink=152.5,79.5,13.5,10 fg=f2dcd55e
+n34 y=71 ink=184,79.5,14,10 fg=f2dcd55e
+n35 y=71 ink=216,79.5,14,10 fg=f2dcd55e
+n42 y=71 ink=254,80,6,9 fg=ffb5a0fa
+n43 y=103 ink=61.5,111.5,6.5,9.5 fg=ffb5a0fa
+n44 y=103 ink=93.5,111.5,6.5,10 fg=ffb5a0fa
+n45 y=103 ink=125,112,7,9 fg=ffb5a0fa
+n46 y=103 ink=157.5,112,6.5,9.5 fg=ffb5a0fa
+n47 y=103 ink=189.5,111.5,6.5,10 fg=ffb5a0fa
+n48 y=103 ink=221.5,112,6.5,9 fg=ffb5a0fa
+n49 y=103 ink=253.5,111.5,6.5,10 fg=ffb5a0fa
+k34
+n29 y=72 ink=56.5,80.5,13.5,10 fg=f2ddd75c
+n30 y=72 ink=88.5,80.5,13.5,9.5 fg=f2ddd75c
+n31 y=72 ink=120.5,80.5,13.5,10 fg=f2ddd75c
+n32 y=72 ink=152.5,80.5,13.5,10 fg=f2ddd75c
+n34 y=72 ink=184,80.5,14,10 fg=f2ddd75c
+n35 y=72 ink=216,80.5,14,10 fg=f2ddd75c
+n42 y=72 ink=254,81,6,9 fg=ffb59ffc
+n43 y=104 ink=61.5,112.5,6.5,9.5 fg=ffb59ffc
+n44 y=104 ink=93.5,112.5,6.5,10 fg=ffb59ffc
+n45 y=104 ink=125,113,7,9 fg=ffb59ffc
+n46 y=104 ink=157.5,113,6.5,9.5 fg=ffb59ffc
+n47 y=104 ink=189.5,112.5,6.5,10 fg=ffb59ffc
+n48 y=104 ink=221.5,113,6.5,9 fg=ffb59ffc
+n49 y=104 ink=253.5,112.5,6.5,10 fg=ffb59ffc
+k35
+n29 fg=f1ded85b
+n30 fg=f1ded85b
+n31 fg=f1ded85b
+n32 fg=f1ded85b
+n34 fg=f1ded85b
+n35 fg=f1ded85b
+n42 fg=ffb59ffd
+n43 fg=ffb59ffd
+n44 fg=ffb59ffd
+n45 fg=ffb59ffd
+n46 fg=ffb59ffd
+n47 fg=ffb59ffd
+n48 fg=ffb59ffd
+n49 fg=ffb59ffd
+k36
+n29 fg=f1ded95a
+n30 fg=f1ded95a
+n31 fg=f1ded95a
+n32 fg=f1ded95a
+n34 fg=f1ded95a
+n35 fg=f1ded95a
+n42 fg=ffb59ffe
+n43 fg=ffb59ffe
+n44 fg=ffb59ffe
+n45 fg=ffb59ffe
+n46 fg=ffb59ffe
+n47 fg=ffb59ffe
+n48 fg=ffb59ffe
+n49 fg=ffb59ffe
+k37
+n29 fg=f1dfd95a
+n30 fg=f1dfd95a
+n31 fg=f1dfd95a
+n32 fg=f1dfd95a
+n34 fg=f1dfd95a
+n35 fg=f1dfd95a
+k38
+n29 fg=f1dfda59
+n30 fg=f1dfda59
+n31 fg=f1dfda59
+n32 fg=f1dfda59
+n34 fg=f1dfda59
+n35 fg=f1dfda59
+n42 fg=ffb59fff
+n43 fg=ffb59fff
+n44 fg=ffb59fff
+n45 fg=ffb59fff
+n46 fg=ffb59fff
+n47 fg=ffb59fff
+n48 fg=ffb59fff
+n49 fg=ffb59fff
+k51 p1
+s2 -
+n3 fg=fdbba8ff
+n4 -
+n5 -
+n6 -
+n7 -
+n8 -
+n9 -
+n10 -
+n29 -
+n30 -
+n31 -
+n32 -
+n34 -
+n35 -
+n42 -
+n43 -
+n44 -
+n45 -
+n46 -
+n47 -
+n48 -
+n49 -
+n53 -
+n54 -
+n55 -
+n56 -
+n57 -
+n58 -
+n59 -
+n60 -
+n61 -
+n62 -
+n63 -
+n64 -
+n65 -
+n66 -
+n67 -
+n68 -
+n69 -
+n70 -
+n71 -
+n72 -
+n73 -
+n74 -
+n75 -
+n76 -
+n77 -
+n78 -
+n79 -
+n80 -
+k52
+n3 fg=fbc6b6ff
+k53
+n3 fg=f8cec2ff
+k54
+n3 fg=f5d5cbff
+k55
+n3 fg=f4d9d1ff
+k56
+n3 fg=f3dbd5ff
+k57
+n3 fg=f2ddd7ff
+k58
+n3 fg=f2ded8ff
+k59
+n3 fg=f1dfdaff

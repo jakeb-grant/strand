@@ -1,0 +1,43 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-state-dark"
+verdict good
+note "the state page's volume bar: a click on 45% opens the slider, then the volume set to 0.7 moves the text and springs the knob; checked in light and dark"
+date 2026-10-27
+rev "06f5c019+changes"
+approver "claude"
+scenario b9f290b65ec90f8d
+seal 46030a67f783e122
+S1 0 - "bar Volume"
+N0 "|volume.strand:4:1|[Mock | DP-1]#0" "bar@volume.strand:4"
+N1 "|volume.strand:7:3|[Mock | DP-1]#0" "row@volume.strand:7"
+N2 "|volume.strand:8:5|[Mock | DP-1]#0" "icon@volume.strand:8"
+N3 "|volume.strand:9:5|[Mock | DP-1]#0" "text(\"45%\")"
+N4 "|volume.strand:11:7|[Mock | DP-1]#0" "slider@volume.strand:11"
+k0 p1
+s1 z=360,32 o=0,68
+n0 x=0 y=0 w=360 h=32 bg=1a110fff
+n1 x=0 y=0 w=360 h=32 ord=1
+n2 x=12 y=8 w=16 h=16 ord=2 im=0,0,16,16@32,32+f1dfdaff
+n3 x=36 y=9 w=27 h=15 txt=S ord=3 ink=36,11,26,10 fg=f1dfdaff gl=["45%"]
+k1
+n4 x=71 y=7 w=120 h=18 ord=4 bg=f1dfda33/ffb59fff/ffb59fff pt=0,7,120,4/0,7,54.703125,4/47.703125,2,14,14
+k32
+n3 ink=36.5,11,25.5,10 gl=["70%"]
+n4 pt=0,7,120,4/0,7,61.59375,4/54.59375,2,14,14
+k33
+n4 pt=0,7,120,4/0,7,71.65625,4/64.65625,2,14,14
+k34
+n4 pt=0,7,120,4/0,7,78.265625,4/71.265625,2,14,14
+k35
+n4 pt=0,7,120,4/0,7,81.1875,4/74.1875,2,14,14
+k36
+n4 pt=0,7,120,4/0,7,81.9375,4/74.9375,2,14,14
+k37
+n4 pt=0,7,120,4/0,7,81.8125,4/74.8125,2,14,14
+k38
+n4 pt=0,7,120,4/0,7,81.515625,4/74.515625,2,14,14
+k39
+n4 pt=0,7,120,4/0,7,81.3125,4/74.3125,2,14,14
+k40
+n4 pt=0,7,120,4/0,7,81.203125,4/74.203125,2,14,14
+k41

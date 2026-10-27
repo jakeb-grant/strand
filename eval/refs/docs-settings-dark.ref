@@ -1,0 +1,36 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-settings-dark"
+verdict good
+note "the settings-file how-to's bar with every default: Show seconds turns the clock to 09:41:08, it ticks to :09, Hide seconds turns it back; checked in light and dark"
+date 2026-10-27
+rev "06f5c019+changes"
+approver "claude"
+scenario 748c763659a64da4
+seal b6ef9a4ebe7185a3
+S1 0 - "bar Top"
+N0 "|bar.strand:10:3|[Mock | DP-1]#0" "split@bar.strand:10"
+N1 "|bar.strand:11:14|[Mock | DP-1]#0" "text(\"09:41\")"
+N2 "|bar.strand:11:5|[Mock | DP-1]#0" "center@bar.strand:11"
+N3 "|bar.strand:12:5|[Mock | DP-1]#0" "end@bar.strand:12"
+N4 "|bar.strand:13:7|[Mock | DP-1]#0" "button(\"Show seconds\")"
+N5 "|bar.strand:7:1|[Mock | DP-1]#0" "bar@bar.strand:7"
+k0 p1
+s1 z=360,32
+n0 x=0 y=0 w=360 h=32 ord=1
+n1 x=164 y=9 w=33 h=15 txt=S ord=3 ink=164.5,11,31.5,10 fg=e2e2e9ff gl=["09:41"]
+n2 x=164 y=0 w=33 h=32 ord=2
+n3 x=197 y=0 w=151 h=32 ord=4
+n4 x=243 y=5 w=105 h=23 txt=S ord=5 ink=253.5,11,84,10 bg=1f2026ff fg=e2e2e9ff gl=["Show\u0020seconds"]
+n5 x=0 y=0 w=360 h=32 bg=121318ff
+k1
+n1 x=155 w=51 ink=155.5,11,50,10 gl=["09:41:08"]
+n2 x=155 w=51
+n3 x=206 w=142
+n4 x=249 w=99 ink=260,11,77.5,10 bg=1f2026ff/e2e2e914 gl=["Hide\u0020seconds"]
+k61
+n1 ink=155.5,11,49.5,10 gl=["09:41:09"]
+k92
+n1 x=164 w=33 ink=164.5,11,31.5,10 gl=["09:41"]
+n2 x=164 w=33
+n3 x=197 w=151
+n4 x=243 w=105 ink=253.5,11,84,10 gl=["Show\u0020seconds"]

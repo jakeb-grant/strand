@@ -1,0 +1,60 @@
+id     = "docs-calendar"
+about  = """The calendar popup how-to (site/how-to/calendar-popup.md): its
+two files, word for word. A click on the clock opens the month calendar
+under it, lit in the accent while it shows; a click on › moves to the next
+month, and a second click on the clock closes it again."""
+screen = { width = 360, height = 320, scale = 2.0 }
+
+[services]
+"system.accent" = "#a13c1c"
+
+=== bar.strand
+// bar.strand: a bar on every monitor with the clock in the middle
+bar Top {
+  edge: top; height: 36
+  bg: $surface; font: $font.ui; color: $fg
+  split { pad: 0, $space.3
+    center { Clock }
+  }
+}
+
+=== clock.strand
+component Clock {
+  state open = false                               // one per monitor
+  text clock.format("%a %d  %H:%M") {              // wakes once a minute
+    when cal.open { color: $accent }               // lit while the calendar shows
+    on click { open = !open }
+    popup { id: cal; open: <-> open; Calendar }    // anchored here; Esc or click-away closes
+  }
+}
+
+component Calendar {
+  state month = clock.today.month_start()
+  col { pad: $space.3; gap: $space.2; bg: $surface; radius: $radius.lg; shadow: $elevation.lg
+    row { align: center
+      button "‹" { on click { month = month.add(months: -1) } }
+      text month.format("%B %Y") { grow: 1; align: center }
+      button "›" { on click { month = month.add(months: 1) } }
+    }
+    grid { columns: 7; gap: $space.1
+      for d in calendar.days(month) {
+        text d.date.format("%e") { width: 28; height: 28; align: center
+          when !d.in_month { color: $fg.faint }
+          when d.date == clock.today { bg: $accent; color: $on_accent; radius: full }
+        }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark open
+click 180,18 on bar
+wait 400
+mark next-month
+click 256,52 on #cal
+wait 400
+mark close
+click 180,18 on bar
+wait 400

@@ -1,0 +1,56 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-guide-4-polkit-dark"
+verdict good
+note "Guide level 4's polkit dialog for the site: a request opens it with its message and user, and twelve letters typed show as dots; checked frame by frame in light and dark"
+date 2026-10-27
+rev "06f5c019+changes"
+approver "claude"
+scenario 25835f3449846ee8
+seal efd0a9e7c03546cb
+S1 1 - "panel Polkit"
+N0 "|polkit.strand:10:5|#1" "text(\"Authentication is requir\")"
+N1 "|polkit.strand:12:5|#2" "text(\"Password for alex\")"
+N2 "|polkit.strand:13:5|#0" "input(\"\")"
+N3 "|polkit.strand:20:5|#0" "row@polkit.strand:20"
+N4 "|polkit.strand:21:78|#0" "text(\"Cancel\")"
+N5 "|polkit.strand:21:7|#0" "box@polkit.strand:21"
+N6 "|polkit.strand:2:1|#0" "panel@polkit.strand:2"
+N7 "|polkit.strand:7:3|#0" "col@polkit.strand:7"
+N8 "|polkit.strand:9:5|#0" "text(\"Authentication needed\")"
+k1 p1
+s1 z=566,357 o=-23,-8
+n0 x=89 y=138 w=388 h=15 txt=S ord=3 ink=89,140,250.5,12.5 fg=f1dfdaff gl=["Authentication\u0020is\u0020required\u0020to\u0020install\u0020software"]
+n1 x=89 y=165 w=388 h=15 txt=S ord=4 ink=90,167,102.5,10 fg=f1dfdaa6 gl=["Password\u0020for\u0020alex"]
+n2 x=89 y=192 w=388 h=17 txt=S ord=5 ink=90,194,59,10 fg=f1dfdaa6 gl=["Password:"]
+n3 x=89 y=221 w=388 h=31 ord=6
+n4 x=97 y=229 w=41 h=15 txt=S ord=8 ink=97.5,231,39.5,10 fg=f1dfdaff gl=["Cancel"]
+n5 x=89 y=221 w=57 h=31 ord=7
+n6 x=73 y=89 w=420 h=179
+n7 x=73 y=89 w=420 h=179 ord=1 bg=1a110fff sh=00000066@0.5,32.5,565,324
+n8 x=89 y=105 w=388 h=21 txt=S ord=2 ink=89,108,193,14 fg=f1dfdaff gl=["Authentication\u0020needed"]
+k2
+n2 bg=ffb59fff pt=0,0,1.5,14.953125
+k6
+n2 ink=89.5,197,4,4 fg=f1dfdaff gl=["•"] pt=4.546875,0,1.5,14.953125
+k11
+n2 ink=89.5,197,8.5,4 gl=["••"] pt=9.109375,0,1.5,14.953125
+k15
+n2 ink=89.5,197,13,4 gl=["•••"] pt=13.65625,0,1.5,14.953125
+k20
+n2 ink=89.5,197,17.5,4 gl=["••••"] pt=18.203125,0,1.5,14.953125
+k24
+n2 ink=89.5,197,22,4 gl=["•••••"] pt=22.75,0,1.5,14.953125
+k29
+n2 ink=89.5,197,26.5,4 gl=["••••••"] pt=27.3125,0,1.5,14.953125
+k34
+n2 ink=89.5,197,31,4 gl=["•••••••"] pt=31.859375,0,1.5,14.953125
+k38
+n2 ink=89.5,197,35.5,4 gl=["••••••••"] pt=36.40625,0,1.5,14.953125
+k43
+n2 ink=89.5,197,40,4 gl=["•••••••••"] pt=40.96875,0,1.5,14.953125
+k47
+n2 ink=89.5,197,45,4 gl=["••••••••••"] pt=45.515625,0,1.5,14.953125
+k52
+n2 ink=89.5,197,49.5,4 gl=["•••••••••••"] pt=50.0625,0,1.5,14.953125
+k56
+n2 ink=89.5,197,54,4 gl=["••••••••••••"] pt=54.609375,0,1.5,14.953125

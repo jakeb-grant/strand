@@ -1,0 +1,57 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-guide-4-settings"
+verdict good
+note "Guide level 4's settings window for the site: drawn with its own title row, the volume knob springs from 30% to 75%, then Mute reads Unmute; checked frame by frame in light and dark"
+date 2026-10-27
+rev "06f5c019+changes"
+approver "claude"
+scenario 30bf61b4dd5f5dc9
+seal eb2bdb98ca40daa7
+S1 1 - "window Settings"
+N0 "bar|settings.strand:12:7|#0" "row#bar"
+N1 "w|settings.strand:4:1|#0" "window#w"
+N2 "|settings.strand:10:3|#0" "col@settings.strand:10"
+N3 "|settings.strand:14:9|#0" "text(\"Settings\")"
+N4 "|settings.strand:15:9|#0" "button(\"Close\")"
+N5 "|settings.strand:18:5|#0" "text(\"Volume\")"
+N6 "|settings.strand:19:5|#1" "row@settings.strand:19"
+N7 "|settings.strand:20:7|#0" "slider@settings.strand:20"
+N8 "|settings.strand:21:7|#0" "button(\"Mute\")"
+N9 "|settings.strand:24:7|#1" "text(\"Brightness\")"
+N10 "|settings.strand:25:7|#0" "slider@settings.strand:25"
+k1 p1
+s1 z=360,174 o=40,61
+n0 x=16 y=16 w=328 h=23 ord=2
+n1 x=0 y=0 w=360 h=174 bg=fff8f6ff
+n2 x=0 y=0 w=360 h=174 ord=1
+n3 x=16 y=17 w=274 h=21 txt=S ord=3 ink=16.5,20,70,17.5 fg=231917ff gl=["Settings"]
+n4 x=290 y=16 w=54 h=23 txt=S ord=4 ink=301,22,32.5,10 bg=ebe4e2ff fg=231917ff gl=["Close"]
+n5 x=16 y=51 w=328 h=15 txt=S ord=5 ink=16,53,43,10 fg=231917a6 gl=["Volume"]
+n6 x=16 y=78 w=328 h=23 ord=6
+n7 x=16 y=81 w=271 h=18 ord=7 bg=23191733/8f4c37ff/8f4c37ff pt=0,7,271,4/0,7,84.09375,4/77.09375,2,14,14
+n8 x=295 y=78 w=49 h=23 txt=S ord=8 ink=306,84.5,27.5,9.5 bg=ebe4e2ff fg=231917ff gl=["Mute"]
+n9 x=16 y=113 w=328 h=15 txt=S ord=9 ink=17,115,60,12.5 fg=231917a6 gl=["Brightness"]
+n10 x=16 y=140 w=328 h=18 ord=10 bg=23191733/8f4c37ff/8f4c37ff pt=0,7,328,4/0,7,211.09375,4/204.09375,2,14,14
+k2
+n7 pt=0,7,271,4/0,7,114.203125,4/107.203125,2,14,14
+k3
+n7 pt=0,7,271,4/0,7,158.125,4/151.125,2,14,14
+k4
+n7 pt=0,7,271,4/0,7,186.953125,4/179.953125,2,14,14
+k5
+n7 pt=0,7,271,4/0,7,199.703125,4/192.703125,2,14,14
+k6
+n7 pt=0,7,271,4/0,7,202.96875,4/195.96875,2,14,14
+k7
+n7 pt=0,7,271,4/0,7,202.4375,4/195.4375,2,14,14
+k8
+n7 pt=0,7,271,4/0,7,201.15625,4/194.15625,2,14,14
+k9
+n7 pt=0,7,271,4/0,7,200.234375,4/193.234375,2,14,14
+k10
+n7 pt=0,7,271,4/0,7,199.796875,4/192.796875,2,14,14
+k11
+n7 pt=0,7,271,4/0,7,199.75,4/192.75,2,14,14
+k12
+n7 w=254 pt=0,7,254,4/0,7,187,4/180,2,14,14
+n8 x=278 w=66 ink=289,84.5,44,9.5 gl=["Unmute"]

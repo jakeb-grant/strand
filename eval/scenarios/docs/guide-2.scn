@@ -1,0 +1,61 @@
+id     = "docs-guide-2"
+about  = """The guide's level 2 (docs/guide/level-2.md): the themed bar with
+workspace dots and the tray as the level leaves it, word for word, on a
+640 px screen at scale 2. Four workspaces on the screen, three of them
+occupied: the focus moves from the first to the third and back, and the
+wide dot slides across each time."""
+screen = { width = 640, height = 360, scale = 2.0 }
+
+[services]
+"system.accent" = "#a13c1c"
+"battery.percent" = 0.82
+"windows.focused" = '{"id": "1", "title": "Terminal", "app_id": "terminal", "icon": "", "workspace": 1, "focused": true, "minimized": false, "maximized": false, "fullscreen": false, "urgent": false, "app": null, "rect": null}'
+"workspaces.all" = '[{"id": 1, "name": "1", "focused": true, "active": true, "occupied": true, "urgent": false, "screen": "DP-1", "windows": []}, {"id": 2, "name": "2", "focused": false, "active": false, "occupied": true, "urgent": false, "screen": "DP-1", "windows": []}, {"id": 3, "name": "3", "focused": false, "active": false, "occupied": true, "urgent": false, "screen": "DP-1", "windows": []}, {"id": 4, "name": "4", "focused": false, "active": false, "occupied": false, "urgent": false, "screen": "DP-1", "windows": []}]'
+"tray.items" = '[{"id": "nm", "title": "Network", "icon": "network-wireless-signal-good-symbolic", "status": "Active"}, {"id": "bt", "title": "Bluetooth", "icon": "bluetooth-active-symbolic", "status": "Active"}]'
+
+=== bar.strand
+// bar.strand: one instance per monitor; `screen` is in scope
+bar Top {
+  edge: top; height: 36; margin: $space.2, $space.2, 0
+  bg: $surface.alpha(0.72); blur: 24; radius: $radius.lg; shadow: $elevation.md
+  font: $font.ui; color: $fg                      // inherited by every child
+  split { pad: 0, $space.3                         // centre is truly centred
+    start { gap: $space.3
+      row { gap: $space.1
+        for ws in workspaces.on(screen) { Dot ws } // keyed by ws.id, no max
+      }
+      text windows.focused?.title ?? "" { color: $fg.muted; max_width: 40%; ellipsis: end }
+    }
+    center { text clock.format("%H:%M") }
+    end { gap: $space.3
+      text pct(battery.percent)
+      for item in tray.items {
+        image item.icon { size: 16
+          on click     { item.activate() }
+          on secondary { item.menu.open() }
+        }
+      }
+    }
+  }
+}
+
+=== dot.strand
+component Dot(ws: Workspace) {
+  box { size: 8; radius: full; bg: $fg.alpha(0.25); hit: grow(6)
+    when ws.occupied { bg: $fg.muted }
+    when ws.focused  { width: 24; bg: $accent }    // later `when` wins, like CSS
+    when ws.urgent   { bg: $error }
+    when hover       { bg: $accent.hover }
+    when pressed     { scale: 0.9 }
+    on click { ws.focus() }
+  }
+}
+
+=== steps
+rest
+mark to-three
+set workspaces.all [{"id": 1, "name": "1", "focused": false, "active": false, "occupied": true, "urgent": false, "screen": "DP-1", "windows": []}, {"id": 2, "name": "2", "focused": false, "active": false, "occupied": true, "urgent": false, "screen": "DP-1", "windows": []}, {"id": 3, "name": "3", "focused": true, "active": true, "occupied": true, "urgent": false, "screen": "DP-1", "windows": []}, {"id": 4, "name": "4", "focused": false, "active": false, "occupied": false, "urgent": false, "screen": "DP-1", "windows": []}]
+rest
+mark back
+set workspaces.all [{"id": 1, "name": "1", "focused": true, "active": true, "occupied": true, "urgent": false, "screen": "DP-1", "windows": []}, {"id": 2, "name": "2", "focused": false, "active": false, "occupied": true, "urgent": false, "screen": "DP-1", "windows": []}, {"id": 3, "name": "3", "focused": false, "active": false, "occupied": true, "urgent": false, "screen": "DP-1", "windows": []}, {"id": 4, "name": "4", "focused": false, "active": false, "occupied": false, "urgent": false, "screen": "DP-1", "windows": []}]
+rest

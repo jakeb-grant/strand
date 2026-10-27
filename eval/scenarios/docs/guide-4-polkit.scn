@@ -1,0 +1,48 @@
+id     = "docs-guide-4-polkit"
+about  = """Guide level 4's admin password dialog (docs/guide/level-4.md), word
+for word. A program asks polkit for a password (the request is set on the
+mock, since the sandbox runs no polkit): the dialog opens with the
+request's message and user, and a password is typed into it, a dot a
+letter. The request names no command, so the dialog keeps one size from
+its first frame (the site's frame strip needs every frame the same
+size)."""
+screen = { width = 520, height = 340, scale = 2.0 }
+
+[services]
+"system.accent" = "#a13c1c"
+"polkit.available" = true
+
+=== polkit.strand
+// polkit.strand. Shown when a program asks polkit for your password
+panel Polkit {
+  screens: focused; layer: overlay; anchor: center; keyboard: exclusive
+  open: polkit.request != null
+  state answer = ""
+  on show { answer = "" }
+  col { width: 420; pad: $space.4; gap: $space.3; radius: $radius.xl
+        bg: $surface; shadow: $elevation.xl
+    text "Authentication needed" { font: $font.title }
+    text polkit.request?.message ?? ""
+    if polkit.request?.command != null { text polkit.request?.command ?? "" { color: $fg.muted } }
+    text "Password for " + (polkit.request?.user ?? "") { color: $fg.muted }
+    input { type: (polkit.request?.echo ?? false) ? text : password
+      placeholder: polkit.request?.prompt ?? ""; text: <-> answer; focus: true
+      on activate { if answer != "" { polkit.respond(answer) }; answer = "" }
+    }
+    if polkit.busy { text "Checking..." { color: $fg.muted } }
+    else if polkit.failed { text "Wrong password, try again" { color: $error } }
+    else if (polkit.request?.info ?? "") != "" { text polkit.request?.info ?? "" }
+    row { gap: $space.2
+      box { pad: $space.2; radius: $radius.md; on click { polkit.cancel() }; text "Cancel" }
+      if polkit.waiting > 0 { text join(" ", polkit.waiting, "more") { color: $fg.muted } }
+    }
+  }
+}
+=== steps
+rest
+mark ask
+set polkit.request {"action_id": "org.freedesktop.packagekit.package-install", "message": "Authentication is required to install software", "command": null, "icon": "", "user": "alex", "users": ["alex"], "prompt": "Password:", "echo": false, "info": ""}
+rest
+mark type
+type 12 over 900
+rest

@@ -76,6 +76,12 @@ panel Dock {
 }
 ```
 
+On one monitor, `DP-1`, the two draw this. The active workspace moves
+from 1 to 2:
+
+```example surfaces
+```
+
 - **`screens:`** picks the monitors: `all`, `focused`, a monitor's
   name (`"DP-1"`) or a list of names. A bar's default is `all`.
 - **A `panel` or `osd` is on the focused monitor** unless `screens:`

@@ -53,7 +53,11 @@ component Calendar {
 ```
 
 Save them while `strand run` is running and the bar appears. Nothing
-restarts.
+restarts. Here the clock is clicked, then › moves to the next month, and a
+second click on the clock closes it:
+
+```example calendar
+```
 
 ## How it works
 

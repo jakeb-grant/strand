@@ -1,0 +1,68 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-surfaces-dark"
+verdict good
+note "the surfaces page's bar (workspaces of DP-1, the screen's name) and its dock panel half the screen wide at the bottom; the active workspace moves 1 -> 2; checked in light and dark"
+date 2026-10-27
+rev "06f5c019+changes"
+approver "claude"
+scenario 839d77bd349bf021
+seal caa2cfcfb5ceb822
+S1 0 - "bar Top"
+S2 0 - "panel Dock"
+N0 "|bar.strand:13:11|[Mock | DP-1]#0" "text(\"DP-1\")"
+N1 "|bar.strand:13:5|[Mock | DP-1]#0" "end@bar.strand:13"
+N2 "|bar.strand:1:1|[Mock | DP-1]#0" "bar@bar.strand:1"
+N3 "|bar.strand:4:3|[Mock | DP-1]#0" "split@bar.strand:4"
+N4 "|bar.strand:5:5|[Mock | DP-1]#0" "start@bar.strand:5"
+N5 "|bar.strand:7:9|[Mock | DP-1][1]#0" "text(\"1\")"
+N6 "|bar.strand:7:9|[Mock | DP-1][2]#1" "text(\"2\")"
+N7 "|bar.strand:7:9|[Mock | DP-1][3]#2" "text(\"3\")"
+N8 "|dock.strand:1:1|[Mock | DP-1]#0" "panel@dock.strand:1"
+N9 "|dock.strand:3:3|[Mock | DP-1]#0" "row@dock.strand:3"
+k0 p1,2
+s1 z=480,32
+s2 z=240,48 o=120,144
+n0 x=438 y=9 w=30 h=15 txt=S ord=7 ink=439,11.5,28,9 fg=f1dfda59 gl=["DP-1"]
+n1 x=240 y=0 w=228 h=32 ord=6
+n2 x=0 y=0 w=480 h=32 bg=1a110fff
+n3 x=0 y=0 w=480 h=32 ord=1
+n4 x=12 y=0 w=228 h=32 ord=2
+n5 x=12 y=9 w=8 h=15 txt=S ord=3 ink=12.5,11.5,6.5,9 fg=ffb59fff gl=["1"]
+n6 x=28 y=9 w=8 h=15 txt=S ord=4 ink=28.5,11,6.5,9.5 fg=f1dfdaa6 gl=["2"]
+n7 x=44 y=9 w=8 h=15 txt=S ord=5 ink=44,11,7,10 fg=f1dfdaa6 gl=["3"]
+n8 srf=2 x=0 y=0 w=240 h=48
+n9 srf=2 x=0 y=0 w=240 h=48 ord=1 bg=1a110fff
+k1 p1
+n5 fg=feb9a5f2
+n6 fg=f5d7ceb3
+k2
+n5 fg=fcc1b0dd
+n6 fg=f9cbbdc8
+k3
+n5 fg=f9cabcca
+n6 fg=fcc2b1db
+k4
+n5 fg=f7d1c6bc
+n6 fg=fdbdaae8
+k5
+n5 fg=f5d6cdb4
+n6 fg=febaa5f1
+k6
+n5 fg=f3dad2ae
+n6 fg=feb8a3f7
+k7
+n5 fg=f2dcd5ab
+n6 fg=ffb7a1fa
+k8
+n5 fg=f2ddd7a8
+n6 fg=ffb6a0fc
+k9
+n5 fg=f1ded8a7
+n6 fg=ffb5a0fd
+k10
+n5 fg=f1ded9a7
+n6 fg=ffb59ffe
+k11
+n5 fg=f1dfdaa6
+n6 fg=ffb59fff
+k12

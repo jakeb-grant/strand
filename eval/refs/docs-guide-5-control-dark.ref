@@ -1,0 +1,151 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-guide-5-control-dark"
+verdict good
+note "Guide level 5's control centre for the site, open from the start (seeded, settled in the warmup): the volume knob springs up, the profile moves to performance and Bluetooth turns off, its tile losing the accent; checked frame by frame in light and dark"
+date 2026-10-27
+rev "06f5c019+changes"
+approver "claude"
+scenario cf1e9c4f02251eaf
+seal bdd5eeaa80aafddc
+S1 49 - "panel Control"
+N0 "|control.strand:10:5|#0" "text(\"Appearance\")"
+N1 "|control.strand:10:5|#0~2" "text(\"Volume\")"
+N2 "|control.strand:10:5|#0~3" "text(\"Brightness\")"
+N3 "|control.strand:10:5|#0~4" "text(\"Power profile\")"
+N4 "|control.strand:10:5|#0~5" "text(\"Bluetooth\")"
+N5 "|control.strand:15:1|#0" "panel@control.strand:15"
+N6 "|control.strand:21:3|#0" "col@control.strand:21"
+N7 "|control.strand:24:5|#0" "row@control.strand:24"
+N8 "|control.strand:25:7|#0" "text(\"aurora\")"
+N9 "|control.strand:26:7|#1" "text(\"52°\")"
+N10 "|control.strand:28:5|#0" "pages@control.strand:28"
+N11 "|control.strand:29:7|#0" "page@control.strand:29"
+N12 "|control.strand:30:9|#0" "col@control.strand:30"
+N13 "|control.strand:31:31|#0" "segmented@control.strand:31"
+N14 "|control.strand:32:11|#0" "row@control.strand:32"
+N15 "|control.strand:34:29|#0" "slider@control.strand:34"
+N16 "|control.strand:35:59|#0" "slider@control.strand:35"
+N17 "|control.strand:38:13|#0" "row@control.strand:38"
+N18 "|control.strand:40:17|[balanced]#1" "text(\"balanced\")"
+N19 "|control.strand:40:17|[performance]#2" "text(\"performance\")"
+N20 "|control.strand:40:17|[power-saver]#0" "text(\"power-saver\")"
+N21 "|control.strand:48:13|#0" "row@control.strand:48"
+N22 "|control.strand:49:15|#0" "button(\"On\")"
+N23 "|control.strand:50:15|#1" "button(\"Devices ›\")"
+N24 "|control.strand:8:3|#0" "col@control.strand:8"
+N25 "|control.strand:8:3|#0~2" "col@control.strand:8"
+N26 "|control.strand:8:3|#1" "col@control.strand:8"
+N27 "|control.strand:8:3|#1~2" "col@control.strand:8"
+N28 "|control.strand:8:3|#2" "col@control.strand:8"
+k49 p1
+s1 z=441,424 o=39,0
+n0 x=97 y=59 w=312 h=13 v=97.328125,59.328125,312,12.671875 txt=S ord=9 ink=97.328125,61.328125,59.328125,10.671875 fg=f1dfdaa6 gl=["Appearance"]
+n1 x=93 y=134 w=148 h=13 v=93.328125,134,148,13.328125 txt=S ord=13 ink=93.328125,136,36.671875,8.671875 fg=f1dfdaa6 gl=["Volume"]
+n2 x=265 y=134 w=148 h=13 v=265.328125,134,148,13.328125 txt=S ord=16 ink=266,136,51.328125,10.671875 fg=f1dfdaa6 gl=["Brightness"]
+n3 x=97 y=201 w=312 h=13 v=97.328125,201.328125,312,12.671875 txt=S ord=19 ink=98,203.328125,63.328125,10.671875 fg=f1dfdaa6 gl=["Power\u0020profile"]
+n4 x=97 y=267 w=312 h=13 v=97.328125,267.328125,312,12.671875 txt=S ord=25 ink=98,269.328125,45.328125,8.671875 fg=f1dfdaa6 gl=["Bluetooth"]
+n5 x=73 y=8 w=360 h=327 v=73.328125,8,360,327.328125
+n6 x=73 y=8 w=360 h=327 v=73.328125,8,360,327.328125 ord=1 bg=211614ff sh=00000066@0.671875,-48.671875,505.328125,472.671875
+n7 x=85 y=20 w=336 h=15 v=85.328125,20,336,15.328125 ord=2
+n8 x=85 y=20 w=309 h=15 v=85.328125,20,308.671875,15.328125 txt=S ord=3 ink=85.328125,24.671875,40.671875,8 fg=f1dfdaff gl=["aurora"]
+n9 x=402 y=21 w=19 h=14 v=402,21.328125,19.328125,14 txt=S ord=4 ink=402,23.328125,18,9.328125 fg=f1dfdaa6 gl=["52°"]
+n10 x=85 y=47 w=336 h=276 v=85.328125,47.328125,336,276 ord=5
+n11 x=85 y=47 w=336 h=276 v=85.328125,47.328125,336,276 ord=6
+n12 x=85 y=47 w=336 h=276 v=85.328125,47.328125,336,276 ord=7
+n13 x=97 y=80 w=312 h=26 v=97.328125,80,312,26 ord=10 bg=2f2321ff/ffb59fff fg=561f0eff/f1dfdaff/f1dfdaff/f1dfdaff/f1dfdaff gl=["auto","light","dark","wallpaper","mocha"] pt=2,2,58.40625,22
+n14 x=85 y=126 w=336 h=55 v=85.328125,126,336,55.328125 ord=11
+n15 x=93 y=155 w=148 h=18 v=93.328125,155.328125,148,18 ord=14 bg=f1dfda33/ffb59fff/ffb59fff pt=0,7,148,4/0,7,60.59375,4/53.609375,2,14,14
+n16 x=265 y=155 w=148 h=18 v=265.328125,155.328125,148,18 ord=17 bg=f1dfda33/ffb59fff/ffb59fff pt=0,7,148,4/0,7,100.796875,4/93.8125,2,14,14
+n17 x=97 y=222 w=312 h=13 v=97.328125,222,312,13.328125 ord=20
+n18 x=206 y=222 w=93 h=13 v=206,222,93.328125,13.328125 txt=S ord=22 ink=206.671875,224,46.671875,8.671875 fg=ffb59fff gl=["balanced"]
+n19 x=303 y=222 w=106 h=13 v=303.328125,222,106,13.328125 txt=S ord=23 ink=304,224,60.671875,10.671875 fg=f1dfdaa6 gl=["performance"]
+n20 x=97 y=222 w=105 h=13 v=97.328125,222,104.671875,13.328125 txt=S ord=21 ink=98,226,60,8.671875 fg=f1dfdaa6 gl=["power-saver"]
+n21 x=97 y=288 w=312 h=23 v=97.328125,288,312,23.328125 ord=26
+n22 x=97 y=288 w=136 h=23 v=97.328125,288,136,23.328125 txt=S ord=27 ink=156.671875,294.671875,16.671875,10 bg=2f2321ff fg=f1dfdaff gl=["On"]
+n23 x=237 y=288 w=172 h=23 v=237.328125,288,172,23.328125 txt=S ord=28 ink=296.671875,294,53.328125,10.671875 bg=2f2321ff fg=f1dfdaff gl=["Devices\u0020›"]
+n24 x=85 y=47 w=336 h=71 v=85.328125,47.328125,336,70.671875 ord=8 bg=2f2321ff
+n25 x=85 y=126 w=164 h=55 v=85.328125,126,164,55.328125 ord=12 bg=2f2321ff
+n26 x=257 y=126 w=164 h=55 v=257.328125,126,164,55.328125 ord=15 bg=2f2321ff
+n27 x=85 y=189 w=336 h=58 v=85.328125,189.328125,336,58 ord=18 bg=2f2321ff
+n28 x=85 y=255 w=336 h=68 v=85.328125,255.328125,336,68 ord=24 bg=ffb59f38
+k77
+n15 pt=0,7,148,4/0,7,74.546875,4/67.5625,2,14,14
+k78
+n15 pt=0,7,148,4/0,7,94.90625,4/87.921875,2,14,14
+k79
+n15 pt=0,7,148,4/0,7,108.265625,4/101.28125,2,14,14
+k80
+n15 pt=0,7,148,4/0,7,114.1875,4/107.1875,2,14,14
+k81
+n15 pt=0,7,148,4/0,7,115.6875,4/108.703125,2,14,14
+k82
+n15 pt=0,7,148,4/0,7,115.4375,4/108.453125,2,14,14
+k83
+n15 pt=0,7,148,4/0,7,114.859375,4/107.859375,2,14,14
+k84
+n15 pt=0,7,148,4/0,7,114.421875,4/107.4375,2,14,14
+k85
+n15 pt=0,7,148,4/0,7,114.21875,4/107.234375,2,14,14
+k86
+n15 pt=0,7,148,4/0,7,114.203125,4/107.203125,2,14,14
+k87
+n18 w=88 v=206,222,88,13.328125 ink=206.671875,224,43.328125,8.671875 fg=feb9a5f2
+n19 x=298 w=111 v=298,222,111.328125,13.328125 ink=298.671875,224,66,10.671875 fg=f5d7ceb3
+k88
+n18 fg=fcc1b0dd
+n19 fg=f9cbbdc8
+k89
+n18 fg=f9cabcca
+n19 fg=fcc2b1db
+k90
+n18 fg=f7d1c6bc
+n19 fg=fdbdaae8
+k91
+n18 fg=f5d6cdb4
+n19 fg=febaa5f1
+k92
+n18 fg=f3dad2ae
+n19 fg=feb8a3f7
+k93
+n18 fg=f2dcd5ab
+n19 fg=ffb7a1fa
+k94
+n18 fg=f2ddd7a8
+n19 fg=ffb6a0fc
+k95
+n18 fg=f1ded8a7
+n19 fg=ffb5a0fd
+k96
+n18 fg=f1ded9a7
+n19 fg=ffb59ffe
+k97
+n18 fg=f1dfdaa6
+n19 fg=ffb59fff
+k98
+k99
+n22 ink=156.671875,294,17.328125,10.671875 gl=["Off"]
+n28 bg=9e716455
+k100
+n28 bg=5f453e85
+k101
+n28 bg=47342fae
+k102
+n28 bg=3c2c28cc
+k103
+n28 bg=362825e0
+k104
+n28 bg=332623ed
+k105
+n28 bg=312522f4
+k106
+n28 bg=302421f9
+k107
+n28 bg=302421fc
+k108
+n28 bg=302421fd
+k109
+n28 bg=2f2421fe
+k110
+n28 bg=2f2321fe
+k111
+n28 bg=2f2321ff

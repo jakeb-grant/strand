@@ -42,7 +42,11 @@ bar Top {
 ```
 
 The clock stays in the middle of the bar however wide the two sides
-are, and the focused workspace's dot grows to a pill.
+are, and the focused workspace's dot grows to a pill. Here the focus
+moves from workspace 1 to 3, then to 2:
+
+```example layout
+```
 
 ## Sizes
 

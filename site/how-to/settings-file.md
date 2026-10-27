@@ -32,6 +32,12 @@ A settings declaration at the top of a file belongs to that file, as
 any top-level `state` does; `export state prefs from …` would let other
 files read it as `bar.prefs`.
 
+Here it is before there is a settings file. A click on the button sets
+`prefs.seconds`, and the clock shows them:
+
+```example settings
+```
+
 And the settings themselves, which you can leave out: a missing file
 gives every field its default.
 
