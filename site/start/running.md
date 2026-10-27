@@ -177,8 +177,8 @@ the `export state open` of `launcher.strand`), `service.field` for a
 service (`audio.sink.volume`) and `$name` for a token. `strand set
 '$accent' '#ff5555'` lays a token over the theme until `strand clear
 '$accent'` takes it off. Bind these commands to keys in your
-compositor; levels [4](../../docs/guide/level-4.md) and
-[5](../../docs/guide/level-5.md) of the guide do.
+compositor ([Start it and bind keys](#start-it-and-bind-keys) shows
+how).
 
 ## Logs
 
@@ -199,14 +199,46 @@ mapped, each reload and each service starting or stopping. The topic `damage`
 (`STRAND_LOG=damage`, or `STRAND_LOG=info,damage` with a level) prints
 one line per painted frame with the rectangles it repainted.
 
-## Start it with your session
+## Start it and bind keys
 
 Start `strand run` from your compositor's startup commands, so it runs
-in the session's environment. For example:
+in the session's environment. Strand does not grab keys either: your
+compositor keeps them, and a key runs a `strand` command. Every
+compositor works this way; these are the lines for three of them,
+starting the shell and opening the launcher on Super+D.
 
-- sway: `exec strand run`
-- Hyprland, in a hyprlang config: `exec-once = strand run`
-- niri: `spawn-at-startup "strand" "run"`
+sway, in `~/.config/sway/config`:
+
+```sh
+exec strand run
+bindsym $mod+d exec strand toggle launcher.open
+```
+
+Hyprland, in its Lua config (`~/.config/hypr/hyprland.lua`, Hyprland
+0.55 and later):
+
+```lua
+hl.on("hyprland.start", function()
+    hl.exec_cmd("strand run")
+end)
+hl.bind("SUPER + D", hl.dsp.exec_cmd("strand toggle launcher.open"))
+```
+
+niri, in `~/.config/niri/config.kdl`:
+
+```kdl
+spawn-at-startup "strand" "run"
+binds {
+    Mod+D { spawn "strand" "toggle" "launcher.open"; }
+}
+```
+
+Keys that should work while the screen is locked, such as volume and
+brightness, take a flag: `bindsym --locked` in sway, `{ locked = true }`
+as `hl.bind`'s third argument in Hyprland (with `repeating = true` there
+to repeat while held, which sway and niri do already), and
+`allow-when-locked=true` in niri. Your compositor's own documentation
+has the rest.
 
 The shell connects to the display `WAYLAND_DISPLAY` names, and the
 commands above reach it through a socket in `$XDG_RUNTIME_DIR` named

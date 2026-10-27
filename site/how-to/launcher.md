@@ -43,18 +43,14 @@ panel Launcher {
 
 ## Bind a key
 
-Strand does not grab keys. Your compositor runs the command instead.
-In sway:
+Strand does not grab keys. Your compositor runs the command instead:
 
 ```sh
-bindsym $mod+d exec strand toggle launcher.open
+strand toggle launcher.open
 ```
 
-In Hyprland:
-
-```sh
-bind = SUPER, D, exec, strand toggle launcher.open
-```
+Bind it to a key such as Super+D in your compositor (how: [Start it
+and bind keys](../start/running.md#start-it-and-bind-keys)).
 
 `strand toggle` flips an exported `bool` state. `launcher.open` is the
 file's name, then the state's: `export` is what lets the command line

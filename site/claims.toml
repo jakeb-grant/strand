@@ -151,6 +151,12 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 
 [[claim]]
 page   = "site/start/install.md"
+text   = "Lua (`hl.layer_rule`) by default, and `--classic` prints hyprlang"
+source = ["crates/strand/src/rules.rs:211", "crates/strand/src/rules.rs:234"]
+proof  = "read: lua() writes hl.layer_rule({ … }), classic() writes `layerrule =` lines; --classic picks classic (USAGE)"
+
+[[claim]]
+page   = "site/start/install.md"
 text   = "into your Hyprland config. Strand never applies them itself."
 source = ["crates/strand/src/rules.rs:6"]
 proof  = "read"
@@ -451,7 +457,7 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 
 [[claim]]
 page   = "site/start/running.md"
-text   = "- niri: `spawn-at-startup \"strand\" \"run\"`"
+text   = "spawn-at-startup \"strand\" \"run\""
 source = ["crates/strand/src/entry.rs:164"]
 proof  = "niri's config syntax; strand run takes no other argument"
 

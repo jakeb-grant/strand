@@ -33,18 +33,21 @@ osd Level {                                       // focused monitor, overlay, c
 ## Bind the keys
 
 Strand does not grab keys: your compositor keeps them and runs
-`strand set`. In sway:
+`strand set`. These are the commands for the volume and brightness
+keys:
 
 ```sh
-bindsym XF86AudioRaiseVolume  exec strand set audio.sink.volume +5%
-bindsym XF86AudioLowerVolume  exec strand set audio.sink.volume -5%
-bindsym XF86MonBrightnessUp   exec strand set brightness.level +5%
-bindsym XF86MonBrightnessDown exec strand set brightness.level -5%
+strand set audio.sink.volume +5%
+strand set audio.sink.volume -5%
+strand set brightness.level +5%
+strand set brightness.level -5%
 ```
 
-In Hyprland the same commands follow `bind = , XF86AudioRaiseVolume,
-exec,` and so on. On a service field, a signed number or percentage is
-a step from the value it has now, and it never goes below 0.
+Bind them to the keys in your compositor, so they work while the
+screen is locked and repeat while held (how: [Start it and bind
+keys](../start/running.md#start-it-and-bind-keys)). On a service
+field, a signed number or percentage is a step from the value it has
+now, and it never goes below 0.
 
 ## What it looks like
 

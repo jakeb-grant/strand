@@ -46,17 +46,18 @@ a pill with the level fades in near the bottom of the screen, follows
 the volume while you move it, and fades out a little after you stop.
 
 **Keys stay in your compositor.** Strand does not grab keys. Bind your
-volume and brightness keys to the command line instead. In sway:
+volume and brightness keys to the command line instead:
 
 ```
-bindsym XF86AudioRaiseVolume  exec strand set audio.sink.volume +5%
-bindsym XF86AudioLowerVolume  exec strand set audio.sink.volume -5%
-bindsym XF86MonBrightnessUp   exec strand set brightness.level +5%
-bindsym XF86MonBrightnessDown exec strand set brightness.level -5%
+strand set audio.sink.volume +5%
+strand set audio.sink.volume -5%
+strand set brightness.level +5%
+strand set brightness.level -5%
 ```
 
-In Hyprland the same commands follow `bind = , XF86AudioRaiseVolume,
-exec,` and so on. `strand set` writes a service field the way a
+Your compositor's config says which key runs which (how: [Start it
+and bind keys](../../site/start/running.md#start-it-and-bind-keys)).
+`strand set` writes a service field the way a
 handler does. A signed number or percentage is a step from the current
 value, and it never goes below 0.
 
@@ -358,10 +359,10 @@ panel Launcher {
 }
 ```
 
-Bind a key to open it. In sway:
+Bind a key such as Super+D to open it, as above:
 
 ```
-bindsym $mod+d exec strand toggle launcher.open
+strand toggle launcher.open
 ```
 
 Press it: a search box fades in at the centre of the screen. Type a few
@@ -445,10 +446,10 @@ lock {
 
 Before you lock anything, check the file: `strand check
 ~/.config/strand` must report no error in `lock.strand`. Then bind a
-key:
+key to:
 
 ```
-bindsym $mod+Escape exec strand set lock.locked true
+strand set lock.locked true
 ```
 
 An idle daemon can run the same command. Locking before the machine
@@ -751,7 +752,7 @@ window Settings {
 Bind a key to it, as the launcher's:
 
 ```
-bindsym $mod+comma exec strand toggle settings.open
+strand toggle settings.open
 ```
 
 Press it: a window titled "Settings" opens, as any app's would. A
