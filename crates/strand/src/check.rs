@@ -883,13 +883,18 @@ mod tests {
         t.write("lock.strand", LOCK);
         let report = check_dir_with(&t.0, Style::Plain, no_helper).unwrap();
         assert_eq!(report.errors, 1, "{}", report.text);
+        // The help wraps to the report's width wherever the hint's path
+        // (this test binary's directory) puts the breaks, so the words are
+        // looked for with the whitespace taken out.
+        let unwrapped: String = report.text.split_whitespace().collect();
         for want in [
             "check::lock_no_helper",
             "lock.strand:1:",
             "beside this strand",
             "/usr/libexec/strand",
         ] {
-            assert!(report.text.contains(want), "{want}: {}", report.text);
+            let want: String = want.split_whitespace().collect();
+            assert!(unwrapped.contains(&want), "{want}: {}", report.text);
         }
         assert!(!report.ok());
         let report = check_dir_with(&t.0, Style::Plain, a_helper).unwrap();

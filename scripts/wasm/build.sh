@@ -52,7 +52,11 @@ trap 'cp "$lock" Cargo.lock; rm -f "$lock"' EXIT
   if [ "$rust_opt" != 3 ]; then
     export CARGO_PROFILE_RELEASE_OPT_LEVEL="$rust_opt"
   fi
-  export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="${CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS:-} -C target-feature=+simd128"
+  # A set RUSTFLAGS (CI's `-D warnings`) would take the place of the
+  # target's flags, simd128 among them, and fearless_simd would build its
+  # scalar fallback, which the patch does not fuse: so it joins them.
+  export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="${RUSTFLAGS:-} ${CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS:-} -C target-feature=+simd128"
+  unset RUSTFLAGS
   cargo build --release --target wasm32-unknown-unknown -p strand-web --lib \
     --config "patch.crates-io.fearless_simd.path='$CARGO_TARGET_DIR/fearless_simd-exact'"
 )
