@@ -1,7 +1,9 @@
 # Live examples: Strand's renderer in the docs site
 
 The playground page (`site/playground.md`, linked from Tools) runs
-every docs example live. Strand's compiler, logic VM, layout, text and
+the docs examples its ```` ```playground ```` block names live (only
+those: another figure's scenario may click or use a header key the web
+host refuses). Strand's compiler, logic VM, layout, text and
 CPU renderer, built to WebAssembly, run the example's own scenario in
 the page and draw into a canvas. The reader can play the scenario's
 steps, run them one at a time, point and click, and edit the config,
@@ -78,7 +80,7 @@ figures stopped offering "Try it live" under `docs-tune`.
 
 ## Pixel parity
 
-Every docs example, live, draws every frame eval drew for the site's
+Every example the playground runs draws every frame eval drew for the site's
 media, at the same time from its first frame and with the same pixel
 hash, in light and dark mode: hello 1 of 1, springs 75 of 75, swap 33
 of 33, toasts 44 of 44, OSD 34 of 34. Two checks hold it:

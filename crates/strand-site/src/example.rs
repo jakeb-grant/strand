@@ -210,20 +210,28 @@ pub fn live(s: &Scenario) -> Result<Value, String> {
     }))
 }
 
-/// Every docs example (`eval/scenarios/docs/*.scn`, by name) as the
-/// playground runs it ([`live`]), as a JSON list.
+/// The page whose ```` ```playground ```` block names the examples it
+/// runs live.
+pub const PLAYGROUND: &str = "site/playground.md";
+
+/// The examples the playground names, in its order: only they run live
+/// (a figure on another page is its frames, and its scenario may use
+/// what the web host cannot run: a click, a header key it refuses).
+pub fn playground_names(root: &Path) -> Result<Vec<String>, String> {
+    let text = std::fs::read_to_string(root.join(PLAYGROUND))
+        .map_err(|e| format!("{PLAYGROUND}: {e}"))?;
+    let line = text
+        .lines()
+        .find_map(|l| l.strip_prefix("```playground "))
+        .ok_or_else(|| format!("{PLAYGROUND}: no ```playground block"))?;
+    Ok(line.split_whitespace().map(str::to_string).collect())
+}
+
+/// Every example the playground names as it runs it ([`live`]), as a
+/// JSON list.
 pub fn all_live(root: &Path) -> Result<Value, String> {
-    let dir = root.join(DIR);
-    let mut names: Vec<String> = std::fs::read_dir(&dir)
-        .map_err(|e| format!("{DIR}: {e}"))?
-        .filter_map(|e| {
-            let p = e.ok()?.path();
-            (p.extension()? == "scn").then(|| p.file_stem()?.to_str().map(str::to_string))?
-        })
-        .collect();
-    names.sort();
     let mut out = Vec::new();
-    for n in names {
+    for n in playground_names(root)? {
         out.push(live(&load(root, &n)?)?);
     }
     Ok(Value::Array(out))
