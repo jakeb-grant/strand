@@ -1,50 +1,29 @@
-<section class="hero">
-<div class="hero-copy">
+<section class="intro">
 
 # Strand
 
-<p class="hero-lede">A toolkit for Wayland shells.</p>
+<p class="lede">A toolkit for Wayland shells. Write bars, launchers, lock screens and panels in one small typed language; save the file and the running shell follows.</p>
 
-<p class="hero-text">Write bars, launchers, lock screens and panels in one small typed language. Colours, sizes and positions spring, saving a file never restarts the shell, and nothing runs while nothing changes.</p>
+<p class="actions"><a class="btn primary" href="start/install.html">Install</a><a class="btn" href="guide/index.html">Read the guide</a></p>
 
-<p class="hero-actions"><a class="button" href="guide/level-1.html">Build the hello bar</a><a class="text-link" href="guide/index.html">Read the guide</a></p>
+</section>
 
-</div>
+<section class="hello">
 
 ```example hello
 ```
 
 </section>
 
-<section class="band band-reload">
-<div class="band-copy">
+<section class="row">
+<div class="row-copy">
 
-## Saving changes the shell, not its state
-
-Strand watches your config. When you save, it reconciles the running
-shell with the new file: what you changed animates to its new value,
-and the rest keeps its state, an open popup or the text typed into a
-launcher. A save that does not check leaves the last good shell
-running, and an overlay points at the line.
-
-</div>
-<dl class="figures">
-<div><dt>35 ms</dt><dd>from saving a token edit to the frame on screen, at the 95th percentile. CI fails a build that is slower.</dd></div>
-<div><dt>50 ms</dt><dd>for an edit that adds or removes an element, held the same way.</dd></div>
-</dl>
-</section>
-
-<section class="band band-motion">
-<div class="band-copy">
-
-## Changes spring into place
+## Changes move on springs
 
 Change a value and its prop moves there. Spring curves are theme tokens
-you can retune, and a prop can choose its own after `~`. These frames
-are Strand's own, drawn one at a time on a virtual clock. Try it live
-runs the same config in your browser, Strand's compiler and renderer
-built to WebAssembly, and draws the same frames, pixel for pixel; edit
-the config and it runs again.
+you can retune, and a prop can choose its own after `~`.
+
+<p><a href="concepts/motion.html">Motion</a></p>
 
 </div>
 
@@ -53,15 +32,20 @@ the config and it runs again.
 
 </section>
 
-<section class="band band-check">
-<div class="band-copy">
+<section class="row">
+<div class="row-copy">
 
-## Checked before it runs
+## Save, and the shell follows
 
-Every name, field and type is known before the shell starts. `strand
-check` and your editor's language server say what is wrong and where,
-and usually how to fix it. This error is computed by the same check
-when this site is built.
+Strand watches your config. When you save, what you changed animates to
+its new value, and the rest keeps its state, an open popup or the text
+typed into a launcher.
+
+Every name, field and type is known before the shell starts. A save that
+does not check leaves the last good shell running, and the check says
+what is wrong and where, and usually how to fix it.
+
+<p><a href="concepts/live-reload.html">Live reload</a></p>
 
 </div>
 
@@ -74,29 +58,19 @@ bar Top {
 
 </section>
 
-<section class="band band-idle">
-<div class="band-copy">
+<section class="docs">
 
-## Idle when nothing changes
+## The documentation
 
-With nothing else changing, the hello bar wakes once a minute, to
-turn its clock. A surface repaints only what changed, and the GPU
-draws large animations and shaders. CI holds design.md's bar on two
-monitors to 48 MiB, measured with no GPU device.
+<nav class="index" aria-label="The documentation">
+<a href="start/install.html"><b>Start</b><span>Install Strand and run a shell.</span></a>
+<a href="guide/index.html"><b>Guide</b><span>Five levels, from one bar to a full shell.</span></a>
+<a href="how-to/calendar-popup.html"><b>How-to</b><span>Complete configs for common pieces.</span></a>
+<a href="concepts/language.html"><b>Concepts</b><span>The language, state, theming, layout and motion.</span></a>
+<a href="tools/editor.html"><b>Tools</b><span>Your editor, the strand command and the inspector.</span></a>
+<a href="reference/elements/index.html"><b>Reference</b><span>Every element, service, type and function.</span></a>
+</nav>
 
-</div>
-<ul class="compositors" aria-label="Compositors tested in CI">
-<li>sway</li><li>Hyprland</li><li>niri</li><li>labwc</li>
-</ul>
-<p class="compositors-note">Every build runs on these four compositors in CI.</p>
-</section>
-
-<section class="closing">
-
-## Start with one file
-
-<p>Level 1 of the guide builds the hello bar from <code>strand new</code> in a few minutes. Each level after it adds a handful of ideas, up to a full desktop shell.</p>
-
-<p class="hero-actions"><a class="button" href="guide/level-1.html">Build the hello bar</a><a class="text-link" href="reference/elements/index.html">Browse the reference</a></p>
+<p class="note">Strand runs on sway, Hyprland, niri and labwc, and every build is tested on all four.</p>
 
 </section>

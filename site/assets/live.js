@@ -8,8 +8,8 @@
 // A run is the example's own scenario: its config, its mock services,
 // its screen and its steps, played at the page's frame rate on Strand's
 // virtual clock (one tick each 1/hz s, at most four a frame behind). The
-// reader can press each step that acts, replay the steps, point and
-// click, and edit the config; an edit runs again, or shows the
+// reader can play the steps again, run them one at a time, start over,
+// point and click, and edit the config; an edit runs again, or shows the
 // compiler's diagnostics as `strand check` prints them.
 (function () {
   "use strict";
@@ -70,10 +70,7 @@
     return b;
   }
 
-  /** A step's label, cut as the curve's are (26 characters). */
-  function short(text) {
-    return text.length > 26 ? text.slice(0, 25) + "…" : text;
-  }
+  const PLAY_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3v10l8.5-5z"/></svg>';
 
   // ---- A light editor: a textarea over the same text, highlighted as
   // the site highlights Strand (its hl- classes), by a small scanner
@@ -160,9 +157,10 @@
   }
 
   /**
-   * One example running live: a canvas where its frames were, its steps
-   * as buttons, its config in editors, and what went wrong under them.
-   * `parts` places them: `stage` (the canvas's box), `controls`, `edit`.
+   * One example running live: a canvas where its frames were, a bar to
+   * play its steps, run the next one or start over, its config in
+   * editors, and what went wrong under them. `parts` places them:
+   * `stage` (the canvas's box), `controls` (the bar), `edit`.
    */
   class Run {
     constructor(lib, data, parts) {
@@ -180,21 +178,31 @@
       this.canvas = el("canvas", "lv-canvas");
       this.canvas.setAttribute("role", "img");
       this.canvas.setAttribute("aria-label", `The ${data.name} example, running live`);
-      parts.stage.append(this.canvas);
-
+      // Shown when nothing is on screen and nothing is coming (an OSD
+      // that has faded), so an empty stage says what to do.
+      this.empty = el("p", "lv-empty");
+      parts.stage.append(this.canvas, this.empty);
       const c = parts.controls;
-      this.replay = button("lv-replay", "Replay", "Replay the example's steps");
+      this.replay = button("btn icon lv-replay", "", "Play the steps");
+      this.replay.innerHTML = PLAY_ICON;
+      this.replay.title = "Play the steps from the start";
       this.replay.addEventListener("click", () => this.start());
-      c.append(this.replay);
+      // The steps that act, run one at a time; the button's tooltip
+      // names the one it runs.
       this.acts = [];
       this.steps.forEach((s, i) => {
-        if (!s.acts) return;
-        const b = button("lv-act", short(s.text));
-        b.title = s.text;
-        b.addEventListener("click", () => this.act(i, b));
-        c.append(b);
-        this.acts.push(b);
+        if (s.acts) this.acts.push(i);
       });
+      this.nextAct = 0;
+      this.next = button("btn lv-next", "Next step");
+      this.next.addEventListener("click", () => this.act(this.acts[this.nextAct]));
+      this.next.hidden = !this.acts.length;
+      this.restart = button("btn quiet lv-restart", "Restart", "Start the example again, before its steps");
+      this.restart.addEventListener("click", () => this.start(false));
+      c.append(this.replay, this.next, this.restart);
+      this.empty.textContent = this.acts.length
+        ? "Nothing is on screen now. Next step runs the example's next step."
+        : "Nothing is on screen now.";
       this.status = el("span", "lv-status");
       this.status.setAttribute("aria-live", "polite");
       c.append(this.status);
@@ -205,7 +213,7 @@
           this.edited = setTimeout(() => this.start(), 350);
         }),
       );
-      this.reset = button("lv-reset", "Reset", "Put the example's config back");
+      this.reset = button("btn small lv-reset", "Reset", "Put the example's config back");
       this.reset.addEventListener("click", () => {
         this.editors.forEach((e, i) => (e.value = data.files[i][1]));
         this.start();
@@ -261,8 +269,8 @@
       return same ? "" : JSON.stringify(now);
     }
 
-    /** Boots the run and plays its steps from the beginning. */
-    start() {
+    /** Boots the run and, unless `play` is false, plays its steps. */
+    start(play = true) {
       clearTimeout(this.edited);
       cancelAnimationFrame(this.raf);
       this.raf = 0;
@@ -280,8 +288,11 @@
       this.starts = (this.starts || 0) + 1;
       this.drawn = -1;
       this.owed = 0;
-      this.playing = true;
+      this.playing = play;
       this.clock = null;
+      this.shown = false;
+      this.setNext(0);
+      this.status.textContent = "";
       this.parts.root.classList.remove("lv-failed");
       this.note([live.warnings(), reducedQuery.matches ? "Reduced motion is on, as on your desktop: motion snaps." : ""]);
       this.wake();
@@ -298,13 +309,15 @@
       cancelAnimationFrame(this.raf);
       this.raf = 0;
       this.parts.root.classList.add("lv-failed");
+      this.parts.root.classList.remove("lv-blank");
       this.out.textContent = text;
       this.out.hidden = this.outBox.hidden = false;
       this.status.textContent = this.live ? "The last config that ran is shown" : "";
     }
 
-    act(index, b) {
-      if (!this.live) return;
+    /** Runs step `index` now, stopping the steps that were playing. */
+    act(index) {
+      if (!this.live || index === undefined) return;
       this.playing = false;
       try {
         this.live.act(index);
@@ -312,8 +325,15 @@
         this.fail(String(e));
         return;
       }
-      this.acts.forEach((a) => a.classList.toggle("lv-done", a === b));
+      this.setNext(this.nextAct + 1);
       this.wake(2);
+    }
+
+    /** Which step Next step runs: the `i`th that acts, round again. */
+    setNext(i) {
+      if (!this.acts.length) return;
+      this.nextAct = i % this.acts.length;
+      this.next.title = this.steps[this.acts[this.nextAct]].text;
     }
 
     /**
@@ -369,14 +389,15 @@
       }
       const notes = live.notes();
       if (notes) this.note([live.warnings(), notes]);
-      if (this.playing || this.owed > 0 || !live.at_rest()) this.wake();
-      else this.status.textContent = `${(this.cost.tickMs / Math.max(1, this.cost.ticks)).toFixed(2)} ms a tick`;
+      const busy = this.playing || this.owed > 0 || !live.at_rest();
+      this.parts.root.classList.toggle("lv-blank", !busy && !this.shown);
+      if (busy) this.wake();
     }
 
-    /** Shows which step is playing. */
+    /** Steps played so far point Next step past them. */
     mark(at) {
-      const s = this.steps[at];
-      if (s) this.status.textContent = s.text.length > 40 ? s.text.slice(0, 39) + "…" : s.text;
+      const i = this.acts.indexOf(at);
+      if (i >= 0) this.setNext(i + 1);
     }
 
     draw() {
@@ -384,7 +405,8 @@
       this.drawn = live.painted();
       if (this.firstDrawn === undefined) this.firstDrawn = performance.now();
       const v = live.view();
-      if (v.length === 4) this.rect = Array.from(v);
+      this.shown = v.length === 4;
+      if (this.shown) this.rect = Array.from(v);
       const cx = this.canvas.getContext("2d");
       if (!this.rect) return;
       const [x, y, w, h] = this.rect;
@@ -430,29 +452,43 @@
     }
   }
 
+  /**
+   * The stage sized to a run's view (`w` by `h` pixels at `scale`) as
+   * the build sizes a figure's: up to 1.5 times its size, and a bar
+   * never below it (example.rs, `figure`).
+   */
+  function fit(stage, w, h, scale) {
+    stage.style.aspectRatio = `${w} / ${h}`;
+    stage.style.maxWidth = `${(w / scale) * 1.5}px`;
+    stage.style.minWidth = w >= 6 * h ? `${w / scale}px` : "";
+  }
+
   /** A figure's live mode, in place of its player. */
   async function figure(fig, wasm, root) {
     const data = JSON.parse(fig.querySelector(".ex-live-data").textContent);
     const l = await boot(wasm, root);
     const view = fig.querySelector(".ex-view");
     const stage = fig.querySelector(".ex-stage");
-    const controls = el("div", "lv-controls");
+    const controls = el("div", "ex-bar lv-controls");
     const edit = el("div", "lv-edit");
-    const back = button("lv-back", "Frames", "Back to the frames Strand drew");
+    const back = button("btn quiet lv-back", "Back to recording", "Back to the frames Strand drew");
+    // On a phone it is "Back", so the bar keeps one line.
+    back.replaceChildren("Back", el("span", "lv-wide", "\u00a0to recording"));
     const parts = {
       root: fig,
       stage,
       controls,
       edit,
       fit(w, h, scale) {
-        stage.style.aspectRatio = `${w} / ${h}`;
-        stage.style.maxWidth = `${(w / scale) * 1.5}px`;
+        fit(stage, w, h, scale);
       },
     };
-    const was = { aspect: stage.style.aspectRatio, max: stage.style.maxWidth };
+    const was = { aspect: stage.style.aspectRatio, max: stage.style.maxWidth, min: stage.style.minWidth };
     const run = new Run(l, data, parts);
     controls.append(back);
-    view.append(controls);
+    const bar = view.querySelector(".ex-controls");
+    if (bar) bar.after(controls);
+    else view.append(controls);
     fig.querySelector("figcaption").before(edit);
     fig.classList.add("is-live");
     fig.dispatchEvent(new CustomEvent("strand-live", { detail: true }));
@@ -461,9 +497,11 @@
       run.canvas.remove();
       controls.remove();
       edit.remove();
+      run.empty.remove();
       stage.style.aspectRatio = was.aspect;
       stage.style.maxWidth = was.max;
-      fig.classList.remove("is-live", "lv-failed");
+      stage.style.minWidth = was.min;
+      fig.classList.remove("is-live", "lv-failed", "lv-blank");
       figures.delete(fig.id);
       fig.dispatchEvent(new CustomEvent("strand-live", { detail: false }));
     });
@@ -480,10 +518,12 @@
     pick.setAttribute("role", "group");
     pick.setAttribute("aria-label", "Example");
     const view = el("div", "ex-view pg-view");
+    const frame = el("div", "ex-frame");
     const stage = el("div", "ex-stage pg-stage");
-    const controls = el("div", "lv-controls");
+    const controls = el("div", "ex-bar lv-controls");
     const edit = el("div", "lv-edit pg-edit");
-    view.append(stage, controls);
+    frame.append(stage);
+    view.append(frame, controls);
     const note = box.querySelector(".pg-note");
     note.textContent = "Pick an example; edit its config and it runs again.";
     box.append(pick, view, edit);
@@ -492,7 +532,9 @@
       if (run) {
         run.stop();
         run.canvas.remove();
+        run.empty.remove();
       }
+      box.classList.remove("lv-failed", "lv-blank");
       controls.replaceChildren();
       edit.replaceChildren();
       stage.style.aspectRatio = "";
@@ -503,15 +545,14 @@
         controls,
         edit,
         fit(w, h, scale) {
-          stage.style.aspectRatio = `${w} / ${h}`;
-          stage.style.maxWidth = `${(w / scale) * 1.5}px`;
+          fit(stage, w, h, scale);
         },
       });
       figures.set("playground", run);
       run.start();
     };
     all.forEach((ex, i) => {
-      const b = button("pg-choice", ex.name);
+      const b = button("btn pg-choice", ex.name);
       b.addEventListener("click", () => show(i));
       pick.append(b);
     });

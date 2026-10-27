@@ -1,7 +1,7 @@
 // The Strand site's script. Every page reads without it; it adds the
 // theme switch, the search, copy buttons, the sidebar on narrow screens,
-// the bands' entrance, the example players and, where the site has
-// their WebAssembly build, the offer of each example live.
+// the example players and, where the site has their WebAssembly build,
+// the offer of each example live.
 (function () {
   "use strict";
   var root = document.documentElement;
@@ -11,26 +11,28 @@
   // works from disk as from a server.
   var siteRoot = document.currentScript ? new URL("../", document.currentScript.src) : new URL("./", location.href);
 
-  // ---- Theme: system, light, dark, in turn. A choice that cannot be
-  // stored is still made for this page.
-  var themeButton = document.querySelector(".theme");
-  function themeLabel() {
+  // ---- Theme: System, Light or Dark, the one in use pressed. A choice
+  // that cannot be stored is still made for this page.
+  var themeButtons = document.querySelectorAll(".theme button");
+  function themeShown() {
     var t = root.dataset.theme || "system";
-    if (themeButton) themeButton.setAttribute("aria-label", "Theme: " + t);
-  }
-  if (themeButton) {
-    themeLabel();
-    themeButton.addEventListener("click", function () {
-      var next = { system: "light", light: "dark", dark: "system" }[root.dataset.theme || "system"];
-      if (next === "system") delete root.dataset.theme;
-      else root.dataset.theme = next;
-      try {
-        if (next === "system") localStorage.removeItem("strand-theme");
-        else localStorage.setItem("strand-theme", next);
-      } catch (e) {}
-      themeLabel();
+    themeButtons.forEach(function (b) {
+      b.setAttribute("aria-pressed", b.dataset.theme === t ? "true" : "false");
     });
   }
+  themeButtons.forEach(function (b) {
+    b.addEventListener("click", function () {
+      var t = b.dataset.theme;
+      if (t === "system") delete root.dataset.theme;
+      else root.dataset.theme = t;
+      try {
+        if (t === "system") localStorage.removeItem("strand-theme");
+        else localStorage.setItem("strand-theme", t);
+      } catch (e) {}
+      themeShown();
+    });
+  });
+  themeShown();
 
   // ---- The sidebar on narrow screens.
   var menu = document.querySelector(".menu");
@@ -259,7 +261,7 @@
     var head = box.querySelector(".code-head");
     var b = document.createElement("button");
     b.type = "button";
-    b.className = "copy";
+    b.className = "btn small copy";
     b.textContent = "Copy";
     b.addEventListener("click", function () {
       var text = pre.innerText;
@@ -286,33 +288,6 @@
     var s = window.getSelection();
     s.removeAllRanges();
     s.addRange(r);
-  }
-
-  // ---- The home page's bands rise in, their parts one after another.
-  if ("IntersectionObserver" in window && document.body.classList.contains("home")) {
-    var parts = [];
-    document.querySelectorAll(".band, .closing").forEach(function (band) {
-      var i = 0;
-      band.querySelectorAll("h2, .band-copy p, .figures > div, .ex-view, .code, .check-out, .compositors li, .compositors-note, .closing p")
-        .forEach(function (el) {
-          if (el.closest(".rise")) return;
-          var box = el.getBoundingClientRect();
-          if (box.top < window.innerHeight) return; // already in view: shown as is
-          el.classList.add("rise");
-          el.style.setProperty("--delay", Math.min(i, 6) * 75 + "ms");
-          i++;
-          parts.push(el);
-        });
-    });
-    var io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (e) {
-        if (e.isIntersecting) {
-          e.target.classList.add("risen");
-          io.unobserve(e.target);
-        }
-      });
-    }, { rootMargin: "0px 0px -8% 0px" });
-    parts.forEach(function (el) { io.observe(el); });
   }
 
   // ---- Example players: the frames Strand drew, by tick.
@@ -344,7 +319,7 @@
         s.el.style.backgroundPosition = "0 " + y + "%";
       });
       scrub.value = String(k);
-      out.textContent = "frame " + k + " · " + Math.round(t[k]) + " ms";
+      out.textContent = (t[k] / 1000).toFixed(2) + " s";
       if (cursor) {
         var x0 = Number(cursor.dataset.x0), x1 = Number(cursor.dataset.x1);
         var x = x0 + (x1 - x0) * t[k] / tEnd;
@@ -460,22 +435,29 @@
   if (canLive) {
     document.querySelectorAll(".example").forEach(function (fig) {
       if (!fig.querySelector(".ex-live-data")) return;
-      var offer = document.createElement("div");
-      offer.className = "ex-live-offer";
+      // At the end of the player's bar; a still example gets a bar of
+      // its own for it.
+      var bar = fig.querySelector(".ex-controls");
+      if (!bar) {
+        bar = document.createElement("div");
+        bar.className = "ex-bar ex-controls";
+        fig.querySelector(".ex-view").appendChild(bar);
+      }
       var b = document.createElement("button");
       b.type = "button";
-      b.className = "ex-live-try";
+      b.className = "btn ex-live-try";
       b.textContent = "Try it live";
-      var note = document.createElement("span");
-      note.className = "ex-live-note";
-      note.textContent = "Runs Strand in your browser; edit the config and it runs again" +
+      b.title = "Run this config in your browser and edit it" +
         (wasm.download ? " (" + megabytes(wasm.download) + ", once)" : "");
-      offer.appendChild(b);
-      offer.appendChild(note);
-      fig.querySelector(".ex-view").appendChild(offer);
+      bar.appendChild(b);
+      var note = document.createElement("p");
+      note.className = "ex-live-note";
+      note.hidden = true;
+      fig.querySelector("figcaption").before(note);
       b.addEventListener("click", function () {
         b.disabled = true;
         b.textContent = "Loading…";
+        note.hidden = true;
         loadLive()
           .then(function (L) { return L.figure(fig, wasm, siteRoot); })
           .then(function () {
@@ -485,6 +467,7 @@
           .catch(function (e) {
             b.disabled = false;
             b.textContent = "Try it live";
+            note.hidden = false;
             note.textContent = "The live example did not load (" + (e && e.message ? e.message : e) + "); the frames above are Strand's own.";
           });
       });

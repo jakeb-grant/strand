@@ -1,10 +1,9 @@
 # Playground
 
-Every example on this site, running in your browser: Strand's compiler
-and renderer, built to WebAssembly, run each one's config the way eval
-runs it, with the mock services the docs use and the steps its scenario
-plays. Pick an example, press its steps or replay them, point at it and
-click, and edit its config: it runs again as you type, and a mistake
+Every example on this site, running in your browser. It is Strand's
+own compiler and renderer, with the mock services the docs use and the
+steps each example's scenario plays. Pick an example, play its steps or run them one at a time, point
+at it and click, and edit its config: it runs again as you type, and a mistake
 shows what `strand check` would print.
 
 ```playground hello springs osd toasts swap

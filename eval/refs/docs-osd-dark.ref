@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "docs-osd-dark"
 verdict good
-note "docs example (osd): first recording, its frames looked at on a contact sheet (enter, settle, exit; light and dark)"
-date 2026-10-26
-rev "6dce7f51"
+note "docs examples drawn with the site's rust accent (system.accent = #a13c1c on the mock) instead of the default blue seed; only colours changed, every other check passes; frames looked at on a contact sheet, light and dark"
+date 2026-10-27
+rev "ff112c0a+changes"
 approver "claude"
-scenario fa98afac102c9e4c
-seal 1f9d42d1cc3b1ee7
+scenario e68d313f9c0dd59e
+seal 6d137a187374255d
 S1 1 99 "osd Level"
 N0 "|osd.strand:10:1|#0" "osd@osd.strand:10"
 N1 "|osd.strand:13:3|#0" "row@osd.strand:13"
@@ -18,10 +18,10 @@ s1 z=334,118 o=33,71
 n0 x=37 y=29 w=260 h=44 op=0 sc=0.9,0.9 hid=opacity0
 k2
 n0 v=46.609375,30.625,240.765625,40.75 op=37 sc=0.926,0.926 hid=-
-n1 x=37 y=29 w=260 h=44 v=46.609375,30.625,240.765625,40.75 op=37 ord=1 bg=121318f2 sh=0000004d@0.5,0.5,333,117/00000033@33.5,26.5,267,51
-n2 x=49 y=41 w=20 h=20 v=57.734375,41.734375,18.515625,18.515625 op=37 ord=2 im=0,0,20,20@40,40+e2e2e9ff
-n3 x=81 y=48 w=163 h=6 v=87.359375,48.21875,150.9375,5.5625 op=37 ord=3 bg=e2e2e926/aec6ffff pt=0,0,73.34375,6
-n4 x=256 y=44 w=29 h=14 v=249.421875,44.515625,26.859375,12.96875 op=37 txt=S ord=4 ink=261,46.5,24,9 fg=e2e2e9ff gl=["45%"]
+n1 x=37 y=29 w=260 h=44 v=46.609375,30.625,240.765625,40.75 op=37 ord=1 bg=1a110ff2 sh=0000004d@0.5,0.5,333,117/00000033@33.5,26.5,267,51
+n2 x=49 y=41 w=20 h=20 v=57.734375,41.734375,18.515625,18.515625 op=37 ord=2 im=0,0,20,20@40,40+f1dfdaff
+n3 x=81 y=48 w=163 h=6 v=87.359375,48.21875,150.9375,5.5625 op=37 ord=3 bg=f1dfda26/ffb59fff pt=0,0,73.34375,6
+n4 x=256 y=44 w=29 h=14 v=249.421875,44.515625,26.859375,12.96875 op=37 txt=S ord=4 ink=261,46.5,24,9 fg=f1dfdaff gl=["45%"]
 k3
 n0 v=41.671875,29.796875,250.640625,42.421875 op=98 sc=0.964,0.964
 n1 v=41.671875,29.796875,250.640625,42.421875 op=98

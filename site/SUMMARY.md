@@ -11,11 +11,11 @@
 
 ## Guide
 - [Overview](../docs/guide/README.md)
-- [Level 1: the hello bar](../docs/guide/level-1.md)
-- [Level 2: tokens and components](../docs/guide/level-2.md)
-- [Level 3: state and popups](../docs/guide/level-3.md)
-- [Level 4: surfaces that come and go](../docs/guide/level-4.md)
-- [Level 5: your own theme and services](../docs/guide/level-5.md)
+- [1. The hello bar](../docs/guide/level-1.md)
+- [2. Tokens and components](../docs/guide/level-2.md)
+- [3. State and popups](../docs/guide/level-3.md)
+- [4. Surfaces that come and go](../docs/guide/level-4.md)
+- [5. Your own theme and services](../docs/guide/level-5.md)
 - [Plugins](../docs/guide/plugins.md)
 
 ## How-to

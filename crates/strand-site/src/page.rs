@@ -37,6 +37,16 @@ if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</
 const MARK: &str = "<svg class=\"mark\" viewBox=\"0 0 32 32\" aria-hidden=\"true\">\
 <path d=\"M4 22c6 0 6-12 12-12s6 12 12 12\"/><path d=\"M4 10c6 0 6 12 12 12s6-12 12-12\"/></svg>";
 
+/// System, Light or Dark; `site.js` presses the one in use.
+const THEME_SWITCH: &str = "<div class=\"seg theme\" role=\"group\" aria-label=\"Theme\">\
+<button type=\"button\" data-theme=\"system\" title=\"Follow the system\" aria-label=\"System\" aria-pressed=\"true\">\
+<svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><rect x=\"2\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\"/><path d=\"M6 14h4\"/></svg></button>\
+<button type=\"button\" data-theme=\"light\" title=\"Light\" aria-label=\"Light\" aria-pressed=\"false\">\
+<svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><circle cx=\"8\" cy=\"8\" r=\"3\"/>\
+<path d=\"M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1\"/></svg></button>\
+<button type=\"button\" data-theme=\"dark\" title=\"Dark\" aria-label=\"Dark\" aria-pressed=\"false\">\
+<svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z\"/></svg></button></div>";
+
 fn head(o: &mut String, title: &str, out: &str, description: &str) {
     let r = root(out);
     let _ = write!(
@@ -67,11 +77,17 @@ fn topbar(o: &mut String, out: &str, current: &str) {
     let _ = write!(
         o,
         "<header class=\"top\"><div class=\"top-in\">\
-         <button type=\"button\" class=\"menu\" aria-label=\"Menu\" aria-expanded=\"false\" aria-controls=\"sidebar\">\
-         <svg viewBox=\"0 0 20 20\" aria-hidden=\"true\"><path d=\"M3 6h14M3 10h14M3 14h14\"/></svg></button>\
+         <button type=\"button\" class=\"btn quiet icon menu\" aria-label=\"Menu\" aria-expanded=\"false\" aria-controls=\"sidebar\">\
+         <svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"M2.5 4.5h11M2.5 8h11M2.5 11.5h11\"/></svg></button>\
          <a class=\"brand\" href=\"{r}index.html\">{MARK}<span>strand</span></a><nav class=\"top-nav\" aria-label=\"Site\">"
     );
     link(o, &format!("{r}guide/index.html"), "Guide", "guide");
+    link(
+        o,
+        &format!("{r}how-to/calendar-popup.html"),
+        "How-to",
+        "how-to",
+    );
     link(
         o,
         &format!("{r}concepts/motion.html"),
@@ -84,20 +100,18 @@ fn topbar(o: &mut String, out: &str, current: &str) {
         "Reference",
         "reference",
     );
-    // The search field works only with the script, which shows it.
+    // The search field works only with the script, which shows it, as it
+    // does the theme switch.
     let _ = writeln!(
         o,
         "</nav><div class=\"top-end\"><div class=\"search\" role=\"search\">\
-         <svg class=\"search-icon\" viewBox=\"0 0 20 20\" aria-hidden=\"true\"><circle cx=\"8.5\" cy=\"8.5\" r=\"5.5\"/>\
-         <path d=\"m13 13 4 4\"/></svg><input type=\"search\" class=\"search-input\" id=\"search\" \
-         placeholder=\"Search\" aria-label=\"Search the documentation\" autocomplete=\"off\" spellcheck=\"false\" \
+         <svg class=\"search-icon\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><circle cx=\"7\" cy=\"7\" r=\"4.5\"/>\
+         <path d=\"M10.5 10.5 14 14\"/></svg><input type=\"search\" class=\"search-input\" id=\"search\" \
+         placeholder=\"Search the docs\" aria-label=\"Search the documentation\" autocomplete=\"off\" spellcheck=\"false\" \
          role=\"combobox\" aria-expanded=\"false\" aria-controls=\"search-results\" aria-autocomplete=\"list\">\
          <kbd class=\"search-key\" aria-hidden=\"true\">/</kbd>\
          <div class=\"search-results\" id=\"search-results\" role=\"listbox\" aria-label=\"Search results\" hidden></div></div>\
-         <a class=\"gh\" href=\"{GITHUB}\">GitHub</a>\
-         <button type=\"button\" class=\"theme\" aria-label=\"Theme: system\" title=\"Theme\">\
-         <svg viewBox=\"0 0 20 20\" aria-hidden=\"true\"><circle cx=\"10\" cy=\"10\" r=\"6.5\"/>\
-         <path class=\"theme-half\" d=\"M10 3.5a6.5 6.5 0 0 1 0 13z\"/></svg></button></div></div></header>"
+         <a class=\"btn quiet gh\" href=\"{GITHUB}\">GitHub</a>{THEME_SWITCH}</div></div></header>"
     );
 }
 

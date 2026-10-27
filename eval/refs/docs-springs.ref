@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "docs-springs"
 verdict good
-note "docs-gen: initial references of the site's examples (eval/scenarios/docs and their dark twins); every frame is pixel for pixel the media committed at c6d470df, all other checks pass"
-date 2026-10-26
-rev "c6d470df+changes"
+note "docs examples drawn with the site's rust accent (system.accent = #a13c1c on the mock) instead of the default blue seed; only colours changed, every other check passes; frames looked at on a contact sheet, light and dark"
+date 2026-10-27
+rev "ff112c0a+changes"
 approver "claude"
-scenario 9c8af1a94be9fd91
-seal e58ec50ad22c3797
+scenario 6e22c8a9d340ebb2
+seal 003b993b9486a574
 S1 0 - "bar Springs"
 N0 "bouncy|shell.strand:20:9|[Mock | DP-1]#0" "box#bouncy"
 N1 "spatial|shell.strand:10:9|[Mock | DP-1]#0" "box#spatial"
@@ -24,20 +24,20 @@ N12 "|shell.strand:8:7|[Mock | DP-1]#0" "text(\"default\")"
 N13 "|shell.strand:9:7|[Mock | DP-1]#0" "box@shell.strand:9"
 k0 p1
 s1 z=360,128
-n0 x=96 y=54 w=24 h=24 ord=9 bg=455e91ff
-n1 x=96 y=16 w=24 h=24 ord=5 bg=455e91ff
-n2 x=96 y=92 w=24 h=24 ord=13 bg=455e91ff
+n0 x=96 y=54 w=24 h=24 ord=9 bg=8f4c37ff
+n1 x=96 y=16 w=24 h=24 ord=5 bg=8f4c37ff
+n2 x=96 y=92 w=24 h=24 ord=13 bg=8f4c37ff
 n3 x=20 y=54 w=320 h=24 ord=6
-n4 x=20 y=59 w=64 h=15 txt=S ord=7 ink=20.5,61,41.5,12.5 fg=1a1b20a6 gl=["bouncy"]
-n5 x=96 y=54 w=220 h=24 ord=8 bg=e6e5ebff
+n4 x=20 y=59 w=64 h=15 txt=S ord=7 ink=20.5,61,41.5,12.5 fg=231917a6 gl=["bouncy"]
+n5 x=96 y=54 w=220 h=24 ord=8 bg=ebe4e2ff
 n6 x=20 y=92 w=320 h=24 ord=10
-n7 x=20 y=97 w=64 h=15 txt=S ord=11 ink=20,99,39,10 fg=1a1b20a6 gl=["300ms"]
-n8 x=96 y=92 w=220 h=24 ord=12 bg=e6e5ebff
-n9 x=0 y=0 w=360 h=128 bg=faf9ffff
+n7 x=20 y=97 w=64 h=15 txt=S ord=11 ink=20,99,39,10 fg=231917a6 gl=["300ms"]
+n8 x=96 y=92 w=220 h=24 ord=12 bg=ebe4e2ff
+n9 x=0 y=0 w=360 h=128 bg=fff8f6ff
 n10 x=0 y=0 w=360 h=128 ord=1
 n11 x=20 y=16 w=320 h=24 ord=2
-n12 x=20 y=21 w=64 h=15 txt=S ord=3 ink=20.5,23,38.5,10 fg=1a1b20a6 gl=["default"]
-n13 x=96 y=16 w=220 h=24 ord=4 bg=e6e5ebff
+n12 x=20 y=21 w=64 h=15 txt=S ord=3 ink=20.5,23,38.5,10 fg=231917a6 gl=["default"]
+n13 x=96 y=16 w=220 h=24 ord=4 bg=ebe4e2ff
 k1
 n0 x=105
 n1 x=147

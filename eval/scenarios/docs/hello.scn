@@ -4,6 +4,7 @@ for word, on a 640 px screen at scale 2 (the width of its place beside the copy)
 screen = { width = 640, height = 360, scale = 2.0 }
 
 [services]
+"system.accent" = "#a13c1c"
 "battery.percent" = 0.82
 "windows.focused" = '{"id": "1", "title": "README.md — Strand", "app_id": "editor", "icon": "", "workspace": 1, "focused": true, "minimized": false, "maximized": false, "fullscreen": false, "urgent": false, "app": null, "rect": null}'
 

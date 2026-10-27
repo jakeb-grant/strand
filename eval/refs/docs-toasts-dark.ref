@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "docs-toasts-dark"
 verdict good
-note "docs example (toasts): first recording, its frames looked at on a contact sheet (enter, settle, exit; light and dark)"
-date 2026-10-26
-rev "6dce7f51"
+note "docs examples drawn with the site's rust accent (system.accent = #a13c1c on the mock) instead of the default blue seed; only colours changed, every other check passes; frames looked at on a contact sheet, light and dark"
+date 2026-10-27
+rev "ff112c0a+changes"
 approver "claude"
-scenario 21a7e0b1d9cfae23
-seal 4685ee27fea9f606
+scenario 2e1df25b0fb9b6f4
+seal 418fd350fb52f5a1
 S1 1 - "panel Toasts"
 N0 "|toasts.strand:15:3|[1]#0" "col@toasts.strand:15"
 N1 "|toasts.strand:5:1|#0" "panel@toasts.strand:5"
@@ -30,13 +30,13 @@ n0 x=457 y=12 w=380 h=60 op=0 hid=opacity0 ord=2
 n1 x=37 y=12 w=380 h=180
 n2 x=37 y=12 w=380 h=180 ord=1
 k2
-n0 x=348 op=37 hid=- bg=121318ff bd=2e2f35ff sh=0000004d@311.5,-16.5,453,133/00000033@344.5,9.5,387,67
+n0 x=348 op=37 hid=- bg=1a110fff bd=382d2bff sh=0000004d@311.5,-16.5,453,133/00000033@344.5,9.5,387,67
 n3 x=360 y=24 w=356 h=36 op=37 ord=3
-n4 x=360 y=24 w=36 h=36 op=37 ord=4 im=0,0,36,36@72,72+e2e2e9ff
+n4 x=360 y=24 w=36 h=36 op=37 ord=4 im=0,0,36,36@72,72+f1dfdaff
 n5 x=404 y=27 w=290 h=30 op=37 ord=5
-n6 x=404 y=27 w=290 h=15 op=37 txt=S ord=6 ink=404.5,29,119.5,10 fg=e2e2e9ff gl=["Mail\u0020·\u0020Ada\u0020Lovelace"]
-n7 x=404 y=42 w=290 h=15 op=37 txt=S ord=7 ink=405,44,88.5,10 fg=e2e2e9a6 gl=["Lunch\u0020at\u0020noon?"]
-n8 x=702 y=35 w=14 h=14 op=37 ord=8 im=0,0,14,14@28,28+e2e2e9ff
+n6 x=404 y=27 w=290 h=15 op=37 txt=S ord=6 ink=404.5,29,119.5,10 fg=f1dfdaff gl=["Mail\u0020·\u0020Ada\u0020Lovelace"]
+n7 x=404 y=42 w=290 h=15 op=37 txt=S ord=7 ink=405,44,88.5,10 fg=f1dfdaa6 gl=["Lunch\u0020at\u0020noon?"]
+n8 x=702 y=35 w=14 h=14 op=37 ord=8 im=0,0,14,14@28,28+f1dfdaff
 k3
 n0 x=188 op=98 sh=0000004d@151.5,-16.5,453,133/00000033@184.5,9.5,387,67
 n3 x=200 op=98
@@ -128,13 +128,13 @@ n7 op=255
 n8 op=255
 k15
 k62
-n9 x=348 y=80 w=380 h=60 op=37 ord=9 bg=121318ff bd=2e2f35ff sh=0000004d@311.5,51.5,453,133/00000033@344.5,77.5,387,67
+n9 x=348 y=80 w=380 h=60 op=37 ord=9 bg=1a110fff bd=382d2bff sh=0000004d@311.5,51.5,453,133/00000033@344.5,77.5,387,67
 n10 x=360 y=92 w=356 h=36 op=37 ord=10
-n11 x=360 y=92 w=36 h=36 op=37 ord=11 im=0,0,36,36@72,72+e2e2e9ff
+n11 x=360 y=92 w=36 h=36 op=37 ord=11 im=0,0,36,36@72,72+f1dfdaff
 n12 x=404 y=95 w=290 h=30 op=37 ord=12
-n13 x=404 y=95 w=290 h=15 op=37 txt=S ord=13 ink=404.5,97,129,12.5 fg=e2e2e9ff gl=["Builds\u0020·\u0020main\u0020passed"]
-n14 x=404 y=110 w=290 h=15 op=37 txt=S ord=14 ink=404,112,119,12.5 fg=e2e2e9a6 gl=["All\u0020412\u0020tests\u0020passed."]
-n15 x=702 y=103 w=14 h=14 op=37 ord=15 im=0,0,14,14@28,28+e2e2e9ff
+n13 x=404 y=95 w=290 h=15 op=37 txt=S ord=13 ink=404.5,97,129,12.5 fg=f1dfdaff gl=["Builds\u0020·\u0020main\u0020passed"]
+n14 x=404 y=110 w=290 h=15 op=37 txt=S ord=14 ink=404,112,119,12.5 fg=f1dfdaa6 gl=["All\u0020412\u0020tests\u0020passed."]
+n15 x=702 y=103 w=14 h=14 op=37 ord=15 im=0,0,14,14@28,28+f1dfdaff
 k63
 n9 x=188 op=98 sh=0000004d@151.5,51.5,453,133/00000033@184.5,77.5,387,67
 n10 x=200 op=98

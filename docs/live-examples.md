@@ -23,11 +23,15 @@ The decisions are in docs/decisions.md under `live-examples`.
   served over http(s) (a browser loads no WebAssembly from a file), and
   the browser has WebAssembly. Nothing is fetched until the reader asks;
   the browser check holds every page to that.
-- Live, the canvas takes the frames' place. The scenario's `set` steps
-  become buttons, in order; **Replay** boots the example again and plays
-  its steps; **Frames** goes back to the player. The config is in an
-  editor (a textarea over its own text, highlighted with the site's
-  `hl-` classes). An edit runs again after 350 ms; a broken one shows
+- Live, the canvas takes the frames' place and one bar the player's:
+  **Play** boots the example again and plays its steps (as entering live
+  mode does); **Next step** runs the scenario's next step that acts
+  (its command is the button's tooltip), round again after the last;
+  **Restart** boots it again without its steps; **Back to recording**
+  goes back to the player. A stage with nothing on screen and nothing
+  coming says so, and that Next step runs the next step. The config
+  is in an editor (a textarea over its own text, highlighted with the
+  site's `hl-` classes). An edit runs again after 350 ms; a broken one shows
   its diagnostic as `strand check` prints it and leaves the last good
   run on the canvas; **Reset** puts the example's config back.
 - The run follows the page's theme (`system.dark`, set as the site's

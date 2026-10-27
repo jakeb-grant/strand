@@ -15,6 +15,7 @@ screen = { width = 440, height = 360, scale = 2.0 }
 
 [services]
 "system.dark" = true
+"system.accent" = "#a13c1c"
 "notifications.popups" = '[]'
 
 === toasts.strand

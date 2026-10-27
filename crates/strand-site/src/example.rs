@@ -491,12 +491,12 @@ fn curve(o: &mut String, v: &Value) {
     }
     let _ = write!(
         o,
-        "<text class=\"ex-axis\" x=\"{}\" y=\"{}\" text-anchor=\"end\">{} ms</text>\
+        "<text class=\"ex-axis\" x=\"{}\" y=\"{}\" text-anchor=\"end\">{}</text>\
          <line class=\"ex-cursor\" x1=\"{pad_l}\" x2=\"{pad_l}\" y1=\"{pad_t}\" y2=\"{base}\" \
          data-x0=\"{pad_l}\" data-x1=\"{}\" data-tend=\"{t_end}\"/></svg>",
         w - pad_r,
         base + 20.0,
-        fmt_num(t_end),
+        seconds(t_end),
         w - pad_r
     );
     o.push_str("<ul class=\"ex-legend\">");
@@ -564,11 +564,22 @@ pub fn figure(
     let ticks = media["t"].as_array().map_or(0, Vec::len);
     let _ = write!(
         o,
-        "<figure class=\"example{still}\" id=\"example-{name}\">\
-         <div class=\"ex-view\"><div class=\"ex-stage\" style=\"aspect-ratio: {lw} / {lh}; max-width: {}px\">",
-        lw * 1.5,
+        "<figure class=\"example{still}\" id=\"example-{name}\">",
         name = s.name,
         still = if ticks > 1 { "" } else { " example-still" }
+    );
+    // A bar keeps its size on a narrow screen, in a strip that scrolls
+    // sideways: shrunk to fit, its text would be too small to read.
+    let keep = if lw >= 6.0 * lh {
+        format!("; min-width: {lw}px")
+    } else {
+        String::new()
+    };
+    let _ = write!(
+        o,
+        "<div class=\"ex-view\"><div class=\"ex-frame\"><div class=\"ex-stage\" \
+         style=\"aspect-ratio: {lw} / {lh}; max-width: {}px{keep}\">",
+        lw * 1.5,
     );
 
     // Each mode's first frame, and over it the part that changes, from
@@ -616,53 +627,48 @@ pub fn figure(
         }
         o.push_str("</div>");
     }
-    o.push_str("</div>");
+    o.push_str("</div></div>");
     let moving = ticks > 1;
-    let t: Vec<String> = nums(&media["t"]).iter().map(|v| fmt_num(*v)).collect();
+    let t = nums(&media["t"]);
     if moving {
+        let mut plot = String::new();
+        curve(&mut plot, media);
+        if !plot.is_empty() {
+            let _ = write!(o, "<div class=\"ex-plot\">{plot}</div>");
+        }
         let _ = write!(
             o,
-            "<div class=\"ex-controls\" data-t=\"{}\" data-poster=\"{shown}\">\
-         <button type=\"button\" class=\"ex-play\" aria-label=\"Play\" aria-pressed=\"false\">\
-         <svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path class=\"ex-icon-play\" d=\"M4 2.5v11l9-5.5z\"/>\
-         <path class=\"ex-icon-pause\" d=\"M4 2.5h3v11H4zM9 2.5h3v11H9z\"/></svg></button>\
-         <button type=\"button\" class=\"ex-step\" data-step=\"-1\" aria-label=\"Previous frame\">\
-         <svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"M10.5 3 5 8l5.5 5z\"/></svg></button>\
-         <button type=\"button\" class=\"ex-step\" data-step=\"1\" aria-label=\"Next frame\">\
-         <svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"m5.5 3 5.5 5-5.5 5z\"/></svg></button>\
-         <input type=\"range\" class=\"ex-scrub\" id=\"ex-scrub-{name}\" min=\"0\" max=\"{}\" value=\"0\" \
-         aria-label=\"Frame\"><output class=\"ex-time\" for=\"ex-scrub-{name}\">frame 0 · 0 ms</output></div>",
-            t.join(","),
+            "<div class=\"ex-bar ex-controls\" data-t=\"{}\" data-poster=\"{shown}\">\
+         <button type=\"button\" class=\"btn icon ex-play\" aria-label=\"Play\" aria-pressed=\"false\">\
+         <svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path class=\"ex-icon-play\" d=\"M4.5 3v10l8.5-5z\"/>\
+         <path class=\"ex-icon-pause\" d=\"M4.5 3h2.5v10H4.5zM9 3h2.5v10H9z\"/></svg></button>\
+         <button type=\"button\" class=\"btn icon quiet ex-step\" data-step=\"-1\" aria-label=\"Previous frame\" title=\"Previous frame\">\
+         <svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"M10.5 3.5 5 8l5.5 4.5z\"/></svg></button>\
+         <button type=\"button\" class=\"btn icon quiet ex-step\" data-step=\"1\" aria-label=\"Next frame\" title=\"Next frame\">\
+         <svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"M5.5 3.5 11 8l-5.5 4.5z\"/></svg></button>\
+         <input type=\"range\" class=\"ex-scrub\" id=\"ex-scrub-{name}\" min=\"0\" max=\"{}\" value=\"{shown}\" \
+         aria-label=\"Frame\"><output class=\"ex-time\" for=\"ex-scrub-{name}\">{}</output></div>",
+            t.iter().map(|v| fmt_num(*v)).collect::<Vec<_>>().join(","),
             ticks.saturating_sub(1),
+            seconds(t.get(shown).copied().unwrap_or(0.0)),
             name = s.name
         );
-        curve(&mut o, media);
     }
     o.push_str("</div>");
+    // Under what it draws, the file it draws from.
     for (file, body) in s.files.iter().filter(|_| code) {
         let _ = write!(
             o,
-            "<div class=\"code\"><div class=\"code-head\"><span class=\"code-file\">{}</span>\
-             <a class=\"code-src\" href=\"{}\">{}</a></div><pre><code class=\"language-strand\">{}</code></pre></div>",
+            "<div class=\"code\"><div class=\"code-head\"><span class=\"code-file\">{}</span></div>\
+             <pre><code class=\"language-strand\">{}</code></pre></div>",
             esc(file),
-            crate::GITHUB_BLOB.to_string() + &s.path,
-            esc(&s.path),
             hl.html(body)
         );
     }
-    let hz = media["hz"].as_u64().unwrap_or(60);
-    let how = if moving {
-        format!("one frame at a time, on a virtual {hz} Hz clock")
-    } else {
-        "with mock services".to_string()
-    };
     let _ = write!(
         o,
-        "<figcaption>Drawn by Strand's renderer {how}, from {which}; \
-         <a href=\"{}{}\">its scenario</a> holds the steps that drive it.</figcaption>\
+        "<figcaption>Drawn by Strand from {which}.</figcaption>\
          <script type=\"application/json\" class=\"ex-live-data\">{}</script></figure>",
-        crate::GITHUB_BLOB,
-        s.path,
         // What live mode runs (docs/live-examples.md), read by the
         // page's script only when the reader asks for it.
         script_json(live),
@@ -673,6 +679,11 @@ pub fn figure(
         }
     );
     o
+}
+
+/// A time on the player, `ms` in seconds: "0.62 s".
+fn seconds(ms: f64) -> String {
+    format!("{:.2} s", ms / 1000.0)
 }
 
 #[cfg(test)]

@@ -11,8 +11,9 @@ below that does not hold:
   frame eval drew for the site (media/<name>.json, held to the approved
   reference recordings), frame for frame, as tests/live.rs holds them
   natively;
-- a step's button acts, Replay plays the steps again, Frames goes back
-  to the player;
+- Next step runs a step that changes the example, Play plays the steps
+  again, Restart starts over without them, Back to recording brings the
+  player back;
 - an edit with an error shows its diagnostic, a fixed one runs again,
   Reset puts the config back;
 - from file:// no figure offers live mode, and the playground says why;
@@ -162,33 +163,41 @@ def main() -> int:
             res["live_frames"] = cost["frames"]
             res["memory_bytes"] = page.evaluate("window.StrandLive.boot(window.STRAND_WASM, null).then(l => l.memory.buffer.byteLength)")
             page.locator(f"#{fid}").screenshot(path=str(shots / f"live-{name}.png"))
-            # At the steps' end, at rest, a step's button acts in place of
-            # them: pressed in order, one of them changes the example
-            # (the last one pressed may set what the steps left), which
-            # paints, and the button pressed is marked.
-            acts = page.locator(f"#{fid} .lv-act")
+            # At the steps' end, at rest, Next step runs the steps that act
+            # one at a time, its tooltip naming the one it runs: pressed
+            # in turn, one of them changes the example (the last one may
+            # set what the steps left), which paints.
+            nxt = page.locator(f"#{fid} .lv-next")
+            n_acts = page.evaluate("(id) => window.StrandLive.figures.get(id).acts.length", fid)
             painted = "(id) => window.StrandLive.figures.get(id).live.painted()"
-            acted = acts.count() == 0
-            for i in range(acts.count()):
+            acted = n_acts == 0
+            if n_acts and not nxt.is_visible():
+                problems.append(f"{name}: no Next step for its {n_acts} steps")
+                n_acts = 0
+            for i in range(n_acts):
                 painted0 = page.evaluate(painted, fid)
-                acts.nth(i).click()
+                if not (nxt.get_attribute("title") or ""):
+                    problems.append(f"{name}: Next step does not name the step it runs")
+                nxt.click()
                 page.wait_for_timeout(600)
-                if "lv-done" not in (acts.nth(i).get_attribute("class") or ""):
-                    problems.append(f"{name}: step button {i} is not marked as the one pressed")
                 if page.evaluate(painted, fid) > painted0:
                     acted = True
                     break
             if not acted:
-                problems.append(f"{name}: no step button changed the example")
-            # Replay boots the example again and plays its steps.
-            starts = page.evaluate("(id) => window.StrandLive.figures.get(id).starts", fid)
-            page.locator(f"#{fid} .lv-replay").click()
-            if page.evaluate("(id) => window.StrandLive.figures.get(id).starts", fid) != starts + 1:
-                problems.append(f"{name}: Replay does not play the steps again")
-            # Frames: the player again, the canvas gone.
+                problems.append(f"{name}: no step Next step ran changed the example")
+            # Play boots the example again and plays its steps; Restart
+            # boots it again without them.
+            for button, what in (("lv-replay", "Play"), ("lv-restart", "Restart")):
+                starts = page.evaluate("(id) => window.StrandLive.figures.get(id).starts", fid)
+                page.locator(f"#{fid} .{button}").click()
+                if page.evaluate("(id) => window.StrandLive.figures.get(id).starts", fid) != starts + 1:
+                    problems.append(f"{name}: {what} does not start the example again")
+            if page.evaluate("(id) => window.StrandLive.figures.get(id).playing", fid):
+                problems.append(f"{name}: Restart plays the steps")
+            # Back to recording: the player again, the canvas gone.
             page.locator(f"#{fid} .lv-back").click()
             if page.locator(f"#{fid} .lv-canvas").count() or not page.locator(f"#{fid} .ex-stage .ex-sprite").first.is_visible():
-                problems.append(f"{name}: Frames does not bring the player back")
+                problems.append(f"{name}: Back to recording does not bring the player back")
             out["examples"][name] = res
             ctx.close()
 

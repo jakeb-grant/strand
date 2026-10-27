@@ -5,6 +5,9 @@ and on a timed `~ 300ms`. Its config is the page's code block, word for
 word, and its frames are the page's pictures."""
 screen = { width = 360, height = 200, scale = 2.0 }
 
+[services]
+"system.accent" = "#a13c1c"
+
 === shell.strand
 state on = false
 

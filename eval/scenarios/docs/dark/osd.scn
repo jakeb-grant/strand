@@ -10,6 +10,7 @@ screen = { width = 400, height = 240, scale = 2.0 }
 
 [services]
 "system.dark" = true
+"system.accent" = "#a13c1c"
 "audio.sink.volume" = 0.4
 "audio.sink.muted" = false
 "audio.sink.icon" = "audio-volume-medium-symbolic"

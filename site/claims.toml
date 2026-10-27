@@ -1115,21 +1115,9 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 
 [[claim]]
 page   = "site/index.md"
-text   = "Colours, sizes and positions spring"
-source = ["crates/strand-render/src/anim/mod.rs:1", "docs/spec.md:1117"]
-proof  = "crates/strand-render/tests/motion.rs::colours_spring_in_oklab, ::size_springs_relayout_only_under_the_nearest_size_stable_ancestor"
-
-[[claim]]
-page   = "site/index.md"
-text   = "saving a file never restarts the shell"
+text   = "save the file and the running shell follows"
 source = ["docs/spec.md:1880"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_prop_edit_patches_in_place_and_keeps_state"
-
-[[claim]]
-page   = "site/index.md"
-text   = "nothing runs while nothing changes"
-source = ["docs/spec.md:1455"]
-proof  = "crates/strand-render/tests/motion.rs::an_idle_bar_does_no_work_after_animations_settle; crates/strand/tests/budgets.rs::the_design_bar_on_the_real_services_keeps_the_budget (no wakeup in 10 s)"
 
 [[claim]]
 page   = "site/index.md"
@@ -1145,33 +1133,9 @@ proof  = "crates/strand-compiler/tests/reload.rs::random_edits_land_on_a_cold_bo
 
 [[claim]]
 page   = "site/index.md"
-text   = "<dt>35 ms</dt>"
-source = ["crates/strand/src/bench.rs:847"]
-proof  = "crates/strand/src/bench.rs::reload_latency_to_the_presented_frame, run by .github/workflows/ci.yml:266 (timing job)"
-
-[[claim]]
-page   = "site/index.md"
-text   = "<dt>50 ms</dt>"
-source = ["crates/strand/src/bench.rs:853"]
-proof  = "crates/strand/src/bench.rs::reload_latency_to_the_presented_frame (markup p95, nodes added and removed)"
-
-[[claim]]
-page   = "site/index.md"
-text   = "CI fails a build that is slower."
-source = [".github/workflows/ci.yml:247"]
-proof  = "read: the timing job runs on every push and pull request (`if: github.event_name != 'schedule'`) and enforces the gate"
-
-[[claim]]
-page   = "site/index.md"
 text   = "Spring curves are theme tokens"
 source = ["crates/strand-theme/src/defaults.rs:86", "docs/spec.md:1121"]
 proof  = "crates/strand-render/tests/motion.rs::per_prop_transitions_override_the_default_spring"
-
-[[claim]]
-page   = "site/index.md"
-text   = "drawn one at a time on a virtual clock"
-source = ["docs/eval.md", "scripts/site/media.sh"]
-proof  = "read: the site's examples are eval scenarios rendered by strand-eval on its virtual clock"
 
 [[claim]]
 page   = "site/index.md"
@@ -1187,39 +1151,9 @@ proof  = "strand check in the container (scripts/container/run.sh) on a probe co
 
 [[claim]]
 page   = "site/index.md"
-text   = "the hello bar wakes once a minute"
-source = ["docs/reference/services.md:149"]
-proof  = "crates/strand-compiler/tests/instantiate.rs::the_hello_bar_clock_ticks_once_a_minute"
-
-[[claim]]
-page   = "site/index.md"
-text   = "A surface repaints only what changed"
-source = ["crates/strand/src/demo/mod.rs:381"]
-proof  = "crates/strand/src/demo/mod.rs::a_minute_tick_repaints_at_most_2000_px2"
-
-[[claim]]
-page   = "site/index.md"
-text   = "draws large animations and shaders"
-source = ["crates/strand-render/src/promote.rs:11"]
-proof  = "crates/strand-render/src/promote.rs::a_panel_opening_is_promoted_at_its_first_frame"
-
-[[claim]]
-page   = "site/index.md"
-text   = "monitors to 48 MiB, measured with no GPU device"
-source = ["crates/strand/tests/budgets.rs:110"]
-proof  = "crates/strand/tests/budgets.rs::the_design_bar_with_no_gpu_keeps_the_cold_budget"
-
-[[claim]]
-page   = "site/index.md"
-text   = "Every build runs on these four compositors in CI."
+text   = "Strand runs on sway, Hyprland, niri and labwc, and every build is tested on all four."
 source = [".github/workflows/ci.yml:348"]
 proof  = "read: the compositors job (no event filter) runs sway, niri, Hyprland and labwc on each push, and nightly"
-
-[[claim]]
-page   = "site/index.md"
-text   = "builds the hello bar from <code>strand new</code>"
-source = ["docs/guide/level-1.md:10"]
-proof  = "read"
 
 [[claim]]
 page   = "site/concepts/motion.md"
@@ -2743,20 +2677,8 @@ proof  = "read"
 # scripts/wasm/check-browser.sh on 2026-10-26.
 
 [[claim]]
-page   = "site/index.md"
-text   = "Try it live runs the same config in your browser, Strand's compiler and renderer built to WebAssembly, and draws the same frames, pixel for pixel;"
-source = ["crates/strand-web/tests/live.rs:92", "scripts/wasm/check.py", "site/assets/site.js:442"]
-proof  = "crates/strand-web/tests/live.rs::every_docs_example_draws_every_frame_eval_drew (natively); scripts/wasm/check-browser.sh (every docs example, light and dark, in Chromium: each frame's time and pixel hash equal to the site media's)"
-
-[[claim]]
-page   = "site/index.md"
-text   = "edit the config and it runs again."
-source = ["site/assets/live.js", "scripts/wasm/check.py"]
-proof  = "scripts/wasm/check-browser.sh (an edit with an error shows its diagnostic, a fixed one runs again, Reset puts the config back)"
-
-[[claim]]
 page   = "site/playground.md"
-text   = "Strand's compiler and renderer, built to WebAssembly, run each one's config the way eval runs it, with the mock services the docs use and the steps its scenario plays."
+text   = "It is Strand's own compiler and renderer, with the mock services the docs use and the steps each example's scenario plays."
 source = ["crates/strand-web/src/shell.rs:190", "crates/strand-web/src/steps.rs", "crates/strand-web/src/live.rs:121"]
 proof  = "crates/strand-web/tests/live.rs::every_docs_example_draws_every_frame_eval_drew"
 

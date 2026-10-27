@@ -9,6 +9,7 @@ screen = { width = 360, height = 200, scale = 2.0 }
 
 [services]
 "system.dark" = true
+"system.accent" = "#a13c1c"
 
 === shell.strand
 state on = false
