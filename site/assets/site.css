@@ -984,7 +984,7 @@ pre {
   border-top: 1px solid var(--line);
 }
 
-/* The bar: the player's, or live mode's in its place. */
+/* The bar: the player's, or the playground's. */
 .ex-bar {
   display: flex;
   align-items: center;
@@ -1104,8 +1104,7 @@ pre {
   margin-right: 8px;
 }
 
-.example figcaption,
-.ex-live-note {
+.example figcaption {
   font-size: var(--t-small);
   color: var(--ink-2);
   margin: 0;
@@ -1115,21 +1114,7 @@ pre {
   margin: 0;
 }
 
-/* ---- Live examples (assets/live.js, docs/live-examples.md) ----------- */
-
-/* Try it live, at the bar's end. */
-.ex-live-try {
-  margin-left: auto;
-}
-
-/* Live, the canvas takes the frames' place and live mode's bar the
-   player's. */
-.is-live .ex-sprite,
-.is-live .ex-controls,
-.is-live .ex-plot,
-.is-live > .code:not(.lv-file) {
-  display: none;
-}
+/* ---- The playground's runs (assets/live.js, docs/live-examples.md) -- */
 
 .lv-canvas {
   position: absolute;
@@ -1149,19 +1134,6 @@ pre {
   background: none;
   color: var(--ink-2);
   font-size: 0.8125rem;
-}
-
-/* Over the live config: what live mode is, in one line. */
-.lv-hint {
-  margin: 12px 0 8px;
-  font-size: var(--t-small);
-  color: var(--ink-2);
-}
-
-.lv-controls .lv-back {
-  margin-left: auto;
-  /* "Back" and " to recording" read as one label: no gap between. */
-  gap: 0;
 }
 
 .lv-status {
@@ -1298,8 +1270,8 @@ pre {
   min-height: 48px;
 }
 
-/* On a phone the frames keep less margin, live mode's bar says only
-   "Back", and a bar that still cannot fit on one line takes two. */
+/* On a phone the frames keep less margin, Next step drops the step it
+   names, and a bar that still cannot fit on one line takes two. */
 @media (max-width: 520px) {
   .ex-frame {
     padding: 16px;
@@ -1307,7 +1279,6 @@ pre {
   .ex-bar {
     flex-wrap: wrap;
   }
-  .lv-wide,
   .lv-next-what {
     display: none;
   }
@@ -1478,7 +1449,7 @@ pre {
 
 /* A long config beside its words scrolls in its box, so the section
    stays about as tall as its example. */
-.row .example > .code:not(.lv-file) pre {
+.row .example > .code pre {
   max-height: 22rem;
 }
 

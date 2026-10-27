@@ -659,23 +659,24 @@ again and compares the frames' hashes (CI's `site` job, with the build,
 strand-site's tests and `scripts/site/shots.sh --all`, every page in
 headless Chromium).
 
-(live examples, docs/live-examples.md) Each example figure also carries
-what its live mode runs, as JSON in a `<script type="application/json"
-class="ex-live-data">` (`example::live`: the scenario's name, id,
-config files, `[services]` as `[path, text]` pairs, screen, rate and
-steps section; a scenario header key the web host would not honour is
-a build error), and `strand-site live` prints every example's, for
-`scripts/wasm/build.sh`. A ```` ```playground name… ```` block writes
-the playground (`site/playground.md`) with the named examples' data.
+(live examples, docs/live-examples.md) Only the playground
+(`site/playground.md`) runs examples live; an example figure is its
+recorded frames. A ```` ```playground name… ```` block writes what each
+named example runs, as JSON in a `<script type="application/json"
+class="pg-data">` (`example::live`: the scenario's name, id, config
+files, `[services]` as `[path, text]` pairs, screen, rate and steps
+section; a scenario header key the web host would not honour is a
+build error), and `strand-site live` prints every example's, for
+`scripts/wasm/build.sh`.
 Every page loads `wasm/manifest.js` before `site.js`; the build writes
 it as `window.STRAND_WASM = null;`, so the site needs no wasm tooling,
-and the pages offer nothing live. `scripts/wasm/site.sh` adds a
+and the playground then says it has no build. `scripts/wasm/site.sh` adds a
 WebAssembly build to a built site: `wasm/` with the module, its glue
 and the icon files named by content hash, the two
 fonts, their licences, and the manifest written again naming them.
-`site.js` then offers "Try it live" on each figure, over http only, and
-loads `assets/live.js`, the module and its assets only when the reader
-asks (the playground: on arrival). The module is built with
+On the playground, over http only, `site.js` then loads
+`assets/live.js`, the module and its assets; no other page fetches
+them. The module is built with
 fearless_simd's wasm multiply-add patched to round once, as natively
 (`scripts/wasm/exact-fma.py`, passed to cargo on the command line, so
 no native build and no manifest in the workspace sees it).

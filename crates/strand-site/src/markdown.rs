@@ -286,7 +286,8 @@ fn code_block(
         }
         "playground" => {
             // The playground page's examples (docs/live-examples.md): what
-            // each runs live, for its script to offer them in turn.
+            // each runs live, for its script to offer them in turn. It is
+            // the one place an example runs live; a figure is its frames.
             let mut all = Vec::new();
             for name in words.iter().skip(1) {
                 match example::load(ctx.root, name).and_then(|s| example::live(&s)) {
@@ -334,17 +335,9 @@ fn code_block(
                         .iter()
                         .any(|(pf, pb)| pf == f && pb.trim_end() == b.trim_end())
                 });
-                // `recording` shows the frames alone, with no offer to
-                // run it live (the home page: a plain showcase).
-                let live = if words.get(2) == Some(&"recording") {
-                    serde_json::Value::Null
-                } else {
-                    example::live(&s)?
-                };
                 Ok(example::figure(
                     &s,
                     &m,
-                    &live,
                     ctx.hl,
                     &crate::html::root(ctx.out),
                     !shown,

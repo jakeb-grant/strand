@@ -1,43 +1,40 @@
 # Live examples: Strand's renderer in the docs site
 
-Every example figure on the site can run live. Strand's compiler, logic
-VM, layout, text and CPU renderer, built to WebAssembly, run the
-example's own scenario in the page and draw into a canvas where the
-frame player was. The reader can press the scenario's steps, replay
-them, point and click, and edit the config, which runs again and shows
-`strand check`'s diagnostics when it does not compile. The playground
-page (`site/playground.md`, linked from Tools) runs every docs example
-the same way.
+The playground page (`site/playground.md`, linked from Tools) runs
+every docs example live. Strand's compiler, logic VM, layout, text and
+CPU renderer, built to WebAssembly, run the example's own scenario in
+the page and draw into a canvas. The reader can play the scenario's
+steps, run them one at a time, point and click, and edit the config,
+which runs again and shows `strand check`'s diagnostics when it does
+not compile. Every other page shows an example as its recorded frames.
 
 It began as a spike (branch `laptop/wasm-spike`, 2026-10-26; its shims
 and build measurements are kept below) and shipped on the same branch.
-The decisions are in docs/decisions.md under `live-examples`.
+The decisions are in docs/decisions.md under `live-examples`; the
+figures stopped offering "Try it live" under `docs-tune`.
 
 ## What a reader gets
 
-- The frame player stays each figure's default and its fallback: it
-  needs no script beyond the site's, works from `file://`, and does not
-  play by itself when the reader asks for reduced motion.
-- A figure offers **Try it live** only where it can run: the site has
-  the WebAssembly build (`wasm/manifest.js` names it), the page is
-  served over http(s) (a browser loads no WebAssembly from a file), and
-  the browser has WebAssembly. Nothing is fetched until the reader asks;
-  the browser check holds every page to that.
-- Live, the canvas takes the frames' place and one bar the player's:
-  **Play** boots the example again and plays its steps (as entering live
-  mode does), and reads **Playing** while they run; **Next step** runs
-  the scenario's next step that acts, round again after the last, and
+- An example figure is its frame player. It needs no script beyond the
+  site's, works from `file://`, and does not play by itself when the
+  reader asks for reduced motion. No page but the playground fetches
+  the WebAssembly; the browser check holds every page to that.
+- The playground runs only where it can: the site has the WebAssembly
+  build (`wasm/manifest.js` names it), the page is served over http(s)
+  (a browser loads no WebAssembly from a file), and the browser has
+  WebAssembly. Otherwise its note says which is missing.
+- It has one button per example. Each runs in a canvas with one bar:
+  **Play** boots the example again and plays its steps (as picking it
+  does), and reads **Playing** while they run; **Next step** runs the
+  scenario's next step that acts, round again after the last, and
   names it (`set on true` is `on = true`, a list its length; the
-  command as written is its tooltip); **Back to recording** goes back
-  to the player. A line over the config says it runs in the browser
-  and runs again when edited. A figure written ```` ```example NAME
-  recording ```` (the home page's) shows the frames alone, with no
-  offer to run it live. A stage with nothing on screen and nothing
-  coming says so, and that Next step runs the next step. The config
-  is in an editor (a textarea over its own text, highlighted with the
-  site's `hl-` classes). An edit runs again after 350 ms; a broken one shows
-  its diagnostic as `strand check` prints it and leaves the last good
-  run on the canvas; **Reset** puts the example's config back.
+  command as written is its tooltip). A stage with nothing on screen
+  and nothing coming says so, and that Next step runs the next step.
+  The config is in an editor (a textarea over its own text,
+  highlighted with the site's `hl-` classes). An edit runs again after
+  350 ms; a broken one shows its diagnostic as `strand check` prints it
+  and leaves the last good run on the canvas; **Reset** puts the
+  example's config back.
 - The run follows the page's theme (`system.dark`, set as the site's
   dark twin of each scenario sets it) and the reader's reduced-motion
   setting (`system.reduced_motion`, so motion snaps as on their
@@ -55,17 +52,17 @@ The decisions are in docs/decisions.md under `live-examples`.
     name.
   - `surfaces.rs` is the compositor's side, placed by
     `strand_scene::placement`, composited for a canvas.
-  - `live.rs` is an example as its figure carries it, and the icon files
+  - `live.rs` is an example as the playground carries it, and the icon files
     a host without a disk supplies (`strand-web-icons` finds them).
   - `web.rs` is the wasm-bindgen API: `Live.boot`, `advance`, `act`,
     `tick`, `set`, `get`, the pointer, `view`, `compose`, `frame_ptr`,
     `record`, `paints`, `notes`, `warnings`.
-- `crates/strand-site`: each example figure carries its live data as
-  JSON (`example::live`: files, `[services]`, screen, rate and steps; a
-  header key the web host would not honour fails the build), and the
-  ```` ```playground ```` block writes the playground's. Every page loads
-  `wasm/manifest.js`, which the build writes as `null`, so the site
-  builds with no wasm tooling and works as before from a file or a host.
+- `crates/strand-site`: the ```` ```playground ```` block writes each
+  named example's live data as JSON (`example::live`: files,
+  `[services]`, screen, rate and steps; a header key the web host would
+  not honour fails the build). Every page loads `wasm/manifest.js`,
+  which the build writes as `null`, so the site builds with no wasm
+  tooling and works as before from a file or a host.
 - `scripts/wasm/build.sh`, in `scripts/wasm/run.sh`'s image (CI's image
   plus the wasm32 target, wasm-bindgen-cli 0.2.129 and binaryen 124):
   the lint below, the module, its glue, the two fonts, the icon files
@@ -75,8 +72,8 @@ The decisions are in docs/decisions.md under `live-examples`.
 - `scripts/wasm/site.sh` adds that build to a built site: `wasm/` with
   the module, glue and icons named by their content's hash, and the
   manifest written again to name them.
-- `site/assets/live.js` is the page's side, loaded only when the reader
-  asks.
+- `site/assets/live.js` is the page's side, loaded only by the
+  playground.
 - `scripts/wasm/ci.sh` runs CI's `wasm` job on the laptop.
 
 ## Pixel parity
@@ -171,7 +168,8 @@ Chromium in Docker on the laptop (16 cores, loaded by other builds) on
 - **A draw**: composing the shown surfaces into the frame buffer, plus
   `putImageData`. The canvas reads the buffer in place in the module's
   memory, with no copy into JavaScript.
-- **First live frame**: from the click, the script's load included.
+- **First live frame**: from asking for the example, the script's load
+  included (measured when figures still offered it).
 
 The module is fetched, compiled and started in 42 to 57 ms, and its
 fonts and icons are added in 19 to 25 ms. An edit boots again in about

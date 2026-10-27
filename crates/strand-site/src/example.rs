@@ -35,7 +35,7 @@ pub const REFS: &str = "eval/refs";
 /// The live examples' manifest, in the site (docs/live-examples.md):
 /// the build writes it saying there is no WebAssembly build, and
 /// scripts/wasm/site.sh, which adds one to a built site, writes it
-/// again naming its files. Every page loads it; a page offers live mode
+/// again naming its files. Every page loads it; the playground runs
 /// only when it names a build.
 pub const MANIFEST: &str = "wasm/manifest.js";
 
@@ -139,7 +139,7 @@ fn id_of(text: &str) -> Option<String> {
 /// the browser's run another than eval's, so the build refuses it.
 const LIVE_KEYS: &[&str] = &["id", "about", "screen", "hz", "services"];
 
-/// What a figure's live mode runs (strand-web's `live::Example`): the
+/// What the playground runs of an example (strand-web's `live::Example`): the
 /// scenario's config files, its `[services]` with each value as eval
 /// reads its text, its screen, its clock's rate and its steps, as JSON.
 pub fn live(s: &Scenario) -> Result<Value, String> {
@@ -210,8 +210,8 @@ pub fn live(s: &Scenario) -> Result<Value, String> {
     }))
 }
 
-/// Every docs example (`eval/scenarios/docs/*.scn`, by name) as its
-/// live mode runs it ([`live`]), as a JSON list.
+/// Every docs example (`eval/scenarios/docs/*.scn`, by name) as the
+/// playground runs it ([`live`]), as a JSON list.
 pub fn all_live(root: &Path) -> Result<Value, String> {
     let dir = root.join(DIR);
     let mut names: Vec<String> = std::fs::read_dir(&dir)
@@ -542,18 +542,10 @@ pub fn poster(media: &Value) -> usize {
     }
 }
 
-/// The example's figure: the frames, their player, the value curve,
-/// what its live mode runs ([`live`]) and, unless the page already shows
-/// the same files (`code: false`), the config. `root` leads from the
-/// page to the site's root.
-pub fn figure(
-    s: &Scenario,
-    media: &Value,
-    live: &Value,
-    hl: &Highlighter,
-    root: &str,
-    code: bool,
-) -> String {
+/// The example's figure: the frames, their player, the value curve
+/// and, unless the page already shows the same files (`code: false`),
+/// the config. `root` leads from the page to the site's root.
+pub fn figure(s: &Scenario, media: &Value, hl: &Highlighter, root: &str, code: bool) -> String {
     let mut o = String::new();
     let shown = poster(media);
     let size = nums(&media["size"]);
@@ -667,18 +659,7 @@ pub fn figure(
     }
     let _ = write!(
         o,
-        "<figcaption>Drawn by Strand from {which}.</figcaption>{}</figure>",
-        // What live mode runs (docs/live-examples.md), read by the
-        // page's script only when the reader asks for it; none for a
-        // recording alone.
-        if live.is_null() {
-            String::new()
-        } else {
-            format!(
-                "<script type=\"application/json\" class=\"ex-live-data\">{}</script>",
-                script_json(live)
-            )
-        },
+        "<figcaption>Drawn by Strand from {which}.</figcaption></figure>",
         which = if code {
             "this config"
         } else {

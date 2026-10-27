@@ -4,7 +4,7 @@
 //! (scripts/site/cli.sh); `strand-site media <name> <light-run>
 //! [<dark-run>]` renders an example's media from eval runs of its
 //! scenario (scripts/site/media.sh); `strand-site live` prints every
-//! docs example as its live mode runs it (scripts/wasm/build.sh).
+//! docs example as the playground runs it (scripts/wasm/build.sh).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -98,7 +98,7 @@ fn main() -> ExitCode {
             }
         }
         Some("live") => {
-            // Every docs example as its figure's live mode runs it, for
+            // Every docs example as the playground runs it, for
             // the tools that build the live examples (scripts/wasm/build.sh).
             match strand_site::example::all_live(&root) {
                 Ok(v) => {

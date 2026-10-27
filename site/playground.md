@@ -17,5 +17,5 @@ on your screen, into a canvas. Time is a virtual clock that ticks every
 desktop. Bars, panels, OSDs and popups are shown; windows and lock
 screens are not, nor is the GPU's work. Service values are the mock's,
 the icons are the few files the examples draw, and the fonts are
-Liberation Sans, regular and bold. Nothing is downloaded until you open an
-example live or this page.
+Liberation Sans, regular and bold. Nothing is downloaded until you open
+this page.

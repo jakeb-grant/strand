@@ -10,7 +10,7 @@
 
 <section class="hello">
 
-```example hello recording
+```example hello
 ```
 
 </section>
@@ -27,7 +27,7 @@ you can retune, and a prop can choose its own after `~`.
 
 </div>
 
-```example springs recording
+```example springs
 ```
 
 </section>

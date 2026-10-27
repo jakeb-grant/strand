@@ -1,7 +1,7 @@
 // The Strand site's script. Every page reads without it; it adds the
 // theme switch, the search, copy buttons, the sidebar on narrow screens,
-// the example players and, where the site has their WebAssembly build,
-// the offer of each example live.
+// the example players and, where the site has its WebAssembly build,
+// the playground.
 (function () {
   "use strict";
   var root = document.documentElement;
@@ -381,13 +381,6 @@
         show(0);
       }
     }
-    // Live mode (assets/live.js) takes the figure's place while it runs.
-    fig.addEventListener("strand-live", function (e) {
-      if (e.detail) {
-        fig.dataset.touched = "1";
-        setPlaying(false);
-      }
-    });
     // It plays while it is on screen, unless motion is reduced.
     if (!reduced.matches && "IntersectionObserver" in window) {
       var seen = new IntersectionObserver(function (entries) {
@@ -407,71 +400,23 @@
     }
   });
 
-  // ---- Live examples (docs/live-examples.md). Offered only where they
-  // can run: the site has their WebAssembly build (wasm/manifest.js
-  // names it), it is served over http (a browser loads no WebAssembly
-  // from a file) and the browser runs WebAssembly. Nothing is fetched
-  // until the reader asks; the player stays the default and the
-  // fallback.
+  // ---- The playground (docs/live-examples.md). It runs only where it
+  // can: the site has its WebAssembly build (wasm/manifest.js names
+  // it), it is served over http (a browser loads no WebAssembly from a
+  // file) and the browser runs WebAssembly. No other page fetches it.
   var wasm = window.STRAND_WASM;
   var canLive = !!wasm && /^https?:$/.test(location.protocol) && typeof WebAssembly === "object";
-  var liveScript = null;
   function loadLive() {
-    if (!liveScript) {
-      liveScript = new Promise(function (resolve, reject) {
-        var s = document.createElement("script");
-        s.src = new URL("assets/live.js", siteRoot).href;
-        s.onload = function () { resolve(window.StrandLive); };
-        s.onerror = function () { reject(new Error("assets/live.js did not load")); };
-        document.head.appendChild(s);
-      });
-      liveScript.catch(function () { liveScript = null; });
-    }
-    return liveScript;
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement("script");
+      s.src = new URL("assets/live.js", siteRoot).href;
+      s.onload = function () { resolve(window.StrandLive); };
+      s.onerror = function () { reject(new Error("assets/live.js did not load")); };
+      document.head.appendChild(s);
+    });
   }
   function megabytes(n) {
     return (n / 1e6).toFixed(1) + " MB";
-  }
-  if (canLive) {
-    document.querySelectorAll(".example").forEach(function (fig) {
-      if (!fig.querySelector(".ex-live-data")) return;
-      // At the end of the player's bar; a still example gets a bar of
-      // its own for it.
-      var bar = fig.querySelector(".ex-controls");
-      if (!bar) {
-        bar = document.createElement("div");
-        bar.className = "ex-bar ex-controls";
-        fig.querySelector(".ex-view").appendChild(bar);
-      }
-      var b = document.createElement("button");
-      b.type = "button";
-      b.className = "btn ex-live-try";
-      b.textContent = "Try it live";
-      b.title = "Run this config in your browser and edit it" +
-        (wasm.download ? " (" + megabytes(wasm.download) + ", once)" : "");
-      bar.appendChild(b);
-      var note = document.createElement("p");
-      note.className = "ex-live-note";
-      note.hidden = true;
-      fig.querySelector("figcaption").before(note);
-      b.addEventListener("click", function () {
-        b.disabled = true;
-        b.textContent = "Loading…";
-        note.hidden = true;
-        loadLive()
-          .then(function (L) { return L.figure(fig, wasm, siteRoot); })
-          .then(function () {
-            b.disabled = false;
-            b.textContent = "Try it live";
-          })
-          .catch(function (e) {
-            b.disabled = false;
-            b.textContent = "Try it live";
-            note.hidden = false;
-            note.textContent = "The live example did not load (" + (e && e.message ? e.message : e) + "); the frames above are Strand's own.";
-          });
-      });
-    });
   }
   var pg = document.querySelector(".playground");
   if (pg) {

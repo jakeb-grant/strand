@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-browser.sh: the live examples (docs/live-examples.md) of the
+# check-browser.sh: the playground (docs/live-examples.md) of the
 # built site (target/site, after `strand-site build`,
 # scripts/wasm/build.sh and scripts/wasm/site.sh) in headless Chromium,
 # in eval's pinned Playwright image (scripts/eval/Dockerfile.viewer)

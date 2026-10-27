@@ -2601,7 +2601,7 @@ proof  = "crates/strand-web/tests/live.rs::a_config_with_an_error_gives_its_diag
 [[claim]]
 page   = "site/playground.md"
 text   = "Time is a virtual clock that ticks every 1/60 s of real time,"
-source = ["site/assets/live.js:333", "crates/strand-web/src/steps.rs"]
+source = ["site/assets/live.js:387", "crates/strand-web/src/steps.rs"]
 proof  = "read: Run.frame runs the ticks due at the example's rate (60 Hz) on requestAnimationFrame, at most four behind"
 
 [[claim]]
@@ -2619,6 +2619,6 @@ proof  = "crates/strand-web/tests/live.rs::every_docs_example_draws_every_frame_
 
 [[claim]]
 page   = "site/playground.md"
-text   = "Nothing is downloaded until you open an example live or this page."
-source = ["site/assets/site.js:442", "site/assets/live.js"]
-proof  = "scripts/wasm/check-browser.sh (each example's page requests no WebAssembly before Try it live is pressed)"
+text   = "Nothing is downloaded until you open this page."
+source = ["site/assets/site.js:411", "site/assets/live.js"]
+proof  = "scripts/wasm/check-browser.sh (no page with an example figure requests the WebAssembly or live.js)"

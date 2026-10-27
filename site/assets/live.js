@@ -1,15 +1,14 @@
-// Live examples (docs/live-examples.md): Strand's compiler and CPU
-// renderer, built to WebAssembly, running an example's scenario in the
-// page. site.js loads this file only when a reader asks for a live
-// example (or opens the playground), and only on a site that has the
-// WebAssembly build (wasm/manifest.js names it) served over http; the
-// frame-by-frame player stays the figure's default and its fallback.
+// The playground (docs/live-examples.md): Strand's compiler and CPU
+// renderer, built to WebAssembly, running each docs example's scenario
+// in the page. site.js loads this file only on the playground page, and
+// only on a site that has the WebAssembly build (wasm/manifest.js names
+// it) served over http; every other figure is its recorded frames.
 //
 // A run is the example's own scenario: its config, its mock services,
 // its screen and its steps, played at the page's frame rate on Strand's
 // virtual clock (one tick each 1/hz s, at most four a frame behind). The
-// reader can play the steps again, run them one at a time, start over,
-// point and click, and edit the config; an edit runs again, or shows the
+// reader can play the steps again, run them one at a time, point and
+// click, and edit the config; an edit runs again, or shows the
 // compiler's diagnostics as `strand check` prints them.
 (function () {
   "use strict";
@@ -176,9 +175,9 @@
   }
 
   /**
-   * One example running live: a canvas where its frames were, a bar to
-   * play its steps, run the next one or start over, its config in
-   * editors, and what went wrong under them. `parts` places them:
+   * One example running live: a canvas, a bar to play its steps or run
+   * the next one, its config in editors, and what went wrong under
+   * them. `parts` places them:
    * `stage` (the canvas's box), `controls` (the bar), `edit`.
    */
   class Run {
@@ -499,54 +498,6 @@
     stage.style.minWidth = w >= 6 * h ? `${w / scale}px` : "";
   }
 
-  /** A figure's live mode, in place of its player. */
-  async function figure(fig, wasm, root) {
-    const data = JSON.parse(fig.querySelector(".ex-live-data").textContent);
-    const l = await boot(wasm, root);
-    const view = fig.querySelector(".ex-view");
-    const stage = fig.querySelector(".ex-stage");
-    const controls = el("div", "ex-bar lv-controls");
-    const edit = el("div", "lv-edit");
-    const back = button("btn quiet lv-back", "Back to recording", "Back to the frames Strand drew");
-    // On a phone it is "Back", so the bar keeps one line.
-    back.replaceChildren("Back", el("span", "lv-wide", "\u00a0to recording"));
-    const parts = {
-      root: fig,
-      stage,
-      controls,
-      edit,
-      fit(w, h, scale) {
-        fit(stage, w, h, scale);
-      },
-    };
-    const was = { aspect: stage.style.aspectRatio, max: stage.style.maxWidth, min: stage.style.minWidth };
-    const run = new Run(l, data, parts);
-    controls.append(back);
-    const bar = view.querySelector(".ex-controls");
-    if (bar) bar.after(controls);
-    else view.append(controls);
-    edit.prepend(el("p", "lv-hint", "Running in your browser. Edit the config and it runs again."));
-    fig.querySelector("figcaption").before(edit);
-    fig.classList.add("is-live");
-    fig.dispatchEvent(new CustomEvent("strand-live", { detail: true }));
-    back.addEventListener("click", () => {
-      run.stop();
-      run.canvas.remove();
-      controls.remove();
-      edit.remove();
-      run.empty.remove();
-      stage.style.aspectRatio = was.aspect;
-      stage.style.maxWidth = was.max;
-      stage.style.minWidth = was.min;
-      fig.classList.remove("is-live", "lv-failed", "lv-blank");
-      figures.delete(fig.id);
-      fig.dispatchEvent(new CustomEvent("strand-live", { detail: false }));
-    });
-    figures.set(fig.id, run);
-    run.start();
-    return run;
-  }
-
   /** The playground page: every example in turn, larger, to edit. */
   async function playground(box, wasm, root) {
     const all = JSON.parse(box.querySelector(".pg-data").textContent);
@@ -585,7 +536,7 @@
           fit(stage, w, h, scale);
         },
       });
-      figures.set("playground", run);
+      window.StrandLive.run = run;
       run.start();
     };
     all.forEach((ex, i) => {
@@ -597,6 +548,6 @@
     return run;
   }
 
-  const figures = new Map();
-  window.StrandLive = { figure, playground, figures, boot: (w, r) => boot(w, r) };
+  /** `run` is the example the playground runs now (the browser check's). */
+  window.StrandLive = { playground, run: null, boot: (w, r) => boot(w, r) };
 })();

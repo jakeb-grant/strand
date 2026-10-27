@@ -79,23 +79,16 @@ fn the_site_builds_with_no_problems() {
     for cmd in ["strand check", "strand compositor-rules", "strand replay"] {
         assert!(cli.contains(cmd), "no {cmd}");
     }
-    // (live examples) Each figure carries what its live mode runs, but
-    // the home page's are recordings alone; the playground carries every
-    // example named, and the site needs no wasm build: its manifest
-    // names none until scripts/wasm/site.sh adds one.
-    assert!(
-        !home.contains("class=\"ex-live-data\""),
-        "the home page offers live mode"
-    );
-    let motion = std::fs::read_to_string(out.join("concepts/motion.html")).unwrap();
-    let live = motion
-        .split("<script type=\"application/json\" class=\"ex-live-data\">")
-        .nth(1)
-        .and_then(|r| r.split("</script>").next())
-        .expect("the motion page's figure carries its live data");
-    let live: serde_json::Value = serde_json::from_str(live).unwrap();
-    assert_eq!(live["id"], "docs-springs");
-    assert!(live["files"][0][1].as_str().unwrap().contains("bar "));
+    // (live examples) Only the playground runs an example live: a
+    // figure is its frames, with nothing for a script to run. The
+    // playground carries every example named, and the site needs no
+    // wasm build: its manifest names none until scripts/wasm/site.sh
+    // adds one.
+    for page in ["index.html", "concepts/motion.html", "how-to/osd.html"] {
+        let html = std::fs::read_to_string(out.join(page)).unwrap();
+        assert!(html.contains("class=\"example"), "{page} has no example");
+        assert!(!html.contains("ex-live-data"), "{page} offers live mode");
+    }
     assert!(home.contains("<script src=\"wasm/manifest.js\" defer></script>"));
     assert_eq!(
         std::fs::read_to_string(out.join("wasm/manifest.js")).unwrap(),
