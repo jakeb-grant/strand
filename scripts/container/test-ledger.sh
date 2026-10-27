@@ -61,7 +61,7 @@ fi
 job=$(awk '/^  budgets:$/ {on=1; next} on && /^  [a-z][a-z-]*:$/ {exit} on' \
   "$HERE/../../.github/workflows/ci.yml")
 if grep -q 'trial/strand-gpu"$' <<<"$job" && grep -q 'trial/strand-cpu"$' <<<"$job" &&
-  grep -q 'actions/upload-artifact@v4' <<<"$job" &&
+  grep -Eq 'actions/upload-artifact@v[0-9]+$' <<<"$job" &&
   grep -q 'name: strand-release-binaries' <<<"$job"; then
   echo "ok   the budgets job uploads both release binaries"
 else
