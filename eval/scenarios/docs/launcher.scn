@@ -1,0 +1,56 @@
+id     = "docs-launcher"
+about  = """The launcher how-to (site/how-to/launcher.md): its file, word for
+word, over seven mock apps. The launcher opens (fading and scaling in), lists
+every app, then "ter" is typed a letter at a time: the list filters to the
+apps whose names match (four, two, one), the matched letters lit in the
+accent and the card shrinking to its rows."""
+screen = { width = 680, height = 440, scale = 2.0 }
+
+[services]
+"system.accent" = "#a13c1c"
+"apps.all" = "[{\"id\": \"org.gnome.Nautilus\", \"name\": \"Files\", \"comment\": \"Access and organise files\", \"icon\": \"system-file-manager-symbolic\", \"categories\": [], \"actions\": []}, {\"id\": \"firefox\", \"name\": \"Firefox\", \"comment\": \"Browse the web\", \"icon\": \"web-browser-symbolic\", \"categories\": [], \"actions\": []}, {\"id\": \"org.gnome.Console\", \"name\": \"Terminal\", \"comment\": \"Run commands\", \"icon\": \"utilities-terminal-symbolic\", \"categories\": [], \"actions\": []}, {\"id\": \"org.gnome.Calculator\", \"name\": \"Calculator\", \"comment\": \"Perform arithmetic and scientific calculations\", \"icon\": \"accessories-calculator-symbolic\", \"categories\": [], \"actions\": []}, {\"id\": \"org.gnome.Calendar\", \"name\": \"Calendar\", \"comment\": \"Access and manage your calendars\", \"icon\": \"x-office-calendar-symbolic\", \"categories\": [], \"actions\": []}, {\"id\": \"org.gnome.TextEditor\", \"name\": \"Text Editor\", \"comment\": \"Edit text files\", \"icon\": \"accessories-text-editor-symbolic\", \"categories\": [], \"actions\": []}, {\"id\": \"org.gnome.Settings\", \"name\": \"Settings\", \"comment\": \"Change the system settings\", \"icon\": \"preferences-system-symbolic\", \"categories\": [], \"actions\": []}]"
+
+=== launcher.strand
+// launcher.strand. Bind a key to: strand toggle launcher.open
+export state open = false
+state query = ""
+let hits = apps.search(query)          // Async<[Hit]>: fuzzy + frecency, keeps last result
+
+panel Launcher {
+  screens: focused; layer: overlay; anchor: center; keyboard: exclusive
+  open: <-> open                       // Escape, click-away and focus loss write false
+  enter { opacity: 0; scale: 0.96 }
+  on show { query = "" }
+  col { width: 600; pad: $space.3; gap: $space.2; radius: $radius.xl; clip: true
+        bg: $surface.alpha(0.82); blur: 32; shadow: $elevation.xl
+    input { text: <-> query; placeholder: "Search apps"; font: $font.title; focus: true; nav: results }
+    list { id: results; max_height: 420               // virtualised; arrows move selection
+      for h in hits {
+        row { pad: $space.2; gap: $space.3; radius: $radius.md; align: center
+          when hover    { bg: $surface.hi }
+          when selected { bg: $accent.container }
+          on activate { h.app.launch(); open = false }
+          image h.app.icon { size: 32 }
+          col { grow: 1
+            text h.app.name { marks: h.ranges; mark_color: $accent; weight: 600 }
+            text h.app.comment ?? "" { font: $font.caption; color: $fg.muted; ellipsis: end }
+          }
+        }
+      }
+    }
+    if hits.len == 0 && query != "" && !hits.pending { text "No matches" { color: $fg.muted } }
+  }
+}
+
+=== steps
+rest
+mark open
+set launcher.open true
+wait 500
+mark type
+set launcher.query t
+wait 300
+set launcher.query te
+wait 300
+set launcher.query ter
+wait 500

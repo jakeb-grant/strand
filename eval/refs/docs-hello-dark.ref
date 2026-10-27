@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "docs-hello-dark"
 verdict good
-note "docs examples drawn with the site's rust accent (system.accent = #a13c1c on the mock) instead of the default blue seed; only colours changed, every other check passes; frames looked at on a contact sheet, light and dark"
+note "owner asked for breathing room at the bar's ends: split { pad: 0, 12 } as the guide's level-1 bar has; the title and battery move 12 px in, nothing else changes; frames looked at, light and dark"
 date 2026-10-27
-rev "ff112c0a+changes"
+rev "05feaa90+changes"
 approver "claude"
-scenario c2c2395feff01f30
-seal 044a5d7bdd42c8f4
+scenario 9ca186ee09fc6a4a
+seal ffb85db066a06026
 S1 0 - "bar Top"
 N0 "|shell.strand:1:1|[Mock | DP-1]#0" "bar@shell.strand:1"
 N1 "|shell.strand:3:3|[Mock | DP-1]#0" "split@shell.strand:3"
@@ -20,9 +20,9 @@ k0 p1
 s1 z=640,32
 n0 x=0 y=0 w=640 h=32 bg=1a110fff
 n1 x=0 y=0 w=640 h=32 ord=1
-n2 x=0 y=9 w=136 h=15 txt=S ord=3 ink=1,11,134.5,10 fg=f1dfdaff gl=["README.md\u0020—\u0020Strand"]
-n3 x=0 y=0 w=304 h=32 ord=2
+n2 x=12 y=9 w=136 h=15 txt=S ord=3 ink=13,11,134.5,10 fg=f1dfdaff gl=["README.md\u0020—\u0020Strand"]
+n3 x=12 y=0 w=292 h=32 ord=2
 n4 x=304 y=9 w=33 h=15 txt=S ord=5 ink=304.5,11,31.5,10 fg=f1dfdaff gl=["09:41"]
 n5 x=304 y=0 w=33 h=32 ord=4
-n6 x=613 y=9 w=27 h=15 txt=S ord=7 ink=613.5,11,25.5,10 fg=f1dfdaff gl=["82%"]
-n7 x=337 y=0 w=303 h=32 ord=6
+n6 x=601 y=9 w=27 h=15 txt=S ord=7 ink=601.5,11,25.5,10 fg=f1dfdaff gl=["82%"]
+n7 x=337 y=0 w=291 h=32 ord=6

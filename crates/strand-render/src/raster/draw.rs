@@ -244,11 +244,11 @@ pub(crate) fn draw(
                 radii,
                 std_dev,
                 color,
-                clip,
+                clip: cut,
                 extent,
             } => {
                 ctx.set_fill_rule(Fill::EvenOdd);
-                ctx.push_clip_path(clip);
+                ctx.push_clip_path(cut);
                 ctx.set_fill_rule(Fill::NonZero);
                 let shape = ShadowShape {
                     rect: *rect,
@@ -260,10 +260,29 @@ pub(crate) fn draw(
                 // Sliced (whole pixels, so only untransformed), else the
                 // whole pixmap, else drawn directly.
                 let sliced = (cur == base).then(|| cache.peek_slices(&shape)).flatten();
-                match (sliced, cache.peek(shadow_key(&shape))) {
+                // (redraw) Not cached: this frame's part of its pixmap,
+                // when it holds what `clip` shows (`Raster::prepare` made
+                // it for the frame's damage), else drawn directly.
+                let (ox, oy) = (extent.x0.floor(), extent.y0.floor());
+                let part = cache
+                    .peek_part(d as *const DisplayItem as usize)
+                    .filter(|p| {
+                        let back = (base.inverse() * cur).inverse();
+                        let area =
+                            back.transform_rect_bbox(to_kurbo(clip)) + kurbo::Vec2::new(-ox, -oy);
+                        p.covers(area)
+                    })
+                    .map(|p| p.pixmap());
+                let pixmap = match cache.peek(shadow_key(&shape)) {
+                    Some(pm) => Some((pm, (0.0, 0.0))),
+                    None => part.flatten(),
+                };
+                match (sliced, pixmap) {
                     (Some(sl), _) => draw_slices(ctx, &sl, region(cur)),
-                    (None, Some(pm)) => {
-                        let (ox, oy) = (extent.x0.floor(), extent.y0.floor());
+                    // Every pixel the clip shows lies inside the box.
+                    (None, None) if part.is_some() => {}
+                    (None, Some((pm, (px, py)))) => {
+                        let (ox, oy) = (ox + px, oy + py);
                         let (p, t) = image_paint(pm, ox, oy, cur != base);
                         ctx.set_paint(p);
                         ctx.set_paint_transform(t);

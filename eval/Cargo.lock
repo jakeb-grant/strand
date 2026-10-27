@@ -2111,6 +2111,7 @@ dependencies = [
  "strand-services-schema",
  "strand-surface",
  "strand-text",
+ "strand-theme",
  "tempfile",
  "toml",
  "wayland-client",

@@ -1,0 +1,70 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-wallpaper-theme"
+verdict good
+note "wallpaper-theme figure: boots in the seeded purple picture's palette, the setting points at art.png at tick 37, the old palette holds one tick while it is quantised, then every colour springs to the new palette (light and dark on one timeline)"
+date 2026-10-27
+rev "05feaa90+changes"
+approver "claude"
+scenario 8389ee47fae5e0f4
+seal 89ca92c2f70fe150
+S1 0 - "bar Top"
+N0 "|bar.strand:1:1|[Mock | DP-1]#0" "bar@bar.strand:1"
+N1 "|bar.strand:4:3|[Mock | DP-1]#0" "split@bar.strand:4"
+N2 "|bar.strand:5:13|[Mock | DP-1]#0" "box@bar.strand:5"
+N3 "|bar.strand:5:5|[Mock | DP-1]#0" "start@bar.strand:5"
+N4 "|bar.strand:6:14|[Mock | DP-1]#0" "text(\"09:41\")"
+N5 "|bar.strand:6:5|[Mock | DP-1]#0" "center@bar.strand:6"
+N6 "|bar.strand:7:11|[Mock | DP-1]#0" "text(\"82%\")"
+N7 "|bar.strand:7:5|[Mock | DP-1]#0" "end@bar.strand:7"
+k0 p1
+s1 z=360,32
+n0 x=0 y=0 w=360 h=32 bg=fef7ffff
+n1 x=0 y=0 w=360 h=32 ord=1
+n2 x=12 y=10 w=12 h=12 ord=3 bg=69548dff
+n3 x=12 y=0 w=152 h=32 ord=2
+n4 x=164 y=9 w=33 h=15 txt=S ord=5 ink=164.5,11,31.5,10 fg=1d1a20ff gl=["09:41"]
+n5 x=164 y=0 w=33 h=32 ord=4
+n6 x=321 y=9 w=27 h=15 txt=S ord=7 ink=321.5,11,25.5,10 fg=1d1a20a6 gl=["82%"]
+n7 x=197 y=0 w=151 h=32 ord=6
+k38
+n0 bg=fef7feff
+n2 bg=6f5484ff
+n4 fg=1e1a1fff
+n6 fg=1e1a1fa6
+k39
+n0 bg=fef7fcff
+n2 bg=785274ff
+n4 fg=1f1a1dff
+n6 fg=1f1a1da6
+k40
+n0 bg=fff8faff
+n2 bg=815066ff
+n4 fg=21191cff
+n6 fg=21191ca6
+k41
+n0 bg=fff8f9ff
+n2 bg=864e5cff
+n4 fg=22191bff
+n6 fg=22191ba6
+k42
+n0 bg=fff8f8ff
+n2 bg=8a4d55ff
+n4 fg=22191aff
+n6 fg=22191aa6
+k43
+n2 bg=8d4c50ff
+k44
+n0 bg=fff8f7ff
+n2 bg=8e4b4dff
+n4 fg=231919ff
+n6 fg=231919a6
+k45
+n2 bg=8f4b4bff
+k46
+n2 bg=8f4a4aff
+k47
+n2 bg=904a4aff
+k48
+n2 bg=904a49ff
+k49
+k50

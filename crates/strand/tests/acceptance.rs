@@ -1611,11 +1611,21 @@ fn the_hello_bar_alone_is_laid_out_and_themed() {
         else {
             panic!("{name}: start, centre or end is empty: {runs:?}");
         };
-        // Start at the bar's left edge, end at its right one (the bar has
-        // no padding: a glyph's side bearing away), the clock centred.
+        // Start 12 px in from the bar's left edge, end 12 px in from its
+        // right one (`split { pad: 0, 12 }`: a glyph's side bearing
+        // further), the clock centred.
+        let pad = (12.0 * scale) as usize;
         let edge = (4.0 * scale) as usize;
-        assert!(s.0 <= edge, "{name}: start ink at {}", s.0);
-        assert!(e.1 >= w - 1 - edge, "{name}: end ink at {}", e.1);
+        assert!(
+            (pad.saturating_sub(1)..=pad + edge).contains(&s.0),
+            "{name}: start ink at {}",
+            s.0
+        );
+        assert!(
+            (w - 1 - pad - edge..=w - pad).contains(&e.1),
+            "{name}: end ink at {}",
+            e.1
+        );
         let mid = (c0.0 + c1.1) as f64 / 2.0;
         assert!(
             (mid - w as f64 / 2.0).abs() <= 2.0 * scale,

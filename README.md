@@ -8,7 +8,7 @@ changes, and saving a file is a state change, not a restart.
 ```
 bar Top {
   edge: top; height: 32
-  split {
+  split { pad: 0, 12
     start  { text windows.focused?.title ?? "" }
     center { text clock.format("%H:%M") }
     end    { text pct(battery.percent) }

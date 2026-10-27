@@ -78,6 +78,8 @@ rustix = { version = "1.1.5", features = ["process"] }
 # tests/live.rs: a virtual pointer and keyboard on that sway's seat.
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
 wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
+# tests/wallpaper.rs: the palette a fixture's wallpaper makes.
+strand-theme = { path = "../crates/strand-theme" }
 
 [lints]
 workspace = true

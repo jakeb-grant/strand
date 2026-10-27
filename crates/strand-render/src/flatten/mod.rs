@@ -763,9 +763,19 @@ struct OpenClip {
     /// Its box's largest corner radius (physical pixels): how far its
     /// rounding reaches into the target's square corners.
     radius: f64,
-    /// Its box path, kept once the fillet target's fill has widened the
-    /// clip: what the rest of the group is held to.
+    /// Its box path, kept once the fillet target's fill or a shadow has
+    /// widened the clip: what the rest of the group is held to.
     held: Option<BezPath>,
+    /// (shadow-pass) It clips only because its box's size springs
+    /// (`Animator::sizing`), not for `clip: true`, a `scroll`, `list` or
+    /// `pages`: the shadows of the boxes inside it pass it.
+    sizing: bool,
+    /// (shadow-pass) What the clips above it let through (surface px):
+    /// a shadow that passes it shows no further.
+    outer: Rect,
+    /// (shadow-pass) The shadow items that pass it, kept in step with
+    /// the items inserted before them.
+    passes: Vec<usize>,
 }
 
 /// (damage-fraction) Where `item` paints, from its own geometry

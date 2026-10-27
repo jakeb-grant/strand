@@ -130,6 +130,13 @@ pub struct PaintCache {
     /// Pixels of blurred shadow rendered into pixmaps (whole shadows and
     /// tiles), plus the extents frames drew directly (tests).
     blurred: u64,
+    /// (redraw) This frame's parts of shadows not cached, by display
+    /// item ([`PaintCache::shadow_part`]); dropped when the frame ends.
+    parts: HashMap<usize, ShadowPart>,
+    /// (redraw) What large shadows' cells are rastered with (behind a
+    /// lock only so that the cache stays `Sync` for the raster's threads,
+    /// which read it; only `&mut self` takes it).
+    lanes: std::sync::Mutex<CellLanes>,
 }
 
 /// A corner tile built uncached, held for a later frame to cache.
@@ -535,9 +542,22 @@ impl PaintCache {
         self.builds
     }
 
+    /// The lanes large shadows' cells are rastered on.
+    fn lanes(&mut self) -> &mut CellLanes {
+        self.lanes
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Starts a frame: entries used from now on stay until the next.
     pub fn begin_frame(&mut self) {
         self.frame += 1;
+        self.parts.clear();
+    }
+
+    /// Ends a frame: drops its parts of shadows ([`Self::shadow_part`]).
+    pub fn end_frame(&mut self) {
+        self.parts.clear();
     }
 
     fn get(&mut self, key: u64) -> Option<Arc<Pixmap>> {
@@ -568,6 +588,13 @@ impl PaintCache {
         self.recent
             .retain(|_, t| now.saturating_duration_since(t.at) < idle);
         self.recent_bytes = self.recent.values().map(|t| t.bytes).sum();
+        let lanes = self.lanes();
+        if lanes
+            .used
+            .is_some_and(|t| now.saturating_duration_since(t) >= idle)
+        {
+            *lanes = CellLanes::default();
+        }
         trim_luts(now, idle);
     }
 
@@ -723,9 +750,114 @@ impl PaintCache {
         if !eager(w, h) && !admit_large(self, key) {
             return None;
         }
-        let pm = render_shadow(s, w as u16, h as u16);
+        // A large one is rastered on its fixed grid of cells, as a part
+        // of it is when it is not cached (`shadow_part`): the same pixels.
+        let pm = if eager(w, h) {
+            render_shadow(s, w as u16, h as u16)
+        } else {
+            let all = vec![true; part_grid(w, h).len()];
+            let whole = kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+            render_shadow_cells(self.lanes(), s, (w, h), &all, whole)
+        };
         self.built(&pm);
         Some(self.insert(key, pm))
+    }
+
+    /// (redraw) The part of `s`'s pixmap that a frame needs, for a shadow
+    /// [`Self::shadow_in`] neither had cached nor built: the cells of the
+    /// pixmap's fixed grid ([`PART_CELL_W`] × [`PART_CELL_H`], from its
+    /// origin) that `damage` (surface px) reaches under `to_surface` (the
+    /// transform the item is drawn under), less those wholly inside the
+    /// box `clip` cuts out of the shadow, rastered uncached into a pixmap
+    /// of the whole's size, for the raster's draw of `item` (the display
+    /// item's address) this frame ([`Self::peek_part`]). A large entry is
+    /// rastered whole on the same grid, so the part's pixels are the
+    /// whole pixmap's: a frame draws a shadow from its pixmap's pixels
+    /// whether or not an earlier frame cached it, and a partial redraw
+    /// equals a full one (decisions.md, shadow-part).
+    pub fn shadow_part(
+        &mut self,
+        item: usize,
+        s: &ShadowShape,
+        clip: &kurbo::BezPath,
+        to_surface: Affine,
+        damage: &[kurbo::Rect],
+    ) {
+        let (w, h) = shadow_size(s);
+        if !cacheable(w, h) || to_surface.determinant().abs() < 1e-12 {
+            return;
+        }
+        let cells = part_grid(w, h);
+        let (ox, oy) = (s.extent.x0.floor(), s.extent.y0.floor());
+        let back = to_surface.inverse();
+        // Pixmap pixels one on from what each damaged pixel samples.
+        let mut need = vec![false; cells.len()];
+        for d in damage {
+            let q = back.transform_rect_bbox(*d) + kurbo::Vec2::new(-ox, -oy);
+            let q = q.inflate(2.0, 2.0);
+            for (i, c) in cells.iter().enumerate() {
+                need[i] |= overlaps(c, &q);
+            }
+        }
+        // A device pixel the clip lets through samples the pixmap at most
+        // about one device pixel inside the box, plus bilinear's pixel.
+        let reach = 2.0 + 1.5 * device_px(back);
+        let segs: Vec<kurbo::Rect> = clip
+            .segments()
+            .map(|g| kurbo::ParamCurveExtrema::bounding_box(&g))
+            .collect();
+        let hidden = |c: &kurbo::Rect| {
+            let c = (*c + kurbo::Vec2::new(ox, oy)).inflate(reach, reach);
+            !segs.iter().any(|b| overlaps(b, &c))
+                && kurbo::Shape::winding(clip, c.center()) % 2 == 0
+        };
+        let mut want = vec![false; cells.len()];
+        let mut ok = vec![false; cells.len()];
+        for (i, c) in cells.iter().enumerate() {
+            if hidden(c) {
+                ok[i] = true;
+            } else if need[i] {
+                want[i] = true;
+                ok[i] = true;
+            }
+        }
+        // Drawn pixel for pixel (no transform), only the cells rastered
+        // need a pixmap; under a transform it is sampled between pixels and
+        // filled over its whole rect, so it is the whole's size and place.
+        let window = if to_surface == Affine::IDENTITY {
+            cells
+                .iter()
+                .zip(&want)
+                .filter_map(|(c, w)| w.then_some(*c))
+                .reduce(|a, c| a.union(c))
+        } else {
+            Some(kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h)))
+        };
+        let pixmap = window.filter(|_| want.iter().any(|w| *w)).map(|window| {
+            let pm = render_shadow_cells(self.lanes(), s, (w, h), &want, window);
+            let px: u64 = cells
+                .iter()
+                .zip(&want)
+                .filter(|(_, w)| **w)
+                .map(|(c, _)| (c.width() * c.height()) as u64)
+                .sum();
+            self.blurred += px;
+            (Arc::new(pm), (window.x0, window.y0))
+        });
+        self.parts.insert(
+            item,
+            ShadowPart {
+                pixmap,
+                size: (w, h),
+                ok,
+            },
+        );
+    }
+
+    /// (redraw) This frame's part of a shadow for display item `item`
+    /// ([`Self::shadow_part`]).
+    pub fn peek_part(&self, item: usize) -> Option<&ShadowPart> {
+        self.parts.get(&item)
     }
 
     /// Counts a pixmap of blurred shadow rendered.
@@ -1289,6 +1421,191 @@ fn render_blurred(w: u16, h: u16, draw: impl FnOnce(&mut RenderContext)) -> Pixm
                 ..RasterizerSettings::default()
             },
         );
+    }
+    pm
+}
+
+/// Sides of the cells a large shadow's pixmap is rastered in, whole or in
+/// part ([`PaintCache::shadow_part`]): each pixel is always rastered by a
+/// context of its cell's size with the shadow translated by the cell's
+/// origin, so a part is bit for bit the whole pixmap there (vello's
+/// blurred rect is evaluated in f32 relative to the context's origin, and
+/// one context of the whole size rounds otherwise).
+pub const PART_CELL_W: u32 = 128;
+/// See [`PART_CELL_W`].
+pub const PART_CELL_H: u32 = 64;
+
+/// (redraw) What [`PaintCache::shadow_part`] rastered of a shadow's
+/// pixmap for one frame.
+#[derive(Debug)]
+pub struct ShadowPart {
+    /// A pixmap holding the cells rastered, and where its origin lies in
+    /// the whole's (`None`: every cell the frame needs lies inside the
+    /// box, so none shows).
+    pixmap: Option<(Arc<Pixmap>, (f64, f64))>,
+    size: (u32, u32),
+    /// Per cell of the grid: rastered, or wholly inside the box.
+    ok: Vec<bool>,
+}
+
+impl ShadowPart {
+    /// The pixmap, and its origin from the shadow's whole-pixel origin,
+    /// where a cached one is drawn: (0, 0), and the whole's size, when the
+    /// shadow is drawn under a transform.
+    pub fn pixmap(&self) -> Option<(&Arc<Pixmap>, (f64, f64))> {
+        self.pixmap.as_ref().map(|(p, at)| (p, *at))
+    }
+
+    /// Whether it holds every pixel `area` (pixmap px) may sample, one on
+    /// around it (bilinear) included.
+    pub fn covers(&self, area: kurbo::Rect) -> bool {
+        let area = area.inflate(1.0, 1.0);
+        part_grid(self.size.0, self.size.1)
+            .iter()
+            .zip(&self.ok)
+            .all(|(c, ok)| *ok || !overlaps(c, &area))
+    }
+}
+
+/// The cells of a `w × h` pixmap's part grid, row by row.
+fn part_grid(w: u32, h: u32) -> Vec<kurbo::Rect> {
+    let mut cells = Vec::new();
+    for y in (0..h).step_by(PART_CELL_H as usize) {
+        for x in (0..w).step_by(PART_CELL_W as usize) {
+            cells.push(kurbo::Rect::new(
+                f64::from(x),
+                f64::from(y),
+                f64::from((x + PART_CELL_W).min(w)),
+                f64::from((y + PART_CELL_H).min(h)),
+            ));
+        }
+    }
+    cells
+}
+
+/// Whether `a` and `b` overlap or touch (a line's zero-area box counts).
+fn overlaps(a: &kurbo::Rect, b: &kurbo::Rect) -> bool {
+    a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1
+}
+
+/// How many item pixels one device pixel spans at most under `back`
+/// (surface to item coordinates).
+fn device_px(back: Affine) -> f64 {
+    let [a, b, c, d, _, _] = back.as_coeffs();
+    a.hypot(b).max(c.hypot(d))
+}
+
+/// (redraw) A thread's render contexts for [`render_shadow_cells`], one
+/// per cell size in use (a grid has at most four), kept between frames
+/// in [`PaintCache`] and freed when idle.
+#[derive(Debug, Default)]
+struct CellLane {
+    contexts: Vec<RenderContext>,
+    resources: Option<Resources>,
+}
+
+impl CellLane {
+    /// Rasters `s` into the pixmap cell `c` (pixmap px), its pixmap's
+    /// origin at `(ox, oy)`, as [`render_blurred`] would with a context of
+    /// its own (the same settings, translation and drawing).
+    fn render(&mut self, s: &ShadowShape, c: kurbo::Rect, ox: f64, oy: f64) -> Pixmap {
+        let (w, h) = (c.width() as u16, c.height() as u16);
+        let at = match self
+            .contexts
+            .iter()
+            .position(|x| x.width() == w && x.height() == h)
+        {
+            Some(i) => i,
+            None => {
+                let settings = RenderSettings {
+                    num_threads: 0,
+                    ..RenderSettings::default()
+                };
+                self.contexts.push(RenderContext::new_with(w, h, settings));
+                self.contexts.len() - 1
+            }
+        };
+        let ctx = &mut self.contexts[at];
+        ctx.reset();
+        ctx.set_fill_rule(Fill::NonZero);
+        ctx.set_transform(Affine::translate((-(ox + c.x0), -(oy + c.y0))));
+        draw_shadow(ctx, s);
+        ctx.flush();
+        let mut pm = Pixmap::new(w, h);
+        let resources = self.resources.get_or_insert_with(Resources::new);
+        if let Some(target) = PixmapMut::new(w, h, pm.data_as_u8_slice_mut()) {
+            ctx.render_with(
+                target,
+                resources,
+                RasterizerSettings {
+                    target_init: TargetInit::SrcOver,
+                    render_mode: RenderMode::OptimizeQuality,
+                    ..RasterizerSettings::default()
+                },
+            );
+        }
+        ctx.reset();
+        pm
+    }
+}
+
+/// (redraw) The lanes [`render_shadow_cells`] rasters on, and when they
+/// last did.
+#[derive(Debug, Default)]
+struct CellLanes {
+    lanes: Vec<CellLane>,
+    used: Option<Instant>,
+}
+
+/// `s`'s pixmap of `w × h`, or the part of it `window` (pixmap px, on
+/// whole pixels) covers, with only the cells of its part grid that `want`
+/// marks rastered (the others transparent), each by a context of its
+/// cell's size, on as many threads as there are cells to share.
+fn render_shadow_cells(
+    lanes: &mut CellLanes,
+    s: &ShadowShape,
+    (w, h): (u32, u32),
+    want: &[bool],
+    window: kurbo::Rect,
+) -> Pixmap {
+    let cells: Vec<kurbo::Rect> = part_grid(w, h)
+        .into_iter()
+        .zip(want)
+        .filter_map(|(c, w)| w.then_some(c))
+        .collect();
+    let (ox, oy) = (s.extent.x0.floor(), s.extent.y0.floor());
+    let done: Vec<std::sync::Mutex<Option<Pixmap>>> =
+        cells.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    let threads = crate::raster::threads().min(cells.len()).max(1);
+    while lanes.lanes.len() < threads {
+        lanes.lanes.push(CellLane::default());
+    }
+    lanes.used = Some(Instant::now());
+    crate::raster::share(&mut lanes.lanes[..threads], cells.len(), |lane, i| {
+        let pm = lane.render(s, cells[i], ox, oy);
+        *done[i]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pm);
+    });
+    let (wx, wy) = (window.x0 as usize, window.y0 as usize);
+    let mut pm = Pixmap::new(window.width() as u16, window.height() as u16);
+    let row = window.width() as usize;
+    let data = pm.data_mut();
+    for (c, cell) in cells.iter().zip(done) {
+        let cell = cell
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Every task ran (a panic is this call's).
+        let Some(cell) = cell else { continue };
+        let (x0, y0, cw) = (
+            c.x0 as usize - wx,
+            c.y0 as usize - wy,
+            cell.width() as usize,
+        );
+        for (y, src) in cell.data().chunks_exact(cw).enumerate() {
+            let at = (y0 + y) * row + x0;
+            data[at..at + cw].copy_from_slice(src);
+        }
     }
     pm
 }

@@ -1,0 +1,43 @@
+id     = "docs-wallpaper-theme"
+about  = """The wallpaper-theme how-to (site/how-to/wallpaper-theme.md): its two
+files, word for word, with the wallpaper setting seeded before boot to a
+purple picture (`[seed]`, as the page's prefs.toml would hold it), so the bar
+starts in that picture's colours. Then the setting points at another picture,
+as `strand set prefs.wallpaper …` would: while it is read the old palette
+holds, and then every colour of the bar springs to the new palette. Fixed
+waits, not rests, so the light run and its dark twin share one timeline."""
+screen = { width = 360, height = 100, scale = 2.0 }
+
+[services]
+"system.accent" = "#a13c1c"
+"battery.percent" = 0.82
+
+[seed]
+"theme.prefs.wallpaper" = '"../../fixtures/images/app.png"'
+
+=== theme.strand
+// theme.strand: the palette comes from the wallpaper
+state prefs from "prefs.toml" {
+  wallpaper: path = "~/Pictures/wall.jpg"; accent: color = #7aa2f7
+}
+let scheme: Palette = material(image: prefs.wallpaper, dark: system.dark)
+                      ?? material(seed: prefs.accent, dark: system.dark)   // until the picture is read
+use palette scheme
+file "~/.cache/strand/accent.txt" { text: $accent }   // kept in step with every switch
+
+=== bar.strand
+bar Top {
+  edge: top; height: 32
+  bg: $surface; font: $font.ui; color: $fg
+  split { pad: 0, $space.3
+    start { box { size: 12; radius: full; bg: $accent } }
+    center { text clock.format("%H:%M") }
+    end { text pct(battery.percent) { color: $fg.muted } }
+  }
+}
+
+=== steps
+wait 600
+mark new-wallpaper
+set theme.prefs.wallpaper ../../fixtures/images/art.png
+wait 1200

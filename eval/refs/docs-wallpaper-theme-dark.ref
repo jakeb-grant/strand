@@ -1,0 +1,74 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "docs-wallpaper-theme-dark"
+verdict good
+note "wallpaper-theme figure: boots in the seeded purple picture's palette, the setting points at art.png at tick 37, the old palette holds one tick while it is quantised, then every colour springs to the new palette (light and dark on one timeline)"
+date 2026-10-27
+rev "05feaa90+changes"
+approver "claude"
+scenario 145d4ec31e9123b9
+seal 9dbe3a20d881c030
+S1 0 - "bar Top"
+N0 "|bar.strand:1:1|[Mock | DP-1]#0" "bar@bar.strand:1"
+N1 "|bar.strand:4:3|[Mock | DP-1]#0" "split@bar.strand:4"
+N2 "|bar.strand:5:13|[Mock | DP-1]#0" "box@bar.strand:5"
+N3 "|bar.strand:5:5|[Mock | DP-1]#0" "start@bar.strand:5"
+N4 "|bar.strand:6:14|[Mock | DP-1]#0" "text(\"09:41\")"
+N5 "|bar.strand:6:5|[Mock | DP-1]#0" "center@bar.strand:6"
+N6 "|bar.strand:7:11|[Mock | DP-1]#0" "text(\"82%\")"
+N7 "|bar.strand:7:5|[Mock | DP-1]#0" "end@bar.strand:7"
+k0 p1
+s1 z=360,32
+n0 x=0 y=0 w=360 h=32 bg=151218ff
+n1 x=0 y=0 w=360 h=32 ord=1
+n2 x=12 y=10 w=12 h=12 ord=3 bg=d5bbfcff
+n3 x=12 y=0 w=152 h=32 ord=2
+n4 x=164 y=9 w=33 h=15 txt=S ord=5 ink=164.5,11,31.5,10 fg=e7e0e8ff gl=["09:41"]
+n5 x=164 y=0 w=33 h=32 ord=4
+n6 x=321 y=9 w=27 h=15 txt=S ord=7 ink=321.5,11,25.5,10 fg=e7e0e8a6 gl=["82%"]
+n7 x=197 y=0 w=151 h=32 ord=6
+k38
+n0 bg=161217ff
+n2 bg=dbbaf2ff
+n4 fg=e8e0e6ff
+n6 fg=e8e0e6a6
+k39
+n0 bg=171215ff
+n2 bg=e6b9e0ff
+n4 fg=eadfe4ff
+n6 fg=eadfe4a6
+k40
+n0 bg=181114ff
+n2 bg=eeb7d1ff
+n4 fg=ecdfe1ff
+n6 fg=ecdfe1a6
+k41
+n0 bg=191113ff
+n2 bg=f5b6c5ff
+n4 fg=eedfe0ff
+n6 fg=eedfe0a6
+k42
+n0 bg=191112ff
+n2 bg=f9b5bdff
+n4 fg=efdedfff
+n6 fg=efdedfa6
+k43
+n0 bg=1a1112ff
+n2 bg=fbb4b8ff
+n4 fg=efdedeff
+n6 fg=efdedea6
+k44
+n0 bg=1a1111ff
+n2 bg=fdb4b5ff
+n4 fg=f0dedeff
+n6 fg=f0dedea6
+k45
+n2 bg=feb3b3ff
+n4 fg=f0deddff
+n6 fg=f0dedda6
+k46
+n2 bg=feb3b2ff
+k47
+n2 bg=ffb3b2ff
+k48
+n2 bg=ffb3b1ff
+k49

@@ -789,10 +789,13 @@ impl<'a> Flattener<'a> {
         };
         let has_area = !phys.is_empty();
 
-        // Shadows, under the box.
+        // Shadows, under the box. What of them passes the clips of the
+        // boxes whose size springs around it (shadow-pass).
+        let mut passed = Rect::default();
         if has_area && let Some(PropValue::Shadow(list)) = get(Prop::Shadow) {
             for sh in list {
-                self.shadow(node.id, sh, frame, &r, &box_path, &mut sig, &mut ink);
+                passed = passed
+                    .union(self.shadow(node.id, sh, frame, &r, &box_path, &mut sig, &mut ink));
             }
         }
         // (M4) `glow:`: a box glows as a shadow under it; text, icons and
@@ -808,7 +811,7 @@ impl<'a> Flattener<'a> {
             && glows_box
             && let Some(g) = glow
         {
-            self.shadow(
+            passed = passed.union(self.shadow(
                 node.id,
                 &g.shadow(),
                 frame,
@@ -816,7 +819,7 @@ impl<'a> Flattener<'a> {
                 &box_path,
                 &mut sig,
                 &mut ink,
-            );
+            ));
         }
         // (M4) `backdrop:`: what is drawn behind the box, filtered, in its
         // outline under its background (`crate::backdrop`); its damage
@@ -1572,7 +1575,11 @@ impl<'a> Flattener<'a> {
             );
         }
 
-        let mut bounds = ink.intersect(inh.clip).unwrap_or_default().union(fillets);
+        let mut bounds = ink
+            .intersect(inh.clip)
+            .unwrap_or_default()
+            .union(fillets)
+            .union(passed);
         if reach > 0 && !bounds.is_empty() {
             bounds = bounds
                 .inflate(reach)
@@ -1761,13 +1768,15 @@ impl<'a> Flattener<'a> {
         // Children. A `scroll`, `list` or `pages` always clips its content
         // (a page slides in from outside it), and so
         // does a node whose size springs (a toast collapsing to `height:
-        // 0`), or that exits to a pose setting its size.
-        let clips = matches!(get(Prop::Clip), Some(PropValue::Bool(true)))
+        // 0`), or that exits to a pose setting its size. That last clip
+        // cuts what spills past the box, not the shadows of the boxes
+        // that lie inside it (shadow-pass, `let_shadow_through`).
+        let asked_clip = matches!(get(Prop::Clip), Some(PropValue::Bool(true)))
             || matches!(
                 node.kind,
                 NodeKind::Scroll | NodeKind::List | NodeKind::Pages
-            )
-            || self.anim.sizing(self.tree, node);
+            );
+        let clips = asked_clip || self.anim.sizing(self.tree, node);
         let mut ctx = DefaultHasher::new();
         (inh.ctx, node.epoch).hash(&mut ctx);
         hash_f32(&mut ctx, opacity);
@@ -1823,6 +1832,9 @@ impl<'a> Flattener<'a> {
                     .into_iter()
                     .fold(0.0, f64::max),
                 held: None,
+                sizing: !asked_clip,
+                outer: inh.clip,
+                passes: Vec::new(),
             });
         }
         // (M4) A merge's goo goes under its children, once they are
@@ -2004,32 +2016,105 @@ impl<'a> Flattener<'a> {
             .unwrap_or_default()
     }
 
-    /// (fillet-clip) `n` items went in before item `at`: the fillet
-    /// target's fill, when it is at or past `at`, moved with them.
+    /// (shadow-pass) A shadow about to be drawn (the next item), of the
+    /// box `frame`, over `extent` (both physical px under the current
+    /// transform): each clip open above it that a size spring sets
+    /// (`OpenClip::sizing`), innermost first, while the box lies inside
+    /// it (within half a pixel), takes in the shadow's extent, and the
+    /// rest of its group is held to its box once it closes
+    /// (`hold_to_box`). At rest no such clip is there and the shadow is
+    /// drawn whole, so it is drawn whole while the size springs too:
+    /// the clip cuts what spills past the box, and a box inside it
+    /// spills only its shadow. A box that spills past it (a toast's card
+    /// as the toast collapses) is cut, its shadow with it, and so is a
+    /// shadow under a clip asked for (`clip: true`, a `scroll`, `list`
+    /// or `pages`), at rest as in motion. Returns how many clips it
+    /// passes and the pixels it shows past them, as far as the clips
+    /// above those let it.
+    fn let_shadow_through(&mut self, frame: kurbo::Rect, extent: kurbo::Rect) -> (u32, Rect) {
+        if self.xform.determinant().abs() <= 1e-12 {
+            return (0, Rect::default());
+        }
+        let at = self.out.items.len();
+        let mut passes = 0u32;
+        let mut outer = None;
+        for open in self.open_clips.iter_mut().rev() {
+            if !open.sizing || open.xform.determinant().abs() <= 1e-12 {
+                break;
+            }
+            // The box in the clip's own space.
+            let to = open.xform.inverse() * self.xform;
+            let b = to.transform_rect_bbox(frame);
+            let room = open.frame.inflate(0.5, 0.5);
+            let inside = b.x0 >= room.x0 && b.y0 >= room.y0 && b.x1 <= room.x1 && b.y1 <= room.y1;
+            if !inside {
+                break;
+            }
+            let Item::PushClip(clip) = &mut self.out.items[open.item].item else {
+                break;
+            };
+            let held = open.held.get_or_insert_with(|| clip.clone());
+            // Wound like the clip's own box, so the union has no seam.
+            let mut e = to * extent.to_path(TOLERANCE);
+            if (e.area() >= 0.0) != (held.area() >= 0.0) {
+                e = e.reverse_subpaths();
+            }
+            clip.extend(e.iter());
+            open.passes.push(at);
+            passes += 1;
+            outer = Some(open.outer);
+        }
+        let Some(outer) = outer else {
+            return (0, Rect::default());
+        };
+        let passed = map_rect(self.xform, cover(extent))
+            .intersect(outer)
+            .and_then(|r| r.intersect(self.surface))
+            .unwrap_or_default();
+        (passes, passed)
+    }
+
+    /// (fillet-clip, shadow-pass) `n` items went in before item `at`:
+    /// the fillet target's fill and the shadows passing a clip, when at
+    /// or past `at`, moved with them.
     fn shift_fillet_fill(&mut self, at: usize, n: usize) {
         if let Some(k) = &mut self.fillet_fill
             && at <= *k
         {
             *k += n;
         }
+        for open in &mut self.open_clips {
+            for k in &mut open.passes {
+                if at <= *k {
+                    *k += n;
+                }
+            }
+        }
     }
 
-    /// (fillet-clip) The clip group `open` closing: when the fillet
-    /// target's fill widened it ([`Self::let_fillets_through`]),
-    /// everything else the group draws is held to the clip's box again,
-    /// so only that fill passes it. Each run of items around the fill
-    /// that opens no group the fill is drawn in (what is drawn before
-    /// the fill, the target's own content after it, what follows) is
-    /// wrapped in a clip of the box, in the transform it is drawn under;
-    /// the groups the fill is drawn in (its ancestors' and its own
-    /// opacity, transform, layers, clips) keep their order.
+    /// (fillet-clip, shadow-pass) The clip group `open` closing: when
+    /// the fillet target's fill ([`Self::let_fillets_through`]) or a
+    /// shadow ([`Self::let_shadow_through`]) widened it, everything else
+    /// the group draws is held to the clip's box again, so only those
+    /// pass it. Each run of items around them that opens no group they
+    /// are drawn in (what is drawn before them, a box's own content
+    /// after its shadow, what follows) is wrapped in a clip of the box,
+    /// in the transform it is drawn under; the groups they are drawn in
+    /// (their ancestors' and their own opacity, transform, layers,
+    /// clips) keep their order.
     fn hold_to_box(&mut self, open: super::OpenClip) {
         let Some(held) = open.held else {
             return;
         };
         let start = open.item + 1;
         let end = self.out.items.len();
-        let Some(fill) = self.fillet_fill.filter(|&k| {
+        let mut pass: Vec<usize> = open
+            .passes
+            .iter()
+            .copied()
+            .filter(|k| (start..end).contains(k))
+            .collect();
+        pass.extend(self.fillet_fill.filter(|&k| {
             (start..end).contains(&k)
                 && matches!(
                     self.out.items[k].item,
@@ -2038,62 +2123,75 @@ impl<'a> Flattener<'a> {
                         ..
                     }
                 )
-        }) else {
+        }));
+        pass.sort_unstable();
+        pass.dedup();
+        if pass.is_empty() {
+            // Nothing it was widened for is in it: the box alone.
+            self.out.items[open.item].item = Item::PushClip(held);
             return;
-        };
-        // The runs to hold: (first item, end, the transform in force).
-        let mut runs: Vec<(usize, usize, kurbo::Affine)> = Vec::new();
-        // The groups open at the fill, each with the transform before it.
-        let mut path: Vec<(usize, kurbo::Affine)> = Vec::new();
-        let mut cur = open.xform;
-        for k in start..fill {
-            match &self.out.items[k].item {
-                Item::PushTransform(a) => {
-                    path.push((k, cur));
-                    cur = *a;
-                }
-                Item::PushClip(_) | Item::PushOpacity(..) | Item::PushLayer(_) => {
-                    path.push((k, cur));
-                }
-                Item::PopClip | Item::PopOpacity | Item::PopTransform | Item::PopLayer => {
-                    if let Some((_, before)) = path.pop() {
-                        cur = before;
-                    }
-                }
-                _ => {}
-            }
         }
-        let mut from = start;
-        for &(k, before) in &path {
-            runs.push((from, k, before));
-            from = k + 1;
-        }
-        runs.push((from, fill, cur));
-        // After the fill: each pop at its depth closes a group it is
-        // drawn in, innermost first.
-        let mut from = fill + 1;
-        let mut depth = 0usize;
-        for k in fill + 1..end {
+        // Each group's closing item, by its opening one.
+        let mut closes = vec![end; end - start];
+        let mut opened: Vec<usize> = Vec::new();
+        for k in start..end {
             match &self.out.items[k].item {
                 Item::PushClip(_)
                 | Item::PushOpacity(..)
                 | Item::PushTransform(_)
-                | Item::PushLayer(_) => depth += 1,
+                | Item::PushLayer(_) => opened.push(k),
                 Item::PopClip | Item::PopOpacity | Item::PopTransform | Item::PopLayer => {
-                    if depth > 0 {
-                        depth -= 1;
-                    } else {
-                        runs.push((from, k, cur));
-                        if let Some((_, before)) = path.pop() {
-                            cur = before;
-                        }
-                        from = k + 1;
+                    if let Some(o) = opened.pop() {
+                        closes[o - start] = k;
                     }
                 }
                 _ => {}
             }
         }
-        runs.push((from, end, cur));
+        // The runs to hold: (first item, end, the transform in force).
+        let mut runs: Vec<(usize, usize, kurbo::Affine)> = Vec::new();
+        // The levels to walk: (first item, end, the transform in force).
+        let mut levels = vec![(start, end, open.xform)];
+        while let Some((a, b, at)) = levels.pop() {
+            let mut from = a;
+            let mut k = a;
+            while k < b {
+                let item = &self.out.items[k].item;
+                let close = match item {
+                    Item::PushClip(_)
+                    | Item::PushOpacity(..)
+                    | Item::PushTransform(_)
+                    | Item::PushLayer(_) => Some(closes[k - start].min(b)),
+                    _ => None,
+                };
+                match close {
+                    // A group: held whole unless something passing is
+                    // drawn in it, else walked into.
+                    Some(c) => {
+                        let lo = pass.partition_point(|&p| p <= k);
+                        if pass.get(lo).is_some_and(|&p| p < c) {
+                            runs.push((from, k, at));
+                            let inner = match item {
+                                Item::PushTransform(t) => *t,
+                                _ => at,
+                            };
+                            levels.push((k + 1, c, inner));
+                            from = c + 1;
+                        }
+                        k = c + 1;
+                    }
+                    None => {
+                        if pass.binary_search(&k).is_ok() {
+                            runs.push((from, k, at));
+                            from = k + 1;
+                        }
+                        k += 1;
+                    }
+                }
+            }
+            runs.push((from, b.max(from), at));
+        }
+        runs.sort_by_key(|r| r.0);
         // The clips to insert, by the item they go before.
         let mut inserts: Vec<(usize, DisplayItem)> = Vec::new();
         for (a, b, at) in runs {
@@ -2143,6 +2241,10 @@ impl<'a> Flattener<'a> {
             }
         }
         if let Some(k) = &mut self.fillet_fill {
+            let old = *k;
+            *k += inserts.iter().filter(|(at, _)| *at <= old).count();
+        }
+        for k in self.open_clips.iter_mut().flat_map(|o| o.passes.iter_mut()) {
             let old = *k;
             *k += inserts.iter().filter(|(at, _)| *at <= old).count();
         }
@@ -2344,6 +2446,9 @@ impl<'a> Flattener<'a> {
         }
     }
 
+    /// Draws shadow `sh` of the box `frame` (radii `r`, outline
+    /// `box_path`); returns the pixels it shows past the clips it passes
+    /// (shadow-pass, [`Self::let_shadow_through`]).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn shadow(
         &mut self,
@@ -2354,10 +2459,10 @@ impl<'a> Flattener<'a> {
         box_path: &BezPath,
         sig: &mut DefaultHasher,
         ink: &mut Rect,
-    ) {
+    ) -> Rect {
         let s = self.scale.as_f64();
         if sh.color.a.is_nan() || sh.color.a <= 0.0 {
-            return;
+            return Rect::default();
         }
         let spread = finite_or_zero(sh.spread) as f64 * s;
         let (dx, dy) = (
@@ -2368,7 +2473,7 @@ impl<'a> Flattener<'a> {
             .with_origin((frame.x0 + dx, frame.y0 + dy))
             .inflate(spread, spread);
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
-            return;
+            return Rect::default();
         }
         let limit = rect.width().min(rect.height()) / 2.0;
         let corner = |v: f64| (v + spread).min(limit).max(0.0) as f32;
@@ -2409,6 +2514,13 @@ impl<'a> Flattener<'a> {
         }
         #[cfg(not(feature = "eval-hooks"))]
         let _ = node;
+        let (passes, passed) = self.let_shadow_through(frame, extent);
+        // Which clips it passes is part of what it draws: a clip it
+        // stops passing cuts it where the clip's edges alone did not
+        // move.
+        if passes > 0 {
+            (0x5au8, passes).hash(sig);
+        }
         self.push(
             Item::Shadow {
                 rect,
@@ -2422,6 +2534,7 @@ impl<'a> Flattener<'a> {
             sig,
             ink,
         );
+        passed
     }
 }
 

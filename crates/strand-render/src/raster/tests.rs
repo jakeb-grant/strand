@@ -997,3 +997,140 @@ fn a_transformed_gradient_draws_its_parts_from_the_cache_as_fresh() {
         "{dithered_warm:?}"
     );
 }
+
+/// (shadow-part) A launcher card at 2× whose shadow is too large to
+/// cache at first sight (over `EAGER_ENTRY_BYTES`) and too short to
+/// slice, at rest and scaling in (`enter { scale: 0.96 }`), under its
+/// translucent box.
+fn large_shadow_scene(scale: f64) -> Vec<DisplayItem> {
+    use strand_scene::Color;
+    use vello_cpu::kurbo::{self, Shape};
+    let card = kurbo::Rect::new(146.0, 178.0, 1346.0, 480.0);
+    let rect = card + kurbo::Vec2::new(0.0, 32.0);
+    let extent = rect.inflate(145.0, 145.0);
+    let mut clip = extent.to_path(0.1);
+    clip.extend(kurbo::RoundedRect::from_rect(card, 40.0).into_path(0.1));
+    let turn = kurbo::Affine::scale_about(scale, card.center());
+    let bounds = |r: kurbo::Rect| {
+        let r = turn.transform_rect_bbox(r);
+        Rect::from_edges(
+            r.x0.floor() as i64,
+            r.y0.floor() as i64,
+            r.x1.ceil() as i64,
+            r.y1.ceil() as i64,
+        )
+    };
+    vec![
+        DisplayItem {
+            item: Item::PushTransform(turn),
+            bounds: bounds(extent),
+        },
+        DisplayItem {
+            item: Item::Shadow {
+                rect,
+                radii: [40.0; 4],
+                std_dev: 48.0,
+                color: Color::from_hex("#00000066").unwrap(),
+                clip,
+                extent,
+            },
+            bounds: bounds(extent),
+        },
+        DisplayItem {
+            item: Item::Fill {
+                shape: crate::flatten::FillShape::Path(
+                    kurbo::RoundedRect::from_rect(card, 40.0).into_path(0.1),
+                ),
+                paint: strand_scene::Paint::Solid(Color::from_hex("#eff1f5d1").unwrap()),
+                frame: card,
+            },
+            bounds: bounds(card),
+        },
+        DisplayItem {
+            item: Item::PopTransform,
+            bounds: bounds(extent),
+        },
+    ]
+}
+
+/// (shadow-part, the docs launcher's `redraw` failure) A large shadow,
+/// at rest and scaled, repaints within any damage as a fresh raster
+/// with nothing cached draws it in full, whether this raster has its
+/// pixmap cached (a second whole frame admits it), has none (one whole
+/// frame), or never drew it. Before, a frame without the pixmap drew
+/// the shadow directly and one with it drew the pixmap: through the
+/// box's antialiased edge (8-bit pixels clipped against a clip applied
+/// in f32) and, scaled, everywhere (bilinear samples of the pixmap
+/// against the blur evaluated in place) the two differed by a level,
+/// so a partial frame left pixels a full repaint does not draw. And a
+/// damage wholly inside the box rasters no shadow.
+#[test]
+fn a_large_shadow_repaints_from_its_cache_as_fresh() {
+    use strand_scene::Size;
+    let (w, h) = (1492u32, 700u32);
+    let full = Damage::full(Size::new(w, h));
+    let damages: Vec<Damage> = [
+        // Across the box's top-left corner and its antialiased edge.
+        Rect::new(120, 150, 100, 80),
+        // Across the ring below the box, the whole width.
+        Rect::new(0, 450, 1492, 120),
+        // Down the right side of the box.
+        Rect::new(1300, 100, 120, 500),
+        // Cut by cells of the raster and of the shadow's grid alike.
+        Rect::new(61, 67, 333, 129),
+    ]
+    .into_iter()
+    .map(|r| {
+        let mut d = Damage::new();
+        d.add(r);
+        d
+    })
+    .collect();
+    for scale in [1.0, 0.96, 0.98125] {
+        let items = large_shadow_scene(scale);
+        let mut fresh = vec![0u8; (w * h * 4) as usize];
+        paint_with(&mut Raster::default(), &items, &full, (w, h), &mut fresh);
+        for (n, damage) in damages.iter().enumerate() {
+            for whole_frames in [0, 1, 2] {
+                let mut r = Raster::default();
+                let mut buf = vec![0u8; (w * h * 4) as usize];
+                for _ in 0..whole_frames {
+                    paint_with(&mut r, &items, &full, (w, h), &mut buf);
+                }
+                paint_with(&mut r, &items, damage, (w, h), &mut buf);
+                let bad: Vec<(i64, i64)> = damage
+                    .rects()
+                    .iter()
+                    .flat_map(|d| {
+                        (d.top()..d.bottom())
+                            .flat_map(move |y| (d.left()..d.right()).map(move |x| (x, y)))
+                    })
+                    .filter(|&(x, y)| {
+                        let i = (y as usize * w as usize + x as usize) * 4;
+                        buf[i..i + 4] != fresh[i..i + 4]
+                    })
+                    .collect();
+                assert!(
+                    bad.is_empty(),
+                    "scale {scale}, damage {n}, after {whole_frames} whole frames: {} pixels differ: {:?}",
+                    bad.len(),
+                    &bad[..bad.len().min(6)]
+                );
+            }
+        }
+    }
+    // Inside the box, with nothing cached: no shadow pixel shows, none is
+    // rastered.
+    let items = large_shadow_scene(1.0);
+    let mut r = Raster::default();
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    let mut d = Damage::new();
+    d.add(Rect::new(300, 250, 400, 100));
+    paint_with(&mut r, &items, &d, (w, h), &mut buf);
+    assert_eq!(
+        r.cache().blurred(),
+        0,
+        "a damage inside the box rasters no shadow"
+    );
+    assert_eq!(r.cache().builds(), 0);
+}

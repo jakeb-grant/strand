@@ -383,7 +383,10 @@ by a state (`let scheme: Palette = split ? import("base16:…") :
 import("base16:…")`, `use palette scheme`) swaps when a `set` changes the
 state, and logic sends the new table as the shell's does. `import`
 reads a palette file against the config's directory, as the shell does:
-the scenario file's for a config written in `===` sections. A committed
+the scenario file's for a config written in `===` sections (a docs
+scenario's dark twin in eval/scenarios/docs/dark/ reads against its
+scenario's eval/scenarios/docs/, so both name the same files;
+wallpaper-follow). A committed
 scenario names only files inside eval/: eval/fixtures/palettes/ holds
 `grey.yaml` (every background one mid grey) and `split.yaml` (the
 background black, the lighter ones white). From one to the other no text
@@ -431,7 +434,11 @@ and the router read the virtual clock. Each tick does this, in order:
 
 Text is shaped inline, where the shell has a text worker that wakes the
 loop for each layout it delivers: the driver wakes the loop for each
-layout shaped inline, as that wake would. The renderer's wall-clock holds
+layout shaped inline, as that wake would. A wallpaper palette
+(`material(image:)`), which the shell quantises off the logic thread, is
+waited for as the next tick starts, so it reaches logic one tick after the
+lookup that asked for it, and a `rest` does not end while one is being
+quantised (wallpaper-follow). The renderer's wall-clock holds
 are neutralised with its own setters (the query hold excepted: logic always
 answers in time), so a run is a function of its scenario. Surfaces are
 attached (with the screen as their output's bounds) and configured at the
@@ -3266,6 +3273,9 @@ only a replay that cannot run does.
 - **Text is shaped inline.** Lateness is a hold on top of inline shaping
   (`text late`, `text hold`). A real shaping worker's timing is not
   modelled.
+- **A wallpaper palette takes one tick** (wallpaper-follow). The
+  quantiser's own time is not modelled: its fallback (`??`) shows for
+  the tick its lookup runs in, and its palette arrives on the next.
 - **Wall time is not gated.** Frame times are recorded and `bench`
   reports them, marked advisory, but no check gates on them. The timing
   tests in crates/strand-render hold the frame budgets.

@@ -330,6 +330,19 @@ fn one(run: &Run) -> Result<(Vec<usize>, Vec<Image>, [f64; 2]), String> {
     Ok((ticks, images, size))
 }
 
+/// Whether a run's surfaces drew buffers of more than one size.
+fn resizes(run: &Run) -> Result<bool, String> {
+    let mut seen: HashMap<String, Value> = HashMap::new();
+    for f in frames(run)? {
+        for (sid, size) in f["sizes"].as_object().into_iter().flatten() {
+            if seen.entry(sid.clone()).or_insert_with(|| size.clone()) != size {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Each tick's frame of a run that draws several surfaces (a bar and
 /// its popup): the shown surfaces' latest buffers, each where it lies on
 /// the output (`origins`), in the order the run made them (a popup over
@@ -468,7 +481,14 @@ fn strip(
     let several = run.trace["surfaces"]
         .as_array()
         .is_some_and(|s| s.len() > 1);
-    let (ticks, images, size) = if several { composed(run)? } else { one(run)? };
+    // A surface that grows or shrinks (a launcher's card fitting its
+    // rows) is composed at its origins too, on a picture as large as
+    // every place it held, so every frame of the strip has one size.
+    let (ticks, images, size) = if several || resizes(run)? {
+        composed(run)?
+    } else {
+        one(run)?
+    };
     let ticks = on_timeline(run, &ticks, timeline)?;
     let first = images.first().ok_or("no frames")?;
     if images.iter().any(|f| f.w != first.w || f.h != first.h) {
@@ -765,6 +785,53 @@ mod tests {
             assert_eq!(back.rgba, want, "{n}");
             assert_eq!(back.h, frames[0].h * frames.len() as u32, "{n}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (docs-launcher) One surface whose buffer shrinks, and whose
+    /// origin moves as it stays centred, is composed at its origins on
+    /// one picture as large as every place it held: each tick's frame
+    /// the same size, each buffer where it lay.
+    #[test]
+    fn a_surface_that_shrinks_is_composed_at_its_origins() {
+        let dir = std::env::temp_dir().join(format!("strand-site-shrink-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("frames")).unwrap();
+        let tall = image(6, 8, |_, _| [200, 0, 0, 255]);
+        let short = image(6, 4, |_, _| [0, 0, 200, 255]);
+        write_strip(&dir.join("frames/tall.png"), std::slice::from_ref(&tall)).unwrap();
+        write_strip(&dir.join("frames/short.png"), std::slice::from_ref(&short)).unwrap();
+        let run = Run {
+            trace: json!({
+                "schema": 1,
+                "scenario": {"scale": 2.0},
+                "surfaces": [{"id": 1}],
+                "frames": [
+                    {"k": 1, "sizes": {"1": [3.0, 4.0]}, "origins": {"1": [1.0, 0.0]},
+                     "png": {"1": "frames/tall.png"}},
+                    {"k": 2, "sizes": {"1": [3.0, 2.0]}, "origins": {"1": [1.0, 1.0]},
+                     "png": {"1": "frames/short.png"}},
+                    {"k": 3, "sizes": {"1": [3.0, 2.0]}, "origins": {"1": [1.0, 1.0]},
+                     "png": {}},
+                ],
+            }),
+            dir: dir.clone(),
+        };
+        assert!(resizes(&run).unwrap());
+        let (ticks, images, size) = composed(&run).unwrap();
+        assert_eq!(ticks, vec![0, 1, 1]);
+        assert_eq!(size, [3.0, 4.0]);
+        assert!(images.iter().all(|i| (i.w, i.h) == (6, 8)));
+        let px = |i: &Image, y: u32| i.rgba[(y * i.w * 4) as usize..][..4].to_vec();
+        assert_eq!(px(&images[1], 0), vec![0, 0, 0, 0], "above the short one");
+        assert_eq!(px(&images[1], 2), vec![0, 0, 200, 255]);
+        assert_eq!(px(&images[1], 6), vec![0, 0, 0, 0], "below it");
+        let still = Run {
+            trace: json!({"schema": 1, "surfaces": [{"id": 1}], "frames": [
+                {"k": 1, "sizes": {"1": [3.0, 4.0]}}, {"k": 2, "sizes": {"1": [3.0, 4.0]}},
+            ]}),
+            dir: dir.clone(),
+        };
+        assert!(!resizes(&still).unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

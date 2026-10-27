@@ -3,7 +3,7 @@ source: crates/strand-compiler/tests/instantiate.rs
 expression: shell.scene.render()
 ---
 bar height=32 edge=top screens="Mock | DP-1 | Display" name="Top"
-  split
+  split pad=[0, 12]
     start
       text text="strand — design.md"
     center
@@ -11,7 +11,7 @@ bar height=32 edge=top screens="Mock | DP-1 | Display" name="Top"
     end
       text text="42%"
 bar height=32 edge=top screens="Mock | HDMI-A-1 | Display" name="Top"
-  split
+  split pad=[0, 12]
     start
       text text="strand — design.md"
     center

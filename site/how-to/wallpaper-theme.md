@@ -47,6 +47,12 @@ or, from a terminal or a wallpaper script:
 strand set prefs.wallpaper ~/Pictures/mountains.jpg
 ```
 
+Here the bar starts in a purple picture's colours; then the setting
+points at another picture, and every colour springs to its palette:
+
+```example wallpaper-theme
+```
+
 ## How it works
 
 - **`material(image: …)`** builds a palette from a picture. It

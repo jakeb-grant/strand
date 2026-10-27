@@ -41,6 +41,12 @@ panel Launcher {
 }
 ```
 
+The launcher fades and scales in over seven apps, then "ter" is typed a
+letter at a time and the list narrows to the apps that match.
+
+```example launcher
+```
+
 ## Bind a key
 
 Strand does not grab keys. Your compositor runs the command instead:

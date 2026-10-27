@@ -443,6 +443,7 @@ impl Raster {
         if lanes_used > 1 {
             self.shared_at = Some(Instant::now());
         }
+        self.cache.end_frame();
         self.times.threads = threads as u32;
         let lanes = &self.lanes[..lanes_used];
         let (enc, fine, copy) = lanes.iter().fold(
@@ -742,14 +743,23 @@ impl Raster {
         self.cache.begin_frame();
         let touches = |b: &Rect| damage.rects().iter().any(|r| r.intersects(*b));
         let whole = |b: &Rect| b.intersect(window).is_some_and(|b| damage.covers(b));
-        // Whether each open `scale`/`rotate` group transforms (a sliced
-        // shadow draws only on whole pixels).
-        let mut turned: Vec<bool> = Vec::new();
+        // Each open `scale`/`rotate` group's transform, item to surface
+        // pixels (a sliced shadow draws only on whole pixels).
+        let mut turned: Vec<Affine> = Vec::new();
+        let rects: Vec<vello_cpu::kurbo::Rect> =
+            damage.rects().iter().map(|r| to_kurbo(*r)).collect();
+        // Whether each open layer is an offscreen group, drawn whole
+        // whatever the damage.
+        let mut layers: Vec<bool> = Vec::new();
         for d in items {
             match &d.item {
-                Item::PushTransform(a) => turned.push(*a != Affine::IDENTITY),
+                Item::PushTransform(a) => turned.push(*a),
                 Item::PopTransform => {
                     turned.pop();
+                }
+                Item::PushLayer(l) => layers.push(!l.cell_local()),
+                Item::PopLayer => {
+                    layers.pop();
                 }
                 _ => {}
             }
@@ -768,7 +778,7 @@ impl Raster {
                     std_dev,
                     color,
                     extent,
-                    ..
+                    clip,
                 } => {
                     let shape = ShadowShape {
                         rect: *rect,
@@ -777,10 +787,22 @@ impl Raster {
                         color: *color,
                         extent: *extent,
                     };
-                    let sliced = !turned.last().copied().unwrap_or(false)
+                    let to_surface = turned.last().copied().unwrap_or(Affine::IDENTITY);
+                    let sliced = to_surface == Affine::IDENTITY
                         && self.cache.shadow_slices(&shape).is_some();
                     if !sliced && self.cache.shadow_in(&shape, whole(&d.bounds)).is_none() {
-                        self.cache.drew_directly(*extent);
+                        // (redraw) Not cached: the part of its pixmap this
+                        // frame shows, the whole pixmap's pixels (one too
+                        // large to cache is drawn directly).
+                        let item = d as *const DisplayItem as usize;
+                        let grouped = layers.iter().any(|g| *g);
+                        let whole = [to_surface.transform_rect_bbox(*extent)];
+                        let reach = if grouped { &whole[..] } else { &rects[..] };
+                        self.cache
+                            .shadow_part(item, &shape, clip, to_surface, reach);
+                        if self.cache.peek_part(item).is_none() {
+                            self.cache.drew_directly(*extent);
+                        }
                     }
                 }
                 _ => {}

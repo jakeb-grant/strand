@@ -708,3 +708,84 @@ fn palette_extras_are_read_in_props() {
     assert_eq!(bg(&shell, 0).as_deref(), Some("$palette.mantle"));
     assert_eq!(shell.color("palette.mantle"), hex("#181825"));
 }
+
+/// (wallpaper-follow) A wallpaper palette that nothing but `use palette`
+/// reads follows a change of the setting, through the quantiser's own
+/// wake (no `wait_images`), as the live shell sees it; also when
+/// `system.dark` arrives after the first lookup.
+#[test]
+fn a_palette_only_use_palette_reads_follows_the_wallpaper_by_the_quantisers_wake() {
+    for dark_late in [false, true] {
+        let dir = temp_dir(&format!("follow-{dark_late}"));
+        let config = dir.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        let (first, second) = (
+            png([200, 40, 160], [20, 20, 20]),
+            png([40, 160, 60], [240, 240, 240]),
+        );
+        std::fs::write(config.join("a.png"), &first).unwrap();
+        std::fs::write(config.join("b.png"), &second).unwrap();
+        std::fs::write(config.join("prefs.toml"), "wallpaper = \"a.png\"\n").unwrap();
+        let src = "state prefs from \"prefs.toml\" { wallpaper: path = \"nope.png\" }\n\
+                   let m: Palette = material(image: prefs.wallpaper, dark: system.dark)\n\
+                   \x20   ?? material(seed: #7aa2f7, dark: system.dark)\n\
+                   use palette m\n\
+                   bar Top { box { size: 12; bg: $accent } }\n";
+        let mut map = SourceMap::new();
+        map.add("theme.strand", src.to_string());
+        let compiled = strand_compiler::compile(&map);
+        assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+        let program = Arc::new(lower::lower(
+            &compiled.program,
+            strand_compiler::schema::Schema::builtin(),
+        ));
+        let rt = Runtime::new();
+        let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+        if !dark_late {
+            host.set(&rt, "system.dark", Value::Bool(true)).unwrap();
+        }
+        let storage = Storage::in_dirs(dir.join("state"), &config);
+        let inst = Instance::new(&rt, program, host.clone(), storage);
+        let mut shell = Shell {
+            rt,
+            host,
+            inst,
+            scene: SceneMirror::new(),
+        };
+        shell.flush();
+        if dark_late {
+            shell
+                .host
+                .set(&shell.rt, "system.dark", Value::Bool(true))
+                .unwrap();
+            shell.flush();
+        }
+        let accent = |bytes: &[u8]| {
+            let seed = strand_theme::image::seed_from_bytes(bytes).unwrap();
+            from_seed(
+                seed,
+                Options {
+                    dark: true,
+                    ..Options::default()
+                },
+            )
+            .get(Role::Accent)
+        };
+        let until = |shell: &mut Shell, want: Color| {
+            let t0 = std::time::Instant::now();
+            while shell.color("accent") != want && t0.elapsed() < Duration::from_secs(30) {
+                std::thread::sleep(Duration::from_millis(5));
+                shell.flush();
+            }
+            assert_eq!(shell.color("accent"), want, "dark_late {dark_late}");
+        };
+        until(&mut shell, accent(&first));
+        shell
+            .inst
+            .set("theme.prefs.wallpaper", Value::text("b.png"))
+            .unwrap();
+        shell.flush();
+        until(&mut shell, accent(&second));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

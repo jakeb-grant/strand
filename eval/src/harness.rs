@@ -41,7 +41,9 @@
 //! first-frame, new-text, estimate, busy or resize wait; a long query
 //! wait, since logic here always answers before the frame it holds), and
 //! the router's and renderer's timers read the virtual clock
-//! (`set_now`), so the run is a function of the scenario.
+//! (`set_now`), and a wallpaper palette being quantised off-thread is
+//! waited for as the next tick starts (`Harness::settle_images`), so the
+//! run is a function of the scenario.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
@@ -523,6 +525,9 @@ const FACT_ROUNDS: usize = 8;
 const TURN_ROUNDS: usize = 64;
 /// Logic timers run within one tick before the run is called stuck.
 const TIMER_ROUNDS: usize = 10_000;
+/// How long a tick waits for a wallpaper palette being quantised
+/// ([`Harness::settle_images`]) before the run notes it.
+const IMAGE_WAIT: Duration = Duration::from_secs(30);
 
 /// The sources of `sc`'s config, named as they are written in it.
 fn sources(sc: &Scenario) -> Result<SourceMap, Error> {
@@ -566,7 +571,10 @@ fn sources_of(config: &Config) -> Result<SourceMap, Error> {
 /// none: its config is the fixture filled in, read against the fixture's
 /// directory, as the shell reads a config against its own
 /// (eval-coverage-3: a relative image path through `cells/..` named no
-/// file).
+/// file). (wallpaper-follow) A docs scenario's dark twin, under
+/// `eval/scenarios/docs/dark/`, is its scenario in dark mode: its config
+/// is read against the scenario's own directory, so a relative image
+/// path names the same file in both.
 fn config_dir(sc: &Scenario) -> std::path::PathBuf {
     let dir = |p: &std::path::Path| {
         p.parent()
@@ -580,6 +588,8 @@ fn config_dir(sc: &Scenario) -> std::path::PathBuf {
             let d = dir(&sc.file);
             if d == crate::matrix::dir().join("cells") {
                 crate::matrix::dir()
+            } else if d.ends_with("scenarios/docs/dark") {
+                dir(&d)
             } else {
                 d
             }
@@ -3398,6 +3408,35 @@ impl Harness {
                 .is_none_or(|d| d > t + REST_HORIZON)
             && self.r.held_text().is_empty()
             && !self.r.has_surface_changes()
+            && !self.images_pending()
+    }
+
+    /// A wallpaper palette (`material(image:)`) is being quantised, or a
+    /// finished one is not reported to logic yet.
+    fn images_pending(&self) -> bool {
+        self.inst
+            .theme()
+            .is_some_and(|t| self.rt.untrack(|rt| t.images_pending(rt)))
+    }
+
+    /// (wallpaper-follow) Wallpaper palettes are quantised off the logic
+    /// thread in real time, where the run's clock is virtual: the jobs
+    /// started up to the tick before are waited for, so their palettes
+    /// reach this tick's logic step, as text is shaped inline. Without
+    /// it a palette landed after however many ticks the machine ran
+    /// meanwhile, or after the run had ended.
+    fn settle_images(&mut self) {
+        if !self.images_pending() {
+            return;
+        }
+        let Some(theme) = self.inst.theme() else {
+            return;
+        };
+        if !theme.wait_images(&self.rt, IMAGE_WAIT) {
+            self.notes.push(format!(
+                "a wallpaper palette took longer than {IMAGE_WAIT:?} to quantise"
+            ));
+        }
     }
 
     /// One tick (see the module docs).
@@ -3408,6 +3447,9 @@ impl Harness {
         set_virtual_boot(t);
         self.router.set_now(Some(now));
         self.r.set_now(Some(now));
+        // Wallpaper palettes the last tick asked for, before anything
+        // reaches logic.
+        self.settle_images();
         // (report) The keyboard moved by surfaces mapped or gone.
         self.kb_sync()?;
         for i in input {
