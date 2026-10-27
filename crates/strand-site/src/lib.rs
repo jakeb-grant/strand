@@ -13,6 +13,7 @@ pub mod cli;
 pub mod example;
 pub mod highlight;
 pub mod html;
+pub mod llms;
 pub mod markdown;
 pub mod media;
 pub mod nav;
@@ -207,6 +208,8 @@ pub fn build_with(root: &Path, out: &Path, opts: &Options) -> Result<Report, Vec
     let published: HashSet<&str> = sources.iter().map(|s| s.out.as_str()).collect();
     anchor_pages.retain(|_, page| published.contains(page.as_str()));
     let mut rendered: Vec<(usize, Rendered)> = Vec::new();
+    // Each page's markdown copy, by output page.
+    let mut plain: HashMap<String, String> = HashMap::new();
     for (i, s) in sources.iter().enumerate() {
         let is_reference = s.out.starts_with("reference/");
         let ctx = Ctx {
@@ -219,6 +222,10 @@ pub fn build_with(root: &Path, out: &Path, opts: &Options) -> Result<Report, Vec
             links: is_reference.then_some(&links),
         };
         let r = markdown::render(&s.markdown, &ctx, &mut errors);
+        // The home page is laid out in HTML; llms.txt stands for it.
+        if s.out != "index.html" {
+            plain.insert(s.out.clone(), llms::page(&s.markdown, &ctx, &mut errors));
+        }
         if !r.config.is_empty() {
             match check::config(&s.out.replace('/', "-"), &r.config) {
                 Ok(c) => {
@@ -349,6 +356,51 @@ pub fn build_with(root: &Path, out: &Path, opts: &Options) -> Result<Report, Vec
         if let Err(e) = write(&s.out, &html, &mut report) {
             fail.push(e);
         }
+    }
+    // For language models: each page's markdown, llms.txt by the
+    // sidebar, and llms-full.txt in the sidebar's order, then the rest.
+    let mut full: Vec<(String, String)> = Vec::new();
+    for s in nav
+        .iter()
+        .flat_map(|s| s.items.iter())
+        .map(|(_, o)| o)
+        .chain(
+            sources
+                .iter()
+                .map(|s| &s.out)
+                .filter(|o| !order.iter().any(|(_, x)| x == *o)),
+        )
+    {
+        if let Some(md) = plain.get(s)
+            && !full.iter().any(|(o, _)| o == s)
+        {
+            full.push((s.clone(), md.clone()));
+        }
+    }
+    for (out_page, md) in &full {
+        if let Err(e) = write(&llms::md_path(out_page), md, &mut report) {
+            fail.push(e);
+        }
+    }
+    let sections: Vec<llms::Section> = nav
+        .iter()
+        .map(|s| {
+            let pages = s
+                .items
+                .iter()
+                .map(|(label, o)| {
+                    let about = plain.get(o).map(|m| llms::summary(m)).unwrap_or_default();
+                    (label.clone(), o.clone(), about)
+                })
+                .collect();
+            (s.title.clone(), pages)
+        })
+        .collect();
+    if let Err(e) = write(llms::INDEX, &llms::index(&sections), &mut report) {
+        fail.push(e);
+    }
+    if let Err(e) = write(llms::FULL, &llms::full(&full), &mut report) {
+        fail.push(e);
     }
     if let Err(e) = write("theme.css", &theme::css(), &mut report) {
         fail.push(e);

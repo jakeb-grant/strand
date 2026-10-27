@@ -113,7 +113,7 @@ impl Rendered {
     }
 }
 
-fn options() -> Options {
+pub(crate) fn options() -> Options {
     Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
@@ -132,7 +132,7 @@ fn level(l: HeadingLevel) -> u8 {
 }
 
 /// `dest` as the page should link it.
-fn resolve(ctx: &Ctx, dest: &str, r: &mut Rendered, errors: &mut Vec<String>) -> String {
+pub(crate) fn resolve(ctx: &Ctx, dest: &str, r: &mut Rendered, errors: &mut Vec<String>) -> String {
     if dest.contains("://") || dest.starts_with("mailto:") {
         return dest.to_string();
     }

@@ -41,6 +41,33 @@ fn the_site_builds_with_no_problems() {
     assert!(out.join("media/springs-light.png").exists());
     assert!(out.join("assets/fonts/inter.woff2").exists());
     assert!(out.join("theme.css").exists());
+    // For language models: llms.txt lists the pages' markdown, which
+    // exists, links to the other pages' markdown, shows an example as
+    // its config and leaves out what is repo-only.
+    let llms = std::fs::read_to_string(out.join("llms.txt")).unwrap();
+    assert!(llms.starts_with("# Strand\n\n> "), "{llms}");
+    for line in llms.lines().filter(|l| l.starts_with("- [")) {
+        let md = line.split_once("](").unwrap().1.split_once(')').unwrap().0;
+        assert!(
+            out.join(md).is_file(),
+            "llms.txt lists {md}, which is not written"
+        );
+    }
+    let osd = std::fs::read_to_string(out.join("how-to/osd.html.md")).unwrap();
+    assert!(osd.contains("```strand\n// osd.strand"), "{osd}");
+    assert!(!osd.contains("```example"), "{osd}");
+    let level1 = std::fs::read_to_string(out.join("guide/level-1.html.md")).unwrap();
+    assert!(
+        level1.contains(".html.md"),
+        "links go to markdown: {level1}"
+    );
+    let perf = std::fs::read_to_string(out.join("concepts/performance.html.md")).unwrap();
+    assert!(
+        !perf.contains("repo-only") && !perf.contains("What CI holds"),
+        "{perf}"
+    );
+    let full = std::fs::read_to_string(out.join("llms-full.txt")).unwrap();
+    assert!(full.contains("<!-- page: reference/elements/slider.html -->"));
     // A type in a signature links to its entry, an element's group to
     // its page.
     let spectrum = std::fs::read_to_string(out.join("reference/elements/spectrum.html")).unwrap();

@@ -622,6 +622,12 @@ captured in `crates/strand-site/cli-help.txt` by `strand-site cli BIN`
 page's title and each `##`/`###` heading with its anchor and the text
 under it, as a script `site.js` loads the first time the reader searches
 (a `fetch` of a file fails on `file://`).
+For language models (llmstxt.org) it writes each page again as markdown
+beside its HTML (`guide/level-1.html.md`: what the page shows, repo-only
+spans left out, links to the other pages' markdown, a docs example as
+its config), `llms.txt` (a summary, then the sidebar's sections, each
+page with its first sentence) and `llms-full.txt` (every page in one
+file), all with relative links (`llms.rs`).
 
 It fails, writing nothing, on any link or anchor that reaches no page or
 file, any `strand file=` block or example config that does not check
