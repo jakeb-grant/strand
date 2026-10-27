@@ -1,0 +1,40 @@
+# The docs site's server (deploy/railway/README.md). Railway gives the
+# port in $PORT and terminates TLS in front of it.
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+:{$PORT:8080} {
+	root * /srv
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+	# Pages and the live examples' manifest revalidate on every visit
+	# (their ETag answers 304), so a deploy shows at once; the live
+	# examples' files, named by their content's hash, keep for a year;
+	# the rest, whose names don't change between builds, an hour.
+	# `?` sets it only where neither rule below did: Caddy runs a
+	# directive with no matcher after those with one.
+	header ?Cache-Control "public, max-age=3600"
+	@pages path / */ *.html *.md *.txt /wasm/manifest.js
+	header @pages Cache-Control "no-cache"
+	@hashed path_regexp ^/wasm/.+\.[0-9a-f]{16}\.[a-z]+$
+	header @hashed Cache-Control "public, max-age=31536000, immutable"
+
+	# The markdown copies and llms.txt are UTF-8 text for agents.
+	@markdown path *.md
+	header @markdown Content-Type "text/markdown; charset=utf-8"
+
+	file_server
+
+	handle_errors 404 {
+		header Content-Type "text/html; charset=utf-8"
+		respond `<!doctype html><meta charset="utf-8"><title>Not found · Strand</title><p>No page here. <a href="/">The Strand docs</a>.` 404
+	}
+}

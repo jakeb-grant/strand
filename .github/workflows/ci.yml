@@ -646,6 +646,63 @@ jobs:
         env:
           LOCKVM_TIMEOUT: "600"
 
+  # The docs site on Railway (deploy/railway/README.md): on a push to
+  # main whose every job passed, the site the wasm job built and checked
+  # (the `site-live` artifact) is packaged with deploy/railway's
+  # Dockerfile and Caddyfile, its server checked (scripts/site/
+  # package.sh --check), and uploaded with `railway up`, so Railway
+  # builds nothing but that small image. It needs the repository secret
+  # RAILWAY_TOKEN (a project token) and the variable RAILWAY_SERVICE;
+  # with no token it says so and deploys nothing.
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, test, budgets, acceptance, timing, eval, site, wasm, compositors, lock-vm]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    concurrency:
+      group: railway-deploy
+      cancel-in-progress: false
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_SERVICE: ${{ vars.RAILWAY_SERVICE }}
+      RAILWAY_CLI_VERSION: 5.67.1
+      RAILWAY_CLI_SHA256: f65fcb7d9b97e81e9cc2c8af08cbdf57d3801579a727ec2302e5774965b0575e
+    steps:
+      - name: Is there a token?
+        id: token
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::notice::No RAILWAY_TOKEN secret: the site is not deployed (deploy/railway/README.md)"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif [ -z "$RAILWAY_SERVICE" ]; then
+            echo "::error::RAILWAY_TOKEN is set but the RAILWAY_SERVICE variable is not"
+            exit 1
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.token.outputs.go == 'true'
+      - uses: actions/download-artifact@v4
+        if: steps.token.outputs.go == 'true'
+        with:
+          name: site-live
+          path: target/site-live
+      - name: Package the site and check its server
+        if: steps.token.outputs.go == 'true'
+        run: scripts/site/package.sh --check target/site-live/site "$RUNNER_TEMP/railway"
+      - name: The Railway CLI
+        if: steps.token.outputs.go == 'true'
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSfL -o /tmp/railway.tar.gz \
+            "https://github.com/railwayapp/cli/releases/download/v${RAILWAY_CLI_VERSION}/railway-v${RAILWAY_CLI_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          echo "${RAILWAY_CLI_SHA256}  /tmp/railway.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/.railway-cli"
+          tar -xzf /tmp/railway.tar.gz -C "$HOME/.railway-cli" railway
+          echo "$HOME/.railway-cli" >> "$GITHUB_PATH"
+      - name: Deploy
+        if: steps.token.outputs.go == 'true'
+        run: railway up "$RUNNER_TEMP/railway" --path-as-root --no-gitignore --service "$RAILWAY_SERVICE" --ci --message "${GITHUB_SHA::12}"
+
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04

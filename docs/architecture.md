@@ -700,6 +700,16 @@ fearless_simd's wasm multiply-add patched to round once, as natively
 (`scripts/wasm/exact-fma.py`, passed to cargo on the command line, so
 no native build and no manifest in the workspace sees it).
 
+The site is hosted on Railway (deploy/railway/README.md). Railway builds
+nothing from the repository: CI's `deploy` job, on a push to `main` whose
+every job passed, takes the site the `wasm` job built and checked
+(`site-live`), puts it with `deploy/railway`'s Dockerfile, Caddyfile and
+`railway.toml` (`scripts/site/package.sh`), checks the server's answers
+in a container with no network (`--check`: status, type, compression and
+caching of a page, `llms.txt`, a markdown copy, the module and a missing
+page), and uploads that with `railway up`; the image is Caddy and the
+site.
+
 `strand-fake-wayland` (M4) is a test fixture, not part of the runtime: no
 root crate depends on it outside `[dev-dependencies]`
 (`scripts/eval/check-isolation.sh` (d) checks it), and it depends on no
