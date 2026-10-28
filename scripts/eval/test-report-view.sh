@@ -342,7 +342,11 @@ PY
   fi
 
   # (fidelity) A session on four outputs: each a screen of the replay,
-  # its input taken there, every surface held to its own.
+  # its input taken there, every surface held to its own. Its VERIFIED
+  # check can fail rarely, and that is accepted (graph-flake,
+  # decisions.md): a click within about half a frame of a graph column
+  # boundary can land a column apart, a few px DRIFTED in the Top bar's
+  # graph. Under 1% of runs; a rerun passes.
   keep=$DIR/keep-four
   if STRAND_REPORT_KEEP=$keep cargo test -q --locked -p strand --test report \
     a_four_output_session_is_kept_for_its_replay -- --exact >"$DIR/e2e-four.log" 2>&1 && [ -f "$keep/bundle" ]; then
