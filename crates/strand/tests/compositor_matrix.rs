@@ -512,12 +512,21 @@ impl Live {
                         !(name == "special" || name.starts_with("special:"))
                     })
                     .filter(|w| text(&w["monitor"]) == output)
-                    .map(|w| {
+                    .enumerate()
+                    .map(|(i, w)| {
+                        // 0.57 names a workspace by `address` and writes
+                        // `id` only for a numbered one (hypr-057): one
+                        // without goes after them, in the reply's order.
+                        let key = w["id"].as_i64().unwrap_or(-1337 - i as i64);
+                        let same = match (w.get("address"), active.get("address")) {
+                            (Some(a), Some(b)) => a == b,
+                            _ => w["id"] == active["id"],
+                        };
                         (
-                            w["id"].as_i64().unwrap_or(0),
+                            key,
                             RealWs {
                                 name: text(&w["name"]),
-                                focused: w["id"] == active["id"],
+                                focused: same,
                                 occupied: w["windows"].as_u64().unwrap_or(0) > 0,
                             },
                         )
