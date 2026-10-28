@@ -1,0 +1,19 @@
+{
+    "address": "0x55d0a1",
+    "mapped": true,
+    "hidden": false,
+    "at": [10, 10],
+    "size": [800, 600],
+    "workspace": {
+        "address": "1",
+        "id": 1,
+        "type": "normal",
+        "name": "1"
+    },
+    "floating": false,
+    "monitor": 0,
+    "class": "kitty",
+    "title": "~",
+    "fullscreen": 0,
+    "stableId": "18000001"
+}

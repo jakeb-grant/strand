@@ -1,0 +1,51 @@
+[{
+    "address": "1",
+    "id": 1,
+    "type": "normal",
+    "name": "1",
+    "monitor": "DP-1",
+    "monitorID": 0,
+    "windows": 1,
+    "hasfullscreen": false,
+    "lastwindow": "0x55d0a1",
+    "lastwindowtitle": "~",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+},{
+    "address": "web",
+    "type": "normal",
+    "name": "web",
+    "monitor": "HDMI-A-1",
+    "monitorID": 1,
+    "windows": 1,
+    "hasfullscreen": false,
+    "lastwindow": "0x55d0b2",
+    "lastwindowtitle": "Firefox",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+},{
+    "address": "2",
+    "id": 2,
+    "type": "normal",
+    "name": "2",
+    "monitor": "DP-1",
+    "monitorID": 0,
+    "windows": 0,
+    "hasfullscreen": false,
+    "lastwindow": "0x0",
+    "lastwindowtitle": "",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+},{
+    "address": "special:magic",
+    "type": "special",
+    "name": "special:magic",
+    "monitor": "DP-1",
+    "monitorID": 0,
+    "windows": 1,
+    "hasfullscreen": false,
+    "lastwindow": "0x55d0c3",
+    "lastwindowtitle": "scratch",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+}]

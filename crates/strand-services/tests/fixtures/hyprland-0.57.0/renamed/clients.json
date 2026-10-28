@@ -1,0 +1,56 @@
+[{
+    "address": "0x55d0a1",
+    "mapped": true,
+    "hidden": false,
+    "at": [10, 10],
+    "size": [800, 600],
+    "workspace": {
+        "address": "1",
+        "id": 1,
+        "type": "normal",
+        "name": "1"
+    },
+    "floating": false,
+    "monitor": 0,
+    "class": "kitty",
+    "title": "~",
+    "fullscreen": 0,
+    "stableId": "18000001"
+}
+,{
+    "address": "0x55d0b2",
+    "mapped": true,
+    "hidden": false,
+    "at": [10, 10],
+    "size": [800, 600],
+    "workspace": {
+        "address": "web",
+        "type": "normal",
+        "name": "browser"
+    },
+    "floating": false,
+    "monitor": 1,
+    "class": "firefox",
+    "title": "Firefox",
+    "fullscreen": 0,
+    "stableId": "18000002"
+}
+,{
+    "address": "0x55d0c3",
+    "mapped": true,
+    "hidden": false,
+    "at": [10, 10],
+    "size": [800, 600],
+    "workspace": {
+        "address": "special:magic",
+        "type": "special",
+        "name": "special:magic"
+    },
+    "floating": false,
+    "monitor": 0,
+    "class": "foot",
+    "title": "scratch",
+    "fullscreen": 0,
+    "stableId": "18000003"
+}
+]

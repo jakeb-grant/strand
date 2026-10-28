@@ -320,6 +320,7 @@ fn hyprland_dispatch_forms_use_the_current_syntax_first() {
     assert!(hypr_wants_eval(
         "keyword can't work with non-legacy parsers. Use eval.\n"
     ));
+    assert!(hypr_wants_eval("unknown request\n"));
     assert!(!hypr_wants_eval("ok"));
     let on = r#"{"option": "misc:focus_on_activate", "bool": true, "set": true }"#;
     assert!(hypr_option_is(on, true) && !hypr_option_is(on, false));
@@ -2691,9 +2692,11 @@ fn idle_follows_the_compositor_and_a_surface_holds_it_awake() {
         .apply_surface_change(CAFFEINE, SurfaceChange::Created(spec(true)));
     let ok = mgr
         .dispatch_until(PATIENCE, |s| {
+            // Its inhibitor comes once the compositor answers its first
+            // frame (strand-surface's idle.rs).
             s.surfaces()
                 .iter()
-                .any(|i| i.node == CAFFEINE && i.stats.commits > 0)
+                .any(|i| i.node == CAFFEINE && i.stats.commits > 0 && i.inhibits_idle == inhibits)
         })
         .expect("dispatch");
     assert!(ok, "{kind}: the panel: {:?}", mgr.state().surfaces());
@@ -3618,8 +3621,9 @@ impl Policy {
 
     /// Hyprland's `section:option` set to `to` (a Lua or hyprlang
     /// literal, `true` or `false`), and checked to have taken: a Lua
-    /// config (0.55 on) refuses `hyprctl keyword` with an exit status of
-    /// 0 ("keyword can't work with non-legacy parsers. Use eval.", which
+    /// config (0.55 and 0.56) refuses `hyprctl keyword` with an exit
+    /// status of 0, and 0.57 has no `keyword` ("keyword can't work with
+    /// non-legacy parsers. Use eval." and "unknown request", the first
     /// left the activation test running under the default policy on
     /// every m5-platform CI run), so the setting goes through `eval` as
     /// `hl.config({ section = { option = to } })` there, and
@@ -3664,9 +3668,11 @@ fn hypr_set_option(section: &str, option: &str, to: &str, lua: bool) -> Vec<Stri
     }
 }
 
-/// Whether a `hyprctl keyword` reply is a Lua config's refusal.
+/// Whether a `hyprctl keyword` reply is a Lua config's refusal (0.55
+/// and 0.56), or 0.57's, which has no `keyword` request at all (it went
+/// with hyprlang, #15539: `unknown request`).
 fn hypr_wants_eval(reply: &str) -> bool {
-    reply.contains("non-legacy") || reply.contains("Use eval")
+    reply.contains("non-legacy") || reply.contains("Use eval") || reply.trim() == "unknown request"
 }
 
 /// Whether `hyprctl -j getoption`'s answer is a bool or int option that

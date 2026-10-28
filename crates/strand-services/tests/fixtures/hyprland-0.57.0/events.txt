@@ -1,0 +1,26 @@
+# Hyprland 0.57.0 .socket2.sock bursts (SOURCE.txt), applied in this order
+# to the state the replies give.
+
+## focus-web
+# The pointer crosses to HDMI-A-1, then its workspace is focused: the
+# address, not an id.
+focusedmon>>HDMI-A-1,web
+focusedmonv2>>HDMI-A-1,web
+activewindow>>firefox,Firefox
+activewindowv2>>55d0b2
+
+## back-to-1
+workspace>>1
+workspacev2>>1,1
+activewindow>>kitty,~
+activewindowv2>>55d0a1
+
+## new-named
+# A named workspace not read yet: the state must be read again.
+createworkspace>>chat
+createworkspacev2>>chat,chat
+workspace>>chat
+workspacev2>>chat,chat
+
+## rename
+renameworkspace>>web,browser

@@ -286,11 +286,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         s.stats.commits += 1;
         self.stats.commits += 1;
         if s.commit_seq == 1 {
-            // Mapped: popups waiting for it as their parent come now, and
-            // (lockmon) its idle inhibitor (idle.rs).
+            // Mapped: popups waiting for it as their parent come now.
             let node = s.node;
             self.reconcile_children(node);
-            self.sync_idle_inhibitor(id);
         }
     }
 
@@ -554,6 +552,8 @@ impl<H: SurfaceHost + 'static> CompositorHandler for State<H> {
                 self.cancel_give_up(id);
             }
         }
+        // (hypr-057) Shown: its idle inhibitor (idle.rs).
+        self.sync_idle_inhibitor(id);
         self.mark(id);
     }
 
@@ -670,6 +670,7 @@ impl<H: SurfaceHost + 'static> Dispatch2<WpPresentationFeedback, State<H>> for F
                         s.stats.presented += 1;
                     }
                     state.clock.presented(self.surface, presentation);
+                    state.sync_idle_inhibitor(self.surface);
                 }
             }
             wp_presentation_feedback::Event::Discarded => {
@@ -679,6 +680,7 @@ impl<H: SurfaceHost + 'static> Dispatch2<WpPresentationFeedback, State<H>> for F
                         s.stats.discarded += 1;
                     }
                     state.clock.discarded(self.surface);
+                    state.sync_idle_inhibitor(self.surface);
                 }
             }
             _ => {}

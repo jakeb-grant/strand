@@ -1,8 +1,9 @@
 //! (services-round) `inhibit_idle: true` on a surface: while it is shown
 //! the compositor does not go idle. Each of its Wayland surfaces (one per
 //! monitor, a popup's own) carries a `zwp_idle_inhibitor_v1`, made when
-//! the surface is mapped (its first buffer committed) or the spec turns
-//! it on, destroyed when the spec turns it off or the surface goes. The
+//! the surface is shown (the compositor answered a frame of it) or the
+//! spec turns it on, destroyed when the spec turns it off or the surface
+//! goes. The
 //! protocol makes an inhibitor count only while its surface is visible,
 //! which is what "while it is shown" means; a compositor without
 //! `zwp_idle_inhibit_manager_v1` gets none.
@@ -12,6 +13,16 @@
 //! with the surface, before its first buffer, never held it awake (the
 //! compositor matrix, `idle_follows_the_compositor_and_a_surface_holds_it_awake`;
 //! sway 1.9 counts any surface that is not a hidden window's).
+//!
+//! (hypr-057) Not before it is shown: Hyprland 0.57 counts an inhibitor
+//! only while its layer surface's alpha is above zero, and checks a layer
+//! surface's only when the inhibitor is made (`recheckIdleInhibitorStatus`
+//! in `src/managers/input/IdleInhibitor.cpp` runs on window focus, map
+//! and fullscreen changes, never on a layer's). A layer maps at alpha 0
+//! and fades in from the next animation tick, even with animations off,
+//! so one made with the first buffer never held it awake; after the
+//! compositor's first answer the layer has been drawn, so its alpha is
+//! above zero.
 
 use wayland_protocols::wp::idle_inhibit::zv1::client::{
     zwp_idle_inhibit_manager_v1::{self, ZwpIdleInhibitManagerV1},
@@ -28,7 +39,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             .get(&id)
             .and_then(|s| self.specs.get(&s.node))
             .is_some_and(|spec| spec.inhibit_idle && spec.open)
-            && self.surfaces.get(&id).is_some_and(Surface::mapped);
+            && self.surfaces.get(&id).is_some_and(Surface::shown);
         match (want, self.inhibitors.contains_key(&id)) {
             (true, false) => {
                 let (Some(manager), Some(s)) = (&self.idle_inhibit, self.surfaces.get(&id)) else {

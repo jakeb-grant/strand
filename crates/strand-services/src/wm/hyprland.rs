@@ -4,7 +4,19 @@
 //! `.socket.sock` answers one request per connection (`j/workspaces`,
 //! `j/monitors`, `j/clients`, `j/activewindow`, `dispatch …`) and closes;
 //! `.socket2.sock` streams `EVENT>>DATA` lines. Formats are Hyprland
-//! 0.56.2's (`src/debug/HyprCtl.cpp`, the wiki's IPC page).
+//! 0.56.2's (`src/debug/HyprCtl.cpp`, the wiki's IPC page) and 0.57.0's
+//! (`src/ipc/s1/Commands.cpp`).
+//!
+//! (hypr-057) 0.57 names a workspace by its `address`: its number for a
+//! numbered one (`"3"`), else its name (`web`, `special:magic`; a rename
+//! changes the `name`, not the address). A reply writes `id` only for a
+//! numbered workspace, and the workspace events carry the address where
+//! 0.56 sent the id (`workspacev2>>web,web`, `focusedmonv2>>DP-1,web`).
+//! A workspace without an `id` goes by one the adapter keeps for its
+//! address while connected (`Numbers`), from -1337 down in the order
+//! first seen, as 0.56 numbered named workspaces, so the services' ids
+//! stay what they were. Actions name a named workspace by its address
+//! (`name:web`, which 0.57 still takes).
 //!
 //! Events that carry what changed (`workspacev2`, `focusedmonv2`,
 //! `activewindowv2`, `windowtitlev2`, `urgent`, `minimized`) patch the state
@@ -61,7 +73,7 @@
 //! and the diagnostic names Hyprland's version (`j/version`, read then).
 //! An event name it does not know is ignored, as before.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -88,11 +100,23 @@ const EVENT_DATA_CAP: usize = 1024;
 // renamed field in a newer Hyprland) is not understood, instead of read
 // as empty (`understood`). The rest default.
 
+/// A reply's `id` for a workspace 0.57 writes none for (a named or
+/// special one), until [`State::replace`] gives it one from `Numbers`.
+const UNNUMBERED: i64 = i64::MIN;
+
+fn unnumbered() -> i64 {
+    UNNUMBERED
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub(crate) struct WsRef {
+    #[serde(default = "unnumbered")]
     pub id: i64,
     #[serde(default)]
     pub name: String,
+    /// (hypr-057) 0.57's name for it; empty before.
+    #[serde(default)]
+    pub address: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -204,10 +228,60 @@ impl Devices {
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub(crate) struct HWorkspace {
+    #[serde(default = "unnumbered")]
     pub id: i64,
     pub name: String,
     #[serde(default)]
     pub monitor: String,
+    /// (hypr-057) 0.57's name for it; empty before.
+    #[serde(default)]
+    pub address: String,
+}
+
+impl HWorkspace {
+    /// What actions name it by: 0.57's address, else (0.56) its name.
+    fn address(&self) -> &str {
+        if self.address.is_empty() {
+            &self.name
+        } else {
+            &self.address
+        }
+    }
+}
+
+/// (hypr-057) The ids the adapter gives the workspaces 0.57 writes no
+/// `id` for, by address (else name), for as long as it is connected:
+/// from -1337 down in the order first seen, never reused.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Numbers {
+    given: HashMap<String, i64>,
+}
+
+impl Numbers {
+    /// The id of a workspace a reply wrote `id`, `address` and `name`
+    /// for: its own, else the one kept for its address; -1 (no
+    /// workspace, as 0.56 wrote it) when it names none.
+    fn of(&mut self, id: i64, address: &str, name: &str) -> i64 {
+        if id != UNNUMBERED {
+            return id;
+        }
+        let key = if address.is_empty() { name } else { address };
+        if key.is_empty() {
+            return -1;
+        }
+        let next = -1337 - self.given.len() as i64;
+        *self.given.entry(key.to_string()).or_insert(next)
+    }
+
+    /// The id an event's workspace field names: a number (0.56's id, or
+    /// 0.57's address of a numbered workspace), else the id kept for that
+    /// address.
+    fn named(&self, field: &str) -> Option<i64> {
+        field
+            .parse::<i64>()
+            .ok()
+            .or_else(|| self.given.get(field).copied())
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -293,6 +367,8 @@ pub(crate) struct State {
     /// in the default one (and at connection, which Hyprland does not
     /// tell).
     pub submap: Option<String>,
+    /// (hypr-057) The ids of workspaces without one.
+    pub numbers: Numbers,
 }
 
 /// Addresses come as `0x55d…` from requests and as `55d…` in events.
@@ -322,6 +398,14 @@ impl State {
         self.monitors = monitors;
         self.workspaces = workspaces;
         self.clients = clients;
+        let n = &mut self.numbers;
+        for w in &mut self.workspaces {
+            w.id = n.of(w.id, &w.address, &w.name);
+        }
+        let refs = self.monitors.iter_mut().map(|m| &mut m.active_workspace);
+        for r in refs.chain(self.clients.iter_mut().map(|c| &mut c.workspace)) {
+            r.id = n.of(r.id, &r.address, &r.name);
+        }
         for c in &mut self.clients {
             // As `windowtitlev2` sends it (see the module docs).
             if c.title.contains('\n') {
@@ -355,11 +439,12 @@ impl State {
     /// Applies one socket2 event.
     pub(crate) fn apply(&mut self, event: &str, data: &str) -> Effect {
         match event {
+            // `ID,NAME` (0.56) or `ADDRESS,NAME` (0.57).
             "workspacev2" => {
                 let Some((id, _name)) = data.split_once(',') else {
                     return Effect::Requery;
                 };
-                let Ok(id) = id.parse::<i64>() else {
+                let Some(id) = self.numbers.named(id) else {
                     return Effect::Requery;
                 };
                 let Some(ws) = self.workspaces.iter().find(|w| w.id == id) else {
@@ -373,6 +458,7 @@ impl State {
                         m.active_workspace = WsRef {
                             id,
                             name: ws.name.clone(),
+                            address: ws.address.clone(),
                         };
                         changed = true;
                     }
@@ -385,11 +471,12 @@ impl State {
                     Effect::None
                 }
             }
+            // `MONITOR,ID` (0.56) or `MONITOR,ADDRESS` (0.57).
             "focusedmonv2" => {
                 let Some((mon, id)) = data.split_once(',') else {
                     return Effect::Requery;
                 };
-                let Ok(id) = id.parse::<i64>() else {
+                let Some(id) = self.numbers.named(id) else {
                     return Effect::Requery;
                 };
                 if !self.monitors.iter().any(|m| m.name == mon)
@@ -397,11 +484,11 @@ impl State {
                 {
                     return Effect::Requery;
                 }
-                let name = self
+                let (name, address) = self
                     .workspaces
                     .iter()
                     .find(|w| w.id == id)
-                    .map(|w| w.name.clone())
+                    .map(|w| (w.name.clone(), w.address.clone()))
                     .unwrap_or_default();
                 for m in &mut self.monitors {
                     m.focused = m.name == mon;
@@ -409,6 +496,7 @@ impl State {
                         m.active_workspace = WsRef {
                             id,
                             name: name.clone(),
+                            address: address.clone(),
                         };
                     }
                 }
@@ -639,12 +727,13 @@ impl State {
     }
 
     /// The `workspace` dispatcher's argument for workspace `id`: an
-    /// existing one by number (a named one by `name:`), else a number not
-    /// made yet (Hyprland makes it, on its rule's monitor if any).
+    /// existing one by number (a named one by `name:` and its address),
+    /// else a number not made yet (Hyprland makes it, on its rule's
+    /// monitor if any).
     fn workspace_target(&self, id: i64) -> Result<String, WmError> {
         match self.workspaces.iter().find(|w| w.id == id) {
             Some(_) if id > 0 => Ok(id.to_string()),
-            Some(ws) => Ok(format!("name:{}", ws.name)),
+            Some(ws) => Ok(format!("name:{}", ws.address())),
             None if id > 0 => Ok(id.to_string()),
             None => Err(WmError::UnknownWorkspace(id)),
         }
@@ -1216,6 +1305,7 @@ mod tests {
                     active_workspace: WsRef {
                         id: 1,
                         name: "1".into(),
+                        ..Default::default()
                     },
                     disabled: false,
                     description: String::new(),
@@ -1229,6 +1319,7 @@ mod tests {
                     active_workspace: WsRef {
                         id: 3,
                         name: "3".into(),
+                        ..Default::default()
                     },
                     disabled: false,
                     description: String::new(),
@@ -1241,21 +1332,25 @@ mod tests {
                     id: 3,
                     name: "3".into(),
                     monitor: "HDMI-A-1".into(),
+                    ..Default::default()
                 },
                 HWorkspace {
                     id: 1,
                     name: "1".into(),
                     monitor: "DP-1".into(),
+                    ..Default::default()
                 },
                 HWorkspace {
                     id: 2,
                     name: "2".into(),
                     monitor: "DP-1".into(),
+                    ..Default::default()
                 },
                 HWorkspace {
                     id: -98,
                     name: "special:magic".into(),
                     monitor: "DP-1".into(),
+                    ..Default::default()
                 },
             ],
             vec![Client {
@@ -1264,6 +1359,7 @@ mod tests {
                 workspace: WsRef {
                     id: 1,
                     name: "1".into(),
+                    ..Default::default()
                 },
                 class: "kitty".into(),
                 title: "~".into(),
@@ -1522,6 +1618,7 @@ mod tests {
             id: -1337,
             name: "web".into(),
             monitor: "DP-1".into(),
+            ..Default::default()
         });
         let named = |s: &State, name: &str, d| {
             s.dispatch_for(&WmAction::FocusWorkspaceNamed(name.into()), d)
@@ -1604,6 +1701,7 @@ mod tests {
             id: 4,
             name: "4".into(),
             monitor: "DP-1".into(),
+            ..Default::default()
         });
         let ids: Vec<i64> = s.snapshot().state.configured.iter().map(|w| w.id).collect();
         assert_eq!(ids, [5]);
@@ -2191,5 +2289,125 @@ mod tests {
             );
         }
         assert_eq!(s.snapshot(), end.snapshot());
+    }
+
+    // ---- Hyprland 0.57.0, reconstructed from its source ------------------
+
+    const V057: &str = "hyprland-0.57.0";
+
+    /// The state `query` reads from the four 0.57.0 replies in `dir`
+    /// (`""` for the scenario's start).
+    fn from_057(s: &mut State, dir: &str) {
+        let read = |name: &str| crate::wm::captured::fixture(&format!("{V057}/{dir}{name}.json"));
+        s.replace(
+            parse_reply("j/monitors", &read("monitors")).unwrap(),
+            parse_reply("j/workspaces", &read("workspaces")).unwrap(),
+            parse_reply("j/clients", &read("clients")).unwrap(),
+            parse_active(&read("activewindow")).unwrap(),
+        );
+    }
+
+    /// (hypr-057) 0.57 writes `id` only for a numbered workspace and
+    /// names the others by address: the named one and the scratchpad are
+    /// read (not a reply the adapter cannot understand), the named one
+    /// gets an id from -1337 down that it keeps through a re-read and a
+    /// rename, windows find their workspace by it, the events' addresses
+    /// patch the focus in place or, for a workspace not read yet, ask for
+    /// a re-read, and an action names the named workspace by its address.
+    #[test]
+    fn hyprland_057_names_workspaces_by_address() {
+        use Effect::{Changed, Requery};
+        let mut s = State::default();
+        from_057(&mut s, "");
+        let snap = s.snapshot().state;
+        let ws: Vec<(i64, &str, &str, bool, bool)> = snap
+            .workspaces
+            .iter()
+            .map(|w| {
+                (
+                    w.id,
+                    w.name.as_str(),
+                    w.screen.as_str(),
+                    w.focused,
+                    w.active,
+                )
+            })
+            .collect();
+        assert_eq!(
+            ws,
+            [
+                (1, "1", "DP-1", true, true),
+                (2, "2", "DP-1", false, false),
+                (-1337, "web", "HDMI-A-1", false, true),
+            ]
+        );
+        let windows: Vec<(&str, Option<i64>, bool)> = snap
+            .windows
+            .iter()
+            .map(|w| (w.app_id.as_str(), w.workspace, w.minimized))
+            .collect();
+        assert_eq!(
+            windows,
+            [
+                ("kitty", Some(1), false),
+                ("firefox", Some(-1337), false),
+                // On the scratchpad: no workspace, minimised.
+                ("foot", None, true),
+            ]
+        );
+        let text = crate::wm::captured::fixture(&format!("{V057}/events.txt"));
+        let bursts = crate::wm::captured::bursts(&text);
+        let apply = |s: &mut State, burst: &[String]| -> Vec<Effect> {
+            burst.iter().map(|l| s.apply_line(l.as_bytes())).collect()
+        };
+        let focused = |s: &State| {
+            let snap = s.snapshot().state;
+            snap.workspaces.iter().find(|w| w.focused).map(|w| w.id)
+        };
+        assert!(apply(&mut s, &bursts[0].1).contains(&Changed));
+        assert_eq!(focused(&s), Some(-1337), "{}", bursts[0].0);
+        assert!(apply(&mut s, &bursts[1].1).contains(&Changed));
+        assert_eq!(focused(&s), Some(1), "{}", bursts[1].0);
+        assert!(
+            apply(&mut s, &bursts[2].1).contains(&Requery),
+            "{}",
+            bursts[2].0
+        );
+        assert_eq!(apply(&mut s, &bursts[3].1), [Requery], "{}", bursts[3].0);
+        // The re-read: `web` is `browser` now under the same address and
+        // id, and `chat` gets the next id (the scratchpad took -1338).
+        from_057(&mut s, "renamed/");
+        let snap = s.snapshot().state;
+        let ws: Vec<(i64, &str)> = snap
+            .workspaces
+            .iter()
+            .map(|w| (w.id, w.name.as_str()))
+            .collect();
+        assert_eq!(
+            ws,
+            [(1, "1"), (2, "2"), (-1337, "browser"), (-1339, "chat")]
+        );
+        assert_eq!(
+            s.dispatch_for(&WmAction::FocusWorkspace(-1337), Dialect::Lua)
+                .unwrap(),
+            r#"dispatch hl.dsp.focus({ workspace = "name:web" })"#
+        );
+        assert_eq!(
+            s.dispatch_for(
+                &WmAction::FocusWorkspaceNamed("browser".into()),
+                Dialect::Lua
+            )
+            .unwrap(),
+            r#"dispatch hl.dsp.focus({ workspace = "name:web" })"#
+        );
+        // A reply with neither an id nor an address names its workspace
+        // by name; a window with no workspace (`""`) is on none.
+        let mut n = Numbers::default();
+        assert_eq!(n.of(UNNUMBERED, "", "old"), -1337);
+        assert_eq!(n.of(UNNUMBERED, "", ""), -1);
+        assert_eq!(n.of(4, "4", "4"), 4);
+        assert_eq!(n.named("4"), Some(4));
+        assert_eq!(n.named("old"), Some(-1337));
+        assert_eq!(n.named("nope"), None);
     }
 }

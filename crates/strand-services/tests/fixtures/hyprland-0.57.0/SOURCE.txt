@@ -1,0 +1,23 @@
+Hyprland 0.57.0 IPC replies and events, reconstructed from Hyprland's
+source at tag v0.57.0, not captured from a running Hyprland (hypr-057,
+2026-10-28): the format strings of src/ipc/s1/Commands.cpp
+(getMonitorData, getWindowData, getWorkspaceData; activeWindowRequest
+answers `{}` when no window has focus) and the postEvent calls of
+src/output/Monitor.cpp, src/desktop/state/FocusState.cpp and
+src/workspace/HLWorkspace.cpp. Fields the adapter does not read are
+cut from the replies.
+
+What 0.57 changed from 0.56.2 (#16140, #16269, #16292): a workspace is
+named by its `address` (its number for a numbered workspace, else its
+name; a rename changes `name` only), `id` is written only for a
+numbered workspace, `type` is "normal" or "special", and the workspace
+events carry the address where 0.56 sent the id.
+
+The scenario: DP-1 (focused) shows workspace 1, HDMI-A-1 the named
+workspace `web`; workspace 2 exists, empty, and the scratchpad
+`special:magic` holds a terminal. kitty is on 1 and focused, firefox on
+web. renamed/ is the same moment after `web` is renamed `browser` and a
+named workspace `chat` is made on DP-1.
+
+events.txt: ".socket2.sock" lines as 0.57 sends them, in bursts (`##
+name`), applied in order to the state the replies give.

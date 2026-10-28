@@ -1,0 +1,40 @@
+[{
+    "id": 0,
+    "name": "DP-1",
+    "description": "Dell Inc. DELL U2720Q",
+    "x": 0,
+    "y": 0,
+    "activeWorkspace": {
+        "address": "1",
+        "id": 1,
+        "type": "normal",
+        "name": "1"
+    },
+    "specialWorkspace": {
+        "address": "",
+        "type": "",
+        "name": ""
+    },
+    "scale": 1.00,
+    "focused": true,
+    "disabled": false
+},{
+    "id": 1,
+    "name": "HDMI-A-1",
+    "description": "LG Electronics LG HDR",
+    "x": 2560,
+    "y": 0,
+    "activeWorkspace": {
+        "address": "web",
+        "type": "normal",
+        "name": "browser"
+    },
+    "specialWorkspace": {
+        "address": "",
+        "type": "",
+        "name": ""
+    },
+    "scale": 1.00,
+    "focused": false,
+    "disabled": false
+}]
