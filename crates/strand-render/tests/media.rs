@@ -591,6 +591,83 @@ fn a_graphs_columns_fall_on_the_boot_clock_whatever_its_frames() {
     }
 }
 
+/// (graph-flake) The tick a kept value's history starts in is a column
+/// whichever tick the graph's first frame comes in. A replay maps every
+/// surface at its window's start, so its graph first drew in the tick
+/// the history starts in (and drew that column, with the value then),
+/// while the live shell's first frame of that surface came after the
+/// next boundary (and left the column empty, as starting before the
+/// oldest point): the four-output e2e report drifted by that one column,
+/// 3 px of a line at 0 on its scale-2 output. Here the history starts 50
+/// ms into a 100 ms column; one graph first draws 10 ms later, in that
+/// column, the other 80 ms later, in the next.
+#[test]
+fn the_tick_a_history_starts_in_is_a_column_whenever_the_graph_first_draws() {
+    let changes: &[(u64, f32)] = &[(50, 0.3), (320, 0.8)];
+    let value = |at: u64| {
+        changes
+            .iter()
+            .rev()
+            .find(|(t, _)| *t <= at)
+            .map_or(0.3, |c| c.1)
+    };
+    let backlog = |at: u64| {
+        PropValue::Backlog(std::sync::Arc::new(Backlog {
+            points: changes
+                .iter()
+                .filter(|(t, _)| *t <= at)
+                .map(|&(t, value)| BacklogPoint {
+                    at: BOOT + t as f64 / 1000.0,
+                    value,
+                    ramp: 0.0,
+                })
+                .collect(),
+        }))
+    };
+    let draw = |first: u64| {
+        let (mut r, ids, mut buf) = graphs(&[vec![(Prop::Fill, color("#89b4fa55"))]]);
+        let mut at = first;
+        loop {
+            let at_ = at.min(600);
+            set(&mut r, ids[0], Prop::Value, num(value(at_)));
+            set(&mut r, ids[0], Prop::Backlog, backlog(at_));
+            buf.paint_at(&mut r, S, u8::from(at_ != first), ms(at_));
+            if at_ == 600 {
+                break;
+            }
+            at += 16;
+        }
+        buf
+    };
+    let (a, b) = (draw(60), draw(130));
+    // The columns the line lights: the graph is 60 px from x 8, rows 8
+    // to 32, its line #89b4fa over #1e1e2e.
+    let lit = |buf: &Buffer| {
+        (8..68)
+            .filter(|&x| (8..32).any(|y| buf.px(x, y)[0] > 0x90))
+            .count()
+    };
+    let diff = a
+        .to_rgba()
+        .iter()
+        .zip(b.to_rgba())
+        .filter(|(x, y)| **x != *y)
+        .count();
+    assert_eq!(
+        diff,
+        0,
+        "the same columns ({} and {} lit)",
+        lit(&a),
+        lit(&b)
+    );
+    // At 600 ms the samples of ticks 0 to 6, then the value now flush
+    // right at x 67: the tick from 0 ms, which the history starts in,
+    // is x 60, and nothing is left of it.
+    let on = |x: u32| (8..32).any(|y| b.px(x, y)[0] > 0x90);
+    assert!(on(60), "the tick the history starts in is drawn");
+    assert!(!(8..60).any(on), "nothing before it");
+}
+
 /// (graph-follow) A frame with no clock (time zero, as a shell's first
 /// can be) stands nowhere on the boot clock, so it places no columns: a
 /// graph whose first frame had none draws, from its first frame with a

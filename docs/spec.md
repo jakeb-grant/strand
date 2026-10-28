@@ -1482,10 +1482,11 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   item's history as its own series, and a graph's columns are whole
   periods of the boot clock, its `history` over its columns, each the
   value at its period's start (as kept, else as the frames that painted
-  it saw it), so kept values fall in the same columns whenever its
+  it saw it; the period kept history starts within, the value it starts
+  with), so kept values fall in the same columns whenever its
   frames come, and a value no history keeps does too unless it changed
-  within a frame before a column's start (decisions.md graph-follow;
-  sections 6.6 and 14).
+  within a frame before a column's start (decisions.md graph-follow and
+  graph-flake; sections 6.6 and 14).
 
 ### 8.2 One tick, one diff
 

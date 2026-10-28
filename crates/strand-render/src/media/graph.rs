@@ -51,9 +51,11 @@
 //! the columns of a gap in its ticks (it was hidden, or a frame came
 //! late), each value eased by `smooth` in order as a tick would have. A
 //! column older than the backlog's oldest point stays empty, as one
-//! older than the mount is without a backlog; a column inside a gap of
-//! the backlog (the machine slept) is drawn as none. Columns it samples
-//! while drawn are its own, one per tick, as before.
+//! older than the mount is without a backlog, but (graph-flake) the
+//! column whose tick the oldest point falls in holds that point, so it
+//! is drawn whichever tick the graph first draws in; a column inside a
+//! gap of the backlog (the machine slept) is drawn as none. Columns it
+//! samples while drawn are its own, one per tick, as before.
 
 use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
@@ -450,22 +452,30 @@ enum Past {
     Known(f32),
     /// Nothing is known then: the machine slept.
     Gap,
-    /// Before the backlog's oldest point, or no backlog.
+    /// Before the tick the backlog's oldest point falls in, or no
+    /// backlog.
     Unknown,
 }
 
 /// What `backlog` holds for tick `j` (`col` seconds each): its value at
 /// the tick's start on the boot clock. A tick after the newest point
-/// holds that point.
+/// holds that point. (graph-flake) The tick the oldest point falls in
+/// holds the oldest point: its start is before anything was kept, and
+/// the value from when it first was is what is known of that tick. So
+/// that tick is a column whichever tick the graph first draws in; left
+/// unknown, it was one only when the graph's first frame came within it
+/// (drawn then with the value now), which a replay's first frame and
+/// its live shell's need not.
 fn past(backlog: Option<&Backlog>, j: u64, col: f64) -> Past {
     let Some(b) = backlog else {
         return Past::Unknown;
     };
-    let at = j as f64 * col;
-    match b.oldest() {
-        Some(o) if at >= o => {}
+    let start = j as f64 * col;
+    let at = match b.oldest() {
+        Some(o) if start >= o => start,
+        Some(o) if start + col > o => o,
         _ => return Past::Unknown,
-    }
+    };
     match b.value_at(at) {
         Some(v) => Past::Known(v),
         None => Past::Gap,
@@ -1127,9 +1137,11 @@ mod tests {
             backlog(&[(997.5, 0.2, 0.0), (998.5, 0.6, 0.0), (999.7, 0.9, 0.0)]),
         );
         g.advance(1000, 5, secs(1.0));
-        // Ticks 996 and 997 are older than the backlog: no sample. Tick
-        // 998 is 0.2, tick 999 0.6, tick 1000 the value since 999.7 s.
-        assert_eq!(g.series[0].samples, [0.2, 0.6, 0.9]);
+        // Tick 996 is older than the backlog: no sample. (graph-flake)
+        // Tick 997, which the backlog starts in, holds its oldest point,
+        // 0.2; tick 998 is 0.2, tick 999 0.6, tick 1000 the value since
+        // 999.7 s.
+        assert_eq!(g.series[0].samples, [0.2, 0.2, 0.6, 0.9]);
     }
 
     /// (review) A backlog whose newest point is older than the draw keeps

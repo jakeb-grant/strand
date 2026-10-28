@@ -86,3 +86,55 @@ fn a_seeded_history_reaches_the_graph_on_the_runs_clock() {
     );
     assert_eq!(pixel(Some(seed), 98, 30), pixel(None, 98, 30), "now: 0");
 }
+
+/// (graph-flake) A click's change is kept at the tick it acts at. The
+/// boot clock is 499.91 s at `T0`, so with 100 ms columns a boundary
+/// (500 s) lies between tick 5 (499.993 s) and tick 6 (500.010 s), where
+/// `frames 6` puts the click. Kept at tick 5's time (the boot clock as
+/// the tick before left it), the step landed in the column from 500 s,
+/// a column before a live shell that changed it after 500 s: the
+/// four-output e2e report drifted by 59 px so. At 500.010 s the column
+/// from 500 s shows 0 and the next one 1.
+#[test]
+fn a_clicks_change_is_kept_at_the_tick_it_acts_at() {
+    const CLICKED: &str = "state level = 0.0
+bar Top {
+  edge: top; height: 40
+  row {
+    box { width: 40; height: 40; bg: #0000ff; on click { level = 1.0 } }
+    graph level { width: 100; height: 40; history: 10s; fill: #ff0000 }
+  }
+}
+";
+    let text = format!(
+        "id = \"history-click\"\nscreen = {{ width = 200, height = 100, scale = 1.0 }}\nboot = 499.91\n\n=== shell.strand\n{CLICKED}\n=== steps\nframes 6\nclick 10,10\nframes 27\n"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("history-click.scn");
+    std::fs::write(&path, &text).unwrap();
+    let sc = Scenario::parse(&text, &path).unwrap_or_else(|e| panic!("{e}\n{text}"));
+    let steps = sc.steps.clone();
+    let mut d = Driver::boot(sc, &RunOptions::default()).unwrap();
+    for step in &steps {
+        if let Some(mut run) = d.begin(step).unwrap() {
+            while !d.advance(&mut run).unwrap() {}
+        }
+    }
+    let s = &d.surfaces().shown[0];
+    let stride = s.size.w as usize * 4;
+    // The graph's slot `x` (from x 40) at row 10: the bar's colour
+    // under a value of 0, the fill or the line (a riser) at 1.
+    let px = |x: usize| {
+        let i = 10 * stride + (40 + x) * 4;
+        [s.pixels[i], s.pixels[i + 1], s.pixels[i + 2]]
+    };
+    let bar = px(0);
+    // Last drawn in the tick from 500.4 s: the column from 500 s is slot
+    // 94 (after the column the history starts in, 93), the value now 99.
+    let shown: Vec<bool> = (92..100).map(|x| px(x) != bar).collect();
+    assert_eq!(
+        shown,
+        [false, false, false, true, true, true, true, true],
+        "slots 92 to 99: the column from 500 s (94) shows 0, the step is in 95"
+    );
+}

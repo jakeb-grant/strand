@@ -3418,7 +3418,8 @@ re-base, if it needs one, is a dated decisions.md entry.
     virtual one); the animator reads it at each frame's `begin`, and a
     graph's columns are its whole periods (`history / slots`), tick `j`
     the value at `j × column` seconds of it: the backlog's from its
-    oldest point on, else the value the last painted frame at or before
+    oldest point on (graph-flake: the tick that point falls in holds
+    it), else the value the last painted frame at or before
     that time saw (a preview's sighting is stamped with the next painted
     frame's time). A backlog is not part of
     the graph's state hash: it repaints nothing by itself. A graph of a

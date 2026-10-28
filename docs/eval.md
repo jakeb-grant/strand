@@ -2668,7 +2668,9 @@ capability, used by any scenario):
   time, never asleep. (graph-follow) A `graph`'s columns are whole
   periods of it, so a replay whose `boot` is the live shell's at its
   window's start puts each value in the column the live shell did,
-  whatever its frames' times. The
+  whatever its frames' times. (graph-flake) An instant step (a click,
+  a `set`) acts at the tick about to run on the boot clock too, so what
+  it changes is kept at that tick's time, not the tick's before. The
   services' stand-ins sample as the live ones do: the polled builtins
   (`strand_services_schema::POLLED`: `cpu`, `memory`, `disk`,
   `network`) and a

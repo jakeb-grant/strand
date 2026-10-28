@@ -2853,8 +2853,13 @@ impl Harness {
     /// A step begun: an instant step done, a time step's plan returned
     /// for [`Harness::advance`] to run tick by tick.
     fn begin_step(&mut self, step: &Step) -> Result<Option<TimeRun>, Error> {
-        // Instant steps act at the tick about to run.
+        // Instant steps act at the tick about to run, (graph-flake) on
+        // the boot clock too: what logic keeps of a value they change is
+        // timed then, not at the tick before (whose time the boot clock
+        // held since), so a column boundary between the two cannot put
+        // the change a column early.
         let t = self.clock.now();
+        set_virtual_boot(t);
         self.router.set_now(Some(self.instant(t)));
         if step.kind.opens_segment() {
             self.opens(step.text.clone(), step.line);
