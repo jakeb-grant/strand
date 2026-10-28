@@ -544,6 +544,11 @@ pre {
   font-weight: 600;
 }
 
+/* The home page has the sidebar only for the menu on narrow screens. */
+.home > .sidebar {
+  display: none;
+}
+
 .main {
   padding: 44px 0 96px;
   min-width: 0;
@@ -1624,11 +1629,19 @@ pre {
   .layout {
     display: block;
   }
-  .sidebar {
+  /* A drawer the screen's height that scrolls on its own: `normal`
+     undoes the column's `start`, which would size it to its content
+     (taller than the screen, shifted up under the top bar, nothing to
+     scroll), and a swipe at its end does not scroll the page. */
+  .sidebar,
+  .home > .sidebar {
+    display: block;
     position: fixed;
     inset: calc(var(--top-h) + 1px + env(safe-area-inset-top, 0px)) auto 0 0;
+    align-self: normal;
     width: min(86vw, 320px);
     max-height: none;
+    overscroll-behavior: contain;
     z-index: 15;
     padding: 20px 16px 48px max(16px, env(safe-area-inset-left, 0px));
     background: var(--page);

@@ -125,6 +125,29 @@ fn topbar(o: &mut String, out: &str, current: &str) {
     );
 }
 
+/// The sidebar, the page `out` in it marked current.
+fn sidebar(o: &mut String, nav: &[NavSection], out: &str) {
+    o.push_str("<nav class=\"sidebar\" id=\"sidebar\" aria-label=\"Documentation\">");
+    for s in nav {
+        let _ = write!(o, "<p class=\"side-title\">{}</p><ul>", esc(&s.title));
+        for (label, to) in &s.items {
+            let cur = if to == out {
+                " aria-current=\"page\""
+            } else {
+                ""
+            };
+            let _ = write!(
+                o,
+                "<li><a href=\"{}\"{cur}>{}</a></li>",
+                relative(out, to),
+                esc(label)
+            );
+        }
+        o.push_str("</ul>");
+    }
+    o.push_str("</nav>");
+}
+
 fn section_of(out: &str) -> &str {
     out.split('/').next().unwrap_or("")
 }
@@ -141,27 +164,9 @@ pub fn doc(p: &Page) -> String {
     );
     o.push_str("<body class=\"doc\">\n");
     topbar(&mut o, p.out, section_of(p.out));
-    o.push_str(
-        "<div class=\"layout\"><nav class=\"sidebar\" id=\"sidebar\" aria-label=\"Documentation\">",
-    );
-    for s in p.nav {
-        let _ = write!(o, "<p class=\"side-title\">{}</p><ul>", esc(&s.title));
-        for (label, out) in &s.items {
-            let cur = if out == p.out {
-                " aria-current=\"page\""
-            } else {
-                ""
-            };
-            let _ = write!(
-                o,
-                "<li><a href=\"{}\"{cur}>{}</a></li>",
-                relative(p.out, out),
-                esc(label)
-            );
-        }
-        o.push_str("</ul>");
-    }
-    o.push_str("</nav><main class=\"main\" id=\"main\"><article class=\"prose\">");
+    o.push_str("<div class=\"layout\">");
+    sidebar(&mut o, p.nav, p.out);
+    o.push_str("<main class=\"main\" id=\"main\"><article class=\"prose\">");
     o.push_str(p.body);
     o.push_str("</article><footer class=\"pager\">");
     if let Some((label, out)) = p.prev {
@@ -202,8 +207,9 @@ pub fn doc(p: &Page) -> String {
     o
 }
 
-/// The home page: no sidebar, the content wide.
-pub fn home(body: &str, out: &str) -> String {
+/// The home page: the content wide, the sidebar only where the menu
+/// opens it (narrow screens, where the top bar's links are hidden).
+pub fn home(body: &str, out: &str, nav: &[NavSection]) -> String {
     let mut o = String::new();
     head(
         &mut o,
@@ -214,6 +220,7 @@ pub fn home(body: &str, out: &str) -> String {
     );
     o.push_str("<body class=\"home\">\n");
     topbar(&mut o, out, "");
+    sidebar(&mut o, nav, out);
     let _ = write!(
         o,
         "<main class=\"home-main\" id=\"main\">{body}</main>\n<footer class=\"foot\"><div class=\"foot-in\">\

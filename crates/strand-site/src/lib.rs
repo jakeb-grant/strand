@@ -342,7 +342,7 @@ pub fn build_with(root: &Path, out: &Path, opts: &Options) -> Result<Report, Vec
             r,
         ));
         let html = if s.out == "index.html" {
-            page::home(&r.html, &s.out)
+            page::home(&r.html, &s.out, &nav)
         } else {
             let at = order.iter().position(|(_, o)| *o == s.out);
             let toc = markdown::toc(r);

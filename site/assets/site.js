@@ -64,11 +64,20 @@
       var open = sidebar.classList.toggle("open");
       menu.setAttribute("aria-expanded", open ? "true" : "false");
     });
+    var shut = function () {
+      sidebar.classList.remove("open");
+      menu.setAttribute("aria-expanded", "false");
+    };
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape" && sidebar.classList.contains("open")) {
-        sidebar.classList.remove("open");
-        menu.setAttribute("aria-expanded", "false");
+        shut();
         menu.focus();
+      }
+    });
+    // A tap beside the open sidebar closes it.
+    document.addEventListener("click", function (e) {
+      if (sidebar.classList.contains("open") && !sidebar.contains(e.target) && !menu.contains(e.target)) {
+        shut();
       }
     });
   }

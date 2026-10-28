@@ -5,8 +5,10 @@ request that fails, or a page wider than the screen; saves a full-page
 screenshot of each. Then drives the search on the first page, at a
 desktop's and a phone's width: "/" focuses it, typing lists results,
 the arrows move through them and Enter opens one, a word found nowhere
-says so; and on each page, each example player shows another picture at
-a later frame than at its first. Each step that does not work is a
+says so; on each page, each example player shows another picture at a
+later frame than at its first; and at a phone's width the menu opens the
+sidebar under the top bar, no taller than the screen, scrolling on its
+own, and a tap beside it closes it. Each step that does not work is a
 problem."""
 
 import argparse
@@ -86,6 +88,41 @@ def main() -> int:
                 problems.append(f"{where}: {fid}: its moving part lies outside its stage")
         ctx.close()
 
+    def menu(browser, rel):
+        """At a phone's width the menu opens the sidebar: under the top bar,
+        within the screen, its own scroll moving it and not the page; a
+        tap beside it closes it."""
+        where = f"{rel} [menu]"
+        ctx = browser.new_context(viewport={"width": WIDTHS["phone"], "height": 700}, device_scale_factor=1, reduced_motion="reduce")
+        page = ctx.new_page()
+        watch(page, where)
+        page.goto((site / rel).resolve().as_uri(), wait_until="load")
+        page.click(".menu")
+        side = page.locator("#sidebar")
+        if not side.is_visible():
+            problems.append(f"{where}: the menu does not open the sidebar")
+            ctx.close()
+            return
+        box = page.evaluate("""() => { const s = document.getElementById('sidebar');
+          const r = s.getBoundingClientRect(), t = document.querySelector('.top').getBoundingClientRect();
+          return {top: r.top, bottom: r.bottom, bar: t.bottom, h: innerHeight, sh: s.scrollHeight, ch: s.clientHeight}; }""")
+        if box["top"] < box["bar"] or box["bottom"] > box["h"]:
+            problems.append(f"{where}: the sidebar spans {box['top']:.0f} to {box['bottom']:.0f}px, not the bar's foot ({box['bar']:.0f}) to the screen's ({box['h']})")
+        if box["sh"] > box["ch"]:
+            page.mouse.move(100, box["bar"] + 200)
+            page.mouse.wheel(0, 400)
+            page.wait_for_timeout(300)
+            moved = page.evaluate("[document.getElementById('sidebar').scrollTop, scrollY]")
+            if moved[0] <= 0 or moved[1] != 0:
+                problems.append(f"{where}: scrolling the sidebar moved it {moved[0]}px and the page {moved[1]}px")
+        name = rel.replace("/", "_").removesuffix(".html")
+        page.screenshot(path=str(shots / f"{name}-menu.png"))
+        page.mouse.click(WIDTHS["phone"] - 20, box["bar"] + 300)
+        page.wait_for_timeout(300)
+        if side.is_visible() or page.get_attribute(".menu", "aria-expanded") != "false":
+            problems.append(f"{where}: a tap beside the sidebar does not close it")
+        ctx.close()
+
     def search(browser, rel, wname, width):
         where = f"{rel} [search, {wname}]"
         ctx = browser.new_context(viewport={"width": width, "height": 900}, device_scale_factor=1, reduced_motion="reduce")
@@ -158,6 +195,8 @@ def main() -> int:
                 ctx.close()
         for rel in pages:
             players(browser, rel)
+        for rel in pages:
+            menu(browser, rel)
         for wname in ("desktop", "phone"):
             search(browser, pages[0], wname, WIDTHS[wname])
         browser.close()

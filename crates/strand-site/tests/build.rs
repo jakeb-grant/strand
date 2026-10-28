@@ -38,6 +38,10 @@ fn the_site_builds_with_no_problems() {
     // The check on the home page is computed, not pasted.
     assert!(home.contains("did you mean `percent`"));
     assert!(home.contains("id=\"example-springs\""));
+    // The menu on a narrow screen opens the sidebar here too, its links
+    // relative to the root.
+    assert!(home.contains("<nav class=\"sidebar\" id=\"sidebar\""));
+    assert!(home.contains("<a href=\"guide/index.html\">"));
     assert!(out.join("media/springs-light.png").exists());
     assert!(out.join("assets/fonts/inter.woff2").exists());
     assert!(out.join("theme.css").exists());
