@@ -19,8 +19,7 @@
 //! (an animation running) is not measured: M1's renderer animates
 //! nothing (springs land in M2), and headless sway answers a frame
 //! callback at once, so the wait a monitor adds there (the pending
-//! callback's vblank, then the next) cannot be seen here
-//! (`docs/m1-report.md`).
+//! callback's vblank, then the next) cannot be seen here.
 //!
 //! Monitor changes: a scale change (`swaymsg output … scale`) is timed
 //! from the main thread hearing of it (`wl_output.done`) to the

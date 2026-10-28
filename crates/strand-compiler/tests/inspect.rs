@@ -1,5 +1,4 @@
-//! (M5) The inspector's compiler half (docs/m5-plan.md, S-inspect wave
-//! 1): a node's identity, its state cells and their kept badges, reset
+//! (M5) The inspector's compiler half: a node's identity, its state cells and their kept badges, reset
 //! subtree, the source hash write-back compares against, and the dump.
 
 use std::rc::Rc;

@@ -1,7 +1,7 @@
 id     = "list-swipe"
 about  = """list-wheel's twenty rows in a list 100 px tall, moved by a touchpad
 (`swipe DY over MS`: the fingers' motion one axis frame a tick, then they
-lift; m4-plan.md "Lists": touchpad flings decay): the offset follows the
+lift; touchpad flings decay): the offset follows the
 fingers at once, and a lift while they move flings it on, its speed
 decaying, until it stops by itself. A slow swipe lifts with no fling.
 list-swipe-end runs a fling into the list's end and back. The list is

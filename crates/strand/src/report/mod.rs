@@ -1,5 +1,5 @@
-//! `strand report` (S-tools; design.md, "`strand report`"; m5-plan,
-//! S-tools): the compositor, its globals with their versions, the
+//! `strand report` (S-tools; design.md, "`strand
+//! report`"): the compositor, its globals with their versions, the
 //! outputs and their scales, the process's PSS, each surface's frame
 //! timing over its last 600 frames, the GPU's status, reason and lost
 //! devices, and why a surface is on the GPU. No serials or ids: outputs

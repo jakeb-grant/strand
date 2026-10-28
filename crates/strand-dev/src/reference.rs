@@ -2,7 +2,7 @@
 //! prop, service, type, function and token, generated from the schemas
 //! the language checks against (the builtin schema extended by every
 //! builtin service's, as `strand check` has them, without plugin files)
-//! and their `///` docs (m5-plan, S-docs; architecture.md, "strand-dev
+//! and their `///` docs (architecture.md, "strand-dev
 //! (M5)"). The pages are committed; `the_reference_is_current` fails when
 //! regenerating them would change a byte.
 

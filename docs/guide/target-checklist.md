@@ -1,7 +1,7 @@
 # Target checklist: bar (a)
 
-What the agent proxy's result is scored against (m5-plan, "Newcomer
-builds a multi-monitor bar in 15 minutes", layer 2). The target is
+What the agent proxy's result is scored against (features.md, M5:
+"Newcomer builds a multi-monitor bar in 15 minutes", layer 2). The target is
 design.md's bar (a), the bar levels 1 to 3 of the guide build. A proxy
 session gets the guide and nothing else, builds the bar in its own
 config directory, and `scripts/agent-proxy/score.sh` runs that config
@@ -44,4 +44,4 @@ checked on a known good result.
 
 The proxy's run is advisory: it gates nothing, its findings are fixed in
 the guide before the human trials, and it is the first thing cut under
-time pressure (m5-plan).
+time pressure.

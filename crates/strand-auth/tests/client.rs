@@ -315,8 +315,8 @@ fn a_password_typed_early_waits_for_the_prompt_within_the_limit() {
 /// (a `pam_fprintd` whose `timeout=` is 3 times the client's or more:
 /// here 5 s against 4.5 s) makes a password typed during its wait time
 /// out, and `submit` (the fallback's) through the same stack too: only
-/// the module itself can then succeed (lock-r3-2, the limit README and
-/// handoff.md state).
+/// the module itself can then succeed (lock-r3-2, as the limit README
+/// states).
 #[test]
 fn a_reader_wait_past_the_limit_times_out_a_password_typed_early() {
     let dir = tempfile::tempdir().unwrap();

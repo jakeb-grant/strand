@@ -14,7 +14,7 @@
 # Then hotplugs a third output, HEADLESS-3 at 1920x1080 and scale 1.0 (the
 # same scale as HEADLESS-1, another width), checks that only the new bar
 # paints, and checks one more tick on all three bars (gate and centring).
-# Also saves grim screenshots of the bars to docs/images/ and runs the
+# Also saves grim screenshots of the bars to $OUT and runs the
 # strand-core 10k-node benchmark (skip with --no-bench).
 #
 # Usage: scripts/m0-exit.sh [--no-bench] [--no-build] [--no-third] [--ticks N]
@@ -203,9 +203,8 @@ awk '/^[0-9a-f]+-[0-9a-f]+ / { name = $6; if (name == "") name = "[anon]" }
      END { for (n in pss) printf "%8d kB  %s\n", pss[n], n }' "/proc/$STRAND_PID/smaps" |
   sort -rn | head -25 >"$OUT/pss_by_mapping.txt"
 
-mkdir -p "$ROOT/docs/images"
-grim -g "0,0 2560x32" "$ROOT/docs/images/m0-bar.png"
-grim -s 1.25 -g "2560,0 2048x32" "$ROOT/docs/images/m0-bar-125.png"
+grim -g "0,0 2560x32" "$OUT/m0-bar.png"
+grim -s 1.25 -g "2560,0 2048x32" "$OUT/m0-bar-125.png"
 
 if [ "$THIRD" = 1 ]; then
   # Same scale as HEADLESS-1, another width: the shared bar node needs a
@@ -233,7 +232,7 @@ if [ "$THIRD" = 1 ]; then
   T3_MAX=$(echo "$lines" | areas | sort -n | tail -1)
   T3_AREA=$(echo "$lines" | areas | sum)
   T3_OFF=$(echo "$lines" | grep . | off_centre | grep -c . || true)
-  grim -g "4608,0 1920x32" "$ROOT/docs/images/m0-bar-1920.png"
+  grim -g "4608,0 1920x32" "$OUT/m0-bar-1920.png"
 fi
 DROPPED=$(grep -c '^strand: dropped' "$LOG" || true)
 
@@ -269,7 +268,7 @@ if [ "$THIRD" = 1 ]; then
 fi
 echo "frames painted but not committed: $DROPPED"
 [ "$DROPPED" -eq 0 ] || { echo "  FAIL: dropped frames"; fail=1; }
-echo "pss by mapping: $OUT/pss_by_mapping.txt; screenshots: docs/images/m0-bar*.png"
+echo "pss by mapping: $OUT/pss_by_mapping.txt; screenshots: $OUT/m0-bar*.png"
 
 kill "$STRAND_PID" 2>/dev/null || true
 STRAND_PID=

@@ -1,7 +1,6 @@
 //! S-ipc: the D-Bus front end (`io.github.jakeb_grant.Strand` at `/`,
 //! `strand_services::ipc_bus`) of a headless `strand run` on the real
-//! services and a private `dbus-daemon` (docs/m5-plan.md, "S-ipc",
-//! tests; "Test realism": a private bus only, and two instances on one
+//! services and a private `dbus-daemon` (a private bus only, and two instances on one
 //! bus for the name collision):
 //!
 //! - `get`, `set`, `toggle`, `call`, `clear` and `reload` as methods,

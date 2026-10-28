@@ -708,8 +708,8 @@ fn a_lone_radius_glow_springs_in_the_nodes_colour() {
     assert!(red(buf.px(24, 40)), "settled: {:?}", buf.px(24, 40));
 }
 
-/// A text's solid `fill:` springs like the other drawn props (m4-plan:
-/// newly drawn props join the springs).
+/// A text's solid `fill:` springs like the other drawn props (newly
+/// drawn props join the springs).
 #[test]
 fn a_solid_text_fill_springs() {
     use std::time::Duration;
@@ -1333,8 +1333,8 @@ fn no_gpu() -> Renderer {
     r
 }
 
-/// m4-plan: "Before the GPU path, particles cap at 1,000 and aurora is
-/// static, with a notice." Without a GPU, aurora alone runs no clock and
+/// Without the GPU path, particles cap at 1,000 and aurora is static,
+/// with a notice. Without a GPU, aurora alone runs no clock and
 /// draws the same still frame at any time; the renderer says once that
 /// aurora is still and, when `rate × life` passes 1,000, that particles
 /// are capped. (With one they are the GPU's: `tests/gpu.rs`.)

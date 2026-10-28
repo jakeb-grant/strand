@@ -4,7 +4,7 @@
 # takes the prompt on stdin and runs in OUT (for example `claude -p`
 # with its tools limited to OUT). Its transcript goes to OUT/session.log.
 # Never run by CI or by an agent on its own: a rehearsal is started by
-# a person (docs/m5-plan.md).
+# a person.
 set -euo pipefail
 OUT=${1:?usage: run.sh OUT}
 CMD=${AGENT_PROXY_CMD:?set AGENT_PROXY_CMD to the session command}

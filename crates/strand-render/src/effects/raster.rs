@@ -159,9 +159,9 @@ impl Built {
     }
 }
 
-/// An effect the CPU draws in place of the GPU's version (m4-plan: "Before
-/// the GPU path, particles cap at 1,000 and aurora is static, with a
-/// notice").
+/// An effect the CPU draws in place of the GPU's version (without the
+/// GPU path, particles cap at 1,000 and aurora is static, with a
+/// notice).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Fallback {
     Aurora,

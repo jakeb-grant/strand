@@ -230,7 +230,7 @@ advance the clock.
   allowed), each 15 px (as libinput's legacy wheel, decisions.md
   wave3-pixels; the sandbox's own `NOTCH_PX`, so the reduced-fling bound
   does not follow the product's constant), as one axis frame from a wheel: each notch springs the offset
-  from where the last one aims (m4-plan.md "Lists": wheel steps spring).
+  from where the last one aims (wheel steps spring).
 - `swipe DY over MS` moves a touchpad's fingers `DY` logical px over `MS`,
   one axis frame a tick, and lifts them with the last frame (`axis_stop`):
   the offset follows the fingers at once, and a lift while they move

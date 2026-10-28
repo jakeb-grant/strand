@@ -1,5 +1,4 @@
-//! `strand export json` and `base24` (decisions.md m5-tools, "the CLI";
-//! m5-plan S-palette): the json golden from `catppuccin:mocha`, every
+//! `strand export json` and `base24` (decisions.md m5-tools, "the CLI"): the json golden from `catppuccin:mocha`, every
 //! value kind, base24's round trips and overlays reaching both.
 //!
 //! `STRAND_BLESS=1` rewrites the golden.

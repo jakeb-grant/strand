@@ -4,7 +4,7 @@
 # default features). Each binary is built exactly as budgets.rs's gate
 # test builds it (`cargo test --release -p strand --test budgets`, fat
 # LTO, the workspace's per-package opt-levels), so the `.text` figure is
-# the gate's figure (docs/m5-plan.md, "How size is measured").
+# the gate's figure.
 #
 # Usage: scripts/container/run.sh scripts/size-report.sh   (re-execs
 #        itself through run.sh when started outside the container)

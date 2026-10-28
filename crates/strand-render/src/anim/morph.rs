@@ -1,7 +1,7 @@
 //! (M4) Shared-element morph (design.md, "Motion and time": `morph:
 //! "media"` on both nodes, "so the bar's media pill becomes the media
-//! panel"; m4-plan: "Morph across surfaces needs surface origins, else
-//! falls back to the enter pose").
+//! panel"; across surfaces it needs their origins, else it falls back to
+//! the enter pose).
 //!
 //! Render remembers where each `morph` name was last drawn (the node's
 //! box with its paint offsets, logical pixels on its surface), as each

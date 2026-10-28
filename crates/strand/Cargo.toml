@@ -73,7 +73,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 log = { version = "0.4.34", features = ["std"] }
 # `no_thp`: mimalloc v3 madvises its arenas for transparent huge pages,
 # which (THP in `madvise` mode) made 2 MiB pages resident for a few KiB
-# of heap: 55 MB PSS for the design bar instead of about 22 (docs/m2-report.md).
+# of heap: 55 MB PSS for the design bar instead of about 22 (M2's measurement).
 # With THP in `always` mode the kernel does so unasked: `main` turns THP
 # off for the process (rustix `thread`: `PR_SET_THP_DISABLE`).
 mimalloc = { version = "0.1.52", default-features = false, features = ["no_thp"] }

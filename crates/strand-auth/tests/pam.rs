@@ -1,4 +1,4 @@
-//! Tier A (docs/m4-plan.md, "Lock fails closed under faults"): the real
+//! Tier A (M4's "lock fails closed under faults"): the real
 //! helper against private PAM stacks (`pam_start_confdir`, through the
 //! `faults` feature's `STRAND_AUTH_PAM_CONFDIR`), never the host's PAM.
 //! `pam_permit`, `pam_deny` and `pam_exec` stand in for real modules;

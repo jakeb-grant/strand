@@ -1,5 +1,4 @@
-//! S-tools: `strand report [--json]` (m5-plan, S-tools) against `strand
-//! run` on a headless sway with two outputs, running the shell `strand
+//! S-tools: `strand report [--json]` against `strand run` on a headless sway with two outputs, running the shell `strand
 //! new` writes (the guide's hello bar, with the label the desk waits
 //! on), so it also shows the new shell running on both outputs: every
 //! section is there (compositor and globals with versions, outputs and

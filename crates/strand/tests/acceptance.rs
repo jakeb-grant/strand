@@ -1649,8 +1649,7 @@ fn the_hello_bar_alone_is_laid_out_and_themed() {
     assert!(desk.errors().is_empty(), "{:?}", desk.errors());
 }
 
-/// `strand new`'s shell checks and runs on two outputs (m5-plan, S-tools:
-/// "the new shell checks and runs on two outputs (grim refs)"): the
+/// `strand new`'s shell checks and runs on two outputs (grim refs): the
 /// binary writes it into an empty directory, `strand check` passes it,
 /// and `strand run` draws it on both outputs against references, on the
 /// acceptance mock, whose clock is frozen at 09:41 and whose focused

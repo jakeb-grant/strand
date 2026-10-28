@@ -1,5 +1,4 @@
-//! The freeze review of `docs/spec.md` (m5-plan, "Language spec frozen";
-//! decisions.md m5-docs, "spec.md marks what it cannot pin down"): each
+//! The freeze review of `docs/spec.md` (decisions.md m5-docs, "spec.md marks what it cannot pin down"): each
 //! point the draft marked **(unverified)** is settled here by what the
 //! checker and the runtime do, and spec.md states it.
 //!

@@ -212,8 +212,8 @@ screen_scale = 2.0
 [[effect]]
 name = "scroll"
 about = """a short list beside the popup's anchor is scrolled by the wheel, two
-notches in quick steps and one back during the spring (m4-plan.md
-"Lists": wheel steps spring), then flicked on the touchpad, which flings
+notches in quick steps and one back during the spring (wheel steps
+spring), then flicked on the touchpad, which flings
 it on into the list's end (a fling stops there), or with motion reduced
 stops it where the fingers lift
 (eval-coverage-4)"""

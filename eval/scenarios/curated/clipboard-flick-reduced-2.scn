@@ -3,8 +3,8 @@ about  = """A clipboard history panel at scale 2 with motion reduced: its list o
 fourteen entries, 200 px tall with its bottom edge faded (`mask: fade(bottom,
 24)`, design.md "Filters and compositing"), is turned by two wheel notches
 that land at once, flicked down on the touchpad and back up, then motion is
-turned on again and the same flick flings (m4-plan.md "Lists": touchpad
-flings decay; renderer/lists.rs `scroll_input`: under `reduced_motion` the
+turned on again and the same flick flings (touchpad flings
+decay; renderer/lists.rs `scroll_input`: under `reduced_motion` the
 wheel lands at once and nothing flings, the offset following the fingers
 alone). The flicks are short, so the rows in view before a lift stay
 mounted after it, and where the list stops is held to where the fingers

@@ -1,7 +1,7 @@
 //! `strand get [--json] <path>` and `strand toggle <path>` (S-ipc): the
 //! CLI's side, and the values as an answer carries them.
 //!
-//! `get` reads what `set` writes (docs/m5-plan.md, "S-ipc"; decisions.md
+//! `get` reads what `set` writes (decisions.md
 //! m5-ipc): an exported `state` or `let` (or a field of one), a settings
 //! field, or a token with the token spelling (`'$accent'`, m5-owner Q10),
 //! the overlay included. The answer is `{"ok": true, "value": …, "text":

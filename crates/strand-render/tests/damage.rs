@@ -2120,7 +2120,7 @@ fn physical_box(r: &Renderer, id: NodeId, s: Scale, m: i32) -> Rect {
 /// equals a full one. Per output the tick stays within design.md's
 /// "about 60×20 px" (scaled by scale²); summed over a 1× and a 1.25×
 /// output it is over M0's 2,000 px², the documented midnight exception
-/// (decisions.md, wave3-pixels exit fixer r3; m2-report.md).
+/// (decisions.md, wave3-pixels exit fixer r3).
 #[test]
 fn the_midnight_tick_damages_only_the_centred_clock() {
     let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Mon"];

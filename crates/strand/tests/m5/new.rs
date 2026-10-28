@@ -1,4 +1,4 @@
-//! S-tools: `strand new [dir]` (m5-plan, S-tools): the guide's level-1
+//! S-tools: `strand new [dir]`: the guide's level-1
 //! hello bar written into a new or empty directory (the default
 //! `$XDG_CONFIG_HOME/strand`), which `strand check` passes; a directory
 //! with anything in it is refused and left as it was, and the template

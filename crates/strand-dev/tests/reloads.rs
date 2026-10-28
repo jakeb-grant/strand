@@ -1,5 +1,4 @@
-//! "Extract component" and live reload (design.md, "Identity and state";
-//! m5-plan, S-lsp): the extracted subtree lives under a new component, so
+//! "Extract component" and live reload (design.md, "Identity and state"): the extracted subtree lives under a new component, so
 //! its state resets on the reload that commits the edit (the action's
 //! title says so), and nothing outside it does.
 //!

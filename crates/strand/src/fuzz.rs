@@ -70,7 +70,7 @@
 //! the seed (decimal or `0x` hex, as printed), `STRAND_FUZZ_MAX_GAP_MS`
 //! the longest delete-to-create gap (25); the directory is `/dev/shm`
 //! when it is there (tmpfs), `STRAND_FUZZ_DIR` overrides it. The
-//! 10,000-edit run is the nightly CI job (`docs/m1-report.md`).
+//! 10,000-edit run is the nightly CI job.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};

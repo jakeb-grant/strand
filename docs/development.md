@@ -12,8 +12,8 @@ live beside this file:
 - `decisions.md`: one dated paragraph per decision;
 - `eval.md`: the animation evaluation sandbox;
 - `live-examples.md`: the site's in-browser examples;
-- the milestone plans and reports (`m0-report.md` … `m5-report.md`),
-  `handoff.md`, `benchmarks.md` and `size-baseline.md`, as history;
+- `benchmarks.md`: measured numbers, updated by hand, so they go
+  stale (the gates themselves are tests);
 - `owner-testing.md`: findings from hands-on testing.
 
 ## Layout
@@ -217,5 +217,5 @@ mutants run nightly (`.github/workflows/eval-matrix.yml`); a report's
 `scripts/m0-exit.sh` and `scripts/m2-exit.sh` measure the memory, idle
 and damage gates over whole minutes on a release build (the M0 demo and
 design.md's bar, and the full shell with the launcher open).
-`scripts/m3-shots.sh` takes the M3 report's screenshots of the full
-shell on the real services.
+`scripts/m3-shots.sh` takes screenshots of the full shell on the real
+services.

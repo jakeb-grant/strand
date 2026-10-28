@@ -1,6 +1,6 @@
 //! The tree-sitter grammar (`tree-sitter-strand`) against the compiler's
-//! parser, which is the language (m5-plan, S-lsp; Risk 10, "tree-sitter
-//! drifts from the parser"):
+//! parser, which is the language (so the
+//! grammar cannot drift from the parser):
 //! - every `.strand` file in the repository the parser accepts (the design
 //!   fixtures, the test configs, the template, the negative fixtures that
 //!   are only checker errors) and every guide block parses without an

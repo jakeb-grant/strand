@@ -3,7 +3,7 @@ about  = """list-swipe's list, flung into its end by a fast touchpad swipe
 (`swipe 400 over 50ms`: far more than the rows left), where the offset
 stops (Strand has no overscroll: offsets clamp at either end), then
 flung back up by a swipe the other way, its speed decaying until it
-stops by itself (m4-plan.md "Lists": touchpad flings decay)."""
+stops by itself (touchpad flings decay)."""
 screen = { width = 300, height = 600, scale = 1.0 }
 
 === shell.strand

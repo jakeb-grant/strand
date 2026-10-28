@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # prepare.sh [OUT]: a workspace for one agent-proxy rehearsal of the
-# newcomer exit (docs/m5-plan.md, "Newcomer builds a multi-monitor bar
+# newcomer exit (features.md, M5: "Newcomer builds a multi-monitor bar
 # in 15 minutes", layer 2; advisory, gates nothing).
 #
 # OUT (default target/agent-proxy/<UTC time>, inside the checkout so the

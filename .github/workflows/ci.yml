@@ -75,7 +75,7 @@ jobs:
       - run: cargo build -p strand --no-default-features
       # Targets behind a non-default feature (strand's `[[test]] lock`
       # needs `faults`, and so does run/lock.rs's fault module) are out
-      # of the default build: lint them too (m4-plan, "Feature legs").
+      # of the default build: lint them too.
       - run: cargo clippy --workspace --all-targets --all-features
       # The tree-sitter CLI: a pinned prebuilt release checked by its
       # sha256, in this job only (no cargo install, nothing in the other
@@ -195,13 +195,13 @@ jobs:
       - run: cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
         env:
           STRAND_LEDGER_FILE: ${{ runner.temp }}/ledger
-      # M5's size ledger line (docs/m5-plan.md, "How size is measured"):
+      # M5's size ledger line (scripts/container/ledger.sh):
       # both builds' .text against the gates and M4's baseline, in the
       # log and the job summary.
       - name: Size ledger
         if: always()
         run: scripts/container/ledger.sh "$RUNNER_TEMP/ledger"
-      # M5's human trials (docs/m5-plan.md, "0-infra"; decisions.md
+      # M5's human trials (decisions.md
       # m5-owner Q15, Q20): both release-profile binaries the gates
       # measured, as a workflow artifact. Not a release: no version, tag
       # or notes.
@@ -262,7 +262,7 @@ jobs:
       # ignored in debug builds.
       # 50 edits each so p95 is not the worst of 20 samples (the token
       # gate's headroom is thin: 1.6 ms at p95 in GitHub run 37647946808,
-      # 0.5 ms in a reviewer's local run; see docs/m1-report.md).
+      # 0.5 ms in a reviewer's local run).
       - run: scripts/container/tests-ran.sh cargo test --profile timing -p strand --lib reload_latency -- --nocapture --test-threads=1
         env:
           STRAND_LATENCY_ROUNDS: "50"

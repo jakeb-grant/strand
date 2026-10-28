@@ -1,5 +1,5 @@
 //! `strand new [dir]` (S-tools; design.md, "`strand new` scaffolds a
-//! working shell"; m5-plan, S-tools): the guide's level-1 hello bar
+//! working shell"): the guide's level-1 hello bar
 //! (`docs/guide/template/bar.strand`, S-docs') written as `bar.strand`
 //! into `dir`, default `$XDG_CONFIG_HOME/strand`. A directory with
 //! anything in it is refused, so nothing of the user's is overwritten.

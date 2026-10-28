@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The M3 report's screenshots (docs/m3-report.md, docs/images/m3-*.png):
+# The full shell's screenshots (m3-*.png):
 # design.md's full shell (theme, bar, launcher, toasts, OSD; the fixtures
 # byte for byte) in `strand run` on headless sway with the real services,
 # no STRAND_MOCK. The backends are those of crates/strand/tests/budgets.rs:
@@ -18,12 +18,12 @@
 #   m3-osd.png       the OSD raised by `wpctl set-volume` on PipeWire
 #   m3-shell.png     the whole output with all four up
 #
-# Usage: scripts/m3-shots.sh [out dir]   (default: docs/images)
+# Usage: scripts/m3-shots.sh [out dir]   (default: target/m3-shots)
 # Needs sway, grim, dbus-daemon, python3-dbusmock (STRAND_DBUSMOCK_PYTHON
 # picks the interpreter), pipewire and wireplumber.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-OUT=$(realpath -m "${1:-$ROOT/docs/images}")
+OUT=$(realpath -m "${1:-$ROOT/target/m3-shots}")
 mkdir -p "$OUT"
 cd "$ROOT"
 STRAND_SHOTS_DIR="$OUT" STRAND_REQUIRE_SWAY=1 STRAND_REQUIRE_DBUS=1 STRAND_REQUIRE_PIPEWIRE=1 \

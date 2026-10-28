@@ -1,6 +1,6 @@
 //! IPC requests on the logic thread: [`Shell::request`] dispatches each
 //! command to its own module, so the streams that serve M5's commands
-//! own disjoint files (docs/m5-plan.md, "Streams": `get`, `set`,
+//! own disjoint files (`get`, `set`,
 //! `toggle`, `call`, `clear` S-ipc, and in wave 2 `inspect.node`,
 //! `inspect.dump` and `reset{node}` over S-inspect's library; the other
 //! `inspect.*` S-inspect; `report` and `export` S-tools). A command no module serves

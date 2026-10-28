@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M2 budget re-check (docs/m2-report.md): the M0 gates measured again on
+# M2 budget re-check: the M0 gates measured again on
 # design.md's own bar instead of the M0 demo, and the full shell's memory
 # with the launcher open against design.md's 59-64 MB estimate. Headless
 # sway with two 2560x1440 outputs (HEADLESS-1 at scale 1.0, HEADLESS-2 at

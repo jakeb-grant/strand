@@ -1,5 +1,5 @@
-//! The theming hub's palette half (decisions.md m5-tools; m5-plan
-//! S-palette): the 13 hue roles, filled from the source or harmonised
+//! The theming hub's palette half (decisions.md
+//! m5-tools): the 13 hue roles, filled from the source or harmonised
 //! toward the accent; the extras and identity every importer keeps; the
 //! persisted file's `name` and `extra` lines.
 

@@ -1,5 +1,5 @@
 //! S-ipc: `strand get | set | toggle | call | clear` over the socket,
-//! against a headless `strand run` (docs/m5-plan.md, "S-ipc", tests):
+//! against a headless `strand run` :
 //!
 //! - under `STRAND_MOCK`: `get` (text and `--json` with the layer),
 //!   `toggle` (and its refusal of a non-bool), and the token overlay:

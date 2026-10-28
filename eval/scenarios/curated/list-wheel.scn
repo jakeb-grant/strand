@@ -1,6 +1,6 @@
 id     = "list-wheel"
 about  = """A list of twenty rows scrolled by a wheel (`scroll N` is N notches of
-15 px; m4-plan.md "Lists": wheel steps spring): one notch springs the offset from where it is;
+15 px; wheel steps spring): one notch springs the offset from where it is;
 notches arriving while it springs retarget it from its target, not from
 the offset drawn; a notch back up during the spring reverses it in
 place; scrolling far past either end clamps there (Strand has no

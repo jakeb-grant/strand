@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The M5 size ledger line (docs/m5-plan.md, "How size is measured"):
+# The M5 size ledger line:
 # crates/strand/tests/budgets.rs's `.text` gate test adds each release
 # build's half to STRAND_LEDGER_FILE ("cpu ..." or "gpu ..."); this
 # prints them as one line, and adds it to the GitHub job summary when

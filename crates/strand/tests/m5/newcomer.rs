@@ -1,5 +1,5 @@
-//! S-docs: the newcomer exit's automated layers (m5-plan, "Newcomer
-//! builds a multi-monitor bar in 15 minutes").
+//! S-docs: the newcomer exit's automated layers ("Newcomer builds a
+//! multi-monitor bar in 15 minutes", features.md M5).
 //!
 //! - `the_guide_builds_bar_a_on_two_outputs` (layer 1, a gate): a fresh
 //!   `$HOME`, `strand new`, then `strand run` on a headless sway with two
@@ -58,7 +58,7 @@ const LAYOUT: (u32, u32) = (2560 + 1536, 1440);
 const BAR_1: Rect = rect(0, 0, 2560, 64);
 const BAR_2: Rect = rect(0, 0, 1920, 80);
 
-/// The whole test's budget in the container (m5-plan).
+/// The whole test's budget in the container.
 const BUDGET: Duration = Duration::from_secs(120);
 
 /// A wall-clock gate's miss (`scripts/container/gate-misses.sh`).

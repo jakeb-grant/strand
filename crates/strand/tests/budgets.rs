@@ -148,12 +148,6 @@ const FULL_SHELL_KB: u64 = 324 * 1024;
 /// The warm debug bar measured 269,462 kB (the cold one 75,166 kB under
 /// its 96 MiB): a ceiling 25 MB over it, the cold one's headroom.
 const DEBUG_PSS_CEILING_KB: u64 = 288 * 1024;
-/// The gates the owner confirmed in M3 (decisions.md wave4-core), which
-/// docs/m3-report.md records; the ones in force are above.
-const M3_PSS_TARGET_KB: u64 = 34 * 1024;
-const M3_PSS_GATE_KB: u64 = 38 * 1024;
-const M3_FULL_SHELL_TARGET_KB: u64 = 64 * 1024;
-const M3_FULL_SHELL_KB: u64 = 70 * 1024;
 /// The environment requires a GPU device (CI's lavapipe tier): the warm
 /// device must be up.
 fn gpu_required() -> bool {
@@ -1920,13 +1914,13 @@ fn the_full_shell_on_the_real_services_is_measured() {
     );
 }
 
-/// docs/images/m3-*.png (`scripts/m3-shots.sh`): the full shell on the
+/// `scripts/m3-shots.sh`'s screenshots: the full shell on the
 /// real services with only the machine's apps, every check of
 /// `full_shell` made, and HEADLESS-1 saved at each step into
 /// `$STRAND_SHOTS_DIR`: the bar, the launcher, the toasts, the OSD and
 /// the whole output with all four up.
 #[test]
-#[ignore = "writes the M3 report's screenshots: scripts/m3-shots.sh"]
+#[ignore = "writes the full shell's screenshots: scripts/m3-shots.sh"]
 fn the_m3_screenshots() {
     let dir = PathBuf::from(
         std::env::var_os("STRAND_SHOTS_DIR").expect("STRAND_SHOTS_DIR names where the shots go"),
@@ -2460,97 +2454,6 @@ fn release_opt_levels_reads_release_sections_only() {
     assert_eq!(levels["quoted"], "s");
 }
 
-/// The `## <name>` section of a Markdown report, heading excluded.
-fn report_section<'a>(report: &'a str, name: &str) -> &'a str {
-    let heading = format!("\n## {name}\n");
-    let Some(start) = report.find(&heading) else {
-        return "";
-    };
-    let body = &report[start + heading.len()..];
-    &body[..body.find("\n## ").unwrap_or(body.len())]
-}
-
-/// docs/m3-report.md states the memory gates M3 closed with, as the
-/// owner confirmed them (decisions.md wave4-core, commit 607bd10): the
-/// bar's 34 MB target and 38 MB ceiling and the full shell's 64 / 70 MB
-/// are named in the result table, the Memory section cites the
-/// confirmation and no sentence of it calls them unconfirmed, and the
-/// Open list does not carry them as awaiting the owner.
-#[test]
-fn the_report_states_the_owner_confirmed_memory_gates() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/m3-report.md");
-    let report = std::fs::read_to_string(path).unwrap();
-    let mb = |kb: u64| kb / 1024;
-    let row = |prefix: &str| {
-        report
-            .lines()
-            .find(|line| line.starts_with(prefix))
-            .unwrap_or_else(|| panic!("m3-report.md has no {prefix:?} row"))
-    };
-    let bar = row("| Memory: design.md's bar");
-    let bar_gate = format!(
-        "{} MB target (warns), {} MB ceiling (fails), owner-confirmed",
-        mb(M3_PSS_TARGET_KB),
-        mb(M3_PSS_GATE_KB)
-    );
-    assert!(bar.contains(&bar_gate), "{bar}\nlacks {bar_gate:?}");
-    let full = row("| Memory: full shell");
-    let full_gate = format!(
-        "{} MB target, {} MB ceiling, owner-confirmed",
-        mb(M3_FULL_SHELL_TARGET_KB),
-        mb(M3_FULL_SHELL_KB)
-    );
-    assert!(full.contains(&full_gate), "{full}\nlacks {full_gate:?}");
-
-    let numbers = [
-        mb(M3_PSS_TARGET_KB),
-        mb(M3_PSS_GATE_KB),
-        mb(M3_FULL_SHELL_TARGET_KB),
-        mb(M3_FULL_SHELL_KB),
-    ];
-    let names_a_gate = |text: &str| {
-        text.contains("targets and ceilings")
-            || numbers.iter().any(|n| {
-                text.contains(&format!("{n} MB"))
-                    || text.contains(&format!("{n}/"))
-                    || text.contains(&format!("/{n}"))
-            })
-    };
-    let memory = report_section(&report, "Memory").split_whitespace();
-    let memory = memory.collect::<Vec<_>>().join(" ");
-    assert!(
-        memory.contains("owner-confirmed") && memory.contains("decisions.md wave4-core"),
-        "the Memory section does not cite the owner's confirmation (decisions.md wave4-core)"
-    );
-    let unconfirmed: Vec<&str> = memory
-        .split(". ")
-        .filter(|s| names_a_gate(s))
-        .filter(|s| {
-            s.contains("not explicitly confirmed")
-                || s.contains("await")
-                || (s.contains(" not ") && s.contains("confirm"))
-        })
-        .collect();
-    assert!(
-        unconfirmed.is_empty(),
-        "the Memory section calls the owner-confirmed gates unconfirmed: {unconfirmed:#?}"
-    );
-
-    let open = report_section(&report, "Open");
-    let pending: Vec<String> = open
-        .split("\n- ")
-        .map(|item| item.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|item| {
-            names_a_gate(item)
-                && !(item.contains("owner-confirmed") || item.contains("owner confirmed"))
-        })
-        .collect();
-    assert!(
-        pending.is_empty(),
-        "the Open list carries the owner-confirmed memory gates as pending: {pending:#?}"
-    );
-}
-
 /// design.md budgets 10–14 MB for "code and libraries touched", and the
 /// two-monitor bar's code is resident close to its whole `.text` where
 /// the page cache maps large folios (decisions.md, wave4-exitMemory):
@@ -2578,7 +2481,7 @@ fn the_release_binary_code_stays_within_its_gate() {
     notice(&format!(
         "strand's .text: {text} bytes (gate {gate}, {build})"
     ));
-    // The M5 ledger (docs/m5-plan.md, "How size is measured"): each build
+    // The M5 ledger: each build
     // adds its half to STRAND_LEDGER_FILE, and scripts/container/ledger.sh
     // prints the line once both builds ran (CI's budgets job, run.sh ci).
     let gpu = cfg!(feature = "gpu");
@@ -2605,7 +2508,7 @@ fn the_release_binary_code_stays_within_its_gate() {
 
 /// The M5 ledger's baselines: M4's merged release `.text`
 /// (decisions.md m4-owner-3), CPU-only and GPU builds. Every M5 merge
-/// is read against them (docs/m5-plan.md, "Ledger and allocations").
+/// is read against them.
 const LEDGER_BASELINE_CPU: u64 = 15_657_671;
 const LEDGER_BASELINE_GPU: u64 = 19_041_095;
 

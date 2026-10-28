@@ -1,5 +1,5 @@
-//! The guide's code blocks check (m5-plan, S-docs' tests; written by S-lsp,
-//! decisions.md m5-lsp): applied in page order, each block replacing the
+//! The guide's code blocks check (written by S-lsp, decisions.md
+//! m5-lsp): applied in page order, each block replacing the
 //! file it names, the config after every step has no error and no
 //! warning, and every file in it is already formatted. The `strand new`
 //! template (`docs/guide/template/bar.strand`) passes the same.

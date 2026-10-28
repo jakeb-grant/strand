@@ -1,4 +1,4 @@
-//! Tier C (docs/m4-plan.md): the helper against the real PAM stack
+//! Tier C: the helper against the real PAM stack
 //! (`pam_unix` through the setuid `unix_chkpwd`), **inside the lock VM
 //! only** (`scripts/lockvm/scenarios/pam.sh` runs it as the test user,
 //! `tester`, password `strand-test`). Anywhere else it skips: it must

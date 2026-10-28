@@ -1,4 +1,4 @@
-//! The guide's ladder test (m5-plan, S-docs; spec.md, section 14: one of
+//! The guide's ladder test (spec.md, section 14: one of
 //! the conformance tests that hold the freeze). design.md's learning
 //! ladder says nothing at level N+1 appears in a level-N example, and
 //! decisions.md m5-docs places every construct the ladder's "You learn"

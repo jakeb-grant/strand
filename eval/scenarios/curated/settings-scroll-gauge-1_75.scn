@@ -8,7 +8,7 @@ charging tag whose fill snaps (`~ instant`) while everything else springs; a
 refresh button whose shape morphs from a circle to a cookie while it is busy
 (`shape:` morphs by spring); and a body in a `scroll` (design.md "Layout":
 a container that is not a list) turned by the wheel, two notches in quick
-steps and one back during the spring (m4-plan.md "Lists": wheel steps
+steps and one back during the spring (wheel steps
 spring). The panel closes on its preset mirrored. The header row and the
 gauge never move while the body scrolls (eval-coverage-4: `scroll`, arc
 gauges, `slidefade` and `~ instant` were in no committed scenario or

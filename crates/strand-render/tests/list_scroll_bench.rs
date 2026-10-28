@@ -1,5 +1,4 @@
-//! Smooth 2,000-row scrolling, timed (the M4 exit; docs/m4-plan.md,
-//! "Lists"): a launcher-sized panel (600 × 460) holding a virtualised
+//! Smooth 2,000-row scrolling, timed (the M4 exit): a launcher-sized panel (600 × 460) holding a virtualised
 //! `list` of 2,000 rows (an icon and two lines of text each, as
 //! design.md's launcher draws them), scrolled at injected 60 and 144 Hz
 //! presentation times by a touchpad (the offset follows the fingers, a

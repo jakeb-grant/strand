@@ -3,6 +3,11 @@
 Numbers measured on the dev container. Re-run and update the table when a
 change touches a hot path; note the commit.
 
+**These numbers go stale.** They are updated by hand, so any of them may
+be older than the code it describes; the commit beside each says when it
+was measured. The budgets themselves are enforced by tests, not by this
+file.
+
 ## Reactive graph, 10k nodes (M0)
 
 `cargo bench -p strand-core --bench graph` (release profile: thin LTO, one

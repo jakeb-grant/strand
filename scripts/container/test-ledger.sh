@@ -57,7 +57,7 @@ else
 fi
 
 # The budgets job uploads the two release binaries its gates measure,
-# for M5's human trials (docs/m5-plan.md, "0-infra").
+# for M5's human trials.
 job=$(awk '/^  budgets:$/ {on=1; next} on && /^  [a-z][a-z-]*:$/ {exit} on' \
   "$HERE/../../.github/workflows/ci.yml")
 if grep -q 'trial/strand-gpu"$' <<<"$job" && grep -q 'trial/strand-cpu"$' <<<"$job" &&

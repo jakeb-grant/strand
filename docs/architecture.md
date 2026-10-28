@@ -352,7 +352,7 @@ render. A client whose socket cannot take its output yet gets a write
 source on the logic loop until it is written (no polling); one more
 than 1 MiB behind is dropped.
 
-**M4 additions (planned in docs/m4-plan.md, waves 0a and 0c; as built).** The GPU
+**M4 additions (waves 0a and 0c; as built).** The GPU
 thread, promotion and the surface hand-off are in "`strand-gpu`";
 `run/gpu.rs` is the binary's side of them.
 - `ToLogic::ListWindow { list, first, count }`: the rows a virtualised
@@ -1161,8 +1161,8 @@ the crate used, so paths such as `crate::flatten::pick` are unchanged.
 ## M5 interfaces (wave 0a)
 
 The cross-crate interfaces M5's streams build against, fixed before any
-stream branches (`docs/m5-plan.md`, "0a: interface text", with the
-owner's answers of 2026-10-10, decisions.md m5-owner). Wave 0b lands
+stream branches (with the owner's answers of 2026-10-10, decisions.md
+m5-owner). Wave 0b lands
 them as code with no behaviour change; after that each stream edits only
 its own crate's text here. Names marked "new" do not exist at `70cdc56`.
 
@@ -1212,7 +1212,7 @@ its own crate's text here. Names marked "new" do not exist at `70cdc56`.
     or the template is too large for one request line), a socket request only: the D-Bus front end has
     no `Export` method (decisions.md m5-tools, "the CLI"). Its
     `parse_m5` arm, `Shell::request` arm and handler
-    (`run/request/export.rs`) are S-tools' (m5-plan, Streams).
+    (`run/request/export.rs`) are S-tools'.
   - On the wire a node id (`inspect.node{id}`, `inspect.highlight{id}`,
     `reset{node}`) and `inspect.dump`'s `surface` are opaque strings
     the inspector's own answers spell (S-inspect picks the spelling);
@@ -1913,8 +1913,8 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   service whose file differs from its text logs "stale; run `<binary>
   --write-schemas`".
 - **Schema files** (`strand_compiler::schema::plugins`, a new file
-  `strand-compiler/src/schema/plugins.rs`, std only, owned by S-plugins
-  in m5-plan's strand-compiler list; strand-dev links it through
+  `strand-compiler/src/schema/plugins.rs`, std only, owned by S-plugins;
+  strand-dev links it through
   strand-compiler): `dir()` is `$XDG_DATA_HOME/strand/schemas/`
   (absolute only, else `$HOME/.local/share/strand/schemas/`; neither: no
   plugin schemas); `load(dir) -> (Vec<(PathBuf, String)>, Vec<Warning>)`
@@ -2001,8 +2001,7 @@ accepted: `main.rs`'s dispatch moving into the library, and the stock
   `activation_token` and the input context's route (S-platform, wave
   2), `Shell::builder` (S-plugins, wave 2), and the theming hub's
   pieces (S-palette and S-tools, wave 2; "The theming hub" names each
-  owner). Each then belongs to the stream
-  `docs/m5-plan.md`'s "Streams" table names.
+  owner). Each then belongs to the stream that built it.
 - **Shared dispatch points, merged by the integrator:** each stream adds
   only its own one-line entries to `strand_core::ipc::parse`'s and
   `parse_m5`'s matches, `Shell::request`'s match
@@ -3187,7 +3186,7 @@ re-base, if it needs one, is a dated decisions.md entry.
   aligned in its box at flatten time; only a box narrower than it asks
   for a layout of its (whole-pixel) width (decisions.md, wave3-pixels).
 
-- **M4 vocabulary** (docs/m4-plan.md). S-runtime landed these types in
+- **M4 vocabulary**. S-runtime landed these types in
   wave 0b, with stubs where behaviour is pending, so the streams build
   against them; `strand-compiler/tests/scene_catalogue.rs` checks them
   against builtin.schema (decisions.md, m4-scene). `Prop`
@@ -3813,7 +3812,7 @@ table.
 > and its writer; decisions.md m5-tools, wave 2) are described below as
 > built. `strand new` and `strand report` were built in a later slot
 > (decisions.md m5-tools, "`strand new` and `strand report`"). Two streams
-> build it (m5-plan, Streams): **S-palette** owns the strand-theme and
+> build it: **S-palette** owns the strand-theme and
 > strand-scene parts, **S-tools** the strand-compiler, strand-core and
 > binary parts. The design and its reasons are in decisions.md m5-tools
 > ("the owner-approved theming design" and the paragraphs after it).
@@ -5243,7 +5242,7 @@ Public interfaces other crates and later stages build on:
     instance's id allocator and diff, and survive reloads (hard ones
     too); input on them is the caller's.
 
-- **M4 additions** (planned; docs/m4-plan.md).
+- **M4 additions** (planned).
   - Shaders (`check/shaders.rs`, feature `shaders`, on by default): a
     `shader "x.wgsl"` file is read by the loader, registered with the
     watcher as `Role::Shader` (`Instance` reports it with the other
@@ -5678,7 +5677,7 @@ and the connection):
   (innermost first, as any surface's are), and it is not shown again until
   its spec closes. `Painter::blur_region` is read for the blur ladder
   (M4, below).
-- **M4 additions** (docs/m4-plan.md). 0b landed the host hooks as no-op
+- **M4 additions**. 0b landed the host hooks as no-op
   defaults (`compositor_caps`, `gpu_release`, `lock_changed(LockState)`,
   `LockState` beside `SurfaceHost`); the manager calls them as the
   streams below build their parts.
@@ -5972,7 +5971,7 @@ hand-off between `wl_shm` and the GPU thread's WSI).
 
 ### `strand-gpu`
 
-(M4; docs/m4-plan.md wave 0c, from the wave-0 spike: decisions.md,
+(M4 wave 0c, from the wave-0 spike: decisions.md,
 m4-gpu-spike; the backend landed in m4-gpu-w2, the bundled effects in
 m4-gpu-effects.) The GPU backend is in every build and falls back to the
 CPU (decisions.md, m4-owner). vello_cpu into `wl_shm` draws every still
@@ -7753,7 +7752,7 @@ transparent huge pages for life.
   `audio.*` at the schema's defaults (its schema text is left out of
   `strand_services::schemas()`).
 
-- **M4 additions** (planned; docs/m4-plan.md). One owner per file: tray
+- **M4 additions** (planned). One owner per file: tray
   to S-surface, auth to S-lock, audio and wm to S-effects.
   - `auth` stops being provisional (`services/auth.rs`, as built in
     M4 wave 1): its schema is `strand-services-schema/src/auth.schema`

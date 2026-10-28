@@ -176,7 +176,7 @@ step "random_edits_through_five_save_styles (STRAND_FUZZ_MAX_GAP_MS=20)" 60 \
 
 job=budgets
 # M5's size ledger: the .text gate test adds each build's half here, and
-# ledger.sh prints the line after the job (docs/m5-plan.md).
+# ledger.sh prints the line after the job.
 export STRAND_LEDGER_FILE=$LOGS/ledger
 step "cargo test --release -p strand --test demo" 60 \
   cargo test --release -p strand --test demo
