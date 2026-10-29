@@ -462,6 +462,26 @@ impl Sway {
         (info.width, info.height, rgba)
     }
 
+    /// The output once `f` holds in it: the window answers a command
+    /// before it draws, and draws only when sway is done with its last
+    /// frame, so a shot right after may still hold the one before.
+    fn grim_until(
+        &self,
+        path: &Path,
+        what: &str,
+        f: impl Fn(&(u32, u32, Vec<u8>)) -> Result<(), String>,
+    ) -> (u32, u32, Vec<u8>) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let shot = self.grim(path);
+            match f(&shot) {
+                Ok(()) => return shot,
+                Err(e) => assert!(Instant::now() < deadline, "{what}: {e}"),
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     /// The window's content rectangle on the output.
     fn window(&self) -> Option<[i64; 4]> {
         let tree: Json = serde_json::from_str(&self.msg(&["-t", "get_tree", "-r"])?).ok()?;
@@ -774,21 +794,20 @@ fn the_window_runs_on_a_headless_sway() {
     let text = log["text"].as_str().unwrap().to_string();
     assert!(text.contains("pointer 144,20 on bar[0]"), "{text}");
     // The stage shows it: the bar's boxes and the card under the anchor.
-    let shot = sway.grim(&dir.join("open.png"));
     let s2 = app.send("status");
     assert_eq!(s2["stage"], s["stage"], "the stage did not move");
     let (cx, cy) = on_output(win, &s2, [144.0, 66.0]);
-    assert!(
-        near(px(&shot, cx, cy), [0xff, 0xcc, 0x00]),
-        "card: {:?}",
-        px(&shot, cx, cy)
-    );
     let (gx, gy) = on_output(win, &s2, [38.0, 20.0]);
-    assert!(
-        near(px(&shot, gx, gy), [0xff, 0x30, 0x30]) || near(px(&shot, gx, gy), [0x30, 0xc0, 0x60]),
-        "grow: {:?}",
-        px(&shot, gx, gy)
-    );
+    let shot = sway.grim_until(&dir.join("open.png"), "the open popup", |shot| {
+        let (card, grow) = (px(shot, cx, cy), px(shot, gx, gy));
+        if !near(card, [0xff, 0xcc, 0x00]) {
+            return Err(format!("card: {card:?}"));
+        }
+        if !near(grow, [0xff, 0x30, 0x30]) && !near(grow, [0x30, 0xc0, 0x60]) {
+            return Err(format!("grow: {grow:?}"));
+        }
+        Ok(())
+    });
     // The strip is drawn above the stage.
     assert!(near(px(&shot, win[0] + 2, win[1] + 2), [0x1c, 0x1d, 0x24]));
 
@@ -839,13 +858,15 @@ fn the_window_runs_on_a_headless_sway() {
     app.send("step 120");
     let s = app.send("status");
     assert_eq!(s["queued"], 0, "{s}");
-    let shot = sway.grim(&dir.join("reloaded.png"));
     let (nx, ny) = on_output(win, &s, [195.0, 20.0]);
-    assert!(
-        near(px(&shot, nx, ny), [0xff, 0x00, 0xff]),
-        "next: {:?} at {nx},{ny}",
-        px(&shot, nx, ny)
-    );
+    sway.grim_until(&dir.join("reloaded.png"), "the reloaded frame", |shot| {
+        let next = px(shot, nx, ny);
+        if near(next, [0xff, 0x00, 0xff]) {
+            Ok(())
+        } else {
+            Err(format!("next: {next:?} at {nx},{ny}"))
+        }
+    });
 
     // 'w' records; `record` again returns its digest.
     input.key("w");
