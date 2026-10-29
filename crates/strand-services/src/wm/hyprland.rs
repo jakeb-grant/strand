@@ -2410,4 +2410,122 @@ mod tests {
         assert_eq!(n.named("old"), Some(-1337));
         assert_eq!(n.named("nope"), None);
     }
+
+    // ---- traffic captured from a live Hyprland 0.57.0 --------------------
+
+    /// One `scripts/capture-hyprland.sh` run on 0.57.0 (2026-10-28,
+    /// SOURCE.txt): numbered workspaces switched, the scratchpad and a
+    /// named workspace `test` made and destroyed, windows opened and
+    /// closed.
+    const LIVE_057: &str = "hyprland-0.57.0-captured";
+
+    fn from_live_057(dir: &str) -> State {
+        let read =
+            |name: &str| crate::wm::captured::fixture(&format!("{LIVE_057}/{dir}/{name}.json"));
+        let mut s = State::default();
+        s.replace(
+            parse_reply("j/monitors", &read("monitors")).unwrap(),
+            parse_reply("j/workspaces", &read("workspaces")).unwrap(),
+            parse_reply("j/clients", &read("clients")).unwrap(),
+            parse_active(&read("activewindow")).unwrap(),
+        );
+        s
+    }
+
+    /// (hypr-057) A live 0.57.0 agrees with the reconstruction: its
+    /// replies are read (a monitor with no special workspace shown names
+    /// it by an empty address and no id), the scratchpad and the named
+    /// workspace come and go by address in the events, each kind is
+    /// handled as 0.56's are, and after the last structural event (a
+    /// window closed) the stream patches the end's replies to themselves.
+    #[test]
+    fn captured_057_session_is_read_by_address() {
+        use Effect::{Changed, Requery};
+        let text = crate::wm::captured::fixture(&format!("{LIVE_057}/events.txt"));
+        let all: Vec<&str> = lines(&text).collect();
+        assert_eq!(all.len(), 335);
+        let start = from_live_057("start");
+        let end = from_live_057("end");
+        let ws = |s: &State| -> Vec<(i64, String)> {
+            let snap = s.snapshot().state;
+            snap.workspaces
+                .iter()
+                .map(|w| (w.id, w.screen.clone()))
+                .collect()
+        };
+        let on = |n: i64| (n, "eDP-1".to_string());
+        assert_eq!(ws(&start), [on(1), on(2), on(3)]);
+        assert_eq!(ws(&end), [on(1), on(2), on(3), on(4)]);
+        assert_eq!(start.snapshot().state.windows.len(), 3);
+        assert_eq!(end.snapshot().state.windows.len(), 4);
+
+        const NOTHING: &[&str] = &[
+            "workspace",
+            "activewindow",
+            "windowtitle",
+            "activespecial",
+            "activespecialv2",
+        ];
+        const PATCHED: &[&str] = &["workspacev2", "activewindowv2", "windowtitlev2"];
+        let mut seen = HashSet::new();
+        for (i, line) in all.iter().enumerate() {
+            let kind = line.split_once(">>").map_or(*line, |(k, _)| k);
+            seen.insert(kind);
+            let e = from_live_057("start").apply_line(line.as_bytes());
+            if STRUCTURAL.contains(&kind) {
+                assert_eq!(e, Requery, "line {i}: {line}");
+            } else if NOTHING.contains(&kind) {
+                assert_eq!(e, Effect::None, "line {i}: {line}");
+            } else {
+                assert!(
+                    PATCHED.contains(&kind),
+                    "line {i}: an unhandled kind: {line}"
+                );
+            }
+        }
+        for line in [
+            "createworkspacev2>>special:magic,special:magic",
+            "activespecialv2>>special:magic,special:magic,eDP-1",
+            "createworkspacev2>>test,test",
+            "workspacev2>>test,test",
+            "destroyworkspacev2>>test,test",
+            "closewindow>>557d709c5730",
+        ] {
+            assert!(all.contains(&line), "the session sent no {line}");
+        }
+        // A switch to a numbered workspace patches the focus; to one not
+        // read yet (the named one, just made), it asks for a read.
+        let mut s = from_live_057("start");
+        assert_eq!(s.apply_line(b"workspacev2>>1,1"), Changed);
+        assert_eq!(
+            s.snapshot()
+                .state
+                .workspaces
+                .iter()
+                .find(|w| w.focused)
+                .map(|w| w.id),
+            Some(1)
+        );
+        assert_eq!(s.apply_line(b"workspacev2>>test,test"), Requery);
+
+        let asks = |l: &str| {
+            let kind = l.split_once(">>").map_or(l, |(k, _)| k);
+            STRUCTURAL.contains(&kind) || kind == "configreloaded"
+        };
+        let last = all
+            .iter()
+            .rposition(|l| asks(l))
+            .expect("a structural event");
+        assert_eq!(all[last], "closewindow>>557d70e0c3f0");
+        let mut s = from_live_057("end");
+        for (i, line) in all[last + 1..].iter().enumerate() {
+            let e = s.apply_line(line.as_bytes());
+            assert!(
+                matches!(e, Effect::None | Changed),
+                "line {} asked for a read: {line} ({e:?})",
+                last + 1 + i
+            );
+        }
+        assert_eq!(s.snapshot(), end.snapshot());
+    }
 }

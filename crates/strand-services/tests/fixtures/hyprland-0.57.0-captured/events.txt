@@ -1,0 +1,335 @@
+activewindow>>google-chrome,Example · page - Google Chrome
+activewindowv2>>557d712c9730
+workspace>>2
+workspacev2>>2,2
+activewindow>>dev.zed.Zed,project — notes.txt
+activewindowv2>>557d708d3100
+workspace>>1
+workspacev2>>1,1
+activewindow>>google-chrome,Example · page - Google Chrome
+activewindowv2>>557d712c9730
+workspace>>2
+workspacev2>>2,2
+activewindow>>dev.zed.Zed,strand — README.md
+activewindowv2>>557d711e13c0
+workspace>>3
+workspacev2>>3,3
+windowtitle>>557d709c5730
+windowtitlev2>>557d709c5730,Ghostty
+openwindow>>557d709c5730,3,com.mitchellh.ghostty,Ghostty
+activewindow>>com.mitchellh.ghostty,Ghostty
+activewindowv2>>557d709c5730
+windowtitle>>557d709c5730
+windowtitlev2>>557d709c5730,user@host:~
+activewindow>>com.mitchellh.ghostty,user@host:~
+activewindowv2>>557d709c5730
+windowtitle>>557d709c5730
+windowtitlev2>>557d709c5730,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d709c5730
+activewindow>>dev.zed.Zed,strand — README.md
+activewindowv2>>557d711e13c0
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d709c5730
+windowtitle>>557d709c5730
+windowtitlev2>>557d709c5730,🔔 ~
+activewindow>>com.mitchellh.ghostty,🔔 ~
+activewindowv2>>557d709c5730
+windowtitle>>557d709c5730
+windowtitlev2>>557d709c5730,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d709c5730
+windowtitle>>557d709c5730
+windowtitlev2>>557d709c5730,hyprctl dispatch renameworkspace 1 hello
+activewindow>>com.mitchellh.ghostty,hyprctl dispatch renameworkspace 1 hello
+activewindowv2>>557d709c5730
+windowtitle>>557d709c5730
+windowtitlev2>>557d709c5730,user@host:~
+activewindow>>com.mitchellh.ghostty,user@host:~
+activewindowv2>>557d709c5730
+windowtitle>>557d709c5730
+windowtitlev2>>557d709c5730,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d709c5730
+windowtitle>>557d709c5730
+windowtitlev2>>557d709c5730,🔔 ~
+activewindow>>com.mitchellh.ghostty,🔔 ~
+activewindowv2>>557d709c5730
+activewindow>>dev.zed.Zed,strand — README.md
+activewindowv2>>557d711e13c0
+createworkspace>>special:magic
+createworkspacev2>>special:magic,special:magic
+activewindow>>,
+activewindowv2>>
+activespecial>>special:magic,eDP-1
+activespecialv2>>special:magic,special:magic,eDP-1
+activespecial>>,eDP-1
+activespecialv2>>,,eDP-1
+activewindow>>dev.zed.Zed,strand — README.md
+activewindowv2>>557d711e13c0
+destroyworkspace>>special:magic
+destroyworkspacev2>>special:magic,special:magic
+activewindow>>com.mitchellh.ghostty,🔔 ~
+activewindowv2>>557d709c5730
+windowtitle>>557d709c5730
+windowtitlev2>>557d709c5730,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d709c5730
+closewindow>>557d709c5730
+activewindow>>dev.zed.Zed,strand — README.md
+activewindowv2>>557d711e13c0
+createworkspace>>4
+createworkspacev2>>4,4
+activewindow>>,
+activewindowv2>>
+workspace>>4
+workspacev2>>4,4
+windowtitle>>557d709c5730
+windowtitlev2>>557d709c5730,New Tab - Google Chrome
+openwindow>>557d709c5730,4,google-chrome,New Tab - Google Chrome
+activewindow>>google-chrome,New Tab - Google Chrome
+activewindowv2>>557d709c5730
+windowtitle>>557d709c5730
+windowtitlev2>>557d709c5730,example.com/search
+activewindow>>google-chrome,example.com/search
+activewindowv2>>557d709c5730
+windowtitle>>557d709c5730
+windowtitlev2>>557d709c5730,Example · search - Google Chrome
+activewindow>>google-chrome,Example · search - Google Chrome
+activewindowv2>>557d709c5730
+activewindow>>dev.zed.Zed,strand — README.md
+activewindowv2>>557d711e13c0
+workspace>>3
+workspacev2>>3,3
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,Ghostty
+openwindow>>557d70e0c3f0,3,com.mitchellh.ghostty,Ghostty
+activewindow>>com.mitchellh.ghostty,Ghostty
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,user@host:~
+activewindow>>com.mitchellh.ghostty,user@host:~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,🔔 ~
+activewindow>>com.mitchellh.ghostty,🔔 ~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,hyprctl eval 'hl.dispatch(hl.dsp.focus({ workspace = "name:test" }))'
+activewindow>>com.mitchellh.ghostty,hyprctl eval 'hl.dispatch(hl.dsp.focus({ workspace = "name:test" }))'
+activewindowv2>>557d70e0c3f0
+createworkspace>>test
+createworkspacev2>>test,test
+activewindow>>,
+activewindowv2>>
+workspace>>test
+workspacev2>>test,test
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,user@host:~
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>dev.zed.Zed,project — notes.txt
+activewindowv2>>557d708d3100
+workspace>>1
+workspacev2>>1,1
+destroyworkspace>>test
+destroyworkspacev2>>test,test
+activewindow>>google-chrome,Example · page - Google Chrome
+activewindowv2>>557d712c9730
+workspace>>2
+workspacev2>>2,2
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+workspace>>3
+workspacev2>>3,3
+activewindow>>google-chrome,Example · search - Google Chrome
+activewindowv2>>557d709c5730
+workspace>>4
+workspacev2>>4,4
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+workspace>>3
+workspacev2>>3,3
+activewindow>>dev.zed.Zed,strand — README.md
+activewindowv2>>557d711e13c0
+activewindow>>google-chrome,Example · page - Google Chrome
+activewindowv2>>557d712c9730
+workspace>>2
+workspacev2>>2,2
+activewindow>>dev.zed.Zed,strand — README.md
+activewindowv2>>557d711e13c0
+workspace>>3
+workspacev2>>3,3
+activewindow>>google-chrome,Example · search - Google Chrome
+activewindowv2>>557d709c5730
+workspace>>4
+workspacev2>>4,4
+activewindow>>dev.zed.Zed,strand — README.md
+activewindowv2>>557d711e13c0
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+workspace>>3
+workspacev2>>3,3
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,🔔 ~
+activewindow>>com.mitchellh.ghostty,🔔 ~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,hyprctl dispatch renameworkspace 1 hello
+activewindow>>com.mitchellh.ghostty,hyprctl dispatch renameworkspace 1 hello
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,user@host:~
+activewindow>>com.mitchellh.ghostty,user@host:~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+activewindow>>google-chrome,Example · search - Google Chrome
+activewindowv2>>557d709c5730
+workspace>>4
+workspacev2>>4,4
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+workspace>>3
+workspacev2>>3,3
+activewindow>>google-chrome,Example · search - Google Chrome
+activewindowv2>>557d709c5730
+workspace>>4
+workspacev2>>4,4
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+workspace>>3
+workspacev2>>3,3
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,🔔 ~
+activewindow>>com.mitchellh.ghostty,🔔 ~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,🔔 ~
+activewindow>>com.mitchellh.ghostty,🔔 ~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,🔔 ~
+activewindow>>com.mitchellh.ghostty,🔔 ~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,🔔 ~
+activewindow>>com.mitchellh.ghostty,🔔 ~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,🔔 ~
+activewindow>>com.mitchellh.ghostty,🔔 ~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,🔔 ~
+activewindow>>com.mitchellh.ghostty,🔔 ~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,🔔 ~
+activewindow>>com.mitchellh.ghostty,🔔 ~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,🔔 ~
+activewindow>>com.mitchellh.ghostty,🔔 ~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,🔔 ~
+activewindow>>com.mitchellh.ghostty,🔔 ~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,🔔 ~
+activewindow>>com.mitchellh.ghostty,🔔 ~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,🔔 ~
+activewindow>>com.mitchellh.ghostty,🔔 ~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,hyprctl eval 'hl.dispatch(hl.dsp.workspace.rename({ id = 1, name = "hello" }))'
+activewindow>>com.mitchellh.ghostty,hyprctl eval 'hl.dispatch(hl.dsp.workspace.rename({ id = 1, name = "hello" }))'
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,user@host:~
+activewindow>>com.mitchellh.ghostty,user@host:~
+activewindowv2>>557d70e0c3f0
+windowtitle>>557d70e0c3f0
+windowtitlev2>>557d70e0c3f0,~
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+activewindow>>dev.zed.Zed,strand — README.md
+activewindowv2>>557d711e13c0
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+activewindow>>dev.zed.Zed,strand — README.md
+activewindowv2>>557d711e13c0
+activewindow>>com.mitchellh.ghostty,~
+activewindowv2>>557d70e0c3f0
+closewindow>>557d70e0c3f0
+activewindow>>dev.zed.Zed,strand — README.md
+activewindowv2>>557d711e13c0
+activewindow>>google-chrome,Example · search - Google Chrome
+activewindowv2>>557d709c5730
+workspace>>4
+workspacev2>>4,4
+activewindow>>dev.zed.Zed,strand — README.md
+activewindowv2>>557d711e13c0
+workspace>>3
+workspacev2>>3,3

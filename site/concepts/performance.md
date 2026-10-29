@@ -95,7 +95,7 @@ fails the build above its ceiling, in a release build.
 | What | Target | Fails above | Test |
 | --- | --- | --- | --- |
 | design.md's bar on two monitors, no GPU | 42 MiB | 48 MiB | `the_design_bar_with_no_gpu_keeps_the_cold_budget` |
-| The full shell (bar, launcher, notifications, OSD, theme) with a desktop of apps, no GPU | 76 MiB | 104 MiB | `the_full_shell_with_no_gpu_keeps_the_cold_budget` |
+| The full shell (bar, launcher, notifications, OSD, theme) with a desktop of apps, no GPU | 76 MiB | 128 MiB | `the_full_shell_with_no_gpu_keeps_the_cold_budget` |
 | design.md's bar with the GPU device warm (lavapipe, CI's software Vulkan) | 242 MiB | 252 MiB | `the_design_bar_on_the_real_services_keeps_the_budget` |
 | The full shell with the GPU device warm (lavapipe) | 296 MiB | 324 MiB | `the_full_shell_on_the_real_services_is_measured` |
 

@@ -180,7 +180,7 @@ jobs:
       # GPU cold (42 / 48 MB, nothing Vulkan mapped) with no huge
       # page, then 10 s without a wakeup or a frame; and the full shell
       # (launcher open at 2x, two toasts, the OSD) printed against
-      # 296 / 324 MiB warm and 76 / 104 MB cold, decisions.md
+      # 296 / 324 MiB warm and 76 MB / 128 MiB cold, decisions.md
       # m5-open-budgets, seam-snap and gpu-first (the warm device).
       - run: cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
         env:

@@ -1,0 +1,40 @@
+[{
+    "address": "1",
+    "id": 1,
+    "type": "normal",
+    "name": "1",
+    "monitor": "eDP-1",
+    "monitorID": 0,
+    "windows": 1,
+    "hasfullscreen": false,
+    "lastwindow": "0x557d708d3100",
+    "lastwindowtitle": "project — notes.txt",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+},{
+    "address": "2",
+    "id": 2,
+    "type": "normal",
+    "name": "2",
+    "monitor": "eDP-1",
+    "monitorID": 0,
+    "windows": 1,
+    "hasfullscreen": false,
+    "lastwindow": "0x557d712c9730",
+    "lastwindowtitle": "Example · page - Google Chrome",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+},{
+    "address": "3",
+    "id": 3,
+    "type": "normal",
+    "name": "3",
+    "monitor": "eDP-1",
+    "monitorID": 0,
+    "windows": 1,
+    "hasfullscreen": false,
+    "lastwindow": "0x557d711e13c0",
+    "lastwindowtitle": "strand — README.md",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+}]

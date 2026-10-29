@@ -57,8 +57,7 @@ natively.
 
 ## Building and testing (the container suite)
 
-Development happens on the owner's laptop, which runs a live Hyprland
-session. Everything builds and tests in Docker images that match CI:
+Everything builds and tests in Docker images that match CI:
 
 ```sh
 scripts/container/run.sh cargo test -p strand-watch   # any command
@@ -88,7 +87,7 @@ scripts/container/lockvm.sh <cmd>  # a command in the lock VM (KVM); CI's lock-v
   (`Dockerfile.matrix`). Hyprland gets only `/dev/dri/renderD128`; CI's
   vkms card needs modprobe, so Hyprland is skipped when it cannot start
   without a KMS card.
-- `gpu.sh` runs a command in the same image with the laptop's real GPU
+- `gpu.sh` runs a command in the same image with the machine's real GPU
   (only `/dev/dri/renderD128`) and its own headless sway; failures WARN
   unless `STRAND_STRICT_GPU=1`. `lockvm.sh` boots the lock VM
   (`Dockerfile.lockvm`, only `/dev/kvm` passed in) and runs a command in
@@ -106,21 +105,12 @@ scripts/container/lockvm.sh <cmd>  # a command in the lock VM (KVM); CI's lock-v
 - When the Dockerfile changes, the image is rebuilt (tagged by its hash);
   edit it together with `.github/workflows/ci.yml`.
 
-## Laptop rules
+## Working rules
 
-- No sudo, no host packages, no host config changes. Docker images,
-  containers and named volumes are fine; host Python only via uv/uvx.
-- Never touch the live Hyprland session (`WAYLAND_DISPLAY=wayland-1`):
-  read-only `hyprctl -j` queries at most, no test clients on it, no
-  compositor on the host. Pass only `/dev/dri/renderD128` into containers
-  (and `/dev/kvm` into the lock VM container only), never `/dev/dri/card*`.
 - Lock-screen code runs only inside the lock VM
   (`scripts/container/lockvm.sh`), never against a host or container
   compositor outside it.
-- Run one full-workspace test run at a time, and at most three worktrees
-  build at once. Delete your worktree's
-  `target/` when your task ends; the cargo registry stays in the
-  `strand-cargo-registry` and `strand-cargo-git` volumes, compiled
-  dependencies in `strand-sccache`.
 - Commit on your own branch and push only that branch after each commit;
   never push `main`, never force-push.
+- Rules for one machine (what may run on its host, its session, its
+  resources) go in a git-ignored `CLAUDE.local.md` beside this file.

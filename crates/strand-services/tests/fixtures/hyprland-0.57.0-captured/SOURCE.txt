@@ -1,0 +1,37 @@
+Hyprland 0.57.0 IPC traffic captured from a live session in one run of
+scripts/capture-hyprland.sh 180: the owner's laptop, Hyprland 0.57.0
+(0aa6745f, version.json) with one panel (eDP-1), 2026-10-28, read-only
+(the script sent no dispatch or eval; the owner ran theirs in a terminal).
+
+start/  the replies to j/monitors, j/workspaces, j/clients and
+        j/activewindow, read while the stream was quiet, before its first
+        line (marks.txt "start 0"). Three windows on workspaces 1-3,
+        workspace 3 focused.
+events.txt  every line of .socket2.sock for 180 s (335 lines).
+end/    the same four replies read after its last line ("end 335"). A
+        fourth workspace with a browser window on it; workspace 3 focused.
+
+What the owner did, in order (the stream shows each): switched between
+numbered workspaces, opened a terminal on 3, showed and hid the
+scratchpad special:magic (made and destroyed), closed the terminal, made
+workspace 4 with a browser on it, opened another terminal, went to a
+named workspace `test` (made, then destroyed when left empty), switched
+around 1-4, and closed the second terminal. A rename was tried through
+`hyprctl eval`; the stream holds no renameworkspace, so it is not covered
+here (the reconstruction, hyprland-0.57.0/renamed, is).
+
+What it confirms of the reconstruction (hyprland-0.57.0/SOURCE.txt): a
+workspace is named by its `address` in replies and in the v2 events
+(`createworkspacev2>>test,test`, `activespecialv2>>special:magic,
+special:magic,eDP-1`); `id` comes with numbered workspaces; a monitor
+showing no special workspace writes `specialWorkspace` with an empty
+address and no id. src/wm/hyprland.rs's captured_057_session_is_read_by_address
+replays it.
+
+Scrubbed, the same way in replies and events: a mail page and a search
+page by "Example · page - Google Chrome" and "Example · search - Google
+Chrome" (a search URL by "example.com/search"), an editor's file by
+"project — notes.txt" and a project name by "project", and the shell
+prompt's user and host by "user@host". Not scrubbed, as captured: window
+classes (public app ids), the hyprctl commands in terminal titles,
+"strand — README.md", addresses, stableIds, pids, the monitor.
