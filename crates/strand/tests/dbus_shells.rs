@@ -532,7 +532,9 @@ fn design_shells_on_the_real_dbus_services() {
     sh.keep("battery-9-low");
 
     // A notification over D-Bus, as an app sends it: a toast at the top
-    // right.
+    // right. The surfaces are counted first: the toast can be drawn
+    // before the call's answer is read.
+    let before = sh.surfaces();
     let id: u32 = call(
         &tokio,
         &conn,
@@ -555,7 +557,6 @@ fn design_shells_on_the_real_dbus_services() {
     .deserialize()
     .unwrap();
     let toasts = |img: &Img| img.count(W - 420..W - 12, 60..200, |p| p != img.px(W - 2, H / 2));
-    let before = sh.surfaces();
     sh.wait("the toast", |s| {
         let img = s.shot();
         s.surfaces() > before && toasts(&img) > 2000

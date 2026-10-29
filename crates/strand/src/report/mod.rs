@@ -23,6 +23,8 @@
 pub(crate) mod bundle;
 pub(crate) mod replay;
 
+use std::time::Duration;
+
 use serde_json::{Value as Json, json};
 use strand_scene::{Backend, GpuStatus};
 use strand_surface::State;
@@ -265,7 +267,10 @@ pub(crate) fn parse_args(args: &[String]) -> Result<(bool, Option<String>), Stri
 pub fn report_cli(args: &[String]) -> Result<String, String> {
     let (json, save) = parse_args(args)?;
     let saving = save.is_some();
-    let answer = crate::ipc::ask(&Request::Report { save })?;
+    // As long as `strand reload`'s wait: the display thread's snapshot,
+    // and with words the bundle's writing, come before the answer, and
+    // take longer on a loaded machine.
+    let answer = crate::ipc::ask_within(&Request::Report { save }, Duration::from_secs(30))?;
     if saving {
         if json {
             return Ok(format!("{answer}\n"));

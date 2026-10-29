@@ -319,7 +319,11 @@ fn auth_checks_through_the_helper_and_only_success_unlocks() {
     // The `login` fallback: a success, and the warning once.
     let h = Harness::start(fake(dir.path(), "login", 1, 0, "0"));
     h.submit("right");
-    h.until("accepted", |h| h.unlocks.load(Ordering::SeqCst) == 1);
+    // Its unlock is delivered before `busy` clears: a submit in between
+    // is dropped as typed while checking.
+    h.until("accepted", |h| {
+        h.unlocks.load(Ordering::SeqCst) == 1 && !h.busy()
+    });
     h.submit("right");
     h.until("accepted again", |h| h.unlocks.load(Ordering::SeqCst) == 2);
     let fallback: Vec<String> = h

@@ -29,8 +29,13 @@ use super::{Request, cli};
 /// Send `req` to the running shell and read its answer; a refusal is
 /// the error.
 pub(crate) fn ask(req: &Request) -> Result<Json, String> {
+    ask_within(req, Duration::from_secs(10))
+}
+
+/// [`ask`], waiting `timeout` at most for the answer.
+pub(crate) fn ask_within(req: &Request, timeout: Duration) -> Result<Json, String> {
     let mut conn = BufReader::new(cli::connect()?);
-    let answer = cli::request(&mut conn, req, Duration::from_secs(10))?;
+    let answer = cli::request(&mut conn, req, timeout)?;
     match strand_core::ipc::refusal(&answer) {
         Some(why) => Err(why),
         None => Ok(answer),

@@ -68,7 +68,7 @@ pub use overlay::clear_cli;
 pub(crate) use overlay::token_path;
 pub use query::{get_cli, toggle_cli};
 // `strand report` asks with it too (S-tools).
-pub(crate) use query::ask;
+pub(crate) use query::ask_within;
 pub(crate) use query::{layer_name, token_json, token_text, value_json};
 pub use server::{ClientId, HasReady, Ready, Server};
 pub use strand_core::ipc::{
