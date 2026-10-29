@@ -480,6 +480,63 @@ fn the_compositor_stores_follow_hyprland() {
     wm::configure(None);
 }
 
+/// (screens-focus) The binary's `screens.focused` follows the focused
+/// screen through the same hub: a follower hears Hyprland's focused
+/// monitor at once, each `focusedmonv2` that moves it (once each, not a
+/// batch that leaves it), and nothing after it is dropped, when the
+/// compositor service it alone held stops.
+#[test]
+fn a_focus_follower_hears_the_focused_screen_while_it_lives() {
+    let _serial = serial();
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let _enter = tokio.enter();
+    let fake = common::hyprland::FakeHyprland::start();
+    wm::configure(Some(WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: None,
+        ..Default::default()
+    }));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let _b = Builtin::register(&s, &rt);
+    let runs = wm::live_runs();
+    let (tx, heard) = std::sync::mpsc::channel();
+    let tx = std::sync::Mutex::new(tx);
+    let follower = wm::follow_focused_screen(&s, move |named| {
+        let _ = tx.lock().unwrap().send(named);
+    });
+    let next = || heard.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(
+        next().as_deref(),
+        Some("DP-1"),
+        "the boot's focused monitor"
+    );
+    assert_eq!(wm::live_runs(), runs + 1, "the follower runs the hub");
+    fake.send("focusedmonv2>>HDMI-A-1,3\n");
+    assert_eq!(next().as_deref(), Some("HDMI-A-1"));
+    // A change that leaves the focused monitor says nothing.
+    fake.send("submap>>resize\n");
+    fake.send("focusedmonv2>>DP-1,1\n");
+    assert_eq!(next().as_deref(), Some("DP-1"));
+    drop(follower);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while wm::live_runs() != runs {
+        assert!(Instant::now() < deadline, "the run outlived its follower");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    fake.send("focusedmonv2>>HDMI-A-1,3\n");
+    assert!(
+        heard.recv_timeout(Duration::from_millis(300)).is_err(),
+        "heard after it was dropped"
+    );
+    s.shutdown();
+    wm::configure(None);
+}
+
 /// The `windows` store with no IPC adapter (sway's turned off, as on
 /// labwc, wayfire or river): `windows.focused` and `win.focus()`/
 /// `win.close()` come from `zwlr_foreign_toplevel_management_v1` on the

@@ -311,7 +311,7 @@ provisional record Screen key id {
   width: float
   /// Its height in logical pixels.
   height: float
-  /// It has keyboard focus.
+  /// It has keyboard focus: it is `screens.focused`.
   focused: bool
 }
 
@@ -963,7 +963,8 @@ provisional service memory {
 provisional service screens {
   /// Every monitor, keyed by `name`.
   all: [Screen]
-  /// The monitor with keyboard focus.
+  /// The monitor with keyboard focus, as the compositor says (Hyprland,
+  /// sway, niri); the first monitor while it says none.
   focused: Screen?
 }
 

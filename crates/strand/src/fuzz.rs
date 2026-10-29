@@ -889,7 +889,7 @@ fn cold_boot(m: &Model, files: &BTreeMap<String, String>, state: &State) -> (Loo
     let build = compile(files).unwrap_or_else(|d| panic!("{d:#?}"));
     let rt = Runtime::new();
     let host = Rc::new(SchemaHost::real(&rt, &build.program.types));
-    set_screens(&rt, &host, &screens());
+    set_screens(&rt, &host, &screens(), None);
     let inst = Instance::from_build(&rt, &build, host, Storage::none());
     let mut scene = SceneMirror::new();
     let mut diffs = vec![inst.flush().diff];

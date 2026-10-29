@@ -490,6 +490,10 @@ name them.
   `ToLogic::Picked(PickEvent::Picked { surface, node, seq })` on a click
   and `PickEvent::Ended { seq }` when it ends pick mode (an unmap, a
   lock). Logic ignores either when `seq` is not its last.
+- (screens-focus) `ToMain::FocusedScreen(Option<String>)`: the
+  `Screen.id` of the monitor the compositor names as focused, sent when
+  it changes; main calls `State::set_focused_monitor` with that monitor
+  (plugged in or remembered), `None` when none is named.
 - Logic names nodes, never surfaces: a `SurfaceId` is main's and a root
   may show on several, so no logic→main message carries one.
 
@@ -1906,7 +1910,8 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   stable per (node, monitor) while the monitor is remembered. The binary
   forwards the `monitor_*` hooks to logic as the `screens` service.
   `screens: focused` is one layer surface created without an output;
-  `State::set_focused_monitor` pins it. An `osd` has an empty input
+  `State::set_focused_monitor` pins it (and moves an open one), which the
+  binary calls from `ToMain::FocusedScreen` (screens-focus). An `osd` has an empty input
   region.
 - **Placement** (`strand_scene::placement`, clamped to ±`MAX_LOGICAL`).
   A spec's `overhang` grows the buffer and moves the margins out,
@@ -2597,9 +2602,16 @@ itself.
   (decisions.md laptop-resilience). Windows carry `app` and `icon` from
   `apps::AppIndex`, read on the blocking pool and refreshed by
   `apps::changed()`. `Window::toplevel` (not a schema field) is the
-  identifier thumbnails capture by. `screens.focused` is set by the
-  binary from its monitors (`run::set_screens`), not from
-  `WmChange::FocusedScreen`. Schema texts:
+  identifier thumbnails capture by. `wm::follow_focused_screen(&Services,
+  Fn(Option<String>)) -> FocusFollower` holds one hub subscription on the
+  services runtime until dropped and calls back with each new
+  `WmChange::FocusedScreen` (a connector name, `None` when none is
+  named). The binary's `screens` (`run/focus.rs`) holds a follower while
+  the program reads the focus (the `screens.focused` cell has an
+  observer, or the program names `Screen.focused`), let go
+  `STOP_GRACE` after the last reader: `screens.focused` and
+  `Screen.focused` are the monitor whose `name` the follower gives, else
+  the first, and main hears it as `ToMain::FocusedScreen`. Schema texts:
   `strand_services_schema::{WINDOWS, WORKSPACES, WM}`.
 
 - **Monitor configuration (`strand_services::outputs`, the `outputs`

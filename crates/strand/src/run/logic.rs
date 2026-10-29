@@ -132,6 +132,9 @@ pub fn logic(
     let files_ping = ping.clone();
     let exec_ping = ping.clone();
     let report_ping = ping.clone();
+    // (screens-focus) `screens`' facts; the compositor's focus wakes the
+    // loop.
+    let mut focus = super::focus::Focus::new(ping.clone());
     let own_writes = live.own_writes;
     // (M5) The request channel from the services thread, drained beside
     // the socket after each sleep; a call's send pings the loop awake.
@@ -222,7 +225,7 @@ pub fn logic(
     let mut early_gpu = Vec::new();
     for msg in inbox.msgs.drain(..) {
         match msg {
-            ToLogic::Screens(list) => set_screens(&rt, &host, &list),
+            ToLogic::Screens(list) => focus.screens(&rt, &host, list, live.to_main.as_ref()),
             ToLogic::Shutdown => stop = true,
             ToLogic::Notice(n) if !host_notices.contains(&n) => host_notices.push(n),
             ToLogic::GpuStatus(s) => early_gpu.push(s),
@@ -309,6 +312,7 @@ pub fn logic(
         written: Default::default(),
         saving: Vec::new(),
         has_lock: false,
+        focus,
     };
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good
@@ -388,6 +392,8 @@ pub fn logic(
         shell.after_diff();
         // (M6) Declared actions' commands, started off this thread.
         shell.run_execs();
+        // (screens-focus) The compositor's focus followed while read.
+        let refocused = shell.follow_focus();
         // (report) `system.replay`, and glitch reports written.
         shell.record_replay();
         shell.reports_written();
@@ -422,6 +428,12 @@ pub fn logic(
         // (M5) An `export` waiting for its other mode is answered at its
         // deadline even when nothing else wakes the loop.
         also(shell.exports_wait(now));
+        // (screens-focus) A follow nobody reads ends at its grace's end;
+        // screens it changed show at once.
+        also(shell.focus.deadline(now));
+        if refocused {
+            also(Some(Duration::ZERO));
+        }
         // A step that closed the lock: the deferred load commits now
         // (no polling while it stays shown: only a step can unlock).
         if (shell.deferred.is_some() || shell.deferred_hard) && !shell.inst.lock_shown() {
@@ -446,6 +458,10 @@ pub fn logic(
         for w in inbox.worker.drain(..) {
             shell.worker(w);
         }
+        // (screens-focus) What the compositor said of its focus meanwhile.
+        shell
+            .focus
+            .reported(shell.inst.runtime(), &shell.host, shell.to_main.as_ref());
         // What the services sent while the loop slept, applied outside
         // handlers (reports are not handler writes) before the next step.
         if let Some(r) = &shell.real

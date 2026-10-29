@@ -19,7 +19,8 @@
 //! the batch is the one that becomes the language event). Dropping the
 //! future stops everything. Actions (`ws.focus()`, `win.close()`, …) go
 //! in through [`WmRequest`]s. [`WmHub`] shares one `run` between the
-//! `workspaces`, `windows` and `wm` stores (and `screens.focused`).
+//! `workspaces`, `windows` and `wm` stores (and the binary's
+//! `screens.focused`, through [`follow_focused_screen`]).
 //!
 //! Lost sockets reconnect with backoff (100 ms doubling to 10 s); while an
 //! adapter is away the last state stays. An adapter that is connected but
@@ -68,8 +69,9 @@ pub use protocol::{
 use protocol::{ProtocolSender, WindowOp};
 pub use schema::{WINDOWS_SCHEMA, WM_SCHEMA, WORKSPACES_SCHEMA};
 pub use service::{
-    WindowAction, WindowItem, WindowRect, Windows, WindowsCells, Wm, WmCells, WmEvent,
-    WorkspaceAction, WorkspaceItem, Workspaces, WorkspacesCells, configure, hub,
+    FocusFollower, WindowAction, WindowItem, WindowRect, Windows, WindowsCells, Wm, WmCells,
+    WmEvent, WorkspaceAction, WorkspaceItem, Workspaces, WorkspacesCells, configure,
+    follow_focused_screen, hub,
 };
 
 /// An action on a workspace or window.

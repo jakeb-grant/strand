@@ -46,7 +46,10 @@ pub(crate) fn on_main(state: &mut State<Host>, msg: ToMain, answer: &Sender<ToLo
             }));
             return;
         }
-        ToMain::Snapshot { .. } | ToMain::Recording(_) | ToMain::Secret(_) => return,
+        ToMain::Snapshot { .. }
+        | ToMain::Recording(_)
+        | ToMain::Secret(_)
+        | ToMain::FocusedScreen(_) => return,
         ToMain::Highlight(node) => host.renderer.set_highlight(node),
         ToMain::DamageFlash(on) => host.renderer.set_damage_flash(on),
         ToMain::PickMode { on, seq } => {

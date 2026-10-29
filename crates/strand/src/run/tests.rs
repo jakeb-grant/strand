@@ -2136,7 +2136,7 @@ fn cold_boot(dir: &Path) -> String {
     let build = out.build.unwrap();
     let rt = Runtime::new();
     let host = Rc::new(SchemaHost::real(&rt, &build.program.types));
-    set_screens(&rt, &host, &[screen("A", "DP-1")]);
+    set_screens(&rt, &host, &[screen("A", "DP-1")], None);
     let inst = Instance::from_build(&rt, &build, host, Storage::none());
     let mut m = SceneMirror::new();
     m.apply(&inst.flush().diff).unwrap();

@@ -573,7 +573,7 @@ Keyed by `id`.
 | `scale` | `float` | Its scale factor. |
 | `width` | `float` | Its width in logical pixels. |
 | `height` | `float` | Its height in logical pixels. |
-| `focused` | `bool` | It has keyboard focus. |
+| `focused` | `bool` | It has keyboard focus: it is `screens.focused`. |
 
 ### `TrayItem`
 

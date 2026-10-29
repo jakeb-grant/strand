@@ -80,6 +80,7 @@ use strand_watch::{CacheKind, Role};
 
 mod exec;
 pub(crate) mod feeds;
+mod focus;
 mod gpu;
 mod lists;
 pub(crate) mod lock;
@@ -213,7 +214,7 @@ impl NodeEvent {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToLogic {
     /// The plugged-in monitors, in plug order (the first counts as
-    /// focused until a compositor service says otherwise).
+    /// focused while the compositor names none: `focus.rs`).
     Screens(Vec<ScreenInfo>),
     /// A monitor unplugged 30 s ago did not come back.
     Forget(String),
@@ -386,6 +387,13 @@ pub enum ToMain {
     /// (`true`) or went: main's input ring pauses meanwhile, as for a
     /// lock.
     Secret(bool),
+    /// (screens-focus) The monitor (its `Screen.id`) the compositor names
+    /// as focused, which `screens.focused` is: main places `screens:
+    /// focused` surfaces and the lock's single instance on it
+    /// (`State::set_focused_monitor`). `None` while the compositor names
+    /// none (`screens.focused` is then the first monitor): the
+    /// compositor places them.
+    FocusedScreen(Option<String>),
 }
 
 /// (M5) What main tells logic about pick mode ([`ToLogic::Picked`]).
@@ -442,8 +450,16 @@ pub struct Snapshot {
     pub bundle: Option<Box<crate::report::bundle::MainBundle>>,
 }
 
-/// The `screens` service fields for `screens`.
-pub(crate) fn set_screens(rt: &Runtime, host: &SchemaHost, screens: &[ScreenInfo]) {
+/// The `screens` service fields for `screens`, `focused` naming the
+/// one with the keyboard focus by its connector (`Screen.name`); while
+/// it is `None` or names none of them, the first (`focus.rs`).
+pub(crate) fn set_screens(
+    rt: &Runtime,
+    host: &SchemaHost,
+    screens: &[ScreenInfo],
+    focused: Option<&str>,
+) {
+    let at = focus::focused_index(screens, focused);
     let records: Vec<Value> = screens
         .iter()
         .enumerate()
@@ -459,12 +475,15 @@ pub(crate) fn set_screens(rt: &Runtime, host: &SchemaHost, screens: &[ScreenInfo
                     ("scale", Value::float(s.scale)),
                     ("width", Value::float(s.width)),
                     ("height", Value::float(s.height)),
-                    ("focused", Value::Bool(i == 0)),
+                    ("focused", Value::Bool(Some(i) == at)),
                 ],
             )
         })
         .collect();
-    let focused = records.first().cloned().unwrap_or(Value::Null);
+    let focused = at
+        .and_then(|i| records.get(i))
+        .cloned()
+        .unwrap_or(Value::Null);
     if let Err(e) = host.set(rt, "screens.all", Value::list(records)) {
         log::error!("screens.all: {e}");
     }
@@ -832,6 +851,19 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
                         .host_mut()
                         .recorder
                         .secret(strand_core::flight::now_ns(), on);
+                }
+                // (screens-focus) Logic names a monitor it heard of from
+                // main: plugged in, or unplugged less than 30 s ago.
+                Event::Msg(ToMain::FocusedScreen(id)) => {
+                    let monitor = id.and_then(|id| {
+                        state
+                            .monitors()
+                            .into_iter()
+                            .chain(state.remembered_monitors())
+                            .find(|m| m.id.as_str() == id)
+                            .map(|m| m.id)
+                    });
+                    state.set_focused_monitor(monitor);
                 }
                 // (M5, S-inspect) Layouts, the outline, the flash and
                 // pick mode.

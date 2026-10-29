@@ -163,6 +163,9 @@ pub(super) struct Shell {
     /// (strand-fixes) Whether the running build has a `lock`, as
     /// [`Shell::tell_lock_helper`] last saw it.
     pub(super) has_lock: bool,
+    /// (screens-focus) The `screens` service's monitors and the
+    /// compositor's focus (`focus.rs`).
+    pub(super) focus: super::focus::Focus,
 }
 
 /// (M6) Which press a diff's popups were opened by, stamped on it as
@@ -213,7 +216,10 @@ impl Shell {
     pub(super) fn handle(&mut self, msg: ToLogic) {
         let inst = &self.inst;
         match msg {
-            ToLogic::Screens(list) => set_screens(inst.runtime(), &self.host, &list),
+            ToLogic::Screens(list) => {
+                self.focus
+                    .screens(inst.runtime(), &self.host, list, self.to_main.as_ref());
+            }
             ToLogic::Forget(id) => {
                 inst.forget_screen(&id);
             }

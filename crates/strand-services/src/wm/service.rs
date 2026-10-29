@@ -73,6 +73,61 @@ pub fn hub() -> Option<WmHub> {
     }))
 }
 
+/// (screens-focus) Follows the focused screen until dropped
+/// ([`follow_focused_screen`]).
+#[derive(Debug)]
+pub struct FocusFollower {
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl Drop for FocusFollower {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+    }
+}
+
+/// (screens-focus) Follow the screen with keyboard focus as the
+/// compositor service reports it ([`WmChange::FocusedScreen`]: a
+/// connector name, `None` while it names none), for the binary's
+/// `screens.focused`: one [`WmSubscription`] on the shared services
+/// runtime, held until the follower is dropped, so the compositor
+/// service runs meanwhile (one run with the stores, when they hold it
+/// too). `changed` is called on the services thread with each value
+/// that differs from the last it was given, the first with the hub's
+/// first batch (a running hub's current state, at once). Without a
+/// services runtime, nothing is called.
+pub fn follow_focused_screen(
+    services: &crate::Services,
+    changed: impl Fn(Option<String>) + Send + 'static,
+) -> FocusFollower {
+    let stop = services.spawn_task(move |_| async move {
+        let Some(hub) = hub() else {
+            return;
+        };
+        let mut sub = hub.subscribe();
+        let mut last = None;
+        while let Some(batch) = sub.recv().await {
+            if let Some(now) = focused_screen_in(batch)
+                && last.as_ref() != Some(&now)
+            {
+                changed(now.clone());
+                last = Some(now);
+            }
+        }
+    });
+    FocusFollower { stop }
+}
+
+/// The focused screen a batch ends with, if it says.
+fn focused_screen_in(batch: Vec<WmChange>) -> Option<Option<String>> {
+    batch.into_iter().rev().find_map(|c| match c {
+        WmChange::FocusedScreen(s) => Some(s),
+        _ => None,
+    })
+}
+
 /// A toplevel window: the schema's `Window`.
 #[derive(crate::Data, Clone, Debug, Default, PartialEq)]
 #[data(name = "Window", key = id)]
@@ -595,6 +650,27 @@ impl Wm {
 mod tests {
     use super::*;
     use crate::{FromData, Keyed, Service};
+
+    /// (screens-focus) A batch's last word on the focused screen counts;
+    /// one that says nothing of it changes nothing.
+    #[test]
+    fn a_batch_ends_with_its_focused_screen() {
+        let on = |s: &str| WmChange::FocusedScreen(Some(s.into()));
+        assert_eq!(
+            focused_screen_in(vec![on("DP-1")]),
+            Some(Some("DP-1".into()))
+        );
+        assert_eq!(
+            focused_screen_in(vec![on("DP-1"), WmChange::Mode(None), on("HDMI-A-1")]),
+            Some(Some("HDMI-A-1".into()))
+        );
+        assert_eq!(
+            focused_screen_in(vec![on("DP-1"), WmChange::FocusedScreen(None)]),
+            Some(None)
+        );
+        assert_eq!(focused_screen_in(vec![WmChange::Mode(None)]), None);
+        assert_eq!(focused_screen_in(Vec::new()), None);
+    }
 
     #[test]
     fn the_stores_are_the_schema_records() {

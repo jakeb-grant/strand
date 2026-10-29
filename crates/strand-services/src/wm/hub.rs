@@ -1,8 +1,9 @@
 //! One compositor service shared by every store that shows it.
 //!
 //! `workspaces`, `windows` and `wm` are three services to the language
-//! (each with its own reader count and 5 s stop), and `screens.focused`
-//! reads the focused screen from the same source. They must share one
+//! (each with its own reader count and 5 s stop), and the binary's
+//! `screens.focused` reads the focused screen from the same source
+//! ([`super::follow_focused_screen`], while it is read). They must share one
 //! [`super::run`]: one adapter connection and one protocol thread. A
 //! [`WmHub`] runs it while at least one [`WmSubscription`] lives: the first
 //! subscriber starts it, the last one to go stops it and tells its

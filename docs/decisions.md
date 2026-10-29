@@ -14064,3 +14064,37 @@ tense; history, plans, rationale (pointed to here) and listings the
 code's doc comments give went (540 KB to 176 KB). The trims were checked
 against the code; where the old text and the code disagreed it was kept
 or noted, not silently changed. Git keeps the long versions.
+
+## screens-focus
+
+**2026-10-29 · screens-focus: `screens.focused` follows the compositor's
+focused monitor.** The binary set `screens.focused` and every
+`Screen.focused` from the first monitor, so on two monitors a `screens:`
+that evaluates to `focused`, and the lock's single instance, took the
+first monitor's `screen` while the compositor put the surface on the
+focused one. Both now name the monitor whose `name` (its connector) is
+the hub's `WmChange::FocusedScreen`; the first while nothing names one
+(no adapter and no single activated window for the protocols, nothing
+heard yet, a name no monitor has). Main hears the same monitor
+(`ToMain::FocusedScreen`) and pins `screens: focused` surfaces to it with
+`State::set_focused_monitor`, so a surface shows on the monitor its
+`screen` is. While none is named it pins nothing and the compositor
+places them as before: pinning the fallback first monitor would move a
+default panel or osd away from where a compositor without IPC puts it.
+While pinned, every `screens: focused` surface (a default panel or osd
+too) is placed on the named monitor and moves with it, as
+`set_focused_monitor` already did; that is the monitor the compositor
+reports as focused, so a new surface lands where it would have put it.
+
+**2026-10-29 · screens-focus: the compositor service runs for the focus
+only while something reads it.** Logic holds a
+`wm::follow_focused_screen` follower (one hub subscription) while the
+`screens.focused` cell has an observer, or the program names
+`Screen.focused`, and lets it go `STOP_GRACE` after the last reader, as
+a service stops. The cell's observers are its real readers (a binding,
+a `screens:` that is `focused` now, a lock with one instance), so the
+compiler needs no new bookkeeping; a record field has no cell of its
+own, so `Screen.focused` is the static rule `notifications` uses for
+`can_reply`. A shell that reads neither starts nothing for it (its bars
+read `screens.all`); one that shows workspaces shares the run the
+stores already hold.

@@ -20,8 +20,10 @@
 //! and Hyprland; nested niri has one), the stores must agree on every
 //! output and on which one has the focus, through a switch to the other
 //! output from outside, a window there, `ws.focus()` and `win.focus()`
-//! across outputs; and each output's bar must draw that output's
-//! workspaces and take its own clicks.
+//! across outputs, and (screens-focus) so must the focused screen the
+//! binary's `screens.focused` follows (`wm::follow_focused_screen`, also
+//! checked at boot with one output); and each output's bar must draw that
+//! output's workspaces and take its own clicks.
 
 //! labwc (`STRAND_MATRIX=labwc`) is the matrix's compositor without an
 //! IPC adapter: no CLI reports its state, so the two tests above skip it
@@ -804,6 +806,8 @@ fn the_stores_report_the_live_compositor() {
     b.windows.acquire(&rt);
     b.wm.acquire(&rt);
     assert!(s.wait_ready(&rt, Duration::from_secs(10)), "the first read");
+    // (screens-focus) The focused screen `screens.focused` follows.
+    let focus = FocusHeard::follow(&s);
     until("wm.name", || {
         s.pump(&rt);
         rt.flush();
@@ -817,6 +821,7 @@ fn the_stores_report_the_live_compositor() {
         r.workspaces.iter().any(|w| w.focused)
     });
     assert!(boot.workspaces.iter().any(|w| w.focused), "{boot}");
+    focus.agrees(&live, "boot");
 
     // A real window on the focused workspace.
     let win = TestWindow::open(&live.socket, "strand-matrix", "matrix one");
@@ -3754,6 +3759,40 @@ fn second_output(live: &Live) -> Option<String> {
     second.map(|o| o.name.clone())
 }
 
+/// (screens-focus) What the binary's `screens.focused` follows
+/// (`wm::follow_focused_screen`), as last heard, while it lives.
+struct FocusHeard {
+    last: Arc<std::sync::Mutex<Option<Option<String>>>>,
+    _follower: wm::FocusFollower,
+}
+
+impl FocusHeard {
+    fn follow(s: &Services) -> FocusHeard {
+        let last: Arc<std::sync::Mutex<Option<Option<String>>>> = Arc::default();
+        let l = last.clone();
+        let follower = wm::follow_focused_screen(s, move |named| {
+            *l.lock().unwrap() = Some(named);
+        });
+        FocusHeard {
+            last,
+            _follower: follower,
+        }
+    }
+
+    /// It names the compositor's focused output.
+    fn agrees(&self, live: &Live, what: &str) {
+        until(&format!("{what}: the focused screen followed"), || {
+            let want = focused_output(live);
+            let now = self.last.lock().unwrap().clone();
+            if now.as_ref() == Some(&want) {
+                Ok(())
+            } else {
+                Err(format!("compositor {want:?}, follower {now:?}"))
+            }
+        })
+    }
+}
+
 /// The compositor's focused output.
 fn focused_output(live: &Live) -> Option<String> {
     live.outputs()
@@ -3842,7 +3881,12 @@ fn the_stores_report_every_output() {
     b.windows.acquire(&rt);
     b.wm.acquire(&rt);
     assert!(s.wait_ready(&rt, Duration::from_secs(10)), "the first read");
+    // (screens-focus) What the binary's `screens.focused` follows: the
+    // compositor's focused output too.
+    let heard = FocusHeard::follow(&s);
+    let follows = |what: &str| heard.agrees(&live, what);
     let boot = agree_all(&rt, &s, &b, &live, "boot, every output");
+    follows("boot");
     let home = boot
         .iter()
         .find(|(o, _)| *o == first)
@@ -3857,6 +3901,7 @@ fn the_stores_report_every_output() {
     live.switch(&there);
     agree_all(&rt, &s, &b, &live, "the second output focused from outside");
     assert_eq!(focused_output(&live).as_deref(), Some(second.as_str()));
+    follows("the second output focused from outside");
 
     // A window opens there: its workspace is the second output's.
     let win = TestWindow::open(&live.socket, "strand-matrix-second", "on the second output");
@@ -3888,6 +3933,7 @@ fn the_stores_report_every_output() {
         .unwrap();
     agree_all(&rt, &s, &b, &live, "ws.focus() on the first output");
     assert_eq!(focused_output(&live).as_deref(), Some(first.as_str()));
+    follows("ws.focus() on the first output");
 
     // `win.focus()` on the window there moves it to the second output.
     b.windows
@@ -3895,6 +3941,7 @@ fn the_stores_report_every_output() {
         .unwrap();
     let all = agree_all(&rt, &s, &b, &live, "win.focus() on the second output");
     assert_eq!(focused_output(&live).as_deref(), Some(second.as_str()));
+    follows("win.focus() on the second output");
     let (_, real) = all.iter().find(|(o, _)| *o == second).unwrap();
     assert_eq!(
         real.window,

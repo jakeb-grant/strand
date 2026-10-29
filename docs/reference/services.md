@@ -408,7 +408,7 @@ Monitors.
 | Field | Type | |
 | --- | --- | --- |
 | `all` | `[Screen]` | Every monitor, keyed by `name`. |
-| `focused` | `Screen?` | The monitor with keyboard focus. |
+| `focused` | `Screen?` | The monitor with keyboard focus, as the compositor says (Hyprland, sway, niri); the first monitor while it says none. |
 
 ## `session`
 
