@@ -1,9 +1,9 @@
 diff --git a/crates/strand-render/src/renderer/frame.rs b/crates/strand-render/src/renderer/frame.rs
-index 6200f59b..2803f1eb 100644
+index aae40766..6bd3670e 100644
 --- a/crates/strand-render/src/renderer/frame.rs
 +++ b/crates/strand-render/src/renderer/frame.rs
-@@ -677,7 +677,8 @@ impl Renderer {
-         let mut frame = Damage::new();
+@@ -725,7 +725,8 @@ impl Renderer {
+         let diffing = Instant::now();
          if s.valid && !fade.full() {
              diff_records(&s.records, &f.records, &mut frame);
 -            order_damage((&s.order, &s.records), (&f.order, &f.records), &mut frame);

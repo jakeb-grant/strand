@@ -1,8 +1,8 @@
-diff --git a/crates/strand-surface/src/placement.rs b/crates/strand-surface/src/placement.rs
-index 350171f3..4db82e9f 100644
---- a/crates/strand-surface/src/placement.rs
-+++ b/crates/strand-surface/src/placement.rs
-@@ -391,9 +391,9 @@ pub fn layer_config_with(
+diff --git a/crates/strand-scene/src/placement.rs b/crates/strand-scene/src/placement.rs
+index 0176512c..ec60c529 100644
+--- a/crates/strand-scene/src/placement.rs
++++ b/crates/strand-scene/src/placement.rs
+@@ -408,9 +408,9 @@ pub fn layer_config_with(
      // The box keeps its place: each margin moves out by the overhang.
      let margin = [
          px(m.top) - ot,

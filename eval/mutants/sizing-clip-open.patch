@@ -1,18 +1,20 @@
+diff --git a/crates/strand-render/src/flatten/node.rs b/crates/strand-render/src/flatten/node.rs
+index eaa12048..12e7f2cb 100644
 --- a/crates/strand-render/src/flatten/node.rs
 +++ b/crates/strand-render/src/flatten/node.rs
-@@ -1754,12 +1754,12 @@ impl<'a> Flattener<'a> {
-         // (a page slides in from outside it), and so
-         // does a node whose size springs (a toast collapsing to `height:
-         // 0`), or that exits to a pose setting its size.
--        let clips = matches!(get(Prop::Clip), Some(PropValue::Bool(true)))
-+        let clips = (matches!(get(Prop::Clip), Some(PropValue::Bool(true)))
+@@ -1771,12 +1771,13 @@ impl<'a> Flattener<'a> {
+         // 0`), or that exits to a pose setting its size. That last clip
+         // cuts what spills past the box, not the shadows of the boxes
+         // that lie inside it (shadow-pass, `let_shadow_through`).
+-        let asked_clip = matches!(get(Prop::Clip), Some(PropValue::Bool(true)))
++        let asked_clip = (matches!(get(Prop::Clip), Some(PropValue::Bool(true)))
 +            && !self.anim.sizing(self.tree, node))
              || matches!(
                  node.kind,
                  NodeKind::Scroll | NodeKind::List | NodeKind::Pages
--            )
--            || self.anim.sizing(self.tree, node);
-+            );
+             );
+-        let clips = asked_clip || self.anim.sizing(self.tree, node);
++        let clips = asked_clip;
          let mut ctx = DefaultHasher::new();
          (inh.ctx, node.epoch).hash(&mut ctx);
          hash_f32(&mut ctx, opacity);

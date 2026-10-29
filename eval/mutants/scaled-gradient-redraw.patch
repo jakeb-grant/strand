@@ -1,7 +1,7 @@
-diff --git b/crates/strand-render/src/raster/draw.rs a/crates/strand-render/src/raster/draw.rs
-index e504666a..eb2d485a 100644
---- b/crates/strand-render/src/raster/draw.rs
-+++ a/crates/strand-render/src/raster/draw.rs
+diff --git a/crates/strand-render/src/raster/draw.rs b/crates/strand-render/src/raster/draw.rs
+index bbc7c17e..bc6a5b9d 100644
+--- a/crates/strand-render/src/raster/draw.rs
++++ b/crates/strand-render/src/raster/draw.rs
 @@ -29,17 +29,6 @@ pub(super) fn frame_px(f: kurbo::Rect) -> Option<(u32, u32)> {
  /// (cached, or for one too large to cache the part of it in `region`,
  /// the cell being drawn in item coordinates), else vello's own paint.
@@ -20,12 +20,12 @@ index e504666a..eb2d485a 100644
  pub(super) fn paint_for(
      p: &Paint,
      frame: kurbo::Rect,
-@@ -54,11 +43,11 @@ pub(super) fn paint_for(
-         return paint_type(p, frame);
+@@ -55,11 +44,11 @@ pub(super) fn paint_for(
      };
      let (fx, fy) = (frame.x0.round(), frame.y0.round());
--    if !smooth && let Some(pm) = cache.peek(gradient_key(p, w, h)) {
-+    if let Some(pm) = cache.peek(gradient_key(p, w, h)) {
+     let cached = cache.peek(gradient_key(p, w, h));
+-    if !smooth && let Some(pm) = cached {
++    if let Some(pm) = cached {
          return image_paint(pm, fx, fy, smooth);
      }
 -    // Too large to cache, animated (see `PaintCache::gradient`) or drawn
@@ -35,7 +35,7 @@ index e504666a..eb2d485a 100644
      {
          // One pixel of margin for smooth sampling at the part's edge.
          let x0 = ((region.x0 - fx).floor() - 1.0).clamp(0.0, w as f64) as u32;
-@@ -146,12 +135,16 @@ pub(crate) fn draw(
+@@ -155,12 +144,16 @@ pub(crate) fn draw(
      fades: &HashMap<usize, Drawn>,
  ) {
      let touches = |b: &Rect| clip.intersects(*b);

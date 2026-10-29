@@ -1,16 +1,16 @@
 diff --git a/crates/strand-render/src/flatten/mod.rs b/crates/strand-render/src/flatten/mod.rs
-index 05ed27ae..f2faadda 100644
+index 943de82b..59b44c1b 100644
 --- a/crates/strand-render/src/flatten/mod.rs
 +++ b/crates/strand-render/src/flatten/mod.rs
-@@ -629,7 +629,6 @@ fn flatten_with(
+@@ -642,7 +642,6 @@ fn flatten_with(
          fillet: crate::fillet::find(tree, boxes, root),
          open_clips: Vec::new(),
          fillet_fill: None,
 -        item_clips: Vec::new(),
          pointer: extras.pointers.get(&root).copied(),
-         logical: LogicalRect::new(0.0, 0.0, logical.w, logical.h),
-         drawn: drawn.then(Vec::new),
-@@ -708,10 +707,6 @@ struct Flattener<'a> {
+         #[cfg(feature = "gpu")]
+         gpu_frame: extras.gpu_lowered.contains(&root),
+@@ -723,10 +722,6 @@ struct Flattener<'a> {
      /// what each such clip holds the rest of its group around
      /// (`Flattener::hold_to_box`).
      fillet_fill: Option<usize>,
@@ -20,9 +20,9 @@ index 05ed27ae..f2faadda 100644
 -    item_clips: Vec<kurbo::Rect>,
      /// (M4) The pointer on the surface, and the surface's logical box.
      pointer: Option<strand_scene::LogicalPoint>,
-     logical: LogicalRect,
-@@ -749,51 +744,6 @@ struct OpenClip {
-     held: Option<BezPath>,
+     /// (perf-gpu-retain) The GPU draws the surface's frames
+@@ -778,51 +773,6 @@ struct OpenClip {
+     passes: Vec<usize>,
  }
  
 -/// (damage-fraction) Where `item` paints, from its own geometry
@@ -40,7 +40,7 @@ index 05ed27ae..f2faadda 100644
 -    let r = match item {
 -        Item::Fill { shape, .. } => match shape {
 -            FillShape::Rect(r) => *r,
--            FillShape::Path(p) => p.bounding_box(),
+-            FillShape::Path(p) | FillShape::EvenOdd(p) => p.bounding_box(),
 -        },
 -        Item::Border { path, .. } | Item::PushClip(path) => path.bounding_box(),
 -        Item::Shadow { extent, .. } => *extent,
@@ -74,7 +74,7 @@ index 05ed27ae..f2faadda 100644
  fn map_rect(a: kurbo::Affine, r: Rect) -> Rect {
      if a == kurbo::Affine::IDENTITY || r.is_empty() {
 diff --git a/crates/strand-render/src/flatten/node.rs b/crates/strand-render/src/flatten/node.rs
-index ed4ddffb..56407b72 100644
+index eaa12048..e36c1710 100644
 --- a/crates/strand-render/src/flatten/node.rs
 +++ b/crates/strand-render/src/flatten/node.rs
 @@ -25,7 +25,7 @@ use super::widget::{CaretAt, WidgetCtx, caret_x};
@@ -114,7 +114,7 @@ index ed4ddffb..56407b72 100644
          let bounds = map_rect(self.xform, bounds);
          hash_item(sig, &item);
          *ink = ink.union(bounds);
-@@ -1801,11 +1780,7 @@ impl<'a> Flattener<'a> {
+@@ -1815,11 +1794,7 @@ impl<'a> Flattener<'a> {
              } else {
                  hash_path(&mut ctx, &box_path);
              }

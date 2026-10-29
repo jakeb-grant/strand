@@ -1,7 +1,9 @@
+diff --git a/crates/strand-render/src/flatten/node.rs b/crates/strand-render/src/flatten/node.rs
+index eaa12048..315a604e 100644
 --- a/crates/strand-render/src/flatten/node.rs
 +++ b/crates/strand-render/src/flatten/node.rs
-@@ -2313,10 +2313,7 @@
-             return;
+@@ -2465,10 +2465,7 @@ impl<'a> Flattener<'a> {
+             return Rect::default();
          }
          let spread = finite_or_zero(sh.spread) as f64 * s;
 -        let (dx, dy) = (
