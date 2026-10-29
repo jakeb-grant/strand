@@ -117,6 +117,11 @@ are `Async`.
   runs for the first value, nor for a value a reload writes, so an OSD
   does not flash at boot or on save.
 - `on change a after 1.2s { … }` runs once, 1.2 s after the last change.
+- When a watched path moves to another item, its new value is the new
+  baseline and `on change` does not run: `on change
+  clipboard.history.first?.text` stays quiet when a new copy becomes the
+  first. Watch the item's key too and it runs on each new one:
+  `on change clipboard.history.first?.id, clipboard.history.first?.text`.
 - `after 6s while !hover { … }` runs once, after its condition has held
   for six seconds in all; `every 1s { … }` runs every second.
 - An event such as `on notifications.received(n)` is never merged:

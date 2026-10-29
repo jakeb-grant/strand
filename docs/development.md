@@ -14,7 +14,6 @@ live beside this file:
 - `live-examples.md`: the site's in-browser examples;
 - `benchmarks.md`: measured numbers, updated by hand, so they go
   stale (the gates themselves are tests);
-- `owner-testing.md`: findings from hands-on testing.
 
 ## Layout
 

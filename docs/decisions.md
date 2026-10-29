@@ -9863,8 +9863,9 @@ holds it (a path key's first step), compares values only (`lower::handler`),
 since for a key the switch is the only change; other fields of a keyed
 record still re-baseline on a switch (spec.md 8.4). Each target is paired
 with its own identity (`strand_core::Runtime::on_change_each`,
-`on_change_after_each`). Whether list-query item switches re-baseline is
-left to the owner (owner-testing.md, Docs and traps 3).
+`on_change_after_each`). A list query's item switching re-baselines too:
+the owner kept that, with the key-watching idiom documented
+(owner-testing below, 2026-10-29).
 
 ## nav-remount
 
@@ -14119,3 +14120,23 @@ own, so `Screen.focused` is the static rule `notifications` uses for
 `can_reply`. A shell that reads neither starts nothing for it (its bars
 read `screens.all`); one that shows workspaces shares the run the
 stores already hold.
+
+## owner-testing
+
+**2026-10-29 · owner-testing: the owner-testing log is retired.** Every
+entry of docs/owner-testing.md (bugs 1-26, capability gaps 1-35, docs
+and traps 1-3) was checked against main 3c11916b: each is fixed with
+its test, decided, or settled below, and the owner had tried the fixes
+on their own session, so the log is removed. A citation of
+"owner-testing.md bug N", "gap N" or "docs and traps N" in code, tests
+and docs names an entry of that file as it is at 3c11916b
+(`git show 3c11916b:docs/owner-testing.md`). Settled with it: `network`
+reads NetworkManager and iwd, and no other stack (systemd-networkd and
+ConnMan are not planned; `network.address` reads the kernel for any);
+`bluetooth` stays on BlueZ and Strand registers no pairing agent of its
+own (BlueZ uses the system's, if one runs, for a PIN or a confirmation),
+as m6-service-gaps left it; a list query's item
+switching re-baselines `on change` as a service object's does, and
+site/concepts/state.md shows watching the item's key to run on each new
+one; and a text's line box stays CSS's `line-height: normal`, with
+site/concepts/layout.md saying why text can look low in an even `pad`.

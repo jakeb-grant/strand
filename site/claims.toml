@@ -1493,6 +1493,18 @@ proof  = "strand check in the container (scripts/container/run.sh) on a probe co
 
 [[claim]]
 page   = "site/concepts/state.md"
+text   = "When a watched path moves to another item, its new value is the new"
+source = ["docs/spec.md#84-events-and-timers", "docs/decisions.md#change-optional-chain"]
+proof  = "crates/strand-compiler/tests/instantiate.rs::on_change_over_an_identity_fires_on_a_switch"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "Watch the item's key too and it runs on each new one:"
+source = ["docs/spec.md#84-events-and-timers", "docs/decisions.md#change-optional-chain"]
+proof  = "crates/strand-compiler/tests/instantiate.rs::on_change_over_an_identity_fires_on_a_switch"
+
+[[claim]]
+page   = "site/concepts/state.md"
 text   = "more than 30 times a second is"
 source = ["crates/strand-core/src/rate.rs:47"]
 proof  = "read: rate.rs MAX_WRITES_PER_SEC, THROTTLED_INTERVAL 1/30 s, the held value kept"
@@ -1712,6 +1724,18 @@ page   = "site/concepts/layout.md"
 text   = "**Paint-only props never cause layout.**"
 source = ["crates/strand-render/src/layout/mod.rs:6"]
 proof  = "crates/strand-render/tests/motion.rs::paint_only_springs_never_relayout"
+
+[[claim]]
+page   = "site/concepts/layout.md"
+text   = "A line of text is as tall as CSS's `line-height: normal` makes it"
+source = ["docs/decisions.md#m6-w2-surface"]
+proof  = "crates/strand-render/tests/layout.rs::a_text_line_box_is_css_normal"
+
+[[claim]]
+page   = "site/concepts/layout.md"
+text   = "The ascent keeps room above the"
+source = ["docs/decisions.md#m6-w2-surface"]
+proof  = "crates/strand-render/tests/layout.rs::a_text_line_box_is_css_normal (an H's ink starts 20.5 px down under pad 12)"
 
 [[claim]]
 page   = "site/concepts/layout.md"

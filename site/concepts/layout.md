@@ -64,6 +64,12 @@ moves from workspace 1 to 3, then to 2:
 A text that does not fit is cut with `ellipsis: end`, or wraps up to
 `max_lines`.
 
+A line of text is as tall as CSS's `line-height: normal` makes it: the
+font's ascent, descent and line gap. The ascent keeps room above the
+capitals for accents, so text can look low inside an even `pad`. Give
+it a little less pad on top than below to balance it (`pad: 10, 16,
+14, 16`).
+
 ## Sharing space: grow and shrink
 
 - **`grow: 1`** gives a child a share of the space left in its row or
