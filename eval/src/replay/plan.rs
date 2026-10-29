@@ -733,6 +733,45 @@ fn boot_at(b: &Bundle, start: u64) -> Option<f64> {
     Some((boot_ns as f64 - b.now_ns.saturating_sub(start) as f64) / 1e9)
 }
 
+/// (step-time) When the live shell kept a point of history in the
+/// window, each ns since its start, in order: the boot clock's time
+/// logic took it at.
+fn kept_points(b: &Bundle, start: u64) -> Vec<u64> {
+    let (Some(series), Some(at_start)) = (b.history["series"].as_array(), boot_at(b, start)) else {
+        return Vec::new();
+    };
+    let mut kept: Vec<u64> = series
+        .iter()
+        .filter_map(|s| s["points"].as_array())
+        .flatten()
+        .filter_map(|p| p[0].as_f64())
+        .map(|at| (at - at_start) * 1e9)
+        .filter(|ns| *ns >= 0.0)
+        .map(|ns| ns as u64)
+        .collect();
+    kept.sort_unstable();
+    kept
+}
+
+/// (step-time) How far before a step's live time a point it made may
+/// read: the boot clock and the rings' are read apart.
+const KEPT_SLACK_NS: u64 = 200_000;
+
+/// (step-time) The time the live shell kept the first point of history
+/// a step at `t` made: one from `t` on, before the next step (`next`)
+/// and within a period, which the replay's tick (at `tick`, ns since the
+/// window's start) is within a period of. A step's change acts at a
+/// tick, and logic times what it keeps then, so a column boundary
+/// between the live time and the tick would put a graph's step a column
+/// apart: an `at` step gives it the live time.
+fn kept_at(kept: &[u64], t: u64, next: Option<u64>, tick: u64, period: u64) -> Option<u64> {
+    let from = kept.partition_point(|p| p + KEPT_SLACK_NS < t);
+    kept[from..]
+        .first()
+        .copied()
+        .filter(|p| next.is_none_or(|n| *p < n) && *p < t + period && p.abs_diff(tick) <= period)
+}
+
 /// `90 s`, `2.5 s`.
 fn secs_text(s: f64) -> String {
     if s.fract() == 0.0 {
@@ -2747,7 +2786,11 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     // boots): a step marked with another is taken after a `screen` step,
     // here, in the order the steps run.
     let mut focus_now = outputs.first().map(|o| o.name.clone());
-    for s in timed {
+    let kept = kept_points(b, start);
+    let next_t: Vec<Option<u64>> = (0..timed.len())
+        .map(|i| timed.get(i + 1).map(|n| n.t))
+        .collect();
+    for (s, next_t) in timed.into_iter().zip(next_t) {
         let want = ((s.t + period / 2) / period).max(s.not_before);
         if want > tick {
             steps.push(format!("frames {}", want - tick));
@@ -2762,6 +2805,12 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             focus_now = Some(o.clone());
         }
         if !s.text.is_empty() {
+            if s.ticks == 0
+                && !s.text.starts_with("mark ")
+                && let Some(at) = kept_at(&kept, s.t, next_t, want * period, period)
+            {
+                steps.push(format!("at {:.6}s", at as f64 / 1e9));
+            }
             steps.push(s.text);
         }
         tick += s.ticks;

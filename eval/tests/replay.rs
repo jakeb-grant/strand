@@ -2242,6 +2242,43 @@ fn kept_history_from_before_the_window_is_seeded() {
     assert!(!text.contains("\nboot = "), "{text}");
 }
 
+/// (step-time) A step whose change the live shell kept a point of
+/// history of between ticks gets an `at` step with that point's time: the
+/// click's release at 8.1 s and the point 5 ms after it, so `at 7.105s`
+/// (the window starts at 1 s) before the release, whose tick is 7.1 s.
+/// A step with no point after it (the press, `mood.level`'s set) gets
+/// none, nor does a point with no step before it; the replay runs.
+#[test]
+fn a_change_kept_between_ticks_is_timed_by_an_at_step() {
+    let mut f = Fx::session();
+    // The report at 30 s, 5000 s into boot: 8.105 s is 4978.105 s.
+    f.history = json!({
+        "boot_ns": 5000 * S,
+        "series": [{"key": "clicks", "span_ms": 10_000, "points": [
+            [4970.0, 0.0, 0.0], [4978.105, 1.0, 0.0], [4990.0, 1.0, 0.0]
+        ]}]
+    });
+    let dir = f.write("at");
+    let (_, p, text) = plan_of(&dir, &defaults());
+    assert_eq!(p.start, S);
+    let ats: Vec<(usize, &String)> = p
+        .steps
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.starts_with("at "))
+        .collect();
+    assert_eq!(ats.len(), 1, "{:#?}", p.steps);
+    let (i, at) = ats[0];
+    assert_eq!(at, "at 7.105000s");
+    assert_eq!(p.steps[i + 1], "release left", "{:#?}", p.steps);
+    let root = dir.parent().unwrap().parent().unwrap();
+    let scn = root.join("scenarios/local/report-at.scn");
+    std::fs::create_dir_all(scn.parent().unwrap()).unwrap();
+    std::fs::write(&scn, &text).unwrap();
+    let sc = Scenario::load(&scn).unwrap_or_else(|e| panic!("{e}\n{text}"));
+    harness::run(&sc, &RunOptions::default()).unwrap_or_else(|e| panic!("{e}\n{text}"));
+}
+
 /// (window) A window replays as the compositor configured it live: each
 /// `TOPLEVEL` record a `window` step at its time (its own size, then
 /// tiled at 600 × 400), and its compositor's close (its click away) a

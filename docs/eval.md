@@ -318,6 +318,12 @@ advance the clock.
 
 **Time**
 
+- `at S` (step-time): the next instant step acts at its tick, but
+  with the boot clock (what logic's kept history, and so a `graph`'s
+  columns, are timed on) at `S` seconds from tick 0 (`at 3.217408s`),
+  as does the rest of that tick's logic. `S` is at most a period from
+  the tick; an `at` before a time step is refused. A report's replay
+  writes it where the live shell kept a value between ticks.
 - `frames N`.
 - `wait MS`.
 - `rest [max N]` waits until nothing wants a frame. The default max is
@@ -2607,8 +2613,12 @@ work:
    ((replayfix) 0 by default: the whole window is traced, so its
    viewer and timeline span it; `--traced 20` keeps only the last
    20 s), and the steps: the input on its timeline (`frames`
-   between records, quantised to ticks; a pointer step only where it
-   moves, a `focus` before keys on another surface), each service
+   between records, quantised to ticks, (step-time) a step after
+   which the live shell kept a point of history (`history.json`, from
+   the step's time to the next step's, within a period) preceded by
+   an `at` with that point's time, so a column boundary between it and
+   the tick cannot put the change a column apart; a pointer step
+   only where it moves, a `focus` before keys on another surface), each service
    change as a `set` (a keyed list as the whole list after its diffs;
    (services) never a `LOCAL` one, which the replay's handler makes)
    or an `emit`, (report review) each `strand set`, `toggle` or `reset`
@@ -2670,7 +2680,9 @@ capability, used by any scenario):
   window's start puts each value in the column the live shell did,
   whatever its frames' times. (graph-flake) An instant step (a click,
   a `set`) acts at the tick about to run on the boot clock too, so what
-  it changes is kept at that tick's time, not the tick's before. The
+  it changes is kept at that tick's time, not the tick's before;
+  (step-time) a replay's `at` step before it gives it the time the
+  live shell kept it at instead (below). The
   services' stand-ins sample as the live ones do: the polled builtins
   (`strand_services_schema::POLLED`: `cpu`, `memory`, `disk`,
   `network`) and a

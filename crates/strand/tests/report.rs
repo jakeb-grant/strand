@@ -1179,12 +1179,11 @@ const FOUR: [&str; 4] = [
 /// With `STRAND_REPORT_KEEP=DIR` the bundle's path is written to
 /// `DIR/bundle` and the run's directory is left behind.
 ///
-/// Known to fail rarely, and accepted (graph-flake, decisions.md): the
-/// replay presses on the 60 Hz tick nearest each click, a few ms off
-/// the live press, so a click within about half a frame of the Top
-/// bar's graph column boundary can land a column apart and the replay
-/// is DRIFTED by one column (a few px in the graph). Under 1% of runs;
-/// a rerun passes. Another failure here is a real one.
+/// (step-time) The replay presses on the 60 Hz tick nearest each
+/// click, a few ms off the live press; an `at` step gives the click's
+/// change the time the live shell kept it at, so a click near the Top
+/// bar's graph column boundary lands in the live shell's column
+/// (graph-flake and step-time, decisions.md).
 #[test]
 fn a_four_output_session_is_kept_for_its_replay() {
     let Some(mut desk) = Desk::with_outputs("four", STRIP, &[], false, &[], &FOUR) else {

@@ -97,6 +97,40 @@ fn a_seeded_history_reaches_the_graph_on_the_runs_clock() {
 /// from 500 s shows 0 and the next one 1.
 #[test]
 fn a_clicks_change_is_kept_at_the_tick_it_acts_at() {
+    // Last drawn in the tick from 500.4 s: the column from 500 s is slot
+    // 94 (after the column the history starts in, 93), the value now 99.
+    assert_eq!(
+        clicked_slots("click 10,10").unwrap(),
+        [false, false, false, true, true, true, true, true],
+        "slots 92 to 99: the column from 500 s (94) shows 0, the step is in 95"
+    );
+}
+
+/// (step-time) `at` times the click's change between ticks, as live: at
+/// 499.995 s on the boot clock (the tick's is 500.01 s), before the
+/// column from 500 s, which shows it.
+#[test]
+fn an_at_step_times_the_next_steps_change() {
+    assert_eq!(
+        clicked_slots("at 0.085s\nclick 10,10").unwrap(),
+        [false, false, true, true, true, true, true, true],
+        "slots 92 to 99: the column from 500 s (94) shows the click"
+    );
+}
+
+/// (step-time) An `at` further than a period from its tick, or before a
+/// time step, is refused.
+#[test]
+fn an_at_step_is_refused_off_its_tick_or_before_time() {
+    let far = clicked_slots("at 0.05s\nclick 10,10").unwrap_err();
+    assert!(far.contains("from the tick it acts at"), "{far}");
+    let time = clicked_slots("at 0.1s\nframes 1\nclick 10,10").unwrap_err();
+    assert!(time.contains("not a time step"), "{time}");
+}
+
+/// The graph's slots 92 to 99 shown (not the bar's colour) after `steps`
+/// at tick 6 (500.01 s on the boot clock) and 27 frames more.
+fn clicked_slots(steps: &str) -> Result<Vec<bool>, String> {
     const CLICKED: &str = "state level = 0.0
 bar Top {
   edge: top; height: 40
@@ -107,7 +141,7 @@ bar Top {
 }
 ";
     let text = format!(
-        "id = \"history-click\"\nscreen = {{ width = 200, height = 100, scale = 1.0 }}\nboot = 499.91\n\n=== shell.strand\n{CLICKED}\n=== steps\nframes 6\nclick 10,10\nframes 27\n"
+        "id = \"history-click\"\nscreen = {{ width = 200, height = 100, scale = 1.0 }}\nboot = 499.91\n\n=== shell.strand\n{CLICKED}\n=== steps\nframes 6\n{steps}\nframes 27\n"
     );
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("history-click.scn");
@@ -116,8 +150,8 @@ bar Top {
     let steps = sc.steps.clone();
     let mut d = Driver::boot(sc, &RunOptions::default()).unwrap();
     for step in &steps {
-        if let Some(mut run) = d.begin(step).unwrap() {
-            while !d.advance(&mut run).unwrap() {}
+        if let Some(mut run) = d.begin(step).map_err(|e| e.to_string())? {
+            while !d.advance(&mut run).map_err(|e| e.to_string())? {}
         }
     }
     let s = &d.surfaces().shown[0];
@@ -129,12 +163,5 @@ bar Top {
         [s.pixels[i], s.pixels[i + 1], s.pixels[i + 2]]
     };
     let bar = px(0);
-    // Last drawn in the tick from 500.4 s: the column from 500 s is slot
-    // 94 (after the column the history starts in, 93), the value now 99.
-    let shown: Vec<bool> = (92..100).map(|x| px(x) != bar).collect();
-    assert_eq!(
-        shown,
-        [false, false, false, true, true, true, true, true],
-        "slots 92 to 99: the column from 500 s (94) shows 0, the step is in 95"
-    );
+    Ok((92..100).map(|x| px(x) != bar).collect())
 }

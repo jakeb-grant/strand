@@ -6,6 +6,7 @@
 //! stays a selector and `#ff8800` a colour.
 
 use std::fmt;
+use std::time::Duration;
 
 use strand_render::probe::Axes;
 
@@ -258,6 +259,11 @@ pub enum StepKind {
         axis: Option<Axis>,
         from: u32,
     },
+    /// (step-time) `at S`: the next instant step acts with the boot
+    /// clock, which logic's kept history is timed on, at `S` from tick
+    /// 0 instead of at its tick's time, as does the rest of that
+    /// tick's logic (a replay's change timed between ticks live).
+    At(Duration),
     // Time.
     Frames(u32),
     Wait(u32),
@@ -325,6 +331,7 @@ impl StepKind {
                 | StepKind::Log(_)
                 | StepKind::Intend { .. }
                 | StepKind::Expect { .. }
+                | StepKind::At(_)
                 | StepKind::Frames(_)
                 | StepKind::Wait(_)
                 | StepKind::Rest { .. }
@@ -979,6 +986,16 @@ fn parse_line(text: &str) -> Result<Option<StepKind>, String> {
                 axis,
                 from,
             }
+        }
+        "at" => {
+            only(2)?;
+            let s = need(1, "seconds")?;
+            let secs = s
+                .strip_suffix('s')
+                .and_then(|n| n.parse::<f64>().ok())
+                .filter(|n| *n >= 0.0 && n.is_finite())
+                .ok_or_else(|| format!("`at {s}`: seconds from tick 0, as `at 3.217408s`"))?;
+            StepKind::At(Duration::from_secs_f64(secs))
         }
         "frames" => {
             only(2)?;

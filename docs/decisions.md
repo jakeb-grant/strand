@@ -14140,3 +14140,23 @@ switching re-baselines `on change` as a service object's does, and
 site/concepts/state.md shows watching the item's key to run on each new
 one; and a text's line box stays CSS's `line-height: normal`, with
 site/concepts/layout.md saying why text can look low in an even `pad`.
+
+## step-time
+
+**2026-10-29 · step-time: a replay times a change kept between ticks
+with an `at` step.** graph-flake left one accepted failure: the replay
+acts a live input at the tick nearest it, up to half a frame off, and
+logic times what it keeps at that tick, so a change within that of a
+graph column boundary landed a column apart (seen as 40 px DRIFTED in a
+2×21 column of the e2e Top bar's graph on 2026-10-29). The live shell's
+`history.json` holds each kept point's time on the boot clock, so the
+plan writes `at S` before a step a point followed (from the step's time
+to the next step's, within a period), with the point's time; the step
+still acts at its tick, with the boot clock at `S` for that tick's
+logic. Only the boot clock moves, since only kept history reads it, and
+only where history was kept, so other replays are unchanged. Rejected:
+acting inputs between ticks (every check reads whole ticks), and
+tolerating a column in the verdict (the eval rules are frozen). Tests:
+`an_at_step_times_the_next_steps_change`,
+`an_at_step_is_refused_off_its_tick_or_before_time`,
+`a_change_kept_between_ticks_is_timed_by_an_at_step`.

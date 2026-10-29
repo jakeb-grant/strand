@@ -1039,6 +1039,11 @@ struct Harness {
     /// shows one. One still unmatched when its segment ends is an error
     /// at its line.
     pending_intends: Vec<(Selector, u32)>,
+    /// (step-time) An `at` step's time, for the next instant step.
+    at: Option<Duration>,
+    /// (step-time) The boot clock the tick's logic reads: the last `at`
+    /// an instant step in it took, else the tick's time.
+    tick_boot: Option<Duration>,
     /// Ticks left without a paint: every surface's, one surface's.
     drop_all: u32,
     drop_one: HashMap<SurfaceId, u32>,
@@ -1376,6 +1381,8 @@ impl Harness {
             open: Some(0),
             waiting_intends: Vec::new(),
             pending_intends: Vec::new(),
+            at: None,
+            tick_boot: None,
             drop_all: 0,
             drop_one: HashMap::new(),
             reduced: false,
@@ -2526,7 +2533,7 @@ impl Harness {
             let (u, _) = self.inst.step(d, self.wall(d));
             self.update(u)?;
         }
-        set_virtual_boot(t);
+        set_virtual_boot(self.tick_boot.unwrap_or(t));
         let (u, _) = self.inst.step(t, self.wall(t));
         self.update(u)
     }
@@ -2859,7 +2866,21 @@ impl Harness {
         // held since), so a column boundary between the two cannot put
         // the change a column early.
         let t = self.clock.now();
-        set_virtual_boot(t);
+        // (step-time) Or at the time an `at` step gave it, which the
+        // tick's logic reads too: a set's change is kept when logic next
+        // flushes.
+        if step.kind.is_time() && self.at.is_some() {
+            return Err(self.refused(
+                step.line,
+                "`at` times the instant step after it, not a time step".into(),
+            ));
+        }
+        if !matches!(step.kind, StepKind::At(_))
+            && let Some(at) = self.at.take()
+        {
+            self.tick_boot = Some(at);
+        }
+        set_virtual_boot(self.tick_boot.unwrap_or(t));
         self.router.set_now(Some(self.instant(t)));
         if step.kind.opens_segment() {
             self.opens(step.text.clone(), step.line);
@@ -3125,6 +3146,22 @@ impl Harness {
             StepKind::Hz(n) => {
                 self.event(step);
                 self.clock.set_hz(*n);
+            }
+            StepKind::At(d) => {
+                self.event(step);
+                let at = T0 + *d;
+                let period = self.clock.period();
+                if at.abs_diff(t) > period {
+                    return Err(refused(
+                        self,
+                        format!(
+                            "`at` is {:.1} ms from the tick it acts at (at most a period, {:.1} ms)",
+                            at.abs_diff(t).as_secs_f64() * 1e3,
+                            period.as_secs_f64() * 1e3
+                        ),
+                    ));
+                }
+                self.at = Some(at);
             }
             StepKind::Screen(name) => {
                 self.event(step);
@@ -3449,7 +3486,7 @@ impl Harness {
         let k = self.clock.k();
         let t = self.clock.now();
         let now = self.instant(t);
-        set_virtual_boot(t);
+        set_virtual_boot(self.tick_boot.unwrap_or(t));
         self.router.set_now(Some(now));
         self.r.set_now(Some(now));
         // Wallpaper palettes the last tick asked for, before anything
@@ -3524,6 +3561,7 @@ impl Harness {
             self.trace.segments[i].e = k;
         }
         self.resolve_pending();
+        self.tick_boot = None;
         self.clock.advance();
         Ok(())
     }
