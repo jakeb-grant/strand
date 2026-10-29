@@ -46,7 +46,8 @@
 //!
 //! Prints a table (p50 / p95 / max of each repeat, the stages' means,
 //! frames over the 8.33 ms budget of 120 Hz) and writes every frame as
-//! JSON. Run optimised:
+//! JSON, the warm-up cycle's (a first showing) under `cold_frames`. Run
+//! optimised:
 //!
 //! ```sh
 //! cargo test --profile timing -p strand-render --test anim_bench -- \
@@ -1468,12 +1469,15 @@ struct Run {
     memory: Vec<(&'static str, u64)>,
     /// The warm-up cycle's worst frame (µs): a first showing.
     cold_max: f64,
+    /// The warm-up cycle's frames.
+    cold: Vec<Sample>,
 }
 
 fn run(scene: &Scene, cfg: Config, leg: Leg, cycles: u32) -> Option<Run> {
     let mut b = Bench::boot(scene, cfg, leg)?;
     let mut samples = Vec::new();
     let mut cold_max: f64 = 0.0;
+    let mut cold = Vec::new();
     // Cycle 0 warms up (not recorded).
     for cycle in 0..=cycles {
         let (cap, fixed) = match scene.frames {
@@ -1489,6 +1493,7 @@ fn run(scene: &Scene, cfg: Config, leg: Leg, cycles: u32) -> Option<Run> {
                 let total = s.work + s.gpu_total;
                 if cycle == 0 {
                     cold_max = cold_max.max(total);
+                    cold.push(s);
                 } else {
                     samples.push(s);
                 }
@@ -1503,6 +1508,7 @@ fn run(scene: &Scene, cfg: Config, leg: Leg, cycles: u32) -> Option<Run> {
         samples,
         memory,
         cold_max,
+        cold,
     })
 }
 
@@ -1656,6 +1662,13 @@ fn animation_frame_cost() {
                     }
                     json.push_str("},\"frames\":[");
                     for (i, s) in r.samples.iter().enumerate() {
+                        if i > 0 {
+                            json.push(',');
+                        }
+                        json_sample(&mut json, s);
+                    }
+                    json.push_str("],\"cold_frames\":[");
+                    for (i, s) in r.cold.iter().enumerate() {
                         if i > 0 {
                             json.push(',');
                         }

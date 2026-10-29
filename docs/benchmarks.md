@@ -732,3 +732,44 @@ encoding 0.09–0.18 ms; shared-morph 1.54–1.61 / 4.49–4.61 at 1×
 3.06–3.11; theme-spring 1.84–1.99 / 2.32–2.93. The same test on
 d85e5f96 misses 12 of its gates (cover-mask's encoding 8.5 and 13 ms,
 shared-morph's median 9.2 ms at 1×, stagger's median 9.1 ms at 1.5×).
+
+## Cold first frames (perf-cold)
+
+What a first showing costs on the owner's laptop (Intel GPU, Mesa ANV
+25.2.8), 2026-10-29 at `main` 72f5cdb8, pinned to cores 0–3, the host
+busy (load 4–6). Two measurements:
+
+**The bench.** `anim_bench.rs`'s Intel leg, three repeats; its JSON now
+holds the warm-up cycle's frames (`cold_frames`). A cold maximum there
+adds the render thread's work, the GPU thread's and the full-surface
+readback (5–7 ms of a 2560×1440 frame), which a presented frame never
+waits for, so it overstates what is shown. Every scene's cold maximum
+is 1.3–9.6 ms at 1× and 1.4–11.5 ms at 1.5× but crossfade at 1.5×
+(19–40 ms) and goo at 1.5× (8.9–12.7, its CPU contour). Without the
+readback every frame over the budget falls to 1.7–6.0 ms (panel-open,
+backdrop-blur and stagger at 1.5×, crossfade and stagger at 1×) but
+crossfade's at 1.5× (13–34 ms) and goo's (7.4–10.9). Crossfade's first frame at 1.5× spends 9–32 ms in
+vello_gpu's `render` on the GPU thread (0.2–0.6 ms at 1×); a device
+warm-up drawn at 2560×1440 took that to 5.5–6.3 ms, so growing its
+layer textures is only part of it.
+
+**The shell.** `strand run` (timing profile) in `gpu.sh` on its own
+headless sway at 2560×1440, scale 1.5, 120 Hz: a bar, a full-screen
+themed dashboard (2550×1350 px) and a launcher panel (the bench's
+panel-open card, `enter { opacity: 0; scale: 0.92; y: 24 }`) opened
+by `strand set`, each frame timed by `STRAND_LOG=damage` lines stamped
+as they came. Times from one frame to the next:
+
+| What | First frame (CPU) | Second frame | Then |
+| --- | --- | --- | --- |
+| Launcher open (four, the last after 35 s idle) | 4.5–11.6 ms raster | 5.5–11.1 ms later (the GPU attached 3–5 ms after the first) | 7.5–9.2 ms apart, on the 120 Hz beat |
+| First theme swap of the process | 9.0 ms raster | 25.8 ms later | on the beat |
+| A theme swap after 35 s idle | 9.6 ms raster | 12.1 ms later | on the beat |
+| A theme swap within 2 s of the last | on the GPU | 4–6 ms later | on the beat |
+
+A first frame is the CPU's (the surface promotes at its first large
+frame), and a promoted theme swap blends over the CPU's snapshot
+uploaded whole (14 MB at 2550×1350). So a launcher opens with at most
+one late frame, while it is almost transparent, and the first theme
+swap of a session drops two or three frames. Not fixed (decisions.md
+perf-cold).

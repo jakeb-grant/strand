@@ -14160,3 +14160,21 @@ tolerating a column in the verdict (the eval rules are frozen). Tests:
 `an_at_step_times_the_next_steps_change`,
 `an_at_step_is_refused_off_its_tick_or_before_time`,
 `a_change_kept_between_ticks_is_timed_by_an_at_step`.
+
+## perf-cold
+
+**2026-10-29 · perf-cold (owner-approved): cold first frames measured
+and closed; the rest of the review's open list is dropped.** Measured
+on the owner's Intel GPU at 1.5× and 120 Hz in the bench and in a
+running shell (docs/benchmarks.md, "Cold first frames"): a launcher's
+first open shows at most one late frame, while it fades in from
+transparent, and only the first theme crossfade of a session drops
+frames (two or three: the GPU's first frame over an uploaded 14 MB CPU
+snapshot, about 26 ms). Keeping full-screen GPU textures for the whole
+session to save that once was rejected: theme swaps are rare and the
+memory is held always. The owner dropped the other items of "perf: what
+the review leaves open" (glass at 1× and backdrop blur on the CPU,
+retained GPU layers, goo's GPU contour, CPU resize damage narrowing,
+per-frame allocations, full GPU damage); they are not planned. The
+bench's JSON keeps its warm-up cycle's frames (`cold_frames`) for the
+next measurement.
