@@ -23,6 +23,8 @@ file fixes boundaries; each crate is free inside its own boundary.
 | File output writer (`strand-files`) | the binary's `run/outputs.rs` | Each `file` output's bytes (atomic, following symlinks, keeping the mode), its manifest, retries (1 s doubling to 10 s), `run:` (200 ms debounce, one queued, 10 s timeout killing the group, waited on `strand-files-run`); outcomes to logic via a shared list and a ping | Render templates, touch the scene, block logic; it has no channel to main |
 | State writer (`strand-state-write`, per `FileWriter`) | `strand-theme` (`writer.rs`) | Batched atomic writes of the last palette and portal settings | Block logic (a failure is a WARN) |
 | Introspection asks (`strand-introspect`, per uncached ask; `strand lsp` only) | `strand-introspect` (`Cache::properties_or_ask`) | One D-Bus introspection call, remembered for `TTL` | Block the LSP (it answers from memory or not at all) |
+| Action commands (`strand-exec`, one per running command) | the binary's `run/exec.rs` | A declared action's command, or a command output's capture, with its timeout and kill grace | Block logic (results are taken after a tick) |
+| Raster helpers (`strand-raster`, scoped to one CPU frame) | `strand-render` (`raster/`) | A large frame's cells, drawn in parallel and joined before the frame ends | Outlive the frame |
 | Short-lived waiters | `overlay.rs` (`strand-editor`), services' `custom.rs` (`strand-kill`), `wm/screen.rs` (`strand-screenshot`) | Reap `$EDITOR`; SIGKILL a dropped `permit exec` group after its grace; one screen shot until its frame or `SHOT_WAIT` | Anything but that wait |
 | Report writer (`strand-report`, per saved report) | the binary's `report/bundle.rs` | One glitch report's bundle and pruning ("Glitch reports"); outcome via a shared slot and a ping | Touch Wayland, the scene or the rings; block logic or main |
 
@@ -240,7 +242,7 @@ strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Pain
           ├── strand-services-macros (#[service], #[derive(Store, Data, Call)])
           ├── strand-services-schema (the builtin services' schema texts)
           ├── strand-icons (apps' icons, the renderer's lookup)
-          └── strand-introspect (D-Bus introspection; zbus and log only)
+          └── strand-introspect (D-Bus introspection; zbus, tokio and log only)
 strand (binary) wires everything; its ServiceHost adapters join
 strand-services' stores to strand-compiler's VM. strand-core's `ipc`
 (serde_json) is shared by strand, strand-services and strand-dev;
@@ -428,8 +430,8 @@ name them.
   `strand_core::persist::state_dir()` (`$STRAND_STATE_DIR`, else
   `$XDG_STATE_HOME/strand`, else `~/.local/state/strand`) are the one
   rule for finding a shell and its state. `child::child_env` removes
-  both variables (`child::INSTANCE_VARS`) from every program the shell
-  starts.
+  them, and greetd's `GREETD_SOCK` (`child::INSTANCE_VARS`), from every
+  program the shell starts.
 - Version 1 also has `get{path}`, `toggle{path}`, `call{target, args}`,
   `clear{path}`, `report{save?}` ("Glitch reports"), `export{kind,
   template?, name?}` ("The theming hub"), `inspect.pick{on}`,
@@ -723,7 +725,7 @@ run, so no timer, wakeup or flush exists.
 
 **`strand_core::flight`: types and codec only, no I/O, no threads.**
 `epoch()`, `now_ns()`, `epoch_unix_ns()`; `RingSpec` (`INPUT`,
-`CHANGES`); `Ring::new(RingSpec)` with `push`, `merge_motion`,
+`CHANGES`); `Ring::new(spec, which)` with `push`, `merge_motion`,
 `merge_text`, `name` (interned, else `NAME_IN_ARENA`), `value` (written
 into the arena by a bounded writer; past `VALUE_CAP`, 8,192 B, dropped
 and marked truncated), `named_value`, `push_named`, `pause`/`resume`
@@ -765,7 +767,7 @@ and marked truncated), `named_value`, `push_named`, `pause`/`resume`
   refresh and lateness from `Host::painted` (`State::refresh`).
 
 **Logic side** (`run/record.rs`, `ChangeRecorder`, in the logic `Shell`).
-- **Services.** `Services::tap(Tap)` installs one callback for every
+- **Services.** `Services::tap(Some(Tap))` installs one callback for every
   patch `Services::pump` applies (`TapEvent { service, change }`,
   `Change::{Field, Keyed, Event}`, with `initial` and `local`); a local
   write is told as applied (`local: true`), and its echo is never a
@@ -773,13 +775,13 @@ and marked truncated), `named_value`, `push_named`, `pause`/`resume`
   `Data::write_json` takes a per-text keep closure. Fields the program
   never reads (`Program::reads`, `ServiceReads`) are not recorded;
   events, config services and `system` always are.
-- **The config's writes.** `Instance::set_cell_tap(Box<dyn
-  FnMut(CellWrite<'_>)>)` tells each state cell, settings field or
-  token overlay written in a tick once (`CellWrite { path, old, new }`),
-  from the tick's own write list. Cells under a `lock` surface and cells
-  bound to a password input are left out of the tap and
-  `cells_snapshot` (`Ctx::secret_cells`). `Program::is_text_literal`
-  and `vm::json::{to_json, from_json}` serve redaction and replay.
+- **The config's writes.** `Instance::set_cell_tap(Some(CellTap))`
+  (`CellTap` is `Box<dyn FnMut(CellWrite<'_>)>`) tells each state cell,
+  settings field or token overlay written in a tick once (`CellWrite { path,
+  old, new }`), from the tick's own write list. Cells under a `lock` surface
+  and cells bound to a password input are left out of the tap and
+  `cells_snapshot` (`Ctx::secret_cells`). `Program::is_text_literal` and
+  `vm::json::{to_json, from_json}` serve redaction and replay.
 - **Calls and actions** are recorded where the binary handles them
   (`services/adapter.rs`, `custom.rs`, `run/exec.rs`, `composite.rs`).
 - **Redaction.** `auth`, `polkit` and `greetd` are never recorded or
@@ -886,7 +888,8 @@ is being saved, so the idle-wakeup windows hold.
   closed form; `SPATIAL`, `EFFECTS`, `BOUNCY` are the design's
   `$motion.*` springs. `Curve` (`Instant`, `Spring`, `Timed { duration,
   easing }`) is a resolved transition; `ease(Easing, p)` evaluates it.
-  `Easing::named` knows exactly `Easing::NAMES`; the checker's `enum
+  `Easing::named` (in `protocol.rs`, beside `Easing`) knows exactly
+  `Easing::NAMES`; the checker's `enum
   Curve` in `builtin.schema` must stay a subset of it, so a name it
   accepts never runs as `STANDARD`. `Motion<N>` is an `N`-channel value
   in flight: `retarget`/`shift` (a FLIP jump) take effect at the next
@@ -915,9 +918,11 @@ is being saved, so the idle-wakeup windows hold.
   predicted presentation time (`.at(t)`), tests pass fixed values.
   `opaque_region` is in buffer pixels; convert with
   `Scale::inner_logical_region`, which rounds inward. The input region
-  is not a painter question: render puts the shadow reach into
-  `SurfaceSpec::overhang` and the surface manager sets the region to the
-  box inside it.
+  defaults to the box inside the shadow overhang: render puts the shadow
+  reach into `SurfaceSpec::overhang` and the surface manager sets the
+  region from it, unless `Painter::input_region` returns the rects the
+  last frame drew (a popup that draws nothing itself takes input only
+  where its content is; an empty list takes none).
 
 - **Input**: `InputEvent` (pointer, keyboard, `Key { key: KeyInput }`
   whose `latin` keysym shortcuts match through `KeyInput::shortcut()`,
@@ -978,8 +983,10 @@ is being saved, so the idle-wakeup windows hold.
   what a surface-kind node asks of Wayland, with `thickness()`,
   `exclusive_edge()`, `exclusive_zone()` and `needs_recreate()`. Logic
   pins each per-monitor instance of a `bar`, `panel` or `osd` whose
-  `screens:` picks monitors (`Screens::Named`); a `lock` is one instance
-  with `screen` bound to the focused (else first) monitor and no pin; a
+  `screens:` picks monitors (`Screens::Named`); a `lock` has one
+  instance per monitor its `screens:` picks, and with `screens: focused`
+  (or nothing it picks plugged in) one instance with `screen` bound to
+  the focused (else first) monitor and no pin (decisions.md lockmon); a
   `window` is one instance, unpinned. A surface without a size of its
   own gets it from a content layout pass before the spec is reported.
   Render resolves specs through the node's token scope after every
@@ -997,13 +1004,14 @@ is being saved, so the idle-wakeup windows hold.
   until its first layout arrives (decisions.md late-text-dip).
 - **Animation** (`anim/`): the render thread owns every spring. A prop in
   `ANIMATED` (`x`, `y`, `opacity`, `scale`, `rotate`, `bg`, `color`,
-  `border`, `shadow`, `radius`, `value`, `track`) set on a surface shown
-  with a clock springs along `TokenScope::transition`;
+  `border`, `shadow`, `radius`, `value`, `track`, `stroke`, `trim`,
+  `wave`, `glow`, a text's solid `fill`, and a `shader`'s uniforms) set on a
+  surface shown with a clock springs along `TokenScope::transition`;
   `width`/`height`/`size` spring the laid-out size. Other layout lengths
   snap and the boxes they move glide (FLIP), as do siblings of created,
-  removed and moved nodes and every box after a `SetTokens`; text
-  changes never glide. A target changed by tokens or inheritance snaps
-  at rest and steers a motion in flight.
+  removed and moved nodes and every box after a `SetTokens`; text changes
+  never glide. A target changed by tokens or inheritance snaps at rest and
+  steers a motion in flight.
 
   `enter` plays for a node created on a shown surface or in the diff that
   opens it. `Remove` of a node with a pose makes its subtree a ghost
@@ -1026,9 +1034,9 @@ is being saved, so the idle-wakeup windows hold.
   finishes an exit or lets a held surface shrink refreshes the specs, so
   the host must check `has_surface_changes()` after every `paint`. A
   surface just attached previews at time zero, so `enter` plays from its
-  first painted frame. Not yet animated: gradients, `mark_color` (span
-  colours are part of the shaping request) and the props of effects
-  still to be drawn (`stroke`, `fill`, `trim`, `glow`, `blur`).
+  first painted frame. Not animated: gradients, `mark_color` (span
+  colours are part of the shaping request) and `blur` (the
+  compositor's).
 
   `PaintTarget::time` zero and `reduced_motion` snap everything. `strand
   run` sends each change of `system.reduced_motion` (the portal's
@@ -1385,7 +1393,8 @@ by `strand-compiler`, not here. See `crates/strand-core/src/lib.rs`.
   guard); `rt.spawn_input(Some(site), fut)` runs external input, not
   counted up to its first suspending `await` and counted per run after.
   `<->` writes are not counted. Timers are `rt.after/every(_dyn)`; `on
-  change` is `rt.on_change_each(_after)`, each target paired with the
+  change` is `rt.on_change_each` (`rt.on_change_after_each` for the
+  late phase), each target paired with the
   identity of the keyed object it reads, so it never fires on a sink
   switch; `on change` handlers run after the tick's other effects
   settle.
@@ -1784,9 +1793,9 @@ Public interfaces:
   - `compositor-rules`: `blur_rules(&Build)` (`strand/src/rules.rs`)
     lists the surfaces that blur, by namespace: a layer surface's own
     `blur` gives `blur`, a nested popup's `blur_popups` on its layer.
-  - Checks live in per-stream submodules (`check/{surfaces, effects,
-    lists, lock}.rs`); `attach` and `scrim` are allowed only on `popup`
-    and `panel`.
+  - Checks live in per-concern submodules (`check/surfaces.rs`,
+    `effects.rs`, `lock.rs`, `shaders.rs` and the rest); `attach` and
+    `scrim` are allowed only on `popup` and `panel`.
 
 - **Formatting** (`strand_compiler::fmt`): `format(src) -> Result<String,
   FormatError>`, the one formatter behind `strand fmt` and LSP
@@ -2874,5 +2883,6 @@ concurrent own write is never undone. `Settings::sources()`,
 `SettingsSources::read_from` and `Settings::reload_with` remain for a
 thread allowed to parse. Strand's temp files beside a settings file are
 `.<name>.tmp.<pid>.<n>`, renamed over it (the watcher sees `MOVED_TO`
-for the file); the scratch-name filter should ignore that pattern, as
-it does editors' scratch names.
+for the file). The temp file's own events name no watched file, and its
+leading dot keeps it out of a config directory's module scan
+(`paths::is_hidden`), so it never reads as an edit.

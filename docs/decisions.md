@@ -14065,6 +14065,17 @@ code's doc comments give went (540 KB to 176 KB). The trims were checked
 against the code; where the old text and the code disagreed it was kept
 or noted, not silently changed. Git keeps the long versions.
 
+**2026-10-29 · docs-trim: architecture.md corrected where it disagreed
+with the code.** The trim's check found statements the code had moved
+past (signatures of `Ring::new`, `Services::tap` and `set_cell_tap`,
+`on_change_after_each`, where `Easing::named` lives, the check modules,
+the 18 animated props, `INSTANCE_VARS`, `strand-introspect`'s
+dependencies, the `strand-exec` and `strand-raster` threads, the painter's
+input region, the lock's one instance per picked monitor); each now says
+what the code does. The settings temp files were never a bug: their own
+events name no watched file and their leading dot keeps them out of the
+module scan.
+
 ## screens-focus
 
 **2026-10-29 · screens-focus: `screens.focused` follows the compositor's
