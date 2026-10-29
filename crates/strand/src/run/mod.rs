@@ -388,8 +388,9 @@ pub enum ToMain {
     /// lock.
     Secret(bool),
     /// (screens-focus) The monitor (its `Screen.id`) the compositor names
-    /// as focused, which `screens.focused` is: main places `screens:
-    /// focused` surfaces and the lock's single instance on it
+    /// as focused, which `screens.focused` is: main places the surfaces
+    /// that follow the focus (`SurfaceSpec::follows_focus`: a `screens:`
+    /// that is `focused`, the lock's single instance) on it
     /// (`State::set_focused_monitor`). `None` while the compositor names
     /// none (`screens.focused` is then the first monitor): the
     /// compositor places them.

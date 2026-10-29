@@ -3964,10 +3964,16 @@ impl Ctx {
                     SceneProp::Screens,
                     PropValue::Text(screen_key(&ctx.vm.prog.types, v)),
                 ));
-            } else if lock {
+            } else {
                 // (lockmon) The one instance is the focused monitor's,
-                // whatever its `screens:` named.
-                extra.push((SceneProp::Screens, PropValue::Keyword("focused".into())));
+                // whatever its `screens:` named; (screens-focus) its
+                // `screen` follows the focus, so the surface does too,
+                // where a panel with no `screens:` stays where the
+                // compositor put it.
+                extra.push((
+                    SceneProp::Screens,
+                    PropValue::Keyword(strand_scene::FOLLOW_FOCUS.into()),
+                ));
             }
             if lock {
                 // (lockmon) Its states are the lock's (declared above);

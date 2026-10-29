@@ -144,6 +144,12 @@ impl WindowAsk {
     }
 }
 
+/// (screens-focus) The [`Prop::Screens`] keyword the compiler gives an
+/// instance whose `screen` is the focused monitor (a `screens:` that
+/// evaluates to `focused`, a lock's single instance): [`Screens::Focused`]
+/// with [`SurfaceSpec::follows_focus`]. Config text cannot write it.
+pub const FOLLOW_FOCUS: &str = "follow_focus";
+
 /// Which outputs a surface appears on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Screens {
@@ -185,6 +191,12 @@ pub struct SurfaceSpec {
     pub width: Option<f32>,
     pub height: Option<f32>,
     pub screens: Screens,
+    /// (screens-focus) A [`Screens::Focused`] surface whose `screen` is
+    /// the focused monitor ([`FOLLOW_FOCUS`]): the surface manager places
+    /// it on the monitor it is told is focused and moves it with the
+    /// focus. Without it (a `panel` or `osd` with no `screens:`, or
+    /// `screens: focused` written), the compositor places it, once.
+    pub follows_focus: bool,
     /// `open: …`; unset is open.
     pub open: bool,
     /// `attach: top`: concave fillets towards that edge (M4).
@@ -345,9 +357,14 @@ impl SurfaceSpec {
                 .and_then(|k| Layer::from_name(&k))
                 .unwrap_or(default_layer)
         });
-        let screens = match get(Prop::Screens).as_ref().map(AsRef::as_ref) {
+        let screens_prop = get(Prop::Screens);
+        let follows_focus = matches!(
+            screens_prop.as_ref().map(AsRef::as_ref),
+            Some(PropValue::Keyword(k)) if k == FOLLOW_FOCUS
+        );
+        let screens = match screens_prop.as_ref().map(AsRef::as_ref) {
             Some(PropValue::Keyword(k)) if k == "all" => Screens::All,
-            Some(PropValue::Keyword(k)) if k == "focused" => Screens::Focused,
+            Some(PropValue::Keyword(k)) if k == "focused" || k == FOLLOW_FOCUS => Screens::Focused,
             Some(PropValue::Text(t)) => Screens::Named(vec![t.clone()]),
             Some(PropValue::List(items)) => Screens::Named(
                 items
@@ -390,6 +407,7 @@ impl SurfaceSpec {
             width: px(Prop::Width).or(size),
             height: px(Prop::Height).or(size),
             screens,
+            follows_focus,
             open: !matches!(
                 get(Prop::Open).as_ref().map(AsRef::as_ref),
                 Some(PropValue::Bool(false))
@@ -712,7 +730,20 @@ mod tests {
         let osd = spec(NodeKind::Osd, &[(Prop::Anchor, kw("bottom"))]);
         assert_eq!(osd.layer, Some(Layer::Overlay));
         assert_eq!(osd.screens, Screens::Focused);
+        assert!(!osd.follows_focus, "the compositor places it");
         assert_eq!(osd.namespace(), "strand-osd");
+        // (screens-focus) Written `focused` is the default's placement;
+        // the compiler's FOLLOW_FOCUS follows the focus.
+        let written = spec(NodeKind::Panel, &[(Prop::Screens, kw("focused"))]);
+        assert_eq!(
+            (written.screens, written.follows_focus),
+            (Screens::Focused, false)
+        );
+        let follows = spec(NodeKind::Panel, &[(Prop::Screens, kw(FOLLOW_FOCUS))]);
+        assert_eq!(
+            (follows.screens, follows.follows_focus),
+            (Screens::Focused, true)
+        );
 
         // Popups are not layer surfaces.
         assert_eq!(spec(NodeKind::Popup, &[]).layer, None);

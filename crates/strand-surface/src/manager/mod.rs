@@ -500,7 +500,8 @@ pub struct SurfaceInfo {
     /// focused` the one the compositor showed it on (`None` until then).
     pub monitor: Option<MonitorId>,
     /// A `screens: focused` surface (one per node, placed by the
-    /// compositor or by [`State::set_focused_monitor`]).
+    /// compositor, or by [`State::set_focused_monitor`] when it follows
+    /// the focus).
     pub focused: bool,
     pub namespace: String,
     /// The compositor configured it.
@@ -1546,10 +1547,13 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     // ---- outputs and surfaces -------------------------------------------
 
-    /// Places `screens: focused` surfaces on `monitor` (from a compositor
-    /// IPC service), moving open ones there. `None` (the default) lets the
-    /// compositor choose: wlr-layer-shell puts a surface created without
-    /// an output on the output the user last interacted with.
+    /// Places `screens: focused` surfaces that follow the focus
+    /// ([`SurfaceSpec::follows_focus`]) and the lock's focused content on
+    /// `monitor` (from a compositor IPC service), moving open ones there.
+    /// `None` (the default) lets the compositor choose: wlr-layer-shell
+    /// puts a surface created without an output on the output the user
+    /// last interacted with. Other `screens: focused` surfaces are always
+    /// the compositor's to place.
     pub fn set_focused_monitor(&mut self, monitor: Option<MonitorId>) {
         if self.focused == monitor {
             return;
@@ -1640,7 +1644,9 @@ impl<H: SurfaceHost + 'static> State<H> {
             Vec::new()
         };
         let want_focused = mapped && focused && !self.outputs.is_empty();
-        let target = self.focused_output();
+        // (screens-focus) Only a surface whose `screen` follows the focus
+        // is placed and moved by it; any other the compositor places.
+        let target = spec.follows_focus.then(|| self.focused_output()).flatten();
         let stale: Vec<SurfaceId> = self
             .surfaces
             .values()

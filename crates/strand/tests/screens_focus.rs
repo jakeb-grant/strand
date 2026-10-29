@@ -5,7 +5,8 @@
 //! output`. The config exports what it reads of the focus (read back
 //! with `strand get`) and shows a panel whose `screens:` evaluates to
 //! `focused`, half its `screen`'s width wide: it must show on the
-//! focused monitor, sized from that monitor, and move with the focus.
+//! focused monitor, sized from that monitor, and move with the focus,
+//! while a panel with no `screens:` stays where sway put it.
 //! Without sway's IPC (no compositor adapter) the first monitor is the
 //! focused one, wherever sway's focus is.
 //!
@@ -28,6 +29,10 @@ panel Here { screens: wide ? Screens.all : Screens.focused; anchor: top_left
   width: screen.width / 2; height: 40; open: true
   box { width: screen.width / 2; height: 40; bg: #ff0000 }
 }
+
+panel Plain { anchor: top_right; width: 100; height: 40; open: true
+  box { width: 100; height: 40; bg: #00ff00 }
+}
 "#;
 
 /// A shell that reads nothing of the focus.
@@ -38,9 +43,12 @@ const PLAIN: &str = "export let n = 1\nbar Top { height: 30\n  text screen.name\
 const READER: &str = "export let n = 2\nexport let named = screens.focused?.name ?? \"none\"\n\
                       bar Top { height: 30\n  text screen.name\n}\n";
 
-/// The panel's row of pixels looked at, and its colour.
+/// The panels' row of pixels looked at, and their colours: `Here`'s
+/// (on the focused monitor, following it) and `Plain`'s (no `screens:`:
+/// where the compositor put it).
 const ROW: usize = 20;
 const RED: [u8; 3] = [0xff, 0x00, 0x00];
+const GREEN: [u8; 3] = [0x00, 0xff, 0x00];
 
 /// How long a state may take to show.
 const PATIENCE: Duration = Duration::from_secs(20);
@@ -287,8 +295,13 @@ impl Desk {
         Some((self.get("named")?, self.get("marked")?, self.get("marks")?))
     }
 
-    /// How many pixels of [`ROW`] on `output` are the panel's red.
+    /// How many pixels of [`ROW`] on `output` are `Here`'s red.
     fn red(&self, output: &str) -> usize {
+        self.count(output, RED)
+    }
+
+    /// How many pixels of [`ROW`] on `output` are `colour`.
+    fn count(&self, output: &str, colour: [u8; 3]) -> usize {
         let out = Command::new("grim")
             .args(["-t", "ppm", "-o", output, "-"])
             .env("XDG_RUNTIME_DIR", &self.dir)
@@ -299,7 +312,7 @@ impl Desk {
         let (w, px) = ppm(&out.stdout);
         px[ROW * w * 3..(ROW + 1) * w * 3]
             .chunks(3)
-            .filter(|p| *p == RED)
+            .filter(|p| *p == colour)
             .count()
     }
 
@@ -321,18 +334,27 @@ impl Desk {
         }
     }
 
-    /// The focus is `output` in every export, and the panel is on it,
-    /// `wide` pixels wide (half that monitor), and not on `other`.
-    fn focused_on(&mut self, output: &str, wide: usize, other: &str) {
+    /// The focus is `output` in every export, and `Here` is on it,
+    /// `wide` pixels wide (half that monitor), and not on `other`;
+    /// `Plain` is on `plain` only, 100 pixels wide.
+    fn focused_on(&mut self, output: &str, wide: usize, other: &str, plain: &str) {
         let want = (output.to_string(), output.to_string(), "1".to_string());
         self.until(&format!("the focus on {output}"), |d| {
             let got = d.focus();
             let (here, there) = (d.red(output), d.red(other));
-            if got.as_ref() == Some(&want) && here == wide && there == 0 {
+            let greens = [
+                ("HEADLESS-1", d.count("HEADLESS-1", GREEN)),
+                ("HEADLESS-2", d.count("HEADLESS-2", GREEN)),
+            ];
+            let plain_ok = greens
+                .iter()
+                .all(|(o, n)| *n == if *o == plain { 100 } else { 0 });
+            if got.as_ref() == Some(&want) && here == wide && there == 0 && plain_ok {
                 Ok(())
             } else {
                 Err(format!(
-                    "exports {got:?}, red on {output} {here}, on {other} {there}"
+                    "exports {got:?}, red on {output} {here}, on {other} {there}, \
+                     Plain's green {greens:?}"
                 ))
             }
         });
@@ -360,17 +382,18 @@ fn ppm(bytes: &[u8]) -> (usize, &[u8]) {
 
 /// `screens.focused`, the `focused` flags and a `screens: focused`
 /// panel's `screen` and place follow sway's focus from one monitor to
-/// the other and back.
+/// the other and back; a panel with no `screens:`, opened on the first
+/// while the focus is followed, stays where sway put it.
 #[test]
 fn the_focused_screen_follows_the_compositor_across_two_monitors() {
     let Some(mut desk) = start("follow", SHELL, "HEADLESS-1", true) else {
         return;
     };
-    desk.focused_on("HEADLESS-1", 640, "HEADLESS-2");
+    desk.focused_on("HEADLESS-1", 640, "HEADLESS-2", "HEADLESS-1");
     swaymsg(&desk.sock, &["focus", "output", "HEADLESS-2"]);
-    desk.focused_on("HEADLESS-2", 800, "HEADLESS-1");
+    desk.focused_on("HEADLESS-2", 800, "HEADLESS-1", "HEADLESS-1");
     swaymsg(&desk.sock, &["focus", "output", "HEADLESS-1"]);
-    desk.focused_on("HEADLESS-1", 640, "HEADLESS-2");
+    desk.focused_on("HEADLESS-1", 640, "HEADLESS-2", "HEADLESS-1");
 }
 
 /// Without the compositor's IPC nothing names the focused monitor: the

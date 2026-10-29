@@ -152,6 +152,8 @@ fn a_panel_whose_screens_is_focused_now_follows_focus_in_place() {
     assert_eq!(panels.len(), 1, "{}", sh.scene.render());
     assert_eq!(sh.scene.texts(), ["DP-1"]);
     assert_eq!(sh.spec(panels[0]).screens, strand_scene::Screens::Focused);
+    // (screens-focus) Its `screen` follows the focus: so does its surface.
+    assert!(sh.spec(panels[0]).follows_focus);
     let name = sh.scene.find_text("DP-1").unwrap();
     set_screens(&sh.rt, &sh.host, &MONITORS, Some(1));
     sh.flush();
@@ -177,8 +179,8 @@ fn a_component_in_a_panel_on_every_screen_reads_its_screen() {
 }
 
 /// A panel on the focused monitor (the default, or `screens: focused`)
-/// is one surface the compositor places: no `screen` is in scope there,
-/// and reading it says where it is.
+/// is one surface the compositor places (it does not follow the focus):
+/// no `screen` is in scope there, and reading it says where it is.
 #[test]
 fn screen_is_not_in_scope_on_a_focused_panel() {
     for src in [
@@ -192,6 +194,19 @@ fn screen_is_not_in_scope_on_a_focused_panel() {
     }
     let c = compile("panel P { screens: all; width: screen.width }\n");
     assert_eq!(c.errors(), 0, "{:#?}", c.diagnostics);
+    // (screens-focus) The compositor's to place: it does not follow the
+    // focus.
+    for src in [
+        "panel P { width: 200 }\n",
+        "panel P { screens: focused; width: 200 }\n",
+    ] {
+        let sh = boot(src, &MONITORS, Some(1));
+        let panels = sh.scene.of_kind(NodeKind::Panel);
+        assert_eq!(panels.len(), 1, "{src}");
+        let spec = sh.spec(panels[0]);
+        assert_eq!(spec.screens, strand_scene::Screens::Focused, "{src}");
+        assert!(!spec.follows_focus, "{src}");
+    }
 }
 
 /// (lockmon) A lock is on every monitor, an instance each with its own
@@ -378,6 +393,7 @@ fn a_locks_screens_picks_its_monitors() {
     let locks = sh.scene.of_kind(NodeKind::Lock);
     assert_eq!(locks.len(), 1);
     assert_eq!(sh.spec(locks[0]).screens, strand_scene::Screens::Focused);
+    assert!(sh.spec(locks[0]).follows_focus);
     assert_eq!(sh.scene.texts()[0], "HDMI-A-1");
     let name = sh.scene.find_text("HDMI-A-1").unwrap();
     set_screens(&sh.rt, &sh.host, &MONITORS, Some(0));

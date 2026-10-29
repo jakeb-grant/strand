@@ -679,13 +679,21 @@ fn focused_surfaces_open_on_the_focused_output() {
     )
     .unwrap();
     const PANEL: NodeId = NodeId::new(5, 0);
-    let spec = layer_spec(NodeKind::Panel, "Launcher", "center", 400.0, 200.0);
+    const DEFAULT: NodeId = NodeId::new(6, 0);
+    // (screens-focus) An instance whose `screen` follows the focus.
+    let mut spec = layer_spec(NodeKind::Panel, "Launcher", "center", 400.0, 200.0);
     assert_eq!(spec.screens, strand_scene::Screens::Focused);
+    assert!(!spec.follows_focus);
+    spec.follows_focus = true;
     mgr.state_mut()
         .apply_surface_change(PANEL, SurfaceChange::Created(spec));
     // One surface, placed by the compositor on the focused output.
-    let on = |s: &strand_surface::State<TestHost>, output: &str| {
-        let surfaces = s.surfaces();
+    let on = |s: &strand_surface::State<TestHost>, node: NodeId, output: &str| {
+        let surfaces: Vec<_> = s
+            .surfaces()
+            .into_iter()
+            .filter(|x| x.node == node)
+            .collect();
         surfaces.len() == 1
             && surfaces[0].stats.commits > 0
             && surfaces[0].monitor.as_ref().is_some_and(|m| {
@@ -694,7 +702,7 @@ fn focused_surfaces_open_on_the_focused_output() {
                     .any(|x| &x.id == m && x.connector.as_deref() == Some(output))
             })
     };
-    let ok = mgr.dispatch_until(WAIT, |s| on(s, &second)).unwrap();
+    let ok = mgr.dispatch_until(WAIT, |s| on(s, PANEL, &second)).unwrap();
     assert!(ok, "{:?}", mgr.state().surfaces());
     let info = mgr.state().surfaces()[0].clone();
     assert!(info.focused);
@@ -715,10 +723,18 @@ fn focused_surfaces_open_on_the_focused_output() {
         .find(|m| m.connector.as_deref() == Some("HEADLESS-1"))
         .unwrap();
     mgr.state_mut().set_focused_monitor(Some(first.id.clone()));
-    let ok = mgr.dispatch_until(WAIT, |s| on(s, "HEADLESS-1")).unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| on(s, PANEL, "HEADLESS-1"))
+        .unwrap();
     assert!(ok, "{:?}", mgr.state().surfaces());
     // Same node, same placement: the same surface id.
-    assert_eq!(mgr.state().surfaces()[0].id, info.id);
+    let moved = |s: &strand_surface::State<TestHost>| {
+        s.surfaces()
+            .into_iter()
+            .find(|x| x.node == PANEL)
+            .map(|x| x.id)
+    };
+    assert_eq!(moved(mgr.state()), Some(info.id));
     assert_eq!(
         mgr.state().host().attached.last(),
         Some(&(info.id, PANEL, Some(first.id.clone())))
@@ -726,9 +742,61 @@ fn focused_surfaces_open_on_the_focused_output() {
     settle(&mut mgr);
     assert_eq!(sway.grim("HEADLESS-1").rgb(960, 540), BLUE);
 
+    // (screens-focus) A panel with no `screens:` is the compositor's to
+    // place, with the focus set or not: it opens on sway's focused output
+    // and stays there when the focus set moves.
+    let default = layer_spec(NodeKind::Panel, "Plain", "top_left", 100.0, 100.0);
+    mgr.state_mut()
+        .apply_surface_change(DEFAULT, SurfaceChange::Created(default));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| on(s, DEFAULT, &second))
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    let plain = mgr
+        .state()
+        .surfaces()
+        .into_iter()
+        .find(|x| x.node == DEFAULT)
+        .unwrap()
+        .id;
+    let second_id = mgr
+        .state()
+        .monitors()
+        .into_iter()
+        .find(|m| m.connector.as_deref() == Some(second.as_str()))
+        .unwrap()
+        .id;
+    mgr.state_mut().set_focused_monitor(Some(second_id));
+    let ok = mgr.dispatch_until(WAIT, |s| on(s, PANEL, &second)).unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    settle(&mut mgr);
+    assert!(on(mgr.state(), DEFAULT, &second));
+    mgr.state_mut().set_focused_monitor(Some(first.id.clone()));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| on(s, PANEL, "HEADLESS-1"))
+        .unwrap();
+    assert!(ok, "{:?}", mgr.state().surfaces());
+    settle(&mut mgr);
+    assert!(
+        on(mgr.state(), DEFAULT, &second),
+        "{:?}",
+        mgr.state().surfaces()
+    );
+    assert_eq!(
+        mgr.state()
+            .surfaces()
+            .into_iter()
+            .find(|x| x.node == DEFAULT)
+            .map(|x| x.id),
+        Some(plain),
+        "the default panel was made again"
+    );
+    mgr.state_mut()
+        .apply_surface_change(DEFAULT, SurfaceChange::Removed);
+
     // Unplugging its output brings it back on the other one.
     sway.msg(&["output", "HEADLESS-1", "unplug"]);
-    let ok = mgr.dispatch_until(WAIT, |s| on(s, &second)).unwrap();
+    let ok = mgr.dispatch_until(WAIT, |s| on(s, PANEL, &second)).unwrap();
     assert!(ok, "{:?}", mgr.state().surfaces());
 }
 

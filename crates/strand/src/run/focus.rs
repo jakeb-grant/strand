@@ -4,10 +4,13 @@
 //! the monitors main reports by `Screen.name`; the first monitor while
 //! that is unknown (no compositor adapter, nothing heard from it yet, a
 //! name no monitor has). Main hears which monitor the compositor named
-//! ([`ToMain::FocusedScreen`]) and places `screens: focused` surfaces
-//! and the lock's single instance there (`State::set_focused_monitor`),
-//! so each shows on the monitor its `screen` is; while none is named,
-//! the compositor places them, as before.
+//! ([`ToMain::FocusedScreen`]) and places the surfaces whose `screen` is
+//! the focused monitor there (`State::set_focused_monitor`: an instance
+//! of a `screens:` that evaluates to `focused`, the lock's single
+//! instance; `SurfaceSpec::follows_focus`), so each shows on the monitor
+//! its `screen` is; while none is named, the compositor places them, as
+//! before. A `panel` or `osd` with no `screens:` (or `screens: focused`
+//! written) has no `screen` and stays the compositor's to place.
 //!
 //! The compositor service runs for this only while something reads the
 //! focus ([`reads_focus`]): the `screens.focused` cell has a reader (a

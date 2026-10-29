@@ -1178,11 +1178,12 @@ fn a_bar_follows_its_own_screens() {
         pin_of(&shell, "DP-1"),
         Some(PropValue::Text("Mock | DP-1 | Display".into()))
     );
-    // (flex review) The focused bar is one instance, left unpinned for
-    // the surface manager to place on the focused monitor.
+    // (flex review) The focused bar is one instance, pinned to no monitor;
+    // (screens-focus) its `screen` follows the focus, so the surface
+    // manager places it on the focused monitor and moves it with it.
     assert_eq!(
         pin_of(&shell, "F HDMI-A-1"),
-        Some(PropValue::Keyword("focused".into()))
+        Some(PropValue::Keyword(strand_scene::FOLLOW_FOCUS.into()))
     );
     let bar_of = |shell: &Shell, text: &str| {
         let t = shell.text_node(text);

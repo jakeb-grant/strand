@@ -14076,15 +14076,25 @@ focused one. Both now name the monitor whose `name` (its connector) is
 the hub's `WmChange::FocusedScreen`; the first while nothing names one
 (no adapter and no single activated window for the protocols, nothing
 heard yet, a name no monitor has). Main hears the same monitor
-(`ToMain::FocusedScreen`) and pins `screens: focused` surfaces to it with
-`State::set_focused_monitor`, so a surface shows on the monitor its
-`screen` is. While none is named it pins nothing and the compositor
-places them as before: pinning the fallback first monitor would move a
-default panel or osd away from where a compositor without IPC puts it.
-While pinned, every `screens: focused` surface (a default panel or osd
-too) is placed on the named monitor and moves with it, as
-`set_focused_monitor` already did; that is the monitor the compositor
-reports as focused, so a new surface lands where it would have put it.
+(`ToMain::FocusedScreen`) and pins to it, with
+`State::set_focused_monitor`, only the surfaces whose `screen` is the
+focused monitor, so each shows on the monitor its `screen` is. While
+none is named it pins nothing and the compositor places them as before.
+
+**2026-10-29 · screens-focus: only a surface whose `screen` follows the
+focus is pinned and moved; a default one stays where the compositor put
+it.** A `panel` or `osd` with no `screens:` (or `screens: focused`
+written) is "one surface the compositor places" with no `screen` in
+scope (spec.md), so pinning it would change its placement depending on
+whether something else reads the focus, and on Hyprland, whose focused
+monitor follows the mouse, an open launcher would hop monitors as the
+pointer crossed. `SurfaceSpec` tells the two apart with `follows_focus`:
+the compiler gives an instance of a `screens:` that evaluates to
+`focused`, and the lock's single instance, the internal `Prop::Screens`
+keyword `FOLLOW_FOCUS` (still `Screens::Focused`), the smallest change to
+the scene protocol; the surface manager pins and moves only those, and
+leaves any other `screens: focused` surface unpinned, focus set or not.
+The lock's content follows the focused output as before.
 
 **2026-10-29 · screens-focus: the compositor service runs for the focus
 only while something reads it.** Logic holds a

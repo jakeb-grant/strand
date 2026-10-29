@@ -493,7 +493,9 @@ name them.
 - (screens-focus) `ToMain::FocusedScreen(Option<String>)`: the
   `Screen.id` of the monitor the compositor names as focused, sent when
   it changes; main calls `State::set_focused_monitor` with that monitor
-  (plugged in or remembered), `None` when none is named.
+  (plugged in or remembered), `None` when none is named. Only surfaces
+  with `SurfaceSpec::follows_focus` (and the lock's focused content) go
+  there.
 - Logic names nodes, never surfaces: a `SurfaceId` is main's and a root
   may show on several, so no logic→main message carries one.
 
@@ -1909,9 +1911,15 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   order); `Screens::Named` matches it or the connector. `SurfaceId`s are
   stable per (node, monitor) while the monitor is remembered. The binary
   forwards the `monitor_*` hooks to logic as the `screens` service.
-  `screens: focused` is one layer surface created without an output;
-  `State::set_focused_monitor` pins it (and moves an open one), which the
-  binary calls from `ToMain::FocusedScreen` (screens-focus). An `osd` has an empty input
+  `screens: focused` is one layer surface created without an output.
+  (screens-focus) `SurfaceSpec::follows_focus` (`Prop::Screens` is the
+  compiler's `FOLLOW_FOCUS` keyword, given to an instance of a `screens:`
+  that evaluates to `focused` and to the lock's single instance) marks one
+  whose `screen` is the focused monitor: `State::set_focused_monitor`
+  pins it (and moves an open one), which the binary calls from
+  `ToMain::FocusedScreen`. Any other `screens: focused` surface (a
+  `panel` or `osd` with no `screens:`, or `focused` written) is the
+  compositor's to place, focus set or not. An `osd` has an empty input
   region.
 - **Placement** (`strand_scene::placement`, clamped to ±`MAX_LOGICAL`).
   A spec's `overhang` grows the buffer and moves the margins out,
