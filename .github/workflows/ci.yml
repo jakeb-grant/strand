@@ -185,9 +185,6 @@ jobs:
       - run: cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
         env:
           STRAND_LEDGER_FILE: ${{ runner.temp }}/ledger
-      # The release binary the gate just measured, kept for the human
-      # trials' artifact below before the CPU-only build replaces it.
-      - run: mkdir -p "$RUNNER_TEMP/trial" && cp target/release/strand "$RUNNER_TEMP/trial/strand-gpu"
       # The CPU core's .text keeps its own gate (24,379,392 B; the GPU
       # backend's is 28,311,552 B), both re-based on services-round's
       # tree with a 512 KiB reserve (decisions.md growth, services-round;
@@ -201,19 +198,6 @@ jobs:
       - name: Size ledger
         if: always()
         run: scripts/container/ledger.sh "$RUNNER_TEMP/ledger"
-      # M5's human trials (decisions.md
-      # m5-owner Q15, Q20): both release-profile binaries the gates
-      # measured, as a workflow artifact. Not a release: no version, tag
-      # or notes.
-      - run: cp target/release/strand "$RUNNER_TEMP/trial/strand-cpu"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: strand-release-binaries
-          path: |
-            ${{ runner.temp }}/trial/strand-cpu
-            ${{ runner.temp }}/trial/strand-gpu
-          if-no-files-found: error
-          retention-days: 30
 
   # M2 exit: design.md's four example shells and theme.strand, byte for
   # byte, in `strand run` on headless sway with two outputs against the
@@ -646,6 +630,58 @@ jobs:
         env:
           LOCKVM_TIMEOUT: "600"
 
+  # (install) The release archive the installer installs
+  # (scripts/release/package.sh; site/start/install.md): release builds
+  # of strand, strand-auth, strand-dev and strand-eval, held to the
+  # installer's glibc, with every crate's license (cargo-about; a license
+  # scripts/release/about.toml does not accept fails it); then
+  # scripts/install.sh installing, updating and removing it in fresh
+  # Ubuntu 24.04 and Arch containers and refusing Ubuntu 22.04 and a
+  # system without the libraries (scripts/release/smoke.sh, on the
+  # runner's Docker). The release job publishes the `strand-dist`
+  # artifact; edge-<commit> names it, or the version on a tag.
+  package:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_ABOUT_VERSION: 0.9.3
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          tier: headers
+          cache-key: release
+          cache-save: "false"
+      - uses: actions/cache@v6
+        id: about
+        with:
+          path: ~/.cargo-tools/cargo-about
+          key: cargo-about-${{ env.CARGO_ABOUT_VERSION }}-rust-1.97.0
+      - name: cargo-about
+        run: |
+          if [ "${{ steps.about.outputs.cache-hit }}" != true ]; then
+            cargo install --locked --root ~/.cargo-tools/cargo-about cargo-about --version "$CARGO_ABOUT_VERSION" --features cli
+          fi
+          echo "$HOME/.cargo-tools/cargo-about/bin" >> "$GITHUB_PATH"
+      - name: The archive's version
+        id: id
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "id=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "id=edge-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          fi
+      - run: scripts/release/package.sh "${{ steps.id.outputs.id }}" "$RUNNER_TEMP/dist"
+      - run: scripts/release/test-publish.sh
+      - run: scripts/release/smoke.sh "$RUNNER_TEMP/dist"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: strand-dist
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+          retention-days: 30
+
   # The docs site on Railway (deploy/railway/README.md): on a push to
   # main whose every job passed, the site the wasm job built and checked
   # (the `site-live` artifact) is packaged with deploy/railway's
@@ -656,7 +692,8 @@ jobs:
   # with no token it says so and deploys nothing.
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [lint, test, budgets, acceptance, timing, eval, site, wasm, compositors, lock-vm]
+    # `package` too: the site serves scripts/install.sh, which it tests.
+    needs: [lint, test, budgets, acceptance, timing, eval, site, wasm, compositors, lock-vm, package]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     concurrency:
@@ -702,6 +739,31 @@ jobs:
       - name: Deploy
         if: steps.token.outputs.go == 'true'
         run: railway up "$RUNNER_TEMP/railway" --path-as-root --no-gitignore --service "$RAILWAY_SERVICE" --ci --message "${GITHUB_SHA::12}"
+
+  # (install) The package job's archive on GitHub's releases
+  # (scripts/release/publish.sh): a push to main whose every job passed
+  # replaces the `edge` pre-release's build, unless main has moved on
+  # since; a tag vX, which must name the workspace's version, becomes
+  # the release vX. The only job whose token may write.
+  release:
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    needs: [lint, test, budgets, acceptance, timing, eval, site, wasm, compositors, lock-vm, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: strand-dist
+          path: ${{ runner.temp }}/dist
+      - run: scripts/release/publish.sh "$RUNNER_TEMP/dist"
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

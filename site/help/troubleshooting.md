@@ -5,6 +5,18 @@ problem is not here, run the shell with more logging (see
 [Logs](#where-the-logs-go)) and save a
 [glitch report](../tools/reporting.md).
 
+## `strand` is not found
+
+The [install script](../start/install.md) links `strand` into
+`~/.local/bin`, and says so when that directory is not on your `PATH`.
+Add it to your `PATH` in your shell's profile and open a new terminal.
+Your compositor reads its own `PATH` when it starts: if it cannot find
+`strand`, start it by its full path, `~/.local/bin/strand run`.
+
+The script stops, and changes nothing, on a system it cannot install
+on: it names the missing libraries and the command that installs them,
+or the glibc it needs.
+
 ## The shell does not start
 
 `strand run` prints why it stopped and exits with an error status.
@@ -89,8 +101,14 @@ it happened. The next reload of a fixed config takes the outline away.
   config with a `lock`, `strand run` says so at start, or when a reload
   adds the `lock`, and `strand check` reports an error, since such a
   lock could not be unlocked but from a TTY. Both name the directory to
-  put the helper in, beside `strand`; [Install](../start/install.md#build-it)
-  shows how to build it.
+  put the helper in, beside `strand`. The
+  [install script](../start/install.md) puts it there; if you built
+  Strand yourself, [Install](../start/install.md#build-it) shows how to
+  build it.
+- **"… checks passwords with the `login` PAM service".** There is no
+  `/etc/pam.d/strand`, so the lock uses your system's `login` setup,
+  which works. [The lock screen's helper](../start/install.md#the-lock-screens-helper)
+  says how to give the lock its own.
 - **"the compositor does not offer ext-session-lock".** A `lock` cannot
   lock the session on this compositor.
 

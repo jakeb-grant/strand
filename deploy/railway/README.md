@@ -14,7 +14,9 @@ builds only the image in `Dockerfile`: Caddy and the files.
   brotli copy to a reader who accepts it and gzips the rest as it goes;
   everything is revalidated on every visit except the content-hashed
   files in `wasm/`, kept for a year; the markdown copies are
-  `text/markdown; charset=utf-8`; a missing page is a small 404 page.
+  `text/markdown; charset=utf-8` and the installer, `/install.sh`
+  (`scripts/install.sh`), `text/plain; charset=utf-8`; a missing page
+  is a small 404 page.
 - `railway.toml`: build with the Dockerfile, health check on `/`.
 
 ## Setting it up (once)

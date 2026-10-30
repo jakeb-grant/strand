@@ -28,6 +28,9 @@
 	# The markdown copies and llms.txt are UTF-8 text for agents.
 	@markdown path *.md
 	header @markdown Content-Type "text/markdown; charset=utf-8"
+	# The installer (scripts/install.sh) is text to read before it runs.
+	@installer path /install.sh
+	header @installer Content-Type "text/plain; charset=utf-8"
 
 	file_server {
 		precompressed br

@@ -1,0 +1,23 @@
+# cargo-about's settings for the release archive's
+# THIRD-PARTY-LICENSES.txt (scripts/release/package.sh): the licenses
+# the crates built into strand, strand-auth, strand-dev and strand-eval
+# may carry. A dependency under any other fails the package job.
+# MPL-2.0 is file-level: its notice says where the source is (the crate
+# on crates.io), and nothing in it is changed.
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+]
+# Only the targets the release builds.
+targets = ["x86_64-unknown-linux-gnu"]
+# Build and test dependencies are not in the programs.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+# The crates of this repository.
+private = { ignore = true }

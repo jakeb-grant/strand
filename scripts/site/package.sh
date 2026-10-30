@@ -4,7 +4,7 @@
 # Caddyfile and railway.toml, and SITE (a built site with its live
 # examples, CI's `site-live` artifact) as OUT/site. --check then builds
 # the image and asks the server, inside a container with no network,
-# for a page, llms.txt, a markdown copy, the wasm and a missing page,
+# for a page, llms.txt, the installer, a markdown copy, the wasm and a missing page,
 # and fails unless each answers with the status, type and encoding the
 # site needs.
 set -euo pipefail
@@ -60,6 +60,9 @@ CACHE=no-cache expect / 200 "text/html; charset=utf-8" br
 CACHE=no-cache expect /guide/level-1.html 200 "text/html; charset=utf-8" br
 CACHE=no-cache ACCEPT=gzip expect /guide/level-1.html 200 "text/html; charset=utf-8" gzip
 CACHE=no-cache expect /llms.txt 200 "text/plain; charset=utf-8" br
+CACHE=no-cache expect /install.sh 200 "text/plain; charset=utf-8" br
+# As `curl -fsSL …/install.sh | sh` asks for it: no encoding.
+CACHE=no-cache ACCEPT=identity expect /install.sh 200 "text/plain; charset=utf-8"
 CACHE=no-cache expect /guide/level-1.html.md 200 "text/markdown; charset=utf-8" br
 # Under 512 bytes, Caddy's least worth compressing.
 CACHE=no-cache expect /wasm/manifest.js 200 "text/javascript; charset=utf-8"

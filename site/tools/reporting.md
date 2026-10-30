@@ -65,12 +65,14 @@ strand replay
 
 `strand replay` replays the newest report, or the folder you name, in
 the evaluation sandbox. The sandbox is a separate program,
-`strand-eval`, which is not part of the shell. Build it from the
-checkout and put it beside `strand`:
+`strand-eval`, which is not part of the shell. The
+[install script](../start/install.md) puts it beside `strand`. If you
+built Strand yourself, build it from the checkout and put it beside
+`strand` too:
 
 ```sh
 cargo build --release --manifest-path eval/Cargo.toml
-cp eval/target/release/strand-eval ~/.local/bin/
+cp eval/target/release/strand-eval "$(dirname "$(command -v strand)")/"
 ```
 
 Without it, `strand replay` says so and stops.

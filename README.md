@@ -41,9 +41,17 @@ a minute, for its clock.
 
 ## Status
 
-Strand is young and has no packaged release yet: you build it from this
-repository ([install](https://strand.jacobgrant.dev/start/install.html)).
-The language may still change before 1.0.
+Strand is young: the language may still change before 1.0. Install it
+for your user, or update it, with the install script
+([install](https://strand.jacobgrant.dev/start/install.html)):
+
+```sh
+curl -fsSL https://strand.jacobgrant.dev/install.sh | sh
+```
+
+It installs the newest release from GitHub (`--edge` the newest build
+of `main`) on x86\_64 Linux with glibc 2.39 or newer. Elsewhere, build it
+from this repository:
 
 ```sh
 git clone https://github.com/jakeb-grant/strand

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Tests ledger.sh on hand-written ledger files, and that the budgets
-# job uploads the binaries it measures.
+# Tests ledger.sh on hand-written ledger files, and that the package
+# job uploads the release archive that replaced the budgets job's binaries.
 # Run: scripts/container/test-ledger.sh (no build needed)
 
 set -uo pipefail
@@ -56,16 +56,20 @@ else
   echo "FAIL the job summary gets the line"; bad=1
 fi
 
-# The budgets job uploads the two release binaries its gates measure,
-# for M5's human trials.
-job=$(awk '/^  budgets:$/ {on=1; next} on && /^  [a-z][a-z-]*:$/ {exit} on' \
-  "$HERE/../../.github/workflows/ci.yml")
-if grep -q 'trial/strand-gpu"$' <<<"$job" && grep -q 'trial/strand-cpu"$' <<<"$job" &&
-  grep -Eq 'actions/upload-artifact@v[0-9]+$' <<<"$job" &&
-  grep -q 'name: strand-release-binaries' <<<"$job"; then
-  echo "ok   the budgets job uploads both release binaries"
+# (install) The release archive replaced M5's trial binaries: the
+# package job uploads it, and the site (which serves install.sh) and
+# the release wait for that job.
+job() {
+  awk -v j="  $1:" '$0 == j {on=1; next} on && /^  [a-z][a-z-]*:$/ {exit} on' \
+    "$HERE/../../.github/workflows/ci.yml"
+}
+if grep -q 'name: strand-dist' <<<"$(job package)" &&
+  ! grep -q 'strand-release-binaries' "$HERE/../../.github/workflows/ci.yml" &&
+  grep -Eq 'needs: \[.*\bpackage\b' <<<"$(job deploy)" &&
+  grep -Eq 'needs: \[.*\bpackage\b' <<<"$(job release)"; then
+  echo "ok   the package job uploads the release archive; deploy and release wait for it"
 else
-  echo "FAIL the budgets job uploads both release binaries"; bad=1
+  echo "FAIL the package job uploads the release archive; deploy and release wait for it"; bad=1
 fi
 
 [ "$bad" = 0 ] && echo "test-ledger: all passed"

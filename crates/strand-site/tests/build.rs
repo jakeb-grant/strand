@@ -45,6 +45,11 @@ fn the_site_builds_with_no_problems() {
     assert!(out.join("media/springs-light.png").exists());
     assert!(out.join("assets/fonts/inter.woff2").exists());
     assert!(out.join("theme.css").exists());
+    // (install) The installer, byte for byte.
+    assert_eq!(
+        std::fs::read(out.join("install.sh")).unwrap(),
+        std::fs::read(root.join(strand_site::INSTALLER)).unwrap()
+    );
     // For language models: llms.txt lists the pages' markdown, which
     // exists, links to the other pages' markdown, shows an example as
     // its config and leaves out what is repo-only.

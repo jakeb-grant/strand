@@ -202,7 +202,12 @@ one line per painted frame with the rectangles it repainted.
 ## Start it and bind keys
 
 Start `strand run` from your compositor's startup commands, so it runs
-in the session's environment. Strand does not grab keys either: your
+in the session's environment. The compositor finds `strand` on its own
+`PATH`, which may not hold `~/.local/bin`, where the
+[install script](install.md) links it. If the shell does not start
+from there, write its full path in place of `strand` in the lines
+below: `~/.local/bin/strand`, or `/home/you/.local/bin/strand` where
+the compositor does not expand `~`. Strand does not grab keys either: your
 compositor keeps them, and a key runs a `strand` command. Every
 compositor works this way; these are the lines for three of them,
 starting the shell and opening the launcher on Super+D.

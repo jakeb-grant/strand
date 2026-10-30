@@ -2983,7 +2983,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "strand"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "calloop",
@@ -3024,7 +3024,7 @@ dependencies = [
 
 [[package]]
 name = "strand-auth"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "libc",
  "tempfile",
@@ -3033,7 +3033,7 @@ dependencies = [
 
 [[package]]
 name = "strand-compiler"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "chrono",
@@ -3055,7 +3055,7 @@ dependencies = [
 
 [[package]]
 name = "strand-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "criterion",
  "foldhash",
@@ -3068,7 +3068,7 @@ dependencies = [
 
 [[package]]
 name = "strand-dev"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "crossbeam-channel",
@@ -3091,7 +3091,7 @@ dependencies = [
 
 [[package]]
 name = "strand-fake-wayland"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "rustix",
  "tempfile",
@@ -3102,7 +3102,7 @@ dependencies = [
 
 [[package]]
 name = "strand-gpu"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "log",
  "pollster",
@@ -3115,11 +3115,11 @@ dependencies = [
 
 [[package]]
 name = "strand-icons"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "strand-introspect"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "log",
  "tokio",
@@ -3128,7 +3128,7 @@ dependencies = [
 
 [[package]]
 name = "strand-render"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "criterion",
  "gif",
@@ -3152,7 +3152,7 @@ dependencies = [
 
 [[package]]
 name = "strand-scene"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "log",
  "proptest",
@@ -3162,7 +3162,7 @@ dependencies = [
 
 [[package]]
 name = "strand-services"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "freedesktop-desktop-entry",
@@ -3202,7 +3202,7 @@ dependencies = [
 
 [[package]]
 name = "strand-services-macros"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3211,11 +3211,11 @@ dependencies = [
 
 [[package]]
 name = "strand-services-schema"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "strand-site"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "png",
@@ -3232,7 +3232,7 @@ dependencies = [
 
 [[package]]
 name = "strand-surface"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "calloop",
  "log",
@@ -3257,7 +3257,7 @@ dependencies = [
 
 [[package]]
 name = "strand-text"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "parley",
  "strand-scene",
@@ -3266,7 +3266,7 @@ dependencies = [
 
 [[package]]
 name = "strand-theme"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "crc32fast",
@@ -3286,7 +3286,7 @@ dependencies = [
 
 [[package]]
 name = "strand-watch"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "futures-lite",
@@ -3299,7 +3299,7 @@ dependencies = [
 
 [[package]]
 name = "strand-web"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "serde_json",
@@ -3712,7 +3712,7 @@ checksum = "d0af592be68c579aa78a16846bd19422978c3c52e438523d45ff5d1bff1f9d4a"
 
 [[package]]
 name = "tree-sitter-strand"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "cc",
  "tree-sitter",

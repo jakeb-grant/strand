@@ -296,6 +296,9 @@ not tied to their scenario, dark twin and approved recording. Figures
 are eval scenarios (`eval/scenarios/docs/`) rendered by
 `scripts/site/media.sh`; the generator never runs the renderer. CI's
 `deploy` job uploads the site to Railway (deploy/railway/README.md).
+The site also serves the installer, `scripts/install.sh`, at
+`/install.sh` (`strand_site::INSTALLER`; docs/development.md,
+"Releasing").
 
 **`strand-fake-wayland`** is a test fixture: no root crate depends on it
 outside `[dev-dependencies]`. It serves what strand-services' wm,

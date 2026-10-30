@@ -56,6 +56,11 @@ release: the owner releases 1.0 after using Strand for a while.
 
 ## Building and installing
 
+Most people install a release with the install script
+(`scripts/install.sh`, served at `https://strand.jacobgrant.dev/install.sh`;
+site/start/install.md says what it does), which needs no Rust. From a
+checkout:
+
 ```sh
 cargo build --release                    # target/release/strand and strand-auth
 cargo install --locked --path crates/strand
@@ -116,7 +121,9 @@ locked and a restarted strand shows the password field again, so run
 it under a supervisor that restarts it. docs/architecture.md
 ("Threads", the lock's entry) has the systemd user unit. Its
 `ExecStart` is `%h/.cargo/bin/strand run`, for the install above;
-change it to where strand is if it is installed elsewhere. Its
+change it to where strand is if it is installed elsewhere
+(`%h/.local/bin/strand run` for the install script, whose link follows
+each update). Its
 `StartLimitIntervalSec=0` matters: systemd's default start limit
 would otherwise stop restarting a strand that keeps dying and leave
 the lock with no password field.
@@ -139,6 +146,44 @@ Strand built as a dependency of another workspace, or a distribution
 package that sets its own `CARGO_PROFILE_RELEASE_*`, `opt-level` or LTO
 flags. Such a build works, but its code size and memory differ; copy the
 profile tables to reproduce ours.
+
+## Releasing
+
+The install script installs one of two kinds of build from GitHub's
+releases, both made by CI from the same archive
+(`scripts/release/package.sh`: strand, strand-auth, strand-dev and
+strand-eval built with the release profile, the licenses and every
+dependency's license in `THIRD-PARTY-LICENSES.txt`):
+
+- **edge**: every push to `main` whose every CI job passed replaces the
+  build on the `edge` pre-release (`scripts/release/publish.sh`). Its
+  archive is `strand-edge-<12 hex digits of the commit>-x86_64-linux.tar.gz`.
+  The `edge` tag stays at the commit the pre-release was first made
+  from, since moving a tag breaks `git fetch` for anyone who has it.
+- **a tagged release**: to release version X,
+  1. set `version = "X"` under `[workspace.package]` in `Cargo.toml` and
+     in `eval/Cargo.toml`, update both lock files
+     (`cargo update -w` and `cargo update -w --manifest-path eval/Cargo.toml`),
+     and land that on `main` as usual;
+  2. once `main`'s CI has passed on that commit, tag it and push the tag:
+     `git tag -a vX -m "Strand X" <commit>` and `git push origin vX`.
+
+  CI runs every job again on the tag; the `package` job fails when the
+  tag is not the workspace's version, and the `release` job publishes
+  the release `vX`. Its notes say how to install it; edit them on
+  GitHub to say what changed.
+
+The archive's layout (one `strand-<version>/` directory holding the four
+programs) is what every installer reads, the one on the site and those
+attached to older releases alike: keep it, or teach `scripts/install.sh`
+both layouts. The programs must not need a newer glibc than
+`MIN_GLIBC` in `scripts/install.sh` (package.sh checks); raising it
+drops the systems site/start/install.md lists, so change both together.
+
+`scripts/release/ci.sh` runs the `package` job on this machine: the
+archive built in the dev container, then the installer against it in
+fresh Ubuntu 24.04, Ubuntu 22.04 and Arch containers on the host's
+Docker (`scripts/release/smoke.sh`).
 
 ## Development
 

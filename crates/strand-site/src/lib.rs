@@ -33,6 +33,8 @@ use page::NavSection;
 /// The repository, for links to files the site does not publish.
 pub const GITHUB: &str = "https://github.com/jakeb-grant/strand";
 pub const GITHUB_BLOB: &str = "https://github.com/jakeb-grant/strand/blob/main/";
+/// The installer the site serves at `/install.sh` (site/start/install.md).
+pub const INSTALLER: &str = "scripts/install.sh";
 
 /// The home page's source: its own layout, not in the sidebar.
 const HOME: &str = "site/index.md";
@@ -426,6 +428,11 @@ pub fn build_with(root: &Path, out: &Path, opts: &Options) -> Result<Report, Vec
         {
             fail.push(e);
         }
+    }
+    // (install) The installer, at the address the install page gives
+    // (`curl -fsSL <site>/install.sh | sh`).
+    if let Err(e) = std::fs::copy(root.join(INSTALLER), out.join("install.sh")) {
+        fail.push(format!("{INSTALLER}: {e}"));
     }
     if fail.is_empty() {
         Ok(report)

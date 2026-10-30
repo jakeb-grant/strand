@@ -157,6 +157,7 @@ step "scripts/check-tree-sitter.sh" 10 scripts/check-tree-sitter.sh
 step "scripts/container/test-gate-misses.sh" 5 scripts/container/test-gate-misses.sh
 step "scripts/container/test-check-tree-sitter.sh" 5 scripts/container/test-check-tree-sitter.sh
 step "scripts/container/test-ledger.sh" 5 scripts/container/test-ledger.sh
+step "scripts/release/test-publish.sh" 5 scripts/release/test-publish.sh
 step "scripts/container/test-gpu-measure.sh" 5 scripts/container/test-gpu-measure.sh
 step "scripts/test-size-report.sh" 5 scripts/test-size-report.sh
 step "scripts/container/test-tests-ran.sh" 5 scripts/container/test-tests-ran.sh
@@ -236,6 +237,10 @@ step "a glitch report replayed end to end (test-report-view.sh --e2e)" 30 bash s
 # step here either: this image has no wasm target, wasm-bindgen or
 # wasm-opt, and its browser check is a container of its own. Run it on
 # the host with scripts/wasm/ci.sh.
+# GitHub's `package` job (the release archive and the installer in
+# fresh containers) has no step here but test-publish.sh above: its
+# smoke test runs containers of its own. Run it on the host with
+# scripts/release/ci.sh.
 job=site
 step "strand-site build --strand (the CLI page held to the binary)" 30 bash -c '
   cargo build -q -p strand --bin strand &&

@@ -91,13 +91,12 @@ are not steps.
 - A Wayland compositor with layer-shell, such as sway, Hyprland, niri
   or labwc, the four Strand is tested on. GNOME does not offer
   layer-shell.
-- The `strand` binary on your `PATH`. There is no release yet, so
-  either build it from a checkout of the repository with
+- The `strand` binary on your `PATH`. The
+  [install script](../../site/start/install.md) puts it there:
+  `curl -fsSL https://strand.jacobgrant.dev/install.sh | sh`. Or build it
+  from a checkout of the repository with
   `cargo build --release -p strand` (it lands in
-  `target/release/strand`), or take the
-  [prebuilt binaries](../../site/start/install.md#prebuilt-binaries)
-  and rename `strand-gpu` in them to `strand` (`strand-cpu` is the
-  same without the GPU backend). `strand --version` tells you it is found.
+  `target/release/strand`). `strand --version` tells you it is found.
 
 Then start at [level 1](level-1.md).
 

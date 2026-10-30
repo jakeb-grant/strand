@@ -9,7 +9,7 @@ RUN apk add --no-cache brotli
 COPY site /srv
 RUN find /srv -type f -size +1k \( -name '*.html' -o -name '*.md' -o -name '*.txt' \
       -o -name '*.css' -o -name '*.js' -o -name '*.json' -o -name '*.svg' \
-      -o -name '*.wasm' -o -name '*.ttf' \) -exec brotli -q 11 -k {} +
+      -o -name '*.wasm' -o -name '*.ttf' -o -name '*.sh' \) -exec brotli -q 11 -k {} +
 
 FROM caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
 COPY Caddyfile /etc/caddy/Caddyfile

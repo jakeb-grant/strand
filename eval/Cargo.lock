@@ -2052,7 +2052,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "strand-auth"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "libc",
  "zeroize",
@@ -2060,7 +2060,7 @@ dependencies = [
 
 [[package]]
 name = "strand-compiler"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "chrono",
@@ -2076,7 +2076,7 @@ dependencies = [
 
 [[package]]
 name = "strand-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "foldhash",
  "serde_json",
@@ -2087,7 +2087,7 @@ dependencies = [
 
 [[package]]
 name = "strand-eval"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "base64",
  "blake3",
@@ -2121,7 +2121,7 @@ dependencies = [
 
 [[package]]
 name = "strand-fake-wayland"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "rustix",
  "tempfile",
@@ -2132,7 +2132,7 @@ dependencies = [
 
 [[package]]
 name = "strand-gpu"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "log",
  "pollster",
@@ -2145,11 +2145,11 @@ dependencies = [
 
 [[package]]
 name = "strand-icons"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "strand-render"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "gif",
  "image-webp",
@@ -2169,7 +2169,7 @@ dependencies = [
 
 [[package]]
 name = "strand-scene"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "log",
  "rustix",
@@ -2178,11 +2178,11 @@ dependencies = [
 
 [[package]]
 name = "strand-services-schema"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "strand-surface"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "calloop",
  "log",
@@ -2199,7 +2199,7 @@ dependencies = [
 
 [[package]]
 name = "strand-text"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "parley",
  "strand-scene",
@@ -2208,7 +2208,7 @@ dependencies = [
 
 [[package]]
 name = "strand-theme"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "getrandom",

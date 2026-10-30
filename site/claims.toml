@@ -10,12 +10,156 @@
 # proof  = "crates/strand-core/tests/springs.rs::underdamped_overshoots"  # a test, or how it was seen
 
 # --- start-tools-help ---
+[[claim]]
+page   = "site/start/install.md"
+text   = "It needs no root, and writes only to `~/.local/share/strand` and `~/.local/bin`."
+source = ["scripts/install.sh:91", "scripts/install.sh:97-98"]
+proof  = "scripts/release/test-install.sh full (scripts/release/smoke.sh, CI's package job): installs as a user with an empty home into those two"
 
 [[claim]]
 page   = "site/start/install.md"
-text   = "Strand has no packaged release yet. There is no distribution package,"
-source = ["Cargo.toml:13"]
-proof  = "publish = false; `git tag` and `git ls-remote --tags origin` list no tag"
+text   = "It downloads the newest release from GitHub and checks it against its checksum."
+source = ["scripts/install.sh:244", "scripts/install.sh:274"]
+proof  = "scripts/release/test-install.sh full: a checksum that does not match is refused and current stays"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "Then it starts the new `strand` once before switching to it, so a build that cannot run on your system changes nothing."
+source = ["scripts/install.sh:304"]
+proof  = "scripts/release/test-install.sh nolibs and oldglibc: refused, nothing installed"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "`strand 0.1.0 (a764f45c0d1e)`."
+source = ["crates/strand/src/entry.rs:146", "crates/strand/build.rs", "Cargo.toml:8"]
+proof  = "crates/strand/src/entry.rs::tests::the_version_names_the_commit_and_the_channel"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "Every release on GitHub carries the same script."
+source = ["scripts/release/publish.sh:53", "scripts/release/publish.sh:81-84"]
+proof  = "scripts/release/test-publish.sh: edge's and a tag's releases hold install.sh"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "**Linux on x86\\_64 with glibc 2.39 or newer**"
+source = ["scripts/install.sh:22", "scripts/release/package.sh:51-56"]
+proof  = "package.sh fails when a program needs a newer glibc than MIN_GLIBC; scripts/release/test-install.sh oldglibc: Ubuntu 22.04 (2.35) is refused"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "The releases are built on Ubuntu 24.04."
+source = [".github/workflows/ci.yml:645"]
+proof  = "the package job runs-on ubuntu-24.04"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "the script names it, stops, and prints the command that installs them"
+source = ["scripts/install.sh:295", "scripts/install.sh:310-318"]
+proof  = "scripts/release/test-install.sh nolibs: names libpipewire-0.3.so.0 and the apt command"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "`sudo pacman -S libpipewire libxkbcommon wayland fontconfig`"
+source = ["scripts/install.sh:314", "scripts/release/smoke.sh"]
+proof  = "scripts/release/smoke.sh: archlinux:latest with exactly these installs and runs strand"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "`sudo apt install libpipewire-0.3-0t64 libxkbcommon0 libwayland-client0 libfontconfig1`"
+source = ["scripts/install.sh:315", "scripts/release/smoke.sh"]
+proof  = "scripts/release/smoke.sh: ubuntu:24.04 with exactly these installs and runs strand"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "`sudo dnf install pipewire-libs libxkbcommon libwayland-client fontconfig`"
+source = ["scripts/install.sh:316"]
+proof  = "not run: the Fedora packages that hold libpipewire-0.3.so.0, libxkbcommon.so.0, libwayland-client.so.0 and libfontconfig.so.1 (packages.fedoraproject.org, 2026-10-29)"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "It stays beside `strand`, off your `PATH`"
+source = ["scripts/install.sh:24"]
+proof  = "scripts/release/test-install.sh full: strand-auth is beside strand, not linked"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "The script will not run as root: it installs Strand for one user."
+source = ["scripts/install.sh:91"]
+proof  = "scripts/release/smoke.sh: root is refused (Ubuntu 24.04)"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "also will not replace a `strand` in `~/.local/bin` that it did not put there"
+source = ["scripts/install.sh:332"]
+proof  = "scripts/release/test-install.sh full: refused and left, then replaced with --force"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "When the newest build is the one installed, it says so and changes nothing."
+source = ["scripts/install.sh:391"]
+proof  = "scripts/release/test-install.sh full: again: up to date"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "Commands such as `strand toggle` run the new version straight away, and still work with the older shell."
+source = ["crates/strand/src/ipc/mod.rs:6-11", "crates/strand-core/src/ipc.rs:154"]
+proof  = "read: protocol version 1; a command an older shell does not know is answered `unknown command`, the connection kept"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "The script keeps the version it replaced, and any version a program is still running from"
+source = ["scripts/install.sh:342"]
+proof  = "scripts/release/test-install.sh full: an edge build an LSP still runs from is kept, removed once it stops"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "Strand never updates itself and never checks for updates."
+source = ["scripts/install.sh"]
+proof  = "grep: no crate under crates/ asks GitHub or a release URL for anything"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "Every push to `main` that passes CI replaces it."
+source = [".github/workflows/ci.yml:748-750", "scripts/release/publish.sh:35-58"]
+proof  = "scripts/release/test-publish.sh"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "The script remembers the channel."
+source = ["scripts/install.sh:369"]
+proof  = "scripts/release/test-install.sh full: again with no flag after --edge installs edge"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "A build on either channel passed the whole of CI first"
+source = [".github/workflows/ci.yml:750"]
+proof  = "read: the release job needs every other job, the package job's smoke test among them"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "While a `strand` from there is running it refuses"
+source = ["scripts/install.sh:143-160"]
+proof  = "scripts/release/test-install.sh full: uninstall while it runs: refused"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "Without that file it uses your system's `login` service, which needs nothing installed, and says so once in the log."
+source = ["crates/strand-auth/src/client.rs:293", "crates/strand-auth/src/main.rs:173"]
+proof  = "crates/strand-auth/tests/pam.rs::a_missing_strand_service_falls_back_to_login_with_one_warning"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "the lock screen's helper. It is the only program in the workspace that links libpam."
+source = ["crates/strand-auth/Cargo.toml:13", "crates/strand-auth/src/pam.rs:70"]
+proof  = "grep: the only #[link(name = \"pam\")] in crates/"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "When the helper is missing, `strand run` and `strand check` say where to put it: beside the `strand` that is running, with `cargo install --locked --path crates/strand-auth --root <prefix>` when that `strand` is in `<prefix>/bin`, else by copying `target/release/strand-auth` into its directory."
+source = ["crates/strand/src/check.rs:352"]
+proof  = "crates/strand/src/check.rs::tests::the_helper_hint_names_the_directory_beside_strand"
+
 
 [[claim]]
 page   = "site/start/install.md"
@@ -26,7 +170,7 @@ proof  = "read"
 [[claim]]
 page   = "site/start/install.md"
 text   = "libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev libpam0g-dev"
-source = [".github/workflows/ci.yml:357"]
+source = [".github/workflows/ci.yml:341"]
 proof  = "the compositors job builds strand's tests with exactly these"
 
 [[claim]]
@@ -34,18 +178,6 @@ page   = "site/start/install.md"
 text   = "cargo build --release -p strand -p strand-auth"
 source = ["crates/strand/Cargo.toml", "crates/strand-auth/Cargo.toml"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): the same build in debug wrote strand and strand-auth"
-
-[[claim]]
-page   = "site/start/install.md"
-text   = "with. It is the only program in the workspace that links libpam."
-source = ["crates/strand-auth/Cargo.toml:13", "crates/strand-auth/src/pam.rs:70"]
-proof  = "grep: the only #[link(name = \"pam\")] in crates/"
-
-[[claim]]
-page   = "site/start/install.md"
-text   = "`strand --version` prints `strand 0.0.0`."
-source = ["crates/strand/src/entry.rs:155", "Cargo.toml:8"]
-proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/start/install.md"
@@ -58,12 +190,6 @@ page   = "site/start/install.md"
 text   = "When a config has a `lock` and there is no helper, `strand run` warns at start, or at the reload that adds the `lock`, that the lock would have no way to unlock, and `strand check` reports an error for the config."
 source = ["crates/strand/src/run/lock.rs:986", "crates/strand/src/run/shell.rs:410", "crates/strand/src/check.rs:317"]
 proof  = "crates/strand/src/run/lock.rs::tests::no_helper_is_said_only_for_a_config_with_a_lock; crates/strand/src/check.rs::tests::a_lock_without_the_helper_is_an_error"
-
-[[claim]]
-page   = "site/start/install.md"
-text   = "Both say where to put the helper: beside the `strand` that is running, with `cargo install --locked --path crates/strand-auth --root <prefix>` when that `strand` is in `<prefix>/bin`, else by copying `target/release/strand-auth` into its directory."
-source = ["crates/strand/src/check.rs:352"]
-proof  = "crates/strand/src/check.rs::tests::the_helper_hint_names_the_directory_beside_strand"
 
 [[claim]]
 page   = "site/start/install.md"
@@ -88,30 +214,6 @@ page   = "site/start/install.md"
 text   = "`cargo build --release --manifest-path eval/Cargo.toml`. It is a"
 source = ["eval/Cargo.toml:14"]
 proof  = "its own [workspace], so cargo puts its target/ beside its manifest"
-
-[[claim]]
-page   = "site/start/install.md"
-text   = "30 days, as a workflow artifact named `strand-release-binaries`:"
-source = [".github/workflows/ci.yml:211", ".github/workflows/ci.yml:216", ".github/workflows/ci.yml:190"]
-proof  = "read"
-
-[[claim]]
-page   = "site/start/install.md"
-text   = "build, and `strand-cpu`, the build without the GPU backend. Both are"
-source = [".github/workflows/ci.yml:195", ".github/workflows/ci.yml:208"]
-proof  = "read: strand-cpu is copied after the --no-default-features build"
-
-[[claim]]
-page   = "site/start/install.md"
-text   = "built on Ubuntu 24.04."
-source = [".github/workflows/ci.yml:160"]
-proof  = "the budgets job runs-on ubuntu-24.04"
-
-[[claim]]
-page   = "site/start/install.md"
-text   = "The artifact holds no `strand-auth`, `strand-dev` or `strand-eval`. A"
-source = [".github/workflows/ci.yml:212"]
-proof  = "the artifact's path lists strand-cpu and strand-gpu only"
 
 [[claim]]
 page   = "site/start/install.md"
@@ -182,7 +284,7 @@ proof  = "crates/strand/tests/compositor_matrix.rs::the_stores_follow_a_composit
 [[claim]]
 page   = "site/start/install.md"
 text   = "Strand is tested on **sway**, **Hyprland**, **niri** and **labwc** on every change."
-source = [".github/workflows/ci.yml:348", "scripts/compositor-matrix-ci.sh:28"]
+source = [".github/workflows/ci.yml:332", "scripts/compositor-matrix-ci.sh:28"]
 proof  = "read"
 
 [[claim]]
@@ -194,7 +296,7 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 [[claim]]
 page   = "site/start/running.md"
 text   = "directory uses that one when you give none."
-source = ["crates/strand/src/entry.rs:272", "crates/strand/src/fmt.rs:78", "crates/strand/src/new.rs:97"]
+source = ["crates/strand/src/entry.rs:301", "crates/strand/src/fmt.rs:78", "crates/strand/src/new.rs:97"]
 proof  = "read"
 
 [[claim]]
@@ -308,7 +410,7 @@ proof  = "crates/strand/src/run/tests.rs::a_config_broken_at_first_boot_runs_onc
 [[claim]]
 page   = "site/start/running.md"
 text   = "an error status when it finds an error, so it works in scripts and"
-source = ["crates/strand/src/entry.rs:233"]
+source = ["crates/strand/src/entry.rs:262"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): exit 1 with errors, 0 when clean"
 
 [[claim]]
@@ -458,7 +560,7 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 [[claim]]
 page   = "site/start/running.md"
 text   = "spawn-at-startup \"strand\" \"run\""
-source = ["crates/strand/src/entry.rs:164"]
+source = ["crates/strand/src/entry.rs:193"]
 proof  = "niri's config syntax; strand run takes no other argument"
 
 [[claim]]
@@ -487,7 +589,7 @@ proof  = "read"
 
 [[claim]]
 page   = "site/tools/editor.md"
-text   = "The language server is `strand-dev lsp`. Build `strand-dev` from the"
+text   = "The language server is `strand-dev lsp`."
 source = ["crates/strand-dev/src/main.rs:19"]
 proof  = "crates/strand-dev/tests/lsp.rs::the_binary_serves_stdio"
 
@@ -908,7 +1010,7 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "`strand run` prints why it stopped and exits with an error status."
-source = ["crates/strand/src/entry.rs:283"]
+source = ["crates/strand/src/entry.rs:312"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): exit 1"
 
 [[claim]]
@@ -932,7 +1034,7 @@ proof  = "crates/strand/tests/m5/cli.rs::run_names_a_missing_config_dir_plainly"
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "- **\"no config directory (set XDG\\_CONFIG\\_HOME or HOME)\".** Neither"
-source = ["crates/strand/src/entry.rs:282"]
+source = ["crates/strand/src/entry.rs:311"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
@@ -1009,7 +1111,7 @@ proof  = "crates/strand/src/run/lock.rs::tests::no_helper_is_said_only_for_a_con
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
-text   = "Both name the directory to put the helper in, beside `strand`;"
+text   = "Both name the directory to put the helper in, beside `strand`."
 source = ["crates/strand/src/check.rs:352"]
 proof  = "crates/strand/src/check.rs::tests::the_helper_hint_names_the_directory_beside_strand"
 
@@ -1134,7 +1236,7 @@ proof  = "strand check in the container (scripts/container/run.sh) on a probe co
 [[claim]]
 page   = "site/index.md"
 text   = "Strand runs on sway, Hyprland, niri and labwc, and every build is tested on all four."
-source = [".github/workflows/ci.yml:348"]
+source = [".github/workflows/ci.yml:332"]
 proof  = "read: the compositors job (no event filter) runs sway, niri, Hyprland and labwc on each push, and nightly"
 
 [[claim]]
@@ -1242,7 +1344,7 @@ proof  = "crates/strand-render/tests/motion.rs::paint_only_springs_never_relayou
 [[claim]]
 page   = "site/concepts/language.md"
 text   = "(`$XDG_CONFIG_HOME/strand`) unless you name another one to `strand"
-source = ["crates/strand/src/entry.rs:274"]
+source = ["crates/strand/src/entry.rs:303"]
 proof  = "read: `strand run [dir]`, default from XDG_CONFIG_HOME, else HOME/.config"
 
 [[claim]]
@@ -2646,3 +2748,33 @@ page   = "site/playground.md"
 text   = "Nothing is downloaded until you open this page."
 source = ["site/assets/site.js:411", "site/assets/live.js"]
 proof  = "scripts/wasm/check-browser.sh (no page with an example figure requests the WebAssembly or live.js)"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "installs `strand-dev` with `strand` and links it into `~/.local/bin`."
+source = ["scripts/install.sh:24"]
+proof  = "scripts/release/test-install.sh full: strand-dev runs from ~/.local/bin"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "[install script](../start/install.md) puts it beside `strand`."
+source = ["scripts/install.sh:23", "crates/strand/src/report/replay.rs:35"]
+proof  = "scripts/release/test-install.sh full: strand replay finds strand-eval"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "There is no `/etc/pam.d/strand`, so the lock uses your system's `login` setup, which works."
+source = ["crates/strand-auth/src/client.rs:293"]
+proof  = "crates/strand-auth/tests/pam.rs::a_missing_strand_service_falls_back_to_login_with_one_warning"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "`~/.local/bin`, and says so when that directory is not on your `PATH`."
+source = ["scripts/install.sh:416"]
+proof  = "scripts/release/test-install.sh full: says ~/.local/bin is not on PATH"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "`PATH`, which may not hold `~/.local/bin`, where the"
+source = ["scripts/install.sh:98"]
+proof  = "read: the links' directory; a compositor started by a display manager reads the session's PATH, not a shell profile's"

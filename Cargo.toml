@@ -5,7 +5,7 @@ resolver = "3"
 members = ["crates/*", "crates/strand-dev/tree-sitter-strand"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 # material-colors 0.5 (strand-theme) needs Rust 1.97; CI pins 1.97.0.
 rust-version = "1.97"

@@ -137,6 +137,35 @@ fn help_asked(args: &[std::ffi::OsString]) -> Option<String> {
     Some(out)
 }
 
+/// `strand --version`: the package's version and the commit it was
+/// built from (build.rs's `STRAND_COMMIT`, cut to 12 hex digits and
+/// keeping `-dirty`; left out when `unknown`), after the channel CI
+/// publishes it on when that is not a tagged release
+/// (`STRAND_CHANNEL`, scripts/release/build.sh): `strand 0.1.0 (edge,
+/// a764f45c0d1e)`, `strand 0.1.0 (a764f45c0d1e)`.
+fn version(channel: Option<&str>, commit: &str) -> String {
+    let v = env!("CARGO_PKG_VERSION");
+    let short = match commit {
+        "" | "unknown" => None,
+        c => {
+            let (hash, dirty) = c.split_once('-').unwrap_or((c, ""));
+            let hash = hash.get(..12).unwrap_or(hash);
+            Some(if dirty.is_empty() {
+                hash.to_string()
+            } else {
+                format!("{hash}-{dirty}")
+            })
+        }
+    };
+    let channel = channel.filter(|c| !c.is_empty() && *c != "release");
+    match (channel, short) {
+        (Some(ch), Some(c)) => format!("strand {v} ({ch}, {c})\n"),
+        (None, Some(c)) => format!("strand {v} ({c})\n"),
+        (Some(ch), None) => format!("strand {v} ({ch})\n"),
+        (None, None) => format!("strand {v}\n"),
+    }
+}
+
 /// What a command line asks for.
 #[derive(Debug, PartialEq, Eq)]
 enum Action {
@@ -150,9 +179,9 @@ enum Action {
 fn dispatch(args: &[String]) -> Result<Action, String> {
     match args.first().map(String::as_str) {
         None | Some("help" | "-h" | "--help") => Ok(Action::Print(usage())),
-        Some("-V" | "--version") => Ok(Action::Print(format!(
-            "strand {}\n",
-            env!("CARGO_PKG_VERSION")
+        Some("-V" | "--version") => Ok(Action::Print(version(
+            option_env!("STRAND_CHANNEL"),
+            env!("STRAND_COMMIT"),
         ))),
         Some("run") if args[1..] == ["--demo"] => Ok(Action::Demo),
         Some("run") if args[1..].iter().any(|a| a == "--demo") => {
@@ -303,6 +332,28 @@ mod tests {
 
     fn run(args: &[&str]) -> Result<Action, String> {
         dispatch(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    /// (install) The version names the commit, and a published edge
+    /// build its channel.
+    #[test]
+    fn the_version_names_the_commit_and_the_channel() {
+        let v = env!("CARGO_PKG_VERSION");
+        let full = "a764f45c0d1e2f3a4b5c6d7e8f9012345678abcd";
+        assert_eq!(
+            version(Some("edge"), full),
+            format!("strand {v} (edge, a764f45c0d1e)\n")
+        );
+        assert_eq!(
+            version(Some("release"), full),
+            format!("strand {v} (a764f45c0d1e)\n")
+        );
+        assert_eq!(
+            version(None, &format!("{full}-dirty")),
+            format!("strand {v} (a764f45c0d1e-dirty)\n")
+        );
+        assert_eq!(version(None, "unknown"), format!("strand {v}\n"));
+        assert_eq!(version(Some(""), ""), format!("strand {v}\n"));
     }
 
     #[test]

@@ -14178,3 +14178,56 @@ retained GPU layers, goo's GPU contour, CPU resize damage narrowing,
 per-frame allocations, full GPU damage); they are not planned. The
 bench's JSON keeps its warm-up cycle's frames (`cold_frames`) for the
 next measurement.
+
+## install
+
+**2026-10-29 · install (owner-approved): an install script and two
+release channels on GitHub; Strand never updates itself.** One command,
+`curl -fsSL https://strand.jacobgrant.dev/install.sh | sh`, installs
+Strand for one user with no root and updates it when run again
+(`scripts/install.sh`; site/start/install.md). Each version gets its
+own directory under `~/.local/share/strand/versions/`, `current` points
+at one and switches in one rename, and `~/.local/bin` links `strand`
+and `strand-dev` through it. `strand-auth` stays beside `strand` and
+off `PATH`, as `default_helper` wants, and `strand-eval` beside it for
+`strand replay`. Updating is running the script again, not a `strand
+update`: the shell stays free of network code and of a second updater
+that would fight a distribution package (the AUR comes later). Two
+channels: tagged releases (the default, `releases/latest`) and `edge`,
+the newest build of `main` that passed every job, replaced on each push
+(`--edge`, remembered until `--release`). Both come from CI's `package`
+job, which builds strand, strand-auth, strand-dev and strand-eval with
+the release profile on Ubuntu 24.04 and tests the script against the
+archive in fresh containers; the `release` job publishes it only after
+every other job has passed, and the site, which serves the script, now
+waits for `package` too. The workspace's version is 0.1.0, and `strand
+--version` names the commit (build.rs's `STRAND_COMMIT`) and an edge
+build's channel. The holes closed: (1) a shell's lock screen runs
+`strand-auth` from its own version's directory, so the script never
+removes a version a program still runs from (`/proc/*/exe`), keeps the
+version it replaced, and refuses `--uninstall` while strand runs from
+it; removing it would leave a lock that cannot unlock. (2) The new
+`strand` is started once, and its libraries looked up, before anything
+changes: a missing library or an old glibc changes nothing and is named
+with the commands that fix it. The builds need glibc 2.39
+(`MIN_GLIBC`, which package.sh holds them to), so Ubuntu 22.04 and
+Debian 12 build from source. (3) Moving the `edge` tag would break `git
+fetch` for anyone who has it ("would clobber existing tag"), so the tag
+stays where the pre-release was first made, and the archive is named
+by its commit, its checksum uploaded first and the build before kept,
+so an installer listing the release mid-update reads one whole build.
+A run whose commit main has moved past publishes nothing, so a slower,
+older run never replaces a newer edge. (4) A tag must name the
+workspace's version. (5) The script runs nothing until its last line,
+so a download cut short does nothing; it refuses root and will not
+replace a `strand` it did not link. (6) A binary release must carry
+its dependencies' notices: `THIRD-PARTY-LICENSES.txt` from cargo-about
+0.9.3, accepting Apache-2.0, MIT, BSD-2/3-Clause, ISC, Zlib,
+Unicode-3.0 and MPL-2.0 (file-level, unchanged, its source on
+crates.io); another license fails the job. The budgets job no longer
+uploads M5's trial binaries (`strand-release-binaries`, m5-owner Q15,
+Q20): the archive replaces them, and the CPU-only build stays a
+source build. Rejected: a self-updater in `strand`; a moving `edge`
+tag; a nightly schedule (every push already passes the whole gate);
+static or musl builds (PipeWire, fontconfig and PAM are system
+libraries).

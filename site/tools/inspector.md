@@ -8,8 +8,9 @@ the rest runs in a terminal, in `strand-dev inspect`.
 
 ## Start it
 
-Build `strand-dev` as [Editor setup](editor.md#the-language-server)
-says, start your shell with `strand run`, then in a terminal:
+Install `strand-dev` as [Editor setup](editor.md#the-language-server)
+says (the install script already has), start your shell with
+`strand run`, then in a terminal:
 
 ```sh
 strand-dev inspect

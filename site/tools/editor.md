@@ -7,8 +7,11 @@ gives the settings that start them in Helix and Neovim.
 
 ## The language server
 
-The language server is `strand-dev lsp`. Build `strand-dev` from the
-checkout and put it on your `PATH`:
+The language server is `strand-dev lsp`. The
+[install script](../start/install.md) installs `strand-dev` with
+`strand` and links it into `~/.local/bin`. If you built Strand
+yourself, build `strand-dev` from the checkout and put it on your
+`PATH`:
 
 ```sh
 cargo build --release -p strand-dev
