@@ -1567,6 +1567,54 @@ fn a_resized_content_sized_surface_waits_for_its_configure() {
     );
 }
 
+/// (centred-surface) A panel the compositor centres takes the output on that
+/// axis, so its content changing never resizes it there. Centred on both
+/// axes, it stays its content's size.
+#[test]
+fn a_panel_centred_on_one_axis_never_resizes_there() {
+    for (anchor, span) in [
+        ("top", (Some(1000.0), None)),
+        ("bottom", (Some(1000.0), None)),
+        ("left", (None, Some(800.0))),
+        ("right", (None, Some(800.0))),
+        ("center", (None, None)),
+    ] {
+        let mut b = Builder::default();
+        let p = b.node(
+            NodeKind::Panel,
+            None,
+            vec![
+                (Prop::Anchor, kw(anchor)),
+                (Prop::Font, PropValue::Font(font(13.0))),
+            ],
+        );
+        let t = b.node(NodeKind::Text, Some(p), vec![(Prop::Text, text("short"))]);
+        let mut r = renderer();
+        r.apply(b.diff);
+        let first = r.surface_spec(p).unwrap();
+        let first = Size::new(first.width.unwrap() as u32, first.height.unwrap() as u32);
+        r.attach_surface(S, p);
+        r.set_surface_bounds(S, Some(LogicalSize::new(1000.0, 800.0)));
+        r.configure_surface(S, first, Scale::ONE);
+        for line in ["a longer line of text", "x", "a longer line of text"] {
+            let mut d = SceneDiff::new();
+            d.set(t, Prop::Text, text(line));
+            r.apply(d);
+            let s = r.surface_spec(p).unwrap();
+            if let Some(w) = span.0 {
+                assert_eq!(s.width, Some(w), "{anchor}: {line}");
+            } else {
+                assert!(s.width.unwrap() < 1000.0, "{anchor}: {line}");
+            }
+            if let Some(h) = span.1 {
+                assert_eq!(s.height, Some(h), "{anchor}: {line}");
+            } else {
+                assert!(s.height.unwrap() < 800.0, "{anchor}: {line}");
+            }
+        }
+    }
+}
+
 /// Shadows on a centred surface: the buffer is grown evenly on its
 /// centred axes, so the box (and its input region) stays centred.
 #[test]

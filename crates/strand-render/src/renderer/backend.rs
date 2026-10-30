@@ -1280,6 +1280,19 @@ impl Renderer {
         if self.gpu.device.is_off() || self.gpu.device.is_absent() {
             return;
         }
+        // (centred-surface) A surface that spans its output draws only its
+        // box: a GPU frame's whole buffer, or a first frame's, says nothing of
+        // how much of it moves.
+        let damage = self
+            .surfaces
+            .get(&surface)
+            .filter(|st| self.spanned.contains(&st.root))
+            .and_then(|st| {
+                let r = st.boxes.as_ref()?.rects.get(&st.root).copied()?;
+                let k = st.scale.as_f32();
+                Some(damage.min((r.w * k * r.h * k) as u64))
+            })
+            .unwrap_or(damage);
         let s = self.gpu.surf(surface);
         match s.promo.frame(now, damage, springs, cpu) {
             Some(Switch::ToGpu) => {

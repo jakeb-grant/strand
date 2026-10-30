@@ -202,7 +202,9 @@ impl Promotion {
             let settled = self
                 .busy
                 .is_none_or(|t| now.saturating_duration_since(t) >= self.settle());
-            return settled.then(|| self.switch(now));
+            // TEST BUILD: a promoted surface stays on the GPU.
+            let _ = settled;
+            return None;
         }
         let animates = springs || (self.run >= CLOCK_RUN && !settling);
         (large && animates).then(|| self.switch(now))

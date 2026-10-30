@@ -128,6 +128,12 @@ impl<H: SurfaceHost + 'static> State<H> {
                 // Every buffer is with the compositor: the next release
                 // brings us back.
                 s.repaint = true;
+                log::debug!(
+                    "surface {}: every buffer busy: {} paints, {} releases",
+                    id.0,
+                    s.stats.paints,
+                    s.stats.releases
+                );
                 return;
             }
             Err(e) => {

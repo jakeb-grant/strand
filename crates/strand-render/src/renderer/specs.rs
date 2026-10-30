@@ -211,6 +211,45 @@ impl Renderer {
         }
     }
 
+    /// (centred-surface) The size a content-sized layer surface takes on the
+    /// axis the compositor centres it on, for a panel or OSD anchored to
+    /// one edge, its output known: what is left of the output, so its
+    /// buffer is the output's on that axis at any overhang. A compositor
+    /// moves a centred surface when its size changes, a step apart from
+    /// the buffer of that size on some (Hyprland), and everything on the
+    /// surface, popups too, jumps with it. Not one centred on both axes:
+    /// that would be a whole output's buffer (decisions.md
+    /// centred-surface).
+    fn centred_span(
+        &self,
+        root: NodeId,
+        spec: &SurfaceSpec,
+        (cw, ch): (bool, bool),
+    ) -> (Option<f32>, Option<f32>) {
+        if !matches!(spec.kind, NodeKind::Panel | NodeKind::Osd) {
+            return (None, None);
+        }
+        let Some(b) = self
+            .surfaces
+            .iter()
+            .find(|(_, s)| s.root == root)
+            .and_then(|(i, _)| self.bounds.get(i))
+        else {
+            return (None, None);
+        };
+        let (m, o) = (spec.margin, spec.overhang);
+        let span = |room: f32, used: f32| (room - used).floor().max(1.0);
+        match resize_share(spec, None) {
+            (0.5, fy) if cw && fy != 0.5 => {
+                (Some(span(b.w, m.left + m.right + o.left + o.right)), None)
+            }
+            (fx, 0.5) if ch && fx != 0.5 => {
+                (None, Some(span(b.h, m.top + m.bottom + o.top + o.bottom)))
+            }
+            _ => (None, None),
+        }
+    }
+
     /// (window) The compositor's configure of the window on `surface`
     /// gave it a size on these axes (`(false, false)`: it left the size
     /// to the window). On such an axis the window fills what it was
@@ -245,6 +284,7 @@ impl Renderer {
             self.window_sized.insert(root, sized);
         }
         self.held.remove(&root);
+        self.spanned.remove(&root);
         self.spec_dirty.insert(root);
         self.refresh_specs();
     }
@@ -270,6 +310,7 @@ impl Renderer {
             .collect();
         for id in ready {
             self.held.remove(&id);
+            self.spanned.remove(&id);
             self.spec_dirty.insert(id);
         }
         // (shadow-buffer) Shadows that settled: the overhang shrinks to
@@ -532,8 +573,9 @@ impl Renderer {
                     .at_pointer
                     .then(|| self.pointing.anchor(id, anchor, parent, spec.open))
                     .flatten();
-                spec.anchor_rect = at_pointer
-                    .or_else(|| anchor.zip(parent).and_then(|(a, p)| self.anchor_box(a, p)));
+                let at_box = anchor.zip(parent).and_then(|(a, p)| self.anchor_box(a, p));
+                let at_box = at_box.map(|now| self.steady_anchor(id, now));
+                spec.anchor_rect = at_pointer.or(at_box);
                 if parent.is_some_and(|p| self.specs.get(&p).is_some_and(|ps| !ps.open)) {
                     spec.open = false;
                 }
@@ -656,7 +698,7 @@ impl Renderer {
                 // Nothing to shape for a surface nobody sees.
                 self.spec_wanted.remove(&id);
             }
-            let (size, overhang) = match (&layouts, old) {
+            let (mut size, overhang) = match (&layouts, old) {
                 (Some(layouts), _) if dirty.contains(&id) && pass => {
                     let along = shown.map(|s| {
                         let l = s.scale.logical_size(s.size);
@@ -749,6 +791,18 @@ impl Renderer {
                 id,
                 within_edges(&spec, centred_overhang(&spec, overhang)),
             );
+            // (centred-surface) The axis the compositor centres it on: the
+            // surface takes all of it, so no change of its content ever
+            // resizes it there, and what it holds is laid out and springs
+            // inside it as in any larger buffer.
+            let span = self.centred_span(id, &spec, axes);
+            if span != (None, None) {
+                self.spanned.insert(id);
+            } else {
+                self.spanned.remove(&id);
+            }
+            size.w = size.w.max(span.0.unwrap_or(0.0));
+            size.h = size.h.max(span.1.unwrap_or(0.0));
             if content_sized {
                 // Capped: content taller than any output (a list with no
                 // `max_height`, a long body) never asks for a buffer of
@@ -803,6 +857,33 @@ impl Renderer {
             .values()
             .filter(|s| s.root == root)
             .find_map(|s| s.boxes.as_ref()?.rects.get(&anchor).copied())
+    }
+
+    /// (centred-surface) Where the open popup `popup` keeps its anchor when
+    /// its element's box becomes `now`: the box it was placed at while
+    /// the middle of the box has moved under a pixel on the axis it is
+    /// centred across. A pill's width changing moves its middle by at most
+    /// half a pixel of rounding, which is no reason to move what hangs
+    /// from it.
+    fn steady_anchor(&self, popup: NodeId, now: LogicalRect) -> LogicalRect {
+        let Some(old) = self.specs.get(&popup).filter(|s| s.open) else {
+            return now;
+        };
+        let Some(was) = old.anchor_rect else {
+            return now;
+        };
+        let parent = old.parent.and_then(|p| self.specs.get(&p));
+        let (fx, fy) = resize_share(old, parent);
+        let near = |a: f32, al: f32, b: f32, bl: f32| ((a + al / 2.0) - (b + bl / 2.0)).abs() < 1.0;
+        let same = |a: f32, b: f32| (a - b).abs() < 0.5;
+        let across = if fx == 0.5 {
+            same(was.y, now.y) && same(was.h, now.h) && near(was.x, was.w, now.x, now.w)
+        } else if fy == 0.5 {
+            same(was.x, now.x) && same(was.w, now.w) && near(was.y, was.h, now.y, now.h)
+        } else {
+            false
+        };
+        if across { was } else { now }
     }
 
     /// (popup-boot-wake) `root` was laid out: a popup anchored in it

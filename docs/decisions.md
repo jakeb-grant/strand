@@ -14231,3 +14231,28 @@ source build. Rejected: a self-updater in `strand`; a moving `edge`
 tag; a nightly schedule (every push already passes the whole gate);
 static or musl builds (PipeWire, fontconfig and PAM are system
 libraries).
+
+## centred-surface
+
+**2026-10-30 · centred-surface: a surface centred on one axis takes the
+output on it.** Resizing a centred layer surface makes the compositor move
+it, and on Hyprland the owner saw the whole surface, and a popup on it, jump
+each time a pill's content changed width (an item leaving, media starting). A
+panel or OSD anchored to one edge now asks for its output's size along that
+edge from the first frame its bounds are known, and what it holds is laid
+out as a held surface's is (`RootSize::Placed`, the growth spring, the box
+alone taking input). Costs a wider buffer, only its damage redrawn. A surface
+centred on both axes keeps its content's size: a whole output's buffer for a
+launcher is too dear, and the owner has not seen it jitter there. Hyprland
+would not run nested in a container here (it stalls before a monitor), so
+the proof is `set_size` going quiet in a Wayland log on sway and the owner's
+session; the sizes are tested by `a_panel_centred_on_one_axis_never_resizes_there`.
+
+**2026-10-30 · centred-surface: its box is centred exactly, and an open popup
+stays put when its anchor's middle has not moved.** A whole-pixel origin steps
+one edge of a box whose width springs and not the other, a wobble the owner saw
+as a few pixels of jitter (`RootSize::Placed`'s `middle`). A pill's width
+changing moved the middle of a popup's anchor by half a pixel of rounding and
+repositioned the card hanging from it (`Renderer::steady_anchor`). With these,
+an island needs no popup and no copy of itself: one box whose contents decide
+its size, growing down from its anchored edge.

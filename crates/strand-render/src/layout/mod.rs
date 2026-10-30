@@ -132,6 +132,11 @@ pub enum RootSize {
         height: Option<f32>,
         at: (f32, f32),
         exact: bool,
+        /// (centred-surface) Centred at its exact middle on the axes that
+        /// `at` centres, at any size: both its edges move alike as its size
+        /// changes, where a whole-pixel origin would step one edge and not
+        /// the other.
+        middle: bool,
     },
 }
 
@@ -510,7 +515,11 @@ pub(crate) fn layout(
     b.compute(t, avail, texts, scrolls);
     let mut origin = origin;
     if let RootSize::Placed {
-        frame, at, exact, ..
+        frame,
+        at,
+        exact,
+        middle,
+        ..
     } = size
         && let Ok(l) = b.taffy.layout(t).map(|l| l.size)
     {
@@ -544,7 +553,9 @@ pub(crate) fn layout(
             // Where the smaller box's edge will be: the size it asks for
             // is its content's, up to a whole pixel (`refresh_specs`).
             let room = |have: f32, used: f32, f: f32| {
-                if exact && f >= 1.0 {
+                if middle && f == 0.5 {
+                    (have - used) / 2.0
+                } else if exact && f >= 1.0 {
                     // Anchored by its far edge: that edge is where the
                     // frame's is snapped at rest, at any scale. The box
                     // spans `used` rounded (boxes snap from the origin,

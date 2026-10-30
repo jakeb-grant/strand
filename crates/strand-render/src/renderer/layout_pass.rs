@@ -18,6 +18,9 @@ use crate::tree::SceneTree;
 /// (growth) The least step of a content-sized surface's content size, in
 /// logical px, its box springs over: less is a rounding, taken at once.
 pub(super) const STEP_MIN: f32 = 0.5;
+/// (centred-surface) A step's box this close to rest, logical pixels, is laid
+/// out at rest.
+const STEP_LANDED: f32 = 0.5;
 
 /// Delivered text layouts as layout measures them.
 pub(super) struct TextInfo<'a> {
@@ -266,7 +269,8 @@ impl Renderer {
         else {
             return fixed;
         };
-        if !self.grows(root, spec) || !self.held.contains(&root) {
+        let spanned = self.spanned.contains(&root);
+        if !self.grows(root, spec) || !(spanned || self.held.contains(&root)) {
             return fixed;
         }
         let Some(at) = self.resize_share_of(root) else {
@@ -278,6 +282,7 @@ impl Renderer {
             height: (!ch).then_some(frame.h),
             at,
             exact: false,
+            middle: spanned,
         }
     }
 
@@ -397,11 +402,12 @@ impl Renderer {
             height: (!ch).then_some(frame.h),
             at,
             exact: false,
+            middle: self.spanned.contains(&root),
         };
         let kids = sizes
             .iter()
             .any(|(n, f)| *n != root && f.size.iter().any(Option::is_some));
-        let held = self.held.contains(&root);
+        let held = self.held.contains(&root) || self.spanned.contains(&root);
         let stepping = self.anim.stepping(root);
         let Some(s) = self.surfaces.get(&id) else {
             return self.run_layout(root, fallback, info, sizes);
@@ -494,7 +500,13 @@ impl Renderer {
                 }
             }
         }
-        let mut step = self.anim.sample_step(root);
+        // Its last fraction of a pixel is not laid out: what it holds would
+        // round to the screen's pixels one by one as the box creeps in, each
+        // twitching on its own, where now all of it lands together.
+        let mut step = self
+            .anim
+            .sample_step(root)
+            .map(|d| d.filter(|d| d.abs() >= STEP_LANDED));
         if early {
             // Its box stays the buffer's where its content outgrew it; the
             // step is measured from there once the configure comes.
@@ -926,6 +938,7 @@ fn exact_of(placed: RootSize) -> RootSize {
             width,
             height,
             at,
+            middle,
             ..
         } => RootSize::Placed {
             frame,
@@ -933,6 +946,7 @@ fn exact_of(placed: RootSize) -> RootSize {
             height,
             at,
             exact: true,
+            middle,
         },
         other => other,
     }

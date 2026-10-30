@@ -1033,7 +1033,9 @@ is being saved, so the idle-wakeup windows hold.
   its root's box over the step (`Renderer::lay_out_stepped`); the buffer
   is configured at the larger size so the anchored edge stays put, and
   meanwhile `Painter::input_region` is the box as drawn. A content-sized
-  surface never shrinks while something on it moves. The paint that
+  surface never shrinks while something on it moves; a panel or OSD
+  anchored to one edge is as wide as its output along that edge and
+  never resizes there (`Renderer::centred_span`). The paint that
   finishes an exit or lets a held surface shrink refreshes the specs, so
   the host must check `has_surface_changes()` after every `paint`. A
   surface just attached previews at time zero, so `enter` plays from its
