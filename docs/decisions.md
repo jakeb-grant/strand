@@ -14353,3 +14353,15 @@ gates follow by the usual rule (measurement plus a 512 KiB reserve, rounded up
 to 256 KiB, CI about 48 KB above the container): GPU 29,097,984 B (111 × 256 KiB)
 and CPU-only 24,903,680 B (95 × 256 KiB). Proof:
 `the_release_binary_code_stays_within_its_gate`.
+
+## list-top
+
+**2026-10-30 · list-top: a list at its top stays at its top.** A row added above
+a list's first row stayed out of view, because the view followed the row that
+had been first, even with nothing scrolled: a notification arriving at the top
+of an open list landed above it. The view now follows that row only while the
+list is scrolled away (or on its way somewhere else), so a reader's place still
+holds, and at the top, or with a wheel on its way back there, a new row shows.
+Half a logical pixel counts as the top. Only a `list` follows a row, so a plain
+`scroll` is unchanged. Proof:
+`a_row_added_above_the_first_shows_at_the_top_of_a_list`.

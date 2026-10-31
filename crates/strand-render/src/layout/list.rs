@@ -65,6 +65,10 @@ pub const FLING_STOP: f32 = 20.0;
 /// compositor's clock) do not count towards a fling's velocity.
 pub const FLING_SAMPLES_MS: u32 = 100;
 
+/// A list scrolled less than this, logical pixels, is at its top: rows
+/// added above its first row show (decisions.md list-top).
+const AT_TOP: f32 = 0.5;
+
 /// The rows a virtualised list has, and which of them are mounted and
 /// wanted, as of its last layout.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -793,8 +797,10 @@ pub(super) fn place_list(
         pitch: p.pitch,
     });
     // Rows above the one in view changed their extent: the view follows
-    // it.
-    if let Some((a, was)) = st.anchor
+    // it. Not at the list's top, or on its way there: there is no place
+    // to keep above the first row, so a new first row shows (list-top).
+    if st.target() >= AT_TOP
+        && let Some((a, was)) = st.anchor
         && let Some(j) = rows.iter().position(|r| *r == a)
     {
         let d = p.ys[j] - was;

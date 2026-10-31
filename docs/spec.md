@@ -1110,6 +1110,10 @@ monitor, the keyboard always).
   incrementally.
 - A `list` container lays out and mounts only its visible rows
   (virtualisation is the container's job, not the loop's).
+- Rows that change above a `list`'s view keep the rows in view where
+  they are: a reader's place holds. At the list's top, or scrolling
+  back to it, there is no place to keep: it stays at its top and a row
+  added above the first shows. (decisions.md list-top)
 
 ### 6.6 Poses, transitions and keyframes
 
