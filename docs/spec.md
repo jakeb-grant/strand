@@ -803,7 +803,9 @@ monitor, the keyboard always).
   they are the runtime's to say and never written (`check::read_only`).
   `stop()` is an action, a handler's alone (section 8.3): every command
   of the action now running is stopped and a re-run queued behind one
-  dropped. Each one's process group gets SIGINT, as a terminal's Ctrl-C
+  dropped. Every program strand starts begins with no signal blocked or
+  ignored, whatever strand holds for itself (decisions.md child-signals).
+  Each one's process group gets SIGINT, as a terminal's Ctrl-C
   sends it, then SIGTERM 2 s later if its program has not ended, then
   SIGKILL 2 s after that; strand's thread that started the command
   sends these and reaps it, never signalling a group whose id was

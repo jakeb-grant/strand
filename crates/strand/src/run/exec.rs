@@ -457,8 +457,8 @@ pub(super) fn run(argv: &[String], halt: &Halt, grace: Duration) -> (Option<Stri
         .stdout(Stdio::null())
         .process_group(0);
     strand_services::child::child_env(&mut cmd, None);
-    // SAFETY: `restore_in_child` makes only async-signal-safe calls (an
-    // atomic load, `prctl`), as `pre_exec` requires.
+    // SAFETY: `restore_in_child` makes only async-signal-safe calls, as
+    // `pre_exec` requires.
     unsafe {
         cmd.pre_exec(|| {
             strand_services::child::restore_in_child();
@@ -574,8 +574,7 @@ pub(super) fn capture(
         .stdout(Stdio::piped())
         .process_group(0);
     strand_services::child::child_env(&mut cmd, None);
-    // SAFETY: only async-signal-safe calls (an atomic load, `prctl`), as
-    // `pre_exec` requires. The death signal ends it with this thread,
+    // SAFETY: only async-signal-safe calls, as `pre_exec` requires. The death signal ends it with this thread,
     // which lives until it ends: when strand dies.
     unsafe {
         cmd.pre_exec(|| {
@@ -1292,6 +1291,80 @@ mod tests {
             stop: true,
         });
         assert_eq!(execs.busy(), (0, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (bead #17) Strand blocks SIGINT and SIGTERM on every thread for its
+    /// signalfd, and a thread's mask outlives `exec`: a command started
+    /// from such a thread must still get the signals `rec.stop()` sends.
+    /// With the mask inherited it hears neither and dies at SIGKILL.
+    #[test]
+    fn a_stopped_command_hears_the_signals_strand_blocks_for_itself() {
+        let dir = scratch("stop-mask");
+        let log = dir.join("log");
+        let ready = dir.join("ready");
+        // Not `sh`: dash unblocks signals while it waits for a child, which
+        // hides the bug. A program that keeps its mask is the one that
+        // shows it, as a recorder does.
+        let script = "import signal, sys, time\n\
+                      def on(*_):\n    \
+                      open(sys.argv[1], 'w').write('int\\n')\n    \
+                      sys.exit(0)\n\
+                      signal.signal(signal.SIGINT, on)\n\
+                      open(sys.argv[2], 'w').close()\n\
+                      while True:\n    \
+                      time.sleep(0.05)\n";
+        let argv: Vec<String> = [
+            "python3",
+            "-I",
+            "-c",
+            script,
+            log.to_str().unwrap(),
+            ready.to_str().unwrap(),
+        ]
+        .map(String::from)
+        .to_vec();
+        // As `signal_fd` does on strand's main thread. The mask is this
+        // test thread's own, and the command's thread inherits it.
+        // SAFETY: `set` is initialised by `sigemptyset`; the calls change
+        // only this thread's mask.
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, libc::SIGINT);
+            libc::sigaddset(&mut set, libc::SIGTERM);
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()),
+                0
+            );
+        }
+        let (mut loop_, mut execs) = looped(Duration::from_millis(400));
+        execs.start(ExecRequest {
+            action: "rec".into(),
+            argv,
+            reply: None,
+            stop: false,
+        });
+        wait_for("it never started", 20, || ready.exists());
+        // The handler was set before `ready` was written.
+        let asked = Instant::now();
+        execs.start(ExecRequest {
+            action: "rec".into(),
+            argv: Vec::new(),
+            reply: None,
+            stop: true,
+        });
+        let mut ended = Vec::new();
+        while ended.is_empty() {
+            assert!(asked.elapsed() < Duration::from_secs(20), "it never ended");
+            loop_
+                .dispatch(Some(Duration::from_millis(50)), &mut ())
+                .unwrap();
+            ended.extend(execs.ended());
+        }
+        assert_eq!(std::fs::read_to_string(&log).ok().as_deref(), Some("int\n"));
+        assert_eq!(ended[0].exit, 0, "it ended on its own: {:?}", ended[0]);
+        assert!(ended[0].stopped && ended[0].failed.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

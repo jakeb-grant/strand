@@ -14353,3 +14353,19 @@ gates follow by the usual rule (measurement plus a 512 KiB reserve, rounded up
 to 256 KiB, CI about 48 KB above the container): GPU 29,097,984 B (111 × 256 KiB)
 and CPU-only 24,903,680 B (95 × 256 KiB). Proof:
 `the_release_binary_code_stays_within_its_gate`.
+
+## child-signals
+
+**2026-10-30 · child-signals: every program starts with a clean signal state.**
+`rec.stop()` reached no program: strand blocks SIGINT and SIGTERM on every thread
+for its signalfd, a mask survives `exec`, and std's `Command` keeps it on purpose,
+so a command heard nothing until SIGKILL, 4 s later, and a recording would be left
+unfinished. A `from exec` command also missed its death signal when strand died.
+`child::restore_in_child`, which every spawn already called for the huge page
+setting, now also clears the mask and resets every signal to its default, including
+any strand was itself started with ignored (`nohup`, a shell's `&`). A program gets
+a clean state, not what strand inherited: a shell's children should not depend on
+how the shell was started, and exec resets handlers anyway. Every spawn in the shell
+already called it, and `every_spawn_site_restores_the_child` keeps new ones honest.
+`strand-dev inspect`'s editor and the site tool do not call it: they run from a
+terminal and block nothing of their own. Found by Bead (#17); not specific to it.

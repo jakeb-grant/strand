@@ -698,8 +698,8 @@ fn run_once(argv: &[String], timeout: Duration) -> Option<String> {
         .stderr(Stdio::piped())
         .process_group(0);
     strand_services::child::child_env(&mut cmd, None);
-    // SAFETY: `restore_in_child` makes only async-signal-safe calls (an
-    // atomic load, `prctl`), as `pre_exec` requires.
+    // SAFETY: `restore_in_child` makes only async-signal-safe calls, as
+    // `pre_exec` requires.
     unsafe {
         cmd.pre_exec(|| {
             strand_services::child::restore_in_child();

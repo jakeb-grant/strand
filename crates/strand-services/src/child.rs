@@ -12,6 +12,13 @@
 //! `from exec` service and the editor the overlay opens, and their
 //! children, would run without THP for life.
 //!
+//! Signals survive `exec` the same way: strand blocks SIGINT and SIGTERM
+//! on every thread for its signalfd, std's `Command` keeps the mask on
+//! purpose, and an ignored signal stays ignored. So [`restore_in_child`]
+//! also clears the mask and resets every disposition: a program must be
+//! able to hear `rec.stop()`, a terminal's Ctrl-C and its death signal
+//! (bead #17; decisions.md child-signals).
+//!
 //! Variables strand sets for its own process before `main`
 //! ([`set_own_var`]: the Vulkan loader's driver filter, decisions.md
 //! gpu-first) are given back as strand inherited them the same way.
@@ -110,11 +117,36 @@ pub fn thp_on_for_advised() -> bool {
     EXCEPT_ADVISED.load(Ordering::Relaxed) != 0
 }
 
-/// In a child between `fork` and `exec` (`CommandExt::pre_exec`): give it
-/// back the transparent huge page setting strand itself inherited. Only
-/// async-signal-safe calls (an atomic load, `prctl`); a no-op when
-/// [`thp_off`] never ran. A failure is ignored: the program still runs.
+/// One past the highest signal number on Linux (`_NSIG` is 65 on every
+/// architecture but MIPS, where the extra numbers are refused and ignored).
+const SIGNALS_END: libc::c_int = 65;
+
+/// In a child between `fork` and `exec`: every signal to its default and
+/// nothing blocked. A signal a handler caught is reset by `exec` itself;
+/// this is for what is not, an ignored signal and the mask. Only
+/// async-signal-safe calls. SIGKILL, SIGSTOP and the signals libc keeps
+/// for itself refuse the change, which is ignored.
+fn clean_signals() {
+    // SAFETY: `signal` with `SIG_DFL` and `sigemptyset`/`pthread_sigmask`
+    // on a local set are async-signal-safe and change only this process.
+    unsafe {
+        for sig in 1..SIGNALS_END {
+            libc::signal(sig, libc::SIG_DFL);
+        }
+        let mut none: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut none);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
+    }
+}
+
+/// In a child between `fork` and `exec` (`CommandExt::pre_exec`): clear
+/// the signal mask and every signal's disposition ([`clean_signals`]),
+/// and give it back the transparent huge page setting strand itself
+/// inherited (a no-op when [`thp_off`] never ran). Only async-signal-safe
+/// calls (`signal`, `pthread_sigmask`, an atomic load, `prctl`). A failure
+/// is ignored: the program still runs.
 pub fn restore_in_child() {
+    clean_signals();
     let inherited = INHERITED.load(Ordering::Relaxed);
     if inherited != UNKNOWN {
         let off = libc::c_ulong::from(inherited & 1);
@@ -235,6 +267,137 @@ mod tests {
                 ("XDG_ACTIVATION_TOKEN".into(), None),
             ]
         );
+    }
+
+    /// Signals 32 and 33, which libc keeps for itself and refuses to touch
+    /// (a process manager above the test may leave 32 ignored).
+    const LIBC_OWN: u64 = 0b11 << 31;
+
+    /// The signal lines of a program's `/proc/self/status`, as hex words.
+    fn signal_lines(status: &str) -> Vec<(String, u64)> {
+        status
+            .lines()
+            .filter_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                ["SigBlk", "SigIgn"].contains(&k).then(|| {
+                    let held = u64::from_str_radix(v.trim(), 16).expect("a hex mask");
+                    (k.to_string(), held & !LIBC_OWN)
+                })
+            })
+            .collect()
+    }
+
+    /// (bead #17) A program starts with nothing blocked and nothing
+    /// ignored, whatever the process that starts it holds: `signal_fd`'s
+    /// mask, and any disposition strand itself was started with (`nohup`
+    /// ignores SIGHUP, a shell's `&` SIGINT). Both survive `exec`, and
+    /// std's `Command` keeps the mask on purpose. The child sets them up
+    /// itself here so the test process keeps its own.
+    #[test]
+    fn a_program_starts_with_a_clean_signal_mask_and_default_dispositions() {
+        use std::os::unix::process::CommandExt as _;
+        let held = |clean: bool| {
+            let mut cmd = std::process::Command::new("cat");
+            cmd.arg("/proc/self/status");
+            // SAFETY: only async-signal-safe calls, as `pre_exec` requires.
+            unsafe {
+                cmd.pre_exec(move || {
+                    let mut set: libc::sigset_t = std::mem::zeroed();
+                    libc::sigemptyset(&mut set);
+                    for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGUSR1] {
+                        libc::sigaddset(&mut set, sig);
+                    }
+                    libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+                    for sig in [libc::SIGINT, libc::SIGHUP, libc::SIGUSR2] {
+                        libc::signal(sig, libc::SIG_IGN);
+                    }
+                    if clean {
+                        restore_in_child();
+                    }
+                    Ok(())
+                });
+            }
+            let out = cmd.output().expect("cat runs");
+            signal_lines(&String::from_utf8_lossy(&out.stdout))
+        };
+        let bit = |sig: i32| 1u64 << (sig - 1);
+        // The set-up does hold them when nothing cleans them.
+        let dirty = held(false);
+        assert_eq!(
+            dirty,
+            [
+                (
+                    "SigBlk".to_string(),
+                    bit(libc::SIGINT) | bit(libc::SIGTERM) | bit(libc::SIGUSR1)
+                ),
+                (
+                    "SigIgn".to_string(),
+                    bit(libc::SIGINT) | bit(libc::SIGHUP) | bit(libc::SIGUSR2)
+                ),
+            ]
+        );
+        assert_eq!(
+            held(true),
+            [("SigBlk".to_string(), 0), ("SigIgn".to_string(), 0)]
+        );
+    }
+
+    /// Every program the shell starts goes through [`restore_in_child`]:
+    /// each file of the shell's own code that makes a `Command` calls it.
+    /// `strand-auth` takes it as its `pre_exec` hook from its callers (a
+    /// library without `strand-services`), and those are checked here.
+    #[test]
+    fn every_spawn_site_restores_the_child() {
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        // Code that starts nothing of a shell's: test support and benches.
+        let not_the_shell = [
+            "strand-services/src/testing.rs",
+            "strand/src/bench.rs",
+            "strand/src/run/tests.rs",
+        ];
+        // Tools beside the shell: they start programs from a terminal and
+        // hold no signal state of their own to pass on.
+        let not_a_shell_crate = ["strand-site", "strand-dev"];
+        let mut files = Vec::new();
+        let mut dirs = vec![crates.clone()];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).expect("the crates are read") {
+                let p = e.expect("an entry").path();
+                if p.is_dir() {
+                    if p.file_name().is_some_and(|n| n != "tests" && n != "target") {
+                        dirs.push(p);
+                    }
+                } else if p.extension().is_some_and(|x| x == "rs")
+                    && p.file_name().is_some_and(|n| n != "build.rs")
+                {
+                    files.push(p);
+                }
+            }
+        }
+        let mut missing = Vec::new();
+        let mut seen = 0;
+        for p in files {
+            let rel = p.strip_prefix(&crates).expect("under crates");
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            if !rel.contains("/src/")
+                || not_the_shell.contains(&rel.as_str())
+                || not_a_shell_crate.iter().any(|c| rel.starts_with(c))
+            {
+                continue;
+            }
+            let text = std::fs::read_to_string(&p).expect("a source file");
+            // Tests start what they like.
+            let shell = text.split("#[cfg(test)]\nmod ").next().unwrap_or_default();
+            if !shell.contains("Command::new(") {
+                continue;
+            }
+            seen += 1;
+            if !shell.contains("restore_in_child") && !rel.starts_with("strand-auth/") {
+                missing.push(rel);
+            }
+        }
+        assert!(seen >= 7, "the walk found {seen} spawning files");
+        assert_eq!(missing, Vec::<String>::new(), "no restore_in_child");
     }
 
     /// (gpu-first review) A variable strand set for itself goes back to

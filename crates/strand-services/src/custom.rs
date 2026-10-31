@@ -2461,6 +2461,17 @@ mod tests {
         const HELPER: &str = "STRAND_PDEATHSIG_HELPER";
         if std::env::var_os(HELPER).is_some() {
             block_on(async {
+                // (bead #17) As strand does for its signalfd: the death
+                // signal is SIGTERM, and a child that inherited this mask
+                // would never hear it.
+                // SAFETY: `set` is initialised by `sigemptyset`; the calls
+                // change only this thread's mask.
+                unsafe {
+                    let mut set: libc::sigset_t = std::mem::zeroed();
+                    libc::sigemptyset(&mut set);
+                    libc::sigaddset(&mut set, libc::SIGTERM);
+                    libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+                }
                 let argv = ["sleep".to_string(), "30".to_string()];
                 let (proc, _out) = Proc::spawn(&argv).unwrap();
                 println!("PID {}", proc.child.id().unwrap());

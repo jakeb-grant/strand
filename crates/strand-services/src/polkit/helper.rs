@@ -353,7 +353,7 @@ async fn open(
         }
     }
     // SAFETY: only async-signal-safe calls between fork and exec:
-    // `restore_in_child` (an atomic load and `prctl`) and close_range(2),
+    // `restore_in_child` and close_range(2),
     // which marks descriptors close-on-exec (std's exec-error pipe keeps
     // working; an old kernel without it fails harmlessly).
     unsafe {

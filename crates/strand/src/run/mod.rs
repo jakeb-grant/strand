@@ -529,7 +529,8 @@ fn storage_or(dir: &Path, found: Result<Storage, strand_core::PersistError>) -> 
 /// SIGINT and SIGTERM as a file descriptor: blocked in the calling thread
 /// (and so in every thread it starts afterwards) and read from a
 /// `signalfd`, so the main loop ends the run in order instead of the
-/// process dying with writes in flight.
+/// process dying with writes in flight. A mask survives `exec`: every
+/// program strand starts clears it (`strand_services::child::restore_in_child`).
 fn signal_fd() -> io::Result<OwnedFd> {
     // SAFETY: `sigset_t` is plain data; `sigemptyset` initialises it.
     let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
