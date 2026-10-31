@@ -1308,7 +1308,7 @@ proof  = "crates/strand-render/tests/motion.rs::keyed_reorder_glides_to_new_slot
 [[claim]]
 page   = "site/concepts/motion.md"
 text   = "own size when that changes, growing and shrinking alike."
-source = ["docs/design.md:461"]
+source = ["docs/design.md:454"]
 proof  = "crates/strand-render/tests/motion.rs::a_content_sized_panel_shrinks_when_nothing_moves"
 
 [[claim]]
@@ -1848,7 +1848,7 @@ proof  = "crates/strand-render/tests/motion.rs::size_springs_relayout_only_under
 [[claim]]
 page   = "site/concepts/layout.md"
 text   = "springs its own size when that changes, growing and shrinking alike."
-source = ["docs/design.md:461"]
+source = ["docs/design.md:454"]
 proof  = "crates/strand-render/tests/motion.rs::a_content_sized_panel_shrinks_when_nothing_moves"
 
 [[claim]]
