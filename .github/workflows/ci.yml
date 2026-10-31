@@ -129,6 +129,11 @@ jobs:
       # strand-auth's PAM tier and its no-faults check need the helper's
       # test hooks, asked for by name: no plain test build turns them on.
       - run: cargo test -p strand-auth --features faults
+      # A presented surface under frames that send nothing. Alone, since
+      # `--workspace` turns on the `eval` crate's `eval-hooks` in strand-render,
+      # which draws every frame, so that build never sees this path.
+      - run: cargo test -p strand --test presented_quiet
+        timeout-minutes: 10
       # M3 exit, "100 reloads with no reconnects": a shell reading every
       # builtin service but screens and auth (python-dbusmock's daemons,
       # a mock portal, a tray item and an MPRIS player on a private bus,

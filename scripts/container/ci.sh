@@ -170,6 +170,8 @@ step "cargo test --workspace (skipping the fuzzer and the 100 reloads)" 60 \
   cargo test --workspace -- --skip random_edits_through_five_save_styles --skip a_hundred_reloads_reconnect_and_restart_nothing
 step "cargo test -p strand-auth --features faults" 30 \
   cargo test -p strand-auth --features faults
+step "cargo test -p strand --test presented_quiet" 10 \
+  cargo test -p strand --test presented_quiet
 step "cargo test -p strand --test reloads" 10 \
   cargo test -p strand --test reloads -- --nocapture
 step "random_edits_through_five_save_styles (STRAND_FUZZ_MAX_GAP_MS=20)" 60 \
