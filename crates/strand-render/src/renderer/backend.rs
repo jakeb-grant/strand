@@ -940,6 +940,8 @@ impl Renderer {
                 self.gpu.status = GpuStatus::Unavailable { reason };
                 self.repaint_fallen();
             }
+            // The binary's: it changes nothing here.
+            GpuReply::Committed { .. } => {}
             GpuReply::Exited => {
                 self.gpu.warming = false;
                 if self.gpu.device.is_up() || self.gpu.device.starting() {

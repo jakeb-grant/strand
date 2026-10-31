@@ -294,12 +294,17 @@ impl Desk {
     /// it: a panel that presents, idle. False when there is no device or the
     /// hardware leg's sway cannot be presented to (skipped).
     fn promoted(&mut self) -> bool {
+        self.all_promoted(1)
+    }
+
+    /// [`Desk::promoted`], once `count` panels present.
+    fn all_promoted(&mut self, count: usize) -> bool {
         let required = std::env::var_os("STRAND_REQUIRE_GPU").is_some();
         let hardware = std::env::var("STRAND_GPU_HARDWARE").as_deref() == Ok("1");
         // Lavapipe compiles the device's pipelines first: long on a loaded machine.
         let mode = self.within(Duration::from_secs(60), "the panel promoted", |d| {
             let text = d.log_text();
-            if text.contains("attached (Present)") {
+            if text.matches("attached (Present)").count() >= count {
                 return Some(true);
             }
             if text.contains("attached (Readback)") || text.contains("GPU unavailable") {
@@ -339,6 +344,15 @@ impl Desk {
             "no paint sent nothing, so this proved nothing:\n{}",
             self.log_end()
         );
+    }
+
+    /// Frames presented so far at a width no other panel has.
+    fn frames_of(&self, width: u32) -> usize {
+        let buffer = format!("buffer={width}x");
+        self.log_text()
+            .lines()
+            .filter(|l| l.starts_with("strand: damage") && l.contains(&buffer))
+            .count()
     }
 
     /// The panel's size on `output`, as `strand report` says the surface
@@ -665,4 +679,56 @@ fn a_presented_content_sized_panel_is_capped_to_its_output_as_it_changes() {
             "panel Wide {{ screens: all; anchor: top_left; size: auto\n box {{ width: 2000; height: 620; bg: #202020 }}\n {FADE}\n}}"
         ),
     );
+}
+
+/// (gpu-pace) A region change on an idle panel on a powered-off output is a
+/// present of its last frame, with no frame to answer it. Its frame callback
+/// never comes there, so a frame sent after it waits in Mesa with no timeout,
+/// on the one GPU thread: the panel on the other output stopped until the
+/// output came back. The panel itself waits, and draws when it does.
+#[test]
+fn a_commit_on_a_powered_off_output_stops_no_other_surface() {
+    let shell = r#"
+export state boost = true
+export state through = false
+export state tint = false
+panel Off { screens: "HEADLESS-1"; anchor: top_left; width: 1000; height: 620
+  when through { hit: none }
+  box { place: absolute; width: 1000; height: 600; bg: tint ? #ff0000 : #303030
+    opacity: boost ? 0.5 + 0.5 * wave(600ms) : 1 }
+}
+panel On { screens: "HEADLESS-2"; anchor: top_left; width: 1100; height: 620
+  box { place: absolute; width: 1000; height: 600; bg: #303030
+    opacity: 0.5 + 0.5 * wave(600ms) }
+}
+"#;
+    let Some(mut d) = start("off", shell) else {
+        return;
+    };
+    if !d.all_promoted(2) {
+        return;
+    }
+    const ON: u32 = 1100;
+    let drew = |d: &mut Desk, what: &str| {
+        let from = d.frames_of(ON);
+        d.until(what, |d| (d.frames_of(ON) >= from + 5).then_some(()));
+    };
+    drew(&mut d, "the other panel draws");
+    swaymsg(&d.sock, &["output", "HEADLESS-1", "power", "off"]);
+    // The panel's last callback came long ago: nothing is waited for.
+    std::thread::sleep(Duration::from_millis(1500));
+    d.set_state("through", "true");
+    std::thread::sleep(Duration::from_millis(500));
+    d.proved();
+    d.set_state("tint", "true");
+    std::thread::sleep(Duration::from_millis(1000));
+    drew(&mut d, "the other panel keeps drawing");
+    assert!(
+        !d.shot("HEADLESS-2").has(RED, 1),
+        "the wrong panel drew the change"
+    );
+    swaymsg(&d.sock, &["output", "HEADLESS-1", "power", "on"]);
+    d.until("the panel draws when its output is back", |d| {
+        d.shot("HEADLESS-1").has(RED, 2000).then_some(())
+    });
 }

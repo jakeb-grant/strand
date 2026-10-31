@@ -269,8 +269,8 @@ pub enum GpuRequest {
     /// (gpu-first review 2) Present `surface`'s last frame again, so the
     /// compositor applies the surface state the manager left pending (a
     /// new layer size) and configures it, before a frame of the new
-    /// layout is drawn. Nothing is answered; a surface not presented, or
-    /// with no frame at its swapchain's size, is skipped.
+    /// layout is drawn. Answered [`GpuReply::Committed`]; a surface not
+    /// presented, or with no frame at its swapchain's size, is skipped.
     Commit(SurfaceId),
     /// One frame of an attached surface.
     Frame(Frame),
@@ -325,6 +325,9 @@ pub enum GpuReply {
         waited: Duration,
         ran: Vec<(u64, Duration)>,
     },
+    /// A [`GpuRequest::Commit`] was handled: `committed` if it presented,
+    /// so a frame callback asked for it is coming.
+    Committed { surface: SurfaceId, committed: bool },
     /// A readback frame's pixels, after the GPU ran it; `waited` is the
     /// time its request sat in the thread's queue behind other work.
     Pixels {

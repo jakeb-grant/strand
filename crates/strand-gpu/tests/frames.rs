@@ -539,3 +539,34 @@ fn frames_and_passes_that_cannot_be_drawn_are_answered() {
     let px = frame(&mut h, empty(5, Size::new(4, 4)));
     assert_eq!(pixel(&px, 0, 0), [0, 0, 0, 0]);
 }
+
+/// (gpu-pace) A `Commit` is answered whatever it does, since the host holds
+/// the surface's next present until it hears: one with nothing to present
+/// again says so, and its callback is then not waited for.
+#[test]
+fn a_commit_that_presents_nothing_says_so() {
+    let Some(mut h) = start() else { return };
+    h.gpu.send(GpuRequest::Commit(S));
+    assert!(
+        matches!(
+            h.next(),
+            GpuReply::Committed {
+                surface: S,
+                committed: false
+            }
+        ),
+        "not attached"
+    );
+    attach(&mut h, Size::new(4, 4));
+    h.gpu.send(GpuRequest::Commit(S));
+    assert!(
+        matches!(
+            h.next(),
+            GpuReply::Committed {
+                surface: S,
+                committed: false
+            }
+        ),
+        "read back: no swapchain"
+    );
+}

@@ -89,7 +89,7 @@ mod host {
     struct Presented {
         size: Size,
         scale: Scale,
-        /// A frame was sent and its `Presented` has not come.
+        /// A frame or `Commit` was sent and its answer has not come.
         in_flight: bool,
         /// The sent frame's size and scale, for its `damage` log line
         /// once presented.
@@ -100,7 +100,8 @@ mod host {
         /// next frame waits for that, which wakes the loop.
         paced: bool,
         /// (gpu-pace) A `Commit` waiting for that too: a present then
-        /// would wait for the callback on the GPU thread.
+        /// would wait for the callback on the GPU thread. It is a present
+        /// like a frame: it asks for its own callback and is answered.
         commit_owed: bool,
     }
 
@@ -244,12 +245,13 @@ mod host {
             }
             for r in state.host_mut().renderer.take_gpu_requests() {
                 if let GpuRequest::Commit(id) = r {
-                    // It commits whatever the manager left pending.
+                    // It commits whatever the manager left pending. A
+                    // surface not presented has no last frame to send again.
                     state.take_owed_commit(id);
                     if let Some(p) = self.presented.get_mut(&id) {
                         p.commit_owed = true;
-                        continue;
                     }
+                    continue;
                 }
                 self.send(r);
             }
@@ -438,6 +440,16 @@ mod host {
                             }
                         }
                     }
+                    GpuReply::Committed { surface, committed } => {
+                        if let Some(p) = self.presented.get_mut(surface) {
+                            p.in_flight = false;
+                            if !*committed {
+                                state.forget_present_callback(*surface);
+                            }
+                        }
+                        // Nothing for render, and nothing changed.
+                        continue;
+                    }
                     GpuReply::Failed {
                         surface: Some(surface),
                         ..
@@ -538,8 +550,15 @@ mod host {
                 if p.in_flight || releasing || p.paced {
                     continue;
                 }
+                // A `Commit`'s Mesa asks for a callback of its own, so what
+                // follows it waits for that as a frame does, or a frame sent
+                // now would wait in Mesa, on an output that is off for good.
                 if std::mem::take(&mut p.commit_owed) {
+                    state.take_owed_commit(*id);
+                    state.ask_present_callback(*id);
                     gpu.send(GpuRequest::Commit(*id));
+                    p.in_flight = true;
+                    continue;
                 }
                 let r: &mut Renderer = &mut state.host_mut().renderer;
                 let due = r.presented_due(*id).is_some();
@@ -579,7 +598,9 @@ mod host {
                     // A CPU's empty paint carries its regions in a bare
                     // commit. Only a present commits this surface.
                     if state.take_owed_commit(*id) {
+                        state.ask_present_callback(*id);
                         gpu.send(GpuRequest::Commit(*id));
+                        p.in_flight = true;
                     }
                 }
             }

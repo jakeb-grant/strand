@@ -2174,7 +2174,8 @@ Wayland crate. Its interface (`strand-gpu/src/lib.rs`):
   `wl_surface` or display" holds at exit (decisions.md m4-audit).
 - `GpuRequest`: `Attach { surface, handles: Option<RawHandles>, size,
   scale, opaque }` (no handles: readback only), `Resize`, `Release`,
-  `Commit` (present the last frame again so pending state applies),
+  `Commit` (present the last frame again so pending state applies,
+  answered `Committed`),
   `Frame(Frame)`, `Pass(PassFrame)` (a shader pass for a surface the
   GPU does not draw, drawn offscreen and read back; `input` is the CPU
   pixels a `Content` or `Backdrop` pass reads, `then` chains passes),
@@ -2182,9 +2183,10 @@ Wayland crate. Its interface (`strand-gpu/src/lib.rs`):
 - `GpuReply`: `Ready(AdapterInfo)`, `Unavailable(GpuError)`,
   `Attached { surface, mode: GpuMode }`, `Released`, `Presented { at,
   waited, ran, .. }` (`ran` from timestamp queries; the thread never
-  waits for a presented frame's GPU work), `Pixels`, `PassPixels`,
+  waits for a presented frame's GPU work), `Committed { surface,
+  committed }` (false: it presented nothing), `Pixels`, `PassPixels`,
   `Failed { surface, key, error }` (the device stays up), `Lost`,
-  `Exited`. Every frame and pass is answered, a panic included.
+  `Exited`. Every frame, commit and pass is answered, a panic included.
 - Hangs: a readback waits at most `HUNG_AFTER` (10 s); past it, or on
   a wgpu panic after a driver reset, the request answers `Failed`, then
   `Lost` and `Exited`, and a hung device is leaked rather than dropped.
@@ -2292,8 +2294,11 @@ the binary sends `Renderer::paint_gpu(surface, at) -> Option<Frame>`
 once `Presented` has come for its last frame and `State::present_due`
 says that frame's frame callback has too (decisions.md gpu-pace):
 `State::ask_present_callback` asks for it as pending state before the
-frame goes, and the present commits it. One frame in flight per surface,
-and no surface's FIFO wait on the one GPU thread. A callback is given up
+frame goes, and the present commits it. A `GpuRequest::Commit` is a present
+too, and is paced the same way: it asks for its callback, and is in flight
+until `Committed`, which forgets the callback if it presented nothing. One
+present in flight per surface, and no surface's FIFO wait on the one GPU
+thread. A callback is given up
 on after 1 s only where the compositor offers `wp_fifo_manager_v1`; where
 it does not, Mesa's present waits for it with no timeout. A paint that
 draws nothing returns no frame (wave-cost);

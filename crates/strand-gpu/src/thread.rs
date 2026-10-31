@@ -49,11 +49,12 @@ fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "a panic".into())
 }
 
-/// The answer a frame or pass still owes if handling it panics: every
-/// one is answered, so render stops waiting for it.
+/// The answer a frame, commit or pass still owes if handling it panics:
+/// every one is answered, so nothing stops waiting for it.
 fn owed(req: &GpuRequest) -> Option<(Option<SurfaceId>, Option<u64>)> {
     match req {
         GpuRequest::Frame(f) => Some((Some(f.surface), None)),
+        GpuRequest::Commit(surface) => Some((Some(*surface), None)),
         GpuRequest::Pass(p) => Some((None, Some(p.key))),
         _ => None,
     }
@@ -602,7 +603,10 @@ impl State {
                 self.targets.remove(&surface);
                 reply.send(GpuReply::Released(surface));
             }
-            GpuRequest::Commit(surface) => self.commit(dev, surface),
+            GpuRequest::Commit(surface) => {
+                let committed = self.commit(dev, surface);
+                reply.send(GpuReply::Committed { surface, committed });
+            }
             GpuRequest::Frame(frame) => self.frame(dev, frame, queued, reply),
             GpuRequest::Pass(pass) => self.pass(dev, pass, reply),
             GpuRequest::Shutdown => {}
@@ -611,16 +615,17 @@ impl State {
 
     /// (gpu-first review 2) Presents `surface`'s last frame again: its
     /// commit carries the surface state the manager set since (a new
-    /// size), whose configure the renderer holds the next frame for.
-    fn commit(&mut self, dev: &Device, surface: SurfaceId) {
+    /// size), whose configure the renderer holds the next frame for. True if it
+    /// presented.
+    fn commit(&mut self, dev: &Device, surface: SurfaceId) -> bool {
         let Some(t) = self.targets.get_mut(&surface) else {
-            return;
+            return false;
         };
         let (Some(p), Some(ft)) = (t.present.as_mut(), t.frame.as_ref()) else {
-            return;
+            return false;
         };
         if (ft.width, ft.height) != (p.config.width, p.config.height) {
-            return;
+            return false;
         }
         let mut encoder = dev
             .device
@@ -628,11 +633,12 @@ impl State {
                 label: Some("strand commit"),
             });
         let Some((image, dst, format)) = p.acquire(dev) else {
-            return;
+            return false;
         };
         self.blit.record(dev, &mut encoder, &ft.view, &dst, format);
         dev.queue.submit([encoder.finish()]);
         p.present(dev, image);
+        true
     }
 
     /// Uploads the frame's new pixmaps, then frees the retired ones and
@@ -1955,6 +1961,10 @@ mod tests {
         let (lost, got) = replies(Some((None, Some(9))), false);
         assert!(!lost && got.is_empty(), "{got:?}");
         assert_eq!(owed(&GpuRequest::Release(SurfaceId(1))), None);
+        assert_eq!(
+            owed(&GpuRequest::Commit(SurfaceId(1))),
+            Some((Some(SurfaceId(1)), None))
+        );
         assert_eq!(owed(&GpuRequest::Shutdown), None);
     }
 }

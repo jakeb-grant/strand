@@ -220,9 +220,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.gpu.owed.remove(&surface)
     }
 
-    /// (gpu-pace) Before the host sends the GPU thread a frame of
-    /// handed-off `surface`: asks for a frame callback as pending state,
-    /// which that frame's present commits. Until it comes,
+    /// (gpu-pace) Before the host sends the GPU thread a frame or a
+    /// `GpuRequest::Commit` of handed-off `surface`: asks for a frame
+    /// callback as pending state, which that present commits. Until it comes,
     /// [`State::present_due`] says to send no other frame, so one
     /// surface's FIFO wait never blocks the one GPU thread with every
     /// other surface's frames queued behind it.
@@ -249,9 +249,10 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
     }
 
-    /// (gpu-pace) The frame asked for by [`State::ask_present_callback`]
-    /// failed: no present will commit its callback, so nothing waits for
-    /// it (it comes with the next commit, and then does not count).
+    /// (gpu-pace) The frame or `GpuRequest::Commit` asked for by
+    /// [`State::ask_present_callback`] failed or presented nothing: no
+    /// present will commit its callback, so nothing waits for it (it comes
+    /// with the next commit, and then does not count).
     pub fn forget_present_callback(&mut self, surface: SurfaceId) {
         if let Some(s) = self.surfaces.get_mut(&surface) {
             s.forget_callback();

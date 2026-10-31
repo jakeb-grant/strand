@@ -14736,16 +14736,22 @@ Mesa's wait, in two of three runs on Arch's sway before that was fixed. The give
 surface has is kept only with `wp_fifo_manager_v1`, where Mesa does not wait for
 callbacks and a lost one should not stop the surface. Without it, a frame sent
 after a give-up stops every surface, as measured: all four at 1 s of `power off`.
-A `Commit` waits for the callback too, but asks for none, as the thread may answer
-it without a commit. The compositor gets about one more wake per frame (the
+A `Commit` is paced as a frame is: it asks for the callback, stays in flight until the
+thread answers `Committed`, and forgets the callback if it presented nothing. As first
+written it waited for the callback and asked for none, so a frame after it waited in
+Mesa for that present's own callback: with an idle panel on a powered-off output, a
+region change and then a frame stopped every surface until the output came back, and for
+good if it was unplugged (Arch's sway, the other panel 62 frames/s to 0; 12 s after the
+unplug it had not come back, and the surface was never released). The compositor gets about one more wake per frame (the
 request reaches it apart from the commit), while Strand's own about halve. Left alone:
 a promotion's attach (up to about 20 ms, once per surface since gpu-stay). Nothing
 here ran on Hyprland, so neither its FIFO path nor the 52 ms is covered; there the
 frames should stop queuing up in the compositor's FIFO, which is unmeasured. Proof:
 `a_presented_frame_waits_for_its_callback_or_gives_up` for the manager's half, which
-fails if the stale count, the wait or the FIFO rule goes; the host's wiring only
-shows on a presenting GPU, so benchmarks.md "Presenting on one GPU thread" is its
-proof.
+fails if the stale count, the wait or the FIFO rule goes;
+`a_commit_on_a_powered_off_output_stops_no_other_surface` on sway, under lavapipe, for
+a `Commit`, seen failing without it; the rest of the host's wiring only shows on a
+presenting GPU, so benchmarks.md "Presenting on one GPU thread" is its proof.
 
 ## gpu-idle-wakes
 
