@@ -2414,6 +2414,37 @@ fn save_connection(
     .to_string()
 }
 
+/// (bead #20) NetworkManager answering on a wired machine: the daemon is
+/// `available`, and with no Wi-Fi device `wifi_present` is false, the case
+/// the field exists for.
+#[test]
+fn a_wired_machine_has_no_wifi_present() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some(_nm) = DbusMock::start(&bus, "networkmanager", true, None, NM) else {
+        return;
+    };
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        ROOT,
+        "AddEthernetDevice",
+        &("mock_Eth", "eth0", 30i32),
+    );
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.network.cells();
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert_eq!(cells.available.get_untracked(&rt), Ok(true));
+    assert_eq!(cells.wifi_present.get_untracked(&rt), Ok(false));
+    s.shutdown();
+}
+
 /// (services-round) `network.connections` lists the saved connections
 /// only while a visible reader reads them (loopback left out), follows
 /// one saved meanwhile, `c.up()` and `c.down()` switch a VPN, `kind`

@@ -2889,8 +2889,10 @@ mod tests {
         assert_eq!(nm.wifi_device(), None);
     }
 
-    /// (bead #20) `wifi_present` is the Wi-Fi devices NetworkManager lists,
-    /// whatever else it knows: a wired machine has none.
+    /// (bead #20) `wifi_present` is whether NetworkManager's Wi-Fi device
+    /// list has anything: an empty one is false, an entry true. Which
+    /// devices enter the list, a wired machine's none, is
+    /// `tests/network.rs::a_wired_machine_has_no_wifi_present`.
     #[test]
     fn a_wifi_device_is_what_wifi_present_says() {
         let mut nm = Nm::default();
