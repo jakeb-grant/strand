@@ -14396,7 +14396,7 @@ presents was not run through this; Hyprland was not run.
 
 ## still-pointer
 
-**2026-10-30 · still-pointer: hover and the cursor follow content moving under
+**2026-10-31 · still-pointer: hover and the cursor follow content moving under
 a pointer that stays still.** spec.md 6.3 says `hover` is true while the pointer
 is over a node, and `self.pointer` already followed a node moving under a still
 pointer; `hover` and the cursor did not, and stayed on the row last moved over
@@ -14447,7 +14447,7 @@ heldd-hover-scroll and docs-guide-3 keep their approved recordings.
 
 ## hit-through
 
-**2026-10-30 · hit-through: `hit: none` on a surface's root reaches past the
+**2026-10-31 · hit-through: `hit: none` on a surface's root reaches past the
 surface.** The docs said the pointer passes through to what is below, but on a
 panel the empty area swallowed clicks: nothing asked the compositor to send them
 elsewhere, and only hover popups had a region. No new prop: the root's `hit: none`
@@ -14475,7 +14475,7 @@ presents sends one frame for it, which was not run. Proof:
 
 ## first-read
 
-**2026-10-30 · first-read: a size is measured before its first read.** The owner
+**2026-10-31 · first-read: a size is measured before its first read.** The owner
 saw `isl.width`, read as a popup mounted, give a stale small width while the pill
 sat idle. The repro on sway: a width first read in a closed popup's `on show` gives
 0 however wide the element is, because render reports a size only once something
@@ -14488,13 +14488,18 @@ from its mount, as `pointer` already was (`Program::node_watch`). A shell that
 reads none asks for none. `box` stays as it was: reading it costs a frame's hold
 and a report of every move, it is documented to read zeros until reported, and its
 first value snaps in rather than springing. Through a value passed elsewhere, where
-the read is not followed, a size is still measured from the first read. Proof:
+the read is not followed, a size is still measured from the first read. A popup's own
+content read in its own `on show` still gives 0: logic runs that handler as it mounts
+the content, before anything has laid it out, and giving it a size would mean moving
+`on show` after a layout, a change of what the handler means for far more than this;
+a binding reading it catches up a frame later. Proof:
 `a_width_first_read_as_a_popup_mounts_is_already_known`,
+`a_popups_own_content_reads_zero_in_its_on_show`,
 `only_what_is_read_is_measured`.
 
 ## shadow-popup
 
-**2026-10-30 · shadow-popup: not reproduced, nothing changed.** The owner's notes
+**2026-10-31 · shadow-popup: not reproduced, nothing changed.** The owner's notes
 have a `shadow` on a card stopping its hover popup from opening, with no error, from
 one test on an island since rebuilt without a popup. On headless sway at scale 1.5,
 with a virtual pointer gliding in, more than 40 shells opened and closed every time: the panel springing to fit or plain; the popup over, above or

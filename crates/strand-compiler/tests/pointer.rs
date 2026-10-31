@@ -330,6 +330,33 @@ panel P { anchor: top_left; width: 200; height: 100
     assert_eq!(sh.num("seen_h"), 30.0);
 }
 
+/// (first-read) What is read in a popup's own `on show`: its anchor and its
+/// surface are laid out, its own content not yet, which reads 0 (spec.md 6.3).
+#[test]
+fn a_popups_own_content_reads_zero_in_its_on_show() {
+    let mut sh = Shell::new(
+        r#"
+export state o = false
+export state anchor = -1.0
+export state own = -1.0
+export state surface = -1.0
+panel P { id: root; anchor: top_left; width: 200; height: 100
+  box { id: isl; width: 150; height: 30
+    popup { open: o
+      on show { anchor = isl.width; own = card.width; surface = root.width }
+      box { id: card; width: 77; height: 10 }
+    }
+  }
+}
+"#,
+    );
+    sh.set("o", strand_compiler::vm::value::Value::Bool(true));
+    sh.settle();
+    assert_eq!(sh.num("anchor"), 150.0);
+    assert_eq!(sh.num("surface"), 200.0);
+    assert_eq!(sh.num("own"), 0.0);
+}
+
 /// (first-read) Measuring from the mount is for elements something reads: a
 /// shell that reads no size asks render for none.
 #[test]

@@ -278,3 +278,59 @@ panel P { anchor: top_left; width: 300; height: 200; hit: none
     toggle(&mut sh, true);
     assert!(!sh.r.wants_frame(id));
 }
+
+/// A box on a surface whose root has `hit: none`: the surface takes the pointer
+/// on the box and passes it elsewhere. (A popup's is in the renderer's tests,
+/// `a_hit_none_popup_root_passes_the_pointer`, whose shell attaches popups.)
+fn passes_through(sh: &Shell, id: strand_scene::SurfaceId) {
+    let at = |x, y| sh.r.takes_input_at(id, LogicalPoint::new(x, y));
+    assert!(at(50.0, 10.0), "the box");
+    assert!(!at(150.0, 10.0), "beside it");
+}
+
+#[test]
+fn a_hit_none_bar_passes_the_pointer() {
+    let sh = Shell::new(
+        r#"
+bar B { height: 30; hit: none
+  box { width: 100; height: 20; bg: #00ff00 }
+}
+"#,
+    );
+    passes_through(&sh, sh.surface("B").id);
+}
+
+#[test]
+fn a_hit_none_window_passes_the_pointer() {
+    let sh = Shell::new(
+        r#"
+window W { width: 300; height: 100; hit: none
+  box { width: 100; height: 20; bg: #00ff00 }
+}
+"#,
+    );
+    passes_through(&sh, sh.surface("W").id);
+}
+
+/// A lock never lets the pointer reach what it hides, whatever its root says.
+/// Offline, in the renderer: no compositor, no session lock and no PAM are
+/// involved (the lock VM is for those).
+#[test]
+fn a_lock_keeps_its_whole_box() {
+    let sh = Shell::new(
+        r#"
+lock L { open: true; hit: none
+  on key(k) { auth.submit(k.name) }
+  row { width: 300; hit: none
+    box { width: 100; height: 20; bg: #00ff00 }
+  }
+}
+"#,
+    );
+    let a = sh.surface("L");
+    let id = a.id;
+    assert_eq!(Painter::input_region(&sh.r, id), None);
+    let far = LogicalPoint::new(a.size.w as f32 - 1.0, a.size.h as f32 - 1.0);
+    assert!(far.x > 100.0, "a size to test in: {:?}", a.size);
+    assert!(sh.r.takes_input_at(id, far), "the corner beside the box");
+}

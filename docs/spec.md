@@ -972,9 +972,13 @@ monitor, the keyboard always).
   size, for container queries: `when self.width < 300 { … }`. A query
   switches with 4 px of hysteresis, so it cannot flicker, and costs at
   most one extra layout pass per frame. An element whose `width` or
-  `height` is read anywhere is measured from its mount, so the
-  first read, in a handler or as a popup mounts, finds what is laid out
-  (decisions.md first-read).
+  `height` is read through `self` or its id is measured from its mount,
+  so a first read in a handler, or as a popup mounts, finds its size once
+  it has been laid out: a popup's `on show` finds its anchor's and its
+  surface's. A popup's own content is not laid out yet in its own `on
+  show` and reads 0 there, and a size read through a value passed
+  elsewhere is measured only from that first read, so that read gives 0
+  too (decisions.md first-read).
 - **`name.box`** reads the laid-out box of the node with `id: name` as
   a `Rect` (`x`, `y`, `width`, `height`), in logical pixels from the
   top-left corner of its surface's box (a shadow's overhang lies
