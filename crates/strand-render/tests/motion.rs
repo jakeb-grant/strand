@@ -355,10 +355,12 @@ fn size_springs_relayout_only_under_the_nearest_size_stable_ancestor() {
     assert!(widths[5] > widths[0], "{widths:?}");
     // After the first frame (which lays the whole surface out once for
     // the change), each frame lays out the cell's subtree only (the cell
-    // and its two children, once: the springs' targets are kept).
+    // and its two children, once: the springs' targets are kept). (wave-cost)
+    // The frame it lands on lays the surface out once more.
+    let flying = widths.iter().filter(|w| **w < 24.0).count();
     assert!(
-        partial[2..].iter().all(|n| *n <= 3 && *n < full),
-        "{partial:?} of {full}"
+        flying > 2 && partial[2..flying].iter().all(|n| *n <= 3 && *n < full),
+        "{partial:?} of {full}, {widths:?}"
     );
     st.settle(13);
     assert_eq!(st.rect(dot).w, 24.0);

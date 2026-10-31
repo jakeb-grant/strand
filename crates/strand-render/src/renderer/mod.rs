@@ -223,6 +223,18 @@ struct SurfaceState {
     /// Size springs are moving: the next frame lays out again (only the
     /// subtrees under their nearest size-stable ancestors).
     anim_layout: bool,
+    /// (wave-cost) The last pass of [`Renderer::lay_out`] changed a box
+    /// (or there was none).
+    boxes_moved: bool,
+    /// (wave-cost) This frame is laid out already ([`Renderer::kept_scene`]).
+    laid_now: bool,
+    /// (wave-cost) No frame before this one can show anything: only size
+    /// springs move, and they will not have moved a visible step until
+    /// then ([`Renderer::plan_quiet`]).
+    quiet_until: Option<Instant>,
+    /// (wave-cost) The last frame skipped frames: its gap is no frame
+    /// period ([`crate::clock::Clocks::frame_after_gap`]).
+    quiet_gap: bool,
     /// Parents whose children changed (created, removed, moved, a
     /// layout length snapped): the next layout pass glides their
     /// children from where they were (FLIP). `flip_all`: every node
@@ -314,6 +326,16 @@ impl SurfaceState {
     fn mark_dirty(&mut self) {
         self.dirty = true;
         self.cache = None;
+        self.quiet_until = None;
+    }
+
+    /// (wave-cost) A size that stays inside a box of fixed size changed:
+    /// its next frame lays that box out again, and keeps the scene if no
+    /// box moved ([`Renderer::kept_scene`]).
+    fn mark_sized(&mut self) {
+        self.dirty = true;
+        self.anim_layout = true;
+        self.quiet_until = None;
     }
 
     /// Something layout reads changed: lay out again before painting.
@@ -375,6 +397,13 @@ pub struct Renderer {
     specs: BTreeMap<NodeId, SurfaceSpec>,
     surface_changes: Vec<(NodeId, SurfaceChange)>,
     first_frame_wait: Duration,
+    /// (wave-cost) A host whose loop keeps real time: frames that cannot
+    /// show anything are not asked for ([`Renderer::set_quiet_frames`]).
+    quiet_frames: bool,
+    /// (wave-cost) Where `QUIET_GRID` counts from.
+    quiet_epoch: Instant,
+    /// (wave-cost) [`Renderer::flattens`].
+    flattens: u64,
     new_text_wait: Duration,
     estimate_wait: Duration,
     estimate_waits: u64,
@@ -595,6 +624,9 @@ impl Renderer {
             specs: BTreeMap::new(),
             surface_changes: Vec::new(),
             first_frame_wait: FIRST_FRAME_TEXT_WAIT,
+            quiet_frames: false,
+            quiet_epoch: Instant::now(),
+            flattens: 0,
             new_text_wait: NEW_TEXT_WAIT,
             estimate_wait: ESTIMATE_WAIT,
             estimate_waited: Duration::ZERO,

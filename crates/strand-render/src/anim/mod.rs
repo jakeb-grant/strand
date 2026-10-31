@@ -200,6 +200,9 @@ struct NodeAnim {
     /// `width`, `height` or `size` changed: the laid-out size springs to
     /// its new value.
     size_touched: bool,
+    /// (wave-cost) The axes of `size_touched`: both unless logic set only
+    /// a `width` or a `height`.
+    touched_axes: [bool; 2],
     /// (growth) Per axis, on a content-sized surface's root: how far its
     /// box is from its content's size, springing to zero
     /// ([`Animator::step_size`]).
@@ -455,6 +458,17 @@ impl Animator {
     /// Something drawn since [`Animator::begin`] is still moving.
     pub fn active(&self) -> bool {
         self.active
+    }
+
+    /// (wave-cost) [`Animator::active`], asked of what comes next alone:
+    /// what it was, now false.
+    pub(crate) fn take_active(&mut self) -> bool {
+        std::mem::take(&mut self.active)
+    }
+
+    /// (wave-cost) [`Animator::take_active`]'s answer back.
+    pub(crate) fn add_active(&mut self, active: bool) {
+        self.active |= active;
     }
 
     /// The frame period of the surface about to be drawn (see
@@ -1001,9 +1015,13 @@ impl Animator {
         }
     }
 
-    /// Logic set `width`, `height` or `size` of `id`.
-    pub fn touch_size(&mut self, id: NodeId) {
-        self.nodes.entry(id).or_default().size_touched = true;
+    /// Logic set `width`, `height` or `size` of `id` (`axes`: which of
+    /// its width and height that was).
+    pub fn touch_size(&mut self, id: NodeId, axes: [bool; 2]) {
+        let na = self.nodes.entry(id).or_default();
+        na.size_touched = true;
+        na.touched_axes[0] |= axes[0];
+        na.touched_axes[1] |= axes[1];
     }
 
     pub fn enter(&mut self, id: NodeId) {
@@ -1048,6 +1066,7 @@ impl Animator {
         let na = self.nodes.entry(id).or_default();
         na.respring = true;
         na.size_touched = true;
+        na.touched_axes = [true; 2];
     }
 
     /// A closing surface opened again: it springs back to its props.
@@ -1057,6 +1076,7 @@ impl Animator {
             let na = self.nodes.entry(id).or_default();
             na.respring = true;
             na.size_touched = true;
+            na.touched_axes = [true; 2];
         }
     }
 

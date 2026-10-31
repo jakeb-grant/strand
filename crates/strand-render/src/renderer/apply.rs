@@ -40,7 +40,44 @@ pub fn affects_layout(prop: Prop) -> bool {
     prop.affects_layout()
 }
 
+/// The axes (width, height) a `width`, `height` or `size` sets.
+fn size_axes(prop: Prop) -> [bool; 2] {
+    [prop != Prop::Height, prop != Prop::Width]
+}
+
 impl Renderer {
+    /// (wave-cost) Logic's new `prop` (a size) of `id` springs, and moves
+    /// nothing outside a box of fixed size above it, on every surface
+    /// showing it: the surface's other boxes, its size and what it asks of
+    /// the compositor stay, so it needs no layout of the whole surface, no
+    /// measuring and no preview, only its next frame's
+    /// ([`Renderer::relayout_sized`]). What a size spring moves in a whole
+    /// row of a shell must not cost a layout of the shell at each reading.
+    fn size_change_stays(&self, id: NodeId, prop: Prop) -> bool {
+        let root = self.tree.root_of(id);
+        if self.anim.reduced()
+            || !self.shown(root)
+            || self.lists.still.contains(&id)
+            || !self.tree.contains_live(id)
+        {
+            return false;
+        }
+        let axes = size_axes(prop);
+        let mut on = self
+            .surfaces
+            .values()
+            .filter(|s| Some(s.root) == root)
+            .peekable();
+        on.peek().is_some()
+            && on.all(|s| {
+                s.valid
+                    && s.boxes.as_ref().is_some_and(|b| {
+                        self.size_boundary(id, s.root, |a| self.axes_stable(a, axes, b))
+                            .is_some()
+                    })
+            })
+    }
+
     /// Applies one tick's diff. Failed ops are returned; the rest apply.
     pub fn apply(&mut self, diff: SceneDiff) -> Vec<SceneError> {
         // A `tooltip` (or the tokens it reads) changing while one waits
@@ -88,6 +125,9 @@ impl Renderer {
         // paint-only prop).
         let mut touched: Option<Vec<NodeId>> = Some(Vec::new());
         let mut relayout: Option<Vec<NodeId>> = Some(Vec::new());
+        // (wave-cost) Surface roots where an op only set a size that stays
+        // inside a box of fixed size (`size_change_stays`).
+        let mut sized: Vec<NodeId> = Vec::new();
         if let Some(on) = diff.reduced_motion {
             self.set_reduced_motion(on);
         }
@@ -178,6 +218,13 @@ impl Renderer {
                 }),
                 _ => false,
             };
+            let stays = match &op {
+                SceneOp::SetProp { id, prop, .. } if crate::anim::is_size(*prop) => {
+                    self.size_change_stays(*id, *prop)
+                }
+                _ => false,
+            };
+            let shapes = shapes && !stays;
             let result = if self.animate_op(&op) {
                 Ok(())
             } else {
@@ -189,7 +236,9 @@ impl Renderer {
                         .into_iter()
                         .chain(after.and_then(|id| self.tree.root_of(id)))
                         .collect();
-                    if let Some(t) = &mut touched {
+                    if stays {
+                        sized.extend(roots.iter().copied());
+                    } else if let Some(t) = &mut touched {
                         t.extend(roots.iter().copied());
                     }
                     if (shapes || shadow)
@@ -266,6 +315,8 @@ impl Renderer {
                 s.mark_layout();
             } else if hit(&touched) {
                 s.mark_dirty();
+            } else if sized.contains(&s.root) {
+                s.mark_sized();
             }
         }
         // Pages that swapped choose their slides before anything samples
@@ -429,7 +480,7 @@ impl Renderer {
                     self.anim.touch(*id, *prop, old);
                 }
                 if animates && crate::anim::is_size(*prop) {
-                    self.anim.touch_size(*id);
+                    self.anim.touch_size(*id, size_axes(*prop));
                 }
                 // Layout lengths snap; the boxes they move glide.
                 if snaps_and_glides(*prop) {

@@ -1,12 +1,17 @@
 //! Size springs: laid-out sizes that spring between layout passes.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use strand_scene::{Curve, LogicalRect, Motion, NodeId, Prop, TokenScope, Transition};
 
 use super::pose::{exit_pose, pose_sizes};
 use super::{Animator, COLLAPSED, Forced, LineHold, NodeAnim, PX_EPS, SizeMap, StepFills};
 use crate::tree::{Node, SceneTree};
+
+/// (wave-cost) How far a size spring moves, logical pixels, before its
+/// surface is asked for a frame again (`Animator::frames_unmoved`).
+pub(crate) const SIZE_STEP: f32 = 0.25;
 
 impl Animator {
     /// True while `node`'s laid-out size springs, or while it exits to
@@ -232,6 +237,7 @@ impl Animator {
             };
             let na = self.nodes.entry(id).or_default();
             let touched = std::mem::take(&mut na.size_touched);
+            na.touched_axes = [false; 2];
             let Some(t) = targets.get(&id).filter(|_| !snapping) else {
                 na.size = [None, None];
                 na.collapse = [false; 2];
@@ -423,15 +429,102 @@ impl Animator {
             || self.size_held.keys().any(|id| tree.root_of(*id) == Some(root))
     }
 
-    /// Nodes with a size spring under `root`.
-    pub fn sized_nodes(&self, tree: &SceneTree, root: NodeId) -> Vec<NodeId> {
+    /// Nodes with a size spring under `root`, or whose size logic just
+    /// set, and on which axes (width, height).
+    pub fn sized_nodes(&self, tree: &SceneTree, root: NodeId) -> Vec<(NodeId, [bool; 2])> {
         self.nodes
             .iter()
             .filter(|(id, n)| {
-                n.size.iter().any(Option::is_some) && tree.root_of(**id) == Some(root)
+                (n.size_touched || n.size.iter().any(Option::is_some))
+                    && tree.root_of(**id) == Some(root)
             })
-            .map(|(id, _)| *id)
+            .map(|(id, n)| {
+                let axes = [0, 1].map(|a| n.touched_axes[a] || n.size[a].is_some());
+                (*id, axes)
+            })
             .collect()
+    }
+
+    /// (wave-cost) A size under `root` that needs a whole layout pass: one
+    /// an `enter` pose gives it, or a pose it is held at.
+    pub fn sizes_entering(&self, tree: &SceneTree, root: NodeId) -> bool {
+        self.enter_size
+            .iter()
+            .chain(self.size_held.keys())
+            .any(|id| tree.root_of(*id) == Some(root))
+    }
+
+    /// (wave-cost) Size springs are all that moves under `root`, or is
+    /// about to: nothing a frame's flatten would draw differently unless
+    /// a laid-out box changes. (What flattening itself finds moving the
+    /// scene it kept says, `Flattened::moving`.)
+    pub fn sizes_alone(&self, tree: &SceneTree, root: NodeId) -> bool {
+        let under = |id: &NodeId| tree.root_of(*id) == Some(root);
+        let mut any = false;
+        for (id, n) in &self.nodes {
+            if !under(id) {
+                continue;
+            }
+            if !n.props.is_empty()
+                || !n.touched.is_empty()
+                || n.respring
+                || n.glide.is_some()
+                || n.step.iter().any(Option::is_some)
+            {
+                return false;
+            }
+            any |= n.size_touched || n.size.iter().any(Option::is_some);
+        }
+        any && !self.enter.iter().any(under)
+            && !self.enter_size.iter().any(under)
+            && !self.size_held.keys().any(under)
+            && !self.exits.keys().any(under)
+            && !self.exits_due.iter().any(under)
+            && !self.lifted.keys().any(under)
+            && !self.shapes.pending(|id| under(&id))
+            && !self.rolls.pending(|id| under(&id))
+            && !self.plays.busy(|id| under(&id))
+            && !self.staggers.busy(|id| under(&id))
+            && !self.reveals.busy(self.time, |id| under(&id))
+            && !self.shared.busy(|id| under(&id))
+            && !self.image_swaps.busy(|id| under(&id))
+            && !self.jellies.busy(|id| under(&id))
+    }
+
+    /// (wave-cost) The first frame after `at`, `period` apart and at most
+    /// `most` of them, at which a size spring under `root` has moved
+    /// [`SIZE_STEP`] from where it is at `at`, or settles. A size under
+    /// `root` only shows as boxes land on whole logical pixels, so the
+    /// frames before it need not be drawn or asked for: a landing is seen
+    /// at most that fraction of a pixel's travel late.
+    pub fn frames_unmoved(
+        &self,
+        tree: &SceneTree,
+        root: NodeId,
+        at: Duration,
+        period: Duration,
+        most: u32,
+    ) -> u32 {
+        let mut first = most;
+        for (id, n) in &self.nodes {
+            if tree.root_of(*id) != Some(root) {
+                continue;
+            }
+            if n.size_touched {
+                return 1;
+            }
+            for m in n.size.iter().flatten() {
+                let from = m.peek(at)[0];
+                for k in 1..first {
+                    let (v, _, settled) = m.probe(at + period * k);
+                    if settled || (v[0] - from).abs() >= SIZE_STEP {
+                        first = k;
+                        break;
+                    }
+                }
+            }
+        }
+        first
     }
 
     /// (growth) A step of `delta` logical px on `axis` (0 the width, 1 the

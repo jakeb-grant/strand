@@ -692,6 +692,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     .map_err(DemoError::Text)?;
     let mut renderer = Renderer::try_new(TextBackend::Worker(worker)).map_err(DemoError::Io)?;
     renderer.set_first_frame_wait(FIRST_FRAME_TEXT_WAIT);
+    renderer.set_quiet_frames(true);
     #[cfg(feature = "gpu")]
     gpu::configure(&mut renderer);
     // Apps, icons and fonts are caches their directories' changes

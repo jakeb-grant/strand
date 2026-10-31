@@ -185,6 +185,16 @@ impl Clocks {
     /// `surface` is drawn at `time` (presentation) at `now` (wall clock):
     /// its frame period estimate follows the gap from its last frame.
     pub(crate) fn frame(&mut self, surface: SurfaceId, time: Duration, now: Instant) {
+        self.frame_at(surface, time, now, true);
+    }
+
+    /// (wave-cost) [`Clocks::frame`] after frames skipped on purpose: the
+    /// gap says nothing of the period.
+    pub(crate) fn frame_after_gap(&mut self, surface: SurfaceId, time: Duration, now: Instant) {
+        self.frame_at(surface, time, now, false);
+    }
+
+    fn frame_at(&mut self, surface: SurfaceId, time: Duration, now: Instant, period: bool) {
         if time.is_zero() {
             return;
         }
@@ -196,9 +206,9 @@ impl Clocks {
             last: time,
             at: now,
         });
-        let gap = time.saturating_sub(f.last);
-        if (MIN_PERIOD..=MAX_GAP).contains(&gap) {
-            f.gaps[f.next] = gap.min(DEFAULT_PERIOD);
+        let since = time.saturating_sub(f.last);
+        if period && (MIN_PERIOD..=MAX_GAP).contains(&since) {
+            f.gaps[f.next] = since.min(DEFAULT_PERIOD);
             f.next = (f.next + 1) % GAPS;
             f.filled = (f.filled + 1).min(GAPS);
             f.period = f.gaps[..f.filled]
@@ -300,6 +310,26 @@ impl Clocks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (wave-cost) Frames skipped on purpose leave the period as it was:
+    /// frames two refreshes apart would otherwise read as half the refresh.
+    #[test]
+    fn frames_skipped_on_purpose_keep_the_period() {
+        let mut c = Clocks::default();
+        let now = Instant::now();
+        let mut t = Duration::from_secs(10);
+        let period = Duration::from_micros(8_333);
+        for _ in 0..(GAPS + 1) {
+            t += period;
+            c.frame(S, t, now);
+        }
+        assert_eq!(c.period(S), period);
+        for _ in 0..(GAPS * 2) {
+            t += period * 3;
+            c.frame_after_gap(S, t, now);
+        }
+        assert_eq!(c.period(S), period);
+    }
 
     const S: SurfaceId = SurfaceId(1);
 

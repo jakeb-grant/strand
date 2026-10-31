@@ -77,6 +77,10 @@ impl Renderer {
             false => s.awaiting_text.then_some(s.wait_until).flatten(),
             true => s.new_text_until,
         };
+        // (wave-cost) Unless something else wants the frame.
+        let quiet = s.quiet_until.filter(|_| {
+            !s.dirty && s.valid && !self.pointer_due(surface) && !self.inspect.wants(surface)
+        });
         let now = Instant::now();
         // (M4) A pass or readback in flight.
         #[cfg(feature = "gpu")]
@@ -88,6 +92,7 @@ impl Renderer {
             s.query_hold.map(|(_, t)| t),
             s.size_hold.map(|(_, t)| t),
             gpu,
+            quiet,
         ]
         .into_iter()
         .flatten()
@@ -116,6 +121,14 @@ impl Renderer {
         self.last_damage.get(&surface).copied()
     }
 }
+
+/// (wave-cost) The longest a surface in motion goes unasked for a frame
+/// before it looks again at what moves.
+const QUIET_MOST: Duration = Duration::from_millis(250);
+
+/// (wave-cost) What the wakes of frames asked for later are rounded up to,
+/// so that surfaces due at about the same time wake the loop once.
+const QUIET_GRID: Duration = Duration::from_millis(4);
 
 /// Above this many changed glyph cells (old or new), the change is
 /// damaged as the box around them, not cell by cell.
@@ -400,6 +413,7 @@ impl Painter for Renderer {
             .then(strand_gpu::thread_stats)
             .flatten();
         let damage = self.paint_frame(surface, target);
+        self.plan_quiet(surface, target.time, damage.is_empty());
         #[cfg(feature = "gpu")]
         if started.elapsed() >= strand_gpu::SLOW_FRAME && log::log_enabled!(log::Level::Debug) {
             log::debug!(
@@ -563,7 +577,14 @@ impl Renderer {
             return Damage::new();
         };
         s.time = target.time;
-        self.clocks.frame(surface, target.time, self.now());
+        s.quiet_until = None;
+        let gap = std::mem::take(&mut s.quiet_gap);
+        if gap {
+            self.clocks
+                .frame_after_gap(surface, target.time, self.now());
+        } else {
+            self.clocks.frame(surface, target.time, self.now());
+        }
         self.anim.set_period(self.clocks.period(surface));
         let Some(s) = self.surfaces.get_mut(&surface) else {
             return Damage::new();
@@ -631,7 +652,13 @@ impl Renderer {
         let flatten_start = Instant::now();
         let waited = self.estimate_waited;
         let laid = self.layout_spent;
-        let mut f = match cached {
+        // (wave-cost) No box moved: the last frame's scene.
+        let kept = match (&cached, swapping || ticking) {
+            (None, false) => self.kept_scene(surface),
+            _ => None,
+        };
+        let held = kept.is_some();
+        let mut f = match cached.or(kept) {
             Some(f) => f,
             None => self.flatten_surface(surface),
         };
@@ -674,7 +701,7 @@ impl Renderer {
         // (M4) Clocked passes a GPU-drawn surface runs in every frame.
         #[cfg(feature = "gpu")]
         let clocked = self.gpu_clocked_damage(surface, &f.items, &f.passes);
-        if fresh {
+        if fresh && !held {
             // Exits under this surface it did not draw (a row scrolled
             // out of view) end: nobody sees them, unless another surface
             // showing the same root drew it in its last frame.
@@ -702,6 +729,11 @@ impl Renderer {
             self.anim.finish_undrawn(unseen);
             self.anim.drop_undrawn_enters(unseen);
         }
+        #[cfg(feature = "gpu")]
+        let presenting =
+            self.quiet_frames && self.backend(surface) == strand_scene::Backend::GpuPresent;
+        #[cfg(not(feature = "gpu"))]
+        let presenting = false;
         #[cfg(all(feature = "eval-hooks", feature = "gpu"))]
         let probe_backend = self.backend(surface);
         #[cfg(all(feature = "eval-hooks", not(feature = "gpu")))]
@@ -776,7 +808,7 @@ impl Renderer {
             target.time,
             probe_backend,
             &f,
-            fresh,
+            fresh && !held,
             frame.area(),
             self.layout_passes.saturating_sub(probe_passes),
             s.boxes.as_ref().map_or(0, |b| b.rects.len()),
@@ -796,7 +828,12 @@ impl Renderer {
         // Widen by the buffer's age: it misses the last `age - 1` frames.
         let age = target.age as usize;
         let mut total = frame;
-        if !s.valid || age == 0 || age > s.history.len() + 1 {
+        // (wave-cost) A presented frame has no buffer age: every frame is
+        // whole, and one where nothing changed is not sent. (A host that
+        // does not skip frames asks for each as it always did.)
+        if presenting && s.valid {
+            // As it is.
+        } else if !s.valid || age == 0 || age > s.history.len() + 1 {
             total = Damage::full(target.size);
         } else {
             for d in s.history.iter().take(age - 1) {
@@ -979,6 +1016,81 @@ impl Renderer {
             if let Some((_, t)) = &mut s.size_hold {
                 on(t, &mut s.size_paused);
             }
+        }
+    }
+
+    /// (wave-cost) Whether frames that cannot show anything are skipped:
+    /// not asked for from the compositor at all, the loop woken only by the
+    /// next that can ([`Renderer::frame_deadline`], so
+    /// [`Painter::wants_frame`] is false until then). For a host whose loop
+    /// keeps real time; a host that paints while `wants_frame` holds, on its
+    /// own clock (a test, a replay), draws every frame. Every frame painted
+    /// shows the motion exactly where it is at that frame's time.
+    pub fn set_quiet_frames(&mut self, on: bool) {
+        // (eval-sandbox) Eval's checks read every frame.
+        self.quiet_frames = on && !cfg!(feature = "eval-hooks");
+    }
+
+    /// (wave-cost) Decides, after a paint of `surface` at `time`, when it
+    /// next needs a frame if that is not the next one. Only size springs
+    /// move there, and a box lands only on a whole logical pixel: a spring
+    /// that will not have moved [`SIZE_STEP`] by the next frame can show at
+    /// most that fraction of a pixel's travel late. So a slow spring costs
+    /// frames by how far it moves, not by the refresh rate of each monitor
+    /// showing it, and one that moves that far each frame is drawn at
+    /// refresh as ever.
+    ///
+    /// [`SIZE_STEP`]: crate::anim::SIZE_STEP
+    fn plan_quiet(&mut self, surface: SurfaceId, time: Duration, empty: bool) {
+        if !self.quiet_frames || time.is_zero() {
+            return;
+        }
+        let Some(s) = self.surfaces.get(&surface) else {
+            return;
+        };
+        if !s.animating || s.dirty {
+            return;
+        }
+        let root = s.root;
+        let period = self.clocks.period(surface);
+        let alone = !s.layout_dirty
+            && !s.step_due
+            && s.cache
+                .as_ref()
+                .is_some_and(|f| !f.moving && f.clocks.is_empty())
+            && !self.clocks.running(surface)
+            && !self.swap_moving(surface)
+            && !self.scrolling(surface)
+            && self.anim.sizes_alone(&self.tree, root);
+        let frames = if alone {
+            let most = (QUIET_MOST.as_nanos() / period.as_nanos().max(1)).min(u128::from(u32::MAX));
+            self.anim
+                .frames_unmoved(&self.tree, root, time, period, most as u32)
+        } else {
+            1
+        };
+        // (M4) A presented surface's frame that drew nothing sent nothing,
+        // so no reply wakes the loop for the next one.
+        #[cfg(feature = "gpu")]
+        let wake = empty && self.backend(surface) == strand_scene::Backend::GpuPresent;
+        #[cfg(not(feature = "gpu"))]
+        let wake = {
+            let _ = empty;
+            false
+        };
+        if frames < 2 && !wake {
+            return;
+        }
+        let at = self.clocks.instant_of(surface, time + period * frames);
+        // Deadlines close together wake the loop once.
+        let at = at.map(|t| {
+            let since = t.saturating_duration_since(self.quiet_epoch).as_nanos() as u64;
+            let grid = QUIET_GRID.as_nanos() as u64;
+            t + Duration::from_nanos((grid - since % grid) % grid)
+        });
+        if let Some(s) = self.surfaces.get_mut(&surface) {
+            s.quiet_until = at;
+            s.quiet_gap = frames >= 2;
         }
     }
 

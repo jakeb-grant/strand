@@ -391,6 +391,62 @@ pub(crate) fn size_stable(tree: &SceneTree, id: NodeId) -> bool {
     px(Prop::Width) && px(Prop::Height)
 }
 
+/// (wave-cost) True if a change of a size on `axis` under `id` stays
+/// inside `id`: it has a fixed length in logical pixels there, and nothing
+/// it holds turns a length on one axis into a length on the other (text
+/// that wraps, an image's aspect, a wrapping row, a grid's tracks), so its
+/// box on both axes, and everything around it, stays where it is however
+/// the sizes in it move. A surface under it is anchored to what moves, so
+/// it does not count. The width of a row of bars of fixed widths is the
+/// same whatever their heights.
+pub(crate) fn axis_stable(tree: &SceneTree, id: NodeId, axis: usize) -> bool {
+    use strand_scene::NodeKind as K;
+    let Some(node) = tree.get(id) else {
+        return false;
+    };
+    let inh = inherited_at(tree, id);
+    let mut tokens = inh.tokens.clone();
+    if let Some(PropValue::Tokens(t)) = node.get(Prop::Tokens) {
+        tokens.push(t);
+    }
+    let scope = TokenScope::new(&tokens);
+    let get = |p: Prop| node.get(p).and_then(|v| scope.resolve(v));
+    let font = inh.font.size;
+    let prop = if axis == 0 { Prop::Width } else { Prop::Height };
+    let fixed = dim(get(prop).as_deref(), font).or(dim(get(Prop::Size).as_deref(), font));
+    if !matches!(fixed, Some(Len::Px(_))) {
+        return false;
+    }
+    let mut stack = vec![id];
+    while let Some(n) = stack.pop() {
+        let Some(node) = tree.get(n) else {
+            return false;
+        };
+        let plain = matches!(
+            node.kind,
+            K::Row
+                | K::Col
+                | K::Stack
+                | K::Start
+                | K::Center
+                | K::End
+                | K::Spacer
+                | K::Box
+                | K::Icon
+                | K::Meter
+                | K::Slider
+                | K::Arc
+                | K::Graph
+                | K::Spectrum
+        );
+        if !plain || node.get(Prop::Wrap).is_some() {
+            return false;
+        }
+        stack.extend(node.children.iter().copied());
+    }
+    true
+}
+
 /// Applies `node`'s inherited props for its children.
 fn inherit<'a>(node: &'a Node, inh: &mut Inh<'a>) {
     if let Some(PropValue::Tokens(t)) = node.get(Prop::Tokens) {

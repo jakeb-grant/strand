@@ -311,6 +311,11 @@ pub struct GlyphCells {
 
 #[derive(Debug, Default)]
 pub struct Flattened {
+    /// (wave-cost) Flattening it found something moving (a paint prop, a
+    /// glide, an effect): the scene does not hold for a later frame even
+    /// where no box changed. Set by the renderer; sizes in flight are
+    /// layout's, and count only as boxes that move.
+    pub moving: bool,
     pub items: Vec<DisplayItem>,
     /// Ordered, so damage is added in a deterministic order.
     pub records: BTreeMap<NodeId, NodeRecord>,

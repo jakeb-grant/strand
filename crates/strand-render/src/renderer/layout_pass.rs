@@ -50,6 +50,12 @@ impl TextSizes for TextInfo<'_> {
 }
 
 impl Renderer {
+    /// Scenes flattened so far, a frame's or a preview's (a frame no box
+    /// of which moved flattens none, [`Renderer::kept_scene`]).
+    pub fn flattens(&self) -> u64 {
+        self.flattens
+    }
+
     /// Layout passes run so far (paint-only changes run none).
     pub fn layout_passes(&self) -> u64 {
         self.layout_passes
@@ -206,7 +212,11 @@ impl Renderer {
         };
         let empty = Boxes::default();
         let boxes = s.boxes.as_ref().unwrap_or(&empty);
-        flatten(
+        // (wave-cost) What moves as it flattens, apart from what layout
+        // found moving.
+        self.flattens += 1;
+        let laid_moving = self.anim.take_active();
+        let mut f = flatten(
             &self.tree,
             s.root,
             s.size,
@@ -215,7 +225,43 @@ impl Renderer {
             boxes,
             &mut self.anim,
             &self.extras,
-        )
+        );
+        f.moving = self.anim.active();
+        self.anim.add_active(laid_moving);
+        f
+    }
+
+    /// (wave-cost) The scene of the last frame, if this one's cannot differ:
+    /// only size springs move on `id`, it is not their last frame (a box
+    /// whose size springs clips what it holds, and one at rest does not),
+    /// and laying this frame out moved no box. A frame of a springing
+    /// size between two whole pixels costs that layout, which stays inside
+    /// the box of fixed size around it where there is one.
+    pub(super) fn kept_scene(&mut self, id: SurfaceId) -> Option<Flattened> {
+        let s = self.surfaces.get(&id)?;
+        let root = s.root;
+        if !s.valid
+            || s.layout_dirty
+            || s.step_due
+            || !s
+                .cache
+                .as_ref()
+                .is_some_and(|f| !f.moving && f.clocks.is_empty())
+            || !self.anim.sizes_alone(&self.tree, root)
+        {
+            return None;
+        }
+        let layouts = self.shaped();
+        let laying = strand_scene::time::Instant::now();
+        self.lay_out(id, &layouts);
+        self.layout_spent += laying.elapsed();
+        let moving = self.anim.sizes_moving(&self.tree, root);
+        let s = self.surfaces.get_mut(&id)?;
+        if s.boxes_moved || !moving {
+            s.laid_now = true;
+            return None;
+        }
+        s.cache.take()
     }
 
     /// One layout pass of `root` (two when a list measured rows it had
@@ -572,12 +618,14 @@ impl Renderer {
     /// ancestors. A structural change glides the boxes it moved from
     /// where they were (FLIP).
     pub(super) fn lay_out(&mut self, id: SurfaceId, layouts: &HashMap<NodeId, Vec<Shaped>>) {
-        let Some(s) = self.surfaces.get(&id) else {
+        let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
+        // `kept_scene` laid this frame out, and its scene changed.
+        let laid = std::mem::take(&mut s.laid_now);
         let full = s.layout_dirty || s.boxes.is_none();
         let step_due = s.step_due;
-        if !full && !s.anim_layout {
+        if !full && (laid || !s.anim_layout) {
             return;
         }
         self.laid_out_nodes = 0;
@@ -611,6 +659,10 @@ impl Renderer {
             }
             _ => None,
         };
+        // (wave-cost) Landed, a whole pass: what lies at rest lies exactly
+        // where any later layout will put it (a partial pass rounds from
+        // the whole-pixel box around it).
+        let sized_only = sized_only.filter(|_| self.anim.sizes_moving(&self.tree, root));
         if let Some(boxes) = sized_only {
             // (launcher-flip-pass) After a pass that glided what the
             // change moved, before a frame drew it: what that pass glided
@@ -649,6 +701,7 @@ impl Renderer {
                         curve,
                     );
                 }
+                s.boxes_moved = old.as_ref().is_none_or(|o| o.rects != boxes.rects);
                 s.boxes = Some(boxes);
                 s.anim_layout = moving;
                 keep_drawn(s, old, s.laid_size);
@@ -838,6 +891,7 @@ impl Renderer {
                 );
             }
             s.drawn_boxes = base;
+            s.boxes_moved = old.as_ref().is_none_or(|o| o.rects != boxes.rects);
             keep_drawn(s, old, laid_size);
         }
         // Springs a clockless preview left to start lay out again on the
@@ -854,6 +908,56 @@ impl Renderer {
         self.report_facts(id);
     }
 
+    /// (wave-cost) The nearest box above `id` that `stable` accepts:
+    /// `None` at `root`.
+    pub(super) fn size_boundary(
+        &self,
+        id: NodeId,
+        root: NodeId,
+        stable: impl Fn(NodeId) -> bool,
+    ) -> Option<NodeId> {
+        let mut a = self.tree.get(id)?.parent?;
+        loop {
+            if a == root {
+                return None;
+            }
+            if stable(a) {
+                return Some(a);
+            }
+            a = self.tree.get(a)?.parent?;
+        }
+    }
+
+    /// (wave-cost) A size on `axes` changing under `a` stays inside it
+    /// ([`crate::layout::axis_stable`]), and its box is what its own
+    /// `width` and `height` (or `size`) say, to the whole pixel layout
+    /// rounds it to: over-full, a parent may have shrunk it by its content.
+    pub(super) fn axes_stable(&self, a: NodeId, axes: [bool; 2], boxes: &Boxes) -> bool {
+        let stable = axes
+            .iter()
+            .enumerate()
+            .all(|(i, on)| !on || crate::layout::axis_stable(&self.tree, a, i));
+        if !stable {
+            return false;
+        }
+        let Some((node, r)) = self.tree.get(a).zip(boxes.rects.get(&a)) else {
+            return false;
+        };
+        let tables = crate::flatten::scope_tables(&self.tree, a);
+        let scope = TokenScope::new(&tables);
+        let px = |p: Prop| match node.get(p).and_then(|v| scope.resolve(v)).as_deref() {
+            Some(strand_scene::PropValue::Number(v)) => Some(*v as f32),
+            _ => None,
+        };
+        let size = px(Prop::Size);
+        [(Prop::Width, r.w), (Prop::Height, r.h)]
+            .into_iter()
+            .zip(axes)
+            .all(|((p, have), on)| {
+                !on || px(p).or(size).is_none_or(|want| (want - have).abs() <= 0.5)
+            })
+    }
+
     /// Lays out only what size springs move: the subtree under each
     /// moving node's nearest size-stable ancestor (a node of fixed width
     /// and height, or a surface root of fixed size), into a copy of
@@ -868,29 +972,16 @@ impl Renderer {
         rest: &SizeMap,
         info: &TextInfo<'_>,
     ) -> Option<Boxes> {
-        if self.anim.size_pending(&self.tree, root) {
+        if self.anim.sizes_entering(&self.tree, root) {
             return None;
         }
         let moving = self.anim.sized_nodes(&self.tree, root);
         let mut subs: Vec<NodeId> = Vec::new();
-        for n in moving {
-            let mut a = self.tree.get(n)?.parent?;
-            loop {
-                if a == root {
-                    if self.content_sized.contains_key(&root) {
-                        return None;
-                    }
-                    break;
-                }
-                if !rest.contains_key(&a) && crate::layout::size_stable(&self.tree, a) {
-                    break;
-                }
-                a = self.tree.get(a)?.parent?;
-            }
-            if a == root {
-                return None;
-            }
-            subs.push(a);
+        for (n, axes) in moving {
+            subs.push(self.size_boundary(n, root, |a| {
+                !rest.contains_key(&a)
+                    && (crate::layout::size_stable(&self.tree, a) || self.axes_stable(a, axes, old))
+            })?);
         }
         let tree = &self.tree;
         let all = subs.clone();
@@ -900,6 +991,19 @@ impl Renderer {
         let mut frames = Vec::with_capacity(subs.len());
         for a in &subs {
             frames.push(*old.rects.get(a)?);
+        }
+        // (wave-cost) A size logic just set: its target is learnt where its
+        // change stays, at rest.
+        if self.anim.size_pending(&self.tree, root) {
+            let mut targets = HashMap::new();
+            for (a, frame) in subs.iter().zip(&frames) {
+                let b = self.run_layout(*a, RootSize::Fixed(*frame), info, rest);
+                targets.extend(b.rects);
+            }
+            self.anim
+                .start_sizes(&self.tree, root, &targets, Some(&old.rects), true, |_| {
+                    false
+                });
         }
         let sizes = self.anim.size_overrides(&self.tree, root, rest);
         let mut boxes = old.clone();
