@@ -156,7 +156,10 @@ impl Renderer {
     ///
     /// A dirty surface whose flattened scene turns out identical to its
     /// last painted frame (only text still being shaped changed) stops
-    /// being dirty, so it asks for no frame until the layout arrives.
+    /// being dirty, so it asks for no frame until the layout arrives. One
+    /// whose hit boxes differ (a `hit:` that changed) stays dirty: its next
+    /// paint draws nothing and takes them, routing and the input region
+    /// with them, in a bare commit (decisions.md hit-through).
     pub fn update(&mut self) {
         let now = Instant::now();
         if self.timer_due.is_some_and(|d| d <= now) {
@@ -229,6 +232,7 @@ impl Renderer {
                     && s.records == f.records
                     && s.order == f.order
                     && s.opaque == f.opaque
+                    && s.hits == f.hits
                     && !deferred
                 {
                     s.dirty = false;

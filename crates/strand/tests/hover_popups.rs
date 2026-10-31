@@ -281,6 +281,18 @@ impl Drop for Shell {
 }
 
 impl Shell {
+    /// `strand set shell.<name> <value>`.
+    fn set_state(&self, name: &str, value: &str) {
+        let out = Command::new(env!("CARGO_BIN_EXE_strand"))
+            .args(["set", &format!("shell.{name}"), value])
+            .env("XDG_RUNTIME_DIR", &self.dir)
+            .env("WAYLAND_DISPLAY", &self.display)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+
     fn env(&self) -> Vec<(&'static str, PathBuf)> {
         vec![
             ("XDG_RUNTIME_DIR", self.dir.clone()),
@@ -1165,6 +1177,62 @@ fn a_click_on_a_hit_none_panels_empty_area_reaches_what_is_behind() {
     assert!(
         one.region(YELLOW, 2000).is_some(),
         "the one behind is as it was"
+    );
+}
+
+/// (hit-through) The same set by a `when`: a click on the front panel's empty
+/// area goes to the panel behind once `through` is on, with nothing else on
+/// the front panel changing, and stops going there once it is off.
+const THROUGH_WHEN: &str = r#"
+export state through = false
+state back = false
+panel Behind { anchor: top_left; layer: bottom; width: 300; height: 100
+  box { width: 300; height: 100; bg: #ff0000
+    when back { bg: #ffff00 }
+    on click { back = !back }
+  }
+}
+panel Front { anchor: top_left; width: 800; height: 100
+  when through { hit: none }
+  box { place: absolute; x: 540; width: 200; height: 100; bg: #0000ff }
+}
+"#;
+
+#[test]
+fn a_reactive_hit_none_reaches_the_compositor_at_once() {
+    let Some(mut sh) = start("through-when", THROUGH_WHEN) else {
+        return;
+    };
+    sh.wait("both panels", |one, _| {
+        one.region(ITEM_A, 2000).and(one.region(ITEM_B, 2000))
+    });
+    let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+    pointer.motion(50, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.click(50, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(300));
+    let one = sh.shot("HEADLESS-1");
+    assert!(one.region(YELLOW, 1).is_none(), "the front panel takes it");
+
+    sh.set_state("through", "true");
+    std::thread::sleep(Duration::from_millis(300));
+    pointer.motion(60, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.click(60, 50, LW, LH);
+    sh.wait("the click reached the panel behind", |one, _| {
+        one.region(YELLOW, 2000)
+    });
+
+    sh.set_state("through", "false");
+    std::thread::sleep(Duration::from_millis(300));
+    pointer.motion(70, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.click(70, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(300));
+    let one = sh.shot("HEADLESS-1");
+    assert!(
+        one.region(YELLOW, 2000).is_some(),
+        "the front panel takes it again, and the one behind stays as it was"
     );
 }
 

@@ -14434,8 +14434,15 @@ panel this wins over the box-only region (`placed_root`), since the hit boxes li
 within that box anyway. Rejected: rounded regions (many small rects per frame, for
 a corner). Wave-cost is untouched: a surface without it does no more work than a
 tree lookup per commit, and one with it builds the list per commit, no wake or
-frame. Proof: `crates/strand-compiler/tests/hit_through.rs`;
-`a_click_on_a_hit_none_panels_empty_area_reaches_what_is_behind` on sway.
+frame. A `hit:` set by a `when` takes effect at once, on a root or a child, both
+ways: a surface's scene with the same records but other hit boxes stays dirty
+(`Renderer::update` compared only what it draws, so a change to `hit` asked for no
+frame and the old boxes stayed until something unrelated repainted). Its frame
+damages nothing, and its bare commit carries the region; a surface the GPU thread
+presents sends one frame for it, which was not run. Proof:
+`crates/strand-compiler/tests/hit_through.rs`;
+`a_click_on_a_hit_none_panels_empty_area_reaches_what_is_behind`,
+`a_reactive_hit_none_reaches_the_compositor_at_once` on sway.
 
 ## first-read
 

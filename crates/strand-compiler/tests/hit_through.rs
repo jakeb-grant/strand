@@ -145,3 +145,136 @@ panel P { anchor: top; size: auto ~ spring(400, 0.8)
     assert!(takes(&through, "P", mid + 30.0, 20.0), "the second");
     assert!(!takes(&through, "P", 5.0, 20.0), "the margin");
 }
+
+/// One frame of `name` painted by hand into a buffer holding the last: what
+/// it damaged.
+fn paint_one(sh: &mut Shell, name: &str) -> strand_scene::Damage {
+    use strand_scene::{PaintTarget, Scale};
+    let a = sh.surface(name);
+    let (id, size) = (a.id, a.size);
+    let mut px = vec![0u8; (size.w * size.h * 4) as usize];
+    let t = PaintTarget::new(&mut px, size, size.w * 4, Scale::ONE, 1).unwrap();
+    let damage = sh.r.paint(id, &mut t.at(sh.now));
+    strand_render::host_loop::painted(sh, id).unwrap();
+    damage
+}
+
+/// Logic takes in `through`, and its answer is applied: no frame yet.
+fn toggle(sh: &mut Shell, on: bool) {
+    sh.inst
+        .set_value(
+            "shell",
+            "through",
+            strand_compiler::vm::value::Value::Bool(on),
+        )
+        .unwrap();
+    sh.run(1);
+}
+
+/// `hit: none` on a surface's root set by a `when`: a change asks for a frame
+/// of its own, which draws nothing, and the old region and hit boxes go with
+/// it, both ways, with nothing else on the surface changing.
+#[test]
+fn a_reactive_hit_none_on_a_root_takes_effect_with_no_repaint() {
+    let mut sh = Shell::new(
+        r#"
+export state through = false
+panel P { anchor: top_left; width: 300; height: 200
+  when through { hit: none }
+  box { width: 100; height: 50; bg: #ff0000 }
+}
+"#,
+    );
+    sh.settle();
+    let id = sh.surface("P").id;
+    assert_eq!(Painter::input_region(&sh.r, id), None);
+    assert!(takes(&sh, "P", 290.0, 190.0));
+
+    toggle(&mut sh, true);
+    assert!(sh.r.wants_frame(id), "it asks for the frame that takes it");
+    assert!(
+        paint_one(&mut sh, "P").is_empty(),
+        "nothing visible changed"
+    );
+    assert!(!sh.r.wants_frame(id), "and asks no more");
+    assert!(!takes(&sh, "P", 290.0, 190.0), "the pointer passes through");
+    assert!(takes(&sh, "P", 50.0, 25.0), "the box still takes it");
+
+    toggle(&mut sh, false);
+    assert!(sh.r.wants_frame(id));
+    assert!(paint_one(&mut sh, "P").is_empty());
+    assert!(!sh.r.wants_frame(id));
+    assert_eq!(
+        Painter::input_region(&sh.r, id),
+        None,
+        "its whole box again"
+    );
+    assert!(takes(&sh, "P", 290.0, 190.0));
+}
+
+/// A child's `hit: none` set by a `when`: a click lands by the frame that
+/// follows it, both ways, and a hover under the still pointer follows.
+#[test]
+fn a_reactive_hit_none_on_a_child_takes_effect_with_no_repaint() {
+    let mut sh = Shell::new(
+        r#"
+export state through = false
+export state over = 0
+export state hovered = false
+panel P { anchor: top_left; width: 300; height: 200
+  box { width: 200; height: 100; on click { over = 1 }
+    box { width: 100; height: 50; on click { over = 2 }
+      when through { hit: none }
+      on change self.hover { hovered = self.hover }
+    }
+  }
+}
+"#,
+    );
+    sh.settle();
+    sh.click(10.0, 10.0);
+    sh.settle();
+    assert_eq!(sh.num("over"), 2.0);
+    assert_eq!(sh.get("hovered").as_bool(), Some(true));
+    let id = sh.surface("P").id;
+
+    toggle(&mut sh, true);
+    assert!(sh.r.wants_frame(id));
+    assert!(
+        paint_one(&mut sh, "P").is_empty(),
+        "nothing visible changed"
+    );
+    sh.settle();
+    assert_eq!(sh.get("hovered").as_bool(), Some(false), "hover follows");
+    sh.click(10.0, 10.0);
+    sh.settle();
+    assert_eq!(sh.num("over"), 1.0, "the click reaches its parent");
+
+    toggle(&mut sh, false);
+    assert!(sh.r.wants_frame(id));
+    assert!(paint_one(&mut sh, "P").is_empty());
+    sh.settle();
+    assert_eq!(sh.get("hovered").as_bool(), Some(true));
+    sh.click(10.0, 10.0);
+    sh.settle();
+    assert_eq!(sh.num("over"), 2.0, "and it takes clicks again");
+}
+
+/// A `when` that leaves `hit` as it was changes no hit box and asks for no
+/// frame.
+#[test]
+fn a_hit_that_changes_no_box_asks_for_no_frame() {
+    let mut sh = Shell::new(
+        r#"
+export state through = false
+panel P { anchor: top_left; width: 300; height: 200; hit: none
+  when through { hit: none }
+  box { width: 100; height: 50; bg: #ff0000 }
+}
+"#,
+    );
+    sh.settle();
+    let id = sh.surface("P").id;
+    toggle(&mut sh, true);
+    assert!(!sh.r.wants_frame(id));
+}

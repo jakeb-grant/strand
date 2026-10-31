@@ -862,7 +862,8 @@ impl Renderer {
                 || inspected
                 || !clocked.is_empty()
                 || s.records != f.records
-                || s.order != f.order,
+                || s.order != f.order
+                || s.hits != f.hits,
         );
         s.records = f.records.clone();
         s.order.clone_from(&f.order);

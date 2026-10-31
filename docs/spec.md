@@ -1197,7 +1197,9 @@ monitor, the keyboard always).
   `popup` or `window`; a `lock` never, and an `osd` takes none anyway).
   The region is each hit box's bounds, so a rounded corner of one still
   stops the pointer, and while a press that went down on the surface is
-  held it takes its whole box. (decisions.md hit-through) A node at `opacity: 0` is not drawn and not hit, its
+  held it takes its whole box. A `hit` set by a `when` takes effect at
+  its next frame, whether or not anything else changed, and that frame
+  repaints nothing. (decisions.md hit-through) A node at `opacity: 0` is not drawn and not hit, its
   children neither: a control that takes input unseen keeps its
   opacity and draws nothing (`color` and `track` of alpha 0, no `bg`).
   Shadows enlarge the buffer but not the input region.
