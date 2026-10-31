@@ -516,7 +516,9 @@ provisional record Notification key id {
   desktop_entry: text?
   /// The sender takes a typed reply.
   can_reply: bool
-  /// The sender gave it a default action, which `activate()` invokes.
+  /// The sender gave it a default action, which `activate()` invokes;
+  /// without one `activate()` only closes it, or on a resident one does
+  /// nothing.
   can_activate: bool
   /// Ends its popup, as a timeout does.
   action expire()

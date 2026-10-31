@@ -14378,7 +14378,7 @@ terminal and block nothing of their own. Found by Bead (#17); not specific to it
 ## service-fields
 
 **2026-10-30 · service-fields: `n.can_activate`.** `n.activate()` on a notification
-with no default action closes it and tells nobody, so a shell could not offer a click
+with no default action closes it (a resident one: nothing happens) and tells nobody, so a shell could not offer a click
 only where it means something. The field is named after `can_reply`, its neighbour
 that says the same thing about replies, and is false on a remembered notification
 for the same reason. `activate()` itself is unchanged. Found by Bead (#20).

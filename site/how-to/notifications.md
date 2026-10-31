@@ -84,7 +84,8 @@ your shell the panel grows and shrinks with its cards.
   slides away, so the cards under it move up smoothly.
 - **A click** runs the notification's default action (`n.activate()`);
   a right click or the cross dismisses it. A notification whose sender gave
-  no default action (`n.can_activate` is false) just closes.
+  no default action (`n.can_activate` is false) just closes, or does nothing
+  if it is resident.
 
 ## Do not disturb
 

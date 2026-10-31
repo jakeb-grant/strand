@@ -316,7 +316,8 @@ for a download's progress (0 to 1), `n.category` (`email.arrived`) to
 pick an icon, and, when `n.can_reply` is true (a chat app), an `input`
 whose `on activate { n.reply(draft) }` sends the reply back to the app.
 `n.can_activate` says whether the sender gave a default action: on a
-card without one, `n.activate()` can only close it.
+card without one, `n.activate()` can only close it, and on a resident
+one does nothing.
 
 **`await` waits inside a handler.** `sleep(80ms)` returns an `Async`
 (next section) that finishes after 80 ms, and `await` pauses the
