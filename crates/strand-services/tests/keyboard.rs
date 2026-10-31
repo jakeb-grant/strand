@@ -43,6 +43,56 @@ fn until(rt: &Runtime, s: &Services, what: &str, cond: impl Fn() -> bool) {
     }
 }
 
+/// (bead #20) A bar reading only `layout_code`, with no focused surface,
+/// which is a bar's normal state: it alone subscribes to the compositor,
+/// whose layout's name the list turns into the code.
+#[test]
+fn layout_code_alone_reads_the_compositor_with_no_focus() {
+    let _s = serial();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("rules")).unwrap();
+    std::fs::write(
+        dir.path().join("rules/evdev.xml"),
+        "<xkbConfigRegistry><layoutList>\
+         <layout><configItem><name>de</name><description>German</description></configItem></layout>\
+         </layoutList></xkbConfigRegistry>",
+    )
+    .unwrap();
+    keyboard::configure(Some(keyboard::Config {
+        xkb: dir.path().to_path_buf(),
+        ..keyboard::Config::default()
+    }));
+    keyboard::focused(None);
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let fake = {
+        let _enter = tokio.enter();
+        FakeHyprland::start()
+    };
+    wm::configure(Some(WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: None,
+        ..Default::default()
+    }));
+    let rt = Runtime::new();
+    let (s, b) = services(&rt);
+    b.keyboard.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    b.keyboard.acquire_field(field("layout_code"));
+    let cells = b.keyboard.cells();
+    until(&rt, &s, "the code, from the compositor's layout", || {
+        cells.layout_code.get_untracked(&rt) == Ok(Some("de".into()))
+    });
+    s.shutdown();
+    wm::configure(None);
+    keyboard::configure(None);
+    drop(fake);
+    drop(tokio);
+}
+
 /// (bead #20) `layout_code` follows the compositor's layout through
 /// xkeyboard-config's list (one of the test's own), and a focused surface's
 /// name wins; a name the list lacks is null, and `layout` keeps it.
