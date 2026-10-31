@@ -309,6 +309,7 @@ impl Renderer {
                 boxes: None,
                 layout_dirty: true,
                 hits: Vec::new(),
+                hits_moved: false,
                 query_hold: None,
                 query_held: false,
                 size_hold: None,
@@ -445,6 +446,16 @@ impl Renderer {
             }
         }
         chain
+    }
+
+    /// (still-pointer) Whether a frame painted since the last call moved
+    /// `surface`'s hit boxes with the pointer on it: what is under the
+    /// pointer may have changed though it has not moved. A surface with no
+    /// pointer on it never asks.
+    pub fn take_hits_moved(&mut self, surface: SurfaceId) -> bool {
+        self.surfaces
+            .get_mut(&surface)
+            .is_some_and(|s| std::mem::take(&mut s.hits_moved))
     }
 
     /// (M5, the inspector) `surface`'s root node, scale and the hit

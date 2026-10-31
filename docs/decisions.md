@@ -14428,3 +14428,178 @@ the card collapses in four frames and the width follows only ten frames later, a
 in two steps; with none, the default fade plays and then both axes spring together, one
 move. The page says why, so a reader who reaches for the exit pose knows what it costs.
 The trace shows both; how each feels in motion is for the owner to judge.
+
+## list-top
+
+**2026-10-30 · list-top: a list at its top stays at its top.** A row added above
+a list's first row stayed out of view, because the view followed the row that
+had been first, even with nothing scrolled: a notification arriving at the top
+of an open list landed above it. The view now follows that row only while the
+list is scrolled away (or on its way somewhere else), so a reader's place still
+holds, and at the top, or with a wheel on its way back there, a new row shows.
+Half a logical pixel counts as the top. Only a `list` follows a row, so a plain
+`scroll` is unchanged. Proof:
+`a_row_added_above_the_first_shows_at_the_top_of_a_list`.
+
+## output-change
+
+**2026-10-31 · output-change: an output's change reaches the surfaces on it.**
+Two things were fitted to an output once and never again. The renderer's bounds
+were set when a surface entered its output, so one made just before its output's
+mode and scale settled (sway's `create_output` then `output … scale`; a monitor
+being plugged in) kept the width it had asked for, 1920 on an output of 1706
+logical pixels, and, once its content changed, 1762: the output plus the shadow's
+overhang. `Host::monitor_changed` now gives the renderer the new bounds for every
+surface on that output, as entering it does; a window keeps the bounds its
+configure told. That alone suits only a spanned panel, whose spec is computed from
+those bounds. The surface manager fits a layer surface's config to its output
+(`LayerConfig::fit`) only when it makes the config, and it remade one only when the
+spec changed; a panel asking for more than its output has (`size: auto` over a box
+2000 wide, or `width: 2000`) asks for the same whatever the output does, so it kept
+the old fit: 1600 wide on an output now 2560, and 1600 on one now 1280. So the
+manager fits again every layer surface on an output when that output's geometry
+changes (`refit_layers_on`), which covers `panel`, `bar` and `osd` alike. A `window`
+and a `lock` take their size from the compositor's configure. A `popup` has no fit
+at all, on any output, new or changed: its positioner asks for the whole of its spec
+(2000 on an output of 1600, fresh) and the compositor constrains it, so this does
+not touch it. Proof, on sway, up and down:
+`a_content_sized_panel_is_capped_to_its_output_as_it_changes`,
+`a_fixed_panel_is_capped_to_its_output_as_it_changes`,
+`a_spanned_panel_shrinks_and_grows_with_its_output`,
+`a_spanned_panel_follows_its_outputs_mode_and_scale`. A surface the GPU thread
+presents was not run through this; Hyprland was not run.
+
+## still-pointer
+
+**2026-10-31 · still-pointer: hover and the cursor follow content moving under
+a pointer that stays still.** spec.md 6.3 says `hover` is true while the pointer
+is over a node, and `self.pointer` already followed a node moving under a still
+pointer; `hover` and the cursor did not, and stayed on the row last moved over
+until the next motion, though a click hit the right row because it tests again.
+So `host_loop::painted`, the one reaction every host runs, routes the pointer
+again when the frame just painted moved the surface's hit boxes (`Router::repoint`).
+It costs a surface nothing with no pointer on it, it never wakes anything or
+paints a frame of its own, and the compare replaces the copy of the hit boxes
+each frame made, so equal boxes cost less than before; only a frame that moved
+a box tests the point. A held press keeps its chain, as motion does. Rejected:
+routing on every paint, which allocates a chain for a waveform that moves
+nothing; marking each thing that can move a box (scroll, layout, spring, row
+gone), which is many places and easy to miss one. Proof:
+`hover_and_the_cursor_follow_rows_moving_under_a_still_pointer`,
+`a_held_press_keeps_hover_when_rows_move_under_it`,
+`only_hit_boxes_that_moved_under_the_pointer_ask_for_routing`.
+
+**2026-10-31 · still-pointer, the rest rule (owner): a still pointer lets a surface
+come to rest.** Following made `when hover { y: -10 }` with the pointer in the strip
+the box leaves flip about every other frame for good (301 flips in 600 frames, a
+frame asked for every time), and any hover nudge has that edge. The rule: under a
+still pointer `hover` makes one move, from one innermost node to another, at most
+twice (`Router::repoint`, `STILL_MOVES`), and a third is refused, so the node keeps
+its hover. The count starts again when the pointer has moved, a wheel, button or key
+comes, or no hit box on the surface has moved for a second (`STILL_REST`). So the
+lift flips on, off, on, off, on and rests lifted and hovered, whatever moved it (`y`,
+`x`, `scale`, `width`, a spring or `~ instant`), and everything that follows once in
+one direction is untouched: rows passing the same gap are different moves, a knob
+that slides away and back makes each move once, a wheel starts the count again. A
+node gone gives up its hover whatever its count. What it costs: a node moved away a
+third time with no second's rest and no input (a marquee going round faster than
+that under a pointer left on it) keeps its hover until the pointer moves; a click
+tests afresh and lands right. Twice, not once: a row that overshoots past a pointer
+near its edge makes its entering move twice and must end lit. Rejected: testing a
+hovered node against its box without its own offset, which ends only `x` and `y` and
+not `scale`, a size or a shell's own feedback; a time limit on the round trip, since
+a slow spring's trip outlasts any limit worth having, so the loop would remain; going
+back to hover only on motion, which is the bug this fixes. A surface whose region
+moves with the lift (`hit: none` on its root) depends on what the compositor does
+when the region leaves the pointer, not on this rule; not run on one. Proof:
+`a_hover_lift_comes_to_rest`, seen failing without the rule;
+`a_node_slid_away_and_back_follows_each_time_after_a_rest`,
+`a_node_back_under_the_pointer_with_no_rest_keeps_hover_until_the_pointer_moves`,
+`a_wheel_back_and_forth_keeps_hover_following`,
+`rows_passing_with_gaps_between_keep_hover_following`,
+`a_node_gone_gives_up_its_hover`; launcher-results-144, qs-pager-sliders-1_25,
+heldd-hover-scroll and docs-guide-3 keep their approved recordings.
+
+## hit-through
+
+**2026-10-31 · hit-through: `hit: none` on a surface's root reaches past the
+surface.** The docs said the pointer passes through to what is below, but on a
+panel the empty area swallowed clicks: nothing asked the compositor to send them
+elsewhere, and only hover popups had a region. No new prop: the root's `hit: none`
+now gives the surface an input region of its nodes' hit boxes, as drawn and cut by
+their clips, so it follows every frame and a transformed box its bounds. Boxes that
+draw nothing but take input count (a hover popup's "those that draw" is that
+popup's own older rule, left alone), because a box with `on click` must still get
+its click. A `hit: none` on a child alone changes nothing past the surface: the
+root's own box is what lies below it, and a panel keeps its whole box unless its
+root says otherwise, so no existing shell starts losing clicks. A lock never takes
+it. A held press takes the whole box, as on a hover popup. On a spanned or kept-size
+panel this wins over the box-only region (`placed_root`), since the hit boxes lie
+within that box anyway. Rejected: rounded regions (many small rects per frame, for
+a corner). Wave-cost is untouched: a surface without it does no more work than a
+tree lookup per commit, and one with it builds the list per commit, no wake or
+frame. A `hit:` set by a `when` takes effect at once, on a root or a child, both
+ways: a surface's scene with the same records but other hit boxes stays dirty
+(`Renderer::update` compared only what it draws, so a change to `hit` asked for no
+frame and the old boxes stayed until something unrelated repainted). Its frame
+damages nothing, and its bare commit carries the region; a surface the GPU thread
+presents sends one frame for it, which was not run. Proof:
+`crates/strand-compiler/tests/hit_through.rs`;
+`a_click_on_a_hit_none_panels_empty_area_reaches_what_is_behind`,
+`a_reactive_hit_none_reaches_the_compositor_at_once` on sway.
+
+## first-read
+
+**2026-10-31 · first-read: a size is measured before its first read.** The owner
+saw `isl.width`, read as a popup mounted, give a stale small width while the pill
+sat idle. The repro on sway: a width first read in a closed popup's `on show` gives
+0 however wide the element is, because render reports a size only once something
+has read it, and the answer comes after the handler has run; a binding catches up a
+frame later (a spring starts from 0, which reads as a small width), a handler never
+does. Once read, it stayed current with the element idle, moving or the popup
+closed, in every order tried, so a small width other than 0 was not reproduced. So
+an element whose `width` or `height` is read through `self` or its id is watched
+from its mount, as `pointer` already was (`Program::node_watch`). A shell that
+reads none asks for none. `box` stays as it was: reading it costs a frame's hold
+and a report of every move, it is documented to read zeros until reported, and its
+first value snaps in rather than springing. Through a value passed elsewhere, where
+the read is not followed, a size is still measured from the first read. A popup's own
+content read in its own `on show` still gives 0: logic runs that handler as it mounts
+the content, before anything has laid it out, and giving it a size would mean moving
+`on show` after a layout, a change of what the handler means for far more than this;
+a binding reading it catches up a frame later. Proof:
+`a_width_first_read_as_a_popup_mounts_is_already_known`,
+`a_popups_own_content_reads_zero_in_its_on_show`,
+`only_what_is_read_is_measured`. What measuring from the mount costs where the read
+never runs, measured: a box springing its width in a row of eight, its width read
+only in the `on show` of a popup that never opens, 125.5 µs a frame against 125.3 µs
+with no read (`--profile timing`, offline, renderer and logic on one thread, median of
+15 runs of 1200 frames), which is noise, so it is not narrowed. A real shell's logic
+thread is also woken for each such frame while the spring runs; that wake was not
+measured.
+
+## shadow-popup
+
+**2026-10-31 · shadow-popup: not reproduced, nothing changed.** The owner's notes
+have a `shadow` on a card stopping its hover popup from opening, with no error, from
+one test on an island since rebuilt without a popup. On headless sway at scale 1.5,
+with a virtual pointer gliding in, more than 40 shells opened and closed every time: the panel springing to fit or plain; the popup over, above or
+touching its anchor; a delay of 120 ms; a shadow on nothing, the card, the popup's root, the pill or all
+of them, one with a 20 px spread and an 80 px blur; the popup on an inner child; the
+card clipped, its size read from the anchor, or posed with `enter`. Nothing in the
+code connects a shadow to a popup's opening: it widens the buffer (the overhang) and
+what is painted, not what takes input. Hyprland was not tried and may be where it happened. So no fix, only a test
+that holds the shape: `a_shadow_on_a_hover_popups_card_leaves_it_opening_and_closing`.
+
+## popup-enter
+
+**2026-10-31 · popup-enter: a popup's contents play their `enter` at every open, and
+that stays.** A popup's contents mount each time it opens, written under an `if` or
+not, so their poses replay. A stagger on open relies on it. The cost is a popup that
+starts out looking like something already on screen: its copy plays `enter` over the
+original and flickers. To skip the pose, leave it out, or decide it by a value:
+`enter: still ? none : fade`, or `enter { x: still ? 50 : 200 }` with the node's own
+`x` (50) when `still`; either way, with `still` true as the popup opens, it shows at
+rest from its first frame. No new syntax. Proof, a throwaway run with a card in a
+popup opened twice: `enter { x: 200 }` 14 frames at each open; `enter: none`, and each
+form above with `still` true, 1 frame; with `still` false 14 and 15 frames.

@@ -61,6 +61,7 @@ impl LoopHost for Rec {
             Cause::Settle => "settle",
             Cause::Tick => "tick",
             Cause::Input(_) => "input",
+            Cause::Repoint => "repoint",
         };
         let flags = intents
             .iter()
@@ -239,11 +240,18 @@ fn input_wakes_the_loop_only_for_a_surface_it_woke() {
     while h.r.wants_frame(S) {
         buf.paint_at(&mut h.r, S, 1, Duration::from_millis(ms));
         let Ok(()) = host_loop::painted(&mut h, S);
-        assert_eq!(
-            h.take(),
-            ["facts", "after_paint"],
-            "a frame leaves no change"
-        );
+        // A row that moved under the still pointer routes it first
+        // (decisions.md still-pointer).
+        let log = h.take();
+        let rest = match log.get(1) {
+            Some(i) if i.starts_with("intents repoint") => {
+                assert_eq!(log[0], "facts", "{log:?}");
+                assert_eq!(log[2], "wake", "{log:?}");
+                &log[3..]
+            }
+            _ => &log[..],
+        };
+        assert_eq!(rest, ["facts", "after_paint"], "a frame leaves no change");
         ms += 16;
         assert!(ms < 10_000, "the wheel never settled");
     }

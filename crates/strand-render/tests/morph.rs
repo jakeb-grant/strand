@@ -1195,6 +1195,36 @@ fn near(a: &LogicalRect, b: &LogicalRect) -> bool {
         && (a.h - b.h).abs() <= 0.5
 }
 
+/// (hit-through) `hit: none` on the root of a popup opened by `open:` passes
+/// the pointer where nothing on it takes it, as on any surface.
+#[test]
+fn a_hit_none_popup_root_passes_the_pointer() {
+    let mut sh = Shell::boot_routed(
+        renderer(),
+        "
+bar Top {
+  height: 30
+  box { width: 100; height: 30
+    popup { open: true; width: 300; height: 100; hit: none
+      box { width: 100; height: 20; bg: #00ff00 }
+    }
+  }
+}
+",
+        1.0,
+        800,
+    );
+    run(&mut sh, NodeId::new(0, 0));
+    let pop = sh.popup().expect("open");
+    let region = Painter::input_region(&sh.r, pop).expect("a region");
+    assert_eq!(region.len(), 1, "{region:?}");
+    let r = region[0];
+    assert_eq!((r.w, r.h), (100.0, 20.0), "{region:?}");
+    let at = |x, y| sh.r.takes_input_at(pop, LogicalPoint::new(x, y));
+    assert!(at(r.x + 50.0, r.y + 10.0), "the box");
+    assert!(!at(r.x + 200.0, r.y + 10.0), "beside it");
+}
+
 /// (owner-testing.md bugs 9, 12 and 15 and gap 22) While a hover
 /// popup's card springs its size under a shadow (its overhang held, the
 /// popup not resized), the input region `hit: none` leaves (the card's

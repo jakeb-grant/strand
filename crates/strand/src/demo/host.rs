@@ -629,6 +629,12 @@ impl Host {
         self
     }
 
+    /// (window) The bounds a window's configure gave (the area beside the
+    /// compositor's panels) stand over the whole output's.
+    fn told_bounds(&self, surface: SurfaceId) -> bool {
+        self.windows.get(&surface).and_then(|w| w.bounds).is_some()
+    }
+
     fn wake_if_changed(&self) {
         if self.renderer.has_surface_changes()
             && let Some(p) = &self.wake
@@ -1357,10 +1363,7 @@ impl SurfaceHost for Host {
     }
 
     fn surface_entered(&mut self, surface: SurfaceId, monitor: &Monitor) {
-        // (window) The bounds a window's configure gave (the area beside
-        // the compositor's panels) stay over the whole output's.
-        let told = self.windows.get(&surface).and_then(|w| w.bounds);
-        if told.is_none() {
+        if !self.told_bounds(surface) {
             self.renderer
                 .set_surface_bounds(surface, monitor_bounds(monitor));
         }
@@ -1436,6 +1439,19 @@ impl SurfaceHost for Host {
         if let Some(f) = &mut self.logic {
             f.monitor_changed(monitor);
         }
+        // (output-change) Its mode or scale changed under the surfaces on
+        // it: what they span or are capped to follows, as when they
+        // entered it (a window keeps the bounds its configure told).
+        let on_it: Vec<SurfaceId> = self
+            .outputs
+            .iter()
+            .filter(|(s, m)| m.as_str() == monitor.id.as_str() && !self.told_bounds(**s))
+            .map(|(s, _)| *s)
+            .collect();
+        for s in on_it {
+            self.renderer.set_surface_bounds(s, monitor_bounds(monitor));
+        }
+        self.wake_if_changed();
     }
 
     fn monitor_removed(&mut self, monitor: &Monitor) {

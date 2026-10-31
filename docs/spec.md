@@ -933,6 +933,19 @@ monitor, the keyboard always).
   compositor may wait for the next motion to say so; decisions.md
   m6-owner-fixes). Over any other surface (a sibling popup, another
   bar) the pointer is the compositor's until it moves.
+- `hover` and the cursor follow what is under the pointer as the last
+  frame drew it, also when what moved is the content and not the
+  pointer (a list scrolled, a row closed, an animation), a frame later
+  at most. A press held keeps the node it went down on. A still pointer
+  always lets a surface come to rest: under it `hover` makes one move,
+  from one node to another, at most twice, until the pointer moves, a
+  wheel, button or key comes, or no hit box has moved for a second. So
+  a node that moves itself off the pointer when hovered (`when hover {
+  y: -10 }` with the pointer in the strip it leaves) flips a few times
+  and stays hovered, and a node that slid away and back loses its
+  `hover` and takes it back. A surface pays for this only with the
+  pointer on it, and only a frame that moved a hit box routes it again.
+  (decisions.md still-pointer)
 - **`trigger: hover`** on a `popup` gives its open state to the pointer.
   It opens while the pointer is on the element it is anchored to, after
   its `delay` (none by default). It stays open while the pointer is on
@@ -966,7 +979,14 @@ monitor, the keyboard always).
 - `self.width` and `self.height` read the enclosing node's laid-out
   size, for container queries: `when self.width < 300 { … }`. A query
   switches with 4 px of hysteresis, so it cannot flicker, and costs at
-  most one extra layout pass per frame.
+  most one extra layout pass per frame. An element whose `width` or
+  `height` is read through `self` or its id is measured from its mount,
+  so a first read in a handler, or as a popup mounts, finds its size once
+  it has been laid out: a popup's `on show` finds its anchor's and its
+  surface's. A popup's own content is not laid out yet in its own `on
+  show` and reads 0 there, and a size read through a value passed
+  elsewhere is measured only from that first read, so that read gives 0
+  too (decisions.md first-read).
 - **`name.box`** reads the laid-out box of the node with `id: name` as
   a `Rect` (`x`, `y`, `width`, `height`), in logical pixels from the
   top-left corner of its surface's box (a shadow's overhang lies
@@ -1118,6 +1138,10 @@ monitor, the keyboard always).
   incrementally.
 - A `list` container lays out and mounts only its visible rows
   (virtualisation is the container's job, not the loop's).
+- Rows that change above a `list`'s view keep the rows in view where
+  they are: a reader's place holds. At the list's top, or scrolling
+  back to it, there is no place to keep: it stays at its top and a row
+  added above the first shows. (decisions.md list-top)
 
 ### 6.6 Poses, transitions and keyframes
 
@@ -1149,6 +1173,12 @@ monitor, the keyboard always).
   `enter`. Poses apply to surfaces, `if` branches, `for` copies, list
   items and pages. Siblings of a node that is added, removed or moved
   glide to their new places.
+  A `popup`'s contents mount each time it opens, so their `enter`
+  poses play at every open, which a stagger on open relies on. A popup
+  that starts out looking like something already on screen would
+  flicker: leave the pose out, or skip it by a value, `enter: still ?
+  none : fade`, or `enter { x: still ? 50 : 200 }` for a node whose own
+  `x` is 50 (decisions.md popup-enter).
 - **`keyframes name { 0%, 100% { … }; 50% { … }; duration: T }`**
   declares a timed animation; `play name` in a handler plays it once on
   the enclosing node.
@@ -1183,7 +1213,16 @@ monitor, the keyboard always).
   enlarges it by `n` for small targets; `hit: none` takes no input in
   the node's own box (the pointer passes through to what is below),
   while its children take theirs and are hit with it among their
-  ancestors. A node at `opacity: 0` is not drawn and not hit, its
+  ancestors. What is below a node is its parent, whose own box takes
+  the pointer unless it has `hit: none` too; on a surface's root the
+  pointer leaves the surface for what is behind it, by its input
+  region, wherever none of its nodes takes input (a `panel`, `bar`,
+  `popup` or `window`; a `lock` never, and an `osd` takes none anyway).
+  The region is each hit box's bounds, so a rounded corner of one still
+  stops the pointer, and while a press that went down on the surface is
+  held it takes its whole box. A `hit` set by a `when` takes effect at
+  its next frame, whether or not anything else changed, and that frame
+  repaints nothing. (decisions.md hit-through) A node at `opacity: 0` is not drawn and not hit, its
   children neither: a control that takes input unseen keeps its
   opacity and draws nothing (`color` and `track` of alpha 0, no `bg`).
   Shadows enlarge the buffer but not the input region.

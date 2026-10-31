@@ -281,6 +281,18 @@ impl Drop for Shell {
 }
 
 impl Shell {
+    /// `strand set shell.<name> <value>`.
+    fn set_state(&self, name: &str, value: &str) {
+        let out = Command::new(env!("CARGO_BIN_EXE_strand"))
+            .args(["set", &format!("shell.{name}"), value])
+            .env("XDG_RUNTIME_DIR", &self.dir)
+            .env("WAYLAND_DISPLAY", &self.display)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+
     fn env(&self) -> Vec<(&'static str, PathBuf)> {
         vec![
             ("XDG_RUNTIME_DIR", self.dir.clone()),
@@ -1115,4 +1127,146 @@ fn open_opens_a_hover_popup_from_code_and_holds_it() {
     sh.wait("let go, it closes after its grace", |one, _| {
         one.region(ISLAND_A, 1).is_none().then_some(())
     });
+}
+
+/// (hit-through) A panel behind and one in front whose root has `hit: none`,
+/// covering the one behind and holding a box to its right. A click on the
+/// front panel's empty area reaches the one behind; a click on its box does
+/// not.
+const THROUGH: &str = r#"
+state back = false
+state front = false
+panel Behind { anchor: top_left; layer: bottom; width: 300; height: 100
+  box { width: 300; height: 100; bg: #ff0000
+    when back { bg: #ffff00 }
+    on click { back = !back }
+  }
+}
+panel Front { anchor: top_left; width: 800; height: 100; hit: none
+  box { place: absolute; x: 540; width: 200; height: 100; bg: #0000ff; shadow: 0 6px 18px #000000
+    when front { bg: #00ffff }
+    on click { front = !front }
+  }
+}
+"#;
+
+#[test]
+fn a_click_on_a_hit_none_panels_empty_area_reaches_what_is_behind() {
+    let Some(mut sh) = start("through", THROUGH) else {
+        return;
+    };
+    sh.wait("both panels", |one, _| {
+        one.region(ITEM_A, 2000).and(one.region(ITEM_B, 2000))
+    });
+    let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+    pointer.motion(50, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.click(50, 50, LW, LH);
+    sh.wait("the click reached the panel behind", |one, _| {
+        one.region(YELLOW, 2000)
+    });
+    let one = sh.shot("HEADLESS-1");
+    assert!(one.region(ISLAND_B, 1).is_none(), "and not the front box");
+    pointer.motion(640, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.click(640, 50, LW, LH);
+    sh.wait("a click on the box stays on it", |one, _| {
+        one.region(ISLAND_B, 2000)
+    });
+    let one = sh.shot("HEADLESS-1");
+    assert!(
+        one.region(YELLOW, 2000).is_some(),
+        "the one behind is as it was"
+    );
+}
+
+/// (hit-through) The same set by a `when`: a click on the front panel's empty
+/// area goes to the panel behind once `through` is on, with nothing else on
+/// the front panel changing, and stops going there once it is off.
+const THROUGH_WHEN: &str = r#"
+export state through = false
+state back = false
+panel Behind { anchor: top_left; layer: bottom; width: 300; height: 100
+  box { width: 300; height: 100; bg: #ff0000
+    when back { bg: #ffff00 }
+    on click { back = !back }
+  }
+}
+panel Front { anchor: top_left; width: 800; height: 100
+  when through { hit: none }
+  box { place: absolute; x: 540; width: 200; height: 100; bg: #0000ff }
+}
+"#;
+
+#[test]
+fn a_reactive_hit_none_reaches_the_compositor_at_once() {
+    let Some(mut sh) = start("through-when", THROUGH_WHEN) else {
+        return;
+    };
+    sh.wait("both panels", |one, _| {
+        one.region(ITEM_A, 2000).and(one.region(ITEM_B, 2000))
+    });
+    let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+    pointer.motion(50, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.click(50, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(300));
+    let one = sh.shot("HEADLESS-1");
+    assert!(one.region(YELLOW, 1).is_none(), "the front panel takes it");
+
+    sh.set_state("through", "true");
+    std::thread::sleep(Duration::from_millis(300));
+    pointer.motion(60, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.click(60, 50, LW, LH);
+    sh.wait("the click reached the panel behind", |one, _| {
+        one.region(YELLOW, 2000)
+    });
+
+    sh.set_state("through", "false");
+    std::thread::sleep(Duration::from_millis(300));
+    pointer.motion(70, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.click(70, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(300));
+    let one = sh.shot("HEADLESS-1");
+    assert!(
+        one.region(YELLOW, 2000).is_some(),
+        "the front panel takes it again, and the one behind stays as it was"
+    );
+}
+
+/// A hover popup whose card has a `shadow`, over a panel that springs to fit,
+/// as the owner's island had it when its popup would not open (NOTES #3).
+/// Never reproduced, on sway: this holds what was tried (decisions.md
+/// shadow-popup).
+const SHADOWED: &str = r#"
+panel Island {
+  anchor: top; margin: 6, 0, 0
+  size: auto ~ spring(400, 0.8)
+  box { width: 200; height: 30; bg: #ff0000; radius: 15
+    popup { trigger: hover; delay: 120ms; margin: -30, 0, 0
+      box { width: 300; height: 100; bg: #00ff00; radius: 12
+            shadow: 0 6px 18px #00000080 }
+    }
+  }
+}
+"#;
+
+#[test]
+fn a_shadow_on_a_hover_popups_card_leaves_it_opening_and_closing() {
+    let Some(mut sh) = start("shadowed", SHADOWED) else {
+        return;
+    };
+    sh.wait("the pill", |one, _| one.region(ITEM_A, 2000));
+    let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+    pointer.motion(640, 20, LW, LH);
+    sh.wait("the card opened", |one, _| one.region(ISLAND_A, 5000));
+    pointer.motion(100, 500, LW, LH);
+    sh.wait("the card closed", |one, _| {
+        one.region(ISLAND_A, 1).is_none().then_some(())
+    });
+    sh.wait("the pill again", |one, _| one.region(ITEM_A, 2000));
+    pointer.motion(640, 20, LW, LH);
+    sh.wait("and opened again", |one, _| one.region(ISLAND_A, 5000));
 }

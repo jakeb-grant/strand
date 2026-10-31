@@ -1691,6 +1691,8 @@ group node {
   /// Its hit area: `hit: grow(6)` enlarges it for small targets;
   /// `hit: none` takes no input in its own box (the pointer passes
   /// through to what is below), while its children take theirs. On a
+  /// surface's root it lets the pointer through to what is behind the
+  /// surface wherever none of its nodes takes input. On a
   /// `trigger: hover` popup that draws nothing, a top-level element
   /// with `hit: none` gives the popup's input region its children's
   /// boxes instead of its own.

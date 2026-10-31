@@ -90,6 +90,23 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.set_origin(id, origin);
     }
 
+    /// (output-change) The layer surfaces on `monitor` are fitted again to
+    /// its size (`LayerConfig::fit`, in `reconfigure`), for an output whose
+    /// mode or scale changed: a panel wider than the output asks again, and
+    /// gets what its spec asks once there is room.
+    pub(super) fn refit_layers_on(&mut self, monitor: &MonitorId) {
+        let mut nodes: Vec<NodeId> = self
+            .layers_on(monitor)
+            .into_iter()
+            .filter_map(|id| self.surfaces.get(&id).map(|s| s.node))
+            .collect();
+        nodes.sort_unstable();
+        nodes.dedup();
+        for node in nodes {
+            self.reconfigure(node);
+        }
+    }
+
     /// Places again the layer surfaces on `monitor`, whose logical size
     /// or position may have changed with no configure (a panel of a
     /// fixed size), or whose usable area changed (an exclusive surface

@@ -6,7 +6,10 @@ use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 use strand_scene::time::Instant;
 
-use strand_scene::{Damage, NodeId, PaintTarget, Painter, Rect, SurfaceId};
+use strand_scene::{
+    Damage, NodeId, NodeKind, PaintTarget, Painter, Prop, PropValue, Rect, SurfaceId,
+};
+use vello_cpu::kurbo;
 
 use super::{DAMAGE_HISTORY, MAX_HOLD_PAUSE, Renderer};
 use crate::flatten::{NodeRecord, RoundBox};
@@ -512,6 +515,12 @@ impl Painter for Renderer {
     /// that box alone: the margin it has not reached, or has left, draws
     /// nothing and passes the pointer to what is behind it. An OSD or a
     /// tooltip takes none (`Renderer::placed_root`).
+    ///
+    /// (hit-through) A surface with `hit: none` on its root takes input
+    /// only where what is on it does: the hit boxes of its last frame
+    /// (`hit_region`), so the pointer passes through the rest of it to
+    /// what is behind, a spanned panel's margin included. A held press
+    /// takes the whole box as on a hover popup.
     fn input_region(&self, surface: SurfaceId) -> Option<Vec<strand_scene::LogicalRect>> {
         let s = self.surfaces.get(&surface)?;
         let hover = self.specs.get(&s.root).is_some_and(|sp| sp.hover_trigger);
@@ -529,11 +538,66 @@ impl Painter for Renderer {
         if hover && !root_paints {
             return Some(input.clone());
         }
+        // (hit-through) `hit: none` on its root: where what is on it takes
+        // input, and the pointer passes through the rest.
+        if self.hit_through(s.root) {
+            return Some(hit_region(&s.hits, s.scale.as_f64()));
+        }
         placed.map(|r| vec![r])
     }
 }
 
+/// (hit-through) Where the hit boxes of a frame take the pointer, logical:
+/// each one's bounds as drawn, cut by its clip. Paint order has a parent
+/// first, so a box inside one already kept adds nothing (a list's rows).
+fn hit_region(hits: &[crate::flatten::HitBox], k: f64) -> Vec<strand_scene::LogicalRect> {
+    let mut kept: Vec<kurbo::Rect> = Vec::new();
+    for h in hits {
+        let drawn = match h.inverse {
+            Some(inv) => inv.inverse().transform_rect_bbox(h.rect),
+            None => h.rect,
+        };
+        let c = h.clip;
+        let clip = kurbo::Rect::new(
+            c.left() as f64,
+            c.top() as f64,
+            c.right() as f64,
+            c.bottom() as f64,
+        );
+        let r = drawn.intersect(clip);
+        let inside = |o: &kurbo::Rect| r.x0 >= o.x0 && r.y0 >= o.y0 && r.x1 <= o.x1 && r.y1 <= o.y1;
+        // Not finite: a degenerate transform, never hit.
+        if r.area() > 0.0 && r.is_finite() && !kept.iter().any(inside) {
+            kept.push(r);
+        }
+    }
+    kept.into_iter()
+        .map(|r| {
+            strand_scene::LogicalRect::new(
+                (r.x0 / k) as f32,
+                (r.y0 / k) as f32,
+                (r.width() / k) as f32,
+                (r.height() / k) as f32,
+            )
+        })
+        .collect()
+}
+
 impl Renderer {
+    /// (hit-through) Whether the surface node `root` passes the pointer
+    /// through by `hit: none`. Not a lock, which never lets the pointer
+    /// reach what it hides, nor an OSD or a tooltip, which take none.
+    pub(super) fn hit_through(&self, root: NodeId) -> bool {
+        let Some(spec) = self.specs.get(&root) else {
+            return false;
+        };
+        !matches!(spec.kind, NodeKind::Lock | NodeKind::Osd)
+            && !spec.tooltip
+            && self.tree.get(root).is_some_and(
+                |n| matches!(n.get(Prop::Hit), Some(PropValue::Keyword(k)) if k == "none"),
+            )
+    }
+
     /// (m6-owner-fixes) Whether `surface` takes the pointer at `at`
     /// (logical, on the surface) as its last frame left it: inside the
     /// region [`Painter::input_region`] asks for, or else inside its box
@@ -798,11 +862,18 @@ impl Renderer {
                 || inspected
                 || !clocked.is_empty()
                 || s.records != f.records
-                || s.order != f.order,
+                || s.order != f.order
+                || s.hits != f.hits,
         );
         s.records = f.records.clone();
         s.order.clone_from(&f.order);
-        s.hits = f.hits.clone();
+        // (still-pointer) Hit boxes that moved under a pointer on this
+        // surface: the frame's reaction routes it again. Compared in place
+        // of the copy that equal boxes no longer need.
+        if s.hits != f.hits {
+            s.hits_moved |= self.extras.pointers.contains_key(&s.root);
+            s.hits.clone_from(&f.hits);
+        }
         // (eval-sandbox) Every paint, empty damage included.
         #[cfg(feature = "eval-hooks")]
         self.probe.frame(

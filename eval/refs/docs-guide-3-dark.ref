@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "docs-guide-3-dark"
 verdict good
-note "Guide level 3's whole bar at 760 px: hovering the speaker slides the slider out (enter width 0, opacity 0) and leaving slides it back; a fourth workspace's dot grows in. Looked at the frames, light and dark."
-date 2026-10-27
-rev "06f5c019+changes"
+note "Guide level 3's whole bar at 760 px: hovering the speaker slides the slider out (enter width 0, opacity 0) and leaving slides it back; a fourth workspace's dot grows in. Read again from the traces after still-pointer: the pointer rests at 545,26 on the speaker at k1, and the opening row brings the slider's box (x from 530 at k1) under it, so from k2 the slider is hovered and its knob is the hovered 16 px, not 14, until the leave at k15; that is the only change, on that one node at k2 to k14 (the track's fill and the knob's place move by the 1 px the larger knob takes from the travel). Hover now follows what moved under a still pointer, as spec.md 6.3 says."
+date 2026-10-31
+rev "54629e89"
 approver "claude"
 scenario 2ede0cf4176c9738
-seal b664ec2f734cd32d
+seal ad590f9132201ccf
 S1 0 - "bar Top"
 N0 "|bar.strand:11:7|[Mock | DP-1]#0" "text(\"Terminal\")"
 N1 "|bar.strand:13:5|[Mock | DP-1]#0" "center@bar.strand:13"
@@ -60,31 +60,31 @@ n18 x=530 y=17 w=23 h=18 op=37 ord=13 bg=f1dfda33/ffb59fff/ffb59fff pt=0,7,23,4/
 k2
 n16 x=475 w=78
 n17 x=475
-n18 x=495 w=58 op=98 pt=0,7,58,4/0,7,33.40625,4/26.40625,2,14,14
+n18 x=495 w=58 op=98 pt=0,7,58,4/0,7,33.203125,4/25.203125,1,16,16
 k3
 n16 x=453 w=100
 n17 x=453
-n18 x=473 w=80 op=151 pt=0,7,80,4/0,7,46.59375,4/39.59375,2,14,14
+n18 x=473 w=80 op=151 pt=0,7,80,4/0,7,46.40625,4/38.40625,1,16,16
 k4
 n16 x=443 w=110
 n17 x=443
-n18 x=463 w=90 op=190 pt=0,7,90,4/0,7,52.59375,4/45.59375,2,14,14
+n18 x=463 w=90 op=190 pt=0,7,90,4/0,7,52.40625,4/44.40625,1,16,16
 k5
 n16 x=440 w=113
 n17 x=440
-n18 x=460 w=93 op=216 pt=0,7,93,4/0,7,54.40625,4/47.40625,2,14,14
+n18 x=460 w=93 op=216 pt=0,7,93,4/0,7,54.203125,4/46.203125,1,16,16
 k6
 n16 x=441 w=112
 n17 x=441
-n18 x=461 w=92 op=232 pt=0,7,92,4/0,7,53.796875,4/46.796875,2,14,14
+n18 x=461 w=92 op=232 pt=0,7,92,4/0,7,53.59375,4/45.59375,1,16,16
 k7
 n16 x=442 w=111
 n17 x=442
-n18 x=462 w=91 op=241 pt=0,7,91,4/0,7,53.203125,4/46.203125,2,14,14
+n18 x=462 w=91 op=241 pt=0,7,91,4/0,7,53,4/45,1,16,16
 k8
 n16 x=443 w=110
 n17 x=443
-n18 x=463 w=90 op=247 pt=0,7,90,4/0,7,52.59375,4/45.59375,2,14,14
+n18 x=463 w=90 op=247 pt=0,7,90,4/0,7,52.40625,4/44.40625,1,16,16
 k9
 n18 op=251
 k10

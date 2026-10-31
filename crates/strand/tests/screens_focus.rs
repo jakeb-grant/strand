@@ -456,3 +456,172 @@ fn the_compositor_runs_for_the_focus_only_while_it_is_read() {
         }
     });
 }
+
+/// (output-change) A panel centred on one axis, with a shadow: it takes
+/// its output's width at any overhang (decisions.md centred-surface).
+const SPANNED: &str = r#"
+export state tall = 40
+panel Island { screens: all; anchor: top; margin: 6, 0, 0
+  size: auto ~ spring(400, 0.8)
+  box { width: 200; height: tall; radius: 20; bg: #222222; shadow: 0 6px 18px #000000 }
+}
+"#;
+
+impl Desk {
+    /// The size `strand report` gives the only surface on `output`.
+    fn panel_size(&self, output: &str) -> Option<(u32, u32)> {
+        let reports = self.dir.join("state/strand/reports");
+        let _ = std::fs::remove_dir_all(&reports);
+        let run = Command::new(env!("CARGO_BIN_EXE_strand"))
+            .args(["report", "probe"])
+            .env("XDG_RUNTIME_DIR", &self.dir)
+            .env("WAYLAND_DISPLAY", &self.display)
+            .env("STRAND_SOCKET", self.dir.join("strand.sock"))
+            .env("XDG_STATE_HOME", self.dir.join("state"))
+            .stdin(Stdio::null())
+            .output()
+            .ok()?;
+        if !run.status.success() {
+            return None;
+        }
+        let bundle = std::fs::read_dir(&reports).ok()?.next()?.ok()?.path();
+        let text = std::fs::read_to_string(bundle.join("diagnostics.txt")).ok()?;
+        let line = text
+            .lines()
+            .find(|l| l.contains("(panel)") && l.contains(&format!("on {output}:")))?;
+        let size = line.split(": ").nth(1)?.split(' ').next()?;
+        let (w, h) = size.split_once('x')?;
+        Some((w.parse().ok()?, h.parse().ok()?))
+    }
+
+    fn panel_is(&mut self, output: &str, width: u32) {
+        self.until(
+            &format!("the panel {width} wide on {output}"),
+            |d| match d.panel_size(output) {
+                Some(s) if s.0 == width => Ok(()),
+                got => Err(format!("{got:?}")),
+            },
+        )
+    }
+}
+
+/// (output-change) An output's mode and scale changing after its surface
+/// was made reach that surface, whether or not anything on it changes: it
+/// stays as wide as its output, where it kept the width it was given (1920
+/// on an output of 1706 logical pixels, or 1762 once its content changed).
+#[test]
+fn a_spanned_panel_follows_its_outputs_mode_and_scale() {
+    let Some(mut desk) = start("span", SPANNED, "HEADLESS-1", true) else {
+        return;
+    };
+    desk.panel_is("HEADLESS-2", 1600);
+    let sock = desk.sock.clone();
+    let mode = |w: &str, h: &str, scale: &str| {
+        swaymsg(
+            &sock,
+            &[
+                "output",
+                "HEADLESS-2",
+                "resolution",
+                &format!("{w}x{h}"),
+                "scale",
+                scale,
+            ],
+        );
+    };
+    mode("2560", "1440", "1.5");
+    desk.panel_is("HEADLESS-2", 1706);
+    let before = desk.panel_size("HEADLESS-2").unwrap();
+    // Its content changes, and it stays so.
+    let out = Command::new(env!("CARGO_BIN_EXE_strand"))
+        .args(["set", "shell.tall", "60"])
+        .env("XDG_RUNTIME_DIR", &desk.dir)
+        .env("WAYLAND_DISPLAY", &desk.display)
+        .env("STRAND_SOCKET", desk.dir.join("strand.sock"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    desk.until("the panel grows", |d| match d.panel_size("HEADLESS-2") {
+        Some(s) if s.1 > before.1 && s.0 == 1706 => Ok(()),
+        got => Err(format!("{got:?}")),
+    });
+    mode("2560", "1440", "1");
+    desk.panel_is("HEADLESS-2", 2560);
+    // The other output was left alone.
+    desk.panel_is("HEADLESS-1", 1280);
+}
+
+/// Sets HEADLESS-2's mode and scale.
+fn set_mode(desk: &Desk, width: &str, height: &str, scale: &str) {
+    swaymsg(
+        &desk.sock,
+        &[
+            "output",
+            "HEADLESS-2",
+            "resolution",
+            &format!("{width}x{height}"),
+            "scale",
+            scale,
+        ],
+    );
+}
+
+/// (output-change) A spanned panel, as its output shrinks and grows again.
+#[test]
+fn a_spanned_panel_shrinks_and_grows_with_its_output() {
+    let Some(mut desk) = start("spsh", SPANNED, "HEADLESS-1", true) else {
+        return;
+    };
+    desk.panel_is("HEADLESS-2", 1600);
+    set_mode(&desk, "2560", "1440", "1");
+    desk.panel_is("HEADLESS-2", 2560);
+    set_mode(&desk, "2560", "1440", "1.5");
+    desk.panel_is("HEADLESS-2", 1706);
+    set_mode(&desk, "1280", "720", "1");
+    desk.panel_is("HEADLESS-2", 1280);
+    set_mode(&desk, "2560", "1440", "1");
+    desk.panel_is("HEADLESS-2", 2560);
+    desk.panel_is("HEADLESS-1", 1280);
+}
+
+/// (output-change) A panel wider than its output is capped to the output as
+/// it is now, not as it was when the panel was made: it follows the output
+/// down and, up to what it asks for, back up.
+fn a_wide_panel_follows(name: &str, shell: &str) {
+    let Some(mut desk) = start(name, shell, "HEADLESS-1", true) else {
+        return;
+    };
+    desk.panel_is("HEADLESS-2", 1600);
+    set_mode(&desk, "2560", "1440", "1");
+    desk.panel_is("HEADLESS-2", 2000);
+    set_mode(&desk, "2560", "1440", "1.5");
+    desk.panel_is("HEADLESS-2", 1706);
+    set_mode(&desk, "1280", "720", "1");
+    desk.panel_is("HEADLESS-2", 1280);
+    set_mode(&desk, "2560", "1440", "1");
+    desk.panel_is("HEADLESS-2", 2000);
+    desk.panel_is("HEADLESS-1", 1280);
+}
+
+#[test]
+fn a_content_sized_panel_is_capped_to_its_output_as_it_changes() {
+    a_wide_panel_follows(
+        "wide",
+        r#"
+panel Wide { screens: all; anchor: top_left; size: auto
+  box { width: 2000; height: 40; bg: #222222 }
+}
+"#,
+    );
+}
+
+#[test]
+fn a_fixed_panel_is_capped_to_its_output_as_it_changes() {
+    a_wide_panel_follows(
+        "fixed",
+        r#"
+panel Wide { screens: all; anchor: top_left; width: 2000; height: 40; bg: #222222 }
+"#,
+    );
+}

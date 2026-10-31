@@ -193,6 +193,9 @@ struct SurfaceState {
     layout_dirty: bool,
     /// Hit shapes of the last painted frame, in paint order.
     hits: Vec<HitBox>,
+    /// (still-pointer) `hits` moved since [`Renderer::take_hits_moved`],
+    /// with the pointer on this surface.
+    hits_moved: bool,
     /// A layout pass changed the size of a node a container query reads:
     /// the frame waits for logic to have seen fact batch `.0` (its
     /// answer, see [`SceneDiff::layout_seen`]) or until `.1`.
@@ -948,7 +951,7 @@ impl Renderer {
         // commits it.
         if changed
             && flag == crate::Flag::Pressed
-            && self.specs.get(&node).is_some_and(|sp| sp.hover_trigger)
+            && (self.specs.get(&node).is_some_and(|sp| sp.hover_trigger) || self.hit_through(node))
         {
             for s in self.surfaces.values_mut() {
                 if s.root == node {

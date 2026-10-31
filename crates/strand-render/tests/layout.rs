@@ -644,6 +644,99 @@ fn a_row_entering_above_the_view_keeps_the_rows_in_view() {
     approx(rect(&r, fresh), (0.0, -72.0, 200.0, 32.0));
 }
 
+/// (list-top) A row added above a list's first row, at the list's top:
+/// the list stays at its top and the new row shows, the old first row
+/// moving down under it. Scrolled away, the same row keeps the reader's
+/// place (`a_row_entering_above_the_view_keeps_the_rows_in_view`), and a
+/// wheel on its way back to the top still lands on the new first row.
+#[test]
+fn a_row_added_above_the_first_shows_at_the_top_of_a_list() {
+    use std::time::Duration;
+    let t0 = Duration::from_secs(1);
+    let at = |k: u64| t0 + Duration::from_micros(16_667 * k);
+    let add = |r: &mut strand_render::Renderer, lst: NodeId, n: u32| {
+        let fresh = NodeId::new(10_000 + n, 0);
+        let mut b = Builder::default();
+        b.diff
+            .create(fresh, NodeKind::Row, Some(lst), 0)
+            .set(fresh, Prop::Height, num(32.0));
+        assert!(r.apply(b.diff).is_empty());
+        fresh
+    };
+
+    // At the top: the new row is the first in view, whether it is
+    // measured off the estimate or not.
+    let (d, root, lst) = long_list(40);
+    let (mut r, mut buf) = show(d, root, 200, 420, Scale::ONE);
+    let first = r.tree().get(lst).unwrap().children[0];
+    let was = rect(&r, first);
+    let fresh = add(&mut r, lst, 0);
+    let mut k = 0;
+    while r.wants_frame(S) && k < 60 {
+        k += 1;
+        buf.paint_at(&mut r, S, 1, at(k));
+    }
+    approx(rect(&r, fresh), (was.x, was.y, was.w, 32.0));
+    assert_eq!(
+        rect(&r, first).y,
+        was.y + 32.0,
+        "the old first row moved down"
+    );
+    // And again: it is still at its top.
+    let second = add(&mut r, lst, 1);
+    let mut k2 = 0;
+    while r.wants_frame(S) && k2 < 60 {
+        k2 += 1;
+        k += 1;
+        buf.paint_at(&mut r, S, 1, at(k));
+    }
+    approx(rect(&r, second), (was.x, was.y, was.w, 32.0));
+
+    // Scrolled away: the place is kept.
+    let (d, root, lst) = long_list(40);
+    let (mut r, mut buf) = show(d, root, 200, 420, Scale::ONE);
+    let watched = r.tree().get(lst).unwrap().children[6];
+    assert!(r.scroll(S, LogicalPoint::new(10.0, 10.0), 40.0).is_some());
+    let mut k = 0;
+    while r.wants_frame(S) && k < 120 {
+        k += 1;
+        buf.paint_at(&mut r, S, 1, at(k));
+    }
+    let before = rect(&r, watched);
+    let fresh = add(&mut r, lst, 0);
+    let mut k3 = 0;
+    while r.wants_frame(S) && k3 < 60 {
+        k3 += 1;
+        k += 1;
+        buf.paint_at(&mut r, S, 1, at(k));
+    }
+    assert_eq!(rect(&r, watched).y, before.y, "the reader's place");
+    assert!(rect(&r, fresh).y < 0.0, "above the view");
+
+    // A wheel on its way back to the top when the row comes: the top.
+    let wheel = strand_render::ScrollInput {
+        dx: 0.0,
+        dy: -500.0,
+        kind: strand_render::ScrollKind::Wheel,
+        time: 0,
+    };
+    assert!(
+        r.scroll_input(S, LogicalPoint::new(10.0, 10.0), wheel)
+            .is_some()
+    );
+    k += 1;
+    buf.paint_at(&mut r, S, 1, at(k));
+    assert!(r.wants_frame(S), "still on its way");
+    let last = add(&mut r, lst, 1);
+    let mut k4 = 0;
+    while r.wants_frame(S) && k4 < 120 {
+        k4 += 1;
+        k += 1;
+        buf.paint_at(&mut r, S, 1, at(k));
+    }
+    approx(rect(&r, last), (0.0, 0.0, 200.0, 32.0));
+}
+
 /// A windowed 2,000-row `list` (logic mounted rows 500..532 of
 /// `row_count` 2,000, `row_first` 500): the mounted rows sit at their
 /// global indexes, the rows logic has not mounted take the estimated
@@ -2457,4 +2550,59 @@ fn a_layer_surface_buffer_stays_inside_its_anchored_edges() {
     buf.paint(&mut r, S, 0);
     let row = rect(&r, inner);
     approx(row, (4.0, 4.0, 1280.0 - 8.0, 36.0));
+}
+
+/// (still-pointer) What a still pointer costs: a surface with no pointer on
+/// it never checks its hit boxes, one whose frames move nothing under the
+/// pointer finds nothing to route, and only hit boxes that moved ask for
+/// routing, once a frame that moved them.
+#[test]
+fn only_hit_boxes_that_moved_under_the_pointer_ask_for_routing() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![(Prop::Width, num(100.0)), (Prop::Height, num(100.0))],
+    );
+    let row = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![(Prop::Width, num(100.0)), (Prop::Height, num(40.0))],
+    );
+    let (mut r, mut buf) = show(b.diff, root, 100, 100, Scale::ONE);
+    let id = S;
+    let t0 = std::time::Duration::from_secs(1);
+    let mut paint_all = |r: &mut strand_render::Renderer, k: &mut u64| {
+        while r.wants_frame(id) && *k < 400 {
+            *k += 1;
+            buf.paint_at(r, id, 1, t0 + std::time::Duration::from_micros(16_667 * *k));
+        }
+    };
+    let mut k = 0;
+    paint_all(&mut r, &mut k);
+    assert!(!r.take_hits_moved(id), "no pointer on it");
+
+    // No pointer: the box moves and nothing asks.
+    let mut d = Builder::default();
+    d.diff.set(row, Prop::Height, num(50.0));
+    assert!(r.apply(d.diff).is_empty());
+    paint_all(&mut r, &mut k);
+    assert!(!r.take_hits_moved(id), "no pointer, no check");
+
+    // A pointer on it: a colour changes, the boxes do not.
+    r.set_pointer(id, Some(LogicalPoint::new(10.0, 10.0)));
+    let mut d = Builder::default();
+    d.diff.set(row, Prop::Bg, color("#ff0000"));
+    assert!(r.apply(d.diff).is_empty());
+    paint_all(&mut r, &mut k);
+    assert!(k > 0);
+    assert!(!r.take_hits_moved(id), "nothing moved under it");
+
+    // A box moves: it asks, once.
+    let mut d = Builder::default();
+    d.diff.set(row, Prop::Height, num(60.0));
+    assert!(r.apply(d.diff).is_empty());
+    paint_all(&mut r, &mut k);
+    assert!(r.take_hits_moved(id), "it moved");
+    assert!(!r.take_hits_moved(id), "taken");
 }
