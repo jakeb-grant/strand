@@ -84,6 +84,11 @@ moment you reported matched your live shell (VERIFIED or DRIFTED), then
 where `replay.txt` and the viewer are. Then it opens the viewer in your
 browser. `--no-open` leaves it closed.
 
+The replay's compositor is its stand-in, so it cannot see what your own
+compositor does with a surface, such as how it animates a resize or
+fades in a new popup. If you can see a glitch and the replay cannot,
+suspect the compositor.
+
 The viewer shows the frame large with the timeline under it: scrub
 through the recorded window to find the moment.
 

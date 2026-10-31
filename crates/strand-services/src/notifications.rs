@@ -299,9 +299,10 @@ pub struct Notifications {
     /// dismissed.
     #[store(keyed)]
     pub popups: Vec<Notification>,
-    /// Every notification kept, popups included: the newest 1,000 (older
-    /// ones close as expired), remembered across restarts while `remember`
-    /// is on.
+    /// Every notification kept, popups included, oldest first
+    /// (`notifications.all.reverse()` for newest first): the newest 1,000
+    /// (older ones close as expired), remembered across restarts while
+    /// `remember` is on.
     #[store(keyed)]
     pub all: Vec<Notification>,
     /// How many notifications are kept.

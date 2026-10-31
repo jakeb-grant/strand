@@ -81,7 +81,9 @@ keys, the bar's slider, another program. It never runs for the first
 value. When you log in, when you save a file and when the default
 output switches to your headphones, the value is new to Strand but
 nobody changed it, so the OSD stays hidden. That is why it does not pop
-up every time the shell starts.
+up every time the shell starts. It also means a `state` fed only by
+`on change` holds its starting value until the first real change: for
+something the shell must show from the start, use a `let`.
 
 **`on change … after 1.2s` waits for quiet.** It runs once, 1.2 seconds
 after the last change. Hold the volume key and the OSD stays up; let go

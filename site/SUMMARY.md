@@ -28,6 +28,7 @@
 - [An app launcher](how-to/launcher.md)
 - [A notification stack](how-to/notifications.md)
 - [A volume and brightness OSD](how-to/osd.md)
+- [A morphing island](how-to/island.md)
 - [A theme from your wallpaper](how-to/wallpaper-theme.md)
 - [A settings file](how-to/settings-file.md)
 - [A D-Bus method or an action](how-to/dbus-and-actions.md)

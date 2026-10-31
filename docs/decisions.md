@@ -14411,3 +14411,11 @@ fork; an action with a queued re-run keeps the failure until that re-run ends). 
 of an action with a result keeps its own `.error`, and `rec.error` stays null. It is
 recorded (`flight::kind::ACTION_FAILED`, naming the program, never an argument) and
 replayed (`end action rec failed "<why>"`), so a shell showing it replays as it ran.
+
+## bead-docs
+
+**2026-10-30 · bead-docs: the island how-to has no `exit { height: 0 }`.** With one,
+the card collapses in four frames and the width follows only ten frames later, a move
+in two steps; with none, the default fade plays and then both axes spring together, one
+move. The page says why, so a reader who reaches for the exit pose knows what it costs.
+The trace shows both; how each feels in motion is for the owner to judge.

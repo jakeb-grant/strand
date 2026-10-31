@@ -91,8 +91,9 @@ handler runs it.
   lists every action with its command, so you can see what a config
   runs before you run it.
 - **It runs detached.** The handler does not wait for it. If the
-  program cannot start, or exits with an error, Strand logs it and
-  `strand watch` shows a notice.
+  program cannot start, or exits with an error, Strand logs it,
+  `strand watch` shows a notice, and `rec.error` says why, so the shell
+  can show it too.
 
 ## An action that gives back a value
 

@@ -1,0 +1,45 @@
+id     = "docs-island"
+about  = """The morphing island how-to (site/how-to/island.md): its file, word
+for word. One box at the top of the screen, whose contents decide its size:
+rest on the pill and the card it holds appears, so the box springs down and
+out to fit; leave and the card goes, so it springs back."""
+screen = { width = 460, height = 240, scale = 2.0 }
+
+[services]
+"system.accent" = "#a13c1c"
+"audio.sink.volume" = 0.6
+
+=== island.strand
+// island.strand: one box, and what it holds decides its size
+let morph = spring(620, 0.92)
+
+panel Island {
+  anchor: top; margin: 6, 0, 0
+  size: auto ~ morph
+
+  state open = false
+  on change island.hover after 120ms { if island.hover { open = true } }
+  on change island.hover after 220ms { if !island.hover { open = false } }
+
+  col { id: island; clip: true; bg: $surface; radius: (open ? 22 : 14) ~ morph
+    row { height: 28; pad: 0, 14; align: center; shrink: 0
+      text clock.format("%H:%M") { font: $font.mono }
+    }
+    if open {
+      col { width: 320; shrink: 0; gap: $space.2; pad: 4, 14, 14, 14
+        enter { opacity: 0 }
+        text clock.format("%A %d %B") { weight: 600 }
+        slider { value: <-> audio.sink.volume }
+      }
+    }
+  }
+}
+
+=== steps
+rest
+mark open
+pointer 230,20 on #island
+wait 900
+mark close
+pointer 230,200
+wait 1100

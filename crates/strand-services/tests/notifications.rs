@@ -1040,6 +1040,35 @@ fn history_in(dir: Option<&std::path::Path>) {
     }));
 }
 
+/// (bead #21) `all` lists what is kept in the order it arrived, oldest
+/// first, as its schema says; a replacement keeps its place.
+#[test]
+fn all_is_oldest_first() {
+    let _serial = serial();
+    history_in(None);
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    let first = notify(&tokio, &conn, 0, "First", &[], HashMap::new(), -1);
+    notify(&tokio, &conn, 0, "Second", &[], HashMap::new(), -1);
+    notify(&tokio, &conn, 0, "Third", &[], HashMap::new(), -1);
+    let summaries = || -> Vec<String> { all(&b, &rt).iter().map(|n| n.summary.clone()).collect() };
+    until(&rt, &s, "all three", || all(&b, &rt).len() == 3);
+    assert_eq!(summaries(), ["First", "Second", "Third"]);
+    notify(&tokio, &conn, first, "First again", &[], HashMap::new(), -1);
+    until(&rt, &s, "the replacement", || {
+        all(&b, &rt).iter().any(|n| n.summary == "First again")
+    });
+    assert_eq!(summaries(), ["First again", "Second", "Third"]);
+}
+
 /// Every notification in `all`, oldest first.
 fn all(b: &strand_services::Builtin, rt: &Runtime) -> Vec<Notification> {
     b.notifications

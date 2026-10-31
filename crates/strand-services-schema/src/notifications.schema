@@ -85,9 +85,10 @@ service notifications {
   /// The notifications to show now; each leaves when it expires or is
   /// dismissed.
   popups: [Notification]
-  /// Every notification kept, popups included: the newest 1,000 (older
-  /// ones close as expired), remembered across restarts while `remember`
-  /// is on.
+  /// Every notification kept, popups included, oldest first
+  /// (`notifications.all.reverse()` for newest first): the newest 1,000
+  /// (older ones close as expired), remembered across restarts while
+  /// `remember` is on.
   all: [Notification]
   /// How many notifications are kept.
   count: int

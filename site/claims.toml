@@ -2772,3 +2772,40 @@ page   = "site/start/running.md"
 text   = "`PATH`, which may not hold `~/.local/bin`, where the"
 source = ["scripts/install.sh:98"]
 proof  = "read: the links' directory; a compositor started by a display manager reads the session's PATH, not a shell profile's"
+
+# --- island, reporting ---
+[[claim]]
+page   = "site/how-to/island.md"
+text   = "takes the whole width of the monitor from its first frame"
+source = ["docs/decisions.md#centred-surface"]
+proof  = "crates/strand-render/tests/layout.rs::a_panel_centred_on_one_axis_never_resizes_there; eval/scenarios/docs/island.scn's trace: the surface is 460 wide on a 460 output on every frame"
+
+[[claim]]
+page   = "site/how-to/island.md"
+text   = "only the box takes the pointer"
+source = ["docs/decisions.md#centred-surface"]
+proof  = "eval/scenarios/docs/island.scn's trace: its input region is the box's rectangle on every frame"
+
+[[claim]]
+page   = "site/how-to/island.md"
+text   = "keeps the tallest height it has needed, across restarts"
+source = ["docs/decisions.md#kept-size"]
+proof  = "eval/scenarios/docs/island.scn's trace: the surface stays 88 tall from the frame it opens, through the close"
+
+[[claim]]
+page   = "site/how-to/island.md"
+text   = "an `exit { height: 0 }` collapses the card first"
+source = ["eval/scenarios/docs/island.scn"]
+proof  = "seen in a trace of this file with that exit: height 87 to 28 in frames 69-72, width unchanged until frame 83"
+
+[[claim]]
+page   = "site/how-to/island.md"
+text   = "`exclusive: 28` reserves room for the pill"
+source = ["docs/spec.md:334"]
+proof  = "read: spec.md section 6, `exclusive:` on a panel takes a length"
+
+[[claim]]
+page   = "site/tools/reporting.md"
+text   = "The replay's compositor is its stand-in"
+source = ["docs/eval.md#quick-start"]
+proof  = "read: strand-eval drives strand-surface against strand-fake-wayland; it runs no real compositor"

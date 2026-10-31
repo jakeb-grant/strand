@@ -115,7 +115,9 @@ are `Async`.
 
 - `on change a, b { … }` runs when a watched value changes. It never
   runs for the first value, nor for a value a reload writes, so an OSD
-  does not flash at boot or on save.
+  does not flash at boot or on save. A `state` fed only by `on change`
+  so holds its starting value until the first real change; to show the
+  value from the start, read it with a `let`.
 - `on change a after 1.2s { … }` runs once, 1.2 s after the last change.
 - When a watched path moves to another item, its new value is the new
   baseline and `on change` does not run: `on change
