@@ -1,7 +1,7 @@
 //! Surface specs: resolving every surface node's parameters, content
 //! sizing, overhang, and holding frames for the configure at a new size.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use strand_scene::time::Instant;
 
@@ -391,11 +391,28 @@ impl Renderer {
     /// surface manager clamps the layer size the same way), so it waits
     /// for no configure the compositor would never send.
     pub fn set_surface_bounds(&mut self, surface: SurfaceId, size: Option<LogicalSize>) {
+        let changed = self.bounds.get(&surface).copied() != size;
         match size {
             Some(b) => self.bounds.insert(surface, b),
             None => self.bounds.remove(&surface),
         };
+        // (centred-surface) What it spans follows its output.
+        if changed && let Some(root) = self.surfaces.get(&surface).map(|s| s.root) {
+            self.spec_dirty.insert(root);
+            self.refresh_specs();
+        }
         self.refresh_size_holds();
+    }
+
+    /// (kept-size) The sizes panels keep, by namespace, from an earlier
+    /// session: a panel maps at the size it will need, so it never resizes.
+    pub fn set_kept_sizes(&mut self, kept: BTreeMap<String, (f32, f32)>) {
+        self.kept = kept;
+    }
+
+    /// (kept-size) The sizes panels keep, when one grew since the last ask.
+    pub fn take_kept_sizes(&mut self) -> Option<&BTreeMap<String, (f32, f32)>> {
+        std::mem::take(&mut self.kept_changed).then_some(&self.kept)
     }
 
     /// The bounds `surface`'s content-sized axes are laid out within, as
@@ -796,13 +813,51 @@ impl Renderer {
             // resizes it there, and what it holds is laid out and springs
             // inside it as in any larger buffer.
             let span = self.centred_span(id, &spec, axes);
-            if span != (None, None) {
+            if let Some(w) = span.0 {
+                size.w = w;
+            }
+            if let Some(h) = span.1 {
+                size.h = h;
+            }
+            // (kept-size) And one whose size springs keeps, on any axis its
+            // content sizes, the largest size its name has had, on every
+            // output: a compositor may animate a layer surface's every
+            // resize, drawing the new buffer stretched from the old box for
+            // a moment (Hyprland), so a panel that springs open and closed
+            // must not resize to do it. Its box moves inside the buffer, and
+            // input follows the box.
+            let keeps = spec.open
+                && matches!(spec.kind, NodeKind::Panel | NodeKind::Osd)
+                && self.tree.get(id).is_some_and(|n| {
+                    n.props.iter().any(|e| {
+                        matches!(e.prop, Prop::Size | Prop::Width | Prop::Height)
+                            && !matches!(
+                                e.transition,
+                                strand_scene::Transition::Default
+                                    | strand_scene::Transition::Instant
+                            )
+                    })
+                })
+                && !matches!(spec.exclusive, strand_scene::Exclusive::Auto)
+                && content_sized;
+            if keeps {
+                let (kw, kh) = self.kept.entry(spec.namespace()).or_default();
+                let (w, h) = (*kw, *kh);
+                if axes.0 && span.0.is_none() {
+                    *kw = kw.max(size.w.ceil());
+                    size.w = *kw;
+                }
+                if axes.1 && span.1.is_none() {
+                    *kh = kh.max(size.h.ceil());
+                    size.h = *kh;
+                }
+                self.kept_changed |= (w, h) != (*kw, *kh);
+            }
+            if span != (None, None) || keeps {
                 self.spanned.insert(id);
             } else {
                 self.spanned.remove(&id);
             }
-            size.w = size.w.max(span.0.unwrap_or(0.0));
-            size.h = size.h.max(span.1.unwrap_or(0.0));
             if content_sized {
                 // Capped: content taller than any output (a list with no
                 // `max_height`, a long body) never asks for a buffer of

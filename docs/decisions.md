@@ -14256,3 +14256,35 @@ changing moved the middle of a popup's anchor by half a pixel of rounding and
 repositioned the card hanging from it (`Renderer::steady_anchor`). With these,
 an island needs no popup and no copy of itself: one box whose contents decide
 its size, growing down from its anchored edge.
+
+## kept-size
+
+**2026-10-30 · kept-size: a panel whose size springs keeps the largest size its
+name has had.** Hyprland animates every layer `set_size` with `layersIn` (about
+400 ms on the owner's config): `arrangeLayersForMonitor` calls `setBox`, which
+starts `m_realSize`'s animation, and the renderer scales the new buffer into
+that box, so the twitch at the ends of opening and closing happens on every
+shell that resizes to open. So a content-sized panel or OSD with a `~` on its
+size stops resizing to do it: on the axes its content sizes it asks for the
+largest it has been, under its namespace, on every output, and its box moves
+inside the buffer with input following the box (growth's existing path). The
+sizes are kept in `$STATE/panel-sizes.json` with a hash of the config's
+`.strand` files, so a panel maps at the size it will need and only the first
+open under a config resizes; a changed config starts again, so a card made
+smaller does not stay reserved. Rejected: a whole output's height for every
+such panel (Hyprland damages the whole surface on every commit, so a waveform
+would repaint a monitor at refresh); buffer-only size changes, which skip
+`set_size` and so the animation, because the next arrange overwrites them and
+other compositors do not follow; a declared size, which adds a concept the
+shell author must keep in step with the content. Panels with no `~` on their
+size keep resizing, and a panel whose exclusive zone follows its size
+(`exclusive: true`) is left out because keeping the size would keep windows
+away.
+
+**2026-10-30 · centred-surface: a spring lands under half a pixel
+(`STEP_LANDED`).** A growth step's residue under half a physical pixel of
+movement is dropped, so the icons beside a settling box stop on their final
+position instead of creeping into it. A surface's span now follows its output
+(`set_surface_bounds` refreshes its spec), so one sized before its output's
+mode and scale were known no longer stays at the old width.
+
