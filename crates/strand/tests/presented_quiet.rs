@@ -507,7 +507,7 @@ fn a_presented_panel_whose_exit_only_moves_it_closes() {
 export state boost = true
 export state shown = true
 panel P {{ anchor: top_left; width: 1000; height: 620; open: shown
-  exit {{ y: -20 }}
+  exit {{ y: -0.01 }}
   {FADE}
 }}
 "#
