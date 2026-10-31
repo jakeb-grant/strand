@@ -1117,6 +1117,16 @@ is being saved, so the idle-wakeup windows hold.
      reload commits in that reload's diff (`SceneDiff::config`); where the
      hash changes the host calls `forget_kept_sizes` before it applies the
      diff, and saves under the new hash from then on.
+  7. A host whose loop keeps real time calls `set_quiet_frames(true)`
+     (`strand run`; decisions.md wave-cost). Where only size springs move
+     on a surface, `plan_quiet` then puts its next frame at the first
+     where a spring has moved `SIZE_STEP` or settles, at most `QUIET_MOST`
+     (250 ms) on: `frame_deadline` says when, `wants_frame` is false until
+     then, and no frame callback is asked for. A host that paints while
+     `wants_frame` holds, on its own clock (a test, a replay), leaves it
+     off and draws every frame; builds with `eval-hooks` ignore the call,
+     as eval's checks read every frame, so only
+     `strand-render/tests/wave_cost.rs` proves the skipping.
 
 - **Widgets and paint** (decisions.md wave3-pixels): widget state the
   router owns but widgets draw (hover, press, focus, caret, a dragged
