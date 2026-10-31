@@ -2299,8 +2299,10 @@ too, and is paced the same way: it asks for its callback, and is in flight
 until `Committed`, which forgets the callback if it presented nothing. One
 present in flight per surface, and no surface's FIFO wait on the one GPU
 thread. A callback is given up
-on after 1 s only where the compositor offers `wp_fifo_manager_v1`; where
-it does not, Mesa's present waits for it with no timeout. A paint that
+on only where the compositor offers `wp_fifo_manager_v1`, after 1 s and twice
+that for each present still unanswered (up to 64 s), since each goes into
+the compositor's FIFO; where it does not, Mesa's present waits for it with no
+timeout. A paint that
 draws nothing returns no frame (wave-cost);
 `Renderer::presented_due(surface) -> Option<Duration>` says one is due, so
 the binary still runs the frame's reaction and gives the next one a wake

@@ -254,6 +254,74 @@ fn a_presented_frame_waits_for_its_callback_or_gives_up() {
     assert!(mgr.state().present_due(id));
 }
 
+/// (gpu-pace) Where a callback is given up on, a surface nobody draws must not
+/// go on filling the compositor's queue at the first give-up's pace: each
+/// present still unanswered doubles the next wait, the timer's too, and the
+/// callbacks' coming starts it again.
+#[test]
+fn a_give_up_doubles_while_presents_stay_unanswered() {
+    use wayland_client::Proxy;
+    use wayland_client::backend::ObjectId;
+    use wayland_client::protocol::wl_surface::WlSurface;
+
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let conn = Connection::from_socket(fake.connect()).expect("a connection to the fake");
+    let mut mgr =
+        SurfaceManager::with_connection(conn.clone(), TestHost::default(), Config::default())
+            .expect("surface manager starts");
+    let id = show_panel(&fake, &mut mgr);
+    mgr.dispatch_until(Duration::from_millis(200), |_| false)
+        .unwrap();
+    let handles = mgr.state_mut().raw_handles(id).expect("raw handles");
+    assert!(mgr.state_mut().hand_off(id));
+    let RawWindowHandle::Wayland(w) = handles.window else {
+        panic!("not a Wayland handle");
+    };
+    // SAFETY: the handle names the manager's live wl_surface on `conn`.
+    let obj = unsafe { ObjectId::from_ptr(WlSurface::interface(), w.surface.as_ptr().cast()) }
+        .expect("the wl_surface's id");
+    let wsi = WlSurface::from_id(&conn, obj).expect("the wl_surface");
+    mgr.state_mut().set_wsi_fifo(true);
+    fake.cmd(Cmd::HoldFrames(true));
+    fake.sync();
+
+    let present = |mgr: &mut SurfaceManager<TestHost>| {
+        mgr.state_mut().ask_present_callback(id);
+        wsi.commit();
+        conn.flush().unwrap();
+        std::time::Instant::now()
+    };
+    // The first, at the first give-up's second; the wake is the timer's.
+    let asked = present(&mut mgr);
+    assert!(mgr.dispatch_until(WAIT, |s| s.present_due(id)).unwrap());
+    let first = asked.elapsed();
+    assert!(first >= Duration::from_millis(950), "{first:?}");
+    assert!(first < Duration::from_millis(1900), "{first:?}");
+    // One unanswered: twice as long, and the timer wakes the loop then.
+    let asked = present(&mut mgr);
+    mgr.dispatch_until(Duration::from_millis(1400), |_| false)
+        .unwrap();
+    assert!(!mgr.state().present_due(id), "gave up at the first's pace");
+    assert!(mgr.dispatch_until(WAIT, |s| s.present_due(id)).unwrap());
+    let second = asked.elapsed();
+    assert!(second >= Duration::from_millis(1950), "{second:?}");
+    assert!(second < Duration::from_millis(3900), "{second:?}");
+    // Two unanswered: not at the second's pace either.
+    present(&mut mgr);
+    mgr.dispatch_until(Duration::from_millis(2400), |_| false)
+        .unwrap();
+    assert!(!mgr.state().present_due(id), "gave up at the second's pace");
+    // Drawn again: every callback comes, and the next starts from the first.
+    fake.cmd(Cmd::HoldFrames(false));
+    assert!(mgr.dispatch_until(WAIT, |s| s.present_due(id)).unwrap());
+    fake.cmd(Cmd::HoldFrames(true));
+    fake.sync();
+    let asked = present(&mut mgr);
+    assert!(mgr.dispatch_until(WAIT, |s| s.present_due(id)).unwrap());
+    let again = asked.elapsed();
+    assert!(again < Duration::from_millis(1900), "{again:?}");
+}
+
 fn alive(fake: &Fake) -> bool {
     fake.surfaces()
         .iter()

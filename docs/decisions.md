@@ -14729,12 +14729,19 @@ output turned off stopped all of them for good, since Mesa's wait has no timeout
 Since gpu-stay more surfaces stay on that thread. Now the host asks for a frame
 callback as pending state before it sends a frame (`ask_present_callback`) and
 sends the next once it has come (`present_due`). The thread does not wait, the
-120 Hz output runs at 121 frames/s, and the output's own surface alone stops
-while it is off. A callback still owed when a surface is handed off counts as
+120 Hz output runs at 121 frames/s, and on a compositor without
+`wp_fifo_manager_v1` the output's own surface alone stops while it is off (with it,
+see the give-up below). A callback still owed when a surface is handed off counts as
 stale: taken for the newest, it put every later present a frame early, back into
 Mesa's wait, in two of three runs on Arch's sway before that was fixed. The give-up a CPU
 surface has is kept only with `wp_fifo_manager_v1`, where Mesa does not wait for
-callbacks and a lost one should not stop the surface. Without it, a frame sent
+callbacks and a lost one should not stop the surface. Each present it lets go still
+waits in the compositor's FIFO, though, and Hyprland lets one go per monitor present, so
+the wait doubles for each present still unanswered, up to 64 s, and the callbacks' coming
+starts it again: at a flat second a sleeping output's surface added a buffer a second
+(dmabuf fds 24 to 321 in 300 s, drained over 4 to 6 s at the wake) and held the GPU thread
+each time the images ran out (wgpu's 1 s acquire timeout), so the other output's panel
+ran at 31 to 58 frames/s, with a hidden workspace's window as well as a powered-off output. Without it, a frame sent
 after a give-up stops every surface, as measured: all four at 1 s of `power off`.
 A `Commit` is paced as a frame is: it asks for the callback, stays in flight until the
 thread answers `Committed`, and forgets the callback if it presented nothing. As first
@@ -14749,6 +14756,8 @@ here ran on Hyprland, so neither its FIFO path nor the 52 ms is covered; there t
 frames should stop queuing up in the compositor's FIFO, which is unmeasured. Proof:
 `a_presented_frame_waits_for_its_callback_or_gives_up` for the manager's half, which
 fails if the stale count, the wait or the FIFO rule goes;
+`a_give_up_doubles_while_presents_stay_unanswered` if the back-off goes from either the
+due check or the timer;
 `a_commit_on_a_powered_off_output_stops_no_other_surface` on sway, under lavapipe, for
 a `Commit`, seen failing without it; the rest of the host's wiring only shows on a
 presenting GPU, so benchmarks.md "Presenting on one GPU thread" is its proof.

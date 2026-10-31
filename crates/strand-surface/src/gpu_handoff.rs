@@ -88,6 +88,15 @@ impl HandOffs {
     }
 }
 
+/// (gpu-pace) How long a presented surface's callback is waited for with
+/// `unanswered` presents' callbacks still owed: twice as long for each, up to
+/// about a minute. Each present goes into the compositor's FIFO, so a surface
+/// it does not draw would otherwise add a buffer and its fences every second,
+/// and hold the GPU thread each time a buffer ran out.
+fn give_up_after(unanswered: u32) -> Duration {
+    THROTTLE_GIVE_UP * (1u32 << unanswered.min(6))
+}
+
 impl<H: SurfaceHost + 'static> State<H> {
     /// The connection's `wl_display` and `surface`'s `wl_surface` as raw
     /// handles (`None`: no such surface, or not configured yet), lent:
@@ -243,9 +252,10 @@ impl<H: SurfaceHost + 'static> State<H> {
         s.throttled_at = Some(at);
         s.stats.frame_requests += 1;
         self.stats.frame_requests += 1;
+        let after = give_up_after(s.stale_callbacks);
         self.cancel_give_up(surface);
         if fifo {
-            self.arm_give_up(surface, at + THROTTLE_GIVE_UP);
+            self.arm_give_up(surface, at + after);
         }
     }
 
@@ -267,14 +277,15 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// waits for the same callback where the compositor has no
     /// `wp_fifo_manager_v1`, with no timeout, and would stop every other
     /// surface with it, so only with that protocol, where Mesa does not
-    /// wait for callbacks, is a callback given up on
-    /// ([`THROTTLE_GIVE_UP`]), as a CPU surface's is.
+    /// wait for callbacks, is a callback given up on, after
+    /// [`THROTTLE_GIVE_UP`] and twice that for each present still unanswered
+    /// ([`give_up_after`]).
     pub fn present_due(&self, surface: SurfaceId) -> bool {
         self.surfaces.get(&surface).is_none_or(|s| {
             !s.callback_pending
                 || (self.wsi_fifo
                     && s.throttled_at
-                        .is_some_and(|t| t.elapsed() >= THROTTLE_GIVE_UP))
+                        .is_some_and(|t| t.elapsed() >= give_up_after(s.stale_callbacks)))
         })
     }
 
