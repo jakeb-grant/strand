@@ -133,7 +133,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         // Busy buffers stay valid for the compositor (their memory is
         // never written again); the rest is freed while presented.
         s.buffers.destroy();
-        s.callback_pending = false;
+        s.forget_callback();
         s.in_flight = None;
         s.repaint = false;
         self.gpu.lent.remove(&surface);
@@ -168,6 +168,8 @@ impl<H: SurfaceHost + 'static> State<H> {
         let Some(s) = self.surfaces.get_mut(&surface) else {
             return;
         };
+        // A callback asked for a frame that never came is not waited for.
+        s.forget_callback();
         // Everything the WSI's commits replaced is sent again with the
         // first shm frame.
         s.geometry_dirty = true;
@@ -216,6 +218,70 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// again. Cleared by asking.
     pub fn take_owed_commit(&mut self, surface: SurfaceId) -> bool {
         self.gpu.owed.remove(&surface)
+    }
+
+    /// (gpu-pace) Before the host sends the GPU thread a frame of
+    /// handed-off `surface`: asks for a frame callback as pending state,
+    /// which that frame's present commits. Until it comes,
+    /// [`State::present_due`] says to send no other frame, so one
+    /// surface's FIFO wait never blocks the one GPU thread with every
+    /// other surface's frames queued behind it.
+    pub fn ask_present_callback(&mut self, surface: SurfaceId) {
+        if !self.gpu.has(surface) {
+            return;
+        }
+        let fifo = self.wsi_fifo;
+        let Some(s) = self.surfaces.get_mut(&surface) else {
+            return;
+        };
+        // One still owed (given up on) must not pass for this one.
+        s.forget_callback();
+        let wl = s.wl().clone();
+        wl.frame(&self.qh, FrameCallbackData(wl.clone()));
+        s.callback_pending = true;
+        let at = Instant::now();
+        s.throttled_at = Some(at);
+        s.stats.frame_requests += 1;
+        self.stats.frame_requests += 1;
+        self.cancel_give_up(surface);
+        if fifo {
+            self.arm_give_up(surface, at + THROTTLE_GIVE_UP);
+        }
+    }
+
+    /// (gpu-pace) The frame asked for by [`State::ask_present_callback`]
+    /// failed: no present will commit its callback, so nothing waits for
+    /// it (it comes with the next commit, and then does not count).
+    pub fn forget_present_callback(&mut self, surface: SurfaceId) {
+        if let Some(s) = self.surfaces.get_mut(&surface) {
+            s.forget_callback();
+        }
+        self.cancel_give_up(surface);
+    }
+
+    /// (gpu-pace) `surface`'s next frame may go to the GPU thread: its
+    /// last present's frame callback has come. A compositor shows no
+    /// callback to a surface it does not draw (an output powered off), so
+    /// that surface draws nothing until it is drawn again. Mesa's present
+    /// waits for the same callback where the compositor has no
+    /// `wp_fifo_manager_v1`, with no timeout, and would stop every other
+    /// surface with it, so only with that protocol, where Mesa does not
+    /// wait for callbacks, is a callback given up on
+    /// ([`THROTTLE_GIVE_UP`]), as a CPU surface's is.
+    pub fn present_due(&self, surface: SurfaceId) -> bool {
+        self.surfaces.get(&surface).is_none_or(|s| {
+            !s.callback_pending
+                || (self.wsi_fifo
+                    && s.throttled_at
+                        .is_some_and(|t| t.elapsed() >= THROTTLE_GIVE_UP))
+        })
+    }
+
+    /// Whether the compositor offers `wp_fifo_manager_v1` (tests: the
+    /// fake offers no such global).
+    #[doc(hidden)]
+    pub fn set_wsi_fifo(&mut self, on: bool) {
+        self.wsi_fifo = on;
     }
 
     /// In `draw` for a handed-off surface: no paint and no commit, but a

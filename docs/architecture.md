@@ -2286,9 +2286,15 @@ drawing until the reply: promotion never stalls a frame.
 pixels and sends the current one, so frames run one behind and the main
 thread never waits on the GPU; `Pixels` marks the surface via
 `Renderer::deliver_gpu`. Present: the manager does not call `paint`;
-`Presented` is the frame callback and the binary sends
-`Renderer::paint_gpu(surface, at) -> Option<Frame>`. One frame in
-flight per surface. A paint that draws nothing returns no frame (wave-cost);
+the binary sends `Renderer::paint_gpu(surface, at) -> Option<Frame>`
+once `Presented` has come for its last frame and `State::present_due`
+says that frame's frame callback has too (decisions.md gpu-pace):
+`State::ask_present_callback` asks for it as pending state before the
+frame goes, and the present commits it. One frame in flight per surface,
+and no surface's FIFO wait on the one GPU thread. A callback is given up
+on after 1 s only where the compositor offers `wp_fifo_manager_v1`; where
+it does not, Mesa's present waits for it with no timeout. A paint that
+draws nothing returns no frame (wave-cost);
 `Renderer::presented_due(surface) -> Option<Duration>` says one is due, so
 the binary still runs the frame's reaction and gives the next one a wake
 (decisions.md presented-quiet).

@@ -96,6 +96,12 @@ mod host {
         sent: Option<(Size, Scale)>,
         /// When a paint last sent nothing (decisions.md presented-quiet).
         drew_nothing: Option<std::time::Instant>,
+        /// (gpu-pace) Its last present's frame callback has not come: its
+        /// next frame waits for that, which wakes the loop.
+        paced: bool,
+        /// (gpu-pace) A `Commit` waiting for that too: a present then
+        /// would wait for the callback on the GPU thread.
+        commit_owed: bool,
     }
 
     /// A surface attached (asked or answered).
@@ -237,9 +243,13 @@ mod host {
                 self.change(state, change);
             }
             for r in state.host_mut().renderer.take_gpu_requests() {
-                // It commits whatever the manager left pending.
-                if let GpuRequest::Commit(id) = &r {
-                    state.take_owed_commit(*id);
+                if let GpuRequest::Commit(id) = r {
+                    // It commits whatever the manager left pending.
+                    state.take_owed_commit(id);
+                    if let Some(p) = self.presented.get_mut(&id) {
+                        p.commit_owed = true;
+                        continue;
+                    }
                 }
                 self.send(r);
             }
@@ -324,7 +334,7 @@ mod host {
             let held = self
                 .presented
                 .iter()
-                .filter(|(_, p)| !p.in_flight)
+                .filter(|(_, p)| !p.in_flight && !p.paced)
                 .filter_map(|(id, _)| renderer.frame_deadline(*id))
                 .min()
                 .map(|t| t.saturating_duration_since(now));
@@ -332,7 +342,7 @@ mod host {
                 .presented
                 .iter()
                 .filter(|(id, p)| {
-                    !p.in_flight && self.attached.get(id).is_some_and(|a| !a.releasing)
+                    !p.in_flight && !p.paced && self.attached.get(id).is_some_and(|a| !a.releasing)
                 })
                 .filter_map(|(id, p)| {
                     let period = renderer.presented_due(*id)?;
@@ -395,6 +405,8 @@ mod host {
                                     in_flight: false,
                                     sent: None,
                                     drew_nothing: None,
+                                    paced: false,
+                                    commit_owed: false,
                                 },
                             );
                         }
@@ -436,6 +448,7 @@ mod host {
                             p.in_flight = false;
                             p.sent = None;
                         }
+                        state.forget_present_callback(*surface);
                     }
                     GpuReply::Exited => {
                         // Every swapchain went with the thread: the
@@ -521,8 +534,12 @@ mod host {
                         scale,
                     });
                 }
-                if p.in_flight || releasing {
+                p.paced = !state.present_due(*id);
+                if p.in_flight || releasing || p.paced {
                     continue;
+                }
+                if std::mem::take(&mut p.commit_owed) {
+                    gpu.send(GpuRequest::Commit(*id));
                 }
                 let r: &mut Renderer = &mut state.host_mut().renderer;
                 let due = r.presented_due(*id).is_some();
@@ -537,6 +554,11 @@ mod host {
                     // `Presented`).
                     state.sync_presented(*id);
                     state.take_owed_commit(*id);
+                    // Asked before the frame goes, so the request reaches
+                    // the compositor ahead of the commit the GPU thread
+                    // makes for it; only a frame that goes asks one, so
+                    // an idle surface has no wake.
+                    state.ask_present_callback(*id);
                     gpu.send(GpuRequest::Frame(frame));
                     p.in_flight = true;
                     p.sent = Some((size, scale));
@@ -791,6 +813,8 @@ mod host {
                     in_flight: false,
                     sent: None,
                     drew_nothing: None,
+                    paced: false,
+                    commit_owed: false,
                 },
             );
             let w = host.wait(&r).expect("woken at the hold's end");
@@ -802,6 +826,11 @@ mod host {
                 pr.in_flight = true;
             }
             assert_eq!(host.wait(&r), None, "in flight: its `Presented` wakes it");
+            if let Some(pr) = host.presented.get_mut(&s) {
+                pr.in_flight = false;
+                pr.paced = true;
+            }
+            assert_eq!(host.wait(&r), None, "paced: its frame callback wakes it");
         }
 
         /// (presented-quiet) A presented surface that wants a frame with none
@@ -837,6 +866,8 @@ mod host {
                     in_flight: false,
                     sent: None,
                     drew_nothing: None,
+                    paced: false,
+                    commit_owed: false,
                 },
             );
             assert_eq!(
