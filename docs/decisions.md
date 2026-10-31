@@ -14733,7 +14733,9 @@ sends the next once it has come (`present_due`). The thread does not wait, the
 `wp_fifo_manager_v1` the output's own surface alone stops while it is off (with it,
 see the give-up below). A callback still owed when a surface is handed off counts as
 stale: taken for the newest, it put every later present a frame early, back into
-Mesa's wait, in two of three runs on Arch's sway before that was fixed. The give-up a CPU
+Mesa's wait, in two of three runs on Arch's sway before that was fixed; so does one a
+CPU surface gave up on, or replaced for a new size, in `draw`, which once only cleared
+it. The give-up a CPU
 surface has is kept only with `wp_fifo_manager_v1`, where Mesa does not wait for
 callbacks and a lost one should not stop the surface. Each present it lets go still
 waits in the compositor's FIFO, though, and Hyprland lets one go per monitor present, so
@@ -14757,7 +14759,8 @@ frames should stop queuing up in the compositor's FIFO, which is unmeasured. Pro
 `a_presented_frame_waits_for_its_callback_or_gives_up` for the manager's half, which
 fails if the stale count, the wait or the FIFO rule goes;
 `a_give_up_doubles_while_presents_stay_unanswered` if the back-off goes from either the
-due check or the timer;
+due check or the timer; `a_given_up_shm_callback_does_not_answer_the_present` for
+`draw`'s;
 `a_commit_on_a_powered_off_output_stops_no_other_surface` on sway, under lavapipe, for
 a `Commit`, seen failing without it; the rest of the host's wiring only shows on a
 presenting GPU, so benchmarks.md "Presenting on one GPU thread" is its proof.

@@ -75,7 +75,7 @@ impl<H: SurfaceHost + 'static> State<H> {
                     self.stats.throttle_given_up += 1;
                 }
                 s.in_flight = None;
-                s.callback_pending = false;
+                s.forget_callback();
                 self.cancel_give_up(id);
             } else {
                 // The frame in flight's callback or presentation marks it

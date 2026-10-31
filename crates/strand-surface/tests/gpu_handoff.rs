@@ -578,3 +578,48 @@ fn a_handed_off_surface_takes_input_where_its_gpu_frame_drew() {
         "an unchanged region was sent again"
     );
 }
+
+/// (gpu-pace) An animating CPU surface whose callback was given up on and
+/// which is then handed off: the old callback, when it comes, must not pass
+/// for the present's, or the next frame goes while that present's own callback
+/// is owed, into Mesa's wait.
+#[test]
+fn a_given_up_shm_callback_does_not_answer_the_present() {
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let id = show_panel(&fake, &mut mgr);
+    mgr.dispatch_until(Duration::from_millis(200), |_| false)
+        .unwrap();
+    mgr.state_mut().host_mut().animate = 1000;
+    change(&mut mgr, 20.0);
+    fake.cmd(Cmd::HoldFrames(true));
+    fake.sync();
+    // Two frames with callbacks asked, the first given up on after 1 s.
+    let commits = mgr.state().surface(id).unwrap().stats.commits;
+    mgr.dispatch_until(Duration::from_millis(200), |_| false)
+        .unwrap();
+    change(&mut mgr, 30.0);
+    mgr.dispatch_until(Duration::from_millis(1800), |s| {
+        s.surface(id).unwrap().stats.commits >= commits + 2
+    })
+    .unwrap();
+    assert!(
+        mgr.state().surface(id).unwrap().stats.throttle_given_up >= 1,
+        "the give-up did not run"
+    );
+
+    mgr.state_mut().raw_handles(id).expect("raw handles");
+    assert!(mgr.state_mut().hand_off(id));
+    mgr.state_mut().host_mut().animate = 0;
+    mgr.state_mut().ask_present_callback(id);
+    assert!(!mgr.state().present_due(id));
+    // The output is back: the old callbacks come, and no present committed
+    // the one just asked for.
+    fake.cmd(Cmd::HoldFrames(false));
+    mgr.dispatch_until(Duration::from_millis(500), |_| false)
+        .unwrap();
+    assert!(
+        !mgr.state().present_due(id),
+        "an shm callback passed for the present's, with no present committed"
+    );
+}
