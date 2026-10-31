@@ -83,7 +83,8 @@ your shell the panel grows and shrinks with its cards.
 - **`exit { …; height: 0 }`** shrinks the leaving card's height as it
   slides away, so the cards under it move up smoothly.
 - **A click** runs the notification's default action (`n.activate()`);
-  a right click or the cross dismisses it.
+  a right click or the cross dismisses it. A notification whose sender gave
+  no default action (`n.can_activate` is false) just closes.
 
 ## Do not disturb
 

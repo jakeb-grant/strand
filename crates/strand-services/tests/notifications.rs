@@ -407,6 +407,7 @@ fn the_server_serves_the_spec_and_the_store() {
 /// `n.reply(text)` sends KDE's `NotificationReplied` and closes it; one
 /// without it takes no reply. The reply and the closing go to the sender
 /// alone: another peer listening for the server's signals hears neither.
+/// (bead #20) `can_activate` says whether a `default` action was given.
 #[test]
 fn hints_and_inline_replies() {
     let _serial = serial();
@@ -436,7 +437,7 @@ fn hints_and_inline_replies() {
         &conn,
         0,
         "Copying",
-        &["inline-reply", "Reply", "ok", "OK"],
+        &["inline-reply", "Reply", "ok", "OK", "default", "Open"],
         HashMap::from([
             ("value", Value::from(42i32)),
             ("category", Value::from("transfer")),
@@ -450,6 +451,7 @@ fn hints_and_inline_replies() {
     assert_eq!(n.category.as_deref(), Some("transfer"));
     assert_eq!(n.desktop_entry.as_deref(), Some("org.gnome.Nautilus"));
     assert!(n.can_reply);
+    assert!(n.can_activate, "it gave a default action");
     let buttons: Vec<&str> = n.actions.iter().map(|a| a.id.as_str()).collect();
     assert_eq!(buttons, ["ok"], "the reply is no button");
 
@@ -494,6 +496,7 @@ fn hints_and_inline_replies() {
     until(&rt, &s, "the plain one", || popups(&b, &rt).len() == 1);
     let n = popups(&b, &rt).remove(0);
     assert!(!n.can_reply && n.progress.is_none());
+    assert!(!n.can_activate, "it gave no default action");
     b.notifications
         .dynamic()
         .action(

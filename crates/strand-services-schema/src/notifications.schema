@@ -60,12 +60,18 @@ record Notification key id {
   /// `reply`, so a sender keeps its own Reply button otherwise. False on
   /// one remembered from an earlier run.
   can_reply: bool
+  /// The sender gave it a default action, so `activate()` reaches the
+  /// sender: without one a click on it can do nothing but close it. False
+  /// on one remembered from an earlier run.
+  can_activate: bool
   /// Ends its popup, as a timeout does; it stays in `all`, still open
   /// (its actions still reach the sender) until dismissed.
   action expire()
   /// Closes it: `on secondary { n.dismiss() }`.
   action dismiss()
-  /// Invokes its default action: `on click { n.activate() }`.
+  /// Invokes its default action, if it has one (`can_activate`), then
+  /// closes it unless it is resident: `on click { if n.can_activate {
+  /// n.activate() } }`. On one without a default action it only closes it.
   action activate()
   /// `n.reply(text)` sends `text` to the sender as its inline reply (to
   /// that sender alone, never to other programs on the bus) and closes

@@ -373,12 +373,13 @@ A desktop notification, keyed by `id`.
 | `category` | `text?` | The kind of event it reports (the `category` hint: `email.arrived`, `transfer.complete`), null when the sender gives none. |
 | `desktop_entry` | `text?` | The desktop entry of the app that sent it (the `desktop-entry` hint), null when the sender gives none. |
 | `can_reply` | `bool` | The sender takes a typed reply (an `inline-reply` action, which is not among `actions`): `if n.can_reply { input … }`. Strand offers senders inline replies only while the config names `can_reply` or `reply`, so a sender keeps its own Reply button otherwise. False on one remembered from an earlier run. |
+| `can_activate` | `bool` | The sender gave it a default action, so `activate()` reaches the sender: without one a click on it can do nothing but close it. False on one remembered from an earlier run. |
 
 | Method | |
 | --- | --- |
 | `action expire()` | Ends its popup, as a timeout does; it stays in `all`, still open (its actions still reach the sender) until dismissed. |
 | `action dismiss()` | Closes it: `on secondary { n.dismiss() }`. |
-| `action activate()` | Invokes its default action: `on click { n.activate() }`. |
+| `action activate()` | Invokes its default action, if it has one (`can_activate`), then closes it unless it is resident: `on click { if n.can_activate { n.activate() } }`. On one without a default action it only closes it. |
 | `action reply(text: text)` | `n.reply(text)` sends `text` to the sender as its inline reply (to that sender alone, never to other programs on the bus) and closes it (unless it is resident); nothing when it takes no reply. |
 
 ### `NotificationAction`

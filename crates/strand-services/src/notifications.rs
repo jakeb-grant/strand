@@ -267,6 +267,7 @@ pub struct Notification {
     pub category: Option<String>,
     pub desktop_entry: Option<String>,
     pub can_reply: bool,
+    pub can_activate: bool,
 }
 
 /// `notifications`' actions.
@@ -543,6 +544,7 @@ impl Server {
                 category: hint_text(&hints, &["category"]).filter(|c| !c.is_empty()),
                 desktop_entry: hint_text(&hints, &["desktop-entry"]).filter(|d| !d.is_empty()),
                 can_reply,
+                can_activate: default,
             },
             image,
             replaces,
@@ -1270,6 +1272,8 @@ fn restore(text: &str, exists: impl Fn(&Path) -> bool) -> Result<Vec<Notificatio
             desktop_entry: s.desktop_entry,
             // Its sender cannot hear a reply.
             can_reply: false,
+            // Nor a default action.
+            can_activate: false,
         })
         .collect())
 }
@@ -1759,6 +1763,7 @@ mod tests {
             category: Some("email.arrived".into()),
             desktop_entry: Some("mail".into()),
             can_reply: true,
+            can_activate: true,
         }
     }
 
@@ -1776,12 +1781,14 @@ mod tests {
             assert_eq!(b.id, i as i64 + 1, "renumbered");
             assert!(b.actions.is_empty(), "no buttons");
             assert!(!b.can_reply, "no replies");
+            assert!(!b.can_activate, "no default action");
             assert_eq!(b.progress, Some(0.25));
             assert_eq!(
                 Notification {
                     id: a.id,
                     actions: a.actions.clone(),
                     can_reply: a.can_reply,
+                    can_activate: a.can_activate,
                     ..b.clone()
                 },
                 *a
