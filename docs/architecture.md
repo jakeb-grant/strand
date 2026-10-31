@@ -2279,8 +2279,10 @@ runs), and hands every reply to `Renderer::deliver_gpu(GpuReply)`.
 
 Negotiation: render reports `Promote(surface)`; the binary sends
 `Attach` with `State::raw_handles` (none for readback-only and lock
-surfaces); the reply's `GpuMode` becomes the backend. The CPU keeps
-drawing until the reply: promotion never stalls a frame.
+surfaces); the reply's `GpuMode` becomes the backend. A surface's frames wait from
+`Attach` until the reply, since its handles are lent to a WSI that may own
+its buffers by then (decisions.md syncobj-lend): attaching costs about 2 to
+28 ms on the GPU thread, once per surface.
 
 **Frames.** Readback: `Painter::paint` copies in the last frame's
 pixels and sends the current one, so frames run one behind and the main
