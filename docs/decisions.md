@@ -14256,3 +14256,25 @@ changing moved the middle of a popup's anchor by half a pixel of rounding and
 repositioned the card hanging from it (`Renderer::steady_anchor`). With these,
 an island needs no popup and no copy of itself: one box whose contents decide
 its size, growing down from its anchored edge.
+
+## gpu-stay
+
+**2026-10-30 · gpu-stay (OWNER RULING): a surface promoted to the GPU stays
+there for the rest of its life.** "If something gets elevated to GPU you just
+make it stay there." This supersedes the settle part of gpu-first
+(`SETTLE_AFTER`, `AGAIN_WITHIN`, `CHEAP_FRAME` and the wake that demoted an idle
+surface); promotion in, the warm device and the failure fallback stand. The
+reason is a freeze: on Hyprland `GpuRequest::Release` destroys the Vulkan
+swapchain while Mesa's FIFO barrier can leave Hyprland's per-surface commit
+queue locked, so later `wl_shm` commits get no reply, the three shm buffers fill
+and the surface stops for good at `acquire`; flight logs put every final stop
+exactly 2.00 s after the last switch to the CPU. Sway has no `wp_fifo_v1`, so no
+test here reproduces it, and nothing here proves the fix on Hyprland. Only a
+real failure goes back now (`GpuReply::Failed`, a lost device, an attach a
+failure overtook); those and a destroyed surface are all `Release` still serves.
+The price: a promoted surface's small frames present in full, and it keeps its
+swapchain while idle. On Intel ANV `gpu_idle` measured an idle promoted surface
+at 0 wakeups in 4 s, presented and read back, 1,448-3,229 kB over the warm
+baseline presented and 1,832 kB read back, flat over ten cycles, so no budget
+moved. An idle surface's swapchain rebuilds, seen about 11 times a second in an
+earlier forced-GPU bench, did not show: 0 wakeups leaves no room for one.

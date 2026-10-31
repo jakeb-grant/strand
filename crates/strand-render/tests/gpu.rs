@@ -1383,8 +1383,7 @@ fn a_colour_uniform_paints_like_the_same_bg() {
 /// its GPU frames, so no pass pixels come back to change its record:
 /// its box is still each frame's damage. Without that a promoted
 /// surface showing only an animated shader painted nothing (a readback
-/// surface sent no frames) and, its frames empty, went back to the CPU
-/// as idle 500 ms after every promotion. Needs no device.
+/// surface sent no frames). Needs no device.
 #[test]
 fn a_clocked_shader_on_a_gpu_surface_damages_every_frame() {
     let clocked = Arc::new(ShaderCode {
@@ -1433,16 +1432,15 @@ fn a_clocked_shader_on_a_gpu_surface_damages_every_frame() {
     assert!(!d.is_empty(), "a frame with only the clock moving");
 }
 
-/// (m4-integration-w2) A presented frame in flight is not idleness: a
-/// promoted surface whose frame the GPU thread has not presented yet
-/// (lavapipe's first frame compiles its pipelines, hundreds of ms on a
-/// loaded machine) stays on the GPU past its settle window (here 300 ms),
-/// and goes back once that frame is shown. Without it
-/// `strand/tests/gpu_idle.rs` saw an animating panel released at its
-/// first frame. Needs no device; waits in real time (the renderer's
-/// clock is `Instant::now`).
+/// (gpu-stay) A promoted surface stays on the GPU, and one that does
+/// nothing does nothing: past the 3 s the settle rule waited, with its
+/// frame in flight and after that frame is shown, it asks for no demotion,
+/// no wake, no frame and nothing of the GPU thread. So an idle GPU surface
+/// is as quiet as a CPU one; `strand/tests/gpu_idle.rs` checks the running
+/// process. Needs no device; waits in real time (the renderer's clock is
+/// `Instant::now`).
 #[test]
-fn a_frame_in_flight_keeps_its_surface_promoted() {
+fn an_idle_promoted_surface_stays_and_asks_for_nothing() {
     let mut b = Builder::default();
     b.node(
         NodeKind::Panel,
@@ -1454,8 +1452,6 @@ fn a_frame_in_flight_keeps_its_surface_promoted() {
         ],
     );
     let mut r = renderer();
-    let settle = Duration::from_millis(300);
-    r.set_gpu_settle(settle);
     assert!(r.apply(b.diff).is_empty());
     r.attach_surface(S, r.tree().roots()[0]);
     let mut buf = Buffer::new(80, 40, Scale::ONE);
@@ -1470,24 +1466,23 @@ fn a_frame_in_flight_keeps_its_surface_promoted() {
         r.paint_gpu(S, Duration::from_secs(1)).is_some(),
         "the switch's frame"
     );
-    let idle = settle + Duration::from_millis(150);
-    std::thread::sleep(idle);
-    r.update();
-    assert_eq!(
-        r.backend(S),
-        Backend::GpuPresent,
-        "demoted with a frame in flight"
-    );
-    assert!(
-        !r.take_backend_changes()
-            .iter()
-            .any(|c| matches!(c, BackendChange::Demote(_))),
-        "a demotion asked for with a frame in flight"
-    );
-    // Presented: a still frame (nothing animates on it), shown past the
-    // settle window, so the surface goes back now. An animated frame's
-    // `Presented` would start the window over (`promote.rs`,
-    // `a_shown_frame_restarts_the_settle_window`).
+    let stays = |r: &mut Renderer, what: &str| {
+        r.update();
+        assert_eq!(r.backend(S), Backend::GpuPresent, "demoted: {what}");
+        assert_eq!(r.next_wake(), None, "a wake asked for: {what}");
+        assert!(
+            r.take_backend_changes().is_empty(),
+            "a backend change asked for: {what}"
+        );
+        assert!(
+            r.take_gpu_requests().is_empty(),
+            "a request of the GPU thread: {what}"
+        );
+    };
+    let _ = r.take_gpu_requests();
+    stays(&mut r, "at once, its frame in flight");
+    std::thread::sleep(Duration::from_millis(3200));
+    stays(&mut r, "3 s on, its frame in flight");
     r.deliver_gpu(GpuReply::Presented {
         surface: S,
         frame: 0,
@@ -1495,13 +1490,58 @@ fn a_frame_in_flight_keeps_its_surface_promoted() {
         waited: Duration::ZERO,
         ran: vec![],
     });
-    r.update();
+    stays(&mut r, "its frame shown");
+    assert!(
+        r.paint_gpu(S, Duration::from_secs(5)).is_none(),
+        "a frame with nothing changed"
+    );
+    assert!(!r.wants_frame(S), "wants a frame with nothing changed");
+    std::thread::sleep(Duration::from_millis(3200));
+    stays(&mut r, "3 s after its frame was shown");
+    assert!(r.paint_gpu(S, Duration::from_secs(9)).is_none());
+}
+
+/// (gpu-stay) The one way back: a frame that cannot be drawn takes a
+/// promoted surface to the CPU at once, and its swapchain is released,
+/// with a full repaint. Needs no device.
+#[test]
+fn a_frame_that_cannot_be_drawn_takes_its_surface_back() {
+    let mut b = Builder::default();
+    b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(80.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#ff0000")),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(80, 40, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, Duration::from_secs(1));
+    r.promote_now(S);
+    r.set_backend(S, Backend::GpuPresent);
+    let _ = r.take_backend_changes();
+    assert!(r.paint_gpu(S, Duration::from_secs(1)).is_some());
+    r.deliver_gpu(GpuReply::Failed {
+        surface: Some(S),
+        key: None,
+        error: strand_gpu::GpuError {
+            kind: GpuErrorKind::Render,
+            message: "a frame that cannot be drawn".into(),
+        },
+    });
+    assert_eq!(r.backend(S), Backend::Cpu);
     assert!(
         r.take_backend_changes()
             .iter()
             .any(|c| matches!(c, BackendChange::Demote(id) if *id == S)),
-        "settled once its frame was shown"
+        "its swapchain is released"
     );
+    let d = buf.paint_at(&mut r, S, 1, Duration::from_secs(2));
+    assert_eq!(d.area(), 80 * 40, "the CPU repaints it in full");
 }
 
 /// (M5, m5-tools review) `strand report`'s frame time of a promoted

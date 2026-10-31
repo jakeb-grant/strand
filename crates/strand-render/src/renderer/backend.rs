@@ -59,7 +59,7 @@ use super::Renderer;
 use crate::cache::PaintCache;
 use crate::flatten::{DisplayItem, FillShape, Item};
 use crate::offscreen::{Drawn, layer_key};
-use crate::promote::{Device, GPU_OFF, Promotion, Switch};
+use crate::promote::{Device, GPU_OFF, Promotion};
 use crate::raster::AtlasMirror;
 
 /// How long a frame holds for a pass or a readback before drawing what
@@ -527,8 +527,8 @@ struct Surf {
     /// Its readback frame in flight, and since when.
     inflight: Option<(u64, Instant)>,
     /// A presented frame was handed out ([`Renderer::paint_gpu`]) and
-    /// its `Presented` (or `Failed`) has not come: not idle, however long
-    /// the GPU takes (lavapipe's first frame compiles its pipelines).
+    /// its `Presented` (or `Failed`) has not come: the next `Presented`
+    /// times that frame.
     presenting: bool,
     /// Pixels of its last readback frame, not copied in yet.
     pixels: Option<Readback>,
@@ -557,16 +557,6 @@ struct Surf {
     /// (perf-gpu-retain) What its last presented frame did with its
     /// snapshot (`Renderer::fresh_gpu_frame` does it again).
     snap: strand_gpu::FrameSnapshot,
-}
-
-impl Surf {
-    /// Whether promotion's idle rule applies: only to a surface the GPU
-    /// draws (one still waiting for its `Attached` has painted on the
-    /// CPU, and a device start, hundreds of ms on lavapipe, can stall
-    /// the loop past the idle window) with no presented frame in flight.
-    fn idles(&self) -> bool {
-        self.backend.is_gpu() && !self.presenting
-    }
 }
 
 /// One `shader` node's pass in flight.
@@ -616,9 +606,6 @@ pub(super) struct GpuState {
     /// Promotion is off (tests whose frames' wall-clock pacing must not
     /// matter).
     no_promotion: bool,
-    /// The settle window promotions use ([`crate::promote::SETTLE_AFTER`]
-    /// unless a test shortens it).
-    settle: Option<Duration>,
     /// Timed GPU frames for the binary's `damage` log (its `gpu-frame`
     /// lines): the surface, the frame's CPU part and its GPU run; kept
     /// only while asked for ([`Renderer::log_gpu_frames`]).
@@ -654,14 +641,9 @@ impl GpuState {
         ok
     }
 
-    /// `surface`'s state, with the settle window tests set.
+    /// `surface`'s state.
     fn surf(&mut self, surface: SurfaceId) -> &mut Surf {
-        let settle = self.settle;
-        let s = self.surfaces.entry(surface).or_default();
-        if let Some(d) = settle {
-            s.promo.set_settle(d);
-        }
-        s
+        self.surfaces.entry(surface).or_default()
     }
 
     /// The device is gone (failed, lost, dropped): every promoted surface
@@ -699,11 +681,12 @@ impl Renderer {
     }
 
     /// (M4) What the host must do about the GPU: start the `Gpu`
-    /// (`Start`), attach a surface (`Promote`), release one (`Demote`).
+    /// (`Start`), attach a surface (`Promote`), release one the GPU failed
+    /// (`Demote`).
     ///
     /// The host calls it after every dispatch, so it also re-arms the
-    /// renderer's timer: a reply since the last paint can move a
-    /// promoted surface's settle window.
+    /// renderer's timer: a reply since the last paint can set the kept-warm
+    /// device's retry.
     pub fn take_backend_changes(&mut self) -> Vec<BackendChange> {
         self.arm_timer();
         std::mem::take(&mut self.gpu.changes)
@@ -775,7 +758,7 @@ impl Renderer {
     pub fn promote_now(&mut self, surface: SurfaceId) {
         let now = Instant::now();
         if self.gpu.want(now) {
-            self.gpu.surf(surface).promo.force_gpu(now);
+            self.gpu.surf(surface).promo.force_gpu();
             self.gpu.changes.push(BackendChange::Promote(surface));
         }
     }
@@ -821,17 +804,6 @@ impl Renderer {
         self.gpu.no_promotion = !on;
     }
 
-    /// (gpu-first) How long a promoted surface must be settled before it
-    /// goes back to the CPU ([`crate::promote::SETTLE_AFTER`]; tests
-    /// shorten it).
-    #[doc(hidden)]
-    pub fn set_gpu_settle(&mut self, settle: Duration) {
-        self.gpu.settle = Some(settle);
-        for s in self.gpu.surfaces.values_mut() {
-            s.promo.set_settle(settle);
-        }
-    }
-
     /// (M4) How long a failed or lost device waits before it is asked
     /// for again (30 s; tests shorten it, so a retry-and-lose cycle runs
     /// without the wait hiding what the GPU-off cap does).
@@ -852,11 +824,7 @@ impl Renderer {
     /// tells it once the GPU thread attached it, or took it back). A
     /// switch repaints in full.
     pub fn set_backend(&mut self, surface: SurfaceId, backend: Backend) {
-        let settle = self.gpu.settle;
         let s = self.gpu.surfaces.entry(surface).or_default();
-        if let Some(d) = settle {
-            s.promo.set_settle(d);
-        }
         if s.backend == backend {
             return;
         }
@@ -869,15 +837,11 @@ impl Renderer {
         self.gpu.fades.remove(&surface);
         if backend.is_gpu() {
             if !s.promo.on_gpu() {
-                // Attached for a promotion that has since been undone.
+                // Attached for a promotion a failure has since undone.
                 s.backend = Backend::Cpu;
                 self.gpu.changes.push(BackendChange::Demote(surface));
                 return;
             }
-            // The settle window starts at the attach: the swapchain's
-            // creation (and on lavapipe the first frame's pipelines) is
-            // not the surface's settling.
-            s.promo.shown(Instant::now());
         } else {
             s.promo.force_cpu();
         }
@@ -1028,8 +992,6 @@ impl Renderer {
                         }
                     }
                     s.presenting = false;
-                    // On screen from now: the idle window starts here.
-                    s.promo.shown(now);
                 }
             }
             GpuReply::Pixels {
@@ -1177,27 +1139,20 @@ impl Renderer {
         self.gpu.surfaces.get(&surface).and_then(|s| s.hold)
     }
 
-    /// When the loop must wake for the GPU: a settled promoted surface's
-    /// demotion, and a kept-warm device's retry after a failure that may
-    /// pass (one wake: the start it makes ends in a device or in the next
-    /// failure's deadline). The device is kept up (gpu-first), so nothing
-    /// else.
+    /// When the loop must wake for the GPU: a kept-warm device's retry
+    /// after a failure that may pass (one wake: the start it makes ends in
+    /// a device or in the next failure's deadline). The device is kept up
+    /// (gpu-first) and a promoted surface stays promoted (gpu-stay), so
+    /// nothing else: a promoted surface that paints nothing is as quiet as
+    /// a CPU one.
     pub(super) fn gpu_wake(&self) -> Option<Instant> {
-        let retry = (self.gpu.keep_warm && !self.gpu.rewarmed)
+        (self.gpu.keep_warm && !self.gpu.rewarmed)
             .then(|| self.gpu.device.retry_at())
-            .flatten();
-        self.gpu
-            .surfaces
-            .values()
-            .filter(|s| s.idles())
-            .filter_map(|s| s.promo.wake())
-            .chain(retry)
-            .min()
+            .flatten()
     }
 
-    /// The loop woke at `now`: settled promoted surfaces go back, a
-    /// kept-warm device whose retry is due starts again, and what
-    /// surfaces that went away left is forgotten.
+    /// The loop woke at `now`: a kept-warm device whose retry is due
+    /// starts again, and what surfaces that went away left is forgotten.
     pub(super) fn gpu_tick(&mut self, now: Instant) {
         if self.gpu.keep_warm
             && !self.gpu.rewarmed
@@ -1205,15 +1160,6 @@ impl Renderer {
         {
             self.gpu.rewarmed = true;
             self.warm_gpu();
-        }
-        let mut back = Vec::new();
-        for (id, s) in self.gpu.surfaces.iter_mut() {
-            if s.idles() && s.promo.idle(now) == Some(Switch::ToCpu) {
-                back.push(*id);
-            }
-        }
-        for id in back {
-            self.demote(id);
         }
         // Surfaces that went away.
         let live = &self.surfaces;
@@ -1232,25 +1178,6 @@ impl Renderer {
             .retain(|_, r| live.contains_key(&r.surface));
     }
 
-    fn demote(&mut self, id: SurfaceId) {
-        let Some(s) = self.gpu.surfaces.get_mut(&id) else {
-            return;
-        };
-        s.promo.force_cpu();
-        self.gpu.changes.push(BackendChange::Demote(id));
-        if s.backend == Backend::GpuReadback {
-            // Nothing to hand back: the CPU draws its next frame.
-            s.backend = Backend::Cpu;
-            s.inflight = None;
-            s.pixels = None;
-            s.hold = None;
-            if let Some(st) = self.surfaces.get_mut(&id) {
-                st.valid = false;
-                st.mark_dirty();
-            }
-        }
-    }
-
     /// After a `paint` of `surface` that began at `started`: whether it
     /// sent its frame to the GPU, whose reply then times it.
     pub(super) fn gpu_frame_sent(&mut self, surface: SurfaceId, started: Instant) -> bool {
@@ -1264,15 +1191,8 @@ impl Renderer {
     }
 
     /// A frame of `surface` damaged `damage` pixels with `springs` in
-    /// flight, drawn by the CPU in `cpu` (`None`: the GPU drew it):
-    /// promotion's input.
-    pub(super) fn gpu_frame_stats(
-        &mut self,
-        surface: SurfaceId,
-        damage: u64,
-        springs: bool,
-        cpu: Option<Duration>,
-    ) {
+    /// flight: promotion's input.
+    pub(super) fn gpu_frame_stats(&mut self, surface: SurfaceId, damage: u64, springs: bool) {
         if self.gpu.no_promotion {
             return;
         }
@@ -1294,25 +1214,21 @@ impl Renderer {
             })
             .unwrap_or(damage);
         let s = self.gpu.surf(surface);
-        match s.promo.frame(now, damage, springs, cpu) {
-            Some(Switch::ToGpu) => {
-                if self.gpu.want(now) {
-                    self.gpu.changes.push(BackendChange::Promote(surface));
-                } else if let Some(s) = self.gpu.surfaces.get_mut(&surface) {
-                    s.promo.force_cpu();
-                }
+        if s.promo.frame(now, damage, springs) {
+            if self.gpu.want(now) {
+                self.gpu.changes.push(BackendChange::Promote(surface));
+            } else if let Some(s) = self.gpu.surfaces.get_mut(&surface) {
+                s.promo.force_cpu();
             }
-            Some(Switch::ToCpu) => self.demote(surface),
-            None => {}
         }
     }
 
     /// The boxes of the clocked passes (`strand.time`) of a surface the
     /// GPU draws. Its passes run in its GPU frames, so no new pixels come
     /// back to change their records as on a CPU surface, yet each frame
-    /// draws them anew: their boxes are this frame's damage, for
-    /// promotion (a presented aurora is not an idle surface) and for a
-    /// readback surface's decision to send the frame.
+    /// draws them anew: their boxes are this frame's damage, so a
+    /// presented aurora draws its next frame and a readback surface sends
+    /// it.
     pub(super) fn gpu_clocked_damage(
         &self,
         surface: SurfaceId,

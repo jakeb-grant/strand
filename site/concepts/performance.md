@@ -56,12 +56,10 @@ a large area animates, the GPU is faster, so a surface moves to it:
   200,000 pixels of damage) of an animation, such as a panel opening, a
   scroll or a theme crossfade, or at the third large frame in a row of
   something that animates with no spring, such as a shader's clock.
-- **It goes back to the CPU** once it has been settled, with only small
-  frames or none, for 3 seconds. A surface that animates again within
-  30 seconds of going back waits 15 seconds the next time, so one you
-  use every few seconds is not handed back and forth.
-- **A small animation the CPU draws slowly** (4 ms or more a frame)
-  keeps its surface on the GPU.
+- **It stays there for the rest of its life.** A surface that has moved
+  never moves back, and while it draws nothing it takes no wakeups, like
+  a surface on the CPU. Only a failure, such as a lost device, returns it
+  to the CPU.
 - **The GPU device is started with the shell**, off the drawing path,
   and kept, so an animation never waits for it. Where no GPU can exist,
   Strand never asks for one. After 3 lost devices in one run the GPU
@@ -71,7 +69,7 @@ a large area animates, the GPU is faster, so a surface moves to it:
 These rules are in
 [crates/strand-render/src/promote.rs](../../crates/strand-render/src/promote.rs),
 with tests such as `a_panel_opening_is_promoted_at_its_first_frame`,
-`a_settled_surface_goes_back_after_the_settle_period` and
+`a_promoted_surface_stays_on_the_gpu` and
 `the_third_lost_device_turns_the_gpu_off`.
 <!-- /repo-only -->
 

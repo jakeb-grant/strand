@@ -2207,11 +2207,15 @@ runs), and hands every reply to `Renderer::deliver_gpu(GpuReply)`.
   apart with no spring (a clock). A lone large frame is not an
   animation, nor is the frame a last spring rests on. Shader passes
   need the device without promoting.
-- Demote: settled for `SETTLE_AFTER` (3 s), at a still frame or a wake
-  of its own. A hot frame is a large one, or a small spring frame whose
-  CPU raster median over `SPRING_SAMPLES` is at least `CHEAP_FRAME`
-  (4 ms). A surface promoted again within `AGAIN_WITHIN` (30 s) settles
-  `AGAIN_FACTOR` (5) times longer. Clocks do not count as springs.
+- A promoted surface stays promoted for the rest of its life
+  (decisions.md gpu-stay): `Promotion::frame` answers only whether this
+  frame promotes, and nothing idle or small takes it back. Only a real
+  failure does (`Promotion::force_cpu`, `BackendChange::Demote`): a frame
+  that cannot be drawn (`GpuReply::Failed`), a lost device, an attach a
+  failure overtook. A promoted surface that paints nothing asks for no
+  wake, no frame and no request. The `Release`/`Released`/`take_back`
+  machinery serves those failures and a destroyed surface; no route
+  releases a live, healthy surface's swapchain.
 - The device is kept for the process. `strand run` calls
   `Renderer::warm_gpu()`, or `Renderer::gpu_absent(reason)` when
   `strand_gpu::device_possible(&GpuOptions)` is false (no render node,
@@ -2289,7 +2293,6 @@ flight per surface.
 - The binary's side is `strand/src/run/gpu.rs` (`GpuHost::pump` after
   every dispatch). A new `Gpu` starts only once every dropped thread has
   ended; then the binary calls `malloc_trim(0)` and mimalloc's collect.
-  `Renderer::set_gpu_settle` shortens the settle window in tests.
 
 **Shaders and effects.**
 `strand_scene::effect::Effect::Shader(ShaderPass { code: ShaderRef,
@@ -2352,12 +2355,13 @@ watch`, and keeps it for `strand report` and the inspector.
 - `strand/tests/gpu_cold.rs`: wgpu, vello_gpu and naga reach `strand`
   only through `strand-gpu` (naga also through `strand-compiler`'s
   `shaders`), none in `--no-default-features`.
-- `strand/tests/gpu_idle.rs::a_settled_surface_goes_back_and_the_device_stays_warm`
+- `strand/tests/gpu_idle.rs::a_promoted_surface_stays_on_the_gpu_and_the_device_stays_warm`
   (CI, lavapipe): a large animated shader panel is promoted and
-  presented, matches the CPU strip, is demoted once settled, the thread
-  stays up, the process takes no wakeups, and strand's own PSS after
-  every later cycle is within 4 MiB of the first (decisions.md
-  m5-open-budgets, pss-flake).
+  presented once, matches the CPU strip, and hidden stays on the GPU with
+  its swapchain (no `Released`, no second attach), the thread stays up,
+  the process takes no wakeups for 4 s, and strand's own PSS after every
+  later cycle is within 4 MiB of the first (decisions.md m5-open-budgets,
+  pss-flake, gpu-stay).
 - Hardware leg (`gpu.sh`, advisory): the same over three cycles on
   `/dev/dri/renderD128`, with backstops over the warm baseline of
   12 MiB readback and 16 MiB presenting (`STRAND_GPU_PRESENT=1`), and
