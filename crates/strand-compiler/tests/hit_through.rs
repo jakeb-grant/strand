@@ -37,6 +37,29 @@ fn a_hit_none_panel_takes_the_pointer_only_on_what_is_on_it() {
     assert!(takes(&sh, "P", 110.0, 25.0), "the region follows the box");
 }
 
+/// `hit: none` is written on each box that should let the pointer through
+/// (reference/elements.md, `hit`): a `col` without it still takes the pointer
+/// across its own box, though it draws nothing. With it, only the button does.
+#[test]
+fn each_box_that_lets_the_pointer_through_needs_hit_none() {
+    let plain = r#"
+panel P { width: 300; height: 200; hit: none
+  col { width: 300; height: 200
+    button "Send" { on click { } }
+  }
+}
+"#;
+    let sh = Shell::new(plain);
+    assert!(takes(&sh, "P", 5.0, 5.0), "the button");
+    assert!(takes(&sh, "P", 290.0, 190.0), "the plain col's box");
+    // The reference's example.
+    let sh = Shell::new(
+        r#"panel P { width: 300; height: 200; hit: none; col { hit: none; button "Send" { on click { } } } }"#,
+    );
+    assert!(takes(&sh, "P", 5.0, 5.0), "the button");
+    assert!(!takes(&sh, "P", 290.0, 190.0), "nothing else");
+}
+
 /// A press held on it takes its whole box, as on a hover popup: a compositor
 /// that does not keep the pointer on the pressed surface would end the drag
 /// at the box's edge. The release gives the region back.
