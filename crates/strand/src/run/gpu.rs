@@ -94,6 +94,8 @@ mod host {
         /// The sent frame's size and scale, for its `damage` log line
         /// once presented.
         sent: Option<(Size, Scale)>,
+        /// When a paint last sent nothing (decisions.md presented-quiet).
+        drew_nothing: Option<std::time::Instant>,
     }
 
     /// A surface attached (asked or answered).
@@ -368,6 +370,7 @@ mod host {
                                     scale,
                                     in_flight: false,
                                     sent: None,
+                                    drew_nothing: None,
                                 },
                             );
                         }
@@ -498,18 +501,33 @@ mod host {
                     continue;
                 }
                 let r: &mut Renderer = &mut state.host_mut().renderer;
+                if r.presented_due(*id).is_none() {
+                    continue;
+                }
                 if let Some(frame) = r.paint_gpu(*id, now) {
                     let (size, scale) = (frame.size, frame.scale);
+                    // What follows a CPU frame follows this one too:
+                    // its regions, as pending state the present commits
+                    // (decisions.md gpu-regions), set before the thread
+                    // can present it; layout facts and list windows to
+                    // logic, fed nodes (its `damage` line waits for
+                    // `Presented`).
+                    state.sync_presented(*id);
                     gpu.send(GpuRequest::Frame(frame));
                     p.in_flight = true;
                     p.sent = Some((size, scale));
-                    // What follows a CPU frame follows this one too:
-                    // its regions, as pending state the present commits
-                    // (decisions.md gpu-regions); layout facts and list
-                    // windows to logic, fed nodes (its `damage` line
-                    // waits for `Presented`).
-                    state.sync_presented(*id);
+                    p.drew_nothing = None;
                     state.host_mut().painted(*id, &Damage::full(size));
+                } else {
+                    // (presented-quiet) It painted and drew nothing, so
+                    // nothing is sent and no `Presented` comes. All the
+                    // same that paint may have ended an exit or let a
+                    // shrink go, and moved hit boxes: what follows a
+                    // CPU's empty paint follows it.
+                    log::debug!("surface {}: a paint that sent nothing", id.0);
+                    p.drew_nothing = Some(std::time::Instant::now());
+                    state.sync_presented(*id);
+                    state.host_mut().painted(*id, &Damage::new());
                 }
             }
         }
@@ -741,6 +759,7 @@ mod host {
                     scale: Scale::ONE,
                     in_flight: false,
                     sent: None,
+                    drew_nothing: None,
                 },
             );
             let w = host.wait(&r).expect("woken at the hold's end");

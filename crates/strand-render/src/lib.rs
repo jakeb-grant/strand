@@ -47,6 +47,10 @@ mod time;
 mod tree;
 pub mod widgets;
 
+/// (presented-quiet) Whether this build skips frames that cannot show anything
+/// (`Renderer::set_quiet_frames`): an `eval-hooks` build draws every one.
+pub const QUIET_FRAMES_BUILT: bool = !cfg!(feature = "eval-hooks");
+
 pub use anim::PageSwap;
 pub use cache::{MAX_ENTRY_BYTES, PAINT_CACHE_BYTES};
 pub use clock::Rate;

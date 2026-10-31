@@ -9,7 +9,8 @@
 //! An `eval-hooks` build draws every frame, and `cargo test --workspace`
 //! builds strand with that feature on through the `eval` crate, so there these
 //! tests prove only that the behaviour holds. CI's own step
-//! (`cargo test -p strand --test presented_quiet`) is the proof.
+//! (`cargo test -p strand --test presented_quiet`) is the proof: [`Desk::proved`]
+//! asserts it ran the path where a paint sent nothing.
 //!
 //! Lavapipe presents on a pixman sway, which is what CI runs. The hardware
 //! leg (`scripts/container/gpu.sh` with `STRAND_GPU_PRESENT=1`) starts the
@@ -211,7 +212,7 @@ fn start(name: &str, shell: &str) -> Option<Desk> {
             .env("HOME", &home)
             .env("XDG_CACHE_HOME", dir.join("cache"))
             .env("XDG_STATE_HOME", dir.join("state"))
-            .env("STRAND_LOG", "info,strand::run::gpu=debug")
+            .env("STRAND_LOG", "debug")
             .env_remove("STRAND_MOCK")
             .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
             .env_remove("NIRI_SOCKET")
@@ -307,6 +308,16 @@ impl Desk {
         // panel has no frame to send.
         std::thread::sleep(Duration::from_millis(500));
         true
+    }
+
+    /// In a build with quiet frames, the path under test was run: a paint of a
+    /// presented surface sent nothing.
+    fn proved(&self) {
+        let text = self.log_text();
+        assert!(
+            !strand_render::QUIET_FRAMES_BUILT || text.contains("a paint that sent nothing"),
+            "no paint sent nothing, so this proved nothing:\n{text}"
+        );
     }
 
     /// The panel's size on `output`, as `strand report` says the surface
@@ -443,4 +454,60 @@ panel P {{ anchor: top_left; width: 1100; height: 620
     }
     let span = seen.iter().max().unwrap() - seen.iter().min().unwrap();
     assert!(span >= 20, "it stopped: {seen:?}\n{}", d.log_text());
+    d.proved();
+}
+
+/// A panel closing with an exit that only moves it: its last frames draw
+/// nothing new, and that paint is the one that ends the exit.
+#[test]
+fn a_presented_panel_whose_exit_only_moves_it_closes() {
+    let shell = format!(
+        r#"
+export state boost = true
+export state shown = true
+panel P {{ anchor: top_left; width: 1000; height: 620; open: shown
+  exit {{ y: -20 }}
+  {FADE}
+}}
+"#
+    );
+    let Some(mut d) = start("exit", &shell) else {
+        return;
+    };
+    if !d.promoted() {
+        return;
+    }
+    assert!(matches!(d.panel_size("HEADLESS-1"), Ok(Some(_))));
+    d.set_state("shown", "false");
+    d.until("the panel closed", |d| {
+        matches!(d.panel_size("HEADLESS-1"), Ok(None)).then_some(())
+    });
+    d.proved();
+}
+
+/// A content-sized panel whose box shrinks with no spring on the panel's size:
+/// the shrink is queued by a paint that draws nothing.
+#[test]
+fn a_presented_panel_shrinks_when_its_last_frame_draws_nothing() {
+    let shell = format!(
+        r#"
+export state boost = true
+export state w = 1000
+panel P {{ anchor: top_left; size: auto
+  box {{ width: w; height: 620; bg: #202020 }}
+  {FADE}
+}}
+"#
+    );
+    let Some(mut d) = start("shrink", &shell) else {
+        return;
+    };
+    if !d.promoted() {
+        return;
+    }
+    d.set_state("w", "300");
+    d.until("the panel shrunk", |d| {
+        matches!(d.panel_size("HEADLESS-1"), Ok(Some((300, _)))).then_some(())
+    });
+    d.proved();
 }
