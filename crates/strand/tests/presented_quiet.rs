@@ -318,6 +318,10 @@ impl Desk {
             );
             return false;
         }
+        // Which device this ran on (`--nocapture`).
+        if let Some(l) = self.log_text().lines().find(|l| l.contains("device is up")) {
+            eprintln!("{l}");
+        }
         let d: &Self = self;
         d.set_state("boost", "false");
         // The last frame of the fade is on its way, and the next paint of the
