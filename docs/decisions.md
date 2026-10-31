@@ -14745,9 +14745,11 @@ starts it again: at a flat second a sleeping output's surface added a buffer a s
 each time the images ran out (wgpu's 1 s acquire timeout), so the other output's panel
 ran at 31 to 58 frames/s, with a hidden workspace's window as well as a powered-off output. Without it, a frame sent
 after a give-up stops every surface, as measured: all four at 1 s of `power off`.
-A `Commit` is paced as a frame is: it asks for the callback, stays in flight until the
-thread answers `Committed`, and forgets the callback if it presented nothing. As first
-written it waited for the callback and asked for none, so a frame after it waited in
+Without `wp_fifo_manager_v1` a `Commit` is paced as a frame is: it asks for the callback,
+stays in flight until the thread answers `Committed`, and forgets the callback if it
+presented nothing (with the protocol Mesa does not wait, and pacing it made things
+worse: on nested Hyprland a panel's next size after a stall stayed at 0 to 1 frames/s
+where the frame going along with its `Commit` gave 60, 5 runs of 5). As first written it waited for the callback and asked for none, so a frame after it waited in
 Mesa for that present's own callback: with an idle panel on a powered-off output, a
 region change and then a frame stopped every surface until the output came back, and for
 good if it was unplugged (Arch's sway, the other panel 62 frames/s to 0; 12 s after the

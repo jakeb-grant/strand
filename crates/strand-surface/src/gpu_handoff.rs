@@ -259,6 +259,20 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
     }
 
+    /// (gpu-pace) Before the host sends a `GpuRequest::Commit` of handed-off
+    /// `surface`: true if what follows must wait for its answer and its frame
+    /// callback, which this asks for, as a frame's. That is where the compositor
+    /// has no `wp_fifo_manager_v1`: Mesa's next present would wait for this
+    /// present's callback, with no timeout. With it Mesa does not wait, and the
+    /// frame goes along at once.
+    pub fn pace_commit(&mut self, surface: SurfaceId) -> bool {
+        if self.wsi_fifo {
+            return false;
+        }
+        self.ask_present_callback(surface);
+        true
+    }
+
     /// (gpu-pace) The frame or `GpuRequest::Commit` asked for by
     /// [`State::ask_present_callback`] failed or presented nothing: no
     /// present will commit its callback, so nothing waits for it (it comes

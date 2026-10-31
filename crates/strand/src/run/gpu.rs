@@ -89,7 +89,7 @@ mod host {
     struct Presented {
         size: Size,
         scale: Scale,
-        /// A frame or `Commit` was sent and its answer has not come.
+        /// A frame or paced `Commit` was sent and its answer has not come.
         in_flight: bool,
         /// The sent frame's size and scale, for its `damage` log line
         /// once presented.
@@ -100,9 +100,11 @@ mod host {
         /// next frame waits for that, which wakes the loop.
         paced: bool,
         /// (gpu-pace) A `Commit` waiting for that too: a present then
-        /// would wait for the callback on the GPU thread. It is a present
-        /// like a frame: it asks for its own callback and is answered.
+        /// would wait for the callback on the GPU thread.
         commit_owed: bool,
+        /// (gpu-pace) The present in flight is a `Commit` that
+        /// `State::pace_commit` paced, so its answer ends `in_flight`.
+        commit_paced: bool,
     }
 
     /// A surface attached (asked or answered).
@@ -409,6 +411,7 @@ mod host {
                                     drew_nothing: None,
                                     paced: false,
                                     commit_owed: false,
+                                    commit_paced: false,
                                 },
                             );
                         }
@@ -441,7 +444,9 @@ mod host {
                         }
                     }
                     GpuReply::Committed { surface, committed } => {
-                        if let Some(p) = self.presented.get_mut(surface) {
+                        if let Some(p) = self.presented.get_mut(surface)
+                            && std::mem::take(&mut p.commit_paced)
+                        {
                             p.in_flight = false;
                             if !*committed {
                                 state.forget_present_callback(*surface);
@@ -458,6 +463,7 @@ mod host {
                         // takes the surface back if it cannot be drawn.
                         if let Some(p) = self.presented.get_mut(surface) {
                             p.in_flight = false;
+                            p.commit_paced = false;
                             p.sent = None;
                         }
                         state.forget_present_callback(*surface);
@@ -550,15 +556,18 @@ mod host {
                 if p.in_flight || releasing || p.paced {
                     continue;
                 }
-                // A `Commit`'s Mesa asks for a callback of its own, so what
-                // follows it waits for that as a frame does, or a frame sent
-                // now would wait in Mesa, on an output that is off for good.
+                // Without a compositor's FIFO, what follows a `Commit` waits
+                // for its callback as for a frame's, or a frame sent now would
+                // wait in Mesa, on an output that may be off for good.
                 if std::mem::take(&mut p.commit_owed) {
                     state.take_owed_commit(*id);
-                    state.ask_present_callback(*id);
+                    let paced = state.pace_commit(*id);
                     gpu.send(GpuRequest::Commit(*id));
-                    p.in_flight = true;
-                    continue;
+                    if paced {
+                        p.commit_paced = true;
+                        p.in_flight = true;
+                        continue;
+                    }
                 }
                 let r: &mut Renderer = &mut state.host_mut().renderer;
                 let due = r.presented_due(*id).is_some();
@@ -598,9 +607,10 @@ mod host {
                     // A CPU's empty paint carries its regions in a bare
                     // commit. Only a present commits this surface.
                     if state.take_owed_commit(*id) {
-                        state.ask_present_callback(*id);
+                        let paced = state.pace_commit(*id);
                         gpu.send(GpuRequest::Commit(*id));
-                        p.in_flight = true;
+                        p.commit_paced = paced;
+                        p.in_flight = paced;
                     }
                 }
             }
@@ -836,6 +846,7 @@ mod host {
                     drew_nothing: None,
                     paced: false,
                     commit_owed: false,
+                    commit_paced: false,
                 },
             );
             let w = host.wait(&r).expect("woken at the hold's end");
@@ -889,6 +900,7 @@ mod host {
                     drew_nothing: None,
                     paced: false,
                     commit_owed: false,
+                    commit_paced: false,
                 },
             );
             assert_eq!(

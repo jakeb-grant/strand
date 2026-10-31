@@ -2295,8 +2295,10 @@ once `Presented` has come for its last frame and `State::present_due`
 says that frame's frame callback has too (decisions.md gpu-pace):
 `State::ask_present_callback` asks for it as pending state before the
 frame goes, and the present commits it. A `GpuRequest::Commit` is a present
-too, and is paced the same way: it asks for its callback, and is in flight
-until `Committed`, which forgets the callback if it presented nothing. One
+too: where the compositor has no `wp_fifo_manager_v1` (`State::pace_commit`)
+it asks for its callback and is in flight until `Committed`, which forgets the
+callback if it presented nothing; with that protocol, where Mesa does not wait
+for callbacks, the next frame goes along with it. One
 present in flight per surface, and no surface's FIFO wait on the one GPU
 thread. A callback is given up
 on only where the compositor offers `wp_fifo_manager_v1`, after 1 s and twice

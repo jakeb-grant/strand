@@ -623,3 +623,24 @@ fn a_given_up_shm_callback_does_not_answer_the_present() {
         "an shm callback passed for the present's, with no present committed"
     );
 }
+
+/// (gpu-pace) A `Commit` waits for its callback only where Mesa's next present
+/// would: without the compositor's FIFO.
+#[test]
+fn a_commit_is_paced_only_without_the_compositors_fifo() {
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let id = show_panel(&fake, &mut mgr);
+    mgr.dispatch_until(Duration::from_millis(200), |_| false)
+        .unwrap();
+    mgr.state_mut().raw_handles(id).expect("raw handles");
+    assert!(mgr.state_mut().hand_off(id));
+
+    mgr.state_mut().set_wsi_fifo(true);
+    assert!(!mgr.state_mut().pace_commit(id));
+    assert!(mgr.state().present_due(id), "nothing was asked for");
+
+    mgr.state_mut().set_wsi_fifo(false);
+    assert!(mgr.state_mut().pace_commit(id));
+    assert!(!mgr.state().present_due(id), "its callback is waited for");
+}
