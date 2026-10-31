@@ -1,8 +1,8 @@
 diff --git a/crates/strand-surface/src/gpu_handoff.rs b/crates/strand-surface/src/gpu_handoff.rs
-index 78c4747b..93d984a0 100644
+index 949b3115..7eea0a29 100644
 --- a/crates/strand-surface/src/gpu_handoff.rs
 +++ b/crates/strand-surface/src/gpu_handoff.rs
-@@ -183,18 +183,7 @@ impl<H: SurfaceHost + 'static> State<H> {
+@@ -195,21 +195,7 @@ impl<H: SurfaceHost + 'static> State<H> {
      /// lost hover as soon as the pointer left that (decisions.md
      /// gpu-regions, owner-testing.md bug 23).
      pub fn sync_presented(&mut self, surface: SurfaceId) {
@@ -12,31 +12,43 @@ index 78c4747b..93d984a0 100644
 -        let Some(scale) = self.surfaces.get(&surface).map(|s| s.scale) else {
 -            return;
 -        };
--        self.sync_opaque(surface, scale);
--        self.sync_painted_input(surface);
--        if self.blurs() {
+-        let opaqued = self.sync_opaque(surface, scale);
+-        let inputs = self.sync_painted_input(surface);
+-        let blurred = self.blurs() && {
 -            let rects = self.blur_rects(surface, scale);
--            self.set_blur(surface, rects);
+-            self.set_blur(surface, rects)
+-        };
+-        if opaqued || inputs || blurred {
+-            self.gpu.owe_commit(surface);
 -        }
 +        let _ = surface;
      }
  
-     /// In `draw` for a handed-off surface: no paint and no commit, but a
+     /// (presented-quiet) Whether handed-off `surface` has state pending
 diff --git a/crates/strand/src/run/gpu.rs b/crates/strand/src/run/gpu.rs
-index f1e5e524..fce14810 100644
+index 5dd8aa2c..60bf970a 100644
 --- a/crates/strand/src/run/gpu.rs
 +++ b/crates/strand/src/run/gpu.rs
-@@ -504,11 +504,8 @@ mod host {
-                     p.in_flight = true;
-                     p.sent = Some((size, scale));
+@@ -547,12 +547,8 @@ mod host {
+                 if let Some(frame) = frame {
+                     let (size, scale) = (frame.size, frame.scale);
                      // What follows a CPU frame follows this one too:
 -                    // its regions, as pending state the present commits
--                    // (decisions.md gpu-regions); layout facts and list
--                    // windows to logic, fed nodes (its `damage` line
--                    // waits for `Presented`).
+-                    // (decisions.md gpu-regions), set before the thread
+-                    // can present it; layout facts and list windows to
+-                    // logic, fed nodes (its `damage` line waits for
+-                    // `Presented`).
 -                    state.sync_presented(*id);
 +                    // layout facts and list windows to logic, fed nodes
 +                    // (its `damage` line waits for `Presented`).
-                     state.host_mut().painted(*id, &Damage::full(size));
-                 }
-             }
+                     state.take_owed_commit(*id);
+                     // Asked before the frame goes, so the request reaches
+                     // the compositor ahead of the commit the GPU thread
+@@ -573,7 +569,6 @@ mod host {
+                         // CPU's empty paint follows it.
+                         state.host().log_unsent(*id);
+                         p.drew_nothing = Some(std::time::Instant::now());
+-                        state.sync_presented(*id);
+                         state.host_mut().painted(*id, &Damage::new());
+                     }
+                     // A CPU's empty paint carries its regions in a bare
