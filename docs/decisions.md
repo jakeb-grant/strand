@@ -14537,7 +14537,10 @@ popup's own older rule, left alone), because a box with `on click` must still ge
 its click. A `hit: none` on a child alone changes nothing past the surface: the
 root's own box is what lies below it, and a panel keeps its whole box unless its
 root says otherwise, so no existing shell starts losing clicks. A lock never takes
-it. A held press takes the whole box, as on a hover popup. On a spanned or kept-size
+it. A held press takes the whole box, as on a hover popup, and its release gives it back
+at once, on a spanned or kept-size panel too (each edge asks for a frame there, which
+draws nothing, or a frame painted during the hold would leave the margin taking clicks
+after the release). On a spanned or kept-size
 panel this wins over the box-only region (`placed_root`), since the hit boxes lie
 within that box anyway. Rejected: rounded regions (many small rects per frame, for
 a corner). Wave-cost is untouched: a surface without it does no more work than a

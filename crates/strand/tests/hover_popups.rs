@@ -1236,6 +1236,53 @@ fn a_reactive_hit_none_reaches_the_compositor_at_once() {
     );
 }
 
+/// (hit-through) A press held over a frame, on a panel whose region is its box
+/// alone: the hold takes the whole buffer and the release gives it back, with
+/// no frame of its own to carry that. The margin passes clicks through again.
+const HELD_OVER_A_FRAME: &str = r#"
+export state tint = false
+state back = false
+panel Behind { anchor: top_left; layer: bottom; width: 300; height: 100
+  box { width: 300; height: 100; bg: #ff0000
+    when back { bg: #ffff00 }
+    on click { back = !back }
+  }
+}
+panel Front { anchor: top
+  box { width: 200; height: 60; bg: #0000ff
+    when tint { bg: #00ffff }
+    on click {}
+  }
+}
+"#;
+
+#[test]
+fn a_press_held_over_a_frame_gives_a_spanned_panels_margin_back() {
+    let Some(mut sh) = start("heldmargin", HELD_OVER_A_FRAME) else {
+        return;
+    };
+    sh.wait("both panels", |one, _| {
+        one.region(ITEM_A, 2000).and(one.region(ITEM_B, 2000))
+    });
+    let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+    pointer.motion(640, 30, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.press(640, 30, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    sh.set_state("tint", "true");
+    sh.wait("a frame during the hold", |one, _| {
+        one.region(ISLAND_B, 2000)
+    });
+    // Its colour settles: the release has no frame of the hold's to ride on.
+    std::thread::sleep(Duration::from_millis(1000));
+    pointer.release();
+    std::thread::sleep(Duration::from_millis(300));
+    pointer.click(50, 30, LW, LH);
+    sh.wait("the click reached the panel behind", |one, _| {
+        one.region(YELLOW, 2000)
+    });
+}
+
 /// A hover popup whose card has a `shadow`, over a panel that springs to fit,
 /// as the owner's island had it when its popup would not open (NOTES #3).
 /// Never reproduced, on sway: this holds what was tried (decisions.md
