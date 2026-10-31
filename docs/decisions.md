@@ -14408,3 +14408,19 @@ fails if the stale count, the wait or the FIFO rule goes; the host's wiring only
 shows on a presenting GPU, so benchmarks.md "Presenting on one GPU thread" is its
 proof.
 
+## gpu-idle-wakes
+
+**2026-10-31 · gpu-idle-wakes: an idle promoted surface wakes no more than the CPU
+path; the 175 wakes a second were the bench's forcing, gone since gpu-stay.** Bead's
+benchmark of 2026-10-30 had an idle surface forced to the GPU at 175 wakes a second
+against 8. That binary, run again, measured 178 to 188, and with a debug log it
+releases and attaches its surfaces over and over (27 attaches in one short run, in
+turn on each surface): its patch, which was not kept, promotes, and gpu-first's
+settling, then still there, demotes the idle surface again, so each cycle rebuilds a
+swapchain and draws. Those are also the swapchain rebuilds gpu-stay noted and did not
+see. With gpu-stay nothing demotes it: today's forced build and a
+surface promoted by opening and closing the island both measure 8.1 to 8.7 against
+8.1 to 8.3 on the CPU, no Vulkan or wgpu thread woke at all, and nothing changes in
+the code. Sway only, without `wp_fifo_manager_v1`, so Hyprland's figure is unmeasured. Numbers: benchmarks.md "An idle promoted
+surface's wakes".
+

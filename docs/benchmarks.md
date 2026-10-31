@@ -863,3 +863,21 @@ first surface of a process the slower, in 12 runs on Ubuntu's sway and labwc; on
 attach of about 70 ms was seen once, in a debug build's first run, and did not
 return. The first `acquire` of 78 surfaces was at most 0.12 ms.
 
+## An idle promoted surface's wakes (gpu-idle-wakes)
+
+Per-thread context switches from `/proc`, four outputs of Ubuntu's sway on GLES2,
+the bead config with its media paused, 30 s, three interleaved rounds, 2026-10-31,
+under another agent's builds (load up to 25): the old build's CPU moved with that load
+(0.73 to 1.53% of a core), its wake counts by about 5%. "Forced" draws every surface
+on the GPU.
+
+| Wakes/s | Strand | Of which the main and GPU threads | Compositor |
+| --- | --- | --- | --- |
+| CPU path | 8.1–8.3 | 0–0.1 | 0–0.2 |
+| Promoted by an open and close, then idle (one surface of four) | 8.1–8.6 | 0–0.4 | 0–1.1 |
+| Forced, all four | 8.1–8.7 | 0–0.4 | 0–0.2 |
+| Forced, the build of the 175 figure, before gpu-stay | 178–188 | 168–177 | 67–75 |
+
+The other 8 are `strand-services` in every row. What a promoted surface adds above
+it is one frame on each surface when the clock's minute turns.
+
