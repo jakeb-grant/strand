@@ -407,6 +407,8 @@ impl Iwd {
             access_points,
             // This body runs only while iwd owns its name.
             available: true,
+            // Any device, not only the one in station mode `wifi` follows.
+            wifi_present: self.objects.values().any(|i| i.contains_key(DEVICE)),
             connecting,
             disconnecting,
             frequency,
@@ -1440,6 +1442,34 @@ mod tests {
             ],
             ..Iwd::default()
         }
+    }
+
+    /// (bead #20) Hardware is what `wifi_present` says: not the radio's
+    /// state, the mode iwd runs it in, or iwd answering with no device.
+    #[test]
+    fn a_wifi_device_is_present_whatever_its_state() {
+        let mut iwd = wlan0();
+        assert!(iwd.state(false).wifi_present);
+        let dev = iwd
+            .objects
+            .get_mut("/net/connman/iwd/0/4")
+            .unwrap()
+            .get_mut(DEVICE)
+            .unwrap();
+        dev.insert("Powered".into(), OwnedValue::from(false));
+        assert!(iwd.state(false).wifi_present, "the radio off");
+        let dev = iwd
+            .objects
+            .get_mut("/net/connman/iwd/0/4")
+            .unwrap()
+            .get_mut(DEVICE)
+            .unwrap();
+        dev.insert(
+            "Mode".into(),
+            OwnedValue::try_from(Value::from("ap")).unwrap(),
+        );
+        assert!(iwd.state(false).wifi_present, "in another mode");
+        assert!(!Iwd::default().state(false).wifi_present, "no device");
     }
 
     #[test]

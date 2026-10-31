@@ -192,6 +192,10 @@ pub struct Network {
     /// NetworkManager or iwd answers: false without either (or without a
     /// system bus), so a menu can hide what cannot work.
     pub available: bool,
+    /// The machine has a Wi-Fi device, as the daemon sees it, whatever the
+    /// radio's state: `if network.wifi_present { … }` for a Wi-Fi tile on a
+    /// laptop and none on a desktop. False without a daemon (`available`).
+    pub wifi_present: bool,
     /// The Wi-Fi network being joined, by name: from the moment
     /// `ap.connect()` or `ap.connect_with()` is asked, or the daemon starts
     /// joining one on its own, until it is joined or fails; null otherwise
@@ -744,6 +748,7 @@ impl Nm {
             access_points,
             // Its manager object answered the last read.
             available: !self.manager.is_empty(),
+            wifi_present: !self.wifi_devices.is_empty(),
             connecting: self.ap_in(ACTIVATING).and_then(ssid),
             disconnecting: self.ap_in(DEACTIVATING).and_then(ssid),
             frequency: joined
@@ -2882,6 +2887,16 @@ mod tests {
             [("Cafe".to_string(), false), ("Home".to_string(), false)]
         );
         assert_eq!(nm.wifi_device(), None);
+    }
+
+    /// (bead #20) `wifi_present` is the Wi-Fi devices NetworkManager lists,
+    /// whatever else it knows: a wired machine has none.
+    #[test]
+    fn a_wifi_device_is_what_wifi_present_says() {
+        let mut nm = Nm::default();
+        assert!(!nm.state(false).wifi_present);
+        nm.wifi_devices.insert("/d/1".into(), Props::new());
+        assert!(nm.state(false).wifi_present);
     }
 
     /// (gap 28) The shell's own requests over the daemon's state: a join

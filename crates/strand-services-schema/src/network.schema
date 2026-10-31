@@ -73,6 +73,10 @@ service network {
   /// NetworkManager or iwd answers: false without either (or without a
   /// system bus), so a menu can hide what cannot work.
   available: bool
+  /// The machine has a Wi-Fi device, as the daemon sees it, whatever the
+  /// radio's state: `if network.wifi_present { … }` for a Wi-Fi tile on a
+  /// laptop and none on a desktop. False without a daemon (`available`).
+  wifi_present: bool
   /// The Wi-Fi network being joined, by name: from the moment
   /// `ap.connect()` or `ap.connect_with()` is asked, or the daemon starts
   /// joining one on its own, until it is joined or fails; null otherwise

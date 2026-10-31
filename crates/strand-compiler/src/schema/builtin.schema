@@ -1012,6 +1012,8 @@ provisional service network {
   access_points: [AccessPoint]
   /// NetworkManager or iwd answers.
   available: bool
+  /// The machine has a Wi-Fi device, as the daemon sees it.
+  wifi_present: bool
   /// The Wi-Fi network being joined, by name.
   connecting: text?
   /// The Wi-Fi network being left, by name.

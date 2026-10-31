@@ -14377,3 +14377,11 @@ with no default action closes it and tells nobody, so a shell could not offer a 
 only where it means something. The field is named after `can_reply`, its neighbour
 that says the same thing about replies, and is false on a remembered notification
 for the same reason. `activate()` itself is unchanged. Found by Bead (#20).
+
+**2026-10-30 · service-fields: `network.wifi_present`.** `network.available` says a
+daemon answers and `network.wifi` that the radio is on, and neither tells a desktop
+with no Wi-Fi from a laptop with the radio off, so a shell guessing from saved
+networks hid its tile at the wrong times. The name follows `battery.present`, the
+schema's word for hardware that exists; `available` already means the daemon here.
+Over NetworkManager it is any device of the Wi-Fi type, over iwd any device in any
+mode. Found by Bead (#20).

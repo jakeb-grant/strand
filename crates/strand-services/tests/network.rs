@@ -130,6 +130,7 @@ fn network_follows_networkmanager_and_scans_only_while_watched() {
     assert_eq!(cells.strength.get_untracked(&rt), Ok(0.82));
     assert_eq!(cells.wifi.get_untracked(&rt), Ok(true));
     assert_eq!(cells.available.get_untracked(&rt), Ok(true));
+    assert_eq!(cells.wifi_present.get_untracked(&rt), Ok(true));
     assert!(names(&b, &rt).is_empty(), "nobody reads the access points");
     let scans = || mock_calls(&tokio, &conn, NM, &dev, "RequestScan").len();
     assert_eq!(scans(), 0, "no scan while nobody reads the access points");
@@ -1909,6 +1910,7 @@ fn an_unreachable_network_is_unavailable_and_fails_as_values() {
     until(&rt, &s, "the failed body", || !b.network.running());
     let cells = b.network.cells();
     assert_eq!(cells.available.get_untracked(&rt), Ok(false));
+    assert_eq!(cells.wifi_present.get_untracked(&rt), Ok(false));
     let wifi = network::Network::FIELDS
         .iter()
         .position(|f| f.name == "wifi")

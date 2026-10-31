@@ -310,6 +310,7 @@ networks now.
 | `wifi` | `bool rw` | The Wi-Fi radio is on. Writable. |
 | `access_points` | `[AccessPoint]` | The Wi-Fi networks in range, keyed by `ssid`. Scanned only while a visible reader reads them (a network menu that is open). |
 | `available` | `bool` | NetworkManager or iwd answers: false without either (or without a system bus), so a menu can hide what cannot work. |
+| `wifi_present` | `bool` | The machine has a Wi-Fi device, as the daemon sees it, whatever the radio's state: `if network.wifi_present { … }` for a Wi-Fi tile on a laptop and none on a desktop. False without a daemon (`available`). |
 | `connecting` | `text?` | The Wi-Fi network being joined, by name: from the moment `ap.connect()` or `ap.connect_with()` is asked, or the daemon starts joining one on its own, until it is joined or fails; null otherwise (`if network.connecting == ap.ssid { … }`). |
 | `disconnecting` | `text?` | The Wi-Fi network being left (`network.disconnect()`, or the daemon leaving it), until it is left; null otherwise. |
 | `frequency` | `int?` | The joined Wi-Fi network's frequency in MHz (2412, 5180, 5955): below 3000 is the 2.4 GHz band, 5150 to 5895 the 5 GHz band, from 5925 the 6 GHz band. Null while no Wi-Fi network is joined, or when iwd does not say. |
