@@ -20,9 +20,10 @@
 //!   commits it: configures are still acked (sctk acks them) and reported
 //!   (`surface_configured`, so the host sends `Resize`), and pending state
 //!   (input region, layer state) is set without a commit; the next
-//!   present applies it. [`State::sync_presented`], after each frame the
-//!   host sends the GPU thread, sets that frame's opaque, input and blur
-//!   regions the same way.
+//!   present applies it. [`State::sync_presented`], after each paint of
+//!   it, sets that paint's opaque, input and blur regions the same way.
+//!   With no frame to send, the host asks for a present of the last one
+//!   ([`State::take_owed_commit`]).
 //! - [`State::take_back`] after the GPU thread's `Released` (or when it
 //!   attached the surface for readback, or ended): a handed-off surface's
 //!   next shm frame is painted in full (`age` 0), frame callbacks resume;
@@ -52,6 +53,9 @@ pub(super) struct HandOffs {
     /// Handles given out ([`State::raw_handles`]), not handed off yet.
     lent: BTreeSet<SurfaceId>,
     doomed: BTreeMap<SurfaceId, Surface>,
+    /// Handed-off surfaces with pending state and no present known to be
+    /// coming to commit it ([`State::take_owed_commit`]).
+    owed: BTreeSet<SurfaceId>,
 }
 
 impl HandOffs {
@@ -140,6 +144,7 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// now; a lent one is no longer lent; a handed-off one is painted and
     /// committed by the manager again, starting with a full frame.
     pub fn take_back(&mut self, surface: SurfaceId) {
+        self.gpu.owed.remove(&surface);
         let lent = self.gpu.lent.remove(&surface);
         if let Some(s) = self.gpu.doomed.remove(&surface) {
             // Its swapchain is gone: the wl_surface can go.
@@ -173,8 +178,8 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.gpu.has(surface)
     }
 
-    /// After the host sent the GPU thread a frame of handed-off
-    /// `surface`: what that frame asks of the compositor besides pixels
+    /// After a paint of handed-off `surface`, with or without a frame to
+    /// send: what that paint asks of the compositor besides pixels
     /// (its opaque region, the input region of a hover popup that draws
     /// nothing itself, its blur region) is set as pending state when it
     /// changed, so the present commits it with the frame. Without it a
@@ -189,12 +194,23 @@ impl<H: SurfaceHost + 'static> State<H> {
         let Some(scale) = self.surfaces.get(&surface).map(|s| s.scale) else {
             return;
         };
-        self.sync_opaque(surface, scale);
-        self.sync_painted_input(surface);
-        if self.blurs() {
+        let opaqued = self.sync_opaque(surface, scale);
+        let inputs = self.sync_painted_input(surface);
+        let blurred = self.blurs() && {
             let rects = self.blur_rects(surface, scale);
-            self.set_blur(surface, rects);
+            self.set_blur(surface, rects)
+        };
+        if opaqued || inputs || blurred {
+            self.gpu.owed.insert(surface);
         }
+    }
+
+    /// (presented-quiet) Whether handed-off `surface` has state pending
+    /// that nothing will commit unless the host asks: the host sends a
+    /// frame, or else `GpuRequest::Commit`, which presents its last frame
+    /// again. Cleared by asking.
+    pub fn take_owed_commit(&mut self, surface: SurfaceId) -> bool {
+        self.gpu.owed.remove(&surface)
     }
 
     /// In `draw` for a handed-off surface: no paint and no commit, but a

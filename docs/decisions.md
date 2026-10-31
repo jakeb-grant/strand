@@ -14543,10 +14543,13 @@ ways: a surface's scene with the same records but other hit boxes stays dirty
 (`Renderer::update` compared only what it draws, so a change to `hit` asked for no
 frame and the old boxes stayed until something unrelated repainted). Its frame
 damages nothing, and its bare commit carries the region; a surface the GPU thread
-presents sends one frame for it, which was not run. Proof:
+presents has no bare commit, so its last frame is presented again to carry it
+(`GpuRequest::Commit`, presented-quiet), only when the region really changed. Proof:
 `crates/strand-compiler/tests/hit_through.rs`;
 `a_click_on_a_hit_none_panels_empty_area_reaches_what_is_behind`,
-`a_reactive_hit_none_reaches_the_compositor_at_once` on sway.
+`a_reactive_hit_none_reaches_the_compositor_at_once` on sway, and for a presented
+surface, both ways, `a_reactive_hit_none_on_a_presented_surface_lets_clicks_through`,
+`a_reactive_hit_none_turned_off_on_a_presented_surface_takes_clicks_again`.
 
 ## first-read
 
@@ -14623,3 +14626,22 @@ and the warm device itself, which an owner ruling keeps. Numbers: benchmarks.md
 `a_warm_device_reserves_little_beyond_what_it_uses`, which fails on the default
 on lavapipe and Intel alike.
 
+
+## presented-quiet
+
+**2026-10-31 · presented-quiet: a paint on a presented surface that sends nothing
+still does what follows a paint.** wave-cost made a presented surface send no frame
+when a paint draws nothing, and a sent frame was the only thing that ran the frame's
+reaction, set its regions, or woke the loop for the next one (its `Presented`). So
+such a paint left a time signal stopped, an ended exit and a shrink queued, and a
+changed region unsent, each until something unrelated drew; gpu-stay makes that path
+permanent once a surface is promoted, and `eval-hooks` builds, which draw every frame,
+never reach it. `GpuHost::present` now tells the two cases apart: on no frame it runs
+`Host::painted` and `sync_presented` as a CPU's empty paint does, and where a CPU's
+empty paint would send a bare commit (`State::take_owed_commit`, set when a region
+changed) it asks for `GpuRequest::Commit`, a present of the last frame, since only a
+present commits this surface. Sending a whole new frame for it was rejected: nothing
+was drawn, and the commit already exists for a held size. No hand back to the CPU
+(gpu-stay). Proof: `crates/strand/tests/presented_quiet.rs`, run alone in CI, not under
+`--workspace`, whose `eval-hooks` hides the path; its `proved` asserts a paint did send
+nothing. Each test was seen failing without its fix.

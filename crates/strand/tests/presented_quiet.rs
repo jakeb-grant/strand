@@ -511,3 +511,83 @@ panel P {{ anchor: top_left; size: auto
     });
     d.proved();
 }
+
+/// (hit-through) A panel behind, and a promoted one over it whose root's
+/// `hit: none` is set by a `when`. A big fading box at x 540 leaves the panel's
+/// empty area free to click.
+fn through_shell(through: bool) -> String {
+    format!(
+        r#"
+export state boost = true
+export state through = {through}
+state back = false
+panel Behind {{ anchor: top_left; layer: bottom; width: 300; height: 100
+  box {{ width: 300; height: 100; bg: #ff0000
+    when back {{ bg: #ffff00 }}
+    on click {{ back = !back }}
+  }}
+}}
+panel Front {{ anchor: top_left; width: 1000; height: 620
+  when through {{ hit: none }}
+  box {{ place: absolute; x: 540; width: 440; height: 600; bg: #303030
+    opacity: boost ? 0.5 + 0.5 * wave(600ms) : 1 }}
+}}
+"#
+    )
+}
+
+/// (hit-through) Turned on with nothing else on the panel changing, after the
+/// panel has sent presented frames: a click on its empty area passes through.
+#[test]
+fn a_reactive_hit_none_on_a_presented_surface_lets_clicks_through() {
+    let Some(mut d) = start("thon", &through_shell(false)) else {
+        return;
+    };
+    if !d.promoted() {
+        return;
+    }
+    let mut pointer = d.pointer();
+    pointer.motion(50, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.click(50, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        !d.shot("HEADLESS-1").has(YELLOW, 1),
+        "the front panel takes it while it is off"
+    );
+    d.set_state("through", "true");
+    std::thread::sleep(Duration::from_millis(500));
+    pointer.motion(60, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.click(60, 50, LW, LH);
+    d.until("the click reached the panel behind", |d| {
+        d.shot("HEADLESS-1").has(YELLOW, 2000).then_some(())
+    });
+    d.proved();
+}
+
+/// (hit-through) Turned off the same way: the panel takes its clicks again, and
+/// the panel behind hears nothing.
+#[test]
+fn a_reactive_hit_none_turned_off_on_a_presented_surface_takes_clicks_again() {
+    let Some(mut d) = start("thoff", &through_shell(true)) else {
+        return;
+    };
+    if !d.promoted() {
+        return;
+    }
+    d.set_state("through", "false");
+    std::thread::sleep(Duration::from_millis(500));
+    let mut pointer = d.pointer();
+    pointer.motion(60, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.click(60, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(500));
+    let one = d.shot("HEADLESS-1");
+    assert!(
+        !one.has(YELLOW, 1),
+        "the click went through the front panel"
+    );
+    assert!(one.has(RED, 2000), "the panel behind is there");
+    d.proved();
+}

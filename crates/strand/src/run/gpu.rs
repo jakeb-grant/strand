@@ -237,6 +237,10 @@ mod host {
                 self.change(state, change);
             }
             for r in state.host_mut().renderer.take_gpu_requests() {
+                // It commits whatever the manager left pending.
+                if let GpuRequest::Commit(id) = &r {
+                    state.take_owed_commit(*id);
+                }
                 self.send(r);
             }
             self.present(state);
@@ -501,10 +505,9 @@ mod host {
                     continue;
                 }
                 let r: &mut Renderer = &mut state.host_mut().renderer;
-                if r.presented_due(*id).is_none() {
-                    continue;
-                }
-                if let Some(frame) = r.paint_gpu(*id, now) {
+                let due = r.presented_due(*id).is_some();
+                let frame = if due { r.paint_gpu(*id, now) } else { None };
+                if let Some(frame) = frame {
                     let (size, scale) = (frame.size, frame.scale);
                     // What follows a CPU frame follows this one too:
                     // its regions, as pending state the present commits
@@ -513,21 +516,29 @@ mod host {
                     // logic, fed nodes (its `damage` line waits for
                     // `Presented`).
                     state.sync_presented(*id);
+                    state.take_owed_commit(*id);
                     gpu.send(GpuRequest::Frame(frame));
                     p.in_flight = true;
                     p.sent = Some((size, scale));
                     p.drew_nothing = None;
                     state.host_mut().painted(*id, &Damage::full(size));
                 } else {
-                    // (presented-quiet) It painted and drew nothing, so
-                    // nothing is sent and no `Presented` comes. All the
-                    // same that paint may have ended an exit or let a
-                    // shrink go, and moved hit boxes: what follows a
-                    // CPU's empty paint follows it.
-                    log::debug!("surface {}: a paint that sent nothing", id.0);
-                    p.drew_nothing = Some(std::time::Instant::now());
-                    state.sync_presented(*id);
-                    state.host_mut().painted(*id, &Damage::new());
+                    if due {
+                        // (presented-quiet) It painted and drew nothing, so
+                        // nothing is sent and no `Presented` comes. All the
+                        // same that paint may have ended an exit or let a
+                        // shrink go, and moved hit boxes: what follows a
+                        // CPU's empty paint follows it.
+                        log::debug!("surface {}: a paint that sent nothing", id.0);
+                        p.drew_nothing = Some(std::time::Instant::now());
+                        state.sync_presented(*id);
+                        state.host_mut().painted(*id, &Damage::new());
+                    }
+                    // A CPU's empty paint carries its regions in a bare
+                    // commit. Only a present commits this surface.
+                    if state.take_owed_commit(*id) {
+                        gpu.send(GpuRequest::Commit(*id));
+                    }
                 }
             }
         }
