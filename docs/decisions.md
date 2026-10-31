@@ -14402,3 +14402,24 @@ reads a parent that stays put, as for `pointer`. Proof:
 `hover_and_the_cursor_follow_rows_moving_under_a_still_pointer`,
 `a_held_press_keeps_hover_when_rows_move_under_it`,
 `only_hit_boxes_that_moved_under_the_pointer_ask_for_routing`.
+
+## hit-through
+
+**2026-10-30 · hit-through: `hit: none` on a surface's root reaches past the
+surface.** The docs said the pointer passes through to what is below, but on a
+panel the empty area swallowed clicks: nothing asked the compositor to send them
+elsewhere, and only hover popups had a region. No new prop: the root's `hit: none`
+now gives the surface an input region of its nodes' hit boxes, as drawn and cut by
+their clips, so it follows every frame and a transformed box its bounds. Boxes that
+draw nothing but take input count (a hover popup's "those that draw" is that
+popup's own older rule, left alone), because a box with `on click` must still get
+its click. A `hit: none` on a child alone changes nothing past the surface: the
+root's own box is what lies below it, and a panel keeps its whole box unless its
+root says otherwise, so no existing shell starts losing clicks. A lock never takes
+it. A held press takes the whole box, as on a hover popup. On a spanned or kept-size
+panel this wins over the box-only region (`placed_root`), since the hit boxes lie
+within that box anyway. Rejected: rounded regions (many small rects per frame, for
+a corner). Wave-cost is untouched: a surface without it does no more work than a
+tree lookup per commit, and one with it builds the list per commit, no wake or
+frame. Proof: `crates/strand-compiler/tests/hit_through.rs`;
+`a_click_on_a_hit_none_panels_empty_area_reaches_what_is_behind` on sway.

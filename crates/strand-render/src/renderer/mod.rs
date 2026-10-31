@@ -951,7 +951,7 @@ impl Renderer {
         // commits it.
         if changed
             && flag == crate::Flag::Pressed
-            && self.specs.get(&node).is_some_and(|sp| sp.hover_trigger)
+            && (self.specs.get(&node).is_some_and(|sp| sp.hover_trigger) || self.hit_through(node))
         {
             for s in self.surfaces.values_mut() {
                 if s.root == node {

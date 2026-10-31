@@ -1187,7 +1187,14 @@ monitor, the keyboard always).
   enlarges it by `n` for small targets; `hit: none` takes no input in
   the node's own box (the pointer passes through to what is below),
   while its children take theirs and are hit with it among their
-  ancestors. A node at `opacity: 0` is not drawn and not hit, its
+  ancestors. What is below a node is its parent, whose own box takes
+  the pointer unless it has `hit: none` too; on a surface's root the
+  pointer leaves the surface for what is behind it, by its input
+  region, wherever none of its nodes takes input (a `panel`, `bar`,
+  `popup` or `window`; a `lock` never, and an `osd` takes none anyway).
+  The region is each hit box's bounds, so a rounded corner of one still
+  stops the pointer, and while a press that went down on the surface is
+  held it takes its whole box. (decisions.md hit-through) A node at `opacity: 0` is not drawn and not hit, its
   children neither: a control that takes input unseen keeps its
   opacity and draws nothing (`color` and `track` of alpha 0, no `bg`).
   Shadows enlarge the buffer but not the input region.

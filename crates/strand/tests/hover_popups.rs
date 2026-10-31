@@ -1116,3 +1116,54 @@ fn open_opens_a_hover_popup_from_code_and_holds_it() {
         one.region(ISLAND_A, 1).is_none().then_some(())
     });
 }
+
+/// (hit-through) A panel behind and one in front whose root has `hit: none`,
+/// covering the one behind and holding a box to its right. A click on the
+/// front panel's empty area reaches the one behind; a click on its box does
+/// not.
+const THROUGH: &str = r#"
+state back = false
+state front = false
+panel Behind { anchor: top_left; layer: bottom; width: 300; height: 100
+  box { width: 300; height: 100; bg: #ff0000
+    when back { bg: #ffff00 }
+    on click { back = !back }
+  }
+}
+panel Front { anchor: top_left; width: 800; height: 100; hit: none
+  box { place: absolute; x: 540; width: 200; height: 100; bg: #0000ff; shadow: 0 6px 18px #000000
+    when front { bg: #00ffff }
+    on click { front = !front }
+  }
+}
+"#;
+
+#[test]
+fn a_click_on_a_hit_none_panels_empty_area_reaches_what_is_behind() {
+    let Some(mut sh) = start("through", THROUGH) else {
+        return;
+    };
+    sh.wait("both panels", |one, _| {
+        one.region(ITEM_A, 2000).and(one.region(ITEM_B, 2000))
+    });
+    let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+    pointer.motion(50, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.click(50, 50, LW, LH);
+    sh.wait("the click reached the panel behind", |one, _| {
+        one.region(YELLOW, 2000)
+    });
+    let one = sh.shot("HEADLESS-1");
+    assert!(one.region(ISLAND_B, 1).is_none(), "and not the front box");
+    pointer.motion(640, 50, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.click(640, 50, LW, LH);
+    sh.wait("a click on the box stays on it", |one, _| {
+        one.region(ISLAND_B, 2000)
+    });
+    let one = sh.shot("HEADLESS-1");
+    assert!(
+        one.region(YELLOW, 2000).is_some(),
+        "the one behind is as it was"
+    );
+}
