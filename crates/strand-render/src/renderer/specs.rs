@@ -410,6 +410,16 @@ impl Renderer {
         self.kept = kept;
     }
 
+    /// (kept-size) The config changed: the sizes kept no longer count, and
+    /// every panel asks again for what it holds at its next layout. Called
+    /// before the diff that brings the new config, so nothing measures the
+    /// old content in between.
+    pub fn forget_kept_sizes(&mut self) {
+        self.kept.clear();
+        self.kept_changed = false;
+        self.spec_dirty.extend(self.specs.keys().copied());
+    }
+
     /// (kept-size) The sizes panels keep, when one grew since the last ask.
     pub fn take_kept_sizes(&mut self) -> Option<&BTreeMap<String, (f32, f32)>> {
         std::mem::take(&mut self.kept_changed).then_some(&self.kept)
@@ -715,6 +725,8 @@ impl Renderer {
                 // Nothing to shape for a surface nobody sees.
                 self.spec_wanted.remove(&id);
             }
+            // (kept-size) What the content asks for, before a hold.
+            let mut asked = None;
             let (mut size, overhang) = match (&layouts, old) {
                 (Some(layouts), _) if dirty.contains(&id) && pass => {
                     let along = shown.map(|s| {
@@ -780,6 +792,7 @@ impl Renderer {
                             })
                         });
                     let steps = drawn.is_some_and(|r| self.steps_down(id, &spec, r, b.size));
+                    asked = Some(b.size);
                     if let Some(old) = old.filter(|_| steps || self.moving(id)) {
                         let (w, h) = (old.width.unwrap_or(0.0), old.height.unwrap_or(0.0));
                         held = b.size.w.ceil() < w || b.size.h.ceil() < h;
@@ -847,15 +860,19 @@ impl Renderer {
                 && !matches!(spec.exclusive, strand_scene::Exclusive::Auto)
                 && content_sized;
             if keeps {
+                // Only what the content asked for is kept. A hold, or a
+                // pass that reuses the last size, is no need of its own:
+                // the size a surface holds while its box springs down from
+                // a config's old size is not kept under the new one.
                 let (kw, kh) = self.kept.entry(spec.namespace()).or_default();
                 let (w, h) = (*kw, *kh);
                 if axes.0 && span.0.is_none() {
-                    *kw = kw.max(size.w.ceil());
-                    size.w = *kw;
+                    *kw = asked.map_or(*kw, |a| kw.max(a.w.ceil()));
+                    size.w = size.w.max(*kw);
                 }
                 if axes.1 && span.1.is_none() {
-                    *kh = kh.max(size.h.ceil());
-                    size.h = *kh;
+                    *kh = asked.map_or(*kh, |a| kh.max(a.h.ceil()));
+                    size.h = size.h.max(*kh);
                 }
                 self.kept_changed |= (w, h) != (*kw, *kh);
             }

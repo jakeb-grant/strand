@@ -68,6 +68,11 @@ pub(crate) fn apply(state: &mut State<Host>, mut diff: SceneDiff) {
     for (node, press) in popup_causes(&diff) {
         state.set_popup_cause(node, press);
     }
+    // (kept-size) A reload committed: what the old config measured goes
+    // before the new one is laid out.
+    if let Some(config) = diff.config {
+        state.host_mut().config_committed(config);
+    }
     // (window) What its handlers asked of windows, once the windows it
     // opens are there: a move or resize with its press.
     let (asks, press) = (std::mem::take(&mut diff.window_asks), diff.press);

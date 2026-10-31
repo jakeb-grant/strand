@@ -743,6 +743,15 @@ impl Host {
 }
 
 impl Host {
+    /// (kept-size) A reload committed the config hashed `config`: sizes are
+    /// saved under it from now on, and if it is another config the sizes
+    /// the old one measured no longer hold a panel open.
+    pub(crate) fn config_committed(&mut self, config: u64) {
+        if self.kept_file.as_mut().is_some_and(|f| f.follow(config)) {
+            self.renderer.forget_kept_sizes();
+        }
+    }
+
     /// What follows every painted frame, the CPU's or (M4) one the GPU
     /// thread presents (`run/gpu.rs`): the lock's and the blur
     /// fallback's bookkeeping, effect notices, layout facts and list

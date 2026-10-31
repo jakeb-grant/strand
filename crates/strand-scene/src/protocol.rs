@@ -1080,6 +1080,11 @@ pub struct SceneDiff {
     /// resize goes with the press that is still held (`press`, else the
     /// seat's last).
     pub window_asks: Vec<(NodeId, crate::surface::WindowAsk)>,
+    /// (kept-size) A reload committed in this diff: the hash of the config
+    /// it came from. In the diff, not beside it, so the host forgets the
+    /// sizes the old config measured in the same breath as it applies the
+    /// new one, and no pass between them measures the old content again.
+    pub config: Option<u64>,
 }
 
 impl SceneDiff {
@@ -1097,6 +1102,7 @@ impl SceneDiff {
             && self.layout_seen.is_none()
             && self.reduced_motion.is_none()
             && self.window_asks.is_empty()
+            && self.config.is_none()
     }
 
     /// Convenience for [`SceneOp::Create`].

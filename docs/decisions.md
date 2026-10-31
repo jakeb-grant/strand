@@ -14281,6 +14281,24 @@ size keep resizing, and a panel whose exclusive zone follows its size
 (`exclusive: true`) is left out because keeping the size would keep windows
 away.
 
+**2026-10-31 · kept-size: a reload that changes the config starts again at
+once.** The hash was taken once, at the start, and nothing cleared the sizes
+afterwards, so a saved card made smaller kept its old buffer until a restart,
+and what a panel measured after a save was stored under the config strand started
+with: 200 tall, saved at 400, saved back at 200 and restarted mapped at 400.
+Now a committed reload hashes the `.strand` files again and carries the hash in
+its diff (`SceneDiff::config`), and a host whose hash that changes forgets the
+sizes before it applies the diff and saves under the new hash. In the diff because
+main's two channels from logic are separate sources with no order between them:
+a clear that arrived first would let a pass measure the old content again, one
+that arrived later would leave a surface no change of its own asks to resize. A
+broken save commits nothing, so sizes stay under the config still running. Only
+what the content asks for is kept, not a size a surface holds while its box springs
+down, or the old size would come straight back. Any edit to a `.strand` file
+counts, a colour too, as it does across a restart: a panel closed at the time gives
+its buffer back and pays one resize at its next open. Proof:
+`crates/strand/tests/kept_sizes.rs::a_reload_that_changes_the_config_starts_the_kept_sizes_again`.
+
 **2026-10-30 · centred-surface: a spring lands under half a pixel
 (`STEP_LANDED`).** A growth step's residue under half a physical pixel of
 movement is dropped, so the icons beside a settling box stop on their final

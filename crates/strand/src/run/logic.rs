@@ -308,6 +308,7 @@ pub fn logic(
         replay_on: true,
         secret_sent: false,
         config_dir,
+        committed_config: None,
         report_ping,
         written: Default::default(),
         saving: Vec::new(),
@@ -351,6 +352,7 @@ pub fn logic(
         let mut diff = std::mem::take(&mut update.diff);
         shell.secrets.see_diff(&diff);
         diff.layout_seen = shell.layout_seen.take();
+        diff.config = shell.committed_config.take();
         // The services' answer to a pressed action (a tray menu's
         // `opened`) is that press's, whatever was handled since.
         let answered = std::mem::take(&mut shell.pumped)

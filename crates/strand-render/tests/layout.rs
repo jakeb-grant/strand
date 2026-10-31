@@ -1789,6 +1789,22 @@ fn a_panel_never_shrinks_and_starts_at_its_kept_size() {
         Some(tall),
         "next session"
     );
+    // (kept-size) A config changed by a reload: the old sizes no longer
+    // count, and the panel asks for what it holds with no change of its own.
+    let (mut r, p, t) = build(Some((0.0, tall)));
+    let mut d = SceneDiff::new();
+    d.set(t, Prop::Text, text("one"));
+    r.apply(d);
+    assert_eq!(r.surface_spec(p).unwrap().height, Some(tall));
+    r.forget_kept_sizes();
+    r.apply(SceneDiff::new());
+    let now = r.surface_spec(p).unwrap().height.unwrap();
+    assert!(now < tall, "forgotten: {now} of {tall}");
+    assert_eq!(
+        r.take_kept_sizes().map(|k| k["strand-Card"].1),
+        Some(now),
+        "what it needs now is kept instead"
+    );
 }
 
 /// Shadows on a centred surface: the buffer is grown evenly on its

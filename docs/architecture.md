@@ -1104,6 +1104,15 @@ is being saved, so the idle-wakeup windows hold.
      `frame_deadline(surface)`. An idle surface holds a frame for new
      text up to `NEW_TEXT_WAIT` (16 ms); a surface in motion paints at
      once and the glyphs follow (decisions.md wave2-exit).
+  6. A host that keeps panel sizes across sessions (`strand run`,
+     `run/kept.rs`, decisions.md kept-size) calls `set_kept_sizes` before
+     the first `apply` with what `$STATE/panel-sizes.json` holds for this
+     config: each namespace's largest size, under a hash of the config's
+     `.strand` files. After each paint it asks `take_kept_sizes`, `Some`
+     when one grew, and writes the file. Logic puts the hash of a config a
+     reload commits in that reload's diff (`SceneDiff::config`); where the
+     hash changes the host calls `forget_kept_sizes` before it applies the
+     diff, and saves under the new hash from then on.
 
 - **Widgets and paint** (decisions.md wave3-pixels): widget state the
   router owns but widgets draw (hover, press, focus, caret, a dragged

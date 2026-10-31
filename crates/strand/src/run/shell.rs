@@ -154,6 +154,9 @@ pub(super) struct Shell {
     pub(super) secret_sent: bool,
     /// (report) The config directory (a report copies its files).
     pub(super) config_dir: Option<PathBuf>,
+    /// (kept-size) The hash of the config a reload just committed, for the
+    /// diff that carries it (`SceneDiff::config`).
+    pub(super) committed_config: Option<u64>,
     /// (report) Wakes the loop when a report is written.
     pub(super) report_ping: calloop::ping::Ping,
     /// (report) The `strand-report` threads' outcomes.
@@ -594,6 +597,7 @@ impl Shell {
             if let Some(b) = build.or_else(|| l.hard.then(|| self.build.clone())) {
                 crate::services::follow_program(&b.program);
                 self.build = b;
+                self.committed_config = self.config_dir.as_deref().map(super::kept::config_hash);
                 self.overlay.set_running(true);
                 self.tell_lock_helper();
             }

@@ -699,9 +699,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     gpu::configure(&mut renderer);
     // (kept-size) A panel maps at the size it will need.
     let kept_file = kept::KeptFile::of(dir);
-    if let Some(file) = &kept_file {
-        renderer.set_kept_sizes(file.load());
-    }
+    renderer.set_kept_sizes(kept_file.load());
     // Apps, icons and fonts are caches their directories' changes
     // invalidate (design.md, "Change sources"): the watcher (on the
     // compiler worker) reports them; the renderer's caches are dropped on
@@ -754,7 +752,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     let mut host = Host::new(renderer, log.damage)
         .forwarding(to_logic.clone())
         .waking(wake);
-    host.kept_file = kept_file;
+    host.kept_file = Some(kept_file);
     // (M4) Spectrum bands from the audio thread and window frames from
     // the compositor thread, for the visible spectra and thumbnails.
     let (feeds_tx, feeds_rx) = calloop::channel::channel::<feeds::Fed>();
