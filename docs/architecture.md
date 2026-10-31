@@ -2368,7 +2368,10 @@ watch`, and keeps it for `strand report` and the inspector.
 - Hardware leg (`gpu.sh`, advisory): the same over three cycles on
   `/dev/dri/renderD128`, with backstops over the warm baseline of
   12 MiB readback and 16 MiB presenting (`STRAND_GPU_PRESENT=1`), and
-  the promoted cost checked against design.md's +20–40 MB.
+  the promoted PSS printed against design.md's memory table. PSS leaves
+  out the device's own memory; that is `drm-total-gtt` in fdinfo
+  (decisions.md gpu-memory), and `strand-gpu`'s
+  `a_warm_device_reserves_little_beyond_what_it_uses` bounds its idle part.
 - GPU frames are compared with the CPU frame under their own documented
   tolerance, not `assert_matches_ref`'s.
 

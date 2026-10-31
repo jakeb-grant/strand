@@ -615,6 +615,7 @@ The budgets are targets for Strand's own benchmarks and tests, never limits on a
 | Allocator overhead | 1–2 | 2–3 |
 | **Total** | **29–34** | **59–64** |
 | GPU device, kept warm where a render node exists (gpu-first) | +21 to +23 measured on Intel ANV; about +190 on lavapipe; 0 with no render node | +22 to +38 measured on Intel ANV with the launcher drawn on the GPU, kept for the session |
+| That device's own memory, which PSS does not see (fdinfo's `drm-total-gtt`; real RAM on an integrated GPU; decisions.md gpu-memory) | 126 on Intel ANV, whatever the outputs: a 64 image atlas, 32 of allocator blocks, 30 the driver's; 0 with no render node | The same, plus what surfaces drawn on the GPU hold: +10 measured with a bar animating |
 
 For comparison, real Quickshell configs reach 0.5–1.26 GB, driven by a GL context per popup and full-resolution image decodes. Scrims and lock backgrounds use single-pixel buffers; a 4K triple buffer would cost about 99 MB. (lockmon) A lock's content is a surface on each monitor it shows on, with its buffers: in the lock VM the second 1280×720 monitor's adds 7 MB (a lock VM tripwire at 10 MiB); `screens: focused` keeps it to one, the others the single pixel. A lock's `thumbnail screen` holds one still per monitor it shows, taken at 1280×720 at most, for as long as the lock lasts (decisions.md lockmon review).
 
