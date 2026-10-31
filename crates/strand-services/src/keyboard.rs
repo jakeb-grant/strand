@@ -35,9 +35,12 @@
 //!
 //! 4. The layout's short code (`layout_code`), from whichever name the
 //!    above gave: no compositor says it, so it is looked up by name in
-//!    xkeyboard-config's list ([`code_in`], `<xkb>/rules/evdev.xml`, as
-//!    every compositor's own names come from it), read only while
-//!    `layout_code` is watched and once per name.
+//!    xkeyboard-config's lists ([`code_in`], `<xkb>/rules/evdev.xml`, then
+//!    `evdev.extras.xml` for a name that one lacks, as every compositor's
+//!    own names come from them), read only while `layout_code` is watched
+//!    and once per name. The first lookup of a name blocks the services
+//!    runtime for about 2 ms at worst (both lists, measured in the CI
+//!    image; decisions.md service-fields), so it stays on it.
 //!
 //! The modifiers are only a focused surface's: no compositor tells
 //! another client what is held, so they are false otherwise. The actions
@@ -107,7 +110,8 @@ pub struct Config {
     pub sys: PathBuf,
     /// How often the lights are read while shown and unfocused.
     pub led_period: Duration,
-    /// xkeyboard-config's directory, holding `rules/evdev.xml`.
+    /// xkeyboard-config's directory, holding `rules/evdev.xml` and
+    /// `rules/evdev.extras.xml`.
     pub xkb: PathBuf,
 }
 
@@ -144,6 +148,15 @@ static LED_READS: AtomicU64 = AtomicU64::new(0);
 /// (tests: none while nobody shows them or a surface is focused).
 pub fn led_reads() -> u64 {
     LED_READS.load(Ordering::Relaxed)
+}
+
+static LIST_READS: AtomicU64 = AtomicU64::new(0);
+
+/// How many times a `keyboard` service of this process read one of
+/// xkeyboard-config's lists (tests: none while nobody shows `layout_code`,
+/// and none for a name already looked up).
+pub fn list_reads() -> u64 {
+    LIST_READS.load(Ordering::Relaxed)
 }
 
 /// The lock keys' lights.
@@ -235,8 +248,8 @@ pub struct Keyboard {
     pub logo: bool,
 }
 
-/// The short code of the layout named `name` in xkeyboard-config's
-/// `xml` (`rules/evdev.xml`): a `<layout>` or one of its `<variant>`s
+/// The short code of the layout named `name` in one of xkeyboard-config's
+/// lists, `xml` (`rules/evdev.xml`, `rules/evdev.extras.xml`): a `<layout>` or one of its `<variant>`s
 /// whose `<description>` is `name` gives the layout's `<name>`, the name
 /// the same file gives a compositor's keymap. `None` when none does, or
 /// the text is no XML.
@@ -278,6 +291,7 @@ impl Codes {
             return known.clone();
         }
         let code = ["evdev.xml", "evdev.extras.xml"].iter().find_map(|file| {
+            LIST_READS.fetch_add(1, Ordering::Relaxed);
             let xml = std::fs::read_to_string(xkb.join("rules").join(file)).ok()?;
             code_in(&xml, name)
         });
@@ -586,14 +600,51 @@ mod tests {
         assert_eq!(code_in("not xml", "German"), None);
     }
 
-    /// The real list, where the machine has it (the CI image does).
+    /// A name `evdev.xml` lacks is looked up in `evdev.extras.xml`, and the
+    /// first list wins for a name in both. A name in neither, and a missing
+    /// list, give none.
+    #[test]
+    fn a_name_the_list_lacks_comes_from_the_extras() {
+        let list = |name: &str, code: &str| {
+            format!(
+                "<xkbConfigRegistry><layoutList><layout><configItem><name>{code}</name>\
+                 <description>{name}</description></configItem></layout>\
+                 </layoutList></xkbConfigRegistry>"
+            )
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let rules = dir.path().join("rules");
+        std::fs::create_dir_all(&rules).unwrap();
+        let mut codes = Codes::default();
+        assert_eq!(codes.of(dir.path(), "German"), None, "no lists");
+        std::fs::write(rules.join("evdev.xml"), list("German", "de")).unwrap();
+        std::fs::write(rules.join("evdev.extras.xml"), list("Avestan", "ave")).unwrap();
+        let mut codes = Codes::default();
+        assert_eq!(codes.of(dir.path(), "Avestan").as_deref(), Some("ave"));
+        assert_eq!(codes.of(dir.path(), "German").as_deref(), Some("de"));
+        assert_eq!(codes.of(dir.path(), "Klingon"), None);
+        std::fs::write(rules.join("evdev.extras.xml"), list("German", "xx")).unwrap();
+        let mut codes = Codes::default();
+        assert_eq!(codes.of(dir.path(), "German").as_deref(), Some("de"));
+    }
+
+    /// The real lists. Sway depends on xkeyboard-config, so where sway must
+    /// be there (`STRAND_REQUIRE_SWAY`: CI and the container) a missing list
+    /// fails; no variable of its own is needed for a file sway brings.
     #[test]
     fn the_installed_list_gives_codes() {
         let dir = Config::default().xkb;
         let Ok(xml) = std::fs::read_to_string(dir.join("rules/evdev.xml")) else {
+            assert!(
+                std::env::var_os("STRAND_REQUIRE_SWAY").is_none(),
+                "no xkeyboard-config in {} but STRAND_REQUIRE_SWAY is set",
+                dir.display()
+            );
             eprintln!("skipped: no xkeyboard-config");
             return;
         };
+        let mut codes = Codes::default();
+        assert_eq!(codes.of(&dir, "German (Bone)").as_deref(), Some("de"));
         assert_eq!(code_in(&xml, "English (US)").as_deref(), Some("us"));
         assert_eq!(code_in(&xml, "German").as_deref(), Some("de"));
         assert_eq!(code_in(&xml, "English (Dvorak)").as_deref(), Some("us"));

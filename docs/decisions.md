@@ -14390,7 +14390,11 @@ mode. Found by Bead (#20).
 letters had only the keymap's name to cut from, which makes `English (US)` read `EN`.
 No compositor gives a code (Hyprland gives rule names, sway and niri names only), but
 every name comes from xkeyboard-config, so the field looks the name up in its
-`rules/evdev.xml`, once per name, only while something reads it. It gives the layout
+`rules/evdev.xml`, then `rules/evdev.extras.xml` for a name that lacks (German (Bone)
+is only there), once per name, only while something reads it. That first lookup runs
+on the shared services runtime: 1.3 ms for a common name and 2.2 ms at worst (a name in
+neither list) in the CI image, warm file cache, so it stays there; a cold disk read was
+not measured. It gives the layout
 name a keymap is configured with (`us`, `de`), not the list's `shortDescription`
 (`en`), which many layouts share; a variant gives its layout's code. A custom layout
 not in the list is null, not a guess. The name follows `layout` and `layouts`. Found by

@@ -99,6 +99,78 @@ fn the_layout_code_follows_the_layout() {
     keyboard::configure(None);
 }
 
+/// (bead #20) The lists are read only while `layout_code` is watched and
+/// once per name, a name they lack too: `layout` alone reads none, and a
+/// name seen before reads none and still has its code with the list gone.
+#[test]
+fn the_list_is_read_only_while_watched_and_once_per_name() {
+    let _s = serial();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("rules")).unwrap();
+    let list = dir.path().join("rules/evdev.xml");
+    std::fs::write(
+        &list,
+        "<xkbConfigRegistry><layoutList>\
+         <layout><configItem><name>de</name><description>German</description></configItem></layout>\
+         </layoutList></xkbConfigRegistry>",
+    )
+    .unwrap();
+    keyboard::configure(Some(keyboard::Config {
+        xkb: dir.path().to_path_buf(),
+        ..keyboard::Config::default()
+    }));
+    let rt = Runtime::new();
+    let (s, b) = services(&rt);
+    b.keyboard.acquire(&rt);
+    b.keyboard.acquire_field(field("layout"));
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let cells = b.keyboard.cells();
+    let show = |name: &str| {
+        keyboard::focused(Some(Focused {
+            layout: Some(name.into()),
+            ..Focused::default()
+        }));
+    };
+    let before = keyboard::list_reads();
+    show("German");
+    until(&rt, &s, "the layout", || {
+        cells.layout.get_untracked(&rt) == Ok(Some("German".into()))
+    });
+    pump_for(&rt, &s, Duration::from_millis(100));
+    assert_eq!(keyboard::list_reads(), before, "nobody shows the code");
+    assert_eq!(cells.layout_code.get_untracked(&rt), Ok(None));
+
+    b.keyboard.acquire_field(field("layout_code"));
+    until(&rt, &s, "de", || {
+        cells.layout_code.get_untracked(&rt) == Ok(Some("de".into()))
+    });
+    assert_eq!(
+        keyboard::list_reads(),
+        before + 1,
+        "found in the first list"
+    );
+    show("Strand One");
+    until(&rt, &s, "none", || {
+        cells.layout_code.get_untracked(&rt) == Ok(None)
+            && cells.layout.get_untracked(&rt) == Ok(Some("Strand One".into()))
+    });
+    let read = keyboard::list_reads();
+    assert_eq!(read, before + 3, "looked for in both lists");
+
+    std::fs::remove_file(&list).unwrap();
+    show("German");
+    until(&rt, &s, "de, with the list gone", || {
+        cells.layout_code.get_untracked(&rt) == Ok(Some("de".into()))
+    });
+    show("Strand One");
+    until(&rt, &s, "none again", || {
+        cells.layout_code.get_untracked(&rt) == Ok(None)
+    });
+    assert_eq!(keyboard::list_reads(), read, "each name once");
+    keyboard::focused(None);
+    keyboard::configure(None);
+}
+
 /// Pump for `d`.
 fn pump_for(rt: &Runtime, s: &Services, d: Duration) {
     let t = Instant::now();
