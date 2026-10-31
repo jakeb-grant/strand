@@ -415,6 +415,28 @@ struct InFlight {
     at: Instant,
 }
 
+/// (still-pointer) How long no hit box under a still pointer has to move
+/// for the surface to count as having come to rest.
+const STILL_REST: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// (still-pointer) How many times hover may make one move, from one node to
+/// another, under a still pointer before it stays where it is.
+const STILL_MOVES: u8 = 2;
+
+/// (still-pointer) Where hover has gone under a pointer that stays still,
+/// since it last moved, took other input, or the surface rested. Hover
+/// follows anything once or twice: rows passing, a knob that slid away and
+/// comes back; a move made a third time is a node moving itself off the
+/// pointer when hovered, and refusing it lets its surface rest.
+#[derive(Debug)]
+struct StillPointer {
+    at: LogicalPoint,
+    /// The last frame that moved a hit box under it.
+    moved: Instant,
+    /// The moves hover made, by innermost node, and how many times.
+    moves: HashMap<(Option<NodeId>, NodeId), u8>,
+}
+
 /// The routing state of every surface: what is hovered, pressed and
 /// focused, which row each list has selected, and the text each `input`
 /// last wrote.
@@ -440,6 +462,8 @@ pub struct Router {
     away: HashMap<NodeId, Away>,
     /// The last pointer position on each surface the pointer is over.
     pointer: HashMap<SurfaceId, LogicalPoint>,
+    /// (still-pointer) Where hover went under a pointer that stays still.
+    still: HashMap<SurfaceId, StillPointer>,
     /// The text of a focused input and the rows of its `nav` list when
     /// its selection was last settled: a new query selects the first row
     /// again; rows that change under the same query (late or re-ranked
@@ -709,6 +733,7 @@ impl Router {
     pub fn detached(&mut self, surface: SurfaceId) {
         self.surfaces.remove(&surface);
         self.hovered.remove(&surface);
+        self.still.remove(&surface);
         // A press held on it ends with it: its chain is let go (heard at
         // the next flush), or the renderer would keep a popup's root
         // pressed, and its whole box as its input region, into the next
@@ -1134,6 +1159,17 @@ impl Router {
     /// `open: false` on a surface whose `open` is two-way (a popup also
     /// gets `dismiss`).
     pub fn handle(&mut self, event: &InputEvent, scene: &mut dyn InputScene) -> Vec<Intent> {
+        // (still-pointer) A wheel, a button or a key moves what is under
+        // the pointer on purpose. A pointer's own motion is seen by where
+        // it is (`repoint`).
+        if !matches!(
+            event,
+            InputEvent::PointerEnter { .. }
+                | InputEvent::PointerLeave { .. }
+                | InputEvent::PointerMotion { .. }
+        ) {
+            self.still.clear();
+        }
         self.route(event, scene);
         self.select_first_rows(scene);
         self.flush(scene)
@@ -1167,6 +1203,12 @@ impl Router {
     /// press keeps the chain it went down on, and pick mode's pointer is
     /// the inspector's. Returns what logic hears of it, nothing when the
     /// same chain is under it.
+    ///
+    /// Under a still pointer hover makes one move at most [`STILL_MOVES`]
+    /// times, until the pointer moves, other input comes or the surface
+    /// rests ([`STILL_REST`]): a node that moves itself off the pointer when
+    /// hovered flips a few times and stays, so its surface comes to rest
+    /// (spec.md 6.3).
     pub fn repoint(&mut self, surface: SurfaceId, scene: &mut dyn InputScene) -> Vec<Intent> {
         let (Some(&root), Some(&at)) = (self.surfaces.get(&surface), self.pointer.get(&surface))
         else {
@@ -1175,10 +1217,31 @@ impl Router {
         if self.picking || self.pressed.contains_key(&surface) {
             return Vec::new();
         }
+        let t = self.now();
+        let still = self.still.entry(surface).or_insert_with(|| StillPointer {
+            at,
+            moved: t,
+            moves: HashMap::new(),
+        });
+        if still.at != at || t.saturating_duration_since(still.moved) >= STILL_REST {
+            still.at = at;
+            still.moves.clear();
+        }
+        still.moved = t;
         let hit = scene.hit(surface, at);
         let now = if hit.is_empty() { vec![root] } else { hit };
         if self.hovered(surface) == now.as_slice() {
             return Vec::new();
+        }
+        let from = self.hovered(surface).first().copied();
+        // A node gone keeps nothing.
+        let live = from.is_some_and(|n| scene.tree().is_some_and(|t| t.contains_live(n)));
+        if let Some(still) = self.still.get_mut(&surface) {
+            let made = still.moves.entry((from, now[0])).or_default();
+            if live && *made >= STILL_MOVES {
+                return Vec::new();
+            }
+            *made += 1;
         }
         self.prune(scene.tree());
         self.hover(surface, now);

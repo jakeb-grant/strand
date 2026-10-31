@@ -10,6 +10,7 @@
 mod shell;
 
 use shell::{Shell, assert_matches_ref, px};
+use strand_scene::Painter;
 
 fn fixture(name: &str) -> Shell {
     let path = format!(
@@ -295,6 +296,7 @@ fn a_held_press_keeps_hover_when_rows_move_under_it() {
     // Released, the pointer is on what is under it now.
     sh.button(false);
     sh.settle();
+    assert_eq!(sh.num("over"), 1.0, "hover right after the release");
     sh.wheel(0.0, 3.0);
     sh.settle();
     assert_eq!(sh.num("over"), 2.0);
@@ -351,4 +353,204 @@ panel P { anchor: top_left; width: 200; height: 100
             .is_none(),
         "not read, not measured"
     );
+}
+
+/// (still-pointer) A shell whose box moves itself by `POSE` when hovered,
+/// counting its hover's flips.
+fn lifting(pose: &str) -> Shell {
+    let mut sh = Shell::new(&format!(
+        r#"
+export state n = 0
+export state on = false
+panel P {{ width: 200; height: 100; anchor: top_left
+  col {{ pad: 20
+    box {{ width: 100; height: 40; bg: #ff0000
+      when hover {{ {pose} }}
+      on change self.hover {{ n = n + 1; on = self.hover }}
+    }}
+  }}
+}}
+"#
+    ));
+    sh.settle();
+    // The clock stays: nothing below rests a second by accident.
+    sh.router.set_now(Some(strand_scene::time::Instant::now()));
+    sh
+}
+
+/// (still-pointer) A node that moves itself off a still pointer when hovered
+/// lets its surface come to rest, hovered: `hover` leaves and comes back twice
+/// and stays, whatever moves it. It used to flip every other frame for good.
+#[test]
+fn a_hover_lift_comes_to_rest() {
+    for (pose, at) in [
+        ("y: -10", (50.0, 55.0)),
+        ("y: 10", (50.0, 25.0)),
+        ("x: 40", (25.0, 40.0)),
+        ("y: -10 ~ instant", (50.0, 55.0)),
+        ("y: -10 ~ spring(120, 0.5)", (50.0, 55.0)),
+        ("scale: 0.5", (25.0, 25.0)),
+        ("width: 20", (100.0, 40.0)),
+    ] {
+        let mut sh = lifting(pose);
+        let id = sh.surface("P").id;
+        sh.move_to(at.0, at.1);
+        sh.run(600);
+        assert!(!sh.r.wants_frame(id), "{pose}: it comes to rest");
+        assert_eq!(sh.get("on").as_bool(), Some(true), "{pose}: hovered");
+        assert_eq!(sh.num("n"), 5.0, "{pose}: on, off, on, off and on again");
+        // And stays so.
+        sh.run(60);
+        assert_eq!(sh.num("n"), 5.0, "{pose}");
+        // The pointer moving away ends it, and it can start again.
+        sh.move_to(190.0, 95.0);
+        sh.settle();
+        assert_eq!(sh.get("on").as_bool(), Some(false), "{pose}: left");
+    }
+}
+
+/// A node sliding away under the still pointer and back: it loses `hover` and
+/// takes it back, every time it is given a rest between (a pager's slider
+/// knob), and the rule for a node that moves itself never holds it.
+const SLIDING: &str = r#"
+export state away = false
+export state on = false
+panel P { width: 400; height: 100; anchor: top_left
+  box { width: 100; height: 40; bg: #ff0000
+    x: away ? 200 : 0
+    on change self.hover { on = self.hover }
+  }
+}
+"#;
+
+#[test]
+fn a_node_slid_away_and_back_follows_each_time_after_a_rest() {
+    use std::time::Duration;
+    use strand_compiler::vm::value::Value;
+    let mut sh = Shell::new(SLIDING);
+    sh.settle();
+    let t0 = strand_scene::time::Instant::now();
+    sh.router.set_now(Some(t0));
+    sh.move_to(50.0, 20.0);
+    sh.settle();
+    assert_eq!(sh.get("on").as_bool(), Some(true));
+    for i in 1..4u32 {
+        sh.set("away", Value::Bool(true));
+        sh.settle();
+        assert_eq!(sh.get("on").as_bool(), Some(false), "round {i}: away");
+        sh.set("away", Value::Bool(false));
+        sh.settle();
+        assert_eq!(sh.get("on").as_bool(), Some(true), "round {i}: back");
+        // The surface rests.
+        sh.router
+            .set_now(Some(t0 + Duration::from_secs(u64::from(i) * 2)));
+    }
+}
+
+/// With no rest between, a node that came back twice keeps `hover` when it
+/// goes a third time, until the pointer moves: what ends the loop for one that
+/// moves itself.
+#[test]
+fn a_node_back_under_the_pointer_with_no_rest_keeps_hover_until_the_pointer_moves() {
+    use strand_compiler::vm::value::Value;
+    let mut sh = Shell::new(SLIDING);
+    sh.settle();
+    sh.router.set_now(Some(strand_scene::time::Instant::now()));
+    sh.move_to(50.0, 20.0);
+    sh.settle();
+    for _ in 0..2 {
+        sh.set("away", Value::Bool(true));
+        sh.settle();
+        assert_eq!(sh.get("on").as_bool(), Some(false));
+        sh.set("away", Value::Bool(false));
+        sh.settle();
+        assert_eq!(sh.get("on").as_bool(), Some(true));
+    }
+    sh.set("away", Value::Bool(true));
+    sh.settle();
+    assert_eq!(sh.get("on").as_bool(), Some(true), "held");
+    sh.move_to(51.0, 20.0);
+    sh.settle();
+    assert_eq!(sh.get("on").as_bool(), Some(false), "the pointer moved");
+}
+
+/// A wheel is input: rows brought back and forth under a still pointer with
+/// no rest between keep following.
+#[test]
+fn a_wheel_back_and_forth_keeps_hover_following() {
+    let mut sh = Shell::new(ROWS);
+    sh.router.set_now(Some(strand_scene::time::Instant::now()));
+    sh.move_to(50.0, 10.0);
+    sh.settle();
+    for _ in 0..3 {
+        sh.wheel(0.0, 3.0);
+        sh.settle();
+        assert_eq!(sh.num("over"), 1.0);
+        sh.wheel(0.0, -3.0);
+        sh.settle();
+        assert_eq!(sh.num("over"), 0.0);
+    }
+}
+
+/// A node that goes gives up its hover whatever moves it made, and hover goes
+/// on to what takes its place, passing what lies below it on the way.
+#[test]
+fn a_node_gone_gives_up_its_hover() {
+    use strand_compiler::vm::value::Value;
+    let mut sh = Shell::new(
+        r#"
+export state away = false
+export state gone = false
+export state on = false
+panel P { width: 400; height: 100; anchor: top_left
+  col {
+    if !gone {
+      box { width: 100; height: 40; bg: #ff0000
+        x: away ? 200 : 0
+      }
+    }
+    box { width: 100; height: 40; bg: #00ff00
+      on change self.hover { on = self.hover }
+    }
+  }
+}
+"#,
+    );
+    sh.settle();
+    sh.router.set_now(Some(strand_scene::time::Instant::now()));
+    sh.move_to(50.0, 20.0);
+    sh.settle();
+    for _ in 0..2 {
+        sh.set("away", Value::Bool(true));
+        sh.settle();
+        sh.set("away", Value::Bool(false));
+        sh.settle();
+    }
+    sh.set("gone", Value::Bool(true));
+    sh.settle();
+    assert_eq!(
+        sh.get("on").as_bool(),
+        Some(true),
+        "the next box took its place"
+    );
+}
+
+/// Passing the same gap between rows again and again is no loop: a fling with
+/// no input in it lights each row it brings under the pointer.
+#[test]
+fn rows_passing_with_gaps_between_keep_hover_following() {
+    let rows: String = (0..30)
+        .map(|i| format!("    box {{ height: 20; shrink: 0; on change self.hover {{ if self.hover {{ over = {i} }} }} }}\n"))
+        .collect();
+    let mut sh = Shell::new(&format!(
+        "export state over = -1\nexport state top = 0\npanel P {{ width: 100; height: 100; anchor: top_left\n  col {{ gap: 4; y: top ~ 600ms\n{rows}  }}\n}}\n"
+    ));
+    sh.settle();
+    sh.router.set_now(Some(strand_scene::time::Instant::now()));
+    sh.move_to(50.0, 10.0);
+    sh.settle();
+    assert_eq!(sh.num("over"), 0.0);
+    sh.set("top", strand_compiler::vm::value::Value::float(-240.0));
+    sh.settle();
+    assert_eq!(sh.num("over"), 10.0, "the row it came to rest on");
 }

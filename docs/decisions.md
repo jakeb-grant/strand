@@ -14409,12 +14409,41 @@ each frame made, so equal boxes cost less than before; only a frame that moved
 a box tests the point. A held press keeps its chain, as motion does. Rejected:
 routing on every paint, which allocates a chain for a waveform that moves
 nothing; marking each thing that can move a box (scroll, layout, spring, row
-gone), which is many places and easy to miss one. A node that moves itself off
-a still pointer when hovered now flickers its `hover`, as in CSS: its author
-reads a parent that stays put, as for `pointer`. Proof:
+gone), which is many places and easy to miss one. Proof:
 `hover_and_the_cursor_follow_rows_moving_under_a_still_pointer`,
 `a_held_press_keeps_hover_when_rows_move_under_it`,
 `only_hit_boxes_that_moved_under_the_pointer_ask_for_routing`.
+
+**2026-10-31 · still-pointer, the rest rule (owner): a still pointer lets a surface
+come to rest.** Following made `when hover { y: -10 }` with the pointer in the strip
+the box leaves flip about every other frame for good (301 flips in 600 frames, a
+frame asked for every time), and any hover nudge has that edge. The rule: under a
+still pointer `hover` makes one move, from one innermost node to another, at most
+twice (`Router::repoint`, `STILL_MOVES`), and a third is refused, so the node keeps
+its hover. The count starts again when the pointer has moved, a wheel, button or key
+comes, or no hit box on the surface has moved for a second (`STILL_REST`). So the
+lift flips on, off, on, off, on and rests lifted and hovered, whatever moved it (`y`,
+`x`, `scale`, `width`, a spring or `~ instant`), and everything that follows once in
+one direction is untouched: rows passing the same gap are different moves, a knob
+that slides away and back makes each move once, a wheel starts the count again. A
+node gone gives up its hover whatever its count. What it costs: a node moved away a
+third time with no second's rest and no input (a marquee going round faster than
+that under a pointer left on it) keeps its hover until the pointer moves; a click
+tests afresh and lands right. Twice, not once: a row that overshoots past a pointer
+near its edge makes its entering move twice and must end lit. Rejected: testing a
+hovered node against its box without its own offset, which ends only `x` and `y` and
+not `scale`, a size or a shell's own feedback; a time limit on the round trip, since
+a slow spring's trip outlasts any limit worth having, so the loop would remain; going
+back to hover only on motion, which is the bug this fixes. A surface whose region
+moves with the lift (`hit: none` on its root) depends on what the compositor does
+when the region leaves the pointer, not on this rule; not run on one. Proof:
+`a_hover_lift_comes_to_rest`, seen failing without the rule;
+`a_node_slid_away_and_back_follows_each_time_after_a_rest`,
+`a_node_back_under_the_pointer_with_no_rest_keeps_hover_until_the_pointer_moves`,
+`a_wheel_back_and_forth_keeps_hover_following`,
+`rows_passing_with_gaps_between_keep_hover_following`,
+`a_node_gone_gives_up_its_hover`; launcher-results-144, qs-pager-sliders-1_25,
+heldd-hover-scroll and docs-guide-3 keep their approved recordings.
 
 ## hit-through
 

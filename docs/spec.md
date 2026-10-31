@@ -928,10 +928,15 @@ monitor, the keyboard always).
 - `hover` and the cursor follow what is under the pointer as the last
   frame drew it, also when what moved is the content and not the
   pointer (a list scrolled, a row closed, an animation), a frame later
-  at most. A press held keeps the node it went down on. A node that
-  moves itself off the pointer when hovered loses its `hover` and comes
-  back, as in CSS. A surface pays for this only with the pointer on it,
-  and only a frame that moved a hit box routes it again.
+  at most. A press held keeps the node it went down on. A still pointer
+  always lets a surface come to rest: under it `hover` makes one move,
+  from one node to another, at most twice, until the pointer moves, a
+  wheel, button or key comes, or no hit box has moved for a second. So
+  a node that moves itself off the pointer when hovered (`when hover {
+  y: -10 }` with the pointer in the strip it leaves) flips a few times
+  and stays hovered, and a node that slid away and back loses its
+  `hover` and takes it back. A surface pays for this only with the
+  pointer on it, and only a frame that moved a hit box routes it again.
   (decisions.md still-pointer)
 - **`trigger: hover`** on a `popup` gives its open state to the pointer.
   It opens while the pointer is on the element it is anchored to, after
