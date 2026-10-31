@@ -14353,3 +14353,23 @@ gates follow by the usual rule (measurement plus a 512 KiB reserve, rounded up
 to 256 KiB, CI about 48 KB above the container): GPU 29,097,984 B (111 × 256 KiB)
 and CPU-only 24,903,680 B (95 × 256 KiB). Proof:
 `the_release_binary_code_stays_within_its_gate`.
+
+## gpu-memory
+
+**2026-10-31 · gpu-memory: the warm device asks wgpu for small allocator blocks;
+its memory is measured in fdinfo, not PSS.** The docs' "+21 to +23 MB" for the
+warm device on Intel is PSS, which leaves out device memory: `drm-total-gtt` was
+292,956 KiB, and `GPUActive` in `/proc/meminfo` shows those pages are real. Of
+that, 186 MiB was room wgpu's default `MemoryHints::Performance` reserved and
+nothing used, in a device kept for the session (gpu-first), whatever the outputs.
+`MemoryHints::MemoryUsage` brings it to 129,116 KiB with no frame-time difference
+beyond noise on the hardware bench; a 4K target's own allocation costs about 1 ms
+once per size. Speed beats size, but here size was free. Left as they are: the
+4096² image atlas (64 MiB), which the warm frame makes by drawing an image, so
+that an animation's first image does not pay for it (about 2 ms for the texture;
+a warm frame without the image is 63,580 KiB, its first-frame cost unmeasured);
+and the warm device itself, which an owner ruling keeps. Numbers: benchmarks.md
+"GPU memory of the warm device". Proof:
+`a_warm_device_reserves_little_beyond_what_it_uses`, which fails on the default
+on lavapipe and Intel alike.
+

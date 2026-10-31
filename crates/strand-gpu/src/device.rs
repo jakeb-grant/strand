@@ -75,6 +75,12 @@ impl Device {
             label: Some("strand"),
             // A presented frame's GPU time (`timer.rs`), where there is one.
             required_features: adapter.features() & crate::timer::FEATURES,
+            // (gpu-memory) The device lives as long as the shell, so what
+            // the allocator holds in reserve is real memory held all
+            // session. The default (`Performance`) starts each kind of
+            // memory at a 128 MiB or 64 MiB block, 186 MiB of them idle on
+            // a warm shell; these start at 8 and 4 MiB and grow to 64 and 32.
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
             ..wgpu::DeviceDescriptor::default()
         }))
         .map_err(|e| {

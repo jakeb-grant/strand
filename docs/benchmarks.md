@@ -785,3 +785,41 @@ compositor 1.7-1.8), and with the final fix, on a busier host, 13.0 and 12.9
 the power state not noted, the same bench read 19.9 without and about 4.5 with. Frames drawn and unchanged
 hardly moved (about 165 and 435 of 600): skipped frames matter less here than
 what an unchanged frame no longer costs.
+
+## GPU memory of the warm device (gpu-memory)
+
+Every earlier GPU figure here and in design.md is PSS, which does not hold a
+device's memory: the pages are the kernel's and only `drm-*` in
+`/proc/<pid>/fdinfo` counts them. Intel PTL (ANV, Mesa 25.2.8, xe) through
+`gpu.sh`, 2026-10-31, `drm-total-gtt`, always equal to `drm-resident-gtt`:
+
+| Warm device, KiB | Default hints | `MemoryUsage` |
+| --- | --- | --- |
+| Device open alone, the driver's share | 24,664 | 24,664 |
+| Driver, after the warm frame | 30,812 | 30,812 |
+| Allocator blocks reserved | 262,144 | 98,304 |
+| Of them in use | 75,790 | 75,790 |
+| Of those, the image atlas (4096², drawn once by the warm frame) | 65,536 | 65,536 |
+| **Total** | **292,956** | **129,116** |
+
+The default's blocks are 131,072 device-local and 65,536 for each of two host
+memory types. The total is the same to the KiB with no Wayland client at all,
+and in the real shell on one 1280×720 output, one 3840×2160 output and four
+outputs with the owner's config, so it scales with neither. With no device it
+is 0. Animating adds 10,240 under either setting (hover over the bar: 303,196
+and 139,356).
+
+It is real RAM. While a process held the device, the host's `GPUActive`
+(`/proc/meminfo`) rose by 305 MiB with the default and 141 MiB with
+`MemoryUsage`, three runs each: strand's figure plus the 12 MiB of the leg's own sway.
+`GPUReclaim`, TTM's pool of free pages, fell at the same time: the pages came
+from it first, and went back to it at exit.
+
+What it costs (`anim_bench`, GPU leg, 1.5×, two rounds of two repeats, under
+other builds' load): p50, p95 and the worst cold frame of panel-open,
+resize-shadow, backdrop-blur, crossfade and cover-turn did not differ beyond the
+rounds' own spread. A new 3840×2160 target is the one thing that does: it no
+longer fits a block, so it gets its own memory, 1.3 ms instead of 0.2 ms for its
+first create, clear and wait, and 0.85 ms instead of 0.12 ms for each later one.
+Targets are kept between frames, so that is per surface size, not per frame.
+

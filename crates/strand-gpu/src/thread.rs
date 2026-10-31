@@ -1744,6 +1744,41 @@ mod tests {
         assert_eq!(thread_stats_since(None), "");
     }
 
+    /// (gpu-memory) A warm device holds in reserve little more than it
+    /// uses: the memory hints' blocks, not wgpu's default of 128 MiB and
+    /// 64 MiB ones, held for the whole session whatever the shell draws.
+    /// On the owner's Intel GPU the warm state uses 75,790 kB (the image
+    /// atlas 65,536) of 98,304 kB reserved, 262,144 kB with the default.
+    #[test]
+    fn a_warm_device_reserves_little_beyond_what_it_uses() {
+        let dev = match Device::open(&GpuOptions::from_env()) {
+            Ok(d) => d,
+            Err(e) => {
+                let required = std::env::var("STRAND_REQUIRE_GPU").is_ok_and(|v| v == "1");
+                assert!(!required, "STRAND_REQUIRE_GPU=1 but no GPU: {e}");
+                eprintln!("skipped: no GPU ({e})");
+                return;
+            }
+        };
+        let mut st = State::new(&dev);
+        st.warm(&dev);
+        let report = dev
+            .device
+            .generate_allocator_report()
+            .expect("a Vulkan device reports its allocator");
+        let spare = report.total_reserved_bytes - report.total_allocated_bytes;
+        eprintln!(
+            "warm: {} kB allocated of {} kB reserved",
+            report.total_allocated_bytes / 1024,
+            report.total_reserved_bytes / 1024
+        );
+        assert!(
+            spare <= 48 << 20,
+            "{spare} B reserved beyond the {} B in use",
+            report.total_allocated_bytes
+        );
+    }
+
     /// (perf-gpu-retain review) A backdrop drawn anew every frame (its
     /// key changes, as when what is behind it moves) makes no texture
     /// once the surface's pool has its two: what is behind it and its
