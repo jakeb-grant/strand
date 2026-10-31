@@ -597,6 +597,11 @@ struct Surface {
     /// buffer.
     geometry_dirty: bool,
     callback_pending: bool,
+    /// (gpu-pace) Callbacks still to come that no longer count: one of an
+    /// shm frame when the surface was handed off, or one given up on.
+    /// Taken for the newest, it would make the next present's wait for
+    /// its own callback look over, a frame early, for good.
+    stale_callbacks: u32,
     /// Buffer commits so far; tags presentation feedback.
     commit_seq: u64,
     /// The buffer commit whose presentation (or discard) we wait for
@@ -695,6 +700,14 @@ impl Surface {
 
     fn is_fractional(&self) -> bool {
         self.viewport.is_some() && self.fractional.is_some()
+    }
+
+    /// The callback being waited for, if any, no longer counts when it
+    /// comes.
+    pub(crate) fn forget_callback(&mut self) {
+        if std::mem::take(&mut self.callback_pending) {
+            self.stale_callbacks += 1;
+        }
     }
 
     /// Waiting for a frame callback or for the last frame's presentation.
@@ -925,6 +938,9 @@ pub struct State<H: SurfaceHost + 'static> {
     /// awaited with new content waiting: marked again at
     /// [`THROTTLE_GIVE_UP`] unless the frame settles first.
     give_up_timers: HashMap<SurfaceId, RegistrationToken>,
+    /// (gpu-pace) The compositor offers `wp_fifo_manager_v1`: Mesa's
+    /// presents do not wait for a frame callback (`State::present_due`).
+    wsi_fifo: bool,
     /// (M4) The session lock (`session_lock.rs`).
     session_lock: session_lock::SessionLock,
     /// (M4) Surfaces the GPU thread commits (`gpu_handoff.rs`).
@@ -1071,6 +1087,9 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
                 StrandGlobal,
             )
             .ok();
+        let wsi_fifo = globals
+            .contents()
+            .with_list(|list| list.iter().any(|g| g.interface == "wp_fifo_manager_v1"));
         let mut offered = globals
             .contents()
             .with_list(|list| Offered::from_registry(list.iter().map(|g| g.interface.as_str())));
@@ -1159,6 +1178,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             expiry_timer: None,
             deadline_timers: HashMap::new(),
             give_up_timers: HashMap::new(),
+            wsi_fifo,
             session_lock: session_lock::SessionLock::new(session_lock),
             gpu: gpu_handoff::HandOffs::default(),
             dnd,

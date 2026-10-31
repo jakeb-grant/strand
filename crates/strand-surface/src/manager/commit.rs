@@ -552,7 +552,11 @@ impl<H: SurfaceHost + 'static> CompositorHandler for State<H> {
         };
         self.stats.frames_done += 1;
         if let Some(s) = self.surfaces.get_mut(&id) {
-            s.callback_pending = false;
+            if s.stale_callbacks > 0 {
+                s.stale_callbacks -= 1;
+            } else {
+                s.callback_pending = false;
+            }
             s.stats.frames_done += 1;
             if !s.throttled() {
                 self.cancel_give_up(id);

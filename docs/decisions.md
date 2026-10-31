@@ -14373,3 +14373,38 @@ and the warm device itself, which an owner ruling keeps. Numbers: benchmarks.md
 `a_warm_device_reserves_little_beyond_what_it_uses`, which fails on the default
 on lavapipe and Intel alike.
 
+## gpu-pace
+
+**2026-10-31 · gpu-pace: a presented surface's next frame waits for its last
+present's frame callback, on the main thread, not in Mesa on the GPU thread.**
+Asked why first acquires took about 52 ms and buffers about 40 ms, on real Intel
+hardware the first acquire measured at most 0.12 ms on Ubuntu's sway 1.9, Arch's
+sway 1.12 with explicit sync, and labwc, and no slow acquire appeared at all. Those
+figures were not reproduced, since no compositor here offers `wp_fifo_manager_v1`
+as Hyprland does, and they remain unexplained. What the same trace did show was
+Strand's: `Presented` paced a surface, so its next frame was sent at once and
+Mesa's `queue_present` blocked in the one GPU thread until the last frame's
+callback. Every other surface's frames queued behind that wait (15 ms in the
+queue), a 120 Hz output animating beside 60 Hz ones ran at 61 frames/s, and an
+output turned off stopped all of them for good, since Mesa's wait has no timeout.
+Since gpu-stay more surfaces stay on that thread. Now the host asks for a frame
+callback as pending state before it sends a frame (`ask_present_callback`) and
+sends the next once it has come (`present_due`). The thread does not wait, the
+120 Hz output runs at 121 frames/s, and the output's own surface alone stops
+while it is off. A callback still owed when a surface is handed off counts as
+stale: taken for the newest, it put every later present a frame early, back into
+Mesa's wait, in two of three runs on Arch's sway before that was fixed. The give-up a CPU
+surface has is kept only with `wp_fifo_manager_v1`, where Mesa does not wait for
+callbacks and a lost one should not stop the surface. Without it, a frame sent
+after a give-up stops every surface, as measured: all four at 1 s of `power off`.
+A `Commit` waits for the callback too, but asks for none, as the thread may answer
+it without a commit. The compositor gets about one more wake per frame (the
+request reaches it apart from the commit), while Strand's own about halve. Left alone:
+a promotion's attach (up to about 20 ms, once per surface since gpu-stay). Nothing
+here ran on Hyprland, so neither its FIFO path nor the 52 ms is covered; there the
+frames should stop queuing up in the compositor's FIFO, which is unmeasured. Proof:
+`a_presented_frame_waits_for_its_callback_or_gives_up` for the manager's half, which
+fails if the stale count, the wait or the FIFO rule goes; the host's wiring only
+shows on a presenting GPU, so benchmarks.md "Presenting on one GPU thread" is its
+proof.
+

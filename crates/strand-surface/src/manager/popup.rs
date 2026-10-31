@@ -411,6 +411,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             buffers: ShmBuffers::new(id, self.max_buffers),
             geometry_dirty: true,
             callback_pending: false,
+            stale_callbacks: 0,
             commit_seq: 0,
             in_flight: None,
             throttled_at: None,

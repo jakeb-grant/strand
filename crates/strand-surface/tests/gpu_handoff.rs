@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use common::{BAR, Sway, TestHost, WAIT, bar_spec, layer_spec, pump, wait_for_bars};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
-use strand_fake_wayland::{Fake, SurfaceGlobals};
+use strand_fake_wayland::{Cmd, Fake, SurfaceGlobals};
 use strand_scene::{LogicalRect, NodeId, NodeKind, SurfaceChange};
 use strand_surface::{Config, SurfaceManager};
 use wayland_client::Connection;
@@ -126,6 +126,132 @@ fn a_surface_destroyed_while_handed_off_waits_for_take_back() {
     mgr.state_mut().take_back(id);
     let ok = mgr.dispatch_until(WAIT, |_| !alive(&fake)).unwrap();
     assert!(ok, "the wl_surface was not destroyed at take_back");
+}
+
+/// (gpu-pace) A presented surface's next frame waits for the frame
+/// callback of its last present, so its FIFO wait never holds the one GPU
+/// thread; given up on only where Mesa does not wait for it too; and a
+/// surface that sends no frame asks for nothing.
+#[test]
+fn a_presented_frame_waits_for_its_callback_or_gives_up() {
+    use wayland_client::Proxy;
+    use wayland_client::backend::ObjectId;
+    use wayland_client::protocol::wl_surface::WlSurface;
+
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let conn = Connection::from_socket(fake.connect()).expect("a connection to the fake");
+    let mut mgr =
+        SurfaceManager::with_connection(conn.clone(), TestHost::default(), Config::default())
+            .expect("surface manager starts");
+    let id = show_panel(&fake, &mut mgr);
+    mgr.dispatch_until(Duration::from_millis(200), |_| false)
+        .unwrap();
+    // The hand-off comes with an shm frame's callback still to come.
+    fake.cmd(Cmd::HoldFrames(true));
+    fake.sync();
+    let painted = mgr.state().surface(id).unwrap().stats.commits;
+    change(&mut mgr, 40.0);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id).is_some_and(|i| i.stats.commits > painted)
+        })
+        .unwrap();
+    assert!(ok, "the shm frame was not committed");
+    let handles = mgr.state_mut().raw_handles(id).expect("raw handles");
+    assert!(mgr.state_mut().hand_off(id));
+    let RawWindowHandle::Wayland(w) = handles.window else {
+        panic!("not a Wayland handle");
+    };
+    // SAFETY: the handle names the manager's live wl_surface on `conn`.
+    let obj = unsafe { ObjectId::from_ptr(WlSurface::interface(), w.surface.as_ptr().cast()) }
+        .expect("the wl_surface's id");
+    let wsi = WlSurface::from_id(&conn, obj).expect("the wl_surface");
+
+    assert!(mgr.state().present_due(id), "nothing sent yet");
+    let idle = mgr.state().surface(id).unwrap().stats.frame_requests;
+    mgr.dispatch_until(Duration::from_millis(100), |_| false)
+        .unwrap();
+    assert_eq!(
+        mgr.state().surface(id).unwrap().stats.frame_requests,
+        idle,
+        "a surface that sends no frame asks for no callback"
+    );
+
+    // A frame goes: not due until its present has been answered. The
+    // shm frame's callback coming now (late) does not answer it: it would
+    // make every later present wait for its own callback in the WSI, on
+    // the GPU thread, for good.
+    mgr.state_mut().ask_present_callback(id);
+    assert!(!mgr.state().present_due(id), "its callback has not come");
+    let done = mgr.state().surface(id).unwrap().stats.frames_done;
+    fake.cmd(Cmd::HoldFrames(false));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surface(id).is_some_and(|i| i.stats.frames_done > done)
+        })
+        .unwrap();
+    assert!(ok, "the shm frame's callback never came");
+    assert!(
+        !mgr.state().present_due(id),
+        "the shm frame's callback was taken for the present's"
+    );
+    mgr.dispatch_until(Duration::from_millis(100), |_| false)
+        .unwrap();
+    assert!(
+        !mgr.state().present_due(id),
+        "no commit yet, so no callback: still waiting"
+    );
+    wsi.commit();
+    conn.flush().unwrap();
+    let ok = mgr.dispatch_until(WAIT, |s| s.present_due(id)).unwrap();
+    assert!(ok, "the present's callback never made it due");
+
+    // A surface the compositor does not draw (an output powered off): its
+    // next frame waits. Sent, Mesa's present would wait for this callback
+    // with no timeout and stop every other surface.
+    fake.cmd(Cmd::HoldFrames(true));
+    fake.sync();
+    mgr.state_mut().ask_present_callback(id);
+    wsi.commit();
+    conn.flush().unwrap();
+    mgr.dispatch_until(Duration::from_millis(1200), |_| false)
+        .unwrap();
+    assert!(!mgr.state().present_due(id), "given up without a FIFO");
+    fake.cmd(Cmd::HoldFrames(false));
+    let ok = mgr.dispatch_until(WAIT, |s| s.present_due(id)).unwrap();
+    assert!(ok, "drawn again: the held callback came");
+
+    // With `wp_fifo_manager_v1` Mesa does not wait for it, so it is given
+    // up on, and the give-up's timer wakes the loop by itself.
+    mgr.state_mut().set_wsi_fifo(true);
+    fake.cmd(Cmd::HoldFrames(true));
+    fake.sync();
+    let asked = std::time::Instant::now();
+    mgr.state_mut().ask_present_callback(id);
+    wsi.commit();
+    conn.flush().unwrap();
+    mgr.dispatch_until(Duration::from_millis(300), |_| false)
+        .unwrap();
+    assert!(!mgr.state().present_due(id), "the callback is held");
+    let ok = mgr.dispatch_until(WAIT, |s| s.present_due(id)).unwrap();
+    assert!(ok, "never given up on");
+    assert!(
+        asked.elapsed() >= Duration::from_millis(900),
+        "given up early"
+    );
+    fake.cmd(Cmd::HoldFrames(false));
+    mgr.state_mut().set_wsi_fifo(false);
+
+    // A frame that failed: no present will answer it.
+    mgr.state_mut().ask_present_callback(id);
+    mgr.state_mut().forget_present_callback(id);
+    assert!(mgr.state().present_due(id));
+
+    // Taken back: the CPU's frames do not wait for a callback no frame
+    // will answer.
+    mgr.state_mut().ask_present_callback(id);
+    mgr.state_mut().take_back(id);
+    assert!(mgr.state().present_due(id));
 }
 
 fn alive(fake: &Fake) -> bool {

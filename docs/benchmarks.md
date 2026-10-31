@@ -823,3 +823,43 @@ longer fits a block, so it gets its own memory, 1.3 ms instead of 0.2 ms for its
 first create, clear and wait, and 0.85 ms instead of 0.12 ms for each later one.
 Targets are kept between frames, so that is per surface size, not per frame.
 
+## Presenting on one GPU thread (gpu-pace)
+
+Intel PTL through `gpu.sh`'s render node, 2026-10-31, release builds, three
+interleaved rounds under another agent's builds (load 2 to 13). Four outputs of
+sway, three at 60 Hz and one at 120 Hz, each with a 640×420 panel whose shader
+runs on the clock. Sway 1.12 on Arch, GLES2, Mesa 26.2.6, explicit sync offered;
+no compositor here offers `wp_fifo_manager_v1`. Frames counted from a timing
+patch on the GPU thread that is not committed. The frame rates and wait times
+held between rounds; CPU percentages did not (12 to 37% of a core for the same
+build), so none is compared.
+
+| Per surface | Before | With the callback |
+| --- | --- | --- |
+| Frames/s, the 60 Hz outputs | 61.4–61.5 | 61.4–61.7 |
+| Frames/s, the 120 Hz output | 61.4–61.5 | 120.5–121.9 |
+| Median wait in the thread's queue, surfaces not leading | 15.2–15.5 ms | 0.01–1.6 ms |
+| Median `present`, the surface that leads | 12.8–13.7 ms | 0.06–0.10 ms |
+| Worst first or later `acquire` | 0.18 ms | 0.20 ms |
+
+Wakes per second with only the 120 Hz output's panel, at the same 120–122
+frames/s: strand 764–815 before and 387–490 after, its GPU thread 381–409 and
+122–164; its compositor 246–251 and 363–366 (the callback's request reaches it
+apart from the commit). On one surface of labwc at 60 Hz strand went from 382–389
+to 227–275. A surface on the CPU path has nothing to do with this: a waveform
+that promotes nothing is 291–308 before and 292–294 after.
+
+An output turned off while its surface animated stopped every presented surface
+before this: with an output disabled by `swaymsg`, Ubuntu's sway 1.9 and Mesa
+25.2.8, the GPU thread stayed in that surface's present for the rest of the run,
+at least 21 s, and the panels that replaced it never drew (`none drawn`) in all
+three rounds. Now the three other surfaces keep their 62, 62 and 123 frames/s
+through 6 s of `power off`, and that one goes from 0 to 62 frames/s when it comes
+back.
+
+A promotion's own cost (`try_surface`, the GPU thread, off the frame path) is
+1.2 to 14.1 ms for the capabilities and 0.9 to 13.9 ms for the configure, the
+first surface of a process the slower, in 12 runs on Ubuntu's sway and labwc; one
+attach of about 70 ms was seen once, in a debug build's first run, and did not
+return. The first `acquire` of 78 surfaces was at most 0.12 ms.
+

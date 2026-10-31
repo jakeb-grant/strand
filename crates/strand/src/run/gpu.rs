@@ -94,6 +94,12 @@ mod host {
         /// The sent frame's size and scale, for its `damage` log line
         /// once presented.
         sent: Option<(Size, Scale)>,
+        /// (gpu-pace) Its last present's frame callback has not come: its
+        /// next frame waits for that, which wakes the loop.
+        paced: bool,
+        /// (gpu-pace) A `Commit` waiting for that too: a present then
+        /// would wait for the callback on the GPU thread.
+        commit_owed: bool,
     }
 
     /// A surface attached (asked or answered).
@@ -235,6 +241,12 @@ mod host {
                 self.change(state, change);
             }
             for r in state.host_mut().renderer.take_gpu_requests() {
+                if let GpuRequest::Commit(id) = r
+                    && let Some(p) = self.presented.get_mut(&id)
+                {
+                    p.commit_owed = true;
+                    continue;
+                }
                 self.send(r);
             }
             self.present(state);
@@ -311,7 +323,7 @@ mod host {
             let held = self
                 .presented
                 .iter()
-                .filter(|(_, p)| !p.in_flight)
+                .filter(|(_, p)| !p.in_flight && !p.paced)
                 .filter_map(|(id, _)| renderer.frame_deadline(*id))
                 .min()
                 .map(|t| t.saturating_duration_since(now));
@@ -368,6 +380,8 @@ mod host {
                                     scale,
                                     in_flight: false,
                                     sent: None,
+                                    paced: false,
+                                    commit_owed: false,
                                 },
                             );
                         }
@@ -409,6 +423,7 @@ mod host {
                             p.in_flight = false;
                             p.sent = None;
                         }
+                        state.forget_present_callback(*surface);
                     }
                     GpuReply::Exited => {
                         // Every swapchain went with the thread: the
@@ -494,12 +509,21 @@ mod host {
                         scale,
                     });
                 }
-                if p.in_flight || releasing {
+                p.paced = !state.present_due(*id);
+                if p.in_flight || releasing || p.paced {
                     continue;
+                }
+                if std::mem::take(&mut p.commit_owed) {
+                    gpu.send(GpuRequest::Commit(*id));
                 }
                 let r: &mut Renderer = &mut state.host_mut().renderer;
                 if let Some(frame) = r.paint_gpu(*id, now) {
                     let (size, scale) = (frame.size, frame.scale);
+                    // Asked before the frame goes, so the request reaches
+                    // the compositor ahead of the commit the GPU thread
+                    // makes for it; only a frame that goes asks one, so
+                    // an idle surface has no wake.
+                    state.ask_present_callback(*id);
                     gpu.send(GpuRequest::Frame(frame));
                     p.in_flight = true;
                     p.sent = Some((size, scale));
@@ -741,6 +765,8 @@ mod host {
                     scale: Scale::ONE,
                     in_flight: false,
                     sent: None,
+                    paced: false,
+                    commit_owed: false,
                 },
             );
             let w = host.wait(&r).expect("woken at the hold's end");
@@ -752,6 +778,11 @@ mod host {
                 pr.in_flight = true;
             }
             assert_eq!(host.wait(&r), None, "in flight: its `Presented` wakes it");
+            if let Some(pr) = host.presented.get_mut(&s) {
+                pr.in_flight = false;
+                pr.paced = true;
+            }
+            assert_eq!(host.wait(&r), None, "paced: its frame callback wakes it");
         }
 
         /// The run's exit ends the GPU thread before the surface manager
