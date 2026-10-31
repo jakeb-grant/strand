@@ -981,6 +981,10 @@ struct SeatPointer {
     /// last enter.
     button_serial: Option<u32>,
     enter_serial: Option<u32>,
+    /// (still-pointer) How far the surface it is on moved under it since the
+    /// compositor last said where it is: a press with no motion says nothing
+    /// new, and a surface growing from its far edge moved its coordinates.
+    moved_under: (f32, f32),
     /// (flex) The surface it is on, and the shape last set there
     /// (`None`: none since it entered).
     on: Option<SurfaceId>,

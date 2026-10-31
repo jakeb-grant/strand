@@ -171,6 +171,14 @@ impl<H: SurfaceHost + 'static> State<H> {
         if s.origin == origin {
             return;
         }
+        // (still-pointer) The pointer stays where it is on the screen.
+        if let (Some(old), Some(new)) = (s.origin, origin) {
+            let d = ((old.0 - new.0) as f32, (old.1 - new.1) as f32);
+            for p in self.pointers.iter_mut().filter(|p| p.on == Some(id)) {
+                p.moved_under.0 += d.0;
+                p.moved_under.1 += d.1;
+            }
+        }
         s.origin = origin;
         if let Some(o) = origin {
             self.host.surface_placed(id, o);

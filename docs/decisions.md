@@ -14524,6 +14524,22 @@ when the region leaves the pointer, not on this rule; not run on one. Proof:
 `a_node_gone_gives_up_its_hover`; launcher-results-144, qs-pager-sliders-1_25,
 heldd-hover-scroll and docs-guide-3 keep their approved recordings.
 
+**2026-10-31 · still-pointer, a surface moved under the pointer.** Routing again tested
+the point the compositor last gave, in the surface's own coordinates, and those move
+when a surface grows from its far edge: under a still pointer on a `top_right` panel
+that grew 200 px, the blue box stayed where it was on the screen and lost its hover to
+the red one 100 px from the pointer, for good, with no motion from sway to correct it.
+Where a surface lies is already derived (`set_origin`), so a change of origin now moves
+the stored point by as much, in the router (`Router::shift_pointer`) and in the manager
+(`SeatPointer::moved_under`, which a press or wheel with no motion is reported through,
+as it hit the wrong box too). It is not the pointer moving, so the count of moves
+stands. A compositor that does send a motion gives the same point, and it replaces
+ours. Rejected: skipping the routing on a frame whose size changed, which leaves hover
+on a node really moved away by that frame. Proof, on sway, seen failing without each
+half: `hover_stays_under_a_still_pointer_as_a_right_anchored_panel_grows`,
+`hover_stays_under_a_still_pointer_as_a_bottom_anchored_panel_grows`. Hyprland was not
+run.
+
 ## hit-through
 
 **2026-10-31 · hit-through: `hit: none` on a surface's root reaches past the

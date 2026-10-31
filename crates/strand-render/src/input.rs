@@ -1248,6 +1248,24 @@ impl Router {
         self.flush(scene)
     }
 
+    /// (still-pointer) `surface` moved on the screen under a pointer that
+    /// did not: where the pointer is on it moves by `(dx, dy)`, whatever the
+    /// compositor has said yet, or the next [`Router::repoint`] tests a point
+    /// that is somewhere else now. It is not the pointer moving, so the moves
+    /// made under it still count. True if a pointer was on it.
+    pub fn shift_pointer(&mut self, surface: SurfaceId, dx: f32, dy: f32) -> bool {
+        let Some(at) = self.pointer.get_mut(&surface) else {
+            return false;
+        };
+        at.x += dx;
+        at.y += dy;
+        if let Some(still) = self.still.get_mut(&surface) {
+            still.at.x += dx;
+            still.at.y += dy;
+        }
+        true
+    }
+
     /// (flex) Reactive `focus:`: a node whose `focus:` turned true takes
     /// the keyboard focus of its surface, if that surface has the
     /// keyboard (one that has not yet takes its first `focus: true` node

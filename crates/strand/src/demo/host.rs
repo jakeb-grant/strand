@@ -1401,7 +1401,20 @@ impl SurfaceHost for Host {
     }
 
     fn surface_placed(&mut self, surface: SurfaceId, origin: (i32, i32)) {
-        self.origins.insert(surface, origin);
+        // (still-pointer) It moved under a pointer that stays where it is on
+        // the screen: a panel growing from its far edge, an exclusive zone.
+        // A compositor that says so with a motion says the same.
+        if let (Some(old), Some(f)) = (self.origins.insert(surface, origin), &mut self.logic)
+            && old != origin
+            && f.router.shift_pointer(
+                surface,
+                (old.0 - origin.0) as f32,
+                (old.1 - origin.1) as f32,
+            )
+        {
+            self.renderer
+                .set_pointer(surface, f.router.pointer(surface));
+        }
         self.send_origin(surface);
         self.recorder
             .placed(strand_core::flight::now_ns(), surface, origin.0, origin.1);
