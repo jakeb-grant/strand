@@ -14423,3 +14423,22 @@ a corner). Wave-cost is untouched: a surface without it does no more work than a
 tree lookup per commit, and one with it builds the list per commit, no wake or
 frame. Proof: `crates/strand-compiler/tests/hit_through.rs`;
 `a_click_on_a_hit_none_panels_empty_area_reaches_what_is_behind` on sway.
+
+## first-read
+
+**2026-10-30 · first-read: a size is measured before its first read.** The owner
+saw `isl.width`, read as a popup mounted, give a stale small width while the pill
+sat idle. The repro on sway: a width first read in a closed popup's `on show` gives
+0 however wide the element is, because render reports a size only once something
+has read it, and the answer comes after the handler has run; a binding catches up a
+frame later (a spring starts from 0, which reads as a small width), a handler never
+does. Once read, it stayed current with the element idle, moving or the popup
+closed, in every order tried, so a small width other than 0 was not reproduced. So
+an element whose `width` or `height` is read through `self` or its id is watched
+from its mount, as `pointer` already was (`Program::node_watch`). A shell that
+reads none asks for none. `box` stays as it was: reading it costs a frame's hold
+and a report of every move, it is documented to read zeros until reported, and its
+first value snaps in rather than springing. Through a value passed elsewhere, where
+the read is not followed, a size is still measured from the first read. Proof:
+`a_width_first_read_as_a_popup_mounts_is_already_known`,
+`only_what_is_read_is_measured`.

@@ -299,3 +299,56 @@ fn a_held_press_keeps_hover_when_rows_move_under_it() {
     sh.settle();
     assert_eq!(sh.num("over"), 2.0);
 }
+
+/// (first-read) `isl.width` read for the first time as something mounts (a
+/// popup's `on show`, a binding in it) gives the laid-out width: the element
+/// is measured from its own mount. It read 0 until the answer to that first
+/// read came back, which a handler never sees again.
+#[test]
+fn a_width_first_read_as_a_popup_mounts_is_already_known() {
+    let mut sh = Shell::new(
+        r#"
+export state o = false
+export state seen = -1.0
+export state seen_h = -1.0
+panel P { anchor: top_left; width: 200; height: 100
+  box { id: isl; width: 150; height: 30; x: 0
+    popup { open: o
+      on show { seen = isl.width; seen_h = isl.height }
+      box { width: 10; height: 10 }
+    }
+  }
+}
+"#,
+    );
+    assert_eq!(sh.num("seen"), -1.0, "not read yet");
+    sh.set("o", strand_compiler::vm::value::Value::Bool(true));
+    sh.settle();
+    assert_eq!(sh.num("seen"), 150.0);
+    assert_eq!(sh.num("seen_h"), 30.0);
+}
+
+/// (first-read) Measuring from the mount is for elements something reads: a
+/// shell that reads no size asks render for none.
+#[test]
+fn only_what_is_read_is_measured() {
+    let sh = Shell::new(
+        r#"
+panel P { anchor: top_left; width: 200; height: 100
+  box { id: isl; width: 150; height: 30
+    on click { }
+  }
+}
+"#,
+    );
+    let tree = sh.r.tree();
+    let boxes = sh.nodes("P", strand_scene::NodeKind::Box);
+    assert_eq!(boxes.len(), 1);
+    assert!(
+        tree.get(boxes[0])
+            .unwrap()
+            .get(strand_scene::Prop::Watch)
+            .is_none(),
+        "not read, not measured"
+    );
+}

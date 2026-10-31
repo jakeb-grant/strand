@@ -1604,9 +1604,8 @@ impl Ctx {
             }
         }
         state.scene.set(Some(id));
-        if self.vm.prog.pointer_watch.contains(&e.node) {
-            self.vm
-                .watch(&state, crate::vm::value::NodeState::WATCH_POINTER);
+        if let Some(bits) = self.vm.prog.node_watch.get(&e.node) {
+            self.vm.watch(&state, *bits);
         }
         self.note_node(key.clone(), id, kind, state.clone());
         self.mount_aliases(rt, e, env, &state);

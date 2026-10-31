@@ -90,10 +90,11 @@ pub struct Program {
     /// through it, as node watch bits ([`reads::alias_watch`]): the
     /// elements it may name are measured only for those.
     pub alias_watch: BTreeMap<NodeIdx, u8>,
-    /// (flex) Elements whose `pointer` is read (`self.pointer`,
-    /// `grip.pointer`): render reports the pointer over them from their
-    /// mount ([`reads::alias_watch`]).
-    pub pointer_watch: std::collections::BTreeSet<NodeIdx>,
+    /// (flex, first-read) Elements whose `pointer`, `width` or `height` is
+    /// read (`self.pointer`, `isl.width`), as node watch bits:
+    /// render reports them from their mount, so the first read finds
+    /// them ([`reads::alias_watch`]).
+    pub node_watch: BTreeMap<NodeIdx, u8>,
     /// The checked `shader` files, by path as written (M4): what a
     /// `shader` node's `Prop::Shader` carries. Set from
     /// [`crate::Compiled::shaders`] by `Build::lowered`.

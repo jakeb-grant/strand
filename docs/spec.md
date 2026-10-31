@@ -966,7 +966,10 @@ monitor, the keyboard always).
 - `self.width` and `self.height` read the enclosing node's laid-out
   size, for container queries: `when self.width < 300 { … }`. A query
   switches with 4 px of hysteresis, so it cannot flicker, and costs at
-  most one extra layout pass per frame.
+  most one extra layout pass per frame. An element whose `width` or
+  `height` is read anywhere is measured from its mount, so the
+  first read, in a handler or as a popup mounts, finds what is laid out
+  (decisions.md first-read).
 - **`name.box`** reads the laid-out box of the node with `id: name` as
   a `Rect` (`x`, `y`, `width`, `height`), in logical pixels from the
   top-left corner of its surface's box (a shadow's overhang lies
