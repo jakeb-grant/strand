@@ -14365,3 +14365,18 @@ holds, and at the top, or with a wheel on its way back there, a new row shows.
 Half a logical pixel counts as the top. Only a `list` follows a row, so a plain
 `scroll` is unchanged. Proof:
 `a_row_added_above_the_first_shows_at_the_top_of_a_list`.
+
+## output-change
+
+**2026-10-30 · output-change: an output's change reaches the surfaces on it.**
+A surface learned its output's size when it entered that output and never again,
+so one made just before its output's mode and scale settled (sway's
+`create_output` then `output … scale`; a monitor being plugged in) kept the width
+it had asked for, 1920 on an output of 1706 logical pixels, and, once its content
+changed and the surface manager capped the old width to the output, 1762: the
+output plus the shadow's overhang. `Host::monitor_changed` now gives the renderer
+the new bounds for every surface on that output, as entering it does; a window
+keeps the bounds its configure told. The width comes from those bounds, so the
+fix does not touch `LayerConfig::fit`. Proof:
+`a_spanned_panel_follows_its_outputs_mode_and_scale`, with the numbers above seen
+failing first on sway; Hyprland was not run.
