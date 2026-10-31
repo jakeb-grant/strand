@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "snapped-growth-cut"
 verdict good
-note "growth, first reference: read k0-75: c narrows the centred card 100 -> 88 from its centre (k1-4); ca-cal-calc fades the leaving rows out and then springs the card 245 -> 64 -> 65 tall about its centre (k26-43); erase grows it back a letter at a time, each retargeting the spring with its velocity (k45-58), the returning rows cut by its box and the prompt riding its top edge; clear widens it 88 -> 100 (k66-72); and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Launcher k1-68 (31 frames, first i=2,0,97,245)"
-date 2026-10-23
-rev "abffdefe+changes"
+note "centred-surface, STEP_LANDED: as a wider surface, on-screen boxes match the old recording apart from at most a pixel around a spring (exact centres and whole-pixel landings), with no step beyond the old one's; compared from the trace per tick and node (decisions.md span-fit)."
+date 2026-10-31
+rev "a4ea7ce0+changes"
 approver "claude"
 scenario 2f90aa15de106fa5
-seal d4c2f099d770dd29
+seal f4ec5b6e7e0ad6f8
 S1 0 - "panel Launcher"
 N0 "card|shell.strand:7:3|#0" "col#card"
 N1 "prompt|shell.strand:8:5|#0" "text#prompt"
@@ -67,8 +67,9 @@ n0 x=6 w=88
 n1 x=46 ink=46,13,7,8
 n17 x=6 w=88
 k5
-n1 x=47 ink=47,13,7,8
+n1 x=48 ink=48,13,7,8
 k6
+n1 x=47 ink=47,13,7,8
 k7
 k8
 k9

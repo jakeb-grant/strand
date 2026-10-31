@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "crossfade-interrupted"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; aligned tick by tick with the block before: 60 -> 56 ticks, every matched tick equal within a spring's tolerance, every dropped tick a spring's tail or a zero-opacity exit unmounting sooner, what waits on them starting sooner"
-date 2026-10-18
-rev "55dc894b+changes"
+note "centred-surface: the surface spans its output on the centred axis, so it is wider and every drawn coordinate moves by the difference; compared from the trace per tick and node, on-screen boxes match within rounding (decisions.md span-fit)."
+date 2026-10-31
+rev "a4ea7ce0+changes"
 approver "claude"
 scenario 2deeeb6679307263
-seal cf675bf42bf4c402
+seal 71a04c25a06073a4
 S1 0 - "panel Card"
 N0 "holder|shell.strand:5:3|#0" "stack#holder"
 N1 "|shell.strand:12:7|#0" "row@shell.strand:12"
@@ -26,19 +26,19 @@ N14 "|shell.strand:7:7|#0~3" "col@shell.strand:7"
 N15 "|shell.strand:8:9|#0~3" "text(\"Now playing\")"
 N16 "|shell.strand:9:9|#1~3" "text(\"A song with a rather lon\")"
 k0 p1
-s1 z=200,56 o=80,326
-n0 x=0 y=0 w=200 h=56 ord=1 bg=202336ff
-n1 x=80 y=21 w=40 h=15 ord=2
-n2 x=80 y=22 w=13 h=13 ord=3 bg=8bd5caff
-n3 x=99 y=21 w=21 h=15 txt=S ord=4 ink=100,22,20,11 fg=e0e3f4ff gl=["Idle"]
-n4 x=0 y=0 w=200 h=56
+s1 z=360,56 o=0,326 i=80,0,200,56
+n0 x=80 y=0 w=200 h=56 ord=1 bg=202336ff
+n1 x=160 y=21 w=40 h=15 ord=2
+n2 x=160 y=22 w=13 h=13 ord=3 bg=8bd5caff
+n3 x=179 y=21 w=21 h=15 txt=S ord=4 ink=180,22,20,11 fg=e0e3f4ff gl=["Idle"]
+n4 x=80 y=0 w=200 h=56
 k1
 n1 op=218 hid=inert
 n2 op=218 hid=inert
 n3 op=218 hid=inert
-n5 x=17 y=11 w=167 h=34 op=37 ord=5
-n6 x=17 y=11 w=167 h=15 op=37 txt=S ord=6 ink=18,12,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
-n7 x=17 y=30 w=167 h=15 op=37 txt=S ord=7 ink=17,31,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
+n5 x=97 y=11 w=167 h=34 op=37 ord=5
+n6 x=97 y=11 w=167 h=15 op=37 txt=S ord=6 ink=98,12,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
+n7 x=97 y=30 w=167 h=15 op=37 txt=S ord=7 ink=97,31,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
 k2
 n1 op=157
 n2 op=157
@@ -130,9 +130,9 @@ n5 ord=2
 n6 ord=3
 n7 ord=4
 k16
-n1 x=80 y=21 w=40 h=15 op=37 ord=5
-n2 x=80 y=22 w=13 h=13 op=37 ord=6 bg=8bd5caff
-n3 x=99 y=21 w=21 h=15 op=37 txt=S ord=7 ink=100,22,20,11 fg=e0e3f4ff gl=["Idle"]
+n1 x=160 y=21 w=40 h=15 op=37 ord=5
+n2 x=160 y=22 w=13 h=13 op=37 ord=6 bg=8bd5caff
+n3 x=179 y=21 w=21 h=15 op=37 txt=S ord=7 ink=180,22,20,11 fg=e0e3f4ff gl=["Idle"]
 n5 op=218 hid=inert
 n6 op=218 hid=inert
 n7 op=218 hid=inert
@@ -164,9 +164,9 @@ n3 op=179 hid=inert
 n5 op=39
 n6 op=39
 n7 op=39
-n8 x=17 y=11 w=167 h=34 op=37 ord=8
-n9 x=17 y=11 w=167 h=15 op=37 txt=S ord=9 ink=18,12,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
-n10 x=17 y=30 w=167 h=15 op=37 txt=S ord=10 ink=17,31,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
+n8 x=97 y=11 w=167 h=34 op=37 ord=8
+n9 x=97 y=11 w=167 h=15 op=37 txt=S ord=9 ink=98,12,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
+n10 x=97 y=30 w=167 h=15 op=37 txt=S ord=10 ink=97,31,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
 k21
 n1 op=133
 n2 op=133
@@ -207,9 +207,9 @@ n7 op=4
 n8 op=179 hid=inert
 n9 op=179 hid=inert
 n10 op=179 hid=inert
-n11 x=80 y=21 w=40 h=15 op=37 ord=11
-n12 x=80 y=22 w=13 h=13 op=37 ord=12 bg=8bd5caff
-n13 x=99 y=21 w=21 h=15 op=37 txt=S ord=13 ink=100,22,20,11 fg=e0e3f4ff gl=["Idle"]
+n11 x=160 y=21 w=40 h=15 op=37 ord=11
+n12 x=160 y=22 w=13 h=13 op=37 ord=12 bg=8bd5caff
+n13 x=179 y=21 w=21 h=15 op=37 txt=S ord=13 ink=180,22,20,11 fg=e0e3f4ff gl=["Idle"]
 k25
 n1 op=21
 n2 op=21
@@ -246,9 +246,9 @@ n10 op=57
 n11 op=153 hid=inert
 n12 op=153 hid=inert
 n13 op=153 hid=inert
-n14 x=17 y=11 w=167 h=34 op=37 ord=14
-n15 x=17 y=11 w=167 h=15 op=37 txt=S ord=15 ink=18,12,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
-n16 x=17 y=30 w=167 h=15 op=37 txt=S ord=16 ink=17,31,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
+n14 x=97 y=11 w=167 h=34 op=37 ord=14
+n15 x=97 y=11 w=167 h=15 op=37 txt=S ord=15 ink=98,12,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
+n16 x=97 y=30 w=167 h=15 op=37 txt=S ord=16 ink=97,31,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
 k28
 n1 op=4
 n2 op=4
@@ -390,9 +390,9 @@ n14 ord=2
 n15 ord=3
 n16 ord=4
 k41
-n1 x=80 y=21 w=40 h=15 op=37 ord=5
-n2 x=80 y=22 w=13 h=13 op=37 ord=6 bg=8bd5caff
-n3 x=99 y=21 w=21 h=15 op=37 txt=S ord=7 ink=100,22,20,11 fg=e0e3f4ff gl=["Idle"]
+n1 x=160 y=21 w=40 h=15 op=37 ord=5
+n2 x=160 y=22 w=13 h=13 op=37 ord=6 bg=8bd5caff
+n3 x=179 y=21 w=21 h=15 op=37 txt=S ord=7 ink=180,22,20,11 fg=e0e3f4ff gl=["Idle"]
 n14 op=218 hid=inert
 n15 op=218 hid=inert
 n16 op=218 hid=inert

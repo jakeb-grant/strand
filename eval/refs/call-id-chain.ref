@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "call-id-chain"
 verdict good
-note "eval-finish review, first reference: read k0-12: the knob (named #knob by its root's own id and #knob_btn by its call's) springs 24 -> 48 px wide (1 px overshoot at k5-6) at the row's left edge, and the pill (named #play_btn by the outer call and #pill by the inner one) springs 36 -> 64 px (65 at k5-6) at the row's right edge, both fills springing e6e5eb -> 455e91 (the accent); the panel holds still"
-date 2026-10-20
-rev "b1224229+changes"
+note "centred-surface: the surface spans its output on the centred axis, so it is wider and every drawn coordinate moves by the difference; compared from the trace per tick and node, on-screen boxes match within rounding (decisions.md span-fit)."
+date 2026-10-31
+rev "a4ea7ce0+changes"
 approver "claude"
 scenario a4c47fa669eafb60
-seal 5264134344c12fa5
+seal 646e2ae9353fde9e
 S1 0 - "panel Player"
 N0 "knob|shell.strand:4:3|#0" "box#knob"
 N1 "play_btn|shell.strand:14:3|#1" "box#play_btn"
@@ -14,33 +14,33 @@ N2 "|shell.strand:26:1|#0" "panel@shell.strand:26"
 N3 "|shell.strand:30:3|#0" "col@shell.strand:30"
 N4 "|shell.strand:34:5|#0" "row@shell.strand:34"
 k0 p1
-s1 z=300,60 o=50,124
-n0 x=12 y=18 w=24 h=24 ord=3 bg=e6e5ebff
-n1 x=252 y=12 w=36 h=36 ord=4 bg=e6e5ebff
-n2 x=0 y=0 w=300 h=60
-n3 x=0 y=0 w=300 h=60 ord=1 bg=faf9ffff
-n4 x=12 y=12 w=276 h=36 ord=2
+s1 z=400,60 o=0,124 i=50,0,300,60
+n0 x=62 y=18 w=24 h=24 ord=3 bg=e6e5ebff
+n1 x=302 y=12 w=36 h=36 ord=4 bg=e6e5ebff
+n2 x=50 y=0 w=300 h=60
+n3 x=50 y=0 w=300 h=60 ord=1 bg=faf9ffff
+n4 x=62 y=12 w=276 h=36 ord=2
 k1
 n0 w=30 bg=cdd1deff
-n1 x=245 w=43 bg=cdd1deff
+n1 x=295 w=43 bg=cdd1deff
 k2
 n0 w=39 bg=a5afc9ff
-n1 x=234 w=54 bg=a5afc9ff
+n1 x=284 w=54 bg=a5afc9ff
 k3
 n0 w=45 bg=8393b6ff
-n1 x=227 w=61 bg=8393b6ff
+n1 x=277 w=61 bg=8393b6ff
 k4
 n0 w=48 bg=6b7fa8ff
-n1 x=224 w=64 bg=6b7fa8ff
+n1 x=274 w=64 bg=6b7fa8ff
 k5
 n0 w=49 bg=5c729fff
-n1 x=223 w=65 bg=5c729fff
+n1 x=273 w=65 bg=5c729fff
 k6
 n0 bg=536a99ff
 n1 bg=536a99ff
 k7
 n0 w=48 bg=4d6596ff
-n1 x=224 w=64 bg=4d6596ff
+n1 x=274 w=64 bg=4d6596ff
 k8
 n0 bg=496294ff
 n1 bg=496294ff

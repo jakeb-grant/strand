@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "calendar-grid-144hz"
 verdict good
-note "growth: read against the reference tick by tick: the six-week month now springs the panel 205 -> 236 -> 235 (k189-205) with grid#days stepping inside it, and back 233 -> 202 -> 203 once the cells have faded (k297-312), where the reference snapped; no cell and no heading moves, every other value equal; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Calendar k189-313 (21 frames, first i=0,0,244,205)"
-date 2026-10-23
-rev "abffdefe+changes"
+note "centred-surface: the surface spans its output on the centred axis, so it is wider and every drawn coordinate moves by the difference; compared from the trace per tick and node, on-screen boxes match within rounding (decisions.md span-fit)."
+date 2026-10-31
+rev "a4ea7ce0+changes"
 approver "claude"
 scenario a0b1db86aec4ac2d
-seal a6727e9521a87906
+seal b974d19d19a15a97
 S1 0 - "panel Calendar"
 N0 "cal|shell.strand:7:3|#0" "col#cal"
 N1 "days|shell.strand:9:5|#0" "grid#days"
@@ -55,46 +55,46 @@ N43 "|shell.strand:11:9|[40]#39" "box@shell.strand:11"
 N44 "|shell.strand:11:9|[41]#40" "box@shell.strand:11"
 N45 "|shell.strand:11:9|[42]#41" "box@shell.strand:11"
 k0 p1
-s1 z=244,203 o=78,10
-n0 x=0 y=0 w=244 h=203 ord=1 bg=1e1e2eff
-n1 x=12 y=35 w=220 h=156 ord=3
-n2 x=12 y=12 w=220 h=15 txt=S ord=2 ink=12,13,50,11 fg=cdd6f4ff gl=["October"]
-n3 x=76 y=67 w=28 h=28 ord=13 bg=313244ff
-n4 x=108 y=67 w=28 h=28 ord=14 bg=313244ff
-n5 x=140 y=67 w=28 h=28 ord=15 bg=89b4faff
-n6 x=172 y=67 w=28 h=28 ord=16 bg=313244ff
-n7 x=204 y=67 w=28 h=28 ord=17 bg=313244ff
-n8 x=12 y=99 w=28 h=28 ord=18 bg=313244ff
-n9 x=44 y=99 w=28 h=28 ord=19 bg=313244ff
-n10 x=76 y=99 w=28 h=28 ord=20 bg=313244ff
-n11 x=108 y=99 w=28 h=28 ord=21 bg=313244ff
-n12 x=140 y=99 w=28 h=28 ord=22 bg=313244ff
-n13 x=12 y=35 w=28 h=28 ord=4 bg=313244ff
-n14 x=172 y=99 w=28 h=28 ord=23 bg=313244ff
-n15 x=204 y=99 w=28 h=28 ord=24 bg=313244ff
-n16 x=12 y=131 w=28 h=28 ord=25 bg=313244ff
-n17 x=44 y=131 w=28 h=28 ord=26 bg=313244ff
-n18 x=76 y=131 w=28 h=28 ord=27 bg=313244ff
-n19 x=108 y=131 w=28 h=28 ord=28 bg=313244ff
-n20 x=140 y=131 w=28 h=28 ord=29 bg=313244ff
-n21 x=172 y=131 w=28 h=28 ord=30 bg=313244ff
-n22 x=204 y=131 w=28 h=28 ord=31 bg=313244ff
-n23 x=12 y=163 w=28 h=28 ord=32 bg=313244ff
-n24 x=44 y=35 w=28 h=28 ord=5 bg=313244ff
-n25 x=44 y=163 w=28 h=28 ord=33 bg=313244ff
-n26 x=76 y=163 w=28 h=28 ord=34 bg=313244ff
-n27 x=108 y=163 w=28 h=28 ord=35 bg=313244ff
-n28 x=140 y=163 w=28 h=28 ord=36 bg=313244ff
-n29 x=172 y=163 w=28 h=28 ord=37 bg=313244ff
-n30 x=204 y=163 w=28 h=28 ord=38 bg=313244ff
-n31 x=76 y=35 w=28 h=28 ord=6 bg=313244ff
-n32 x=108 y=35 w=28 h=28 ord=7 bg=313244ff
-n33 x=140 y=35 w=28 h=28 ord=8 bg=313244ff
-n34 x=172 y=35 w=28 h=28 ord=9 bg=313244ff
-n35 x=204 y=35 w=28 h=28 ord=10 bg=313244ff
-n36 x=12 y=67 w=28 h=28 ord=11 bg=313244ff
-n37 x=44 y=67 w=28 h=28 ord=12 bg=313244ff
-n38 x=0 y=0 w=244 h=203
+s1 z=400,203 o=0,10 i=78,0,244,203
+n0 x=78 y=0 w=244 h=203 ord=1 bg=1e1e2eff
+n1 x=90 y=35 w=220 h=156 ord=3
+n2 x=90 y=12 w=220 h=15 txt=S ord=2 ink=90,13,50,11 fg=cdd6f4ff gl=["October"]
+n3 x=154 y=67 w=28 h=28 ord=13 bg=313244ff
+n4 x=186 y=67 w=28 h=28 ord=14 bg=313244ff
+n5 x=218 y=67 w=28 h=28 ord=15 bg=89b4faff
+n6 x=250 y=67 w=28 h=28 ord=16 bg=313244ff
+n7 x=282 y=67 w=28 h=28 ord=17 bg=313244ff
+n8 x=90 y=99 w=28 h=28 ord=18 bg=313244ff
+n9 x=122 y=99 w=28 h=28 ord=19 bg=313244ff
+n10 x=154 y=99 w=28 h=28 ord=20 bg=313244ff
+n11 x=186 y=99 w=28 h=28 ord=21 bg=313244ff
+n12 x=218 y=99 w=28 h=28 ord=22 bg=313244ff
+n13 x=90 y=35 w=28 h=28 ord=4 bg=313244ff
+n14 x=250 y=99 w=28 h=28 ord=23 bg=313244ff
+n15 x=282 y=99 w=28 h=28 ord=24 bg=313244ff
+n16 x=90 y=131 w=28 h=28 ord=25 bg=313244ff
+n17 x=122 y=131 w=28 h=28 ord=26 bg=313244ff
+n18 x=154 y=131 w=28 h=28 ord=27 bg=313244ff
+n19 x=186 y=131 w=28 h=28 ord=28 bg=313244ff
+n20 x=218 y=131 w=28 h=28 ord=29 bg=313244ff
+n21 x=250 y=131 w=28 h=28 ord=30 bg=313244ff
+n22 x=282 y=131 w=28 h=28 ord=31 bg=313244ff
+n23 x=90 y=163 w=28 h=28 ord=32 bg=313244ff
+n24 x=122 y=35 w=28 h=28 ord=5 bg=313244ff
+n25 x=122 y=163 w=28 h=28 ord=33 bg=313244ff
+n26 x=154 y=163 w=28 h=28 ord=34 bg=313244ff
+n27 x=186 y=163 w=28 h=28 ord=35 bg=313244ff
+n28 x=218 y=163 w=28 h=28 ord=36 bg=313244ff
+n29 x=250 y=163 w=28 h=28 ord=37 bg=313244ff
+n30 x=282 y=163 w=28 h=28 ord=38 bg=313244ff
+n31 x=154 y=35 w=28 h=28 ord=6 bg=313244ff
+n32 x=186 y=35 w=28 h=28 ord=7 bg=313244ff
+n33 x=218 y=35 w=28 h=28 ord=8 bg=313244ff
+n34 x=250 y=35 w=28 h=28 ord=9 bg=313244ff
+n35 x=282 y=35 w=28 h=28 ord=10 bg=313244ff
+n36 x=90 y=67 w=28 h=28 ord=11 bg=313244ff
+n37 x=122 y=67 w=28 h=28 ord=12 bg=313244ff
+n38 x=78 y=0 w=244 h=203
 k45
 n5 bg=7ca0ddff
 n14 bg=3d435cff
@@ -258,19 +258,19 @@ k144
 n14 bg=313244ff
 n31 bg=89b4faff
 k189
-s1 z=244,235 i=0,0,244,205
+s1 z=400,235 i=78,0,244,205
 n0 h=205
 n1 h=158
 n38 h=205
-n39 x=12 y=195 w=28 h=28 op=8 hid=clipped ord=39 bg=313244ff
-n40 x=44 y=195 w=28 h=28 op=8 hid=clipped ord=40 bg=313244ff
-n41 x=76 y=195 w=28 h=28 op=8 hid=clipped ord=41 bg=313244ff
-n42 x=108 y=195 w=28 h=28 op=8 hid=clipped ord=42 bg=313244ff
-n43 x=140 y=195 w=28 h=28 op=8 hid=clipped ord=43 bg=313244ff
-n44 x=172 y=195 w=28 h=28 op=8 hid=clipped ord=44 bg=313244ff
-n45 x=204 y=195 w=28 h=28 op=8 hid=clipped ord=45 bg=313244ff
+n39 x=90 y=195 w=28 h=28 op=8 hid=clipped ord=39 bg=313244ff
+n40 x=122 y=195 w=28 h=28 op=8 hid=clipped ord=40 bg=313244ff
+n41 x=154 y=195 w=28 h=28 op=8 hid=clipped ord=41 bg=313244ff
+n42 x=186 y=195 w=28 h=28 op=8 hid=clipped ord=42 bg=313244ff
+n43 x=218 y=195 w=28 h=28 op=8 hid=clipped ord=43 bg=313244ff
+n44 x=250 y=195 w=28 h=28 op=8 hid=clipped ord=44 bg=313244ff
+n45 x=282 y=195 w=28 h=28 op=8 hid=clipped ord=45 bg=313244ff
 k190
-s1 i=0,0,244,209
+s1 i=78,0,244,209
 n0 h=209
 n1 h=162
 n38 h=209
@@ -282,7 +282,7 @@ n43 op=27 hid=-
 n44 op=27 hid=-
 n45 op=27 hid=-
 k191
-s1 i=0,0,244,215
+s1 i=78,0,244,215
 n0 h=215
 n1 h=168
 n38 h=215
@@ -294,7 +294,7 @@ n43 op=52
 n44 op=52
 n45 op=52
 k192
-s1 i=0,0,244,220
+s1 i=78,0,244,220
 n0 h=220
 n1 h=173
 n38 h=220
@@ -306,7 +306,7 @@ n43 op=78
 n44 op=78
 n45 op=78
 k193
-s1 i=0,0,244,224
+s1 i=78,0,244,224
 n0 h=224
 n1 h=177
 n38 h=224
@@ -318,7 +318,7 @@ n43 op=103
 n44 op=103
 n45 op=103
 k194
-s1 i=0,0,244,228
+s1 i=78,0,244,228
 n0 h=228
 n1 h=181
 n38 h=228
@@ -330,7 +330,7 @@ n43 op=127
 n44 op=127
 n45 op=127
 k195
-s1 i=0,0,244,231
+s1 i=78,0,244,231
 n0 h=231
 n1 h=184
 n38 h=231
@@ -342,7 +342,7 @@ n43 op=148
 n44 op=148
 n45 op=148
 k196
-s1 i=0,0,244,233
+s1 i=78,0,244,233
 n0 h=233
 n1 h=186
 n38 h=233
@@ -354,7 +354,7 @@ n43 op=166
 n44 op=166
 n45 op=166
 k197
-s1 i=0,0,244,234
+s1 i=78,0,244,234
 n0 h=234
 n1 h=187
 n38 h=234
@@ -366,7 +366,7 @@ n43 op=182
 n44 op=182
 n45 op=182
 k198
-s1 i=-
+s1 i=78,0,244,235
 n0 h=235
 n1 h=188
 n38 h=235
@@ -737,7 +737,7 @@ n43 hid=opacity0 bg=-
 n44 hid=opacity0 bg=-
 n45 hid=opacity0 bg=-
 k297
-s1 i=0,0,244,233
+s1 i=78,0,244,233
 n0 h=233
 n1 h=186
 n38 h=233
@@ -749,52 +749,52 @@ n43 -
 n44 -
 n45 -
 k298
-s1 i=0,0,244,229
+s1 i=78,0,244,229
 n0 h=229
 n1 h=182
 n38 h=229
 k299
-s1 i=0,0,244,223
+s1 i=78,0,244,223
 n0 h=223
 n1 h=176
 n38 h=223
 k300
-s1 i=0,0,244,218
+s1 i=78,0,244,218
 n0 h=218
 n1 h=171
 n38 h=218
 k301
-s1 i=0,0,244,214
+s1 i=78,0,244,214
 n0 h=214
 n1 h=167
 n38 h=214
 k302
-s1 i=0,0,244,210
+s1 i=78,0,244,210
 n0 h=210
 n1 h=163
 n38 h=210
 k303
-s1 i=0,0,244,207
+s1 i=78,0,244,207
 n0 h=207
 n1 h=160
 n38 h=207
 k304
-s1 i=0,0,244,205
+s1 i=78,0,244,205
 n0 h=205
 n1 h=158
 n38 h=205
 k305
-s1 i=0,0,244,204
+s1 i=78,0,244,204
 n0 h=204
 n1 h=157
 n38 h=204
 k306
-s1 i=0,0,244,203
+s1 i=78,0,244,203
 n0 h=203
 n1 h=156
 n38 h=203
 k307
-s1 i=0,0,244,202
+s1 i=78,0,244,202
 n0 h=202
 n38 h=202
 k308
@@ -803,7 +803,7 @@ k310
 k311
 k312
 k313
-s1 i=0,0,244,203
+s1 i=78,0,244,203
 n0 h=203
 n38 h=203
 k314
@@ -813,4 +813,4 @@ k317
 k318
 k319
 k320
-s1 z=244,203 i=-
+s1 z=400,203

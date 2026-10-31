@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "shrink-keeps-edge"
 verdict good
-note "growth: read against the reference: the right-edge panel springs its height 41 -> 38 -> 36 -> 35 (k31-33) where the reference snapped; #time keeps its place on every frame; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Tray k17-34 (11 frames, first i=26,0,136,43)"
-date 2026-10-23
-rev "abffdefe+changes"
+note "centred-surface, STEP_LANDED: as a wider surface, on-screen boxes match the old recording apart from at most a pixel around a spring (exact centres and whole-pixel landings), with no step beyond the old one's; compared from the trace per tick and node (decisions.md span-fit)."
+date 2026-10-31
+rev "a4ea7ce0+changes"
 approver "claude"
 scenario 769a0bd2b95d09c1
-seal 5a6d922b1b6a59a7
+seal dd47eafda8f27e36
 S1 0 - "osd Brightness"
 S2 0 - "panel Tray"
 N0 "chip|shell.strand:21:7|#0" "box#chip"
@@ -21,46 +21,46 @@ N8 "|shell.strand:23:9|#0" "text(\"Do not disturb\")"
 N9 "|shell.strand:4:1|#0" "osd@shell.strand:4"
 N10 "|shell.strand:6:3|#0" "col@shell.strand:6"
 k0 p1,2
-s1 z=240,62 o=200,354
-s2 z=162,43 o=454,219
-n0 srf=2 x=10 y=10 w=101 h=23 ord=2 bg=8aadf4ff
-n1 x=12 y=12 w=216 h=15 txt=S ord=2 ink=13,13,75,11 fg=a5adcbff gl=["Fn+F6\u0020to\u0020dim"]
-n2 x=12 y=35 w=216 h=15 ord=3
-n3 srf=2 x=119 y=14 w=33 h=15 txt=S ord=4 ink=119,15,32,11 fg=cad3f5ff gl=["12:30"]
-n4 x=12 y=35 w=62 h=15 txt=S ord=4 ink=13,36,61,13 fg=cad3f5ff gl=["Brightness"]
-n5 x=84 y=40 w=120 h=6 ord=5 bg=eed49fff
-n6 srf=2 x=0 y=0 w=162 h=43
-n7 srf=2 x=0 y=0 w=162 h=43 ord=1 bg=24273aff
-n8 srf=2 x=20 y=14 w=81 h=15 txt=S ord=3 ink=21,15,80,11 fg=181926ff gl=["Do\u0020not\u0020disturb"]
-n9 x=0 y=0 w=240 h=62
-n10 x=0 y=0 w=240 h=62 ord=1 bg=24273aff
+s1 z=640,62 o=0,354
+s2 z=162,480 o=454,0 i=0,218.5,162,43
+n0 srf=2 x=10 y=228.5 w=101 h=23 v=10,229,101,23 ord=2 bg=8aadf4ff
+n1 x=212 y=12 w=216 h=15 txt=S ord=2 ink=213,13,75,11 fg=a5adcbff gl=["Fn+F6\u0020to\u0020dim"]
+n2 x=212 y=35 w=216 h=15 ord=3
+n3 srf=2 x=119 y=232.5 w=33 h=15 v=119,233,33,15 txt=S ord=4 ink=119,234,32,11 fg=cad3f5ff gl=["12:30"]
+n4 x=212 y=35 w=62 h=15 txt=S ord=4 ink=213,36,61,13 fg=cad3f5ff gl=["Brightness"]
+n5 x=284 y=40 w=120 h=6 ord=5 bg=eed49fff
+n6 srf=2 x=0 y=218.5 w=162 h=43 v=0,219,162,43
+n7 srf=2 x=0 y=218.5 w=162 h=43 v=0,219,162,43 ord=1 bg=24273aff
+n8 srf=2 x=20 y=232.5 w=81 h=15 v=20,233,81,15 txt=S ord=3 ink=21,234,80,11 fg=181926ff gl=["Do\u0020not\u0020disturb"]
+n9 x=200 y=0 w=240 h=62
+n10 x=200 y=0 w=240 h=62 ord=1 bg=24273aff
 k1 p1
-n1 y=15 h=11 op=218 hid=inert ink=13,16,75,11
+n1 y=15 h=11 op=218 hid=inert ink=213,16,75,11
 n2 y=34
-n4 y=34 ink=13,35,61,13
+n4 y=34 ink=213,35,61,13
 n5 y=39
 n9 y=3 h=58
 n10 y=3 h=58
 k2
-n1 y=24 h=5 op=157 ink=13,25,75,11
+n1 y=24 h=5 op=157 ink=213,25,75,11
 n2 y=35
-n4 y=35 ink=13,36,61,13
+n4 y=35 ink=213,36,61,13
 n9 y=12 h=50
 n10 y=12 h=50
 k3
-n1 y=31 h=2 op=104 ink=13,32,75,11
+n1 y=31 h=2 op=104 ink=213,32,75,11
 n2 y=34
-n4 y=34 ink=13,35,61,13
+n4 y=34 ink=213,35,61,13
 n9 y=19 h=42
 n10 y=19 h=42
 k4
-n1 y=34 h=0 op=65 ink=13,35,75,11
+n1 y=34 h=0 op=65 ink=213,35,75,11
 n9 y=22 h=39
 n10 y=22 h=39
 k5
-n1 y=35 op=39 ink=13,36,75,11
+n1 y=35 op=39 ink=213,36,75,11
 n2 y=35
-n4 y=35 ink=13,36,61,13
+n4 y=35 ink=213,36,61,13
 n5 y=40
 n9 y=23
 n10 y=23
@@ -87,44 +87,44 @@ n2 ord=2
 n4 ord=3
 n5 ord=4
 k16
-s1 z=240,39 o=200,377
+s1 z=640,39 o=0,377
 n2 y=12
-n4 y=12 ink=13,13,61,13
+n4 y=12 ink=213,13,61,13
 n5 y=17
 n9 y=0
 n10 y=0
 k17 p2
-s2 i=26,0,136,43
-n0 x=36 w=75 op=218 hid=inert
-n6 x=26 w=136
-n7 x=26 w=136
-n8 x=46 op=218 hid=inert ink=47,15,80,11
+s2 i=26,218.5,136,43
+n0 x=36 w=75 v=36,229,75,23 op=218 hid=inert
+n6 x=26 w=136 v=26,219,136,43
+n7 x=26 w=136 v=26,219,136,43
+n8 x=46 v=46,233,81,15 op=218 hid=inert ink=47,234,80,11
 k18
-s2 i=64,0,97,43
-n0 x=74 w=36 op=157
-n3 x=118 ink=118,15,32,11
-n6 x=64 w=97
-n7 x=64 w=97
-n8 x=84 op=157 ink=85,15,80,11
+s2 i=64,218.5,97,43
+n0 x=74 w=36 v=74,229,36,23 op=157
+n3 x=118 v=118,233,33,15 ink=118,234,32,11
+n6 x=64 w=97 v=64,219,97,43
+n7 x=64 w=97 v=64,219,97,43
+n8 x=84 v=84,233,81,15 op=157 ink=85,234,80,11
 k19
-s2 i=89,0,72,43
-n0 x=99 w=11 op=104
-n6 x=89 w=72
-n7 x=89 w=72
-n8 x=105 op=104 ink=106,15,80,11
+s2 i=89,218.5,72,43
+n0 x=99 w=11 v=99,229,11,23 op=104
+n6 x=89 w=72 v=89,219,72,43
+n7 x=89 w=72 v=89,219,72,43
+n8 x=105 v=105,233,81,15 op=104 ink=106,234,80,11
 k20
-s2 i=108,0,53,43
-n0 x=118 w=0 op=65 bg=-
+s2 i=108,218.5,53,43
+n0 x=118 w=0 v=118,229,0,23 op=65 bg=-
 n3 ord=3
-n6 x=108 w=53
-n7 x=108 w=53
+n6 x=108 w=53 v=108,219,53,43
+n7 x=108 w=53 v=108,219,53,43
 n8 -
 k21
-s2 i=109,0,53,43
-n0 x=119 op=39
-n3 x=119 ink=119,15,32,11
-n6 x=109
-n7 x=109
+s2 i=109,218.5,53,43
+n0 x=119 v=119,229,0,23 op=39
+n3 x=119 v=119,233,33,15 ink=119,234,32,11
+n6 x=109 v=109,219,53,43
+n7 x=109 v=109,219,53,43
 k22
 n0 op=23
 k23
@@ -134,47 +134,49 @@ n0 op=8
 k25
 n0 op=4
 k26
-s2 i=108,0,53,43
-n0 x=118 op=2
-n3 x=118 ink=118,15,32,11
-n6 x=108
-n7 x=108
+s2 i=108,218.5,53,43
+n0 x=118 v=118,229,0,23 op=2
+n3 x=118 v=118,233,33,15 ink=118,234,32,11
+n6 x=108 v=108,219,53,43
+n7 x=108 v=108,219,53,43
 k27
 n0 op=1
 k28
 k29
-s2 i=109,0,53,43
-n0 x=119 op=0
-n3 x=119 ink=119,15,32,11
-n6 x=109
-n7 x=109
+s2 i=109,218.5,53,43
+n0 x=119 v=119,229,0,23 op=0
+n3 x=119 v=119,233,33,15 ink=119,234,32,11
+n6 x=109 v=109,219,53,43
+n7 x=109 v=109,219,53,43
 k30
 n0 hid=opacity0
 k31
-s2 i=109,1,53,41
+s2 i=109,219.546875,53,41
 n0 -
-n3 ord=2
-n6 y=1 h=41
-n7 y=1 h=41
+n3 y=232.546875 ord=2
+n6 y=219.546875 h=41 v=109,220,53,41
+n7 y=219.546875 h=41 v=109,220,53,41
 k32
-s2 i=109,3,53,38
-n6 y=3 h=38
-n7 y=3 h=38
+s2 i=109,221.0625,53,38
+n3 y=232.0625 v=119,232,33,15 ink=119,233,32,11
+n6 y=221.0625 h=38 v=109,221,53,38
+n7 y=221.0625 h=38 v=109,221,53,38
 k33
-s2 i=109,4,53,36
-n6 y=4 h=36
-n7 y=4 h=36
+s2 i=109,222.0625,53,36
+n6 y=222.0625 h=36 v=109,222,53,36
+n7 y=222.0625 h=36 v=109,222,53,36
 k34
-s2 i=109,4,53,35
-n6 h=35
-n7 h=35
+s2 i=109,222.5,53,35
+n3 y=232.5 v=119,233,33,15 ink=119,234,32,11
+n6 y=222.5 h=35 v=109,223,53,35
+n7 y=222.5 h=35 v=109,223,53,35
 k35
 k36
 k37
 k38
 k39
 k40
-s2 z=53,35 o=563,223 i=-
-n3 x=10 y=10 ink=10,11,32,11
-n6 x=0 y=0
-n7 x=0 y=0
+s2 z=53,480 o=563,0 i=0,222.5,53,35
+n3 x=10 v=10,233,33,15 ink=10,234,32,11
+n6 x=0 v=0,223,53,35
+n7 x=0 v=0,223,53,35

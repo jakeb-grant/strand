@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "click-attached-panel"
 verdict good
-note "growth review: read against the reference, every box and value equal but the input region: while the box is drawn short of its buffer (held as something on it moves) the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Control k23-31 (4 frames, first i=28,0,240,90)"
-date 2026-10-23
-rev "abffdefe+changes"
+note "centred-surface, STEP_LANDED: as a wider surface, on-screen boxes match the old recording apart from at most a pixel around a spring (exact centres and whole-pixel landings), with no step beyond the old one's; compared from the trace per tick and node (decisions.md span-fit)."
+date 2026-10-31
+rev "a4ea7ce0+changes"
 approver "claude"
 scenario b36d95e2e72f3219
-seal a7847a04c6da5a51
+seal 3580618cdd65fb50
 S1 0 - "bar Top"
 S2 23 48 "panel Control"
 N0 "button_text|shell.strand:10:7|[Mock | DP-1]#0" "text#button_text"
@@ -72,20 +72,20 @@ k22
 n0 v=70.234375,5.796875,51.515625,18.40625
 n1 v=70.234375,5.796875,51.515625,18.40625
 k23 p1,2
-s2 z=296,126 o=52,30 i=28,0,240,90
+s2 z=400,126 o=0,30 i=80,0,240,90
 n0 v=69.65625,5.59375,52.6875,18.8125
 n1 v=69.65625,5.59375,52.6875,18.8125 sc=0.941,0.941
-n5 srf=2 x=28 y=-90 w=240 h=90 ord=1 bg=313244ff sh=000000b0@0,-112,296,146 pt=-14,0,268,90
-n6 srf=2 x=40 y=-78 w=216 h=30 txt=S ord=2 ink=40,-77,206,28 fit=216 fg=cdd6f4ff gl=["Do\u0020not\u0020disturb\u0020is\u0020on\u0020until\u0020tomorrow\u0020morning,\u0020and\u0020three\u0020apps\u0020are\u0020muted."]
-n7 srf=2 x=40 y=-40 w=70 h=28 ord=4 bg=89b4faff
-n8 srf=2 x=118 y=-40 w=70 h=28 ord=5 bg=45475aff
-n9 srf=2 x=40 y=-40 w=216 h=28 ord=3
-n10 srf=2 x=28 y=-90 w=240 h=90
+n5 srf=2 x=80 y=-90 w=240 h=90 ord=1 bg=313244ff sh=000000b0@52,-112,296,146 pt=-14,0,268,90
+n6 srf=2 x=92 y=-78 w=216 h=30 txt=S ord=2 ink=92,-77,206,28 fit=216 fg=cdd6f4ff gl=["Do\u0020not\u0020disturb\u0020is\u0020on\u0020until\u0020tomorrow\u0020morning,\u0020and\u0020three\u0020apps\u0020are\u0020muted."]
+n7 srf=2 x=92 y=-40 w=70 h=28 ord=4 bg=89b4faff
+n8 srf=2 x=170 y=-40 w=70 h=28 ord=5 bg=45475aff
+n9 srf=2 x=92 y=-40 w=216 h=28 ord=3
+n10 srf=2 x=80 y=-90 w=240 h=90
 k24
 n0 v=68.8125,5.28125,54.390625,19.421875
 n1 v=68.8125,5.28125,54.390625,19.421875 sc=0.971,0.971
-n5 y=-67 sh=000000b0@0,-89,296,146
-n6 y=-55 ink=40,-54,206,28
+n5 y=-67 sh=000000b0@52,-89,296,146
+n6 y=-55 ink=92,-54,206,28
 n7 y=-17
 n8 y=-17
 n9 y=-17
@@ -93,8 +93,8 @@ n10 y=-67
 k25
 n0 v=68.25,5.09375,55.5,19.828125
 n1 v=68.25,5.09375,55.5,19.828125 sc=0.991,0.991
-n5 y=-32 sh=000000b0@0,-54,296,146
-n6 y=-20 ink=40,-19,206,28
+n5 y=-32 sh=000000b0@52,-54,296,146
+n6 y=-20 ink=92,-19,206,28
 n7 y=18
 n8 y=18
 n9 y=18
@@ -102,8 +102,8 @@ n10 y=-32
 k26
 n0 v=d
 n1 v=d sc=1,1
-n5 y=-10 sh=000000b0@0,-32,296,146
-n6 y=2 ink=40,3,206,28
+n5 y=-10 sh=000000b0@52,-32,296,146
+n6 y=2 ink=92,3,206,28
 n7 y=40
 n8 y=40
 n9 y=40
@@ -111,18 +111,18 @@ n10 y=-10
 k27
 n0 v=67.9375,4.984375,56.125,20.046875
 n1 v=67.9375,4.984375,56.125,20.046875 sc=1.002,1.002
-n5 y=0 sh=000000b0@0,-22,296,146
-n6 y=12 ink=40,13,206,28
+n5 y=0 sh=000000b0@52,-22,296,146
+n6 y=12 ink=92,13,206,28
 n7 y=50
 n8 y=50
 n9 y=50
 n10 y=0
 k28
-s2 i=28,0,240,92
+s2 i=80,0,240,92
 n0 v=67.953125,4.984375,56.109375,20.03125
 n1 v=67.953125,4.984375,56.109375,20.03125
-n5 y=3 h=89 sh=000000b0@0,-19,296,145 pt=-14,0,268,89
-n6 y=15 h=29 ink=40,16,206,28
+n5 y=3 h=89 sh=000000b0@52,-19,296,145 pt=-14,0,268,89
+n6 y=15 h=29 ink=92,16,206,28
 n7 y=52
 n8 y=52
 n9 y=52
@@ -130,25 +130,25 @@ n10 y=3 h=89
 k29
 n0 v=67.96875,4.984375,56.046875,20.015625
 n1 v=67.96875,4.984375,56.046875,20.015625 sc=1.001,1.001
-n5 y=2 h=90 sh=000000b0@0,-20,296,146 pt=-14,0,268,90
-n6 y=14 h=30 ink=40,15,206,28
+n5 y=2 h=90 sh=000000b0@52,-20,296,146 pt=-14,0,268,90
+n6 y=14 h=30 ink=92,15,206,28
 n10 y=2 h=90
 k30
-s2 i=28,0,240,91
+s2 i=80,0,240,91
 n0 v=67.984375,5,56.015625,20
 n1 v=67.984375,5,56.015625,20 sc=1,1
-n5 y=1 sh=000000b0@0,-21,296,146
-n6 y=13 ink=40,14,206,28
+n5 y=1 sh=000000b0@52,-21,296,146
+n6 y=13 ink=92,14,206,28
 n7 y=51
 n8 y=51
 n9 y=51
 n10 y=1
 k31
-s2 i=28,0,240,90
+s2 i=80,0,240,90
 n0 v=d
 n1 v=d
-n5 y=0 sh=000000b0@0,-22,296,146
-n6 y=12 ink=40,13,206,28
+n5 y=0 sh=000000b0@52,-22,296,146
+n6 y=12 ink=92,13,206,28
 n7 y=50
 n8 y=50
 n9 y=50
@@ -158,59 +158,59 @@ k33
 k34
 k35
 k36
-s2 z=296,124 i=-
+s2 z=400,124
 k37 p1,2
-n5 y=-23 sh=000000b0@0,-45,296,146
-n6 y=-11 h=29 ink=40,-10,206,28
+n5 y=-23 h=89 sh=000000b0@52,-45,296,145 pt=-14,0,268,89
+n6 y=-11 h=29 ink=92,-10,206,28
 n7 y=26
 n8 y=26
 n9 y=26
-n10 y=-23
+n10 y=-23 h=89
 k38 p2
-n5 y=-58 sh=000000b0@0,-80,296,146
-n6 y=-46 h=30 ink=40,-45,206,28
+n5 y=-58 h=90 sh=000000b0@52,-80,296,146 pt=-14,0,268,90
+n6 y=-46 h=30 ink=92,-45,206,28
 n7 y=-8
 n8 y=-8
 n9 y=-8
-n10 y=-58
+n10 y=-58 h=90
 k39
-n5 y=-80 sh=000000b0@0,-102,296,146
-n6 y=-68 ink=40,-67,206,28
+n5 y=-80 sh=000000b0@52,-102,296,146
+n6 y=-68 ink=92,-67,206,28
 n7 y=-30
 n8 y=-30
 n9 y=-30
 n10 y=-80
 k40
-n5 y=-90 sh=000000b0@0,-112,296,146
-n6 y=-78 ink=40,-77,206,28
+n5 y=-90 sh=000000b0@52,-112,296,146
+n6 y=-78 ink=92,-77,206,28
 n7 y=-40
 n8 y=-40
 n9 y=-40
 n10 y=-90
 k41
-n5 y=-93 sh=000000b0@0,-115,296,146
-n6 y=-81 ink=40,-80,206,28
+n5 y=-93 sh=000000b0@52,-115,296,146
+n6 y=-81 ink=92,-80,206,28
 n7 y=-43
 n8 y=-43
 n9 y=-43
 n10 y=-93
 k42
-n5 y=-92 sh=000000b0@0,-114,296,146
-n6 y=-80 ink=40,-79,206,28
+n5 y=-92 sh=000000b0@52,-114,296,146
+n6 y=-80 ink=92,-79,206,28
 n7 y=-42
 n8 y=-42
 n9 y=-42
 n10 y=-92
 k43
-n5 y=-91 sh=000000b0@0,-113,296,146
-n6 y=-79 ink=40,-78,206,28
+n5 y=-91 sh=000000b0@52,-113,296,146
+n6 y=-79 ink=92,-78,206,28
 n7 y=-41
 n8 y=-41
 n9 y=-41
 n10 y=-91
 k44
-n5 y=-90 sh=000000b0@0,-112,296,146
-n6 y=-78 ink=40,-77,206,28
+n5 y=-90 sh=000000b0@52,-112,296,146
+n6 y=-78 ink=92,-77,206,28
 n7 y=-40
 n8 y=-40
 n9 y=-40

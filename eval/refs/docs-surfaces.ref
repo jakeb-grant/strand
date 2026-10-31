@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "docs-surfaces"
 verdict good
-note "the surfaces page's bar (workspaces of DP-1, the screen's name) and its dock panel half the screen wide at the bottom; the active workspace moves 1 -> 2; checked in light and dark"
-date 2026-10-27
-rev "06f5c019+changes"
+note "centred-surface: the surface spans its output on the centred axis, so it is wider and every drawn coordinate moves by the difference; compared from the trace per tick and node, on-screen boxes match within rounding (decisions.md span-fit)."
+date 2026-10-31
+rev "a4ea7ce0+changes"
 approver "claude"
 scenario f465e91c075ea7ed
-seal ec3ffa2aafae8dfa
+seal 5f46ee4dc0e48925
 S1 0 - "bar Top"
 S2 0 - "panel Dock"
 N0 "|bar.strand:13:11|[Mock | DP-1]#0" "text(\"DP-1\")"
@@ -21,7 +21,7 @@ N8 "|dock.strand:1:1|[Mock | DP-1]#0" "panel@dock.strand:1"
 N9 "|dock.strand:3:3|[Mock | DP-1]#0" "row@dock.strand:3"
 k0 p1,2
 s1 z=480,32
-s2 z=240,48 o=120,144
+s2 z=480,48 o=0,144 i=120,0,240,48
 n0 x=438 y=9 w=30 h=15 txt=S ord=7 ink=439,11.5,28,9 fg=23191759 gl=["DP-1"]
 n1 x=240 y=0 w=228 h=32 ord=6
 n2 x=0 y=0 w=480 h=32 bg=fff8f6ff
@@ -30,8 +30,8 @@ n4 x=12 y=0 w=228 h=32 ord=2
 n5 x=12 y=9 w=8 h=15 txt=S ord=3 ink=12.5,11.5,6.5,9 fg=8f4c37ff gl=["1"]
 n6 x=28 y=9 w=8 h=15 txt=S ord=4 ink=28.5,11,6.5,9.5 fg=231917a6 gl=["2"]
 n7 x=44 y=9 w=8 h=15 txt=S ord=5 ink=44,11,7,10 fg=231917a6 gl=["3"]
-n8 srf=2 x=0 y=0 w=240 h=48
-n9 srf=2 x=0 y=0 w=240 h=48 ord=1 bg=fff8f6ff
+n8 srf=2 x=120 y=0 w=240 h=48
+n9 srf=2 x=120 y=0 w=240 h=48 ord=1 bg=fff8f6ff
 k1 p1
 n5 fg=834734f2
 n6 fg=37231eb3

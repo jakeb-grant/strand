@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "osd-pose-margins"
 verdict good
-note "new scenario (eval-rules-6): content paints at rest (poses delegated); the OSD's surface is put 24 px below its rest place and slides up to it (margins 16 -> 40), then back down and goes; the corner panel slides in from 37 px right (30 + its scale's centre shift) at scale 0.906 -> 1 and back out 30 px; the trace's shifts follow each pose within half a pixel; read with explain and the trace's poses and shifts"
-date 2026-10-19
-rev "bbda3d6c+changes"
+note "centred-surface: the surface spans its output on the centred axis, so it is wider and every drawn coordinate moves by the difference; compared from the trace per tick and node, on-screen boxes match within rounding (decisions.md span-fit)."
+date 2026-10-31
+rev "a4ea7ce0+changes"
 approver "claude"
 scenario 92603d1727bccaa4
-seal 7cf8452b7aa6da6f
+seal b1fa856d5762ac15
 S1 1 29 "osd Level"
 S2 1 29 "panel Corner"
 N0 "card|shell.strand:16:3|#0" "col#card"
@@ -18,16 +18,16 @@ N5 "vol_icon|shell.strand:8:5|#0" "box#vol_icon"
 N6 "|shell.strand:12:1|#0" "panel@shell.strand:12"
 N7 "|shell.strand:2:1|#0" "osd@shell.strand:2"
 k1 p1,2
-s1 z=200,36 o=100,224 P=0,1,0,24
+s1 z=400,36 o=0,224 P=0,1,0,24
 s2 z=140,46 o=248,12 P=0,0.906,37,2.296875
 n0 srf=2 x=0 y=0 w=140 h=46 ord=1 bg=20232bff
 n1 srf=2 x=10 y=10 w=120 h=10 ord=2 bg=7aa2f7ff
 n2 srf=2 x=10 y=26 w=80 h=10 ord=3 bg=e0af68ff
-n3 x=0 y=0 w=200 h=36 ord=1 bg=1d2029ff
-n4 x=38 y=15 w=150 h=6 ord=3 bg=9ece6aff
-n5 x=12 y=10 w=16 h=16 ord=2 bg=9ece6aff
+n3 x=100 y=0 w=200 h=36 ord=1 bg=1d2029ff
+n4 x=138 y=15 w=150 h=6 ord=3 bg=9ece6aff
+n5 x=112 y=10 w=16 h=16 ord=2 bg=9ece6aff
 n6 srf=2 x=0 y=0 w=140 h=46
-n7 x=0 y=0 w=200 h=36
+n7 x=100 y=0 w=200 h=36
 k2
 s1 P=36,1,0,17.75
 s2 P=36,0.922,27.375,1.703125

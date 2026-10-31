@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "text-exit-squeeze"
 verdict good
-note "growth: read against the reference: the panel springs its height 35 -> 34 -> 32 -> 31 (k73-75) where the reference snapped to 31 at k73, and the buffer's shrink (s1 z=37,31) comes 7 ticks later, at k81 and not k74, as the hold waits for that spring to rest, with six empty ticks (k76-80) between; every other value equal; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Status k59-75 (7 frames, first i=0,0,117,35)"
-date 2026-10-23
-rev "abffdefe+changes"
+note "centred-surface, STEP_LANDED: as a wider surface, on-screen boxes match the old recording apart from at most a pixel around a spring (exact centres and whole-pixel landings), with no step beyond the old one's; compared from the trace per tick and node (decisions.md span-fit)."
+date 2026-10-31
+rev "a4ea7ce0+changes"
 approver "claude"
 scenario 501e141edd717b74
-seal a049c05a708f9ec5
+seal aa0f70acf2f4a007
 S1 0 - "panel Status"
 S2 0 - "bar Top"
 N0 "clock|shell.strand:9:14|[Mock | DP-1]#0" "text#clock"
@@ -26,17 +26,17 @@ N13 "plug|shell.strand:18:9|[Mock | DP-1]#0" "text#plug"
 N14 "badge|shell.strand:12:9|[Mock | DP-1]#0" "box#badge"
 N15 "|shell.strand:14:11|[Mock | DP-1]#0" "text(\"Muted\")"
 k0 p1,2
-s1 z=142,35 o=12,148
+s1 z=142,300 o=12,15 i=0,132.5,142,35
 s2 z=400,30
 n0 srf=2 x=184 y=8 w=33 h=15 txt=S ord=5 ink=184,9,32,11 fg=cdd6f4ff gl=["09:41"]
 n1 srf=2 x=365 y=8 w=27 h=15 txt=S ord=7 ink=365,9,26,11 fg=cdd6f4ff gl=["80%"]
-n2 x=113 y=10 w=21 h=15 txt=S ord=4 ink=114,11,19,11 fg=cdd6f4ff gl=["Mic"]
-n3 x=8 y=8 w=97 h=19 ord=2 bg=f9e2afff
+n2 x=113 y=142.5 w=21 h=15 v=113,143,21,15 txt=S ord=4 ink=114,144,19,11 fg=cdd6f4ff gl=["Mic"]
+n3 x=8 y=140.5 w=97 h=19 v=8,141,97,19 ord=2 bg=f9e2afff
 n4 srf=2 x=8 y=8 w=54 h=15 txt=S ord=3 ink=8,9,53,11 fg=a6adc8ff gl=["notes.md"]
 n5 srf=2 x=217 y=0 w=175 h=30 ord=6
-n6 x=0 y=0 w=142 h=35
-n7 x=0 y=0 w=142 h=35 ord=1 bg=1e1e2eff
-n8 x=16 y=10 w=81 h=15 txt=S ord=3 ink=17,11,80,11 fg=1e1e2eff gl=["Do\u0020not\u0020disturb"]
+n6 x=0 y=132.5 w=142 h=35 v=0,133,142,35
+n7 x=0 y=132.5 w=142 h=35 v=0,133,142,35 ord=1 bg=1e1e2eff
+n8 x=16 y=142.5 w=81 h=15 v=16,143,81,15 txt=S ord=3 ink=17,144,80,11 fg=1e1e2eff gl=["Do\u0020not\u0020disturb"]
 n9 srf=2 x=0 y=0 w=400 h=30 bg=181825ff
 n10 srf=2 x=0 y=0 w=400 h=30 ord=1
 n11 srf=2 x=8 y=0 w=176 h=30 ord=2
@@ -173,32 +173,32 @@ k58
 n1 ord=7
 n14 -
 k59 p1
-s1 i=0,0,117,35
-n2 x=88 ink=89,11,19,11
-n3 w=72 op=218 hid=inert
-n6 w=117
-n7 w=117
+s1 i=0,132.5,117,35
+n2 x=88 v=88,143,21,15 ink=89,144,19,11
+n3 w=72 v=8,141,72,19 op=218 hid=inert
+n6 w=117 v=0,133,117,35
+n7 w=117 v=0,133,117,35
 n8 op=218 hid=inert
 k60
-s1 i=0,0,80,35
-n2 x=51 ink=52,11,19,11
-n3 w=35 op=157
-n6 w=80
-n7 w=80
+s1 i=0,132.5,80,35
+n2 x=51 v=51,143,21,15 ink=52,144,19,11
+n3 w=35 v=8,141,35,19 op=157
+n6 w=80 v=0,133,80,35
+n7 w=80 v=0,133,80,35
 n8 op=157
 k61
-s1 i=0,0,56,35
-n2 x=27 ink=28,11,19,11
-n3 w=11 op=104
-n6 w=56
-n7 w=56
-n8 x=13 op=104 ink=14,11,80,11
+s1 i=0,132.5,56,35
+n2 x=27 v=27,143,21,15 ink=28,144,19,11
+n3 w=11 v=8,141,11,19 op=104
+n6 w=56 v=0,133,56,35
+n7 w=56 v=0,133,56,35
+n8 x=13 v=13,143,81,15 op=104 ink=14,144,80,11
 k62
-s1 i=0,0,37,35
-n2 x=8 ord=3 ink=9,11,19,11
-n3 w=0 op=65 bg=-
-n6 w=37
-n7 w=37
+s1 i=0,132.5,37,35
+n2 x=8 v=8,143,21,15 ord=3 ink=9,144,19,11
+n3 w=0 v=8,141,0,19 op=65 bg=-
+n6 w=37 v=0,133,37,35
+n7 w=37 v=0,133,37,35
 n8 -
 k63
 n3 op=39
@@ -220,26 +220,25 @@ n3 op=0
 k72
 n3 hid=opacity0
 k73
-s1 i=0,1,37,34
-n2 ord=2
+s1 i=0,133.015625,37,34
+n2 y=142.015625 v=8,142,21,15 ord=2 ink=9,143,19,11
 n3 -
-n6 y=1 h=34
-n7 y=1 h=34
+n6 y=133.015625 h=34 v=0,133,37,34
+n7 y=133.015625 h=34 v=0,133,37,34
 k74
-s1 i=0,1,37,32
-n6 h=32
-n7 h=32
+s1 i=0,133.78125,37,32
+n2 y=142.78125 v=8,143,21,15 ink=9,144,19,11
+n6 y=133.78125 h=32 v=0,134,37,32
+n7 y=133.78125 h=32 v=0,134,37,32
 k75
-s1 i=0,2,37,31
-n6 y=2 h=31
-n7 y=2 h=31
+s1 i=0,134.5,37,31
+n2 y=142.5
+n6 y=134.5 h=31 v=0,135,37,31
+n7 y=134.5 h=31 v=0,135,37,31
 k76
 k77
 k78
 k79
 k80
 k81
-s1 z=37,31 o=12,150 i=-
-n2 y=8 ink=9,9,19,11
-n6 y=0
-n7 y=0
+s1 z=37,300

@@ -1615,6 +1615,32 @@ fn a_panel_centred_on_one_axis_never_resizes_there() {
     }
 }
 
+/// A span is room to spare, never less than the content: where content,
+/// margins and overhang together pass the output, the surface holds the
+/// content, so it sits centred and its shadow stays in the buffer.
+#[test]
+fn a_span_never_makes_a_surface_narrower_than_its_content() {
+    let mut b = Builder::default();
+    let p = b.node(
+        NodeKind::Panel,
+        None,
+        vec![(Prop::Anchor, kw("top")), (Prop::Margin, num(30.0))],
+    );
+    b.node(
+        NodeKind::Box,
+        Some(p),
+        vec![(Prop::Width, num(320.0)), (Prop::Height, num(40.0))],
+    );
+    let mut r = renderer();
+    r.apply(b.diff);
+    let first = r.surface_spec(p).unwrap();
+    let first = Size::new(first.width.unwrap() as u32, first.height.unwrap() as u32);
+    r.attach_surface(S, p);
+    r.configure_surface(S, first, Scale::ONE);
+    r.set_surface_bounds(S, Some(LogicalSize::new(360.0, 800.0)));
+    assert_eq!(r.surface_spec(p).unwrap().width, Some(320.0));
+}
+
 /// (kept-size) A compositor may animate a layer surface's every resize
 /// (Hyprland), so a panel's size only ever grows, each name's on every
 /// output, and starts where an earlier session left it.

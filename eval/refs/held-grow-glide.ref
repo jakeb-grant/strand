@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "held-grow-glide"
 verdict good
-note "growth, first reference: read k0-70: the swap springs the bottom panel 93 -> 191 -> 187 wide from its centre (k1-9) as the long card fades in over the idle row; the quick swaps reverse the fades in flight with the box held at the long card's size; back: the long card fades out (k43-56), then the box springs down to the idle row's 60x35 (k57-65), the row keeping its place on x and gliding 20 -> 29 on y to its rest by the bottom edge; only the shown card at every rest; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Card k1-66 (21 frames, first i=74,16,93,40)"
-date 2026-10-23
-rev "abffdefe+changes"
+note "centred-surface, STEP_LANDED: as a wider surface, on-screen boxes match the old recording apart from at most a pixel around a spring (exact centres and whole-pixel landings), with no step beyond the old one's; compared from the trace per tick and node (decisions.md span-fit)."
+date 2026-10-31
+rev "a4ea7ce0+changes"
 approver "claude"
 scenario 20364aa6d1a67173
-seal 483be657407a72e0
+seal a416df8fbc617b1c
 S1 0 - "panel Card"
 N0 "holder|shell.strand:5:3|#0" "stack#holder"
 N1 "|shell.strand:12:7|#0" "row@shell.strand:12"
@@ -26,112 +26,109 @@ N14 "|shell.strand:7:7|#0~3" "col@shell.strand:7"
 N15 "|shell.strand:8:9|#0~3" "text(\"Now playing\")"
 N16 "|shell.strand:9:9|#1~3" "text(\"A song with a rather lon\")"
 k0 p1
-s1 z=60,35 o=150,347
-n0 x=0 y=0 w=60 h=35 ord=1 bg=202336ff
-n1 x=10 y=10 w=40 h=15 ord=2
-n2 x=10 y=11 w=13 h=13 ord=3 bg=8bd5caff
-n3 x=29 y=10 w=21 h=15 txt=S ord=4 ink=30,11,20,11 fg=e0e3f4ff gl=["Idle"]
-n4 x=0 y=0 w=60 h=35
+s1 z=360,35 o=0,347 i=150,0,60,35
+n0 x=150 y=0 w=60 h=35 ord=1 bg=202336ff
+n1 x=160 y=10 w=40 h=15 ord=2
+n2 x=160 y=11 w=13 h=13 ord=3 bg=8bd5caff
+n3 x=179 y=10 w=21 h=15 txt=S ord=4 ink=180,11,20,11 fg=e0e3f4ff gl=["Idle"]
+n4 x=150 y=0 w=60 h=35
 k1
-s1 z=242,56 o=59,326 i=74,16,93,40
-n0 x=74 y=16 w=93 h=40
-n1 x=101 y=28 op=218 hid=inert
-n2 x=101 y=29 op=218 hid=inert
-n3 x=120 y=28 op=218 hid=inert ink=121,29,20,11
-n4 x=74 y=16 w=93 h=40
-n5 x=84 y=26 w=73 h=20 op=37 ord=5
-n6 x=84 y=12 w=167 h=15 op=37 txt=S ord=6 ink=85,13,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
-n7 x=84 y=31 w=167 h=15 op=37 txt=S ord=7 ink=84,32,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
+s1 z=360,56 o=0,326 i=133.46875,16,93,40
+n0 x=133.46875 y=16 w=93 h=40 v=133,16,93,40
+n1 x=159.46875 y=28 v=159,28,40,15 op=218 hid=inert
+n2 x=159.46875 y=29 v=159,29,13,13 op=218 hid=inert
+n3 x=178.46875 y=28 v=178,28,21,15 op=218 hid=inert ink=179,29,20,11
+n4 x=133.46875 y=16 w=93 h=40 v=133,16,93,40
+n5 x=143.46875 y=26 w=73 h=20 v=143,26,73,20 op=37 ord=5
+n6 x=143.46875 y=12 w=167 h=15 v=143,12,167,15 op=37 txt=S ord=6 ink=144,13,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
+n7 x=143.46875 y=31 w=167 h=15 v=143,31,167,15 op=37 txt=S ord=7 ink=143,32,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
 k2
-s1 i=50,9,141,47
-n0 x=50 y=9 w=141 h=47
-n1 y=25 op=157
-n2 y=26 op=157
-n3 y=25 op=157 ink=121,26,20,11
-n4 x=50 y=9 w=141 h=47
-n5 x=60 y=19 w=121 h=27 op=98
-n6 x=60 op=98 ink=61,13,69,13
-n7 x=60 op=98 ink=60,32,167,13
+s1 i=109.34375,9,141,47
+n0 x=109.34375 y=9 w=141 h=47 v=109,9,141,47
+n1 x=159.34375 y=25 v=159,25,40,15 op=157
+n2 x=159.34375 y=26 v=159,26,13,13 op=157
+n3 x=178.34375 y=25 v=178,25,21,15 op=157 ink=179,26,20,11
+n4 x=109.34375 y=9 w=141 h=47 v=109,9,141,47
+n5 x=119.34375 y=19 w=121 h=27 v=119,19,121,27 op=98
+n6 x=119.34375 v=119,12,167,15 op=98 ink=120,13,69,13
+n7 x=119.34375 v=119,31,167,15 op=98 ink=119,32,167,13
 k3
-s1 i=35,4,173,52
-n0 x=35 y=4 w=173 h=52
-n1 y=22 op=104
-n2 y=23 op=104
-n3 y=22 op=104 ink=121,23,20,11
-n4 x=35 y=4 w=173 h=52
-n5 x=45 y=14 w=153 h=32 op=151
-n6 x=45 op=151 ink=46,13,69,13
-n7 x=45 op=151 ink=45,32,167,13
+s1 i=93.53125,4,173,52
+n0 x=93.53125 y=4 w=173 h=52 v=94,4,173,52
+n1 x=159.53125 y=22 v=160,22,40,15 op=104
+n2 x=159.53125 y=23 v=160,23,13,13 op=104
+n3 x=178.53125 y=22 v=179,22,21,15 op=104 ink=180,23,20,11
+n4 x=93.53125 y=4 w=173 h=52 v=94,4,173,52
+n5 x=103.53125 y=14 w=153 h=32 v=104,14,153,32 op=151
+n6 x=103.53125 v=104,12,167,15 op=151 ink=105,13,69,13
+n7 x=103.53125 v=104,31,167,15 op=151 ink=104,32,167,13
 k4
-s1 i=28,2,187,54
-n0 x=28 y=2 w=187 h=54
-n1 op=65
-n2 op=65
-n3 op=65
-n4 x=28 y=2 w=187 h=54
-n5 x=38 y=12 w=167 h=34 op=190
-n6 x=38 op=190 ink=39,13,69,13
-n7 x=38 op=190 ink=38,32,167,13
+s1 i=86.5,2,187,54
+n0 x=86.5 y=2 w=187 h=54 v=87,2,187,54
+n1 x=159.5 op=65
+n2 x=159.5 op=65
+n3 x=178.5 op=65
+n4 x=86.5 y=2 w=187 h=54 v=87,2,187,54
+n5 x=96.5 y=12 w=167 h=34 v=97,12,167,34 op=190
+n6 x=96.5 v=97,12,167,15 op=190 ink=98,13,69,13
+n7 x=96.5 v=97,31,167,15 op=190 ink=97,32,167,13
 k5
-s1 i=26,1,191,55
-n0 x=26 y=1 w=191 h=55
-n1 y=21 op=39
-n2 y=22 op=39
-n3 y=21 op=39 ink=121,22,20,11
-n4 x=26 y=1 w=191 h=55
-n5 x=36 y=11 w=171 h=35 op=216
-n6 x=36 op=216 ink=37,13,69,13
-n7 x=36 op=216 ink=36,32,167,13
+s1 i=84.734375,1,191,55
+n0 x=84.734375 y=1 w=191 h=55 v=85,1,191,55
+n1 x=159.734375 y=21 v=160,21,40,15 op=39
+n2 x=159.734375 y=22 v=160,22,13,13 op=39
+n3 x=178.734375 y=21 v=179,21,21,15 op=39 ink=180,22,20,11
+n4 x=84.734375 y=1 w=191 h=55 v=85,1,191,55
+n5 x=94.734375 y=11 w=171 h=35 v=95,11,171,35 op=216
+n6 x=94.734375 v=95,12,167,15 op=216 ink=96,13,69,13
+n7 x=94.734375 v=95,31,167,15 op=216 ink=95,32,167,13
 k6
-s1 i=26,2,190,54
-n0 y=2 w=190 h=54
-n1 op=23
-n2 op=23
-n3 op=23
-n4 y=2 w=190 h=54
-n5 y=12 w=170 h=34 op=232
-n6 op=232
-n7 op=232
+s1 i=85.03125,2,190,54
+n0 x=85.03125 y=2 w=190 h=54 v=85,2,190,54
+n1 x=160.03125 op=23
+n2 x=160.03125 op=23
+n3 x=179.03125 op=23
+n4 x=85.03125 y=2 w=190 h=54 v=85,2,190,54
+n5 x=95.03125 y=12 w=170 h=34 v=95,12,170,34 op=232
+n6 x=95.03125 op=232
+n7 x=95.03125 op=232
 k7
-s1 i=27,2,189,54
-n0 x=27 w=189
-n1 op=14
-n2 op=14
-n3 op=14
-n4 x=27 w=189
-n5 x=37 w=169 op=241
-n6 x=37 op=241 ink=38,13,69,13
-n7 x=37 op=241 ink=37,32,167,13
+s1 i=85.71875,2,189,54
+n0 x=85.71875 w=189 v=86,2,189,54
+n1 x=159.71875 op=14
+n2 x=159.71875 op=14
+n3 x=178.71875 op=14
+n4 x=85.71875 w=189 v=86,2,189,54
+n5 x=95.71875 w=169 v=96,12,169,34 op=241
+n6 x=95.71875 v=96,12,167,15 op=241 ink=97,13,69,13
+n7 x=95.71875 v=96,31,167,15 op=241 ink=96,32,167,13
 k8
-s1 i=27,2,188,54
-n0 w=188
-n1 op=8
-n2 op=8
-n3 op=8
-n4 w=188
-n5 w=168 op=247
-n6 op=247
-n7 op=247
+s1 i=86.234375,2,188,54
+n0 x=86.234375 w=188 v=86,2,188,54
+n1 x=160.234375 op=8
+n2 x=160.234375 op=8
+n3 x=179.234375 op=8
+n4 x=86.234375 w=188 v=86,2,188,54
+n5 x=96.234375 w=168 v=96,12,168,34 op=247
+n6 x=96.234375 op=247
+n7 x=96.234375 op=247
 k9
-s1 i=27,2,187,54
-n0 w=187
-n1 y=22 op=4
-n2 y=23 op=4
-n3 y=22 op=4 ink=121,23,20,11
-n4 w=187
-n5 w=167 op=251
-n6 op=251
-n7 op=251
+s1 i=86.5,2,187,54
+n0 x=86.5 w=187 v=87,2,187,54
+n1 x=160.5 y=22 v=161,22,40,15 op=4
+n2 x=160.5 y=23 v=161,23,13,13 op=4
+n3 x=179.5 y=22 v=180,22,21,15 op=4 ink=181,23,20,11
+n4 x=86.5 w=187 v=87,2,187,54
+n5 x=96.5 w=167 v=97,12,167,34 op=251
+n6 x=96.5 v=97,12,167,15 op=251 ink=98,13,69,13
+n7 x=96.5 v=97,31,167,15 op=251 ink=97,32,167,13
 k10
-s1 i=28,2,187,54
-n0 x=28
 n1 op=2
 n2 op=2
 n3 op=2
-n4 x=28
-n5 x=38 op=253
-n6 x=38 op=253 ink=39,13,69,13
-n7 x=38 op=253 ink=38,32,167,13
+n5 op=253
+n6 op=253
+n7 op=253
 k11
 n1 op=1
 n2 op=1
@@ -141,9 +138,9 @@ n6 op=254
 n7 op=254
 k12
 k13
-n1 x=102 op=0
-n2 x=102 op=0
-n3 x=121 op=0 ink=122,23,20,11
+n1 op=0
+n2 op=0
+n3 op=0
 n5 op=255
 n6 op=255
 n7 op=255
@@ -160,16 +157,16 @@ n5 ord=2
 n6 ord=3
 n7 ord=4
 k16
-s1 z=187,54 o=87,328 i=-
-n0 x=0 y=0
-n4 x=0 y=0
-n5 x=10 y=10
-n6 x=10 y=10 ink=11,11,69,13
-n7 x=10 y=29 ink=10,30,167,13
+s1 z=360,54 o=0,328 i=86.5,0,187,54
+n0 y=0 v=87,0,187,54
+n4 y=0 v=87,0,187,54
+n5 y=10 v=97,10,167,34
+n6 y=10 v=97,10,167,15 ink=98,11,69,13
+n7 y=29 v=97,29,167,15 ink=97,30,167,13
 k17
-n1 x=74 y=20 w=40 h=15 op=37 ord=5
-n2 x=74 y=21 w=13 h=13 op=37 ord=6 bg=8bd5caff
-n3 x=93 y=20 w=21 h=15 op=37 txt=S ord=7 ink=94,21,20,11 fg=e0e3f4ff gl=["Idle"]
+n1 x=160.5 y=20 w=40 h=15 v=161,20,40,15 op=37 ord=5
+n2 x=160.5 y=21 w=13 h=13 v=161,21,13,13 op=37 ord=6 bg=8bd5caff
+n3 x=179.5 y=20 w=21 h=15 v=180,20,21,15 op=37 txt=S ord=7 ink=181,21,20,11 fg=e0e3f4ff gl=["Idle"]
 n5 op=218 hid=inert
 n6 op=218 hid=inert
 n7 op=218 hid=inert
@@ -195,18 +192,18 @@ n5 op=65
 n6 op=65
 n7 op=65
 k21
-s1 z=242,56 o=59,326 i=28,2,187,54
-n0 x=28 y=2
-n1 x=102 y=22 op=179 hid=inert
-n2 x=102 y=23 op=179 hid=inert
-n3 x=121 y=22 op=179 hid=inert ink=122,23,20,11
-n4 x=28 y=2
-n5 x=38 y=12 op=39
-n6 x=38 y=12 op=39 ink=39,13,69,13
-n7 x=38 y=31 op=39 ink=38,32,167,13
-n8 x=38 y=12 w=167 h=34 op=37 ord=8
-n9 x=38 y=12 w=167 h=15 op=37 txt=S ord=9 ink=39,13,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
-n10 x=38 y=31 w=167 h=15 op=37 txt=S ord=10 ink=38,32,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
+s1 z=360,56 o=0,326 i=86.5,2,187,54
+n0 y=2 v=87,2,187,54
+n1 y=22 v=161,22,40,15 op=179 hid=inert
+n2 y=23 v=161,23,13,13 op=179 hid=inert
+n3 y=22 v=180,22,21,15 op=179 hid=inert ink=181,23,20,11
+n4 y=2 v=87,2,187,54
+n5 y=12 v=97,12,167,34 op=39
+n6 y=12 v=97,12,167,15 op=39 ink=98,13,69,13
+n7 y=31 v=97,31,167,15 op=39 ink=97,32,167,13
+n8 x=96.5 y=12 w=167 h=34 v=97,12,167,34 op=37 ord=8
+n9 x=96.5 y=12 w=167 h=15 v=97,12,167,15 op=37 txt=S ord=9 ink=98,13,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
+n10 x=96.5 y=31 w=167 h=15 v=97,31,167,15 op=37 txt=S ord=10 ink=97,32,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
 k22
 n1 op=133
 n2 op=133
@@ -247,9 +244,9 @@ n7 op=4
 n8 op=179 hid=inert
 n9 op=179 hid=inert
 n10 op=179 hid=inert
-n11 x=102 y=22 w=40 h=15 op=37 ord=11
-n12 x=102 y=23 w=13 h=13 op=37 ord=12 bg=8bd5caff
-n13 x=121 y=22 w=21 h=15 op=37 txt=S ord=13 ink=122,23,20,11 fg=e0e3f4ff gl=["Idle"]
+n11 x=160.5 y=22 w=40 h=15 v=161,22,40,15 op=37 ord=11
+n12 x=160.5 y=23 w=13 h=13 v=161,23,13,13 op=37 ord=12 bg=8bd5caff
+n13 x=179.5 y=22 w=21 h=15 v=180,22,21,15 op=37 txt=S ord=13 ink=181,23,20,11 fg=e0e3f4ff gl=["Idle"]
 k26
 n1 op=21
 n2 op=21
@@ -286,9 +283,9 @@ n10 op=57
 n11 op=153 hid=inert
 n12 op=153 hid=inert
 n13 op=153 hid=inert
-n14 x=38 y=12 w=167 h=34 op=37 ord=14
-n15 x=38 y=12 w=167 h=15 op=37 txt=S ord=15 ink=39,13,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
-n16 x=38 y=31 w=167 h=15 op=37 txt=S ord=16 ink=38,32,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
+n14 x=96.5 y=12 w=167 h=34 v=97,12,167,34 op=37 ord=14
+n15 x=96.5 y=12 w=167 h=15 v=97,12,167,15 op=37 txt=S ord=15 ink=98,13,69,13 fg=e0e3f4ff gl=["Now\u0020playing"]
+n16 x=96.5 y=31 w=167 h=15 v=97,31,167,15 op=37 txt=S ord=16 ink=97,32,167,13 fg=a8adc8ff gl=["A\u0020song\u0020with\u0020a\u0020rather\u0020long\u0020title"]
 k29
 n1 op=4
 n2 op=4
@@ -430,16 +427,16 @@ n14 ord=2
 n15 ord=3
 n16 ord=4
 k42
-s1 z=187,54 o=87,328 i=-
-n0 x=0 y=0
-n4 x=0 y=0
-n14 x=10 y=10
-n15 x=10 y=10 ink=11,11,69,13
-n16 x=10 y=29 ink=10,30,167,13
+s1 z=360,54 o=0,328 i=86.5,0,187,54
+n0 y=0 v=87,0,187,54
+n4 y=0 v=87,0,187,54
+n14 y=10 v=97,10,167,34
+n15 y=10 v=97,10,167,15 ink=98,11,69,13
+n16 y=29 v=97,29,167,15 ink=97,30,167,13
 k43
-n1 x=74 y=20 w=40 h=15 op=37 ord=5
-n2 x=74 y=21 w=13 h=13 op=37 ord=6 bg=8bd5caff
-n3 x=93 y=20 w=21 h=15 op=37 txt=S ord=7 ink=94,21,20,11 fg=e0e3f4ff gl=["Idle"]
+n1 x=160.5 y=20 w=40 h=15 v=161,20,40,15 op=37 ord=5
+n2 x=160.5 y=21 w=13 h=13 v=161,21,13,13 op=37 ord=6 bg=8bd5caff
+n3 x=179.5 y=20 w=21 h=15 v=180,20,21,15 op=37 txt=S ord=7 ink=181,21,20,11 fg=e0e3f4ff gl=["Idle"]
 n14 op=218 hid=inert
 n15 op=218 hid=inert
 n16 op=218 hid=inert
@@ -529,77 +526,77 @@ n14 hid=opacity0
 n15 -
 n16 -
 k57
-s1 i=17,5,154,49
-n0 x=17 y=5 w=154 h=49
-n1 y=22 ord=2
-n2 y=23 ord=3
-n3 y=22 ord=4 ink=94,23,20,11
-n4 x=17 y=5 w=154 h=49
+s1 i=103.03125,5,154,49
+n0 x=103.03125 y=5 w=154 h=49 v=103,5,154,49
+n1 x=160.03125 y=22 v=160,22,40,15 ord=2
+n2 x=160.03125 y=23 v=160,23,13,13 ord=3
+n3 x=179.03125 y=22 v=179,22,21,15 ord=4 ink=180,23,20,11
+n4 x=103.03125 y=5 w=154 h=49 v=103,5,154,49
 n14 -
 k58
-s1 i=41,12,106,42
-n0 x=41 y=12 w=106 h=42
-n1 y=26
-n2 y=27
-n3 y=26 ink=94,27,20,11
-n4 x=41 y=12 w=106 h=42
+s1 i=127.15625,12,106,42
+n0 x=127.15625 y=12 w=106 h=42 v=127,12,106,42
+n1 x=160.15625 y=26 v=160,26,40,15
+n2 x=160.15625 y=27 v=160,27,13,13
+n3 x=179.15625 y=26 v=179,26,21,15 ink=180,27,20,11
+n4 x=127.15625 y=12 w=106 h=42 v=127,12,106,42
 k59
-s1 i=56,17,74,37
-n0 x=56 y=17 w=74 h=37
-n1 x=73 y=28
-n2 x=73 y=29
-n3 x=92 y=28 ink=93,29,20,11
-n4 x=56 y=17 w=74 h=37
+s1 i=142.96875,17,74,37
+n0 x=142.96875 y=17 w=74 h=37 v=143,17,74,37
+n1 x=159.96875 y=28 v=160,28,40,15
+n2 x=159.96875 y=29 v=160,29,13,13
+n3 x=178.96875 y=28 v=179,28,21,15 ink=180,29,20,11
+n4 x=142.96875 y=17 w=74 h=37 v=143,17,74,37
 k60
-s1 i=63,19,60,35
-n0 x=63 y=19 w=60 h=35
-n1 y=29
-n2 y=30
-n3 y=29 ink=93,30,20,11
-n4 x=63 y=19 w=60 h=35
+s1 i=150,19,60,35
+n0 x=150 y=19 w=60 h=35 v=d
+n1 x=160 y=29 v=d
+n2 x=160 y=30 v=d
+n3 x=179 y=29 v=d ink=180,30,20,11
+n4 x=150 y=19 w=60 h=35 v=d
 k61
-s1 i=65,20,56,34
-n0 x=65 y=20 w=56 h=34
-n1 x=75 y=30 w=36
-n2 x=75
-n3 x=94 ink=95,30,20,11
-n4 x=65 y=20 w=56 h=34
+s1 i=151.765625,20,56,34
+n0 x=151.765625 y=20 w=56 h=34 v=152,20,56,34
+n1 x=161.765625 y=30 w=36 v=162,30,36,15
+n2 x=161.765625 v=162,30,13,13
+n3 x=180.765625 v=181,29,21,15 ink=182,30,20,11
+n4 x=151.765625 y=20 w=56 h=34 v=152,20,56,34
 k62
-s1 i=65,19,57,35
-n0 y=19 w=57 h=35
-n1 y=29 w=37
-n4 y=19 w=57 h=35
+s1 i=151.46875,19,57,35
+n0 x=151.46875 y=19 w=57 h=35 v=151,19,57,35
+n1 x=161.46875 y=29 w=37 v=161,29,37,15
+n2 x=161.46875 v=161,30,13,13
+n3 x=180.46875 v=180,29,21,15 ink=181,30,20,11
+n4 x=151.46875 y=19 w=57 h=35 v=151,19,57,35
 k63
-s1 i=64,19,58,35
-n0 x=64 w=58
-n1 x=74 w=38
-n2 x=74
-n3 x=93 ink=94,30,20,11
-n4 x=64 w=58
+s1 i=150.78125,19,58,35
+n0 x=150.78125 w=58 v=151,19,58,35
+n1 x=160.78125 w=38 v=161,29,38,15
+n2 x=160.78125
+n3 x=179.78125
+n4 x=150.78125 w=58 v=151,19,58,35
 k64
-s1 i=64,19,59,35
-n0 w=59
-n1 w=39
-n4 w=59
+s1 i=150.265625,19,59,35
+n0 x=150.265625 w=59 v=150,19,59,35
+n1 x=160.265625 w=39 v=160,29,39,15
+n2 x=160.265625 v=160,30,13,13
+n3 x=179.265625 v=179,29,21,15 ink=180,30,20,11
+n4 x=150.265625 w=59 v=150,19,59,35
 k65
-s1 i=64,19,60,35
-n0 w=60
-n1 w=40
-n4 w=60
+s1 i=150,19,60,35
+n0 x=150 w=60 v=d
+n1 x=160 w=40 v=d
+n2 x=160 v=d
+n3 x=179 v=d
+n4 x=150 w=60 v=d
 k66
-s1 i=63,19,60,35
-n0 x=63
-n1 x=73
-n2 x=73
-n3 x=92 ink=93,30,20,11
-n4 x=63
 k67
 k68
 k69
 k70
-s1 z=60,35 o=150,347 i=-
-n0 x=0 y=0
-n1 x=10 y=10
-n2 x=10 y=11
-n3 x=29 y=10 ink=30,11,20,11
-n4 x=0 y=0
+s1 z=360,35 o=0,347 i=150,0,60,35
+n0 y=0
+n1 y=10
+n2 y=11
+n3 y=10 ink=180,11,20,11
+n4 y=0

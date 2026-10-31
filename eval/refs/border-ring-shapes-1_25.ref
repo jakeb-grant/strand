@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "border-ring-shapes-1_25"
 verdict good
-note "new scenario (eval-rules-6): six bordered boxes at scale 1.25, every corner kind (14, 16 with a 6 px border, full, 14/14/0/0, square, 30 on a 40 px box); #card's width springs 120 -> 200 (overshoot 200.8) and back (119.2); #thick rides along by 80 px; nothing else moves; each ring is the CSS ring on all 175 rings judged; read with explain"
-date 2026-10-19
-rev "bbda3d6c+changes"
+note "centred-surface: the surface spans its output on the centred axis, so it is wider and every drawn coordinate moves by the difference; compared from the trace per tick and node, on-screen boxes match within rounding (decisions.md span-fit)."
+date 2026-10-31
+rev "a4ea7ce0+changes"
 approver "claude"
 scenario a46900affc4ad762
-seal 813b17c5ca1a6dde
+seal 660eb53771f36744
 S1 0 - "panel Rings"
 N0 "card|shell.strand:6:7|#0" "box#card"
 N1 "chip|shell.strand:12:7|#2" "box#chip"
@@ -19,65 +19,65 @@ N7 "|shell.strand:2:1|#0" "panel@shell.strand:2"
 N8 "|shell.strand:5:5|#0" "row@shell.strand:5"
 N9 "|shell.strand:9:5|#1" "row@shell.strand:9"
 k0 p1
-s1 z=320,134 o=20,12
-n0 x=12 y=12 w=120 h=60 ord=3 bg=1d2029ff bd=7aa2f7ff
-n1 x=223 y=90 w=38 h=24 v=223.203125,90.40625,37.59375,24 ord=8 bd=f7768eff
-n2 x=271 y=82 w=37 h=40 v=271.203125,82.40625,36.796875,40 ord=9 bd=7dcfffff
-n3 x=12 y=88 w=105 h=28 v=12,88,104.796875,28 ord=6 bg=1d2029ff bd=9ece6aff
-n4 x=0 y=0 w=320 h=134 v=0,0,320,134.40625 ord=1 bg=15171cff bd=2c313aff
-n5 x=127 y=84 w=86 h=36 v=127.203125,84,85.59375,36 ord=7 bg=1d2029ff bd=bb9af7ff
-n6 x=142 y=12 w=72 h=60 v=142.40625,12,72,60 ord=4 bg=1d2029ff bd=e0af68ff
-n7 x=0 y=0 w=320 h=134 v=0,0,320,134.40625
-n8 x=12 y=12 w=296 h=60 ord=2
-n9 x=12 y=82 w=296 h=40 v=12,82.40625,296,40 ord=5
+s1 z=360,134 o=0,12 i=20,0,320,134
+n0 x=32 y=12 w=120 h=60 ord=3 bg=1d2029ff bd=7aa2f7ff
+n1 x=243 y=90 w=38 h=24 v=243.203125,90.40625,37.59375,24 ord=8 bd=f7768eff
+n2 x=291 y=82 w=37 h=40 v=291.203125,82.40625,36.796875,40 ord=9 bd=7dcfffff
+n3 x=32 y=88 w=105 h=28 v=32,88,104.796875,28 ord=6 bg=1d2029ff bd=9ece6aff
+n4 x=20 y=0 w=320 h=134 v=20,0,320,134.40625 ord=1 bg=15171cff bd=2c313aff
+n5 x=147 y=84 w=86 h=36 v=147.203125,84,85.59375,36 ord=7 bg=1d2029ff bd=bb9af7ff
+n6 x=162 y=12 w=72 h=60 v=162.40625,12,72,60 ord=4 bg=1d2029ff bd=e0af68ff
+n7 x=20 y=0 w=320 h=134 v=20,0,320,134.40625
+n8 x=32 y=12 w=296 h=60 ord=2
+n9 x=32 y=82 w=296 h=40 v=32,82.40625,296,40 ord=5
 k1
-n0 w=141 v=12,12,140.796875,60
-n6 x=163 v=163.203125,12,72,60
+n0 w=141 v=32,12,140.796875,60
+n6 x=183 v=183.203125,12,72,60
 k2
-n0 w=171 v=12,12,171.203125,60
-n6 x=193 v=192.796875,12,72,60
-k3
-n0 w=191 v=12,12,191.203125,60
+n0 w=171 v=32,12,171.203125,60
 n6 x=213 v=212.796875,12,72,60
+k3
+n0 w=191 v=32,12,191.203125,60
+n6 x=233 v=232.796875,12,72,60
 k4
 n0 w=200 v=d
-n6 x=222 v=222.40625,12,72,60
+n6 x=242 v=242.40625,12,72,60
 k5
-n0 w=202 v=12,12,202.40625,60
-n6 x=224 v=d
+n0 w=202 v=32,12,202.40625,60
+n6 x=244 v=d
 k6
 k7
-n0 w=201 v=12,12,200.796875,60
-n6 x=223 v=223.203125,12,72,60
+n0 w=201 v=32,12,200.796875,60
+n6 x=243 v=243.203125,12,72,60
 k8
 n0 w=200 v=d
-n6 x=222 v=222.40625,12,72,60
+n6 x=242 v=242.40625,12,72,60
 k9
 k10
 k11
 k12
 k13
-n0 w=179 v=12,12,179.203125,60
-n6 x=201 v=200.796875,12,72,60
+n0 w=179 v=32,12,179.203125,60
+n6 x=221 v=220.796875,12,72,60
 k14
-n0 w=149 v=12,12,148.796875,60
-n6 x=171 v=171.203125,12,72,60
+n0 w=149 v=32,12,148.796875,60
+n6 x=191 v=191.203125,12,72,60
 k15
-n0 w=129 v=12,12,128.796875,60
-n6 x=151 v=151.203125,12,72,60
+n0 w=129 v=32,12,128.796875,60
+n6 x=171 v=171.203125,12,72,60
 k16
 n0 w=120 v=d
-n6 x=142 v=142.40625,12,72,60
+n6 x=162 v=162.40625,12,72,60
 k17
-n0 w=118 v=12,12,118.40625,60
-n6 x=140 v=d
+n0 w=118 v=32,12,118.40625,60
+n6 x=160 v=d
 k18
 k19
-n0 w=119 v=12,12,119.203125,60
-n6 x=141 v=140.796875,12,72,60
+n0 w=119 v=32,12,119.203125,60
+n6 x=161 v=160.796875,12,72,60
 k20
 n0 w=120 v=d
-n6 x=142 v=142.40625,12,72,60
+n6 x=162 v=162.40625,12,72,60
 k21
 k22
 k23

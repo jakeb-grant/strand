@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "osd-bottom-grow-1_5"
 verdict good
-note "growth: as osd-bottom-grow at 1.5: the OSD's box springs up from its anchored bottom edge 48.7 -> 62.7 -> 72 -> 77.3 -> 76 (k1-6) where the col glided down with the buffer; #more is drawn at rest and revealed by the box, the level row keeps its output place every frame"
-date 2026-10-23
-rev "94d165c6+changes"
+note "centred-surface: the surface spans its output on the centred axis, so it is wider and every drawn coordinate moves by the difference; compared from the trace per tick and node, on-screen boxes match within rounding (decisions.md span-fit)."
+date 2026-10-31
+rev "a4ea7ce0+changes"
 approver "claude"
 scenario 9ad01102c8f99e41
-seal db6728fc912d6a60
+seal 4943f838d5848f5a
 S1 0 - "osd Level"
 N0 "head|shell.strand:10:7|#0" "text#head"
 N1 "icon|shell.strand:9:7|#0" "box#icon"
@@ -15,23 +15,23 @@ N3 "|shell.strand:4:3|#0" "col@shell.strand:4"
 N4 "|shell.strand:8:5|#0" "row@shell.strand:8"
 N5 "more|shell.strand:6:7|#0" "box#more"
 k0 p1
-s1 z=220,40 o=90,212
-n0 x=36 y=13 w=73 h=15 v=36,13.328125,73.328125,14.671875 txt=S ord=4 ink=36,15.328125,72.671875,10.671875 fg=cdd6f4ff gl=["Volume\u002040%"]
-n1 x=12 y=12 w=16 h=16 ord=3 bg=a6e3a1ff
-n2 x=0 y=0 w=220 h=40
-n3 x=0 y=0 w=220 h=40 ord=1 bg=1e1e2ee6
-n4 x=12 y=12 w=196 h=16 ord=2
+s1 z=400,40 o=0,212
+n0 x=126 y=13 w=73 h=15 v=126,13.328125,73.328125,14.671875 txt=S ord=4 ink=126,15.328125,72.671875,10.671875 fg=cdd6f4ff gl=["Volume\u002040%"]
+n1 x=102 y=12 w=16 h=16 ord=3 bg=a6e3a1ff
+n2 x=90 y=0 w=220 h=40
+n3 x=90 y=0 w=220 h=40 ord=1 bg=1e1e2ee6
+n4 x=102 y=12 w=196 h=16 ord=2
 k1
-s1 z=220,76 o=90,176
-n0 y=49 v=36,49.328125,73.328125,14.671875 ord=5 ink=36,51.328125,72.671875,10.671875
+s1 z=400,76 o=0,176
+n0 y=49 v=126,49.328125,73.328125,14.671875 ord=5 ink=126,51.328125,72.671875,10.671875
 n1 y=48 ord=4
-n2 y=27 h=49 v=0,27.328125,220,48.671875
-n3 y=27 h=49 v=0,27.328125,220,48.671875
+n2 y=27 h=49 v=90,27.328125,220,48.671875
+n3 y=27 h=49 v=90,27.328125,220,48.671875
 n4 y=48 ord=3
-n5 x=12 y=12 w=196 h=28 op=37 ord=2 bg=89b4faff
+n5 x=102 y=12 w=196 h=28 op=37 ord=2 bg=89b4faff
 k2
-n2 y=13 h=63 v=0,13.328125,220,62.671875
-n3 y=13 h=63 v=0,13.328125,220,62.671875
+n2 y=13 h=63 v=90,13.328125,220,62.671875
+n3 y=13 h=63 v=90,13.328125,220,62.671875
 n5 op=98
 k3
 n2 y=4 h=72 v=d
@@ -42,8 +42,8 @@ n2 y=0 h=76
 n3 y=0 h=76
 n5 op=190
 k5
-n2 y=-1 h=77 v=0,-1.328125,220,77.328125
-n3 y=-1 h=77 v=0,-1.328125,220,77.328125
+n2 y=-1 h=77 v=90,-1.328125,220,77.328125
+n3 y=-1 h=77 v=90,-1.328125,220,77.328125
 n5 op=216
 k6
 n5 op=232

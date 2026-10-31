@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "toast-stack"
 verdict good
-note "growth: read against the reference: the panel and col#stack spring 121 -> 137 -> 147 -> 152 -> 151 (k1-6) where the reference snapped; the toasts' own motion is the reference's; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Toasts k1-34 (11 frames, first i=0,0,240,121)"
-date 2026-10-23
-rev "abffdefe+changes"
+note "centred-surface: the surface spans its output on the centred axis, so it is wider and every drawn coordinate moves by the difference; compared from the trace per tick and node, on-screen boxes match within rounding (decisions.md span-fit)."
+date 2026-10-31
+rev "a4ea7ce0+changes"
 approver "claude"
 scenario 2c006773271933ff
-seal fc8726df420ce6c5
+seal 6842243db4b7975b
 S1 0 - "panel Toasts"
 S2 0 - "bar Top"
 N0 "header|shell.strand:10:5|#0" "text#header"
@@ -23,85 +23,85 @@ N10 "t_call|shell.strand:12:7|#0" "row#t_call"
 N11 "|shell.strand:14:9|#0" "box@shell.strand:14"
 N12 "|shell.strand:15:9|#0" "text(\"Incoming call\")"
 k0 p1,2
-s1 z=240,111 o=40,30
+s1 z=320,111 o=0,30 i=40,0,240,111
 s2 z=320,30
-n0 x=8 y=8 w=224 h=15 txt=S ord=2 ink=9,9,70,11 fg=d0d0d0ff gl=["Notifications"]
-n1 x=0 y=0 w=240 h=111 ord=1 bg=101216ff
-n2 x=8 y=69 w=220 h=34 ord=6 bg=2b303bff
-n3 x=8 y=29 w=220 h=34 ord=3 bg=2b303bff
-n4 x=18 y=40 w=12 h=12 ord=4 bg=88c0d0ff
-n5 x=38 y=39 w=54 h=15 txt=S ord=5 ink=39,40,52,11 fg=eceff4ff gl=["New\u0020mail"]
-n6 x=18 y=80 w=12 h=12 ord=7 bg=ebcb8bff
-n7 x=38 y=79 w=78 h=15 txt=S ord=8 ink=39,80,76,11 fg=eceff4ff gl=["Build\u0020finished"]
+n0 x=48 y=8 w=224 h=15 txt=S ord=2 ink=49,9,70,11 fg=d0d0d0ff gl=["Notifications"]
+n1 x=40 y=0 w=240 h=111 ord=1 bg=101216ff
+n2 x=48 y=69 w=220 h=34 ord=6 bg=2b303bff
+n3 x=48 y=29 w=220 h=34 ord=3 bg=2b303bff
+n4 x=58 y=40 w=12 h=12 ord=4 bg=88c0d0ff
+n5 x=78 y=39 w=54 h=15 txt=S ord=5 ink=79,40,52,11 fg=eceff4ff gl=["New\u0020mail"]
+n6 x=58 y=80 w=12 h=12 ord=7 bg=ebcb8bff
+n7 x=78 y=79 w=78 h=15 txt=S ord=8 ink=79,80,76,11 fg=eceff4ff gl=["Build\u0020finished"]
 n8 srf=2 x=0 y=0 w=320 h=30 bg=faf9ffff
-n9 x=0 y=0 w=240 h=111
+n9 x=40 y=0 w=240 h=111
 k1 p1
-s1 z=240,151 i=0,0,240,121
+s1 z=320,151 i=40,0,240,121
 n1 h=121
 n2 y=79 ord=9
 n3 y=39 ord=6
 n4 y=50 ord=7
-n5 y=49 ord=8 ink=39,50,52,11
+n5 y=49 ord=8 ink=79,50,52,11
 n6 y=90 ord=10
-n7 y=89 ord=11 ink=39,90,76,11
+n7 y=89 ord=11 ink=79,90,76,11
 n9 h=121
-n10 x=97 y=29 w=220 h=34 op=37 ord=3 bg=2b303bff
-n11 x=107 y=40 w=12 h=12 op=37 ord=4 bg=a3be8cff
-n12 x=127 y=39 w=76 h=15 op=37 txt=S ord=5 ink=128,40,75,13 fg=eceff4ff gl=["Incoming\u0020call"]
+n10 x=137 y=29 w=220 h=34 op=37 ord=3 bg=2b303bff
+n11 x=147 y=40 w=12 h=12 op=37 ord=4 bg=a3be8cff
+n12 x=167 y=39 w=76 h=15 op=37 txt=S ord=5 ink=168,40,75,13 fg=eceff4ff gl=["Incoming\u0020call"]
 k2
-s1 i=0,0,240,137
+s1 i=40,0,240,137
 n1 h=137
 n2 y=95
 n3 y=55
 n4 y=66
-n5 y=64 ink=39,65,52,11
+n5 y=64 ink=79,65,52,11
 n6 y=106
-n7 y=104 ink=39,105,76,11
+n7 y=104 ink=79,105,76,11
 n9 h=137
-n10 x=51 op=98
-n11 x=61 op=98
-n12 x=81 op=98 ink=82,40,75,13
+n10 x=91 op=98
+n11 x=101 op=98
+n12 x=121 op=98 ink=122,40,75,13
 k3
-s1 i=0,0,240,147
+s1 i=40,0,240,147
 n1 h=147
 n2 y=105
 n3 y=65
 n4 y=76
-n5 y=74 ink=39,75,52,11
+n5 y=74 ink=79,75,52,11
 n6 y=116
-n7 y=114 ink=39,115,76,11
+n7 y=114 ink=79,115,76,11
 n9 h=147
-n10 x=21 op=151
-n11 x=31 op=151
-n12 x=51 op=151 ink=52,40,75,13
+n10 x=61 op=151
+n11 x=71 op=151
+n12 x=91 op=151 ink=92,40,75,13
 k4
-s1 i=-
+s1 i=40,0,240,151
 n1 h=151
 n2 y=109
 n3 y=69
 n4 y=80
-n5 y=78 ink=39,79,52,11
+n5 y=78 ink=79,79,52,11
 n6 y=120
-n7 y=118 ink=39,119,76,11
+n7 y=118 ink=79,119,76,11
 n9 h=151
-n10 x=8 op=190
-n11 x=18 op=190
-n12 x=38 op=190 ink=39,40,75,13
+n10 x=48 op=190
+n11 x=58 op=190
+n12 x=78 op=190 ink=79,40,75,13
 k5
 n1 h=152
 n2 y=110
 n3 y=70
 n4 y=81
-n5 y=80 ink=39,81,52,11
+n5 y=80 ink=79,81,52,11
 n6 y=121
-n7 y=120 ink=39,121,76,11
+n7 y=120 ink=79,121,76,11
 n9 h=152
-n10 x=5 op=216
-n11 x=15 op=216
-n12 x=35 op=216 ink=36,40,75,13
+n10 x=45 op=216
+n11 x=55 op=216
+n12 x=75 op=216 ink=76,40,75,13
 k6
-n5 y=79 ink=39,80,52,11
-n7 y=119 ink=39,120,76,11
+n5 y=79 ink=79,80,52,11
+n7 y=119 ink=79,120,76,11
 n10 op=232
 n11 op=232
 n12 op=232
@@ -112,17 +112,17 @@ n3 y=69
 n4 y=80
 n6 y=120
 n9 h=151
-n10 x=7 op=241
-n11 x=17 op=241
-n12 x=37 op=241 ink=38,40,75,13
+n10 x=47 op=241
+n11 x=57 op=241
+n12 x=77 op=241 ink=78,40,75,13
 k8
 n10 op=247
 n11 op=247
 n12 op=247
 k9
-n10 x=8 op=251
-n11 x=18 op=251
-n12 x=38 op=251 ink=39,40,75,13
+n10 x=48 op=251
+n11 x=58 op=251
+n12 x=78 op=251 ink=79,40,75,13
 k10
 n10 op=253
 n11 op=253
@@ -138,44 +138,44 @@ n11 op=255
 n12 op=255
 k14
 k15
-s1 i=0,0,240,142
+s1 i=40,0,240,142
 n1 h=142
 n2 y=100
 n3 h=25 op=218 hid=inert
 n4 y=76 op=218 hid=inert
-n5 y=74 op=218 hid=inert ink=39,75,52,11
+n5 y=74 op=218 hid=inert ink=79,75,52,11
 n6 y=111
-n7 y=110 ink=39,111,76,11
+n7 y=110 ink=79,111,76,11
 n9 h=142
 k16
-s1 i=0,0,240,129
+s1 i=40,0,240,129
 n1 h=129
 n2 y=87
 n3 h=12 op=157
 n4 y=69 op=157
-n5 y=68 op=157 ink=39,69,52,11
+n5 y=68 op=157 ink=79,69,52,11
 n6 y=98
-n7 y=97 ink=39,98,76,11
+n7 y=97 ink=79,98,76,11
 n9 h=129
 k17
-s1 i=0,0,240,119
+s1 i=40,0,240,119
 n1 h=119
 n2 y=77
 n3 h=4 op=104
 n4 y=65 op=104
-n5 y=63 op=104 ink=39,64,52,11
+n5 y=63 op=104 ink=79,64,52,11
 n6 y=88
-n7 y=86 ink=39,87,76,11
+n7 y=86 ink=79,87,76,11
 n9 h=119
 k18
-s1 i=0,0,240,111
+s1 i=40,0,240,111
 n1 h=111
 n2 y=69 ord=7
 n3 h=0 op=65 bg=-
 n4 -
 n5 -
 n6 y=80 ord=8
-n7 y=79 ord=9 ink=39,80,76,11
+n7 y=79 ord=9 ink=79,80,76,11
 n9 h=111
 k19
 n3 op=39
@@ -202,39 +202,39 @@ n3 -
 n6 ord=7
 n7 ord=8
 k30
-s1 z=240,111 i=-
+s1 z=320,111
 k31
-s1 i=0,0,240,93
+s1 i=40,0,240,93
 n1 h=93
 n2 y=60 h=25 op=218 hid=inert
 n6 y=67 op=218 hid=inert
-n7 y=65 op=218 hid=inert ink=39,66,76,11
+n7 y=65 op=218 hid=inert ink=79,66,76,11
 n9 h=93
 n10 h=25 op=218 hid=inert
 n11 y=36 op=218 hid=inert
-n12 y=34 op=218 hid=inert ink=39,35,75,13
+n12 y=34 op=218 hid=inert ink=79,35,75,13
 k32
-s1 i=0,0,240,67
+s1 i=40,0,240,67
 n1 h=67
 n2 y=47 h=12 op=157
 n6 y=47 op=157
-n7 y=46 op=157 ink=39,47,76,11
+n7 y=46 op=157 ink=79,47,76,11
 n9 h=67
 n10 h=12 op=157
 n11 y=29 op=157
-n12 y=28 op=157 ink=39,29,75,13
+n12 y=28 op=157 ink=79,29,75,13
 k33
-s1 i=0,0,240,46
+s1 i=40,0,240,46
 n1 h=46
 n2 y=34 h=4 op=104
 n6 y=30 op=104
-n7 y=29 op=104 ink=39,30,76,11
+n7 y=29 op=104 ink=79,30,76,11
 n9 h=46
 n10 h=4 op=104
 n11 y=25 op=104
-n12 y=23 op=104 ink=39,24,75,13
+n12 y=23 op=104 ink=79,24,75,13
 k34
-s1 i=0,0,240,31
+s1 i=40,0,240,31
 n1 h=31
 n2 y=23 h=0 op=65 ord=4 bg=-
 n6 -
@@ -275,4 +275,4 @@ k45
 n2 -
 n10 -
 k46
-s1 z=240,31 i=-
+s1 z=320,31

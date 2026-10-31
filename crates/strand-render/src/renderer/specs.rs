@@ -772,7 +772,13 @@ impl Renderer {
                     let drawn = shown
                         .filter(|s| s.painted)
                         .and_then(|s| s.boxes.as_ref()?.rects.get(&id).copied())
-                        .filter(|r| old.is_some_and(|o| near(o.width, r.w) && near(o.height, r.h)));
+                        .filter(|r| {
+                            let (sw, sh) = self.centred_span(id, &spec, axes);
+                            old.is_some_and(|o| {
+                                (sw.is_some() || near(o.width, r.w))
+                                    && (sh.is_some() || near(o.height, r.h))
+                            })
+                        });
                     let steps = drawn.is_some_and(|r| self.steps_down(id, &spec, r, b.size));
                     if let Some(old) = old.filter(|_| steps || self.moving(id)) {
                         let (w, h) = (old.width.unwrap_or(0.0), old.height.unwrap_or(0.0));
@@ -814,10 +820,10 @@ impl Renderer {
             // inside it as in any larger buffer.
             let span = self.centred_span(id, &spec, axes);
             if let Some(w) = span.0 {
-                size.w = w;
+                size.w = w.max(size.w);
             }
             if let Some(h) = span.1 {
-                size.h = h;
+                size.h = h.max(size.h);
             }
             // (kept-size) And one whose size springs keeps, on any axis its
             // content sizes, the largest size its name has had, on every

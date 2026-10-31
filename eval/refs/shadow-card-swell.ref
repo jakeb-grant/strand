@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "shadow-card-swell"
 verdict good
-note "growth: read against the reference: the panel and col#deck spring 152 -> 166 -> 173 -> 176 -> 175 (k15-19) where the reference snapped; the note's own height overshoot (19) and the rows below it ride 1 px past the buffer, cut by it, where the frame squeezed them; every value at rest equal; and (review) while the box is drawn short of its buffer the surface takes input in that box alone, the margin passing the pointer, and its whole buffer again at rest: panel Cards k15-17 (3 frames, first i=12,0,280,152)"
-date 2026-10-23
-rev "abffdefe+changes"
+note "centred-surface, STEP_LANDED: as a wider surface, on-screen boxes match the old recording apart from at most a pixel around a spring (exact centres and whole-pixel landings), with no step beyond the old one's; compared from the trace per tick and node (decisions.md span-fit)."
+date 2026-10-31
+rev "a4ea7ce0+changes"
 approver "claude"
 scenario 620f647ac0c7a0e1
-seal ca4dce4ce5a97b9f
+seal b01d0ad7f51614b5
 S1 0 - "panel Cards"
 N0 "chip_a|shell.strand:13:7|#0" "box#chip_a"
 N1 "chip_b|shell.strand:14:7|#1" "box#chip_b"
@@ -18,32 +18,32 @@ N6 "|shell.strand:3:1|#0" "panel@shell.strand:3"
 N7 "chip_c|shell.strand:16:9|#2" "box#chip_c"
 N8 "note|shell.strand:8:7|#0" "box#note"
 k0 p1
-s1 z=304,161 o=8,0
-n0 x=36 y=53 w=24 h=16 ord=4 bg=61afefff
-n1 x=66 y=53 w=24 h=16 ord=5 bg=98c379ff
-n2 x=12 y=0 w=280 h=143 ord=1 bg=15171cff
-n3 x=28 y=45 w=70 h=32 ord=3 bg=23262eff sh=000000aa@9,30,108,70
-n4 x=28 y=16 w=47 h=15 txt=S ord=2 ink=29,17,45,11 fg=e6e6e6ff gl=["Devices"]
-n5 x=28 y=91 w=200 h=36 ord=6 bg=2c313aff sh=000000cc@0,69,256,92/00000080@24,88,208,44
-n6 x=12 y=0 w=280 h=143
+s1 z=320,161 i=20,0,280,143
+n0 x=44 y=53 w=24 h=16 ord=4 bg=61afefff
+n1 x=74 y=53 w=24 h=16 ord=5 bg=98c379ff
+n2 x=20 y=0 w=280 h=143 ord=1 bg=15171cff
+n3 x=36 y=45 w=70 h=32 ord=3 bg=23262eff sh=000000aa@17,30,108,70
+n4 x=36 y=16 w=47 h=15 txt=S ord=2 ink=37,17,45,11 fg=e6e6e6ff gl=["Devices"]
+n5 x=36 y=91 w=200 h=36 ord=6 bg=2c313aff sh=000000cc@8,69,256,92/00000080@32,88,208,44
+n6 x=20 y=0 w=280 h=143
 k1
-n3 w=116 sh=000000aa@9,30,154,70
+n3 w=116 sh=000000aa@17,30,154,70
 n5 ord=7
-n7 x=96 y=53 w=40 h=16 v=101.921875,55.375,28.15625,11.265625 op=37 sc=0.704,0.704 ord=6 bg=e5c07bff
+n7 x=104 y=53 w=40 h=16 v=109.921875,55.375,28.15625,11.265625 op=37 sc=0.704,0.704 ord=6 bg=e5c07bff
 k2
-n7 v=98.875,54.15625,34.25,13.703125 op=98 sc=0.856,0.856
+n7 v=106.875,54.15625,34.25,13.703125 op=98 sc=0.856,0.856
 k3
-n7 v=96.890625,53.359375,38.234375,15.296875 op=151 sc=0.956,0.956
+n7 v=104.890625,53.359375,38.234375,15.296875 op=151 sc=0.956,0.956
 k4
 n7 v=d op=190 sc=1,1
 k5
-n7 v=95.78125,52.90625,40.453125,16.171875 op=216 sc=1.011,1.011
+n7 v=103.78125,52.90625,40.453125,16.171875 op=216 sc=1.011,1.011
 k6
-n7 v=95.8125,52.921875,40.375,16.15625 op=232 sc=1.009,1.009
+n7 v=103.8125,52.921875,40.375,16.15625 op=232 sc=1.009,1.009
 k7
-n7 v=95.90625,52.96875,40.1875,16.078125 op=241 sc=1.005,1.005
+n7 v=103.90625,52.96875,40.1875,16.078125 op=241 sc=1.005,1.005
 k8
-n7 v=95.96875,52.984375,40.0625,16.03125 op=247 sc=1.002,1.002
+n7 v=103.96875,52.984375,40.0625,16.03125 op=247 sc=1.002,1.002
 k9
 n7 v=d op=251 sc=1,1
 k10
@@ -55,63 +55,49 @@ k13
 n7 op=255
 k14
 k15
-s1 z=304,193 i=12,0,280,152
+s1 z=320,193 i=20,0,280,152
 n0 y=62 ord=5
 n1 y=62 ord=6
 n2 h=152
-n3 y=54 ord=4 sh=000000aa@9,39,154,70
-n5 y=100 ord=8 sh=000000cc@0,78,256,92/00000080@24,97,208,44
+n3 y=54 ord=4 sh=000000aa@17,39,154,70
+n5 y=100 ord=8 sh=000000cc@8,78,256,92/00000080@32,97,208,44
 n6 h=152
 n7 y=62 ord=7
-n8 x=28 y=45 w=120 h=5 op=37 ord=3 bg=3b4252ff
+n8 x=36 y=45 w=120 h=5 op=37 ord=3 bg=3b4252ff
 k16
-s1 i=12,0,280,166
+s1 i=20,0,280,166
 n0 y=76
 n1 y=76
 n2 h=166
-n3 y=68 sh=000000aa@9,53,154,70
-n5 y=114 sh=000000cc@0,92,256,92/00000080@24,111,208,44
+n3 y=68 sh=000000aa@17,53,154,70
+n5 y=114 sh=000000cc@8,92,256,92/00000080@32,111,208,44
 n6 h=166
 n7 y=76
 n8 h=12 op=98
 k17
-s1 i=12,0,280,173
+s1 i=20,0,280,173
 n0 y=83
 n1 y=83
 n2 h=173
-n3 y=75 sh=000000aa@9,60,154,70
-n5 y=121 sh=000000cc@0,99,256,92/00000080@24,118,208,44
+n3 y=75 sh=000000aa@17,60,154,70
+n5 y=121 sh=000000cc@8,99,256,92/00000080@32,118,208,44
 n6 h=173
 n7 y=83
 n8 h=16 op=151
 k18
-s1 i=-
+s1 i=20,0,280,175
 n0 y=85
 n1 y=85
 n2 h=175
-n3 y=77 sh=000000aa@9,62,154,70
-n5 y=123 sh=000000cc@0,101,256,92/00000080@24,120,208,44
+n3 y=77 sh=000000aa@17,62,154,70
+n5 y=123 sh=000000cc@8,101,256,92/00000080@32,120,208,44
 n6 h=175
 n7 y=85
 n8 h=18 op=190
 k19
-n0 y=86
-n1 y=86
-n2 h=176
-n3 y=78 sh=000000aa@9,63,154,70
-n5 y=124 sh=000000cc@0,102,256,92/00000080@24,121,208,44
-n6 h=176
-n7 y=86
-n8 h=19 op=216
+n8 op=216
 k20
-n0 y=85
-n1 y=85
-n2 h=175
-n3 y=77 sh=000000aa@9,62,154,70
-n5 y=123 sh=000000cc@0,101,256,92/00000080@24,120,208,44
-n6 h=175
-n7 y=85
-n8 h=18 op=232
+n8 op=232
 k21
 n8 op=241
 k22

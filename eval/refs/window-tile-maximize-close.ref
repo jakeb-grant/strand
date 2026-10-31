@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "window-tile-maximize-close"
 verdict good
-note "window round two: a window tiled by the compositor (360x240), maximised from its own title bar (640x376 under the bar), restored to its content's size at once, decorated by the compositor (its own title bar hidden) and closed by it; frames checked by eye at each segment's end"
-date 2026-10-25
-rev "3aa2859f+changes"
+note "centred-surface, STEP_LANDED: as a wider surface, on-screen boxes match the old recording apart from at most a pixel around a spring (exact centres and whole-pixel landings), with no step beyond the old one's; compared from the trace per tick and node (decisions.md span-fit)."
+date 2026-10-31
+rev "a4ea7ce0+changes"
 approver "claude"
 scenario a601e4db510b8f3e
-seal 01b7059641e1f0cb
+seal 3cc73ed600ce36aa
 S1 0 63 "window Settings"
 S2 0 - "bar Top"
 N0 "a|shell.strand:21:7|#0" "box#a"
@@ -165,14 +165,13 @@ n0 y=-1
 n2 y=-1 bg=545462ff
 k42
 s1 i=0,0,272,52
+n0 y=0
 n1 h=52
-n2 bg=4d4f5fff
-n3 y=0
+n2 y=0 bg=4d4f5fff
+n3 y=0 h=40
 n9 h=52
 k43
-n0 y=0
-n2 y=0 bg=4a4b5dff
-n3 h=40
+n2 bg=4a4b5dff
 k44
 n2 bg=48495cff
 k45

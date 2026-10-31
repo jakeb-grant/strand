@@ -14330,3 +14330,18 @@ a landing shows at most that fraction of a pixel's travel late and a fast spring
 keeps its refresh. Eval's builds draw every frame: its checks read them all, so
 the frame skipping is proved only by `tests/wave_cost.rs`. Measured in
 benchmarks.md "A waveform on four monitors".
+
+## span-fit
+
+**2026-10-30 · span-fit: a span is room to spare, never less than the content.**
+Reviewing the 40 scenarios the span and landing changes left from their
+recordings found two bugs in `specs.rs`. A span replaced the content's size with
+the output less margins and overhang, so a launcher whose content, overhang and
+margins passed its output came out 22 px narrower than its content, 11 px off
+centre with its shadow cut: it is now the larger of the two. And a spanned axis
+failed the test that a surface's size is still its box's, so the surface no
+longer held its size while the box sprang down and cut it on the other axis: a
+spanned axis no longer takes that test. Of the rest, 25 scenarios differ only by
+where a wider surface starts (their on-screen boxes match within rounding), 13
+differ by at most a pixel where a spring lands, and `damage-fraction` plays one
+tick earlier because its surface no longer waits for a resize. All are approved.
