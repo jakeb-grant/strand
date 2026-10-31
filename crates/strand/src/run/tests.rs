@@ -3495,8 +3495,9 @@ fn an_actions_run_shows_and_stop_ends_it() {
 }
 
 /// (action-error) A shell learns its action failed: `rec.error` says why
-/// it exited non-zero, a call clears it and a good end leaves it null, and
-/// a program that cannot start is said the same way.
+/// it exited non-zero, the next run ending well leaves it null, and a
+/// program that cannot start is said the same way. That the call itself
+/// clears it, before the run ends, is `an_actions_error_clears_at_a_new_call`.
 #[test]
 fn an_actions_error_says_why_it_failed() {
     let dir = temp_dir("exec-error");
@@ -3582,6 +3583,31 @@ const QUEUED_ACTION: &str = "permit exec \"sh\"\n\
      \"[ -z \\\"$1\\\" ] || while [ ! -e \\\"$1\\\" ]; do sleep 0.01; done; exit $0\", code, gate]\n";
 
 const SH_FAILED: &str = "`sh` failed (exit status: 3)";
+
+/// (action-error) `rec.error` is null from the moment the action is called
+/// again (spec.md 5.7), while that call's command is still running, not
+/// only once it ends.
+#[test]
+fn an_actions_error_clears_at_a_new_call() {
+    let dir = temp_dir("exec-error-call");
+    let gate = dir.join("gate");
+    let src = format!(
+        "{QUEUED_ACTION}state n = 0\nbar Top {{\n  on click {{\n    n += 1\n    \
+         if n == 1 {{ rec(\"3\", \"\") }}\n    if n == 2 {{ rec(\"0\", \"{}\") }}\n  }}\n  \
+         text rec.error ?? \"none\"\n}}\n",
+        gate.display()
+    );
+    with_action_shell(&dir, &src, |m, click| {
+        click();
+        m.until("its failure", |s| s.texts() == [SH_FAILED]);
+        click();
+        m.until("the call clears it, its command still blocked", |s| {
+            s.texts() == ["none"]
+        });
+        std::fs::write(&gate, "").unwrap();
+    });
+    let _ = std::fs::remove_dir_all(dir);
+}
 
 /// (action-error) A failed command followed by a queued re-run: the failure
 /// shows while the re-run runs, and the re-run's good end clears it, with
