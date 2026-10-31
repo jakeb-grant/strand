@@ -1296,7 +1296,7 @@ monitor, the keyboard always).
   A top-level element with `hit: none` gives its children's boxes
   instead of its own.
   While a press that went down on it is held (a slider's drag), it
-  takes its whole box. Any other popup takes the pointer in its whole box, gaps included.
+  takes its whole box. Any other popup, unless its root has `hit: none`, takes the pointer in its whole box, gaps included.
   (decisions.md m6-w2-surface, 2026-10-14)
 - **Events go to the innermost node with a handler** for them.
   `propagate()` in a handler passes the event on to the next enclosing
