@@ -19,7 +19,6 @@
 //! `STRAND_REQUIRE_SWAY` and `STRAND_REQUIRE_GPU`).
 
 #![cfg(feature = "gpu")]
-#![allow(dead_code)]
 
 mod support;
 
@@ -590,4 +589,59 @@ fn a_reactive_hit_none_turned_off_on_a_presented_surface_takes_clicks_again() {
     );
     assert!(one.has(RED, 2000), "the panel behind is there");
     d.proved();
+}
+
+/// (output-change) A promoted, idle panel wider than its output follows the
+/// output's mode, up and down, with nothing on it changing. Nothing but a
+/// present commits a surface the GPU thread owns.
+fn a_presented_wide_panel_follows(name: &str, body: &str) {
+    let shell = format!(
+        r#"
+export state boost = true
+{body}
+"#
+    );
+    let Some(mut d) = start(name, &shell) else {
+        return;
+    };
+    if !d.promoted() {
+        return;
+    }
+    let size = |d: &Desk| d.panel_size("HEADLESS-2").ok().flatten().map(|s| s.0);
+    let reach = |d: &mut Desk, width: u32| {
+        d.until(&format!("the panel {width} wide"), |d| {
+            (size(d) == Some(width)).then_some(())
+        });
+    };
+    reach(&mut d, 1600);
+    let mode = |d: &Desk, w: &str, h: &str| {
+        swaymsg(
+            &d.sock,
+            &["output", "HEADLESS-2", "resolution", &format!("{w}x{h}")],
+        );
+    };
+    mode(&d, "2560", "1440");
+    reach(&mut d, 2000);
+    mode(&d, "1280", "720");
+    reach(&mut d, 1280);
+}
+
+#[test]
+fn a_presented_fixed_panel_is_capped_to_its_output_as_it_changes() {
+    a_presented_wide_panel_follows(
+        "fixed",
+        &format!(
+            "panel Wide {{ screens: all; anchor: top_left; width: 2000; height: 620\n {FADE}\n}}"
+        ),
+    );
+}
+
+#[test]
+fn a_presented_content_sized_panel_is_capped_to_its_output_as_it_changes() {
+    a_presented_wide_panel_follows(
+        "auto",
+        &format!(
+            "panel Wide {{ screens: all; anchor: top_left; size: auto\n box {{ width: 2000; height: 620; bg: #202020 }}\n {FADE}\n}}"
+        ),
+    );
 }

@@ -93,7 +93,9 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// (output-change) The layer surfaces on `monitor` are fitted again to
     /// its size (`LayerConfig::fit`, in `reconfigure`), for an output whose
     /// mode or scale changed: a panel wider than the output asks again, and
-    /// gets what its spec asks once there is room.
+    /// gets what its spec asks once there is room. One the GPU thread
+    /// presents gets it from a present the host asks for, as no frame may
+    /// follow (`State::take_owed_commit`).
     pub(super) fn refit_layers_on(&mut self, monitor: &MonitorId) {
         let mut nodes: Vec<NodeId> = self
             .layers_on(monitor)

@@ -59,6 +59,11 @@ pub(super) struct HandOffs {
 }
 
 impl HandOffs {
+    /// `id` has state pending that only a present commits.
+    pub(super) fn owe_commit(&mut self, id: SurfaceId) {
+        self.owed.insert(id);
+    }
+
     /// The GPU thread commits `id`.
     pub(super) fn has(&self, id: SurfaceId) -> bool {
         self.on.contains(&id)
@@ -201,7 +206,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             self.set_blur(surface, rects)
         };
         if opaqued || inputs || blurred {
-            self.gpu.owed.insert(surface);
+            self.gpu.owe_commit(surface);
         }
     }
 

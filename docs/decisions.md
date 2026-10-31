@@ -14466,8 +14466,12 @@ not touch it. Proof, on sway, up and down:
 `a_content_sized_panel_is_capped_to_its_output_as_it_changes`,
 `a_fixed_panel_is_capped_to_its_output_as_it_changes`,
 `a_spanned_panel_shrinks_and_grows_with_its_output`,
-`a_spanned_panel_follows_its_outputs_mode_and_scale`. A surface the GPU thread
-presents was not run through this; Hyprland was not run.
+`a_spanned_panel_follows_its_outputs_mode_and_scale`, and for a surface the GPU
+thread presents, idle, whose config is all that changes (only a present commits it,
+so the host asks for one: presented-quiet),
+`a_presented_fixed_panel_is_capped_to_its_output_as_it_changes`,
+`a_presented_content_sized_panel_is_capped_to_its_output_as_it_changes`. Hyprland was
+not run.
 
 ## still-pointer
 
@@ -14640,7 +14644,9 @@ never reach it. `GpuHost::present` now tells the two cases apart: on no frame it
 `Host::painted` and `sync_presented` as a CPU's empty paint does, and where a CPU's
 empty paint would send a bare commit (`State::take_owed_commit`, set when a region
 changed) it asks for `GpuRequest::Commit`, a present of the last frame, since only a
-present commits this surface. Sending a whole new frame for it was rejected: nothing
+present commits this surface. The same goes for what the manager itself leaves pending
+with no frame to follow: a layer's new config (`reconfigure`, so `refit_layers_on`), a
+popup's reposition, a keyboard mode. Sending a whole new frame for it was rejected: nothing
 was drawn, and the commit already exists for a held size. No hand back to the CPU
 (gpu-stay). Proof: `crates/strand/tests/presented_quiet.rs`, run alone in CI, not under
 `--workspace`, whose `eval-hooks` hides the path; its `proved` asserts a paint did send
