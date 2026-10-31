@@ -3544,6 +3544,105 @@ fn an_actions_error_says_why_it_failed() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (action-error) Runs `src`'s shell, hands `body` its mirror and a click
+/// on its bar, and shuts it down.
+fn with_action_shell(dir: &Path, src: &str, body: impl FnOnce(&mut Mirror, &dyn Fn())) {
+    std::fs::write(dir.join("bar.strand"), src).unwrap();
+    let program = load(dir);
+    let storage = Storage::in_dirs(dir.join("state"), dir);
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let live = Live::default();
+    let t = std::thread::spawn(move || logic(program, storage, from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| !s.texts().is_empty());
+    let a = m.scene.roots()[0];
+    let click = || {
+        to_logic
+            .send(ToLogic::Event {
+                input: None,
+                node: a,
+                event: NodeEvent::Click,
+            })
+            .unwrap();
+    };
+    body(&mut m, &click);
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+}
+
+/// An action whose command exits with `code`, once `gate` exists (at once
+/// when it is empty). A handler's two calls go together, so the second is
+/// queued behind the first and clears nothing when the first ends.
+const QUEUED_ACTION: &str = "permit exec \"sh\"\n\
+     action rec(code: text, gate: text) [\"sh\", \"-c\", \
+     \"[ -z \\\"$1\\\" ] || while [ ! -e \\\"$1\\\" ]; do sleep 0.01; done; exit $0\", code, gate]\n";
+
+const SH_FAILED: &str = "`sh` failed (exit status: 3)";
+
+/// (action-error) A failed command followed by a queued re-run: the failure
+/// shows while the re-run runs, and the re-run's good end clears it, with
+/// no call in between to do so.
+#[test]
+fn a_queued_re_runs_good_end_clears_the_error() {
+    let dir = temp_dir("exec-error-end");
+    let gate = dir.join("gate");
+    let src = format!(
+        "{QUEUED_ACTION}bar Top {{\n  on click {{\n    rec(\"3\", \"\")\n    \
+         rec(\"0\", \"{}\")\n  }}\n  text rec.error ?? \"none\"\n}}\n",
+        gate.display()
+    );
+    with_action_shell(&dir, &src, |m, click| {
+        click();
+        m.until("its failure", |s| s.texts() == [SH_FAILED]);
+        std::fs::write(&gate, "").unwrap();
+        m.until("the good end clears it", |s| s.texts() == ["none"]);
+    });
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (action-error) A failed command followed by a queued re-run that is
+/// stopped: a stop is no failure, and it clears the last one.
+#[test]
+fn a_stop_clears_the_error() {
+    let dir = temp_dir("exec-error-stop");
+    let gate = dir.join("never");
+    let src = format!(
+        "{QUEUED_ACTION}state n = 0\nbar Top {{\n  on click {{\n    n += 1\n    \
+         if n == 1 {{\n      rec(\"3\", \"\")\n      rec(\"0\", \"{}\")\n    }}\n    \
+         if n == 2 {{ rec.stop() }}\n  }}\n  text rec.error ?? \"none\"\n}}\n",
+        gate.display()
+    );
+    with_action_shell(&dir, &src, |m, click| {
+        click();
+        m.until("its failure", |s| s.texts() == [SH_FAILED]);
+        click();
+        m.until("the stop clears it", |s| s.texts() == ["none"]);
+    });
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (action-error) A failing action with a result says so on its call's
+/// `.error`; its own `.error` stays null, also on the tick after.
+#[test]
+fn a_failing_action_with_a_result_leaves_its_error_null() {
+    let dir = temp_dir("exec-error-result");
+    let src = "permit exec \"sh\"\n\
+         action calc(code: text) -> text [\"sh\", \"-c\", \"exit $0\", code]\n\
+         let answer = calc(\"3\")\nstate n = 0\n\
+         bar Top {\n  on click { n += 1 }\n  text answer.error ?? \"none\"\n  \
+         text calc.error ?? \"none\"\n  text join(\"\", n)\n}\n";
+    with_action_shell(&dir, src, |m, click| {
+        m.until("the call's error", |s| s.texts()[0] == SH_FAILED);
+        click();
+        m.until("the next tick", |s| s.texts() == [SH_FAILED, "none", "1"]);
+    });
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// (M6, decisions.md m6-w2-surface) A popup grabs by its cause: the diff
 /// a click's handler produces carries that click's serial
 /// (`SceneDiff::press`, and so does every diff after it until a hover
