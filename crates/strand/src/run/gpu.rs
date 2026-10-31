@@ -549,7 +549,7 @@ mod host {
                         // same that paint may have ended an exit or let a
                         // shrink go, and moved hit boxes: what follows a
                         // CPU's empty paint follows it.
-                        log::debug!("surface {}: a paint that sent nothing", id.0);
+                        state.host().log_unsent(*id);
                         p.drew_nothing = Some(std::time::Instant::now());
                         state.sync_presented(*id);
                         state.host_mut().painted(*id, &Damage::new());

@@ -984,6 +984,15 @@ impl Host {
         }
     }
 
+    /// (presented-quiet) The `damage` topic's line for a paint of a presented
+    /// surface that drew nothing, so sent nothing.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn log_unsent(&self, surface: SurfaceId) {
+        if self.log_damage {
+            eprintln!("strand: unsent surface={}", surface.0);
+        }
+    }
+
     /// The `damage` log line of a frame shown (with `--log-damage`).
     pub(crate) fn log_frame(
         &self,

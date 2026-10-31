@@ -1,8 +1,9 @@
 //! `STRAND_LOG`: a comma-separated list of a level (`error`, `warn`,
 //! `info`, `debug`, `trace`; default `warn`) and topics (`damage`: one
 //! stderr line per painted frame with its damage area, followed by a
-//! `dropped` line if that frame's commit fails, and a `gpu-frame` line
-//! per GPU frame once its time is known: its CPU part and its GPU run).
+//! `dropped` line if that frame's commit fails, a `gpu-frame` line per GPU
+//! frame once its time is known: its CPU part and its GPU run, and an
+//! `unsent` line per paint of a presented surface that sent nothing).
 
 use log::{LevelFilter, Log, Metadata, Record};
 

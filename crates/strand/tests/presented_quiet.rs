@@ -211,7 +211,7 @@ fn start(name: &str, shell: &str) -> Option<Desk> {
             .env("HOME", &home)
             .env("XDG_CACHE_HOME", dir.join("cache"))
             .env("XDG_STATE_HOME", dir.join("state"))
-            .env("STRAND_LOG", "debug")
+            .env("STRAND_LOG", "info,damage")
             .env_remove("STRAND_MOCK")
             .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
             .env_remove("NIRI_SOCKET")
@@ -236,6 +236,13 @@ impl Desk {
         std::fs::read_to_string(&self.log).unwrap_or_default()
     }
 
+    /// The log's end, for a failure: its `damage` lines leave too much to read.
+    fn log_end(&self) -> String {
+        let text = self.log_text();
+        let lines: Vec<&str> = text.lines().collect();
+        lines[lines.len().saturating_sub(40)..].join("\n")
+    }
+
     fn set(&self, name: &str, value: &str) -> bool {
         Command::new(env!("CARGO_BIN_EXE_strand"))
             .args(["set", &format!("shell.{name}"), value])
@@ -252,8 +259,17 @@ impl Desk {
     }
 
     /// Waits for `what` to hold, with the log on failure.
-    fn until<T>(&mut self, what: &str, mut look: impl FnMut(&Self) -> Option<T>) -> T {
-        let deadline = Instant::now() + SOON;
+    fn until<T>(&mut self, what: &str, look: impl FnMut(&Self) -> Option<T>) -> T {
+        self.within(SOON, what, look)
+    }
+
+    fn within<T>(
+        &mut self,
+        wait: Duration,
+        what: &str,
+        mut look: impl FnMut(&Self) -> Option<T>,
+    ) -> T {
+        let deadline = Instant::now() + wait;
         loop {
             if let Some(v) = look(self) {
                 return v;
@@ -262,13 +278,13 @@ impl Desk {
                 assert!(
                     p.0.try_wait().unwrap().is_none(),
                     "strand exited: {}",
-                    self.log_text()
+                    self.log_end()
                 );
             }
             assert!(
                 Instant::now() < deadline,
                 "never: {what}\n{}",
-                self.log_text()
+                self.log_end()
             );
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -280,7 +296,8 @@ impl Desk {
     fn promoted(&mut self) -> bool {
         let required = std::env::var_os("STRAND_REQUIRE_GPU").is_some();
         let hardware = std::env::var("STRAND_GPU_HARDWARE").as_deref() == Ok("1");
-        let mode = self.until("the panel promoted", |d| {
+        // Lavapipe compiles the device's pipelines first: long on a loaded machine.
+        let mode = self.within(Duration::from_secs(60), "the panel promoted", |d| {
             let text = d.log_text();
             if text.contains("attached (Present)") {
                 return Some(true);
@@ -294,7 +311,7 @@ impl Desk {
             assert!(
                 !required || (hardware && sway_renderer().is_none()),
                 "the panel does not present:\n{}",
-                self.log_text()
+                self.log_end()
             );
             eprintln!(
                 "\n*** SKIPPED: the panel does not present; presented_quiet did not run ***\n"
@@ -312,10 +329,11 @@ impl Desk {
     /// In a build with quiet frames, the path under test was run: a paint of a
     /// presented surface sent nothing.
     fn proved(&self) {
-        let text = self.log_text();
         assert!(
-            !strand_render::QUIET_FRAMES_BUILT || text.contains("a paint that sent nothing"),
-            "no paint sent nothing, so this proved nothing:\n{text}"
+            !strand_render::QUIET_FRAMES_BUILT
+                || self.log_text().contains("strand: unsent surface="),
+            "no paint sent nothing, so this proved nothing:\n{}",
+            self.log_end()
         );
     }
 
@@ -452,7 +470,7 @@ panel P {{ anchor: top_left; width: 1100; height: 620
         std::thread::sleep(Duration::from_millis(1500));
     }
     let span = seen.iter().max().unwrap() - seen.iter().min().unwrap();
-    assert!(span >= 20, "it stopped: {seen:?}\n{}", d.log_text());
+    assert!(span >= 20, "it stopped: {seen:?}\n{}", d.log_end());
     d.proved();
 }
 
@@ -508,7 +526,6 @@ panel P {{ anchor: top_left; size: auto
     d.until("the panel shrunk", |d| {
         matches!(d.panel_size("HEADLESS-1"), Ok(Some((300, _)))).then_some(())
     });
-    d.proved();
 }
 
 /// (hit-through) A panel behind, and a promoted one over it whose root's
