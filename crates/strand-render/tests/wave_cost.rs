@@ -261,7 +261,6 @@ fn a_content_sized_panel_keeps_to_the_box_too() {
 /// A host that keeps real time is not asked for frames a slow spring cannot
 /// show, a change asks at once, a fast spring keeps its refresh, and it
 /// lands exactly.
-#[cfg(not(feature = "eval-hooks"))]
 #[test]
 fn a_slow_spring_asks_for_the_frames_it_moves_in() {
     let mut w = wave(|_, _| {});

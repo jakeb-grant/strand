@@ -313,10 +313,14 @@ impl Renderer {
             };
             if !tree.contains(s.root) || hit(&relayout) {
                 s.mark_layout();
-            } else if hit(&touched) {
-                s.mark_dirty();
-            } else if sized.contains(&s.root) {
-                s.mark_sized();
+            } else {
+                if hit(&touched) {
+                    s.mark_dirty();
+                }
+                // Whatever else the diff touched: only a layout shows it.
+                if sized.contains(&s.root) {
+                    s.mark_sized();
+                }
             }
         }
         // Pages that swapped choose their slides before anything samples

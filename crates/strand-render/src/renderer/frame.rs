@@ -627,7 +627,9 @@ impl Renderer {
         // A node reading time repaints every frame of its clock.
         let ticking = self.clocks.running(surface);
         // (growth) Nor while a step it may take waits for this frame.
-        let cached = if s.animating || pending || ticking || s.step_due {
+        // (wave-cost) Nor over a size set since, which only a layout shows
+        // (`SurfaceState::mark_sized` keeps the scene for `kept_scene`).
+        let cached = if s.animating || pending || ticking || s.step_due || s.anim_layout {
             None
         } else {
             // A scene with time-bound nodes was evaluated at another

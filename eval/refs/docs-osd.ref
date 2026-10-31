@@ -3,10 +3,10 @@ ref "docs-osd"
 verdict good
 note "The OSD now spans its output along its edge (centred-surface): surface 400 wide, every drawn x +33, half the 66 px widening, so nothing moves on screen; the frame was viewed and all other checks pass."
 date 2026-10-31
-rev "f5b0c7f5+changes"
+rev "43439f90+changes"
 approver "claude"
 scenario 57038d3f6f90358e
-seal d2927720f0e64828
+seal 94d5c3e424daed62
 S1 1 99 "osd Level"
 N0 "|osd.strand:10:1|#0" "osd@osd.strand:10"
 N1 "|osd.strand:13:3|#0" "row@osd.strand:13"

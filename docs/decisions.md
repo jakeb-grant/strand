@@ -14310,3 +14310,23 @@ at 0 wakeups in 4 s, presented and read back, 1,448-3,229 kB over the warm
 baseline presented and 1,832 kB read back, flat over ten cycles, so no budget
 moved. An idle surface's swapchain rebuilds, seen about 11 times a second in an
 earlier forced-GPU bench, did not show: 0 wakeups leaves no room for one.
+
+## wave-cost
+
+**2026-10-30 · wave-cost: a small element that never stops moving costs what
+it changes.** A small audio waveform in a panel on four monitors cost about a
+quarter of a core on the main thread, on a laptop on battery, though about 70%
+of its frames changed no pixel. Three changes, none visible in a scenario (`eval
+check` is identical with and without them). A size logic sets, where the change
+stays inside a box of fixed size above it (`axis_stable`: a fixed length on that
+axis, nothing in it that turns one axis into the other), lays out that box and
+marks the surface `mark_sized`, not a whole layout, measure and preview. A frame
+where only size springs move and no box landed on a new whole pixel keeps the
+last scene (`kept_scene`). And a host that keeps real time is not asked for
+frames a spring cannot show (`set_quiet_frames`, `plan_quiet`): the next frame
+is the first where a spring has moved `SIZE_STEP` (a quarter of a logical pixel)
+or settles, at most 250 ms on, the wakes of nearby surfaces rounded together, so
+a landing shows at most that fraction of a pixel's travel late and a fast spring
+keeps its refresh. Eval's builds draw every frame: its checks read them all, so
+the frame skipping is proved only by `tests/wave_cost.rs`. Measured in
+benchmarks.md "A waveform on four monitors".

@@ -946,7 +946,7 @@ impl Renderer {
         let tables = crate::flatten::scope_tables(&self.tree, a);
         let scope = TokenScope::new(&tables);
         let px = |p: Prop| match node.get(p).and_then(|v| scope.resolve(v)).as_deref() {
-            Some(strand_scene::PropValue::Number(v)) => Some(*v as f32),
+            Some(strand_scene::PropValue::Number(v)) => Some(*v),
             _ => None,
         };
         let size = px(Prop::Size);

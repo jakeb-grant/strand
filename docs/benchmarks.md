@@ -773,3 +773,15 @@ uploaded whole (14 MB at 2550×1350). So a launcher opens with at most
 one late frame, while it is almost transparent, and the first theme
 swap of a session drops two or three frames. Not fixed (decisions.md
 perf-cold).
+
+## A waveform on four monitors (wave-cost)
+
+The owner's Bead config with a tone playing, headless sway on four outputs, on
+the laptop on battery, 2026-10-30, 20 s, CPU path, % of one core for the whole
+process. Without the change, three runs: 27.4, 26.6, 26.7 (main thread 24.6-25.3,
+compositor 2.2-2.3). With it, three runs: 10.1, 9.9, 10.2 (main thread 7.8-8.0,
+compositor 1.7-1.8), and with the final fix, on a busier host, 13.0 and 12.9
+(main thread 9.7-9.8, compositor 2.3-2.4). Earlier the same day, before a reboot and with
+the power state not noted, the same bench read 19.9 without and about 4.5 with. Frames drawn and unchanged
+hardly moved (about 165 and 435 of 600): skipped frames matter less here than
+what an unchanged frame no longer costs.

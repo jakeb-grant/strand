@@ -3,10 +3,10 @@ ref "docs-osd-dark"
 verdict good
 note "The OSD now spans its output along its edge (centred-surface): surface 400 wide, every drawn x +33, half the 66 px widening, so nothing moves on screen; the frame was viewed and all other checks pass."
 date 2026-10-31
-rev "f5b0c7f5+changes"
+rev "43439f90+changes"
 approver "claude"
 scenario e68d313f9c0dd59e
-seal a624c6ad9db3bdab
+seal d8dffbf82a0afae3
 S1 1 99 "osd Level"
 N0 "|osd.strand:10:1|#0" "osd@osd.strand:10"
 N1 "|osd.strand:13:3|#0" "row@osd.strand:13"
