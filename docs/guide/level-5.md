@@ -712,8 +712,8 @@ steps.
   runs your own WGSL fragment shader; props named `u_…` are its
   uniforms, and may be any expression, tokens included. It is checked
   when the config loads and reloads when you save the `.wgsl` file. It
-  runs on the GPU, which starts only while it is visible; without a
-  usable GPU it draws nothing, and `strand report` says why (a `GPU:`
+  runs on the GPU, whose device starts with the shell and is kept;
+  without a usable GPU it draws nothing, and `strand report` says why (a `GPU:`
   warning in the log says it too).
 - **Canvas.** `canvas { draw: (c) => … }` draws with code: `c.line`,
   `c.rect`, `c.circle` and `c.text`, painted with `c.fill` and

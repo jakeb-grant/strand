@@ -2146,8 +2146,8 @@ Module map (`src/manager/`; the public API is re-exported from
 
 The GPU backend is in every build and falls back to the CPU
 (decisions.md m4-owner, gpu-first). vello_cpu into `wl_shm` draws every
-still surface; the GPU draws a surface while it animates a large area,
-and shaders. The binary starts the thread as the shell starts and keeps
+still surface; the GPU draws a surface once it animates a large area,
+from then on (decisions.md gpu-stay), and shaders. The binary starts the thread as the shell starts and keeps
 it for the process; nothing in this crate runs, and no Vulkan library is
 mapped, before `Gpu::spawn`.
 
