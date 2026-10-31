@@ -474,6 +474,111 @@ fn a_node_slid_away_and_back_follows_each_time_after_a_rest() {
     }
 }
 
+/// (still-pointer) Something else on the surface that never stops moving (a
+/// ticker's hit box, far from the pointer) is no reason to hold hover: a node
+/// slid away and back follows every time. It used to freeze from the third
+/// round on, for as long as the ticker ran.
+const SLIDING_BESIDE_A_TICKER: &str = r#"
+export state away = false
+export state on = false
+panel P { width: 400; height: 100; anchor: top_left
+  box { place: absolute; x: 300 + 50 * wave(2s); y: 60; width: 20; height: 20; bg: #00ff00 }
+  box { place: absolute; width: 100; height: 40; bg: #ff0000
+    x: away ? 200 : 0
+    on change self.hover { on = self.hover }
+  }
+}
+"#;
+
+/// `frames` of `sh`, the router's clock kept with the frames', 16 ms each.
+fn stepped(sh: &mut Shell, t: &mut strand_scene::time::Instant, frames: u32) {
+    for _ in 0..frames {
+        *t += std::time::Duration::from_millis(16);
+        sh.router.set_now(Some(*t));
+        sh.run(1);
+    }
+}
+
+#[test]
+fn a_ticker_elsewhere_on_the_surface_does_not_hold_hover() {
+    use strand_compiler::vm::value::Value;
+    let mut sh = Shell::new(SLIDING_BESIDE_A_TICKER);
+    let mut t = strand_scene::time::Instant::now();
+    sh.router.set_now(Some(t));
+    stepped(&mut sh, &mut t, 30);
+    sh.move_to(50.0, 20.0);
+    stepped(&mut sh, &mut t, 30);
+    assert_eq!(sh.get("on").as_bool(), Some(true));
+    for i in 1..=5 {
+        sh.set("away", Value::Bool(true));
+        stepped(&mut sh, &mut t, 250);
+        assert_eq!(sh.get("on").as_bool(), Some(false), "round {i}: away");
+        sh.set("away", Value::Bool(false));
+        stepped(&mut sh, &mut t, 250);
+        assert_eq!(sh.get("on").as_bool(), Some(true), "round {i}: back");
+    }
+}
+
+/// (still-pointer) A marquee going round under a pointer left on it, slowly
+/// enough for a second to pass between its moves, gains and loses hover each
+/// time for as long as it runs.
+#[test]
+fn a_slow_marquee_keeps_following_a_still_pointer() {
+    let mut sh = Shell::new(
+        r#"
+export state n = 0
+panel P { width: 500; height: 100; anchor: top_left
+  box { place: absolute; x: 400 * wave(8s); width: 100; height: 40; bg: #ff0000
+    on change self.hover { n = n + 1 }
+  }
+}
+"#,
+    );
+    let mut t = strand_scene::time::Instant::now();
+    sh.router.set_now(Some(t));
+    stepped(&mut sh, &mut t, 10);
+    sh.move_to(250.0, 20.0);
+    // Four rounds of 8 s; a pass under the pointer is two changes.
+    stepped(&mut sh, &mut t, 2000);
+    let n = sh.num("n");
+    assert!(n >= 12.0, "it stopped following after {n} changes");
+}
+
+/// (still-pointer) The lift rests with something else on the surface moving,
+/// too, and stays at rest: frames of the ticker are no new move of the lift.
+#[test]
+fn a_hover_lift_comes_to_rest_beside_a_ticker() {
+    for pose in [
+        "y: -10",
+        "y: -10 ~ spring(120, 0.5)",
+        "y: -10 ~ spring(20, 0.7)",
+    ] {
+        let mut sh = Shell::new(&format!(
+            r#"
+export state n = 0
+export state on = false
+panel P {{ width: 400; height: 100; anchor: top_left
+  box {{ place: absolute; x: 300 + 50 * wave(2s); y: 80; width: 20; height: 20; bg: #00ff00 }}
+  box {{ place: absolute; x: 0; y: 30; width: 100; height: 40; bg: #ff0000
+    when hover {{ {pose} }}
+    on change self.hover {{ n = n + 1; on = self.hover }}
+  }}
+}}
+"#
+        ));
+        let mut t = strand_scene::time::Instant::now();
+        sh.router.set_now(Some(t));
+        stepped(&mut sh, &mut t, 30);
+        sh.move_to(50.0, 65.0);
+        stepped(&mut sh, &mut t, 1000);
+        let n = sh.num("n");
+        assert_eq!(n, 5.0, "{pose}: on, off, on, off and on again");
+        assert_eq!(sh.get("on").as_bool(), Some(true), "{pose}: hovered");
+        stepped(&mut sh, &mut t, 600);
+        assert_eq!(sh.num("n"), n, "{pose}: and stays so");
+    }
+}
+
 /// With no rest between, a node that came back twice keeps `hover` when it
 /// goes a third time, until the pointer moves: what ends the loop for one that
 /// moves itself.

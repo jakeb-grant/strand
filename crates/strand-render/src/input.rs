@@ -149,6 +149,12 @@ pub trait InputScene {
     fn tree(&self) -> Option<&SceneTree> {
         None
     }
+    /// (still-pointer) `node`'s hit box on `surface` as its last frame drew
+    /// it, to tell whether it moved.
+    fn hit_box(&self, surface: SurfaceId, node: NodeId) -> Option<crate::flatten::HitBox> {
+        let _ = (surface, node);
+        None
+    }
     /// Scrolls list `list` so `row` is in view.
     fn reveal(&mut self, list: NodeId, row: NodeId) {
         let _ = (list, row);
@@ -237,6 +243,10 @@ pub trait InputScene {
 impl InputScene for Renderer {
     fn hit(&self, surface: SurfaceId, at: LogicalPoint) -> Vec<NodeId> {
         Renderer::hit(self, surface, at)
+    }
+    fn hit_box(&self, surface: SurfaceId, node: NodeId) -> Option<crate::flatten::HitBox> {
+        let (_, _, hits) = self.painted_hits(surface)?;
+        hits.iter().rev().find(|h| h.node == node).cloned()
     }
     fn scroll(&mut self, surface: SurfaceId, at: LogicalPoint, dy: f32) -> Option<NodeId> {
         Renderer::scroll(self, surface, at, dy)
@@ -415,7 +425,7 @@ struct InFlight {
     at: Instant,
 }
 
-/// (still-pointer) How long no hit box under a still pointer has to move
+/// (still-pointer) How long hover has to have made no move under a still pointer
 /// for the surface to count as having come to rest.
 const STILL_REST: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -431,11 +441,24 @@ const STILL_MOVES: u8 = 2;
 #[derive(Debug)]
 struct StillPointer {
     at: LogicalPoint,
-    /// The last frame that moved a hit box under it.
+    /// When hover last moved, or a move was refused with its two nodes in
+    /// motion.
     moved: Instant,
     /// The moves hover made, by innermost node, and how many times.
     moves: HashMap<(Option<NodeId>, NodeId), u8>,
+    /// The move last refused, with its two nodes' boxes then: while neither
+    /// has moved, frames of anything else on the surface change nothing.
+    refused: Option<StillRefusal>,
 }
+
+/// (still-pointer) A move of hover and its two nodes' hit boxes.
+type StillRefusal = (
+    (Option<NodeId>, NodeId),
+    (
+        Option<crate::flatten::HitBox>,
+        Option<crate::flatten::HitBox>,
+    ),
+);
 
 /// The routing state of every surface: what is hovered, pressed and
 /// focused, which row each list has selected, and the text each `input`
@@ -1222,12 +1245,14 @@ impl Router {
             at,
             moved: t,
             moves: HashMap::new(),
+            refused: None,
         });
-        if still.at != at || t.saturating_duration_since(still.moved) >= STILL_REST {
+        if still.at != at {
             still.at = at;
+            still.moved = t;
             still.moves.clear();
+            still.refused = None;
         }
-        still.moved = t;
         let hit = scene.hit(surface, at);
         let now = if hit.is_empty() { vec![root] } else { hit };
         if self.hovered(surface) == now.as_slice() {
@@ -1236,12 +1261,32 @@ impl Router {
         let from = self.hovered(surface).first().copied();
         // A node gone keeps nothing.
         let live = from.is_some_and(|n| scene.tree().is_some_and(|t| t.contains_live(n)));
+        let pair = (from, now[0]);
+        let boxes = (
+            from.and_then(|n| scene.hit_box(surface, n)),
+            scene.hit_box(surface, now[0]),
+        );
         if let Some(still) = self.still.get_mut(&surface) {
-            let made = still.moves.entry((from, now[0])).or_default();
+            // At rest: what moved is something else on the surface.
+            if live
+                && still
+                    .refused
+                    .as_ref()
+                    .is_some_and(|r| r.0 == pair && r.1 == boxes)
+            {
+                return Vec::new();
+            }
+            if t.saturating_duration_since(still.moved) >= STILL_REST {
+                still.moves.clear();
+            }
+            still.moved = t;
+            let made = still.moves.entry(pair).or_default();
             if live && *made >= STILL_MOVES {
+                still.refused = Some((pair, boxes));
                 return Vec::new();
             }
             *made += 1;
+            still.refused = None;
         }
         self.prune(scene.tree());
         self.hover(surface, now);

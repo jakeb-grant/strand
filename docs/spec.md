@@ -939,7 +939,8 @@ monitor, the keyboard always).
   at most. A press held keeps the node it went down on. A still pointer
   always lets a surface come to rest: under it `hover` makes one move,
   from one node to another, at most twice, until the pointer moves, a
-  wheel, button or key comes, or no hit box has moved for a second. So
+  wheel, button or key comes, or `hover` has made no move for a second.
+  What moves elsewhere on the surface does not count. So
   a node that moves itself off the pointer when hovered (`when hover {
   y: -10 }` with the pointer in the strip it leaves) flips a few times
   and stays hovered, and a node that slid away and back loses its

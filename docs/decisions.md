@@ -14500,20 +14500,23 @@ frame asked for every time), and any hover nudge has that edge. The rule: under 
 still pointer `hover` makes one move, from one innermost node to another, at most
 twice (`Router::repoint`, `STILL_MOVES`), and a third is refused, so the node keeps
 its hover. The count starts again when the pointer has moved, a wheel, button or key
-comes, or no hit box on the surface has moved for a second (`STILL_REST`). So the
+comes, or hover has made no move for a second (`STILL_REST`). So the
 lift flips on, off, on, off, on and rests lifted and hovered, whatever moved it (`y`,
 `x`, `scale`, `width`, a spring or `~ instant`), and everything that follows once in
 one direction is untouched: rows passing the same gap are different moves, a knob
 that slides away and back makes each move once, a wheel starts the count again. A
 node gone gives up its hover whatever its count. What it costs: a node moved away a
-third time with no second's rest and no input (a marquee going round faster than
-that under a pointer left on it) keeps its hover until the pointer moves; a click
-tests afresh and lands right. Twice, not once: a row that overshoots past a pointer
+third time with no second's rest between hover's moves and no input (a marquee going
+round so fast under a pointer left on it, or a box toggled away that fast and left
+there) keeps its hover until the pointer moves, or that node next moves after a rest; a
+click tests afresh and lands right. Twice, not once: a row that overshoots past a pointer
 near its edge makes its entering move twice and must end lit. Rejected: testing a
 hovered node against its box without its own offset, which ends only `x` and `y` and
 not `scale`, a size or a shell's own feedback; a time limit on the round trip, since
 a slow spring's trip outlasts any limit worth having, so the loop would remain; going
-back to hover only on motion, which is the bug this fixes. A surface whose region
+back to hover only on motion, which is the bug this fixes. (The review below narrows
+what the second measures; a lift's loop slower than a second between flips stays a
+slow flip.) A surface whose region
 moves with the lift (`hit: none` on its root) depends on what the compositor does
 when the region leaves the pointer, not on this rule; not run on one. Proof:
 `a_hover_lift_comes_to_rest`, seen failing without the rule;
@@ -14523,6 +14526,25 @@ when the region leaves the pointer, not on this rule; not run on one. Proof:
 `rows_passing_with_gaps_between_keep_hover_following`,
 `a_node_gone_gives_up_its_hover`; launcher-results-144, qs-pager-sliders-1_25,
 heldd-hover-scroll and docs-guide-3 keep their approved recordings.
+
+**2026-10-31 · still-pointer, the rest is hover's, not the surface's.** The second
+was measured by any hit box on the surface, so one element that never stops (a ticker
+100 px from the pointer, a marquee of its own) meant it never came: a box toggled away
+every 4 s stayed hovered from the third round on, and a `wave(30s)` marquee under the
+pointer changed hover 5 times in its first 30 s and never again. The count now rests
+when hover has made no move for a second, whatever else moves. That alone would let a
+resting lift start again a second later whenever a ticker's frame asked: so a refused
+move is remembered with its two nodes' hit boxes, and while both are as they were it is
+no move at all, and costs nothing but the look-up. A refused move whose nodes are still
+moving keeps the clock from resting, so a lift still settling after its refusal does
+not restart. What this gives up is the case that rule was written for, in one corner:
+a lift so slow that more than a second passes between two flips never rests, it goes
+on flipping at that pace. `spring(20, 0.7)` on a 10 px lift rests in five flips, which is
+slower than a shell would write; a limit by trips would hold a marquee too, which is what
+we are fixing. Proof, stepping the router's clock with the frames:
+`a_ticker_elsewhere_on_the_surface_does_not_hold_hover`,
+`a_slow_marquee_keeps_following_a_still_pointer`, seen failing without it;
+`a_hover_lift_comes_to_rest_beside_a_ticker`, with the earlier tests unchanged.
 
 **2026-10-31 · still-pointer, a surface moved under the pointer.** Routing again tested
 the point the compositor last gave, in the surface's own coordinates, and those move
