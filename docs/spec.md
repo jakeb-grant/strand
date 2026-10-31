@@ -1751,7 +1751,7 @@ is expected is a load error whose help suggests rounding it (`.round()`,
 - **Lint.** A raw hex colour in a prop, or in a declaration that hands
   it on as a colour (`let`, `state`, a `fn`'s result, a parameter
   default), is a warning (use a token). Defaults in settings files and
-  `material(seed:)` arguments are exempt.
+  `material(seed:)` and `palette(…)` arguments are exempt.
 
 ### 9.4 Subtree overrides: set
 
@@ -1776,6 +1776,12 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   Catppuccin, matugen output, W3C design-token JSON). Every importer
   fills the whole palette schema; one table derives any role a source
   lacks.
+- `palette(from:, dark:, <role>: …)` builds a palette from colours of any
+  source. A role left out or null comes from `from`; without `from` the
+  table derives it, and with no colour at all the result is null. A given
+  role re-derives what the table derives from it. Its roles are the palette
+  schema's, so an unknown name is a check error; a token as a colour is a
+  runtime error. A change in its colours is a swap as any other.
 - **Hue roles** are palette roles for what has to stay recognisably
   coloured (terminal colours, success and warning). A source with hues
   fills them as given and they are never altered: base16 `08`–`0E`

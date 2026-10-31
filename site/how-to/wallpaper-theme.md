@@ -108,3 +108,5 @@ writes a CSS file.
 - **A published scheme instead.** `import("catppuccin:mocha")` is a
   palette too, and so are base16 and base24 schemes, matugen output and
   W3C design-token files.
+- **One colour of your own.** `palette(from: material(image: …) ?? fallback,
+  accent: #ff5500)` keeps the rest of the scheme and changes what you give it.

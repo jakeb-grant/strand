@@ -171,6 +171,29 @@ impl Palette {
         }
     }
 
+    /// This palette with `given` in place of its roles. What a given role
+    /// derives ([`derived_from`]) is derived again from it unless also
+    /// given, so an accent brings its own `on_accent`; every other role,
+    /// the name and the extras stay. Light or dark is `dark`, else this
+    /// palette's, else, for a given surface, read from it.
+    pub fn with_roles(&self, given: BTreeMap<Role, Color>, dark: Option<bool>) -> Palette {
+        let mut roles: BTreeMap<Role, Color> = self.iter().collect();
+        for role in given.keys() {
+            for derived in derived_from(*role) {
+                roles.remove(derived);
+            }
+        }
+        let new_surface = given.contains_key(&Role::Surface) || given.contains_key(&Role::Bg);
+        roles.extend(given);
+        Partial {
+            roles,
+            dark: dark.or((!new_surface).then(|| self.is_dark())),
+            name: self.name().map(str::to_string),
+            extras: self.extras().to_vec(),
+        }
+        .fill()
+    }
+
     /// The palette `partial` fills, the rest derived ([`Partial::fill`]).
     pub fn from_partial(partial: Partial) -> Palette {
         partial.fill()
@@ -250,6 +273,74 @@ impl Palette {
             name: None,
             extras: Arc::new([]),
         }
+    }
+}
+
+/// The roles [`Partial::fill`]'s table derives from `role` (secondary,
+/// tertiary and the hues only start from the accent: a scheme's own stay).
+fn derived_from(role: Role) -> &'static [Role] {
+    use Role::*;
+    match role {
+        Surface | Bg => &[
+            Surface,
+            Bg,
+            SurfaceVariant,
+            FgVariant,
+            SurfaceDim,
+            SurfaceBright,
+            SurfaceLowest,
+            SurfaceLow,
+            SurfaceContainer,
+            SurfaceHigh,
+            SurfaceHighest,
+            InverseFg,
+            Outline,
+            OutlineVariant,
+            AccentContainer,
+            SecondaryContainer,
+            TertiaryContainer,
+            ErrorContainer,
+        ],
+        Fg | OnBg => &[
+            Fg,
+            OnBg,
+            SurfaceVariant,
+            FgVariant,
+            InverseSurface,
+            Outline,
+            OutlineVariant,
+        ],
+        Accent => &[
+            OnAccent,
+            AccentContainer,
+            OnAccentContainer,
+            InverseAccent,
+            SurfaceTint,
+            AccentFixed,
+            AccentFixedDim,
+            OnAccentFixed,
+            OnAccentFixedVariant,
+        ],
+        Secondary => &[
+            OnSecondary,
+            SecondaryContainer,
+            OnSecondaryContainer,
+            SecondaryFixed,
+            SecondaryFixedDim,
+            OnSecondaryFixed,
+            OnSecondaryFixedVariant,
+        ],
+        Tertiary => &[
+            OnTertiary,
+            TertiaryContainer,
+            OnTertiaryContainer,
+            TertiaryFixed,
+            TertiaryFixedDim,
+            OnTertiaryFixed,
+            OnTertiaryFixedVariant,
+        ],
+        Error => &[OnError, ErrorContainer, OnErrorContainer],
+        _ => &[],
     }
 }
 

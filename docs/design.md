@@ -406,6 +406,15 @@ use tokens prefs.compact ? compact : base, palette scheme
 file "~/.cache/strand/accent.txt" { text: $accent }   // kept in step with every switch
 ```
 
+**A palette from your own colours.** `palette(from: …, accent: …, surface: …, dark: …)` takes any of the palette's roles as colours or nulls, from anywhere: a literal, a `state`, a `from file`, `dbus` or `poll` service. A role left out or null comes from `from`; without `from`, the one table derives it, as for an import, and with no colours at all the result is null, for `??`. A given role takes the roles it derives with it, so a new `accent` brings a readable `on_accent`, and the contrast guard applies as to any palette. When its colours change it is a swap like any other. It has no format and knows no names: where a source's names meet the roles is a line of the config. An unknown role is a check error, and custom colours belong in `tokens` (decisions.md palette-value).
+
+```
+service colors from file "~/.config/colors.json" { background: color?; foreground: color?; highlight: color? }
+let scheme = palette(from: material(seed: #7aa2f7, dark: true),
+  surface: colors.background, fg: colors.foreground, accent: colors.highlight)
+use palette scheme
+```
+
 A theme switcher anywhere in your shell is one line: `segmented { options: Look; value: <-> theme.look }`. From a terminal or keybind: `strand set theme.look mocha`.
 
 ### How a swap animates

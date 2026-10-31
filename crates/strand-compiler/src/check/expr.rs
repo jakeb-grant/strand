@@ -1597,10 +1597,10 @@ impl<'a> Checker<'a> {
             self.add_ref(id.span, Target::Builtin(name.to_string()));
             let sigs = sigs.clone();
             let reported = sigs.iter().any(|s| s.action) && self.action_check(name, id.span);
-            // `material(seed: #7aa2f7)`: a seed is where a raw colour
-            // belongs.
+            // `material(seed: #7aa2f7)`, `palette(accent: #7aa2f7)`: where a
+            // raw colour belongs.
             let saved = (self.ctx.let_value, self.ctx.prop);
-            if name == "material" {
+            if name == "material" || name == "palette" {
                 self.ctx.let_value = false;
                 self.ctx.prop = false;
             }

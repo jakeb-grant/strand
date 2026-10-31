@@ -789,3 +789,151 @@ fn a_palette_only_use_palette_reads_follows_the_wallpaper_by_the_quantisers_wake
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+const SHOWN: &str = "panel P { anchor: top; size: 40; box { size: 24; bg: $surface } }\n";
+
+fn palette_shell(theme: &str) -> Shell {
+    boot(
+        &[("a.strand", format!("{theme}\n{SHOWN}"))],
+        Storage::none(),
+    )
+}
+
+/// (palette-value) The function's roles are the role list, in its order, as
+/// its arguments are read by position.
+#[test]
+fn palette_takes_every_role_in_order() {
+    let schema = strand_compiler::schema::Schema::builtin();
+    let sigs = &schema.functions["palette"];
+    let roles: Vec<&str> = Role::ALL.iter().map(|r| r.name()).collect();
+    for (sig, first) in sigs.iter().zip([vec!["from", "dark"], vec!["dark"]]) {
+        let names: Vec<&str> = sig.params.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names[..first.len()], first[..]);
+        assert_eq!(names[first.len()..], roles[..]);
+    }
+    assert_eq!(sigs.len(), 2);
+}
+
+/// (palette-value) Given roles are kept, the rest worked out as for an
+/// import, and light or dark read from the surface.
+#[test]
+fn a_palette_from_hand_written_colours_fills_the_rest() {
+    let dark = palette_shell(
+        "use palette palette(surface: #101014, fg: #eeeeee, accent: #7aa2f7, red: #ff5555) ?? material(seed: #000000)",
+    );
+    assert_eq!(dark.color("surface"), hex("#101014"));
+    assert_eq!(dark.color("accent"), hex("#7aa2f7"));
+    assert_eq!(dark.color("red"), hex("#ff5555"));
+    assert_ne!(dark.color("surface_high"), hex("#101014"));
+    readable(dark.tokens());
+
+    let light = palette_shell("use palette palette(surface: #fafafa) ?? material(seed: #000000)");
+    assert!(light.color("fg").to_oklch().l < 0.5);
+    readable(light.tokens());
+
+    // `dark` says so where the colours do not.
+    let told = palette_shell(
+        "use palette palette(dark: true, accent: #7aa2f7) ?? material(seed: #000000)",
+    );
+    assert!(told.color("surface").to_oklch().l < 0.5);
+}
+
+/// (palette-value) With `from`, a role left out stays the scheme's, extras
+/// included, and a given one brings what it derives.
+#[test]
+fn a_palette_from_another_changes_only_what_it_is_given() {
+    let scheme = strand_theme::import("catppuccin:mocha", None).unwrap();
+    let s = palette_shell(
+        "use palette palette(from: import(\"catppuccin:mocha\"), accent: #ff5500)\n\
+         panel Q { anchor: bottom; size: 40; box { size: 24; bg: $palette.mantle } }",
+    );
+    assert_eq!(s.color("accent"), hex("#ff5500"));
+    for (role, was) in [
+        ("surface", Role::Surface),
+        ("fg", Role::Fg),
+        ("secondary", Role::Secondary),
+        ("red", Role::Red),
+        ("outline", Role::Outline),
+    ] {
+        assert_eq!(s.color(role), scheme.get(was), "{role}");
+    }
+    assert_ne!(
+        s.color("accent_container"),
+        scheme.get(Role::AccentContainer)
+    );
+    assert_ne!(s.color("surface_tint"), scheme.get(Role::SurfaceTint));
+    assert_eq!(s.color("surface_tint"), hex("#ff5500"));
+    assert_eq!(s.color("palette.mantle"), scheme.extra("mantle").unwrap());
+    readable(s.tokens());
+
+    // A new surface brings its own steps, and its own light or dark.
+    let light =
+        palette_shell("use palette palette(from: import(\"catppuccin:mocha\"), surface: #fafafa)");
+    assert_ne!(light.color("surface_high"), scheme.get(Role::SurfaceHigh));
+    readable(light.tokens());
+}
+
+/// (palette-value) Its colours may come from anything that changes: the
+/// change is a swap like any other, sprung, and each null role falls back.
+#[test]
+fn a_palette_follows_its_colours_and_falls_back_when_they_go() {
+    let mut s = palette_shell(
+        "export state chosen: color? = null\n\
+         export state tone: color? = null\n\
+         let base = material(seed: #336699, dark: true)\n\
+         use palette palette(accent: chosen, fg: tone) ?? base",
+    );
+    let base = from_seed(
+        hex("#336699"),
+        Options {
+            dark: true,
+            ..Options::default()
+        },
+    );
+    // No colour at all: null, so `??` takes the fallback.
+    assert_eq!(s.color("accent"), base.get(Role::Accent));
+
+    s.inst
+        .set("a.chosen", Value::Color(hex("#ff5500")))
+        .unwrap();
+    let ops = s.flush();
+    assert!(
+        matches!(
+            ops.as_slice(),
+            [SceneOp::SetTokens {
+                transition: Transition::Default,
+                ..
+            }]
+        ),
+        "{ops:?}"
+    );
+    assert_eq!(s.color("accent"), hex("#ff5500"));
+
+    s.inst.set("a.chosen", Value::Null).unwrap();
+    s.flush();
+    assert_eq!(s.color("accent"), base.get(Role::Accent));
+}
+
+/// (palette-value) A token is worked out from a palette, so it cannot make
+/// one. A typo is the checker's, not a silent extra.
+#[test]
+fn a_palette_refuses_tokens_and_unknown_roles() {
+    let (_, errors) = try_boot(
+        &[(
+            "a.strand",
+            format!("use palette palette(from: material(seed: #336699), accent: $fg)\n{SHOWN}"),
+        )],
+        Storage::none(),
+    );
+    assert!(
+        errors.iter().any(|e| e.contains("needs a colour")),
+        "{errors:?}"
+    );
+
+    let mut map = SourceMap::new();
+    map.add(
+        "a.strand",
+        "let p = palette(from: material(seed: #336699), forground: #ffffff)\n".to_string(),
+    );
+    assert!(strand_compiler::compile(&map).errors() > 0);
+}

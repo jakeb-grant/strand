@@ -72,8 +72,9 @@ bar Top {
   one colour, as Android's Material You does; `material(image: …)` from
   a picture ([a theme from your wallpaper](../how-to/wallpaper-theme.md));
   `import("…")` reads a published scheme: Catppuccin, base16 and base24
-  schemes, matugen output and W3C design-token files. Every source
-  fills every role, and a role a source lacks is derived.
+  schemes, matugen output and W3C design-token files; `palette(…)` is
+  built from colours you hand it ([your own colours](#your-own-colours)).
+  Every source fills every role, and a role a source lacks is derived.
 - **`tokens name { … }`** declares a token set. A set that names only
   some base tokens, as `roomy` names only `space`, takes the rest from
   the built-in theme. `extends roomy` starts a set from another one,
@@ -119,6 +120,39 @@ component Tile(label: text) tokens { radius: $radius.lg; pad: $space.3 } {
 
 `set { $Tile.pad: $space.2 }` around some tiles makes those tighter
 without editing `Tile`.
+
+## Your own colours
+
+`palette(…)` builds a palette from colours you hand it, from anywhere: a
+literal, a `state`, or a service reading a file, D-Bus or a command.
+
+```strand fragment
+service colors from file "~/.config/colors.json" {
+  background: color?; foreground: color?; highlight: color?
+}
+use palette palette(
+  from: material(seed: #7aa2f7, dark: true),
+  surface: colors.background,
+  fg: colors.foreground,
+  accent: colors.highlight,
+)
+```
+
+- A role left out or null comes from `from`. Without `from`, Strand works
+  it out as it does for an import, and with no colours at all the result
+  is null: follow it with `??`.
+- A role you give brings the roles worked out from it, so a new `accent`
+  gets a readable `on_accent`. The contrast guard applies as to any palette.
+- `dark` says light or dark. Left out, it is `from`'s, or else read from
+  the surface you gave.
+- When the colours change it is a swap like any other. If the file above
+  is rewritten, every `$` token springs to its new value
+  ([a theme from a file](../how-to/theme-from-file.md)).
+- `palette(from: import("catppuccin:mocha"), accent: #ff5500)` changes one
+  colour of a scheme.
+
+Names outside the palette's roles are an error, so a typo is caught. Custom
+colours belong in `tokens`.
 
 ## How a swap animates
 

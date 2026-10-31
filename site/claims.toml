@@ -1200,19 +1200,19 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 [[claim]]
 page   = "site/index.md"
 text   = "save the file and the running shell follows"
-source = ["docs/spec.md:1880"]
+source = ["docs/spec.md:1886"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_prop_edit_patches_in_place_and_keeps_state"
 
 [[claim]]
 page   = "site/index.md"
 text   = "what you changed animates to its new value,"
-source = ["docs/spec.md:1885"]
+source = ["docs/spec.md:1891"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_prop_edit_patches_in_place_and_keeps_state"
 
 [[claim]]
 page   = "site/index.md"
 text   = "A save that does not check leaves the last good"
-source = ["docs/spec.md:1967", "crates/strand/src/overlay.rs:23"]
+source = ["docs/spec.md:1973", "crates/strand/src/overlay.rs:23"]
 proof  = "crates/strand-compiler/tests/reload.rs::random_edits_land_on_a_cold_boot (held-back sets); overlay QUIET 250 ms"
 
 [[claim]]
@@ -1260,7 +1260,7 @@ proof  = "crates/strand-render/tests/motion.rs::springs_sampled_at_fixed_timesta
 [[claim]]
 page   = "site/concepts/motion.md"
 text   = "A prop takes its own curve after `~`"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1422", "crates/strand-compiler/src/schema/builtin.schema:1424", "crates/strand-compiler/src/schema/builtin.schema:1426", "crates/strand-compiler/src/schema/builtin.schema:45"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1482", "crates/strand-compiler/src/schema/builtin.schema:1484", "crates/strand-compiler/src/schema/builtin.schema:1486", "crates/strand-compiler/src/schema/builtin.schema:45"]
 proof  = "crates/strand-render/tests/motion.rs::per_prop_transitions_override_the_default_spring"
 
 [[claim]]
@@ -1308,7 +1308,7 @@ proof  = "crates/strand-render/tests/motion.rs::keyed_reorder_glides_to_new_slot
 [[claim]]
 page   = "site/concepts/motion.md"
 text   = "own size when that changes, growing and shrinking alike."
-source = ["docs/design.md:452"]
+source = ["docs/design.md:461"]
 proof  = "crates/strand-render/tests/motion.rs::a_content_sized_panel_shrinks_when_nothing_moves"
 
 [[claim]]
@@ -1374,7 +1374,7 @@ proof  = "strand check in the container (scripts/container/run.sh) on a probe co
 [[claim]]
 page   = "site/concepts/language.md"
 text   = "`bar Top` is on every monitor."
-source = ["crates/strand-compiler/src/schema/builtin.schema:1789", "docs/spec.md:269"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1849", "docs/spec.md:269"]
 proof  = "read: crates/strand-scene/src/surface.rs (bar screens default all)"
 
 [[claim]]
@@ -1386,7 +1386,7 @@ proof  = "strand check in the container (scripts/container/run.sh) on a probe co
 [[claim]]
 page   = "site/concepts/language.md"
 text   = "`font`, `weight` and `color` are"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1653", "docs/spec.md:902"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1713", "docs/spec.md:902"]
 proof  = "read: the schema marks exactly these three `inherit`"
 
 [[claim]]
@@ -1464,7 +1464,7 @@ proof  = "strand check in the container (scripts/container/run.sh) on a probe co
 [[claim]]
 page   = "site/concepts/language.md"
 text   = "shell checks each save the same way, and keeps running the last good"
-source = ["docs/spec.md:1977"]
+source = ["docs/spec.md:1983"]
 proof  = "crates/strand-compiler/tests/reload.rs::random_edits_land_on_a_cold_boot"
 
 [[claim]]
@@ -1632,14 +1632,14 @@ proof  = "strand check in the container (scripts/container/run.sh) on a probe co
 [[claim]]
 page   = "site/concepts/theming.md"
 text   = "each base hue is the plain hue moved a little toward"
-source = ["crates/strand-theme/src/palette.rs:292"]
+source = ["crates/strand-theme/src/palette.rs:383"]
 proof  = "read: harmonised by half the hue difference, at most 15 degrees"
 
 [[claim]]
 page   = "site/concepts/theming.md"
 text   = "each bright one is its base made lighter in a dark"
 source = ["docs/spec.md:1737"]
-proof  = "read: crates/strand-theme/src/palette.rs:301 (fill_hues)"
+proof  = "read: crates/strand-theme/src/palette.rs:392 (fill_hues)"
 
 [[claim]]
 page   = "site/concepts/theming.md"
@@ -1680,7 +1680,7 @@ proof  = "read"
 [[claim]]
 page   = "site/concepts/theming.md"
 text   = "`alpha`, `mix`, `lighten` and `darken`"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1541"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1601"]
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: `$fg.lighten(0.1)`, `$surface.darken(0.1)`, `.mix`, `.alpha` check clean"
 
 [[claim]]
@@ -1728,7 +1728,7 @@ proof  = "read"
 [[claim]]
 page   = "site/concepts/theming.md"
 text   = "are written once, with the new"
-source = ["docs/spec.md:1817"]
+source = ["docs/spec.md:1823"]
 proof  = "read: a file is written when its rendered bytes differ, from the resolved table"
 
 [[claim]]
@@ -1788,7 +1788,7 @@ proof  = "read"
 [[claim]]
 page   = "site/concepts/layout.md"
 text   = "1 by default, and `shrink: 0` keeps its size"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1623"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1683"]
 proof  = "read"
 
 [[claim]]
@@ -1848,19 +1848,19 @@ proof  = "crates/strand-render/tests/motion.rs::size_springs_relayout_only_under
 [[claim]]
 page   = "site/concepts/layout.md"
 text   = "springs its own size when that changes, growing and shrinking alike."
-source = ["docs/design.md:452"]
+source = ["docs/design.md:461"]
 proof  = "crates/strand-render/tests/motion.rs::a_content_sized_panel_shrinks_when_nothing_moves"
 
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "On every monitor, top edge, `top` layer; keeps its thickness free of windows"
-source = ["crates/strand-scene/src/surface.rs:336", "crates/strand-compiler/src/schema/builtin.schema:1794"]
+source = ["crates/strand-scene/src/surface.rs:336", "crates/strand-compiler/src/schema/builtin.schema:1854"]
 proof  = "read: edge defaults to top for a bar, layer top, exclusive true"
 
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "On the focused monitor, `top` layer; windows go under it"
-source = ["crates/strand-scene/src/surface.rs:339", "crates/strand-compiler/src/schema/builtin.schema:1810"]
+source = ["crates/strand-scene/src/surface.rs:339", "crates/strand-compiler/src/schema/builtin.schema:1870"]
 proof  = "read: exclusive false by default"
 
 [[claim]]
@@ -1878,13 +1878,13 @@ proof  = "read"
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "Tiles, floats and moves as any app's window does"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1838"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1898"]
 proof  = "read"
 
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "On every monitor; at most one per config"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1827"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1887"]
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: two `lock`s give check::lock_twice"
 
 [[claim]]
@@ -1896,13 +1896,13 @@ proof  = "read"
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "lets the surface close itself: Escape, a click away and focus loss"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1763"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1823"]
 proof  = "read"
 
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "A `window` is the exception: only the compositor's"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1763"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1823"]
 proof  = "read"
 
 [[claim]]
@@ -1914,19 +1914,19 @@ proof  = "read: Keyboard::None unless set"
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "keeps the screen from dimming or locking"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1777"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1837"]
 proof  = "read"
 
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "thickness (a bar's default), a length in px, or `false` for none (a"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1794", "crates/strand-compiler/src/schema/builtin.schema:1807"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1854", "crates/strand-compiler/src/schema/builtin.schema:1867"]
 proof  = "read"
 
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "grows it out of"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1771", "docs/spec.md:350"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1831", "docs/spec.md:350"]
 proof  = "read"
 
 [[claim]]
@@ -1956,7 +1956,7 @@ proof  = "crates/strand-surface/src/monitor.rs::identity_is_make_model_descripti
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "opens it at the click"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1879"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1939"]
 proof  = "read"
 
 [[claim]]
@@ -1968,25 +1968,25 @@ proof  = "read"
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "(each is a load error)"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1845"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1905"]
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: each of screens, layer, anchor, margin and keyboard on a window gives check::window_prop"
 
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "`strand-<Name>` by default"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1854"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1914"]
 proof  = "read"
 
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "`w.focused`, `w.maximized` and `w.tiled` follow the"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1838"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1898"]
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: `w.focused`, `w.tiled`, `w.maximized`, `w.move()`, `w.maximize()`, `w.close()` check clean"
 
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "on the `ext-session-lock` protocol"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1823"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1883"]
 proof  = "read"
 
 [[claim]]
@@ -2004,7 +2004,7 @@ proof  = "crates/strand/tests/lock.rs::runtime_fault_in_the_lock_shows_the_fallb
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "A save that changes it waits until you unlock."
-source = ["docs/spec.md:1894"]
+source = ["docs/spec.md:1900"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_lock_edit_is_deferred_while_shown"
 
 [[claim]]
@@ -2034,7 +2034,7 @@ proof  = "strand check in the container (scripts/container/run.sh) on a probe co
 [[claim]]
 page   = "site/concepts/services.md"
 text   = "the service's `available` field says whether it answers"
-source = ["docs/spec.md:2025"]
+source = ["docs/spec.md:2031"]
 proof  = "read: `available` on network, bluetooth, session, brightness in the reference"
 
 [[claim]]
@@ -2076,97 +2076,97 @@ proof  = "crates/strand-compiler/tests/flex.rs::an_action_with_a_result_is_loade
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A token's value | The colours spring to it | Yes |"
-source = ["docs/spec.md:1887"]
+source = ["docs/spec.md:1893"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_token_edit_swaps_the_table"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A prop or binding | Patched in place; animates from where it is | Yes |"
-source = ["docs/spec.md:1888"]
+source = ["docs/spec.md:1894"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_prop_edit_patches_in_place_and_keeps_state"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A node added or removed |"
-source = ["docs/spec.md:1889"]
+source = ["docs/spec.md:1895"]
 proof  = "crates/strand-compiler/tests/reload.rs::nodes_added_and_removed"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A `state`'s default | Taken only if the value was never changed |"
-source = ["docs/spec.md:1890"]
+source = ["docs/spec.md:1896"]
 proof  = "crates/strand-compiler/tests/reload.rs::state_defaults_are_adopted_only_if_unchanged"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A `state`'s name or type | That one cell resets, with a warning |"
-source = ["docs/spec.md:1891"]
+source = ["docs/spec.md:1897"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_renamed_or_retyped_cell_resets"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A handler's code | Restarted;"
-source = ["docs/spec.md:1892"]
+source = ["docs/spec.md:1898"]
 proof  = "crates/strand-compiler/tests/reload.rs::handler_restart_cancels_its_await"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A timer's duration | The time left is rescaled | Yes |"
-source = ["docs/spec.md:1893"]
+source = ["docs/spec.md:1899"]
 proof  = "crates/strand-compiler/tests/reload.rs::timer_duration_rescales"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A surface's layer, namespace or kind | Only that surface is made again | Yes |"
-source = ["docs/spec.md:1894"]
+source = ["docs/spec.md:1900"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_surface_layer_change_recreates_only_it, ::a_surface_namespace_or_kind_change_recreates_only_it_with_its_state"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| A custom service's declaration | Only that service restarts; built-ins never do | Yes |"
-source = ["docs/spec.md:1895"]
+source = ["docs/spec.md:1901"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_changed_service_declaration_restarts_only_it"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "| Anything in the `lock` | Waits until you unlock | Yes |"
-source = ["docs/spec.md:1896"]
+source = ["docs/spec.md:1902"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_lock_edit_is_deferred_while_shown"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "A handler counts as changed when its own code changed"
-source = ["docs/spec.md:1898"]
+source = ["docs/spec.md:1904"]
 proof  = "read"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "wrapping it in a"
-source = ["docs/spec.md:1912"]
+source = ["docs/spec.md:1918"]
 proof  = "crates/strand-compiler/tests/reload.rs::wrapping_moves_a_node"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "so renaming a"
-source = ["docs/spec.md:1903"]
+source = ["docs/spec.md:1909"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_surface_namespace_or_kind_change_recreates_only_it_with_its_state"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "monitor and survives a reload"
-source = ["docs/spec.md:1921"]
+source = ["docs/spec.md:1927"]
 proof  = "crates/strand-compiler/tests/reload.rs::per_monitor_state_survives_a_reload"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "launcher.query: kept \"fir\" (default changed) [reset]"
-source = ["docs/spec.md:1932"]
+source = ["docs/spec.md:1938"]
 proof  = "read"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "A value a reload writes never fires `on change`"
-source = ["docs/spec.md:1935"]
+source = ["docs/spec.md:1941"]
 proof  = "crates/strand-compiler/tests/reload.rs::on_change_does_not_fire_on_reload"
 
 [[claim]]
@@ -2178,19 +2178,19 @@ proof  = "crates/strand-watch/src/core.rs (deadline t0 + 15 ms test)"
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "A file whose content did not change stops here."
-source = ["docs/spec.md:1969"]
+source = ["docs/spec.md:1975"]
 proof  = "read"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "The largest set of changes that checks clean is applied in one"
-source = ["docs/spec.md:1972"]
+source = ["docs/spec.md:1978"]
 proof  = "read"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "a config that is broken when Strand starts runs"
-source = ["docs/spec.md:1976"]
+source = ["docs/spec.md:1982"]
 proof  = "crates/strand-compiler/tests/reload.rs::reloads_land_on_a_cold_boot"
 
 [[claim]]
@@ -2208,19 +2208,19 @@ proof  = "read: editor_command"
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "freezes only its own component, outlined in red"
-source = ["docs/spec.md:2013"]
+source = ["docs/spec.md:2019"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_fault_outlines_its_component_until_the_fixing_reload"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "resets that one cell to its default when"
-source = ["docs/spec.md:1948"]
+source = ["docs/spec.md:1954"]
 proof  = "crates/strand-compiler/tests/reload.rs::at_reset_resets_one_cell"
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
 text   = "drops every state that is not `persist`"
-source = ["docs/spec.md:1958"]
+source = ["docs/spec.md:1964"]
 proof  = "crates/strand-compiler/tests/reload.rs::a_hard_reload_drops_state_and_recreates_surfaces"
 
 [[claim]]
@@ -2310,7 +2310,7 @@ proof  = "read: one cell per component instance; the page's config checks clean"
 [[claim]]
 page   = "site/how-to/calendar-popup.md"
 text   = "When Escape or a click away closes it, the popup"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1763"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1823"]
 proof  = "read"
 
 [[claim]]
@@ -2346,7 +2346,7 @@ proof  = "read"
 [[claim]]
 page   = "site/how-to/launcher.md"
 text   = "`strand toggle` flips an exported `bool` state."
-source = ["crates/strand/src/entry.rs:33", "docs/spec.md:2054"]
+source = ["crates/strand/src/entry.rs:33", "docs/spec.md:2060"]
 proof  = "crates/strand-compiler/tests/token_overlay.rs (Instance::toggle)"
 
 [[claim]]
@@ -2376,7 +2376,7 @@ proof  = "read"
 [[claim]]
 page   = "site/how-to/launcher.md"
 text   = "sends the arrow keys and Return from the input to"
-source = ["crates/strand-compiler/src/schema/builtin.schema:2044", "crates/strand-compiler/src/schema/builtin.schema:1752"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:2104", "crates/strand-compiler/src/schema/builtin.schema:1812"]
 proof  = "read"
 
 [[claim]]
@@ -2448,7 +2448,7 @@ proof  = "crates/strand-compiler/tests/instantiate.rs::on_change_skips_boot_and_
 [[claim]]
 page   = "site/how-to/osd.md"
 text   = "is on the focused monitor, above everything,"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1814"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:1874"]
 proof  = "read: osd defaults"
 
 [[claim]]
@@ -2466,7 +2466,7 @@ proof  = "crates/strand-compiler/tests/instantiate.rs::on_change_skips_boot_and_
 [[claim]]
 page   = "site/how-to/osd.md"
 text   = "`roll: true` on the `text` rolls the digits"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1977"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:2037"]
 proof  = "read"
 
 [[claim]]
@@ -2508,7 +2508,7 @@ proof  = "crates/strand/src/run/tests.rs::the_theme_follows_the_portal_the_wallp
 [[claim]]
 page   = "site/how-to/wallpaper-theme.md"
 text   = "Strand makes it the first time a value is"
-source = ["docs/spec.md:1995"]
+source = ["docs/spec.md:2001"]
 proof  = "read"
 
 [[claim]]
@@ -2520,7 +2520,7 @@ proof  = "crates/strand/src/run/tests.rs::the_theme_follows_the_portal_the_wallp
 [[claim]]
 page   = "site/how-to/wallpaper-theme.md"
 text   = "`#rrggbb` and rewrites it after every switch"
-source = ["crates/strand-compiler/src/template/render.rs:134", "docs/spec.md:1817"]
+source = ["crates/strand-compiler/src/template/render.rs:134", "docs/spec.md:1823"]
 proof  = "read"
 
 [[claim]]
@@ -2538,7 +2538,7 @@ proof  = "read"
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "A relative path is beside your config; `~/…` is in your home"
-source = ["docs/spec.md:1980"]
+source = ["docs/spec.md:1986"]
 proof  = "read"
 
 [[claim]]
@@ -2586,7 +2586,7 @@ proof  = "read"
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "a missing file"
-source = ["docs/spec.md:1996"]
+source = ["docs/spec.md:2002"]
 proof  = "read"
 
 [[claim]]
@@ -2604,7 +2604,7 @@ proof  = "read: a read-only target gets an overlay in the state directory, with 
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "`segmented { options: Edge; value: <-> prefs.position }` is a picker for the edge, a segment for each of `Edge`'s variants; `options: [Edge.top, Edge.bottom]` offers only those two."
-source = ["crates/strand-compiler/src/schema/builtin.schema:2068", "crates/strand-compiler/src/check/expr.rs:538"]
+source = ["crates/strand-compiler/src/schema/builtin.schema:2128", "crates/strand-compiler/src/check/expr.rs:538"]
 proof  = "crates/strand-compiler/tests/instantiate.rs::a_builtin_enum_gives_a_segmented_its_options; `options: [Edge.top, Edge.bottom]` checked clean in the container (fact-check)"
 
 [[claim]]
@@ -2821,3 +2821,70 @@ page   = "site/tools/reporting.md"
 text   = "The replay's compositor is its stand-in"
 source = ["docs/eval.md#quick-start"]
 proof  = "read: strand-eval drives strand-surface against strand-fake-wayland; it runs no real compositor"
+
+# --- palette-value ---
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "A role left out or null comes from `from`."
+source = ["crates/strand-theme/src/palette.rs", "docs/spec.md#94-subtree-overrides-set"]
+proof  = "crates/strand-compiler/tests/theme.rs::a_palette_from_another_changes_only_what_it_is_given"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "with no colours at all the result"
+source = ["crates/strand-compiler/src/vm/builtins.rs"]
+proof  = "crates/strand-compiler/tests/theme.rs::a_palette_follows_its_colours_and_falls_back_when_they_go"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "gets a readable `on_accent`"
+source = ["crates/strand-theme/src/palette.rs"]
+proof  = "crates/strand-compiler/tests/theme.rs::a_palette_from_another_changes_only_what_it_is_given (readable)"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "Left out, it is `from`'s, or else read from"
+source = ["crates/strand-theme/src/palette.rs"]
+proof  = "crates/strand-compiler/tests/theme.rs::a_palette_from_hand_written_colours_fills_the_rest"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "every `$` token springs to its new value"
+source = ["crates/strand-compiler/src/instantiate/mod.rs"]
+proof  = "crates/strand-compiler/tests/theme.rs::a_palette_follows_its_colours_and_falls_back_when_they_go; seen on headless sway by rewriting the file (decisions.md palette-value)"
+
+[[claim]]
+page   = "site/concepts/theming.md"
+text   = "Names outside the palette's roles are an error"
+source = ["crates/strand-compiler/src/schema/builtin.schema"]
+proof  = "crates/strand-compiler/tests/theme.rs::a_palette_refuses_tokens_and_unknown_roles"
+
+[[claim]]
+page   = "site/how-to/theme-from-file.md"
+text   = "reads the file again each time it changes"
+source = ["site/concepts/services.md"]
+proof  = "seen on headless sway: rewriting the file sprang the colours (decisions.md palette-value)"
+
+[[claim]]
+page   = "site/how-to/theme-from-file.md"
+text   = "a missing or broken"
+source = ["docs/decisions.md"]
+proof  = "seen on headless sway: a broken and a removed file both went to `from` (decisions.md palette-value)"
+
+[[claim]]
+page   = "site/how-to/theme-from-file.md"
+text   = "which is also what you get if the file goes"
+source = ["docs/decisions.md"]
+proof  = "seen on headless sway: a removed file sprang to `from` (decisions.md palette-value)"
+
+[[claim]]
+page   = "site/how-to/theme-from-file.md"
+text   = "with no spring to write yourself"
+source = ["crates/strand-compiler/src/instantiate/mod.rs"]
+proof  = "crates/strand-compiler/tests/theme.rs::a_palette_follows_its_colours_and_falls_back_when_they_go; seen on headless sway"
+
+[[claim]]
+page   = "site/how-to/theme-from-file.md"
+text   = "Without `from`, Strand works out the roles"
+source = ["crates/strand-theme/src/palette.rs"]
+proof  = "crates/strand-compiler/tests/theme.rs::a_palette_from_hand_written_colours_fills_the_rest"

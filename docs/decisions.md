@@ -14824,3 +14824,22 @@ errors from `strand check`. A default was only the commonest way in, since signa
 before any line: an earlier `let` reading a later one does the same. `force_now` now leaves
 anything but `Pending` alone. Proof: `a_declaration_read_before_its_line_keeps_its_type`, five
 ways in, all seen failing without the fix.
+
+## palette-value
+
+2026-10-31. `palette(…)` is a third way to make a palette, beside `material` and `import`: any
+role as a colour or null, plus `from` and `dark`. A config reading colours from a file had two
+paths that did not meet: `import` only reads set formats, and a `from file` service feeds no token,
+so Strand's widgets, the fill-in table, the contrast guard and sprung swaps were out of reach. A new
+import format would have put one file shape and its names in Strand, and copying colours with `set
+{ }` skips the table and the guard. This adds no concept: a palette is already a value, the source
+is any service, and the names meet the roles in a line of the config. Two overloads, as with `from`
+it is never null (`Palette`) and without it null when given nothing (`Palette?`), so `use palette`
+makes the fallback explicit. A given role re-derives what `Partial::fill`'s table derives from it
+(`derived_from`), so `accent` brings `on_accent`; secondary, tertiary and the hues only start from
+the accent and a scheme's own stay. Unknown names stay check errors, not extras: custom colours belong
+in `tokens`. A token as a colour is a runtime error, since tokens are worked out from the palette.
+Run with a `from file` service on headless sway under lavapipe: rewriting the file sprang the
+surface and accent over about 8 captures, a broken or missing file sprang to `from`,
+and 7 restarts showed the file's colours on the first frame drawn, with no fallback frame, so nothing
+was added for startup. Proof: the five `palette` tests in `tests/theme.rs`.

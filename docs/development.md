@@ -33,7 +33,7 @@ Each crate is one box in the runtime architecture:
 | `strand-introspect` | D-Bus introspection that checks no-code `from dbus` services | M3 |
 | `strand-text` | parley shaping and per-scale glyph atlases on a worker thread | M0 |
 | `strand-scene` | Shared vocabulary: ids, geometry, colour, damage, the scene protocol and `Painter` | M0 |
-| `strand-theme` | Palettes: Material 3 roles, `material(seed:/image:)`, importers, the contrast guard | M2 |
+| `strand-theme` | Palettes: Material 3 roles, `material(seed:/image:)`, `palette(…)`'s fill, importers, the contrast guard | M2 |
 | `strand-render` | Springs, tokens, layout, damage, vello_cpu; lowering to the GPU, effects, promotion | M0, M2, M4 |
 | `strand-gpu` | The GPU thread: one wgpu device, vello_gpu frames, shader passes, readback and WSI presents | M4 |
 | `strand-surface` | Layer-shell and xdg toplevel windows, poses, blur, input, frame timing, session lock | M0, M4 |

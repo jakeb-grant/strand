@@ -516,6 +516,7 @@ pub(crate) fn computes(name: &str) -> bool {
             | "number"
             | "join"
             | "material"
+            | "palette"
             | "import"
             | "rgb"
             | "sleep"
@@ -785,6 +786,41 @@ pub(crate) fn call(
             match result {
                 Ok(p) => Value::Palette(Rc::new(p)),
                 Err(e) => return Err(fail(e)),
+            }
+        }
+        "palette" => {
+            // The first overload has `from` before the rest.
+            let (from, first) = match (overload, args.get(0)) {
+                (0, Some(Value::Palette(p))) => (Some(p.clone()), 1),
+                (0, _) => return Ok(Value::Null),
+                _ => (None, 0),
+            };
+            let dark = match args.get(first) {
+                Some(Value::Bool(b)) => Some(*b),
+                _ => None,
+            };
+            let mut given = std::collections::BTreeMap::new();
+            for (i, role) in strand_theme::Role::ALL.iter().enumerate() {
+                match args.get(first + 1 + i) {
+                    Some(Value::Color(c)) => {
+                        given.insert(*role, *c);
+                    }
+                    None | Some(Value::Null) => {}
+                    // A token is worked out from a palette, so it cannot make one.
+                    Some(_) => return Err(fail(format!("`palette`'s `{role}` needs a colour"))),
+                }
+            }
+            match from {
+                Some(from) => Value::Palette(Rc::new(from.with_roles(given, dark))),
+                None if given.is_empty() => Value::Null,
+                None => Value::Palette(Rc::new(
+                    strand_theme::Partial {
+                        roles: given,
+                        dark,
+                        ..Default::default()
+                    }
+                    .fill(),
+                )),
             }
         }
         "oklch" => {

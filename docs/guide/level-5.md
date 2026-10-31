@@ -79,8 +79,11 @@ one you log in to.
 whole set of roles from one colour, the way Android's Material You
 does. `material(image: path)` builds it from a picture: your wallpaper.
 `import("catppuccin:mocha")` reads a published scheme (Catppuccin,
-base16 and base24, matugen output and W3C design-token files). Every
-source fills every role; a role a source lacks is derived.
+base16 and base24, matugen output and W3C design-token files).
+`palette(from: scheme, accent: c)` changes roles of a palette, and
+without `from` builds one from the colours you give it, whichever service
+or `state` they come from. Every source fills every role; a role a source
+lacks is derived.
 
 `material(image: …)` takes a moment, so it is an `Async` (level 4), and
 `?? material(seed: …)` is the palette to use until the wallpaper is

@@ -1318,6 +1318,8 @@ table.
 - `import(source, base_dir)`: `catppuccin:<flavour>[:<accent>]`,
   `base16:`, `base24:`, `matugen:`, `w3c:` + a file of at most 1 MiB
   (decisions.md wave3-theme).
+- `Palette::with_roles(given, dark)`: `palette(from:)`, its given roles in
+  place and what they derive derived again (decisions.md palette-value).
 - `contrast::{PAIRS, guard, ratio, solve}`, `defaults::base_tokens()`
   (design.md's `tokens base`), `gamut::map`.
 

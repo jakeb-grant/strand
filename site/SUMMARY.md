@@ -30,6 +30,7 @@
 - [A volume and brightness OSD](how-to/osd.md)
 - [A morphing island](how-to/island.md)
 - [A theme from your wallpaper](how-to/wallpaper-theme.md)
+- [A theme from a file](how-to/theme-from-file.md)
 - [A settings file](how-to/settings-file.md)
 - [A D-Bus method or an action](how-to/dbus-and-actions.md)
 
