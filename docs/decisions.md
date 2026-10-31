@@ -14366,7 +14366,12 @@ setting, now also clears the mask and resets every signal to its default, includ
 any strand was itself started with ignored (`nohup`, a shell's `&`). A program gets
 a clean state, not what strand inherited: a shell's children should not depend on
 how the shell was started, and exec resets handlers anyway. Every spawn in the shell
-already called it, and `every_spawn_site_restores_the_child` keeps new ones honest.
+already called it. `every_spawn_site_restores_the_child` reads the source: each
+`Command::new` in the shell's code must have a `restore_in_child` call before the next
+one, strand-auth's spawn must run its `pre_exec` hook, and each `Client::new` must pass
+`restore_in_child` as that hook. It is a text check, so a call in the wrong function
+would pass; the behaviour itself is tested at the shared function, declared actions and
+`from exec` commands.
 `strand-dev inspect`'s editor and the site tool do not call it: they run from a
 terminal and block nothing of their own. Found by Bead (#17); not specific to it.
 

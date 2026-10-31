@@ -342,10 +342,45 @@ mod tests {
         );
     }
 
+    /// The lines of `source`'s `Command::new`s with no [`restore_in_child`]
+    /// call before the next one (or the end): comments do not count. Text,
+    /// not a parse: it holds the usual shape, a `Command` made, then set up
+    /// and spawned, and a call in the wrong function would still pass.
+    fn unrestored_spawns(source: &str, call: &str) -> Vec<usize> {
+        let mut found = Vec::new();
+        let mut open: Option<usize> = None;
+        for (i, line) in source.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or_default();
+            if code.contains(call) {
+                open = None;
+            }
+            if code.contains("Command::new(") {
+                found.extend(open.replace(i + 1));
+            }
+        }
+        found.extend(open);
+        found
+    }
+
+    /// The check counts spawns, not files.
+    #[test]
+    fn a_second_spawn_in_a_file_needs_its_own_restore() {
+        let call = "restore_in_child()";
+        let one = "let c = Command::new(a);\nrestore_in_child();\n";
+        assert_eq!(unrestored_spawns(one, call), Vec::<usize>::new());
+        let two = format!("{one}let d = Command::new(b);\nd.spawn();\n");
+        assert_eq!(unrestored_spawns(&two, call), [3]);
+        let first = format!("let d = Command::new(b);\n{one}");
+        assert_eq!(unrestored_spawns(&first, call), [1]);
+        let comment = "let d = Command::new(b);\n// restore_in_child()\n";
+        assert_eq!(unrestored_spawns(comment, call), [1]);
+    }
+
     /// Every program the shell starts goes through [`restore_in_child`]:
-    /// each file of the shell's own code that makes a `Command` calls it.
-    /// `strand-auth` takes it as its `pre_exec` hook from its callers (a
-    /// library without `strand-services`), and those are checked here.
+    /// each `Command::new` in the shell's own code is followed by a call.
+    /// `strand-auth` is a library without `strand-services`: its spawn runs
+    /// the `pre_exec` hook it is given, and each `Client::new` in the shell
+    /// must give it [`restore_in_child`].
     #[test]
     fn every_spawn_site_restores_the_child() {
         let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -375,7 +410,8 @@ mod tests {
             }
         }
         let mut missing = Vec::new();
-        let mut seen = 0;
+        let mut spawns = 0;
+        let mut clients = 0;
         for p in files {
             let rel = p.strip_prefix(&crates).expect("under crates");
             let rel = rel.to_string_lossy().replace('\\', "/");
@@ -388,15 +424,35 @@ mod tests {
             let text = std::fs::read_to_string(&p).expect("a source file");
             // Tests start what they like.
             let shell = text.split("#[cfg(test)]\nmod ").next().unwrap_or_default();
-            if !shell.contains("Command::new(") {
-                continue;
+            if !rel.starts_with("strand-auth/") {
+                for hook in shell.split("Client::new(").skip(1) {
+                    let args = hook.split(';').next().unwrap_or_default();
+                    clients += 1;
+                    if !args.contains("restore_in_child") {
+                        missing.push(format!("{rel}: a Client::new without it"));
+                    }
+                }
             }
-            seen += 1;
-            if !shell.contains("restore_in_child") && !rel.starts_with("strand-auth/") {
-                missing.push(rel);
+            let call = if rel.starts_with("strand-auth/") {
+                "hook();"
+            } else {
+                "restore_in_child()"
+            };
+            spawns += shell
+                .lines()
+                .filter(|l| {
+                    l.split("//")
+                        .next()
+                        .unwrap_or_default()
+                        .contains("Command::new(")
+                })
+                .count();
+            for line in unrestored_spawns(shell, call) {
+                missing.push(format!("{rel}:{line}"));
             }
         }
-        assert!(seen >= 7, "the walk found {seen} spawning files");
+        assert!(spawns >= 8, "the walk found {spawns} spawns");
+        assert_eq!(clients, 2, "the auth helper's owners");
         assert_eq!(missing, Vec::<String>::new(), "no restore_in_child");
     }
 
