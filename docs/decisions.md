@@ -14482,8 +14482,9 @@ pointer; `hover` and the cursor did not, and stayed on the row last moved over
 until the next motion, though a click hit the right row because it tests again.
 So `host_loop::painted`, the one reaction every host runs, routes the pointer
 again when the frame just painted moved the surface's hit boxes (`Router::repoint`).
-It costs a surface nothing with no pointer on it, it never wakes anything or
-paints a frame of its own, and the compare replaces the copy of the hit boxes
+It costs a surface nothing with no pointer on it, it paints no frame of its own
+(when hover did change, it wakes the loop once, for a cursor no diff would otherwise
+bring, `host_loop::repoint`), and the compare replaces the copy of the hit boxes
 each frame made, so equal boxes cost less than before; only a frame that moved
 a box tests the point. A held press keeps its chain, as motion does. Rejected:
 routing on every paint, which allocates a chain for a waveform that moves
