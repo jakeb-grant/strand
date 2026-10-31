@@ -185,9 +185,9 @@ jobs:
       - run: cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
         env:
           STRAND_LEDGER_FILE: ${{ runner.temp }}/ledger
-      # The CPU core's .text keeps its own gate (24,379,392 B; the GPU
-      # backend's is 28,311,552 B), both re-based on services-round's
-      # tree with a 512 KiB reserve (decisions.md growth, services-round;
+      # The CPU core's .text keeps its own gate (24,903,680 B; the GPU
+      # backend's is 29,097,984 B), both re-based on wave-cost's
+      # tree with a 512 KiB reserve (decisions.md growth, services-round, wave-cost;
       # docs/architecture.md, "`strand-gpu`").
       - run: cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
         env:

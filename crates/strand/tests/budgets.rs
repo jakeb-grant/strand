@@ -50,11 +50,11 @@
 //!   Vulkan mapped, aiming at 76 MB and failing above 128 MiB in release.
 //! - `the_release_binary_code_stays_within_its_gate`: the release
 //!   binary's `.text` (most of it resident on a large-folio page cache):
-//!   28,311,552 B with the GPU backend (the default build), 24,379,392 B
+//!   29,097,984 B with the GPU backend (the default build), 24,903,680 B
 //!   for the CPU core (`--no-default-features`); both re-based for the
 //!   speed profile and since by the measured-plus-reserve rule, last for
-//!   services-round's services (decisions.md m5-speed, growth,
-//!   services-round; docs/architecture.md,
+//!   the freeze, kept-size and waveform work (decisions.md m5-speed, growth,
+//!   services-round, wave-cost; docs/architecture.md,
 //!   "`strand-gpu`", "Budgets and tests").
 //! - `the_binary_holds_no_fault_code`: no `STRAND_FAULT` point in a
 //!   default build (the lock's `faults` feature).
@@ -2568,8 +2568,11 @@ fn the_ledger_half_reads_size_delta_baseline_and_gate() {
     assert_eq!(grouped(1_000), "1,000");
 }
 
-/// `.text` of the default (GPU) release build: 28,311,552 B (108 × 256
-/// KiB): services-round's tree (`laptop/services` at its S3 commit)
+/// `.text` of the default (GPU) release build: 29,097,984 B (111 × 256
+/// KiB): the freeze, kept-size and waveform work brought the build to
+/// 28,326,103 B in the container suite, 14,551 B over the gate before, plus
+/// a 512 KiB reserve over CI's runner, rounded up to 256 KiB (decisions.md
+/// wave-cost). It was 28,311,552 B (108 × 256 KiB): services-round's tree (`laptop/services` at its S3 commit)
 /// measured 27,620,503 B in the container suite (`main` at 294970c8
 /// 26,539,863 B: S1 and S2's service members +814,912 B, S3's polkit
 /// agent and greetd greeter +265,728 B), plus a 512 KiB reserve over
@@ -2594,9 +2597,9 @@ fn the_ledger_half_reads_size_delta_baseline_and_gate() {
 /// m5-integration-w2), 22,282,240 B after the speed review (decisions.md
 /// m5-speed) and 18.5 MiB before it.
 const TEXT_GATE_GPU: u64 = 29_097_984;
-/// `.text` of the CPU-only release build: 24,903,680 B (95 × 256 KiB; before
-/// it 24,379,392 B, 93 × 256 KiB; decisions.md wave-cost):
-/// services-round's tree measured 23,581,207 B in the container suite
+/// `.text` of the CPU-only release build: 24,903,680 B (95 × 256 KiB;
+/// 24,284,183 B measured in the container suite; decisions.md wave-cost).
+/// It was 24,379,392 B (93 × 256 KiB): services-round's tree measured 23,581,207 B in the container suite
 /// (`main` at 294970c8 22,508,247 B; S1 and S2 +807,168 B, S3 +265,792
 /// B), plus a 512 KiB reserve over CI's runner, rounded up to 256 KiB
 /// (decisions.md services-round). It was 22,806,528 B: `main` at

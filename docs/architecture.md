@@ -350,7 +350,7 @@ The binary's default `gpu` feature enables render's and surface's `gpu`
 and the compiler's `shaders` (which `strand-dev` also turns on, so the
 LSP checks shaders); with `--no-default-features` it links
 none of wgpu, vello_gpu, naga or libwayland-client, which the CPU-only
-`.text` gate measures (24,379,392 B).
+`.text` gate measures (24,903,680 B).
 
 ```
 strand-scene <── strand-gpu (wgpu, vello_gpu, vello_common, raw-window-handle)
