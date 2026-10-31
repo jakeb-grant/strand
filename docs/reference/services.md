@@ -233,6 +233,7 @@ while a visible reader shows them, the layouts from the compositor
 | `caps_lock` | `bool` | Caps Lock is on: `if keyboard.caps_lock { text "Caps Lock is on" }`. False when nothing reports it. |
 | `num_lock` | `bool` | Num Lock is on. |
 | `layout` | `text?` | The active layout's name as the keymap names it (`English (US)`), null when unknown: `text keyboard.layout ?? ""`. |
+| `layout_code` | `text?` | The active layout's short code as xkeyboard-config lists it (`us`, `de`; a variant's layout, so `English (Dvorak)` is `us`), for a bar with room for two letters: `text keyboard.layout_code ?? ""`. Null when unknown, or for a layout xkeyboard-config does not list. |
 | `layouts` | `[text]` | The layouts it switches between, by index, as the keymap names them (`["English (US)", "German"]`; empty when unknown): `keyboard.set_layout(i)` takes an index into it. |
 | `alt` | `bool` | Alt is held, while a Strand surface has keyboard focus (false otherwise: no compositor tells): an alt-tab switcher commits when it turns false. |
 | `ctrl` | `bool` | Control is held, while a Strand surface has keyboard focus. |

@@ -43,6 +43,62 @@ fn until(rt: &Runtime, s: &Services, what: &str, cond: impl Fn() -> bool) {
     }
 }
 
+/// (bead #20) `layout_code` follows the compositor's layout through
+/// xkeyboard-config's list (one of the test's own), and a focused surface's
+/// name wins; a name the list lacks is null, and `layout` keeps it.
+#[test]
+fn the_layout_code_follows_the_layout() {
+    let _s = serial();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("rules")).unwrap();
+    std::fs::write(
+        dir.path().join("rules/evdev.xml"),
+        "<xkbConfigRegistry><layoutList>\
+         <layout><configItem><name>us</name><description>English (US)</description></configItem></layout>\
+         <layout><configItem><name>de</name><description>German</description></configItem></layout>\
+         </layoutList></xkbConfigRegistry>",
+    )
+    .unwrap();
+    keyboard::configure(Some(keyboard::Config {
+        xkb: dir.path().to_path_buf(),
+        ..keyboard::Config::default()
+    }));
+    let rt = Runtime::new();
+    let (s, b) = services(&rt);
+    b.keyboard.acquire(&rt);
+    b.keyboard.acquire_field(field("layout_code"));
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let cells = b.keyboard.cells();
+    let show = |name: &str| {
+        keyboard::focused(Some(Focused {
+            layout: Some(name.into()),
+            ..Focused::default()
+        }));
+    };
+    show("German");
+    until(&rt, &s, "de", || {
+        cells.layout_code.get_untracked(&rt) == Ok(Some("de".into()))
+    });
+    show("English (US)");
+    until(&rt, &s, "us", || {
+        cells.layout_code.get_untracked(&rt) == Ok(Some("us".into()))
+    });
+    show("Strand One");
+    until(&rt, &s, "none", || {
+        cells.layout_code.get_untracked(&rt) == Ok(None)
+    });
+    assert_eq!(
+        cells.layout.get_untracked(&rt),
+        Ok(Some("Strand One".into()))
+    );
+    show("German");
+    until(&rt, &s, "de again, from memory", || {
+        cells.layout_code.get_untracked(&rt) == Ok(Some("de".into()))
+    });
+    keyboard::focused(None);
+    keyboard::configure(None);
+}
+
 /// Pump for `d`.
 fn pump_for(rt: &Runtime, s: &Services, d: Duration) {
     let t = Instant::now();
@@ -75,6 +131,7 @@ impl Lights {
         keyboard::configure(Some(keyboard::Config {
             sys: dir.path().to_path_buf(),
             led_period: Duration::from_millis(50),
+            ..keyboard::Config::default()
         }));
         Lights(dir)
     }
@@ -234,6 +291,18 @@ fn the_layout_comes_from_the_compositor() {
     until(&rt, &s, "the switch", || {
         cells.layout.get_untracked(&rt) == Ok(Some("English (US)".into()))
     });
+    // (bead #20) Its code, where the machine lists it: from the
+    // compositor's name, with no focused surface.
+    if keyboard::Config::default()
+        .xkb
+        .join("rules/evdev.xml")
+        .exists()
+    {
+        b.keyboard.acquire_field(field("layout_code"));
+        until(&rt, &s, "the layout's code", || {
+            cells.layout_code.get_untracked(&rt) == Ok(Some("us".into()))
+        });
+    }
     // A focused surface whose keymap names its layout wins; one whose
     // keymap names none keeps the compositor's.
     keyboard::focused(Some(Focused {

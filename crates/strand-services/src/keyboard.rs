@@ -33,6 +33,12 @@
 //!    while `layouts` is watched and once per change of the names: a
 //!    bar that shows only `wm` or `keyboard.layout` compiles no keymap.
 //!
+//! 4. The layout's short code (`layout_code`), from whichever name the
+//!    above gave: no compositor says it, so it is looked up by name in
+//!    xkeyboard-config's list ([`code_in`], `<xkb>/rules/evdev.xml`, as
+//!    every compositor's own names come from it), read only while
+//!    `layout_code` is watched and once per name.
+//!
 //! The modifiers are only a focused surface's: no compositor tells
 //! another client what is held, so they are false otherwise. The actions
 //! go to the compositor's adapter (Hyprland's `switchxkblayout`, sway's
@@ -101,6 +107,8 @@ pub struct Config {
     pub sys: PathBuf,
     /// How often the lights are read while shown and unfocused.
     pub led_period: Duration,
+    /// xkeyboard-config's directory, holding `rules/evdev.xml`.
+    pub xkb: PathBuf,
 }
 
 impl Default for Config {
@@ -108,6 +116,8 @@ impl Default for Config {
         Config {
             sys: PathBuf::from("/sys"),
             led_period: LED_PERIOD,
+            xkb: std::env::var_os("XKB_CONFIG_ROOT")
+                .map_or_else(|| PathBuf::from("/usr/share/X11/xkb"), PathBuf::from),
         }
     }
 }
@@ -197,6 +207,12 @@ pub struct Keyboard {
     /// null when unknown: `text keyboard.layout ?? ""`.
     #[store(stream)]
     pub layout: Option<String>,
+    /// The active layout's short code as xkeyboard-config lists it (`us`,
+    /// `de`; a variant's layout, so `English (Dvorak)` is `us`), for a bar
+    /// with room for two letters: `text keyboard.layout_code ?? ""`. Null
+    /// when unknown, or for a layout xkeyboard-config does not list.
+    #[store(stream)]
+    pub layout_code: Option<String>,
     /// The layouts it switches between, by index, as the keymap names them
     /// (`["English (US)", "German"]`; empty when unknown):
     /// `keyboard.set_layout(i)` takes an index into it.
@@ -217,6 +233,57 @@ pub struct Keyboard {
     /// focus.
     #[store(stream)]
     pub logo: bool,
+}
+
+/// The short code of the layout named `name` in xkeyboard-config's
+/// `xml` (`rules/evdev.xml`): a `<layout>` or one of its `<variant>`s
+/// whose `<description>` is `name` gives the layout's `<name>`, the name
+/// the same file gives a compositor's keymap. `None` when none does, or
+/// the text is no XML.
+pub fn code_in(xml: &str, name: &str) -> Option<String> {
+    // The list names its DTD; nothing of it is read.
+    let options = roxmltree::ParsingOptions {
+        allow_dtd: true,
+        ..roxmltree::ParsingOptions::default()
+    };
+    let doc = roxmltree::Document::parse_with_options(xml, options).ok()?;
+    let child_text = |n: roxmltree::Node<'_, '_>, tag: &str| {
+        n.children()
+            .find(|c| c.has_tag_name("configItem"))?
+            .children()
+            .find(|c| c.has_tag_name(tag))?
+            .text()
+            .map(str::to_owned)
+    };
+    doc.descendants()
+        .filter(|n| n.has_tag_name("layout"))
+        .find(|layout| {
+            child_text(*layout, "description").as_deref() == Some(name)
+                || layout
+                    .descendants()
+                    .filter(|n| n.has_tag_name("variant"))
+                    .any(|v| child_text(v, "description").as_deref() == Some(name))
+        })
+        .and_then(|layout| child_text(layout, "name"))
+}
+
+/// Layout names to short codes, looked up once per name: the list is a
+/// quarter of a megabyte, and a shell shows two or three layouts.
+#[derive(Default)]
+struct Codes(std::collections::HashMap<String, Option<String>>);
+
+impl Codes {
+    fn of(&mut self, xkb: &Path, name: &str) -> Option<String> {
+        if let Some(known) = self.0.get(name) {
+            return known.clone();
+        }
+        let code = ["evdev.xml", "evdev.extras.xml"].iter().find_map(|file| {
+            let xml = std::fs::read_to_string(xkb.join("rules").join(file)).ok()?;
+            code_in(&xml, name)
+        });
+        self.0.insert(name.to_owned(), code.clone());
+        code
+    }
 }
 
 /// What the compositor says of the keyboard (its hub's changes).
@@ -275,6 +342,8 @@ pub fn merge(focused: Option<&Focused>, leds: Leds, compositor: &Compositor) -> 
             caps_lock: f.caps_lock,
             num_lock: f.num_lock,
             layout: f.layout.clone().or_else(|| compositor.layout.clone()),
+            // Looked up after: only while watched (`shown_code`).
+            layout_code: None,
             layouts: layouts(&f.layouts),
             alt: f.alt,
             ctrl: f.ctrl,
@@ -297,16 +366,38 @@ fn polls(cx: &Cx<Keyboard>, focused: &Option<Focused>) -> bool {
     focused.is_none() && cx.visible() && (cx.watched("caps_lock") || cx.watched("num_lock"))
 }
 
-/// The compositor hub's subscription, while `layout` or `layouts` is
-/// watched.
+/// The compositor hub's subscription, while `layout`, `layout_code` or
+/// `layouts` is watched.
 fn sync_layout(cx: &Cx<Keyboard>, sub: &mut Option<WmSubscription>) {
-    if !(cx.visible() && (cx.watched("layout") || cx.watched("layouts"))) {
+    let wanted = ["layout", "layout_code", "layouts"]
+        .iter()
+        .any(|f| cx.watched(f));
+    if !(cx.visible() && wanted) {
         // Its last layout is kept; a new subscription's first batch
         // brings the current one.
         *sub = None;
     } else if sub.is_none() {
         *sub = crate::wm::hub().map(|h| h.subscribe());
     }
+}
+
+/// The short code of the layout now shown, only while `layout_code` is
+/// watched: a bar that shows only `layout` reads no list.
+fn shown_code(
+    cx: &Cx<Keyboard>,
+    focused: &Option<Focused>,
+    compositor: &Compositor,
+    codes: &mut Codes,
+    xkb: &Path,
+) -> Option<String> {
+    if !cx.watched("layout_code") {
+        return None;
+    }
+    let name = focused
+        .as_ref()
+        .and_then(|f| f.layout.as_deref())
+        .or(compositor.layout.as_deref())?;
+    codes.of(xkb, name)
 }
 
 /// How long an action waits for the compositor's adapter to come up on
@@ -352,6 +443,7 @@ impl Keyboard {
         let mut focused = focus.borrow_and_update().clone();
         let mut leds = Leds::default();
         let mut compositor = Compositor::default();
+        let mut codes = Codes::default();
         let mut calls = tokio::task::JoinSet::new();
         let mut sub: Option<WmSubscription> = None;
         let mut tick = tokio::time::interval(config.led_period);
@@ -362,7 +454,13 @@ impl Keyboard {
         }
         tick.reset();
         sync_layout(&cx, &mut sub);
-        if !cx.update(|s| *s = merge(focused.as_ref(), leds, &compositor)) {
+        let code = shown_code(&cx, &focused, &compositor, &mut codes, &config.xkb);
+        if !cx.update(|s| {
+            *s = Keyboard {
+                layout_code: code,
+                ..merge(focused.as_ref(), leds, &compositor)
+            };
+        }) {
             return Ok(());
         }
         cx.ready();
@@ -430,7 +528,13 @@ impl Keyboard {
                 tick.reset();
             }
             polling = now;
-            if !cx.update(|s| *s = merge(focused.as_ref(), leds, &compositor)) {
+            let code = shown_code(&cx, &focused, &compositor, &mut codes, &config.xkb);
+            if !cx.update(|s| {
+                *s = Keyboard {
+                    layout_code: code,
+                    ..merge(focused.as_ref(), leds, &compositor)
+                };
+            }) {
                 return Ok(());
             }
         }
@@ -450,6 +554,49 @@ mod tests {
             std::fs::write(d.join("brightness"), b).unwrap();
         }
         dir
+    }
+
+    /// (bead #20) A layout's name to its code: its own description or a
+    /// variant's, the variant giving its layout's code; an unknown name
+    /// and text that is no XML give none. An entity in a description is
+    /// read, as a keymap names it.
+    #[test]
+    fn a_layouts_code_comes_from_its_name() {
+        let xml = r#"<?xml version="1.0"?>
+            <!DOCTYPE xkbConfigRegistry SYSTEM "xkb.dtd">
+            <xkbConfigRegistry><layoutList>
+              <layout><configItem><name>us</name>
+                <shortDescription>en</shortDescription>
+                <description>English (US)</description></configItem>
+                <variantList><variant><configItem><name>dvorak</name>
+                  <description>English (Dvorak)</description>
+                </configItem></variant></variantList>
+              </layout>
+              <layout><configItem><name>de</name>
+                <description>German</description></configItem></layout>
+              <layout><configItem><name>xy</name>
+                <description>Bits &amp; Bobs</description></configItem></layout>
+            </layoutList></xkbConfigRegistry>"#;
+        let code = |name| code_in(xml, name);
+        assert_eq!(code("English (US)").as_deref(), Some("us"));
+        assert_eq!(code("English (Dvorak)").as_deref(), Some("us"));
+        assert_eq!(code("German").as_deref(), Some("de"));
+        assert_eq!(code("Bits & Bobs").as_deref(), Some("xy"));
+        assert_eq!(code("Klingon"), None);
+        assert_eq!(code_in("not xml", "German"), None);
+    }
+
+    /// The real list, where the machine has it (the CI image does).
+    #[test]
+    fn the_installed_list_gives_codes() {
+        let dir = Config::default().xkb;
+        let Ok(xml) = std::fs::read_to_string(dir.join("rules/evdev.xml")) else {
+            eprintln!("skipped: no xkeyboard-config");
+            return;
+        };
+        assert_eq!(code_in(&xml, "English (US)").as_deref(), Some("us"));
+        assert_eq!(code_in(&xml, "German").as_deref(), Some("de"));
+        assert_eq!(code_in(&xml, "English (Dvorak)").as_deref(), Some("us"));
     }
 
     #[test]

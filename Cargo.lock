@@ -3173,6 +3173,7 @@ dependencies = [
  "nucleo",
  "pipewire",
  "png",
+ "roxmltree",
  "rustix",
  "rustls",
  "rustls-native-certs",

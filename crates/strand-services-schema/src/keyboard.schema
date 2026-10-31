@@ -13,6 +13,11 @@ service keyboard {
   /// The active layout's name as the keymap names it (`English (US)`),
   /// null when unknown: `text keyboard.layout ?? ""`.
   layout: text?
+  /// The active layout's short code as xkeyboard-config lists it (`us`,
+  /// `de`; a variant's layout, so `English (Dvorak)` is `us`), for a bar
+  /// with room for two letters: `text keyboard.layout_code ?? ""`. Null
+  /// when unknown, or for a layout xkeyboard-config does not list.
+  layout_code: text?
   /// The layouts it switches between, by index, as the keymap names them
   /// (`["English (US)", "German"]`; empty when unknown):
   /// `keyboard.set_layout(i)` takes an index into it.

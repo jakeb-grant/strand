@@ -14385,3 +14385,13 @@ networks hid its tile at the wrong times. The name follows `battery.present`, th
 schema's word for hardware that exists; `available` already means the daemon here.
 Over NetworkManager it is any device of the Wi-Fi type, over iwd any device in any
 mode. Found by Bead (#20).
+
+**2026-10-30 · service-fields: `keyboard.layout_code`.** A bar with room for two
+letters had only the keymap's name to cut from, which makes `English (US)` read `EN`.
+No compositor gives a code (Hyprland gives rule names, sway and niri names only), but
+every name comes from xkeyboard-config, so the field looks the name up in its
+`rules/evdev.xml`, once per name, only while something reads it. It gives the layout
+name a keymap is configured with (`us`, `de`), not the list's `shortDescription`
+(`en`), which many layouts share; a variant gives its layout's code. A custom layout
+not in the list is null, not a guess. The name follows `layout` and `layouts`. Found by
+Bead (#20).

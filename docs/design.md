@@ -768,6 +768,7 @@ Services are typed Rust structs that start lazily when a shell first references 
 | vello\_cpu, vello\_gpu 0.3, wgpu 30, naga | Rendering and shaders | Behind our own scene IR |
 | material-colors 0.5, palette 0.7 | Palettes and importers | Material spec version pinned |
 | toml\_edit, miette, lsp-server, tree-sitter | Settings, diagnostics, LSP | LSP ships in `strand-dev` only |
+| roxmltree 0.21 | `keyboard.layout_code`, looked up in xkeyboard-config's list | The version resvg already links |
 | xkbcommon 0.8 (no default features), zeroize 1.9 | Hyprland's layout names (`keyboard.layouts`); wiping polkit's and greetd's answers | xkbcommon wraps the libxkbcommon strand-surface already links |
 
 ## Review findings, risks and open questions

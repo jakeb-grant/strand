@@ -1263,6 +1263,8 @@ provisional service keyboard {
   num_lock: bool
   /// The active layout's name, null when unknown.
   layout: text?
+  /// The active layout's short code (`us`), null when unknown.
+  layout_code: text?
   /// The layouts it switches between, by index.
   layouts: [text]
   /// Alt is held, while a Strand surface has keyboard focus.
