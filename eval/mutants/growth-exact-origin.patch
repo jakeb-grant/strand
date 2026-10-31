@@ -1,15 +1,15 @@
 --- a/crates/strand-render/src/layout/mod.rs
 +++ b/crates/strand-render/src/layout/mod.rs
-@@ -544,7 +544,7 @@
-             // Where the smaller box's edge will be: the size it asks for
-             // is its content's, up to a whole pixel (`refresh_specs`).
+@@ -611,7 +611,7 @@ pub(crate) fn layout(
              let room = |have: f32, used: f32, f: f32| {
--                if exact && f >= 1.0 {
-+                if false && exact && f >= 1.0 {
+                 if middle && f == 0.5 {
+                     (have - used) / 2.0
+-                } else if exact && f >= 1.0 {
++                } else if false && exact && f >= 1.0 {
                      // Anchored by its far edge: that edge is where the
                      // frame's is snapped at rest, at any scale. The box
                      // spans `used` rounded (boxes snap from the origin,
-@@ -553,7 +553,7 @@
+@@ -620,7 +620,7 @@ pub(crate) fn layout(
                      // 54.4 px, and a whole share of the unrounded room
                      // left the edge a pixel past it, or short.
                      have.round() - used.round()
