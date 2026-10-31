@@ -485,6 +485,10 @@ pub struct Renderer {
     /// it is centred on: laid out at their content's size inside it, for
     /// good (`held` is a shrink still to come).
     spanned: BTreeSet<NodeId>,
+    /// (kept-size) The largest size each panel's namespace has had.
+    kept: BTreeMap<String, (f32, f32)>,
+    /// A kept size grew since [`Renderer::take_kept_sizes`].
+    kept_changed: bool,
     /// (shadow-buffer) Surface nodes whose overhang is held past their
     /// shadows' reach at rest while a shadow on them springs: they
     /// shrink to it once their shadows settle (see
@@ -658,6 +662,8 @@ impl Renderer {
             was_shown: HashSet::new(),
             held: BTreeSet::new(),
             spanned: BTreeSet::new(),
+            kept: BTreeMap::new(),
+            kept_changed: false,
             shadow_held: BTreeSet::new(),
             exit_stall: EXIT_STALL,
             closing_content: BTreeMap::new(),

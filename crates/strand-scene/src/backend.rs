@@ -34,7 +34,9 @@ impl Backend {
 pub enum BackendChange {
     /// Promote `surface`: start the `Gpu` if needed and attach it.
     Promote(SurfaceId),
-    /// Give `surface` back to the CPU.
+    /// Give `surface` back to the CPU: the GPU failed it (a frame that
+    /// cannot be drawn, a lost device). A promoted surface otherwise stays
+    /// on the GPU (decisions.md gpu-stay).
     Demote(SurfaceId),
     /// Start the `Gpu` if none runs, with nothing to send it yet: the
     /// warm start (gpu-first), so the device and its pipelines are ready

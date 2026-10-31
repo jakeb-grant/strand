@@ -22,6 +22,8 @@ use crate::run::{NodeEvent, PickEvent, ScreenInfo, ToLogic};
 #[derive(Debug)]
 pub struct Host {
     pub renderer: Renderer,
+    /// (kept-size) Where the sizes panels keep are written.
+    pub(crate) kept_file: Option<crate::run::kept::KeptFile>,
     log_damage: bool,
     /// `strand run`: what the logic thread hears about.
     logic: Option<Forward>,
@@ -543,6 +545,7 @@ impl Host {
         renderer.log_gpu_frames(log_damage);
         Self {
             renderer,
+            kept_file: None,
             log_damage,
             logic: None,
             wake: None,
@@ -742,6 +745,11 @@ impl Host {
     /// presented one's when the GPU thread says it presented it.
     pub(crate) fn painted(&mut self, surface: SurfaceId, damage: &Damage) {
         self.lock.painted(surface, damage);
+        if let Some(kept) = self.renderer.take_kept_sizes()
+            && let Some(file) = &self.kept_file
+        {
+            file.save(kept);
+        }
         // (report) Late frames and backend switches.
         if self.recorder.on() {
             let gpu = crate::report::backend(&self.renderer, surface).is_gpu();

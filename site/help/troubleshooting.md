@@ -124,7 +124,7 @@ surfaces itself.
 
 ## The GPU is not used
 
-Strand draws on the CPU by default and hands a surface to the GPU while
+Strand draws on the CPU by default and moves a surface to the GPU once
 it animates a large area. It asks for a GPU device only where a DRM
 render node (`/dev/dri/renderD*`) exists, and it needs a Vulkan driver
 for it; a software driver such as lavapipe counts as none. With no

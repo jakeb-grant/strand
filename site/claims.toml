@@ -272,7 +272,7 @@ proof  = "read: each is bound with .ok()"
 [[claim]]
 page   = "site/start/install.md"
 text   = "`xdg_activation_v1`. `strand report` lists every global your"
-source = ["crates/strand/src/report/mod.rs:298"]
+source = ["crates/strand/src/report/mod.rs:295"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): 44 globals with their versions"
 
 [[claim]]
@@ -866,7 +866,7 @@ proof  = "crates/strand-dev/tests/inspect.rs::a_read_only_target_is_refused_offe
 [[claim]]
 page   = "site/tools/reporting.md"
 text   = "saved a glitch report to /home/you/.local/state/strand/reports/2026-10-26_19-51-11"
-source = ["crates/strand/src/report/mod.rs:276"]
+source = ["crates/strand/src/report/mod.rs:273"]
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
@@ -938,7 +938,7 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 [[claim]]
 page   = "site/tools/reporting.md"
 text   = "bug about your hardware or compositor. `--json` prints it as JSON."
-source = ["crates/strand/src/report/mod.rs:247"]
+source = ["crates/strand/src/report/mod.rs:244"]
 proof  = "read"
 
 [[claim]]
@@ -1135,9 +1135,9 @@ proof  = "read"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
-text   = "Strand draws on the CPU by default and hands a surface to the GPU while"
+text   = "Strand draws on the CPU by default and moves a surface to the GPU once"
 source = ["crates/strand-render/src/promote.rs:1"]
-proof  = "crates/strand-render/src/promote.rs::tests::a_spring_driven_morph_is_promoted_at_its_first_large_frame, ::a_settled_surface_goes_back_after_the_settle_period"
+proof  = "crates/strand-render/src/promote.rs::tests::a_spring_driven_morph_is_promoted_at_its_first_large_frame, ::a_promoted_surface_stays_on_the_gpu"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
@@ -1166,7 +1166,7 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "and how many devices were lost. After three lost devices in one run"
-source = ["crates/strand-render/src/promote.rs:93", "crates/strand-render/src/promote.rs:97"]
+source = ["crates/strand-render/src/promote.rs:61", "crates/strand-render/src/promote.rs:65"]
 proof  = "crates/strand-render/src/promote.rs::tests::the_third_lost_device_turns_the_gpu_off"
 
 [[claim]]
@@ -2238,43 +2238,37 @@ proof  = "crates/strand/src/demo/mod.rs::a_minute_tick_repaints_at_most_2000_px2
 [[claim]]
 page   = "site/concepts/performance.md"
 text   = "Strand draws on the CPU by default, into shared memory, with exact"
-source = ["crates/strand-render/src/promote.rs:22"]
+source = ["crates/strand-render/src/promote.rs:11"]
 proof  = "read"
 
 [[claim]]
 page   = "site/concepts/performance.md"
 text   = "200,000 pixels of damage"
-source = ["crates/strand-render/src/promote.rs:56"]
+source = ["crates/strand-render/src/promote.rs:49"]
 proof  = "crates/strand-render/src/promote.rs::a_panel_opening_is_promoted_at_its_first_frame"
 
 [[claim]]
 page   = "site/concepts/performance.md"
 text   = "or at the third large frame in a row"
-source = ["crates/strand-render/src/promote.rs:60"]
+source = ["crates/strand-render/src/promote.rs:53"]
 proof  = "read: CLOCK_RUN"
 
 [[claim]]
 page   = "site/concepts/performance.md"
-text   = "frames or none, for 3 seconds"
-source = ["crates/strand-render/src/promote.rs:63"]
-proof  = "crates/strand-render/src/promote.rs::a_settled_surface_goes_back_after_the_settle_period"
+text   = "never moves back"
+source = ["crates/strand-render/src/promote.rs:22"]
+proof  = "crates/strand-render/src/promote.rs::a_promoted_surface_stays_on_the_gpu"
 
 [[claim]]
 page   = "site/concepts/performance.md"
-text   = "30 seconds of going back waits 15 seconds the next time"
-source = ["crates/strand-render/src/promote.rs:66", "crates/strand-render/src/promote.rs:70"]
-proof  = "read: AGAIN_WITHIN, AGAIN_FACTOR x SETTLE_AFTER"
-
-[[claim]]
-page   = "site/concepts/performance.md"
-text   = "(4 ms or more a frame)"
-source = ["crates/strand-render/src/promote.rs:76"]
-proof  = "read: CHEAP_FRAME"
+text   = "while it draws nothing it takes no wakeups"
+source = ["crates/strand-render/src/promote.rs:24"]
+proof  = "crates/strand-render/tests/gpu.rs::an_idle_promoted_surface_stays_and_asks_for_nothing"
 
 [[claim]]
 page   = "site/concepts/performance.md"
 text   = "After 3 lost devices in one run the GPU"
-source = ["crates/strand-render/src/promote.rs:93"]
+source = ["crates/strand-render/src/promote.rs:61"]
 proof  = "crates/strand-render/src/promote.rs::the_third_lost_device_turns_the_gpu_off"
 
 [[claim]]

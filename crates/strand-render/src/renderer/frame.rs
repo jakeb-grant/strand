@@ -882,7 +882,7 @@ impl Renderer {
             s.cache = Some(f);
             self.last_damage.insert(surface, total);
             #[cfg(feature = "gpu")]
-            self.gpu_frame_stats(surface, stats.0, stats.1, None);
+            self.gpu_frame_stats(surface, stats.0, stats.1);
             return total;
         }
 
@@ -969,19 +969,8 @@ impl Renderer {
             s.painted_at = Some(Instant::now());
         }
         self.last_damage.insert(surface, total);
-        // The CPU's time for the frame, when it drew about the frame's
-        // own damage: at most twice it (its union with the last frame's,
-        // at a buffer age of 2), never a repaint in full of an invalid
-        // buffer or a late readback's. Whether a small animated frame is
-        // cheap there (promotion's settle rule).
         #[cfg(feature = "gpu")]
-        self.gpu_frame_stats(
-            surface,
-            stats.0,
-            stats.1,
-            (!drawn && total.area() <= stats.0.saturating_mul(2))
-                .then_some(self.paint_times.raster),
-        );
+        self.gpu_frame_stats(surface, stats.0, stats.1);
         total
     }
 

@@ -1615,6 +1615,63 @@ fn a_panel_centred_on_one_axis_never_resizes_there() {
     }
 }
 
+/// (kept-size) A compositor may animate a layer surface's every resize
+/// (Hyprland), so a panel's size only ever grows, each name's on every
+/// output, and starts where an earlier session left it.
+#[test]
+fn a_panel_never_shrinks_and_starts_at_its_kept_size() {
+    let build = |kept: Option<(f32, f32)>| {
+        let mut b = Builder::default();
+        let p = b.node(
+            NodeKind::Panel,
+            None,
+            vec![
+                (Prop::Name, text("Card")),
+                (Prop::Anchor, kw("top")),
+                (Prop::Font, PropValue::Font(font(13.0))),
+            ],
+        );
+        b.diff.push(strand_scene::SceneOp::SetProp {
+            id: p,
+            prop: Prop::Size,
+            value: kw("auto"),
+            transition: strand_scene::Transition::Duration {
+                duration: std::time::Duration::from_millis(200),
+                easing: strand_scene::Easing::Linear,
+            },
+        });
+        let t = b.node(NodeKind::Text, Some(p), vec![(Prop::Text, text("one"))]);
+        let mut r = renderer();
+        if let Some(k) = kept {
+            r.set_kept_sizes(std::collections::BTreeMap::from([(
+                "strand-Card".to_string(),
+                k,
+            )]));
+        }
+        r.apply(b.diff);
+        (r, p, t)
+    };
+    let (mut r, p, t) = build(None);
+    let small = r.surface_spec(p).unwrap().height.unwrap();
+    let mut d = SceneDiff::new();
+    d.set(t, Prop::Text, text("one\ntwo\nthree"));
+    r.apply(d);
+    let tall = r.surface_spec(p).unwrap().height.unwrap();
+    assert!(tall > small);
+    let kept = r.take_kept_sizes().expect("it grew").clone();
+    assert_eq!(kept["strand-Card"].1, tall);
+    let mut d = SceneDiff::new();
+    d.set(t, Prop::Text, text("one"));
+    r.apply(d);
+    assert_eq!(r.surface_spec(p).unwrap().height, Some(tall), "no shrink");
+    let (r, p, _) = build(Some((0.0, tall)));
+    assert_eq!(
+        r.surface_spec(p).unwrap().height,
+        Some(tall),
+        "next session"
+    );
+}
+
 /// Shadows on a centred surface: the buffer is grown evenly on its
 /// centred axes, so the box (and its input region) stays centred.
 #[test]

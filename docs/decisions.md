@@ -14256,3 +14256,57 @@ changing moved the middle of a popup's anchor by half a pixel of rounding and
 repositioned the card hanging from it (`Renderer::steady_anchor`). With these,
 an island needs no popup and no copy of itself: one box whose contents decide
 its size, growing down from its anchored edge.
+
+## kept-size
+
+**2026-10-30 · kept-size: a panel whose size springs keeps the largest size its
+name has had.** Hyprland animates every layer `set_size` with `layersIn` (about
+400 ms on the owner's config): `arrangeLayersForMonitor` calls `setBox`, which
+starts `m_realSize`'s animation, and the renderer scales the new buffer into
+that box, so the twitch at the ends of opening and closing happens on every
+shell that resizes to open. So a content-sized panel or OSD with a `~` on its
+size stops resizing to do it: on the axes its content sizes it asks for the
+largest it has been, under its namespace, on every output, and its box moves
+inside the buffer with input following the box (growth's existing path). The
+sizes are kept in `$STATE/panel-sizes.json` with a hash of the config's
+`.strand` files, so a panel maps at the size it will need and only the first
+open under a config resizes; a changed config starts again, so a card made
+smaller does not stay reserved. Rejected: a whole output's height for every
+such panel (Hyprland damages the whole surface on every commit, so a waveform
+would repaint a monitor at refresh); buffer-only size changes, which skip
+`set_size` and so the animation, because the next arrange overwrites them and
+other compositors do not follow; a declared size, which adds a concept the
+shell author must keep in step with the content. Panels with no `~` on their
+size keep resizing, and a panel whose exclusive zone follows its size
+(`exclusive: true`) is left out because keeping the size would keep windows
+away.
+
+**2026-10-30 · centred-surface: a spring lands under half a pixel
+(`STEP_LANDED`).** A growth step's residue under half a physical pixel of
+movement is dropped, so the icons beside a settling box stop on their final
+position instead of creeping into it. A surface's span now follows its output
+(`set_surface_bounds` refreshes its spec), so one sized before its output's
+mode and scale were known no longer stays at the old width.
+
+
+## gpu-stay
+
+**2026-10-30 · gpu-stay (OWNER RULING): a surface promoted to the GPU stays
+there for the rest of its life.** "If something gets elevated to GPU you just
+make it stay there." This supersedes the settle part of gpu-first
+(`SETTLE_AFTER`, `AGAIN_WITHIN`, `CHEAP_FRAME` and the wake that demoted an idle
+surface); promotion in, the warm device and the failure fallback stand. The
+reason is a freeze: on Hyprland `GpuRequest::Release` destroys the Vulkan
+swapchain while Mesa's FIFO barrier can leave Hyprland's per-surface commit
+queue locked, so later `wl_shm` commits get no reply, the three shm buffers fill
+and the surface stops for good at `acquire`; flight logs put every final stop
+exactly 2.00 s after the last switch to the CPU. Sway has no `wp_fifo_v1`, so no
+test here reproduces it, and nothing here proves the fix on Hyprland. Only a
+real failure goes back now (`GpuReply::Failed`, a lost device, an attach a
+failure overtook); those and a destroyed surface are all `Release` still serves.
+The price: a promoted surface's small frames present in full, and it keeps its
+swapchain while idle. On Intel ANV `gpu_idle` measured an idle promoted surface
+at 0 wakeups in 4 s, presented and read back, 1,448-3,229 kB over the warm
+baseline presented and 1,832 kB read back, flat over ten cycles, so no budget
+moved. An idle surface's swapchain rebuilds, seen about 11 times a second in an
+earlier forced-GPU bench, did not show: 0 wakeups leaves no room for one.
