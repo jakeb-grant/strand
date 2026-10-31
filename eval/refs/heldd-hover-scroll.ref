@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "heldd-hover-scroll"
 verdict good
-note "still-pointer: compared from the trace with the block before: the row under the still pointer at 100,100 now lights and nudges 4 px right as the wheel brings it there (india at k55, hotel as it passes at k69-72), where the row last glided over stayed hovered until the next motion. The list's offset is the same spring and rests in the same place; its first frames at k69 start two ticks later (95, 172, 223, 245 against 223, 245) because the nudge keeps frames painting until k63, nearer the wheel, so the first frame's lead is shorter; every other value equal."
+note "still-pointer, read again from the trace, correcting the note before this one (it named only india and hotel and blamed the first frame's lead, which was wrong). The pointer stays at 100,100 through the wheel, and hover now follows what moves under it. charlie, lit when the wheel starts, fades from k53 where it stayed lit; golf and echo light as they pass (x above 8 at k54-56 and k53-55); india lights at k55 and is the row at rest under the pointer, its fade ending at k63 where the old recording's last change was charlie's at k60. Scrolling back to the top, india fades (k70-71), hotel, echo, delta and charlie light as they pass (k70-72, k71-73, k72-74), and charlie ends lit at k75 and on, as it did. The scroll to the top is the same spring exactly two ticks later: hotel's y is 95, 172, 223, 245 at k67-70 before and k69-72 now, and the list rests in the same place. Two ticks later fits the longer fade in the rest before that scroll, which ends later; the trace shows the two facts, not a run proving one causes the other."
 date 2026-10-31
-rev "475393fe+changes"
+rev "b0d54007"
 approver "claude"
 scenario 5663c8688ef63451
-seal a226724ddef831f9
+seal 95cfec5d52bf78a7
 S1 0 - "panel Picker"
 N0 "picks|shell.strand:6:5|#0" "list#picks"
 N1 "|shell.strand:10:11|[alpha]#0" "text(\"alpha\")"
