@@ -36,6 +36,7 @@ action's name: `rec.running`, `rec.started` and `rec.stop()` for
 | --- | --- | --- |
 | `running` | `bool` | A command of it runs: true while any does (an action with a result may run several at once). |
 | `started` | `Date?` | When the command running longest started, to the minute; null while none runs. |
+| `error` | `text?` | Why its last command failed: it could not start (`could not start \`wf-recorder\`: …`), or exited non-zero; null once one ends well or is stopped, and from the moment it is called again. Null on an action with a result, whose call has its own `.error`. |
 
 | Method | |
 | --- | --- |

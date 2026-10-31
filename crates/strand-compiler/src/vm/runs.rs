@@ -1,14 +1,14 @@
-//! (lockmon) Declared actions' runs: `rec.running`, `rec.started` and
-//! `rec.stop()` for `action rec(…) […]` (spec.md 5.7; decisions.md
-//! lockmon).
+//! (lockmon) Declared actions' runs: `rec.running`, `rec.started`,
+//! `rec.error` and `rec.stop()` for `action rec(…) […]` (spec.md 5.7;
+//! decisions.md lockmon, action-error).
 //!
 //! The host runs the commands, so it says how each action's stand: it
 //! passes on, by the action's name, whether a command of it runs and
 //! when the one running longest started ([`Instance::set_action_run`]).
-//! Each action has two signals, made when the program declares it and
+//! Each action has three signals, made when the program declares it and
 //! kept by name across reloads (a reload never stops a command), owned by
-//! no scope. A read of `rec.running` or `rec.started` reads the action's
-//! run whole, an `ActionRun` record, tracked on both.
+//! no scope. A read of any field reads the action's run whole, an
+//! `ActionRun` record, tracked on all three.
 //!
 //! [`Instance::set_action_run`]: crate::instantiate::Instance::set_action_run
 
@@ -27,6 +27,8 @@ struct Run {
     running: Signal<bool>,
     /// To the minute, as a `Date` holds it.
     started: Signal<Option<NaiveDateTime>>,
+    /// Why its last command failed.
+    error: Signal<Option<String>>,
 }
 
 /// Every declared action's run, by name: the instance's, kept across
@@ -47,12 +49,22 @@ impl ActionRuns {
             }
             let running = rt.signal(false);
             let started = rt.signal(None);
+            let error = rt.signal(None);
             // Owned by no scope: they outlive whatever mounts first.
             let _ = rt.reparent(running.id(), None);
             let _ = rt.reparent(started.id(), None);
+            let _ = rt.reparent(error.id(), None);
             rt.set_name(running.id(), format!("{}.running", a.name));
             rt.set_name(started.id(), format!("{}.started", a.name));
-            runs.insert(a.name.clone(), Run { running, started });
+            rt.set_name(error.id(), format!("{}.error", a.name));
+            runs.insert(
+                a.name.clone(),
+                Run {
+                    running,
+                    started,
+                    error,
+                },
+            );
         }
     }
 
@@ -77,6 +89,15 @@ impl ActionRuns {
         let _ = run.started.set(rt, started);
     }
 
+    /// The host's word on why action `action`'s last command failed. An
+    /// action the program does not declare is ignored.
+    pub(crate) fn set_error(&self, rt: &Runtime, action: &str, error: Option<&str>) {
+        let Some(run) = self.runs.borrow().get(action).copied() else {
+            return;
+        };
+        let _ = run.error.set(rt, error.map(str::to_owned));
+    }
+
     /// Whether a command of `action` runs, as last set (tests, hosts).
     pub(crate) fn running(&self, rt: &Runtime, action: &str) -> Option<bool> {
         let run = self.runs.borrow().get(action).copied()?;
@@ -92,13 +113,20 @@ impl ActionRuns {
         date: Option<crate::ty::RecordId>,
     ) -> Result<Value, Error> {
         let Some(run) = self.runs.borrow().get(action).copied() else {
-            return Ok(Value::record(record, vec![Value::Bool(false), Value::Null]));
+            return Ok(Value::record(
+                record,
+                vec![Value::Bool(false), Value::Null, Value::Null],
+            ));
         };
         let running = run.running.get(rt)?;
         let started = match (run.started.get(rt)?, date) {
             (Some(t), Some(d)) => super::clock::datetime_record(d, t),
             _ => Value::Null,
         };
-        Ok(Value::record(record, vec![Value::Bool(running), started]))
+        let error = run.error.get(rt)?.map_or(Value::Null, Value::text);
+        Ok(Value::record(
+            record,
+            vec![Value::Bool(running), started, error],
+        ))
     }
 }

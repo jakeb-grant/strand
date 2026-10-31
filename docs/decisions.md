@@ -14395,3 +14395,19 @@ name a keymap is configured with (`us`, `de`), not the list's `shortDescription`
 (`en`), which many layouts share; a variant gives its layout's code. A custom layout
 not in the list is null, not a guess. The name follows `layout` and `layouts`. Found by
 Bead (#20).
+
+## action-error
+
+**2026-10-30 · action-error: `rec.error` says a declared action failed.** A shell
+had no way to learn its action could not start: the failure went to the log and `strand
+watch`, and a recording button just sat there. An action's name already reads as its
+run, and an `Async` already calls this `.error`, so the field removes a gap rather
+than adding a concept; an event would have needed new syntax on an action's name. It
+covers a non-zero exit too, as both already count as a failure and a shell that is told
+only of a start would still miss a recorder that dies at once. A stop is no failure. It
+clears on a new call, so a repeat of the same failure is a change `on change` hears
+(unless the new command fails before the logic thread's next flush, which takes a
+fork; an action with a queued re-run keeps the failure until that re-run ends). A call
+of an action with a result keeps its own `.error`, and `rec.error` stays null. It is
+recorded (`flight::kind::ACTION_FAILED`, naming the program, never an argument) and
+replayed (`end action rec failed "<why>"`), so a shell showing it replays as it ran.

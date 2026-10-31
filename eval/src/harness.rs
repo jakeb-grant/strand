@@ -3029,7 +3029,7 @@ impl Harness {
                 self.answer_step(method, answer)
                     .map_err(|m| refused(self, m))?;
             }
-            StepKind::EndAction { action } => {
+            StepKind::EndAction { action, failed } => {
                 self.event(step);
                 if !self
                     .inst
@@ -3053,6 +3053,8 @@ impl Harness {
                 let started = run.started;
                 drop(runs);
                 self.set_run(action, started);
+                // (action-error) As the live shell says of a command's end.
+                self.inst.set_action_error(action, failed.as_deref());
                 self.logic_owed = true;
             }
             StepKind::Leave => {
@@ -3995,6 +3997,8 @@ impl Harness {
                 k,
                 text: format!("exec {}: {:?}", x.action, x.argv),
             });
+            // (action-error) A new try: its last failure no longer stands.
+            self.inst.set_action_error(&x.action, None);
             // (lockmon) A detached command runs from its call until a
             // step ends it (`end action`, a recording's end); a call
             // while one runs queues one re-run in place of any before.

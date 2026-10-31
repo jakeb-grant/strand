@@ -741,7 +741,7 @@ and marked truncated), `named_value`, `push_named`, `pause`/`resume`
   (`ARef`) at 6..12. Kinds and payloads are the constants in
   `flight::kind` and their docs: input `0x01`–`0x0D`, surfaces and
   outputs `0x20`–`0x31` (a `window`'s configure is `0x27`), changes
-  `0x40`–`0x4A`, gaps `0x3E`/`0x3F` and `0x4E`/`0x4F` (why in
+  `0x40`–`0x4B`, gaps `0x3E`/`0x3F` and `0x4E`/`0x4F` (why in
   `flight::gap`). A ring keeps no change record whose value the arena
   lapped, so a dump holds a suffix with every value in it.
 - **Values** are compact JSON typed by the schema or program; a field
@@ -1640,8 +1640,9 @@ Public interfaces:
     answered from the command's bounded stdout. The capture thread owns
     the command's end (SIGTERM to the group, `KILL_GRACE`, SIGKILL, then
     reap), so no signal reaches a recycled group. `rec.running`,
-    `rec.started` and `rec.stop()` read and stop an action's run
-    (`ActionRun`; `Instance::set_action_run`; decisions.md lockmon).
+    `rec.started`, `rec.error` and `rec.stop()` read and stop an action's
+    run (`ActionRun`; `Instance::set_action_run`, `set_action_error`;
+    decisions.md lockmon, action-error).
   - `acquire`/`release(rt, service)`: a reader count. Mounted components
     and the top level hold what their body reads; a surface holds its
     body's services only while shown; a parked bar lets go of

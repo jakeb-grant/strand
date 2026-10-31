@@ -644,6 +644,38 @@ fn an_actions_run_is_read_through_its_name() {
     assert!(!codes.is_empty(), "{text}");
 }
 
+/// (action-error) `rec.error` is what the host last said of the action's
+/// failure: `text?`, tracked, null to start with (so `on change` hears only
+/// real changes), and read in a binding and a handler like the run's other
+/// fields; it cannot be written; another action's stays its own.
+#[test]
+fn an_actions_error_follows_the_host() {
+    let src = "permit exec \"wf-recorder\"\n\
+        action rec() [\"wf-recorder\"]\n\
+        action other() [\"wf-recorder\"]\n\
+        let why = rec.error ?? \"-\"\n\
+        let elsewhere = other.error ?? \"-\"\n\
+        export state seen = 0\n\
+        on change rec.error { seen += 1 }\n";
+    let (_rt, _host, inst) = run(src);
+    assert_eq!(text(&inst, "why"), "-");
+    assert_eq!(get(&inst, "seen").as_f64(), Some(0.0));
+    inst.set_action_error("rec", Some("could not start `wf-recorder`"));
+    inst.flush();
+    assert_eq!(text(&inst, "why"), "could not start `wf-recorder`");
+    assert_eq!(text(&inst, "elsewhere"), "-");
+    assert_eq!(get(&inst, "seen").as_f64(), Some(1.0));
+    inst.set_action_error("nope", Some("ignored"));
+    inst.set_action_error("rec", None);
+    inst.flush();
+    assert_eq!(text(&inst, "why"), "-");
+    assert_eq!(get(&inst, "seen").as_f64(), Some(2.0));
+    let (codes, msg) = diags(
+        "permit exec \"x\"\naction rec() [\"x\"]\non change rec.running { rec.error = \"no\" }\n",
+    );
+    assert!(!codes.is_empty(), "{msg}");
+}
+
 /// (lockmon) What the host says of an action's commands is what
 /// `rec.running` and `rec.started` read (to the minute, null once none
 /// runs); `rec.stop()` asks the host to stop them, in order with the

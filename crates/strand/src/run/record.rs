@@ -1430,6 +1430,22 @@ impl ChangeRecorder {
         r.push(rec);
     }
 
+    /// (action-error) A declared action's command failed, for `why`: what
+    /// `rec.error` reads, so a replay reads it too. It names the program,
+    /// which a config writes out (spec.md 5.7), and no argument.
+    pub(crate) fn action_failed(&mut self, t: u64, action: &str, why: &str) {
+        let Some(r) = &mut self.ring else {
+            return;
+        };
+        push_value(r, t, kind::ACTION_FAILED, action, &[], 0, |w| {
+            match serde_json::to_vec(why) {
+                Ok(j) => w.put(&j),
+                Err(_) => w.put(b"null"),
+            }
+            false
+        });
+    }
+
     /// A reload committed: its counts (files, cells kept, cells reset)
     /// and each file's hash.
     pub(crate) fn reload(&mut self, t: u64, counts: [u16; 3], files: &[(String, String)]) {
@@ -3293,6 +3309,17 @@ mod tests {
         assert_eq!((e[0].rec.u32(0), e[1].rec.u32(0)), (0, 1), "call ids");
         assert_eq!(value_of(&e[1]), serde_json::json!({"ok": ["Firefox"]}));
         assert!(!contains(&c.dump().unwrap(), b"hunter2"));
+    }
+
+    /// (action-error) A failure is kept with its action's name, as the
+    /// JSON text `rec.error` reads.
+    #[test]
+    fn a_failed_action_records_why() {
+        let mut c = ChangeRecorder::new(true, program("let x = 1"));
+        c.action_failed(4, "rec", "could not start `wf-recorder`");
+        let dump = c.dump().unwrap();
+        assert!(contains(&dump, b"\"could not start `wf-recorder`\""));
+        assert!(contains(&dump, b"rec"));
     }
 
     /// (flex review) A result action's answer is a fetch named `action

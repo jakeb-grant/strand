@@ -2482,6 +2482,37 @@ fn a_recorded_commands_end_is_replayed() {
     assert!(p.events.iter().any(|e| e.text == "action rec succeeded"));
 }
 
+/// (action-error) A recorded failure goes with the end it comes before,
+/// so `rec.error` reads as it did; the next end, with none, says nothing.
+#[test]
+fn a_recorded_failure_is_replayed_with_its_end() {
+    let mut f = Fx::session();
+    let started = [0u8, 0, 0, 0, 0, 1];
+    let ended = [0u8, 0, 0, 0, 0, 0];
+    f.change(10 * S, kind::ACTION, "rec", &started, "");
+    f.change(
+        11 * S,
+        kind::ACTION_FAILED,
+        "rec",
+        &[],
+        "\"could not start `x`\"",
+    );
+    f.change(11 * S, kind::ACTION, "rec", &ended, "");
+    f.change(12 * S, kind::ACTION, "rec", &started, "");
+    f.change(13 * S, kind::ACTION, "rec", &ended, "");
+    let (_, _, text) = plan_of(&f.write("action-failed"), &defaults());
+    let st = steps(&text);
+    let ends: Vec<&&str> = st.iter().filter(|s| s.starts_with("end action")).collect();
+    assert_eq!(
+        ends,
+        [
+            &"end action rec failed \"could not start `x`\"",
+            &"end action rec"
+        ],
+        "{st:?}"
+    );
+}
+
 /// (lockmon review) Three calls while a command runs are two commands
 /// live (one runs, one re-run queued), so two ends are recorded; the plan
 /// replays each end as an `end action` step at its time, and the sandbox

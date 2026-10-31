@@ -3494,6 +3494,56 @@ fn an_actions_run_shows_and_stop_ends_it() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (action-error) A shell learns its action failed: `rec.error` says why
+/// it exited non-zero, a call clears it and a good end leaves it null, and
+/// a program that cannot start is said the same way.
+#[test]
+fn an_actions_error_says_why_it_failed() {
+    let dir = temp_dir("exec-error");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "permit exec \"sh\"\npermit exec \"strand-no-such-program\"\n\
+         action rec(code: text) [\"sh\", \"-c\", \"exit $0\", code]\n\
+         action gone() [\"strand-no-such-program\"]\n\
+         state n = 0\n\
+         bar Top {\n  on click {\n    n += 1\n    if n == 1 { rec(\"3\") }\n    \
+         if n == 2 { rec(\"0\") }\n    if n == 3 { gone() }\n  }\n  \
+         text rec.error ?? \"none\"\n  text gone.error ?? \"none\"\n}\n",
+    )
+    .unwrap();
+    let program = load(&dir);
+    let storage = Storage::in_dirs(dir.join("state"), &dir);
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let live = Live::default();
+    let t = std::thread::spawn(move || logic(program, storage, from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| s.texts() == ["none", "none"]);
+    let a = m.scene.roots()[0];
+    let click = || ToLogic::Event {
+        input: None,
+        node: a,
+        event: NodeEvent::Click,
+    };
+    to_logic.send(click()).unwrap();
+    m.until("its failure", |s| {
+        s.texts() == ["`sh` failed (exit status: 3)", "none"]
+    });
+    to_logic.send(click()).unwrap();
+    m.until("a good end clears it", |s| s.texts() == ["none", "none"]);
+    to_logic.send(click()).unwrap();
+    m.until("a failure to start", |s| {
+        s.texts()[0] == "none"
+            && s.texts()[1].starts_with("could not start `strand-no-such-program`")
+    });
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// (M6, decisions.md m6-w2-surface) A popup grabs by its cause: the diff
 /// a click's handler produces carries that click's serial
 /// (`SceneDiff::press`, and so does every diff after it until a hover

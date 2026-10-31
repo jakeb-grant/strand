@@ -391,8 +391,10 @@ recorder runs until you stop it:
 so the recorder finishes its file; one that ignores that is ended after
 a few seconds. One button does both: `on click { if rec.running {
 rec.stop() } else { rec("/tmp/clip.mp4") } }`, and `text rec.running ?
-"Stop" : "Record"` labels it. An action with a result has the same
-three: `calc.running` while any of its calls runs, and `calc.stop()`
+"Stop" : "Record"` labels it. `rec.error` says why its last command
+failed, if it did: it could not start, or exited non-zero, so a button
+can show that instead of doing nothing. An action with a result has
+`running`, `started` and `stop()` too: `calc.running` while any of its calls runs, and `calc.stop()`
 ends them, each call's `.error` saying it was stopped.
 
 For a service none of these can describe, write it in Rust (section 7).

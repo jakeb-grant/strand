@@ -1622,6 +1622,13 @@ impl Instance {
         self.ctx.vm.runs().set(&self.rt, action, running, started);
     }
 
+    /// (action-error) Why declared action `action`'s last command failed,
+    /// or `None` once it has not (`rec.error`, on the next flush). An action
+    /// the program does not declare is ignored.
+    pub fn set_action_error(&self, action: &str, error: Option<&str>) {
+        self.ctx.vm.runs().set_error(&self.rt, action, error);
+    }
+
     /// (lockmon) Whether a command of `action` runs, as last set with
     /// [`Instance::set_action_run`]; `None` for an action the program
     /// does not declare.

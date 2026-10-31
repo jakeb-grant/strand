@@ -125,6 +125,10 @@ pub mod kind {
     /// typically). Name: the path as asked; payload byte 0 the verb
     /// ([`super::request`]); arena: the cell's value after it.
     pub const REQUEST: u8 = 0x4A;
+    /// (action-error) A declared action's command failed, just before its
+    /// [`ACTION`] end at the same time. Name: the action; arena: why, as
+    /// the JSON text `rec.error` reads.
+    pub const ACTION_FAILED: u8 = 0x4B;
     pub const CHANGE_GAP_BEGINS: u8 = 0x4E;
     pub const CHANGE_GAP_ENDS: u8 = 0x4F;
 
@@ -134,7 +138,7 @@ pub mod kind {
     pub fn has_value(k: u8) -> bool {
         matches!(
             k,
-            FIELD | KEYED | EVENT | CELL | FETCH | WRITE | RELOAD | REQUEST
+            FIELD | KEYED | EVENT | CELL | FETCH | WRITE | RELOAD | REQUEST | ACTION_FAILED
         )
     }
 }

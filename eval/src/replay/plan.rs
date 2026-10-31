@@ -2308,6 +2308,7 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     // (replayfix) Each driven field's value as played so far, for a lost
     // record's value after it, set only where it changes something.
     let mut played: HashMap<String, Json> = HashMap::new();
+    let mut action_failures: HashMap<String, String> = HashMap::new();
     let mut answered_at: HashMap<String, u64> = HashMap::new();
     for (i, e) in b.change_entries.iter().enumerate() {
         let t = e.rec.t;
@@ -2541,12 +2542,23 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     text: format!("request {step}"),
                 });
             }
+            kind::ACTION_FAILED => {
+                // (action-error) Said with the end that follows it.
+                if let Some(Json::String(why)) = &v {
+                    action_failures.insert(name.clone(), why.clone());
+                }
+            }
             kind::ACTION => {
                 // (lockmon) The replayed handler calls the action again;
                 // its command ends where the recording's did, so
-                // `rec.running` reads as it did.
+                // `rec.running` (action-error: and `rec.error`) reads as
+                // it did.
                 if e.rec.u8(5) == 0 {
-                    push(&mut timed, at, format!("end action {name}"), 0);
+                    let step = match action_failures.remove(&name) {
+                        Some(why) => format!("end action {name} failed {}", quoted(&why)),
+                        None => format!("end action {name}"),
+                    };
+                    push(&mut timed, at, step, 0);
                 }
                 events.push(Event {
                     kind: "change",

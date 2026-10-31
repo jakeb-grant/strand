@@ -1128,10 +1128,24 @@ fn the_end_action_step_parses() {
     assert_eq!(
         kinds,
         vec![StepKind::EndAction {
-            action: "rec".into()
+            action: "rec".into(),
+            failed: None,
         }]
     );
+    // (action-error) With why it failed, which `rec.error` reads.
+    let s = parse(
+        "id = \"t\"\n=== shell.strand\nbar Top { height: 30 }\n=== steps\nend action rec failed \"no such file\"\n",
+    );
+    assert_eq!(
+        s.steps[0].kind,
+        StepKind::EndAction {
+            action: "rec".into(),
+            failed: Some("no such file".into()),
+        }
+    );
     for (step, want) in [
+        ("end action rec failed", "takes"),
+        ("end action rec failed \"a\" b", "unexpected"),
         ("end", "takes"),
         ("end rec", "takes"),
         ("end action", "takes"),

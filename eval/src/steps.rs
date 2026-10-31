@@ -209,8 +209,10 @@ pub enum StepKind {
     /// (lockmon) `end action <name>`: the oldest command of action
     /// `name` the sandbox counts as running ends (the sandbox runs no
     /// command: one runs from its call until this step or `stop()`).
+    /// (action-error) `failed "<why>"`: it failed, which `rec.error` reads.
     EndAction {
         action: String,
+        failed: Option<String>,
     },
     // Perturbations.
     TextHold {
@@ -798,13 +800,20 @@ fn parse_line(text: &str) -> Result<Option<StepKind>, String> {
             }
         }
         "end" => {
-            let usage = "`end action <name>`";
+            let usage = "`end action <name> [failed \"<why>\"]`";
             if arg(1) != Some("action") || w[1].quoted {
                 return Err(format!("`end` takes {usage}"));
             }
             let action = need(2, usage)?.to_string();
-            only(3)?;
-            StepKind::EndAction { action }
+            let failed = if arg(3) == Some("failed") && !w[3].quoted {
+                let why = need(4, usage)?.to_string();
+                only(5)?;
+                Some(why)
+            } else {
+                only(3)?;
+                None
+            };
+            StepKind::EndAction { action, failed }
         }
         "answer" => {
             let usage = "`answer <service.method> <JSON>`, `answer <service.method> error \

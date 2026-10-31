@@ -822,13 +822,20 @@ impl Shell {
             self.recorder
                 .borrow_mut()
                 .action(t, &req.action, argc, true, 0);
+            // (action-error) A new try: its last failure no longer stands.
+            self.inst.set_action_error(&req.action, None);
             self.execs.start(req);
         }
         for e in self.execs.ended() {
             let t = strand_core::flight::now_ns();
-            self.recorder
-                .borrow_mut()
-                .action(t, &e.action, 0, false, e.exit);
+            {
+                let mut rec = self.recorder.borrow_mut();
+                if let Some(why) = &e.failed {
+                    rec.action_failed(t, &e.action, why);
+                }
+                rec.action(t, &e.action, 0, false, e.exit);
+            }
+            self.inst.set_action_error(&e.action, e.failed.as_deref());
             if e.stopped {
                 log::info!("action {}: stopped (exit {})", e.action, e.exit);
             }

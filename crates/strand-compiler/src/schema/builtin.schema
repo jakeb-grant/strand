@@ -270,6 +270,11 @@ record ActionRun {
   /// When the command running longest started, to the minute; null
   /// while none runs.
   started: Date?
+  /// Why its last command failed: it could not start (`could not start
+  /// \`wf-recorder\`: …`), or exited non-zero; null once one ends well or
+  /// is stopped, and from the moment it is called again. Null on an action
+  /// with a result, whose call has its own `.error`.
+  error: text?
   /// Stops every command of it now running, and the re-run queued behind
   /// one: SIGINT to each one's process group, SIGTERM 2 s later, SIGKILL
   /// 2 s after that.

@@ -801,6 +801,12 @@ monitor, the keyboard always).
   them. `running` and `started` read as fields do, in a binding too,
   tracked (`on change rec.running` fires as commands start and end);
   they are the runtime's to say and never written (`check::read_only`).
+  (action-error; decisions.md action-error) `rec.error` (`text?`) says why
+  its last command failed: it could not start, or exited non-zero. It is
+  null to begin with, from the moment the action is called again, and once
+  a command ends well or is stopped; so `on change rec.error` hears a failure
+  a shell can show. It is never set on an action with a result, whose call
+  has its own `.error`.
   `stop()` is an action, a handler's alone (section 8.3): every command
   of the action now running is stopped and a re-run queued behind one
   dropped. Every program strand starts begins with no signal blocked or

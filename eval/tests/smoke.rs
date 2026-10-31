@@ -1731,6 +1731,45 @@ wait 1500
     assert!(c.report.ok(), "{:?}", c.report.lines(&c.run.trace));
 }
 
+/// (action-error) `end action <name> failed "<why>"` is what `rec.error`
+/// reads, as a recording's failure replays; the next call clears it.
+#[test]
+fn an_actions_error_is_what_its_end_says() {
+    let text = |steps: &str| {
+        format!(
+            r##"id = "action-error"
+screen = {{ width = 300, scale = 1.0 }}
+
+=== shell.strand
+permit exec "wf-recorder"
+action rec() ["wf-recorder"]
+export state go = 0
+on change go {{ rec() }}
+bar Top {{
+  height: 30
+  row {{
+    if rec.error != null {{ box {{ id: failed; width: 10; height: 10; bg: #ff0000 }} }}
+    if rec.error == null {{ box {{ id: fine; width: 10; height: 10; bg: #00ff00 }} }}
+  }}
+}}
+
+=== steps
+rest
+set go 1
+rest
+{steps}
+rest
+"##
+        )
+    };
+    let t = go(&text("end action rec"));
+    assert!(drawn_last(&t, "fine") && !drawn_last(&t, "failed"));
+    let t = go(&text("end action rec failed \"no such file\""));
+    assert!(drawn_last(&t, "failed") && !drawn_last(&t, "fine"));
+    let t = go(&text("end action rec failed \"no\"\nrest\nset go 2\nrest"));
+    assert!(drawn_last(&t, "fine"), "a new call clears it");
+}
+
 /// (lockmon) The sandbox runs no command: a detached action's command
 /// counts as running from its call until `end action <name>` (a
 /// recording's end), so `rec.running` reads as the shell's did. (lockmon
