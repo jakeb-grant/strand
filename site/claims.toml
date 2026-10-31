@@ -2243,6 +2243,18 @@ proof  = "read"
 
 [[claim]]
 page   = "site/concepts/performance.md"
+text   = "redraw the whole surface, and it keeps its GPU buffers"
+source = ["docs/decisions.md#gpu-stay"]
+proof  = "read: design.md, Damage and pacing: GPU frames send full damage; crates/strand-render/src/promote.rs::a_promoted_surface_stays_on_the_gpu"
+
+[[claim]]
+page   = "site/concepts/performance.md"
+text   = "holds about 126 MiB"
+source = ["docs/decisions.md#gpu-memory"]
+proof  = "docs/benchmarks.md, GPU memory of the warm device: 129,116 KiB, measured on Intel ANV; crates/strand-gpu/src/thread.rs::tests::a_warm_device_reserves_little_beyond_what_it_uses"
+
+[[claim]]
+page   = "site/concepts/performance.md"
 text   = "200,000 pixels of damage"
 source = ["crates/strand-render/src/promote.rs:49"]
 proof  = "crates/strand-render/src/promote.rs::a_panel_opening_is_promoted_at_its_first_frame"

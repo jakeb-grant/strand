@@ -30,8 +30,8 @@ burst. The test is
 
 ## Only what changed is painted
 
-Each frame repaints only the area that changed, its **damage**. When
-the clock ticks, Strand repaints the clock's text, not the bar. On the
+On the CPU, each frame repaints only the area that changed, its
+**damage**. When the clock ticks, Strand repaints the clock's text, not the bar. On the
 demo bar (`strand run --demo`), 2560 px wide at scale 1 and 1.25, a
 minute tick, even one that
 changes every digit and the text's width, repaints at most 2,000 px².
@@ -58,7 +58,8 @@ a large area animates, the GPU is faster, so a surface moves to it:
   something that animates with no spring, such as a shader's clock.
 - **It stays there for the rest of its life.** A surface that has moved
   never moves back, and while it draws nothing it takes no wakeups, like
-  a surface on the CPU. Only a failure, such as a lost device, returns it
+  a surface on the CPU. The price is that its later frames, however small,
+  redraw the whole surface, and it keeps its GPU buffers. Only a failure, such as a lost device, returns it
   to the CPU.
 - **The GPU device is started with the shell**, off the drawing path,
   and kept, so an animation never waits for it. Where no GPU can exist,
@@ -84,8 +85,9 @@ a limit on what your shell may do.
 <!-- repo-only -->
 ## What CI holds
 
-The memory figures are PSS, the memory a process really uses with
-shared pages split among their users. They are tripwires that catch a
+The memory figures are PSS, a process's memory with shared pages split
+among their users, which leaves out the GPU device's own memory. They
+are tripwires that catch a
 change making Strand bigger, never a limit on your shell: a config
 that does more may use more. Each figure warns above its target and
 fails the build above its ceiling, in a release build.
@@ -119,3 +121,17 @@ GitHub's `timing` job holds the speed gates, on an optimised build:
 GPU's status, and for each surface its backend, why it is on the GPU
 and its frame times (p50, p95 and p99 over the frames drawn among its
 last 600 paints).
+
+PSS leaves out the GPU device's own memory, because those pages belong
+to the kernel, though on an integrated GPU they are real RAM. Measured
+on one Intel GPU, the device kept warm holds about 126 MiB, whatever
+your outputs, plus what surfaces drawn on the GPU hold (10 MiB more with
+a bar animating). To read it, run:
+
+```sh
+grep -h drm-total-gtt /proc/$(pidof strand)/fdinfo/*
+```
+
+Each line gives its own unit, and descriptors of one device can repeat
+the same figure. Other drivers may use another memory region's name in
+place of `gtt`.
