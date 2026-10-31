@@ -1165,6 +1165,12 @@ monitor, the keyboard always).
   `enter`. Poses apply to surfaces, `if` branches, `for` copies, list
   items and pages. Siblings of a node that is added, removed or moved
   glide to their new places.
+  A `popup`'s contents mount each time it opens, so their `enter`
+  poses play at every open, which a stagger on open relies on. A popup
+  that starts out looking like something already on screen would
+  flicker: leave the pose out, or skip it by a value, `enter: still ?
+  none : fade`, or `enter { x: still ? 50 : 200 }` for a node whose own
+  `x` is 50 (decisions.md popup-enter).
 - **`keyframes name { 0%, 100% { … }; 50% { … }; duration: T }`**
   declares a timed animation; `play name` in a handler plays it once on
   the enclosing node.

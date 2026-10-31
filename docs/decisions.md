@@ -14515,3 +14515,16 @@ card clipped, its size read from the anchor, or posed with `enter`. Nothing in t
 code connects a shadow to a popup's opening: it widens the buffer (the overhang) and
 what is painted, not what takes input. Hyprland was not tried and may be where it happened. So no fix, only a test
 that holds the shape: `a_shadow_on_a_hover_popups_card_leaves_it_opening_and_closing`.
+
+## popup-enter
+
+**2026-10-31 · popup-enter: a popup's contents play their `enter` at every open, and
+that stays.** A popup's contents mount each time it opens, written under an `if` or
+not, so their poses replay. A stagger on open relies on it. The cost is a popup that
+starts out looking like something already on screen: its copy plays `enter` over the
+original and flickers. To skip the pose, leave it out, or decide it by a value:
+`enter: still ? none : fade`, or `enter { x: still ? 50 : 200 }` with the node's own
+`x` (50) when `still`; either way, with `still` true as the popup opens, it shows at
+rest from its first frame. No new syntax. Proof, a throwaway run with a card in a
+popup opened twice: `enter { x: 200 }` 14 frames at each open; `enter: none`, and each
+form above with `still` true, 1 frame; with `still` false 14 and 15 frames.

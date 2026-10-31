@@ -204,6 +204,12 @@ springs to its real size and full opacity. When it goes, it plays the
 same pose in reverse before it is removed: `exit` mirrors `enter`
 unless you write an `exit { … }` block of its own.
 
+What is in a `popup` mounts each time it opens, so its `enter` poses play
+at every open. That is what makes a stagger on open work. If a popup
+starts out looking like something already on screen, the pose shows as a
+flicker: leave it out, or skip it by a value with `enter: still ? none :
+fade`.
+
 **`value: <-> audio.sink.volume`** is the same two-way binding as the
 popup's: the slider shows the volume and writes it when dragged. A
 slider runs from 0 to 1, as the volume does. For a value with other
