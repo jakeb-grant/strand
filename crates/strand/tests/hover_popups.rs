@@ -1167,3 +1167,38 @@ fn a_click_on_a_hit_none_panels_empty_area_reaches_what_is_behind() {
         "the one behind is as it was"
     );
 }
+
+/// A hover popup whose card has a `shadow`, over a panel that springs to fit,
+/// as the owner's island had it when its popup would not open (NOTES #3).
+/// Never reproduced, on sway: this holds what was tried (decisions.md
+/// shadow-popup).
+const SHADOWED: &str = r#"
+panel Island {
+  anchor: top; margin: 6, 0, 0
+  size: auto ~ spring(400, 0.8)
+  box { width: 200; height: 30; bg: #ff0000; radius: 15
+    popup { trigger: hover; delay: 120ms; margin: -30, 0, 0
+      box { width: 300; height: 100; bg: #00ff00; radius: 12
+            shadow: 0 6px 18px #00000080 }
+    }
+  }
+}
+"#;
+
+#[test]
+fn a_shadow_on_a_hover_popups_card_leaves_it_opening_and_closing() {
+    let Some(mut sh) = start("shadowed", SHADOWED) else {
+        return;
+    };
+    sh.wait("the pill", |one, _| one.region(ITEM_A, 2000));
+    let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+    pointer.motion(640, 20, LW, LH);
+    sh.wait("the card opened", |one, _| one.region(ISLAND_A, 5000));
+    pointer.motion(100, 500, LW, LH);
+    sh.wait("the card closed", |one, _| {
+        one.region(ISLAND_A, 1).is_none().then_some(())
+    });
+    sh.wait("the pill again", |one, _| one.region(ITEM_A, 2000));
+    pointer.motion(640, 20, LW, LH);
+    sh.wait("and opened again", |one, _| one.region(ISLAND_A, 5000));
+}

@@ -14442,3 +14442,16 @@ first value snaps in rather than springing. Through a value passed elsewhere, wh
 the read is not followed, a size is still measured from the first read. Proof:
 `a_width_first_read_as_a_popup_mounts_is_already_known`,
 `only_what_is_read_is_measured`.
+
+## shadow-popup
+
+**2026-10-30 · shadow-popup: not reproduced, nothing changed.** The owner's notes
+have a `shadow` on a card stopping its hover popup from opening, with no error, from
+one test on an island since rebuilt without a popup. On headless sway at scale 1.5,
+with a virtual pointer gliding in, more than 40 shells opened and closed every time: the panel springing to fit or plain; the popup over, above or
+touching its anchor; a delay of 120 ms; a shadow on nothing, the card, the popup's root, the pill or all
+of them, one with a 20 px spread and an 80 px blur; the popup on an inner child; the
+card clipped, its size read from the anchor, or posed with `enter`. Nothing in the
+code connects a shadow to a popup's opening: it widens the buffer (the overhang) and
+what is painted, not what takes input. Hyprland was not tried and may be where it happened. So no fix, only a test
+that holds the shape: `a_shadow_on_a_hover_popups_card_leaves_it_opening_and_closing`.
