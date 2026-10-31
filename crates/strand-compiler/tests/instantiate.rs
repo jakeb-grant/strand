@@ -5909,3 +5909,48 @@ fn graph_and_range_props_reach_the_scene() {
         ]))
     );
 }
+
+/// A declaration read before its own line is checked at that read. Reaching
+/// its line must leave it checked: it went back to `Checking` for good, so
+/// every read after that had an error type, reported nowhere, and a method
+/// call on it lowered to null: `bg: b` drew nothing, with 0 errors.
+#[test]
+fn a_declaration_read_before_its_line_keeps_its_type() {
+    let shown = "panel P { anchor: top; size: 40; box { size: 24; bg: b } }\n";
+    let mut blank = Vec::new();
+    for (case, source, bg) in [
+        (
+            "a parameter's default",
+            "let base = #80a0ff\nlet a = base.alpha(0.7)\nlet b = base.alpha(0.3)\n\
+             component Unused(c: color = a) { box { size: 24; bg: c } }\n",
+            "bg=#80a0ff4d",
+        ),
+        (
+            "a default naming the base",
+            "let base = #80a0ff\nlet b = base.alpha(0.3)\n\
+             component Unused(c: color = base) { box { size: 24; bg: c } }\n",
+            "bg=#80a0ff4d",
+        ),
+        (
+            "an earlier let",
+            "let a = base.alpha(0.7)\nlet base = #80a0ff\nlet b = base.alpha(0.3)\n",
+            "bg=#80a0ff4d",
+        ),
+        (
+            "a state",
+            "let a = base.alpha(0.7)\nstate base = #80a0ff\nlet b = base.alpha(0.3)\n",
+            "bg=#80a0ff4d",
+        ),
+        (
+            "a fn",
+            "let a = base().alpha(0.7)\nfn base() { #80a0ff }\nlet b = base().alpha(0.3)\n",
+            "bg=#80a0ff4d",
+        ),
+    ] {
+        let s = boot(&[("a.strand", &format!("{source}{shown}"))], |_, _| {});
+        if !s.scene.render().contains(bg) {
+            blank.push(case);
+        }
+    }
+    assert!(blank.is_empty(), "drew nothing, read after: {blank:?}");
+}

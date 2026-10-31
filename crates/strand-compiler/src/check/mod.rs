@@ -962,6 +962,11 @@ impl<'a> Checker<'a> {
     }
 
     fn force_now(&mut self, id: DefId) {
+        // Only a pending one: a declaration read before its own line is
+        // `Done` when its line asks again, and has to stay so.
+        if !matches!(self.lazy[id.0 as usize], LazyState::Pending(_)) {
+            return;
+        }
         let LazyState::Pending(p) =
             std::mem::replace(&mut self.lazy[id.0 as usize], LazyState::Checking)
         else {

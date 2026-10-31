@@ -14811,3 +14811,16 @@ monitor's behaviour is the owner's session to confirm. Numbers: benchmarks.md "P
 Hyprland". Proof: `mailbox_is_taken_where_the_driver_has_it`;
 `a_commit_on_a_powered_off_output_stops_no_other_surface_on_fifo` keeps the fallback tested;
 the freeze only shows on Hyprland, which no repo test reaches.
+
+## read-before-line
+
+2026-10-31. A `let`, `state` or `fn` read before its own line is checked at that read, and its
+line then asks for it again through `take_done`. `force_now` swapped the state to `Checking`
+before looking at it, so a declaration already `Done` stayed `Checking` for good, and each read
+after that got `Ty::Error` from `def_ty`, whose cycle report says nothing when the declaration
+is not on the stack. An error type reports nothing further, so `let b = base.alpha(0.3)` after
+`let a = base.alpha(0.7)` and a default `c: color = a` lowered `b` to null: nothing drawn and 0
+errors from `strand check`. A default was only the commonest way in, since signatures are checked
+before any line: an earlier `let` reading a later one does the same. `force_now` now leaves
+anything but `Pending` alone. Proof: `a_declaration_read_before_its_line_keeps_its_type`, five
+ways in, all seen failing without the fix.
