@@ -551,3 +551,77 @@ fn a_spanned_panel_follows_its_outputs_mode_and_scale() {
     // The other output was left alone.
     desk.panel_is("HEADLESS-1", 1280);
 }
+
+/// Sets HEADLESS-2's mode and scale.
+fn set_mode(desk: &Desk, width: &str, height: &str, scale: &str) {
+    swaymsg(
+        &desk.sock,
+        &[
+            "output",
+            "HEADLESS-2",
+            "resolution",
+            &format!("{width}x{height}"),
+            "scale",
+            scale,
+        ],
+    );
+}
+
+/// (output-change) A spanned panel, as its output shrinks and grows again.
+#[test]
+fn a_spanned_panel_shrinks_and_grows_with_its_output() {
+    let Some(mut desk) = start("spsh", SPANNED, "HEADLESS-1", true) else {
+        return;
+    };
+    desk.panel_is("HEADLESS-2", 1600);
+    set_mode(&desk, "2560", "1440", "1");
+    desk.panel_is("HEADLESS-2", 2560);
+    set_mode(&desk, "2560", "1440", "1.5");
+    desk.panel_is("HEADLESS-2", 1706);
+    set_mode(&desk, "1280", "720", "1");
+    desk.panel_is("HEADLESS-2", 1280);
+    set_mode(&desk, "2560", "1440", "1");
+    desk.panel_is("HEADLESS-2", 2560);
+    desk.panel_is("HEADLESS-1", 1280);
+}
+
+/// (output-change) A panel wider than its output is capped to the output as
+/// it is now, not as it was when the panel was made: it follows the output
+/// down and, up to what it asks for, back up.
+fn a_wide_panel_follows(name: &str, shell: &str) {
+    let Some(mut desk) = start(name, shell, "HEADLESS-1", true) else {
+        return;
+    };
+    desk.panel_is("HEADLESS-2", 1600);
+    set_mode(&desk, "2560", "1440", "1");
+    desk.panel_is("HEADLESS-2", 2000);
+    set_mode(&desk, "2560", "1440", "1.5");
+    desk.panel_is("HEADLESS-2", 1706);
+    set_mode(&desk, "1280", "720", "1");
+    desk.panel_is("HEADLESS-2", 1280);
+    set_mode(&desk, "2560", "1440", "1");
+    desk.panel_is("HEADLESS-2", 2000);
+    desk.panel_is("HEADLESS-1", 1280);
+}
+
+#[test]
+fn a_content_sized_panel_is_capped_to_its_output_as_it_changes() {
+    a_wide_panel_follows(
+        "wide",
+        r#"
+panel Wide { screens: all; anchor: top_left; size: auto
+  box { width: 2000; height: 40; bg: #222222 }
+}
+"#,
+    );
+}
+
+#[test]
+fn a_fixed_panel_is_capped_to_its_output_as_it_changes() {
+    a_wide_panel_follows(
+        "fixed",
+        r#"
+panel Wide { screens: all; anchor: top_left; width: 2000; height: 40; bg: #222222 }
+"#,
+    );
+}

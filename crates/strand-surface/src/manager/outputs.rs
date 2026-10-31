@@ -196,6 +196,10 @@ impl<H: SurfaceHost + 'static> OutputHandler for State<H> {
         } else if let Some(monitor) = self.monitors.set_geometry(global, output_geometry(&info)) {
             self.rescale_unshown_on(global);
             self.host.monitor_changed(&monitor);
+            // (output-change) A layer surface is fitted to its output when
+            // its config is made, and no spec need change with the output:
+            // what it was fitted to is out of date, up or down.
+            self.refit_layers_on(&monitor.id);
             self.place_layers_on(&monitor.id);
         }
     }

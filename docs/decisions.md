@@ -14368,18 +14368,31 @@ Half a logical pixel counts as the top. Only a `list` follows a row, so a plain
 
 ## output-change
 
-**2026-10-30 · output-change: an output's change reaches the surfaces on it.**
-A surface learned its output's size when it entered that output and never again,
-so one made just before its output's mode and scale settled (sway's
-`create_output` then `output … scale`; a monitor being plugged in) kept the width
-it had asked for, 1920 on an output of 1706 logical pixels, and, once its content
-changed and the surface manager capped the old width to the output, 1762: the
-output plus the shadow's overhang. `Host::monitor_changed` now gives the renderer
-the new bounds for every surface on that output, as entering it does; a window
-keeps the bounds its configure told. The width comes from those bounds, so the
-fix does not touch `LayerConfig::fit`. Proof:
-`a_spanned_panel_follows_its_outputs_mode_and_scale`, with the numbers above seen
-failing first on sway; Hyprland was not run.
+**2026-10-31 · output-change: an output's change reaches the surfaces on it.**
+Two things were fitted to an output once and never again. The renderer's bounds
+were set when a surface entered its output, so one made just before its output's
+mode and scale settled (sway's `create_output` then `output … scale`; a monitor
+being plugged in) kept the width it had asked for, 1920 on an output of 1706
+logical pixels, and, once its content changed, 1762: the output plus the shadow's
+overhang. `Host::monitor_changed` now gives the renderer the new bounds for every
+surface on that output, as entering it does; a window keeps the bounds its
+configure told. That alone suits only a spanned panel, whose spec is computed from
+those bounds. The surface manager fits a layer surface's config to its output
+(`LayerConfig::fit`) only when it makes the config, and it remade one only when the
+spec changed; a panel asking for more than its output has (`size: auto` over a box
+2000 wide, or `width: 2000`) asks for the same whatever the output does, so it kept
+the old fit: 1600 wide on an output now 2560, and 1600 on one now 1280. So the
+manager fits again every layer surface on an output when that output's geometry
+changes (`refit_layers_on`), which covers `panel`, `bar` and `osd` alike. A `window`
+and a `lock` take their size from the compositor's configure. A `popup` has no fit
+at all, on any output, new or changed: its positioner asks for the whole of its spec
+(2000 on an output of 1600, fresh) and the compositor constrains it, so this does
+not touch it. Proof, on sway, up and down:
+`a_content_sized_panel_is_capped_to_its_output_as_it_changes`,
+`a_fixed_panel_is_capped_to_its_output_as_it_changes`,
+`a_spanned_panel_shrinks_and_grows_with_its_output`,
+`a_spanned_panel_follows_its_outputs_mode_and_scale`. A surface the GPU thread
+presents was not run through this; Hyprland was not run.
 
 ## still-pointer
 
