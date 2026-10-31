@@ -2551,3 +2551,58 @@ fn a_layer_surface_buffer_stays_inside_its_anchored_edges() {
     let row = rect(&r, inner);
     approx(row, (4.0, 4.0, 1280.0 - 8.0, 36.0));
 }
+
+/// (still-pointer) What a still pointer costs: a surface with no pointer on
+/// it never checks its hit boxes, one whose frames move nothing under the
+/// pointer finds nothing to route, and only hit boxes that moved ask for
+/// routing, once a frame that moved them.
+#[test]
+fn only_hit_boxes_that_moved_under_the_pointer_ask_for_routing() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![(Prop::Width, num(100.0)), (Prop::Height, num(100.0))],
+    );
+    let row = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![(Prop::Width, num(100.0)), (Prop::Height, num(40.0))],
+    );
+    let (mut r, mut buf) = show(b.diff, root, 100, 100, Scale::ONE);
+    let id = S;
+    let t0 = std::time::Duration::from_secs(1);
+    let mut paint_all = |r: &mut strand_render::Renderer, k: &mut u64| {
+        while r.wants_frame(id) && *k < 400 {
+            *k += 1;
+            buf.paint_at(r, id, 1, t0 + std::time::Duration::from_micros(16_667 * *k));
+        }
+    };
+    let mut k = 0;
+    paint_all(&mut r, &mut k);
+    assert!(!r.take_hits_moved(id), "no pointer on it");
+
+    // No pointer: the box moves and nothing asks.
+    let mut d = Builder::default();
+    d.diff.set(row, Prop::Height, num(50.0));
+    assert!(r.apply(d.diff).is_empty());
+    paint_all(&mut r, &mut k);
+    assert!(!r.take_hits_moved(id), "no pointer, no check");
+
+    // A pointer on it: a colour changes, the boxes do not.
+    r.set_pointer(id, Some(LogicalPoint::new(10.0, 10.0)));
+    let mut d = Builder::default();
+    d.diff.set(row, Prop::Bg, color("#ff0000"));
+    assert!(r.apply(d.diff).is_empty());
+    paint_all(&mut r, &mut k);
+    assert!(k > 0);
+    assert!(!r.take_hits_moved(id), "nothing moved under it");
+
+    // A box moves: it asks, once.
+    let mut d = Builder::default();
+    d.diff.set(row, Prop::Height, num(60.0));
+    assert!(r.apply(d.diff).is_empty());
+    paint_all(&mut r, &mut k);
+    assert!(r.take_hits_moved(id), "it moved");
+    assert!(!r.take_hits_moved(id), "taken");
+}

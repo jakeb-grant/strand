@@ -14380,3 +14380,25 @@ keeps the bounds its configure told. The width comes from those bounds, so the
 fix does not touch `LayerConfig::fit`. Proof:
 `a_spanned_panel_follows_its_outputs_mode_and_scale`, with the numbers above seen
 failing first on sway; Hyprland was not run.
+
+## still-pointer
+
+**2026-10-30 · still-pointer: hover and the cursor follow content moving under
+a pointer that stays still.** spec.md 6.3 says `hover` is true while the pointer
+is over a node, and `self.pointer` already followed a node moving under a still
+pointer; `hover` and the cursor did not, and stayed on the row last moved over
+until the next motion, though a click hit the right row because it tests again.
+So `host_loop::painted`, the one reaction every host runs, routes the pointer
+again when the frame just painted moved the surface's hit boxes (`Router::repoint`).
+It costs a surface nothing with no pointer on it, it never wakes anything or
+paints a frame of its own, and the compare replaces the copy of the hit boxes
+each frame made, so equal boxes cost less than before; only a frame that moved
+a box tests the point. A held press keeps its chain, as motion does. Rejected:
+routing on every paint, which allocates a chain for a waveform that moves
+nothing; marking each thing that can move a box (scroll, layout, spring, row
+gone), which is many places and easy to miss one. A node that moves itself off
+a still pointer when hovered now flickers its `hover`, as in CSS: its author
+reads a parent that stays put, as for `pointer`. Proof:
+`hover_and_the_cursor_follow_rows_moving_under_a_still_pointer`,
+`a_held_press_keeps_hover_when_rows_move_under_it`,
+`only_hit_boxes_that_moved_under_the_pointer_ask_for_routing`.

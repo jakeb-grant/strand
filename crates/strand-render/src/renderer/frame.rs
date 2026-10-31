@@ -802,7 +802,13 @@ impl Renderer {
         );
         s.records = f.records.clone();
         s.order.clone_from(&f.order);
-        s.hits = f.hits.clone();
+        // (still-pointer) Hit boxes that moved under a pointer on this
+        // surface: the frame's reaction routes it again. Compared in place
+        // of the copy that equal boxes no longer need.
+        if s.hits != f.hits {
+            s.hits_moved |= self.extras.pointers.contains_key(&s.root);
+            s.hits.clone_from(&f.hits);
+        }
         // (eval-sandbox) Every paint, empty damage included.
         #[cfg(feature = "eval-hooks")]
         self.probe.frame(

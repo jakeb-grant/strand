@@ -925,6 +925,14 @@ monitor, the keyboard always).
   compositor may wait for the next motion to say so; decisions.md
   m6-owner-fixes). Over any other surface (a sibling popup, another
   bar) the pointer is the compositor's until it moves.
+- `hover` and the cursor follow what is under the pointer as the last
+  frame drew it, also when what moved is the content and not the
+  pointer (a list scrolled, a row closed, an animation), a frame later
+  at most. A press held keeps the node it went down on. A node that
+  moves itself off the pointer when hovered loses its `hover` and comes
+  back, as in CSS. A surface pays for this only with the pointer on it,
+  and only a frame that moved a hit box routes it again.
+  (decisions.md still-pointer)
 - **`trigger: hover`** on a `popup` gives its open state to the pointer.
   It opens while the pointer is on the element it is anchored to, after
   its `delay` (none by default). It stays open while the pointer is on

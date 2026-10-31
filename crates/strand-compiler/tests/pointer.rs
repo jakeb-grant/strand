@@ -228,3 +228,74 @@ fn pointer_is_null_off_the_node_and_once_a_frame() {
     sh.move_to(600.0, 600.0);
     assert_eq!(at(&sh), (-1.0, -1.0));
 }
+
+/// (still-pointer) Rows that move under a pointer that stays still: `hover`
+/// and the cursor follow what is under it (spec.md 6.3), where they stayed
+/// on the row it last moved over until it moved again. Clicks always landed
+/// right; a held press keeps its chain.
+const ROWS: &str = r#"
+export state over = -1
+export state gone = false
+export state clicked = -1
+panel P { width: 100; height: 100; anchor: top_left
+  list { height: 100
+    for i in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] key i {
+      if i > 0 || !gone {
+        box { height: 40; cursor: i % 2 == 0 ? pointer : crosshair
+          on change self.hover { if self.hover { over = i } }
+          on click { clicked = i }
+        }
+      }
+    }
+  }
+}
+"#;
+
+#[test]
+fn hover_and_the_cursor_follow_rows_moving_under_a_still_pointer() {
+    use strand_scene::CursorShape;
+    let mut sh = Shell::new(ROWS);
+    let id = sh.surface("P").id;
+    sh.move_to(50.0, 10.0);
+    sh.settle();
+    assert_eq!(sh.num("over"), 0.0);
+    assert_eq!(sh.r.cursor(id), CursorShape::Pointer);
+    // A wheel moves the list 45 px: row 1 is under the pointer, which has
+    // not moved.
+    sh.wheel(0.0, 3.0);
+    sh.settle();
+    assert_eq!(sh.num("over"), 1.0, "hover follows a scrolled list");
+    assert_eq!(sh.r.cursor(id), CursorShape::Crosshair, "and the cursor");
+    // The click agrees.
+    sh.button(true);
+    sh.button(false);
+    sh.settle();
+    assert_eq!(sh.num("clicked"), 1.0);
+    // Back to the top, then the first row goes: the next takes its place.
+    sh.wheel(0.0, -3.0);
+    sh.settle();
+    assert_eq!(sh.num("over"), 0.0);
+    sh.set("gone", strand_compiler::vm::value::Value::Bool(true));
+    sh.settle();
+    assert_eq!(sh.num("over"), 1.0, "hover follows a row that closed");
+    assert_eq!(sh.r.cursor(id), CursorShape::Crosshair);
+}
+
+/// (still-pointer) A press held on a node keeps its `hover` and cursor
+/// while what is under the pointer moves.
+#[test]
+fn a_held_press_keeps_hover_when_rows_move_under_it() {
+    let mut sh = Shell::new(ROWS);
+    sh.move_to(50.0, 10.0);
+    sh.settle();
+    sh.button(true);
+    sh.wheel(0.0, 3.0);
+    sh.settle();
+    assert_eq!(sh.num("over"), 0.0, "the pressed row stays hovered");
+    // Released, the pointer is on what is under it now.
+    sh.button(false);
+    sh.settle();
+    sh.wheel(0.0, 3.0);
+    sh.settle();
+    assert_eq!(sh.num("over"), 2.0);
+}

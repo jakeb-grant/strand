@@ -384,7 +384,7 @@ pub struct Flattened {
 /// `rotate` the box is in the node's untransformed space and `inverse`
 /// maps a surface point into it, so a rotated pill is hit on its rounded
 /// shape, not its bounding box.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct HitBox {
     pub node: NodeId,
     pub rect: kurbo::Rect,

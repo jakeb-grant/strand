@@ -37,6 +37,8 @@ pub enum Cause<'a> {
     Tick,
     /// [`Router::handle`] of this event.
     Input(&'a InputEvent),
+    /// [`Router::repoint`]: a frame moved what is under a still pointer.
+    Repoint,
 }
 
 /// A host's side of the reactions: the renderer and router it owns, and
@@ -239,13 +241,42 @@ pub fn detached<H: LoopHost>(h: &mut H, surface: SurfaceId) -> Result<(), H::Err
     tick(h)
 }
 
-/// `surface`'s frame was painted: its layout facts go, then the host's
-/// own after-paint work, and changes the paint left (an exit that ended
-/// closes or shrinks a surface) wake the loop.
+/// `surface`'s frame was painted: if it moved what is under a still
+/// pointer, the pointer is routed again; its layout facts go, then the
+/// host's own after-paint work, and changes the paint left (an exit that
+/// ended closes or shrinks a surface) wake the loop.
 pub fn painted<H: LoopHost>(h: &mut H, surface: SurfaceId) -> Result<(), H::Error> {
+    repoint(h, surface)?;
     h.facts()?;
     h.after_paint(surface)?;
     wake_if_changed(h)
+}
+
+/// (still-pointer) A frame moved `surface`'s hit boxes under the pointer:
+/// hover, `pointer` and the cursor follow what is there now. The loop wakes
+/// when that changed, for a cursor no diff would otherwise bring.
+fn repoint<H: LoopHost>(h: &mut H, surface: SurfaceId) -> Result<(), H::Error> {
+    let (r, router) = h.parts();
+    let Some(router) = router else {
+        return Ok(());
+    };
+    if !r.take_hits_moved(surface) {
+        return Ok(());
+    }
+    let intents = router.repoint(surface, r);
+    if intents.is_empty() {
+        return Ok(());
+    }
+    r.pointer_input(
+        surface,
+        router.pointer(surface),
+        router.hovered(surface),
+        router.left_held(surface),
+    );
+    h.facts()?;
+    h.intents(Cause::Repoint, intents)?;
+    input_wake(h);
+    h.wake()
 }
 
 /// The router ticks, its intents go, and its next wake is the renderer's.

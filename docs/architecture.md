@@ -1077,7 +1077,9 @@ is being saved, so the idle-wakeup windows hold.
   main thread (`crates/strand/src/demo`) and the eval driver
   (`eval/src/harness.rs`) both run behind `host_loop::LoopHost`; no host
   takes them by hand outside tests (`eval/tests/drift.rs`). The router
-  side: `Router::tick` before `update` on every wake, and
+  side: `Router::tick` before `update` on every wake, `Router::repoint`
+  in `painted` when `Renderer::take_hits_moved` says the frame moved
+  hit boxes under the pointer (decisions.md still-pointer), and
   `Renderer::set_input_wake(Router::next_wake())` after routing.
   0. After each `apply`, drain `take_surface_changes()` into the surface
      manager: create per matching output for `Created`, reconfigure or

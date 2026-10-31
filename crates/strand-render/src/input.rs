@@ -1161,6 +1161,30 @@ impl Router {
         self.flush(scene)
     }
 
+    /// (still-pointer) What is under the still pointer on `surface` may
+    /// have changed (a scrolled list, a row gone, an animation): its hover
+    /// follows the frame just painted, as if the pointer had moved. A held
+    /// press keeps the chain it went down on, and pick mode's pointer is
+    /// the inspector's. Returns what logic hears of it, nothing when the
+    /// same chain is under it.
+    pub fn repoint(&mut self, surface: SurfaceId, scene: &mut dyn InputScene) -> Vec<Intent> {
+        let (Some(&root), Some(&at)) = (self.surfaces.get(&surface), self.pointer.get(&surface))
+        else {
+            return Vec::new();
+        };
+        if self.picking || self.pressed.contains_key(&surface) {
+            return Vec::new();
+        }
+        let hit = scene.hit(surface, at);
+        let now = if hit.is_empty() { vec![root] } else { hit };
+        if self.hovered(surface) == now.as_slice() {
+            return Vec::new();
+        }
+        self.prune(scene.tree());
+        self.hover(surface, now);
+        self.flush(scene)
+    }
+
     /// (flex) Reactive `focus:`: a node whose `focus:` turned true takes
     /// the keyboard focus of its surface, if that surface has the
     /// keyboard (one that has not yet takes its first `focus: true` node
