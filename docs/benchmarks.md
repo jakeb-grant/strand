@@ -376,7 +376,7 @@ report: `main` at 091c7f64 measured 26,207,698 B (GPU) and 22,218,514 B
 (CPU-only) in GitHub CI's budgets job (run 39691736543), and the gates
 are 26,738,688 and 22,806,528 B (decisions.md growth); services-round
 re-based them to 28,311,552 and 24,379,392 B (decisions.md
-services-round).
+services-round), and wave-cost to 29,097,984 and 24,903,680 B.
 
 No idle-wakeup window in budgets.rs changed: nothing records on a timer,
 and the `strand-report` thread lives only while a report is written.

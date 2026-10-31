@@ -122,8 +122,8 @@ blocking-pool thread 500 ms after its last task
 (`client::BLOCKING_KEEP_ALIVE`). The memory budget rests on the root
 `Cargo.toml`'s `[profile.release.package]` opt-levels (decisions.md
 m5-speed-profile), which packagers' profiles do not carry, so packages
-build from the workspace. `budgets.rs` holds `.text` to 28,311,552 B
-(24,379,392 B without the GPU backend; re-bases are dated decisions.md
+build from the workspace. `budgets.rs` holds `.text` to 29,097,984 B
+(24,903,680 B without the GPU backend; re-bases are dated decisions.md
 entries). Every program strand starts gets back the inherited THP
 setting (`strand_services::child`).
 
@@ -2340,9 +2340,9 @@ watch`, and keeps it for `strand report` and the inspector.
 **Budgets and tests.**
 
 - `.text` (`strand/tests/budgets.rs`, `TEXT_GATE_GPU`/`TEXT_GATE_CPU`):
-  the default build at most 28,311,552 B, `--no-default-features` at
-  most 24,379,392 B (decisions.md services-round, 2026-10-24, which
-  records each earlier re-base).
+  the default build at most 29,097,984 B, `--no-default-features` at
+  most 24,903,680 B (decisions.md wave-cost, 2026-10-30; services-round,
+  2026-10-24, records each earlier re-base).
 - Memory (`budgets.rs`), two legs since the device is warm wherever one
   can start (decisions.md gpu-first). Warm, under `STRAND_REQUIRE_GPU=1`
   with lavapipe: the bar warns above 242 MiB and fails above 252 MiB,

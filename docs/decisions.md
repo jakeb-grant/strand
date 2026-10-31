@@ -14345,3 +14345,11 @@ spanned axis no longer takes that test. Of the rest, 25 scenarios differ only by
 where a wider surface starts (their on-screen boxes match within rounding), 13
 differ by at most a pixel where a spring lands, and `damage-fraction` plays one
 tick earlier because its surface no longer waits for a resize. All are approved.
+
+**2026-10-30 · The `.text` gates re-based on wave-cost's tree.** The freeze,
+kept-size and waveform work brought the GPU build to 28,326,103 B in the
+container, 14,551 B over its gate, and the CPU-only build to 24,284,183 B. The
+gates follow by the usual rule (measurement plus a 512 KiB reserve, rounded up
+to 256 KiB, CI about 48 KB above the container): GPU 29,097,984 B (111 × 256 KiB)
+and CPU-only 24,903,680 B (95 × 256 KiB). Proof:
+`the_release_binary_code_stays_within_its_gate`.

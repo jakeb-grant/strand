@@ -2593,8 +2593,9 @@ fn the_ledger_half_reads_size_delta_baseline_and_gate() {
 /// reserve, decisions.md m6-integration-w1), 22,806,528 B from M5 wave 2's re-base (decisions.md
 /// m5-integration-w2), 22,282,240 B after the speed review (decisions.md
 /// m5-speed) and 18.5 MiB before it.
-const TEXT_GATE_GPU: u64 = 28_311_552;
-/// `.text` of the CPU-only release build: 24,379,392 B (93 × 256 KiB):
+const TEXT_GATE_GPU: u64 = 29_097_984;
+/// `.text` of the CPU-only release build: 24,903,680 B (95 × 256 KiB; before
+/// it 24,379,392 B, 93 × 256 KiB; decisions.md wave-cost):
 /// services-round's tree measured 23,581,207 B in the container suite
 /// (`main` at 294970c8 22,508,247 B; S1 and S2 +807,168 B, S3 +265,792
 /// B), plus a 512 KiB reserve over CI's runner, rounded up to 256 KiB
@@ -2614,7 +2615,7 @@ const TEXT_GATE_GPU: u64 = 28_311_552;
 /// after the speed review (decisions.md m5-speed) and 15,859,712 B
 /// before it. The gate catches accidental growth, never caps a feature:
 /// a deliberate choice re-bases it with its measured reason.
-const TEXT_GATE_CPU: u64 = 24_379_392;
+const TEXT_GATE_CPU: u64 = 24_903_680;
 /// The lock's fault injection never ships (decisions.md, m4-lock-w2):
 /// the `faults` feature's `STRAND_FAULT` points are not in the binary a
 /// default build makes, in the dev profile here and in release in CI's
