@@ -91,8 +91,11 @@ impl<H: SurfaceHost + 'static> State<H> {
                 layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
             }
             s.config = config;
-            // (M4) A handed-off surface's next present applies it.
-            if !self.gpu.has(id) {
+            // (M4) A handed-off surface's next present applies it, and
+            // (presented-quiet) the host asks for one if no frame is coming.
+            if self.gpu.has(id) {
+                self.gpu.owe_commit(id);
+            } else {
                 layer.commit();
                 s.stats.bare_commits += 1;
                 self.stats.bare_commits += 1;

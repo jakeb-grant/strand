@@ -94,6 +94,8 @@ mod host {
         /// The sent frame's size and scale, for its `damage` log line
         /// once presented.
         sent: Option<(Size, Scale)>,
+        /// When a paint last sent nothing (decisions.md presented-quiet).
+        drew_nothing: Option<std::time::Instant>,
     }
 
     /// A surface attached (asked or answered).
@@ -235,6 +237,10 @@ mod host {
                 self.change(state, change);
             }
             for r in state.host_mut().renderer.take_gpu_requests() {
+                // It commits whatever the manager left pending.
+                if let GpuRequest::Commit(id) = &r {
+                    state.take_owed_commit(*id);
+                }
                 self.send(r);
             }
             self.present(state);
@@ -305,6 +311,13 @@ mod host {
         /// whatever woke the loop next: the launcher's mode switches that
         /// change its size froze for about 0.5 s (the allocator's trim
         /// timer) on the GPU, with every frame of the morph after it late.
+        ///
+        /// (presented-quiet) A presented surface that wants a frame now, with
+        /// none in flight, has no reply coming and no hold left to wake the
+        /// loop (a deadline that lapsed before this read it): it is painted
+        /// at once, or, if its last paint sent nothing, a refresh after that
+        /// one, so a surface that keeps wanting frames and drawing nothing
+        /// is paced as a frame callback would pace it and never spins.
         pub(crate) fn wait(&self, renderer: &Renderer) -> Option<Duration> {
             let poll = (!self.exiting.is_empty()).then_some(JOIN_POLL);
             let now = std::time::Instant::now();
@@ -315,7 +328,20 @@ mod host {
                 .filter_map(|(id, _)| renderer.frame_deadline(*id))
                 .min()
                 .map(|t| t.saturating_duration_since(now));
-            [poll, held].into_iter().flatten().min()
+            let due = self
+                .presented
+                .iter()
+                .filter(|(id, p)| {
+                    !p.in_flight && self.attached.get(id).is_some_and(|a| !a.releasing)
+                })
+                .filter_map(|(id, p)| {
+                    let period = renderer.presented_due(*id)?;
+                    Some(p.drew_nothing.map_or(Duration::ZERO, |t| {
+                        (t + period).saturating_duration_since(now)
+                    }))
+                })
+                .min();
+            [poll, held, due].into_iter().flatten().min()
         }
 
         /// Delivers the thread's replies to render; true when one may
@@ -368,6 +394,7 @@ mod host {
                                     scale,
                                     in_flight: false,
                                     sent: None,
+                                    drew_nothing: None,
                                 },
                             );
                         }
@@ -498,18 +525,40 @@ mod host {
                     continue;
                 }
                 let r: &mut Renderer = &mut state.host_mut().renderer;
-                if let Some(frame) = r.paint_gpu(*id, now) {
+                let due = r.presented_due(*id).is_some();
+                let frame = if due { r.paint_gpu(*id, now) } else { None };
+                if let Some(frame) = frame {
                     let (size, scale) = (frame.size, frame.scale);
+                    // What follows a CPU frame follows this one too:
+                    // its regions, as pending state the present commits
+                    // (decisions.md gpu-regions), set before the thread
+                    // can present it; layout facts and list windows to
+                    // logic, fed nodes (its `damage` line waits for
+                    // `Presented`).
+                    state.sync_presented(*id);
+                    state.take_owed_commit(*id);
                     gpu.send(GpuRequest::Frame(frame));
                     p.in_flight = true;
                     p.sent = Some((size, scale));
-                    // What follows a CPU frame follows this one too:
-                    // its regions, as pending state the present commits
-                    // (decisions.md gpu-regions); layout facts and list
-                    // windows to logic, fed nodes (its `damage` line
-                    // waits for `Presented`).
-                    state.sync_presented(*id);
+                    p.drew_nothing = None;
                     state.host_mut().painted(*id, &Damage::full(size));
+                } else {
+                    if due {
+                        // (presented-quiet) It painted and drew nothing, so
+                        // nothing is sent and no `Presented` comes. All the
+                        // same that paint may have ended an exit or let a
+                        // shrink go, and moved hit boxes: what follows a
+                        // CPU's empty paint follows it.
+                        state.host().log_unsent(*id);
+                        p.drew_nothing = Some(std::time::Instant::now());
+                        state.sync_presented(*id);
+                        state.host_mut().painted(*id, &Damage::new());
+                    }
+                    // A CPU's empty paint carries its regions in a bare
+                    // commit. Only a present commits this surface.
+                    if state.take_owed_commit(*id) {
+                        gpu.send(GpuRequest::Commit(*id));
+                    }
                 }
             }
         }
@@ -741,6 +790,7 @@ mod host {
                     scale: Scale::ONE,
                     in_flight: false,
                     sent: None,
+                    drew_nothing: None,
                 },
             );
             let w = host.wait(&r).expect("woken at the hold's end");
@@ -752,6 +802,69 @@ mod host {
                 pr.in_flight = true;
             }
             assert_eq!(host.wait(&r), None, "in flight: its `Presented` wakes it");
+        }
+
+        /// (presented-quiet) A presented surface that wants a frame with none
+        /// in flight wakes the loop though no hold is left, or it would wait
+        /// for whatever woke it next: at once, or a refresh after a paint that
+        /// sent nothing. One that nothing can paint wakes nothing, so the loop
+        /// never spins on it.
+        #[test]
+        fn a_presented_surface_wanting_a_frame_always_has_a_wake() {
+            use strand_scene::{Backend, NodeId, NodeKind, Prop, PropValue, SceneDiff};
+            let (ping, _source) = calloop::ping::make_ping().unwrap();
+            let mut host = GpuHost::new(ping);
+            let font = std::fs::read(strand_text::test_font_path()).unwrap();
+            let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+                std::sync::Arc::new(font),
+            ]));
+            let mut r = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+            let p = NodeId::new(1, 0);
+            let mut d = SceneDiff::new();
+            d.create(p, NodeKind::Panel, None, u32::MAX);
+            d.set(p, Prop::Width, PropValue::Number(100.0));
+            d.set(p, Prop::Height, PropValue::Number(100.0));
+            r.apply(d);
+            let s = SurfaceId(5);
+            r.attach_surface(s, p);
+            r.configure_surface(s, Size::new(100, 100), Scale::ONE);
+            host.attached.insert(s, Attachment::default());
+            host.presented.insert(
+                s,
+                Presented {
+                    size: Size::new(100, 100),
+                    scale: Scale::ONE,
+                    in_flight: false,
+                    sent: None,
+                    drew_nothing: None,
+                },
+            );
+            assert_eq!(
+                host.wait(&r),
+                None,
+                "the CPU's: nothing for this host to do"
+            );
+            r.promote_now(s);
+            r.set_backend(s, Backend::GpuPresent);
+            assert_eq!(host.wait(&r), Some(Duration::ZERO), "wants one: at once");
+            let period = r.presented_due(s).unwrap();
+            host.presented.get_mut(&s).unwrap().drew_nothing = Some(std::time::Instant::now());
+            let w = host.wait(&r).expect("woken for the next");
+            assert!(w > Duration::ZERO && w <= period, "{w:?} of {period:?}");
+            host.presented.get_mut(&s).unwrap().drew_nothing =
+                Some(std::time::Instant::now() - period * 2);
+            assert_eq!(host.wait(&r), Some(Duration::ZERO), "long since: at once");
+            host.presented.get_mut(&s).unwrap().in_flight = true;
+            assert_eq!(host.wait(&r), None, "in flight: its `Presented` wakes it");
+            host.presented.get_mut(&s).unwrap().in_flight = false;
+            if let Some(a) = host.attached.get_mut(&s) {
+                a.releasing = true;
+            }
+            assert_eq!(
+                host.wait(&r),
+                None,
+                "going: no frame is sent after `Release`"
+            );
         }
 
         /// The run's exit ends the GPU thread before the surface manager

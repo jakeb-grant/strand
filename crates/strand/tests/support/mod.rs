@@ -89,6 +89,15 @@ pub mod pointer {
             self.queue.roundtrip(&mut Client).unwrap();
         }
 
+        /// The left button pressed where the pointer is, with no motion.
+        pub fn press_here(&mut self) {
+            self.time += 10;
+            self.pointer
+                .button(self.time, 0x110, wl_pointer::ButtonState::Pressed);
+            self.pointer.frame();
+            self.queue.roundtrip(&mut Client).unwrap();
+        }
+
         /// The left button released where the pointer is.
         pub fn release(&mut self) {
             self.time += 10;

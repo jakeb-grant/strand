@@ -127,7 +127,9 @@ impl<H: SurfaceHost + 'static> State<H> {
                 *asked = Some(ask);
                 s.config = new.as_layer();
                 s.geometry_dirty = true;
-                if !self.gpu.has(id) {
+                if self.gpu.has(id) {
+                    self.gpu.owe_commit(id);
+                } else {
                     popup.wl_surface().commit();
                     s.stats.bare_commits += 1;
                     self.stats.bare_commits += 1;
@@ -544,8 +546,11 @@ impl<H: SurfaceHost + 'static> State<H> {
             Keyboard::Exclusive => KeyboardInteractivity::Exclusive,
         });
         // (M4) A handed-off surface's next present applies it: the GPU
-        // thread is its only committer.
-        if !self.gpu.has(id) {
+        // thread is its only committer, and (presented-quiet) the host asks
+        // for one if no frame is coming.
+        if self.gpu.has(id) {
+            self.gpu.owe_commit(id);
+        } else {
             layer.commit();
             s.stats.bare_commits += 1;
             self.stats.bare_commits += 1;

@@ -159,7 +159,9 @@ impl Renderer {
     /// being dirty, so it asks for no frame until the layout arrives. One
     /// whose hit boxes differ (a `hit:` that changed) stays dirty: its next
     /// paint draws nothing and takes them, routing and the input region
-    /// with them, in a bare commit (decisions.md hit-through).
+    /// with them, in a bare commit, or on a surface the GPU thread presents
+    /// a present of its last frame (decisions.md hit-through,
+    /// presented-quiet).
     pub fn update(&mut self) {
         let now = Instant::now();
         if self.timer_due.is_some_and(|d| d <= now) {

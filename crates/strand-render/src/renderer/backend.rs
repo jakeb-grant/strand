@@ -1512,6 +1512,19 @@ impl Renderer {
         Some(Damage::full(target.size))
     }
 
+    /// (presented-quiet) Whether [`Renderer::paint_gpu`] would paint
+    /// `surface` now, and if so, its refresh period. Its paint may still
+    /// return no frame, when it draws nothing.
+    pub fn presented_due(&self, surface: SurfaceId) -> Option<Duration> {
+        (self.backend(surface) == Backend::GpuPresent
+            && self.wants(surface)
+            && self
+                .surfaces
+                .get(&surface)
+                .is_some_and(|s| !s.size.is_empty()))
+        .then(|| self.clocks.period(surface))
+    }
+
     /// (M4) The next frame of a `GpuPresent` surface, at `at` (the last
     /// present plus the output's refresh period), if it wants one: the
     /// host sends it to the GPU thread, which presents it. It is painted

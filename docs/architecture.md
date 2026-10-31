@@ -2288,7 +2288,10 @@ thread never waits on the GPU; `Pixels` marks the surface via
 `Renderer::deliver_gpu`. Present: the manager does not call `paint`;
 `Presented` is the frame callback and the binary sends
 `Renderer::paint_gpu(surface, at) -> Option<Frame>`. One frame in
-flight per surface.
+flight per surface. A paint that draws nothing returns no frame (wave-cost);
+`Renderer::presented_due(surface) -> Option<Duration>` says one is due, so
+the binary still runs the frame's reaction and gives the next one a wake
+(decisions.md presented-quiet).
 
 **Surface hand-off** (`strand-surface/src/gpu_handoff.rs`). One
 `wl_surface` moves between shm and the WSI; it is never recreated.
@@ -2306,9 +2309,11 @@ flight per surface.
   The manager stops attaching, frame callbacks and `paint`, but still
   handles configures (`surface_configured` → host sends `Resize`) and
   sets pending state without committing; `State::sync_presented`
-  (after each frame sent) sets that frame's opaque, input and blur
-  regions (decisions.md gpu-regions). Poses are painted into the GPU
-  frames, not delegated.
+  (after each paint, sent or not) sets that paint's opaque, input and
+  blur regions (decisions.md gpu-regions). What is pending with no frame
+  to carry it, `State::take_owed_commit(surface) -> bool` reports, and the
+  binary sends `GpuRequest::Commit` (decisions.md presented-quiet). Poses
+  are painted into the GPU frames, not delegated.
 - `State::take_back(surface)` after `Released` (or an `Attached {
   Readback }` for lent handles, or the thread's end) paints a full shm
   frame and resumes callbacks and pose delegation. Between `Release` and

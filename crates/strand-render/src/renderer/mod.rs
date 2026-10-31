@@ -948,13 +948,19 @@ impl Renderer {
         }
         // (m6-owner-fixes) A press held on a `trigger: hover` popup takes
         // its input region to its whole box (`input_region`): a frame
-        // commits it.
-        if changed
-            && flag == crate::Flag::Pressed
-            && (self.specs.get(&node).is_some_and(|sp| sp.hover_trigger) || self.hit_through(node))
-        {
+        // commits it. So on a surface whose region is its box alone (a
+        // spanned or kept-size panel), or a frame painted during the hold
+        // leaves the whole buffer taking clicks after the release.
+        if changed && flag == crate::Flag::Pressed {
+            let asks =
+                self.specs.get(&node).is_some_and(|sp| sp.hover_trigger) || self.hit_through(node);
             for s in self.surfaces.values_mut() {
-                if s.root == node {
+                if s.root == node
+                    && (asks
+                        || s.painted_regions
+                            .as_ref()
+                            .is_some_and(|p| p.placed.is_some()))
+                {
                     s.dirty = true;
                 }
             }

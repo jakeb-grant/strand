@@ -1110,7 +1110,9 @@ impl Renderer {
         let Some(s) = self.surfaces.get(&surface) else {
             return;
         };
-        if !s.animating || s.dirty {
+        // A time signal wants every frame with `animating` false: a presented
+        // frame of it that drew nothing still needs its next (below).
+        if (!s.animating && !self.clocks.wants(surface)) || s.dirty {
             return;
         }
         let root = s.root;

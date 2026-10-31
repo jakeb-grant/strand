@@ -14484,8 +14484,12 @@ not touch it. Proof, on sway, up and down:
 `a_content_sized_panel_is_capped_to_its_output_as_it_changes`,
 `a_fixed_panel_is_capped_to_its_output_as_it_changes`,
 `a_spanned_panel_shrinks_and_grows_with_its_output`,
-`a_spanned_panel_follows_its_outputs_mode_and_scale`. A surface the GPU thread
-presents was not run through this; Hyprland was not run.
+`a_spanned_panel_follows_its_outputs_mode_and_scale`, and for a surface the GPU
+thread presents, idle, whose config is all that changes (only a present commits it,
+so the host asks for one: presented-quiet),
+`a_presented_fixed_panel_is_capped_to_its_output_as_it_changes`,
+`a_presented_content_sized_panel_is_capped_to_its_output_as_it_changes`. Hyprland was
+not run.
 
 ## still-pointer
 
@@ -14496,8 +14500,9 @@ pointer; `hover` and the cursor did not, and stayed on the row last moved over
 until the next motion, though a click hit the right row because it tests again.
 So `host_loop::painted`, the one reaction every host runs, routes the pointer
 again when the frame just painted moved the surface's hit boxes (`Router::repoint`).
-It costs a surface nothing with no pointer on it, it never wakes anything or
-paints a frame of its own, and the compare replaces the copy of the hit boxes
+It costs a surface nothing with no pointer on it, it paints no frame of its own
+(when hover did change, it wakes the loop once, for a cursor no diff would otherwise
+bring, `host_loop::repoint`), and the compare replaces the copy of the hit boxes
 each frame made, so equal boxes cost less than before; only a frame that moved
 a box tests the point. A held press keeps its chain, as motion does. Rejected:
 routing on every paint, which allocates a chain for a waveform that moves
@@ -14514,20 +14519,23 @@ frame asked for every time), and any hover nudge has that edge. The rule: under 
 still pointer `hover` makes one move, from one innermost node to another, at most
 twice (`Router::repoint`, `STILL_MOVES`), and a third is refused, so the node keeps
 its hover. The count starts again when the pointer has moved, a wheel, button or key
-comes, or no hit box on the surface has moved for a second (`STILL_REST`). So the
+comes, or hover has made no move for a second (`STILL_REST`). So the
 lift flips on, off, on, off, on and rests lifted and hovered, whatever moved it (`y`,
 `x`, `scale`, `width`, a spring or `~ instant`), and everything that follows once in
 one direction is untouched: rows passing the same gap are different moves, a knob
 that slides away and back makes each move once, a wheel starts the count again. A
 node gone gives up its hover whatever its count. What it costs: a node moved away a
-third time with no second's rest and no input (a marquee going round faster than
-that under a pointer left on it) keeps its hover until the pointer moves; a click
-tests afresh and lands right. Twice, not once: a row that overshoots past a pointer
+third time with no second's rest between hover's moves and no input (a marquee going
+round so fast under a pointer left on it, or a box toggled away that fast and left
+there) keeps its hover until the pointer moves, or that node next moves after a rest; a
+click tests afresh and lands right. Twice, not once: a row that overshoots past a pointer
 near its edge makes its entering move twice and must end lit. Rejected: testing a
 hovered node against its box without its own offset, which ends only `x` and `y` and
 not `scale`, a size or a shell's own feedback; a time limit on the round trip, since
 a slow spring's trip outlasts any limit worth having, so the loop would remain; going
-back to hover only on motion, which is the bug this fixes. A surface whose region
+back to hover only on motion, which is the bug this fixes. (The review below narrows
+what the second measures; a lift's loop slower than a second between flips stays a
+slow flip.) A surface whose region
 moves with the lift (`hit: none` on its root) depends on what the compositor does
 when the region leaves the pointer, not on this rule; not run on one. Proof:
 `a_hover_lift_comes_to_rest`, seen failing without the rule;
@@ -14537,6 +14545,41 @@ when the region leaves the pointer, not on this rule; not run on one. Proof:
 `rows_passing_with_gaps_between_keep_hover_following`,
 `a_node_gone_gives_up_its_hover`; launcher-results-144, qs-pager-sliders-1_25,
 heldd-hover-scroll and docs-guide-3 keep their approved recordings.
+
+**2026-10-31 · still-pointer, the rest is hover's, not the surface's.** The second
+was measured by any hit box on the surface, so one element that never stops (a ticker
+100 px from the pointer, a marquee of its own) meant it never came: a box toggled away
+every 4 s stayed hovered from the third round on, and a `wave(30s)` marquee under the
+pointer changed hover 5 times in its first 30 s and never again. The count now rests
+when hover has made no move for a second, whatever else moves. That alone would let a
+resting lift start again a second later whenever a ticker's frame asked: so a refused
+move is remembered with its two nodes' hit boxes, and while both are as they were it is
+no move at all, and costs nothing but the look-up. A refused move whose nodes are still
+moving keeps the clock from resting, so a lift still settling after its refusal does
+not restart. What this gives up is the case that rule was written for, in one corner:
+a lift so slow that more than a second passes between two flips never rests, it goes
+on flipping at that pace. `spring(20, 0.7)` on a 10 px lift rests in five flips, which is
+slower than a shell would write; a limit by trips would hold a marquee too, which is what
+we are fixing. Proof, stepping the router's clock with the frames:
+`a_ticker_elsewhere_on_the_surface_does_not_hold_hover`,
+`a_slow_marquee_keeps_following_a_still_pointer`, seen failing without it;
+`a_hover_lift_comes_to_rest_beside_a_ticker`, with the earlier tests unchanged.
+
+**2026-10-31 · still-pointer, a surface moved under the pointer.** Routing again tested
+the point the compositor last gave, in the surface's own coordinates, and those move
+when a surface grows from its far edge: under a still pointer on a `top_right` panel
+that grew 200 px, the blue box stayed where it was on the screen and lost its hover to
+the red one 100 px from the pointer, for good, with no motion from sway to correct it.
+Where a surface lies is already derived (`set_origin`), so a change of origin now moves
+the stored point by as much, in the router (`Router::shift_pointer`) and in the manager
+(`SeatPointer::moved_under`, which a press or wheel with no motion is reported through,
+as it hit the wrong box too). It is not the pointer moving, so the count of moves
+stands. A compositor that does send a motion gives the same point, and it replaces
+ours. Rejected: skipping the routing on a frame whose size changed, which leaves hover
+on a node really moved away by that frame. Proof, on sway, seen failing without each
+half: `hover_stays_under_a_still_pointer_as_a_right_anchored_panel_grows`,
+`hover_stays_under_a_still_pointer_as_a_bottom_anchored_panel_grows`. Hyprland was not
+run.
 
 ## hit-through
 
@@ -14551,7 +14594,10 @@ popup's own older rule, left alone), because a box with `on click` must still ge
 its click. A `hit: none` on a child alone changes nothing past the surface: the
 root's own box is what lies below it, and a panel keeps its whole box unless its
 root says otherwise, so no existing shell starts losing clicks. A lock never takes
-it. A held press takes the whole box, as on a hover popup. On a spanned or kept-size
+it. A held press takes the whole box, as on a hover popup, and its release gives it back
+at once, on a spanned or kept-size panel too (each edge asks for a frame there, which
+draws nothing, or a frame painted during the hold would leave the margin taking clicks
+after the release). On a spanned or kept-size
 panel this wins over the box-only region (`placed_root`), since the hit boxes lie
 within that box anyway. Rejected: rounded regions (many small rects per frame, for
 a corner). Wave-cost is untouched: a surface without it does no more work than a
@@ -14561,10 +14607,13 @@ ways: a surface's scene with the same records but other hit boxes stays dirty
 (`Renderer::update` compared only what it draws, so a change to `hit` asked for no
 frame and the old boxes stayed until something unrelated repainted). Its frame
 damages nothing, and its bare commit carries the region; a surface the GPU thread
-presents sends one frame for it, which was not run. Proof:
+presents has no bare commit, so its last frame is presented again to carry it
+(`GpuRequest::Commit`, presented-quiet), only when the region really changed. Proof:
 `crates/strand-compiler/tests/hit_through.rs`;
 `a_click_on_a_hit_none_panels_empty_area_reaches_what_is_behind`,
-`a_reactive_hit_none_reaches_the_compositor_at_once` on sway.
+`a_reactive_hit_none_reaches_the_compositor_at_once` on sway, and for a presented
+surface, both ways, `a_reactive_hit_none_on_a_presented_surface_lets_clicks_through`,
+`a_reactive_hit_none_turned_off_on_a_presented_surface_takes_clicks_again`.
 
 ## first-read
 
@@ -14641,3 +14690,24 @@ and the warm device itself, which an owner ruling keeps. Numbers: benchmarks.md
 `a_warm_device_reserves_little_beyond_what_it_uses`, which fails on the default
 on lavapipe and Intel alike.
 
+
+## presented-quiet
+
+**2026-10-31 · presented-quiet: a paint on a presented surface that sends nothing
+still does what follows a paint.** wave-cost made a presented surface send no frame
+when a paint draws nothing, and a sent frame was the only thing that ran the frame's
+reaction, set its regions, or woke the loop for the next one (its `Presented`). So
+such a paint left a time signal stopped, an ended exit and a shrink queued, and a
+changed region unsent, each until something unrelated drew; gpu-stay makes that path
+permanent once a surface is promoted, and `eval-hooks` builds, which draw every frame,
+never reach it. `GpuHost::present` now tells the two cases apart: on no frame it runs
+`Host::painted` and `sync_presented` as a CPU's empty paint does, and where a CPU's
+empty paint would send a bare commit (`State::take_owed_commit`, set when a region
+changed) it asks for `GpuRequest::Commit`, a present of the last frame, since only a
+present commits this surface. The same goes for what the manager itself leaves pending
+with no frame to follow: a layer's new config (`reconfigure`, so `refit_layers_on`), a
+popup's reposition, a keyboard mode. Sending a whole new frame for it was rejected: nothing
+was drawn, and the commit already exists for a held size. No hand back to the CPU
+(gpu-stay). Proof: `crates/strand/tests/presented_quiet.rs`, run alone in CI, not under
+`--workspace`, whose `eval-hooks` hides the path; its `proved` asserts a paint did send
+nothing. Each test was seen failing without its fix.

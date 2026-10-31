@@ -93,7 +93,9 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// (output-change) The layer surfaces on `monitor` are fitted again to
     /// its size (`LayerConfig::fit`, in `reconfigure`), for an output whose
     /// mode or scale changed: a panel wider than the output asks again, and
-    /// gets what its spec asks once there is room.
+    /// gets what its spec asks once there is room. One the GPU thread
+    /// presents gets it from a present the host asks for, as no frame may
+    /// follow (`State::take_owed_commit`).
     pub(super) fn refit_layers_on(&mut self, monitor: &MonitorId) {
         let mut nodes: Vec<NodeId> = self
             .layers_on(monitor)
@@ -168,6 +170,14 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         if s.origin == origin {
             return;
+        }
+        // (still-pointer) The pointer stays where it is on the screen.
+        if let (Some(old), Some(new)) = (s.origin, origin) {
+            let d = ((old.0 - new.0) as f32, (old.1 - new.1) as f32);
+            for p in self.pointers.iter_mut().filter(|p| p.on == Some(id)) {
+                p.moved_under.0 += d.0;
+                p.moved_under.1 += d.1;
+            }
         }
         s.origin = origin;
         if let Some(o) = origin {

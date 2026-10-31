@@ -320,6 +320,7 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
                     pointer,
                     button_serial: None,
                     enter_serial: None,
+                    moved_under: (0.0, 0.0),
                     on: None,
                     shape: None,
                 }),
@@ -443,7 +444,21 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
             let Some(surface) = self.surface_for(&e.surface) else {
                 continue;
             };
-            let position = LogicalPoint::new(e.position.0 as f32, e.position.1 as f32);
+            let mut position = LogicalPoint::new(e.position.0 as f32, e.position.1 as f32);
+            // (still-pointer) Told afresh, or the last it told us, moved by
+            // what the surface has moved under it since.
+            if let Some(p) = seat.and_then(|i| self.pointers.get_mut(i)) {
+                if matches!(
+                    e.kind,
+                    PointerEventKind::Enter { .. }
+                        | PointerEventKind::Leave { .. }
+                        | PointerEventKind::Motion { .. }
+                ) {
+                    p.moved_under = (0.0, 0.0);
+                }
+                position.x += p.moved_under.0;
+                position.y += p.moved_under.1;
+            }
             let event = match &e.kind {
                 PointerEventKind::Enter { serial } => {
                     // The cursor is set once the host has routed the

@@ -1236,6 +1236,126 @@ fn a_reactive_hit_none_reaches_the_compositor_at_once() {
     );
 }
 
+/// (hit-through) A press held over a frame, on a panel whose region is its box
+/// alone: the hold takes the whole buffer and the release gives it back, with
+/// no frame of its own to carry that. The margin passes clicks through again.
+const HELD_OVER_A_FRAME: &str = r#"
+export state tint = false
+state back = false
+panel Behind { anchor: top_left; layer: bottom; width: 300; height: 100
+  box { width: 300; height: 100; bg: #ff0000
+    when back { bg: #ffff00 }
+    on click { back = !back }
+  }
+}
+panel Front { anchor: top
+  box { width: 200; height: 60; bg: #0000ff
+    when tint { bg: #00ffff }
+    on click {}
+  }
+}
+"#;
+
+#[test]
+fn a_press_held_over_a_frame_gives_a_spanned_panels_margin_back() {
+    let Some(mut sh) = start("heldmargin", HELD_OVER_A_FRAME) else {
+        return;
+    };
+    sh.wait("both panels", |one, _| {
+        one.region(ITEM_A, 2000).and(one.region(ITEM_B, 2000))
+    });
+    let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+    pointer.motion(640, 30, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.press(640, 30, LW, LH);
+    std::thread::sleep(Duration::from_millis(200));
+    sh.set_state("tint", "true");
+    sh.wait("a frame during the hold", |one, _| {
+        one.region(ISLAND_B, 2000)
+    });
+    // Its colour settles: the release has no frame of the hold's to ride on.
+    std::thread::sleep(Duration::from_millis(1000));
+    pointer.release();
+    std::thread::sleep(Duration::from_millis(300));
+    pointer.click(50, 30, LW, LH);
+    sh.wait("the click reached the panel behind", |one, _| {
+        one.region(YELLOW, 2000)
+    });
+}
+
+/// (still-pointer) A panel pinned by its far edge grows, under a pointer that
+/// stays still: what is under the pointer did not move on the screen, though
+/// the surface's coordinates did, and hover stays on it.
+fn hover_stays_as_the_far_edge_holds(name: &str, shell: &str, at: (u32, u32), grown: [u8; 3]) {
+    let Some(mut sh) = start(name, shell) else {
+        return;
+    };
+    sh.wait("the panel", |one, _| one.region(ITEM_B, 2000));
+    let mut pointer = Pointer::new(&sh.dir.join(&sh.display));
+    pointer.motion(at.0, at.1, LW, LH);
+    sh.wait("blue, lit", |one, _| one.region(ISLAND_B, 2000));
+    sh.set_state("more", "true");
+    sh.wait("the panel grew", |one, _| one.region(grown, 2000));
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(150));
+        let one = sh.shot("HEADLESS-1");
+        assert!(one.region(ISLAND_B, 2000).is_some(), "blue lost its hover");
+        assert!(
+            one.region(ISLAND_A, 1).is_none(),
+            "red took it, far from the pointer"
+        );
+    }
+    // And a press with no motion lands on what is under the pointer.
+    pointer.press_here();
+    std::thread::sleep(Duration::from_millis(200));
+    pointer.release();
+    sh.wait("the click on blue", |one, _| one.region(YELLOW, 2000));
+}
+
+#[test]
+fn hover_stays_under_a_still_pointer_as_a_right_anchored_panel_grows() {
+    hover_stays_as_the_far_edge_holds(
+        "farright",
+        r#"
+export state more = false
+state hit = false
+panel R { anchor: top_right; size: auto
+  row {
+    if more { box { width: 200; height: 100; bg: #808080 } }
+    box { width: 100; height: 100; bg: #ff0000; when hover { bg: #00ff00 } }
+    box { width: 100; height: 100; bg: #0000ff; when hover { bg: #00ffff }
+      on click { hit = true }
+      box { width: 20; height: 20; when hit { bg: #ffff00; width: 60; height: 60 } } }
+  }
+}
+"#,
+        (1230, 50),
+        [0x80, 0x80, 0x80],
+    );
+}
+
+#[test]
+fn hover_stays_under_a_still_pointer_as_a_bottom_anchored_panel_grows() {
+    hover_stays_as_the_far_edge_holds(
+        "farbottom",
+        r#"
+export state more = false
+state hit = false
+panel D { anchor: bottom_left; size: auto
+  col {
+    if more { box { width: 100; height: 200; bg: #808080 } }
+    box { width: 100; height: 100; bg: #ff0000; when hover { bg: #00ff00 } }
+    box { width: 100; height: 100; bg: #0000ff; when hover { bg: #00ffff }
+      on click { hit = true }
+      box { width: 20; height: 20; when hit { bg: #ffff00; width: 60; height: 60 } } }
+  }
+}
+"#,
+        (50, 670),
+        [0x80, 0x80, 0x80],
+    );
+}
+
 /// A hover popup whose card has a `shadow`, over a panel that springs to fit,
 /// as the owner's island had it when its popup would not open (NOTES #3).
 /// Never reproduced, on sway: this holds what was tried (decisions.md
