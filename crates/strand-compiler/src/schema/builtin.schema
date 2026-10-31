@@ -1692,7 +1692,12 @@ group node {
   /// `hit: none` takes no input in its own box (the pointer passes
   /// through to what is below), while its children take theirs. On a
   /// surface's root it lets the pointer through to what is behind the
-  /// surface wherever none of its nodes takes input. On a
+  /// surface wherever none of its nodes takes input: write it among the
+  /// surface's own props, and on each box inside that should let the
+  /// pointer through too, since a box without it, a plain `col` included,
+  /// takes the pointer across its whole box whether it draws or not:
+  /// `panel P { width: 300; height: 200; hit: none; col { hit: none; button "Send" { on click { … } } } }`
+  /// takes the pointer only on the button. On a
   /// `trigger: hover` popup that draws nothing, a top-level element
   /// with `hit: none` gives the popup's input region its children's
   /// boxes instead of its own.
