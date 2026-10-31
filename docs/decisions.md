@@ -14495,7 +14495,13 @@ the content, before anything has laid it out, and giving it a size would mean mo
 a binding reading it catches up a frame later. Proof:
 `a_width_first_read_as_a_popup_mounts_is_already_known`,
 `a_popups_own_content_reads_zero_in_its_on_show`,
-`only_what_is_read_is_measured`.
+`only_what_is_read_is_measured`. What measuring from the mount costs where the read
+never runs, measured: a box springing its width in a row of eight, its width read
+only in the `on show` of a popup that never opens, 125.5 µs a frame against 125.3 µs
+with no read (`--profile timing`, offline, renderer and logic on one thread, median of
+15 runs of 1200 frames), which is noise, so it is not narrowed. A real shell's logic
+thread is also woken for each such frame while the spring runs; that wake was not
+measured.
 
 ## shadow-popup
 
