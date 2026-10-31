@@ -864,6 +864,23 @@ first surface of a process the slower, in 12 runs on Ubuntu's sway and labwc; on
 attach of about 70 ms was seen once, in a debug build's first run, and did not
 return. The first `acquire` of 78 surfaces was at most 0.12 ms.
 
+## Presenting on Hyprland (gpu-mailbox)
+
+Intel PTL, Hyprland 0.57 nested in a headless labwc
+(`scripts/container/hyprland-nested.sh`'s setup, render node only), Mesa 26.2.6, debug
+builds, 2026-10-31. Its monitors are headless, not DRM; a monitor's sleep is simulated by
+stopping its frames with a test shim and `dpms off`.
+
+| | `Fifo` | `Mailbox` |
+| --- | --- | --- |
+| A burst of sizes on an otherwise idle monitor, frames/s after it | 0 to 1 in 8 runs of 15, else 60 | 60, 8 runs of 8 |
+| The other output's panel, one output asleep 200 s, frames/s | 61–62, with dips to 31 and 32 | 60–62 |
+| GPU present timeouts in that run | 2 | 0 |
+| Hyprland's dmabuf fds, one output asleep 150 s | 24, rising to 30 | 28, flat |
+| One panel on one 60 Hz output: frames/s, Hyprland and Strand wakes/s | 61, 312, 234 | 61, 306, 233 |
+| The same at 120 Hz | 123, 621, 480 | 123, 617, 449 |
+| GPU memory (`drm-resident-gtt`) with one 800×500 panel on each of two outputs | 135,284 KiB | 137,332 KiB |
+
 ## An idle promoted surface's wakes (gpu-idle-wakes)
 
 Per-thread context switches from `/proc`, four outputs of Ubuntu's sway on GLES2,

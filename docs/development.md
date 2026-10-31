@@ -244,7 +244,10 @@ shell on the real services). The `compositors` job runs
 labwc in an Arch Linux container (`scripts/compositor-matrix-ci.sh`), on
 every push and nightly against `archlinux:latest`;
 `scripts/container/matrix.sh` runs it locally (Hyprland only where it
-gets a KMS card). The lock screen's fault matrix runs only in a QEMU
+gets a KMS card), and `scripts/container/hyprland-nested.sh <command>` runs
+a command against a real Hyprland nested in a headless labwc, with only the
+render node, for presenting that only shows there (its monitors are headless,
+not DRM). The lock screen's fault matrix runs only in a QEMU
 guest with real PAM: `scripts/container/lockvm.sh bash
 scripts/lockvm/scenarios/all.sh` after `scripts/container/run.sh bash
 scripts/lockvm/scenarios/build.sh` (CI's `lock-vm` job where KVM is

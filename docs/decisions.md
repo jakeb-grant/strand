@@ -14755,9 +14755,11 @@ region change and then a frame stopped every surface until the output came back,
 good if it was unplugged (Arch's sway, the other panel 62 frames/s to 0; 12 s after the
 unplug it had not come back, and the surface was never released). The compositor gets about one more wake per frame (the
 request reaches it apart from the commit), while Strand's own about halve. Left alone:
-a promotion's attach (up to about 20 ms, once per surface since gpu-stay). Nothing
-here ran on Hyprland, so neither its FIFO path nor the 52 ms is covered; there the
-frames should stop queuing up in the compositor's FIFO, which is unmeasured. Proof:
+a promotion's attach (up to about 20 ms, once per surface since gpu-stay). The 52 ms
+was not seen again. Hyprland's FIFO path, measured since on a real Hyprland (nested,
+`scripts/container/hyprland-nested.sh`), is why gpu-mailbox replaced it. Where a driver
+has `Mailbox` Mesa never waits for a callback, so all of the above about Mesa's wait now
+holds only on a driver with `Fifo` alone. Proof:
 `a_presented_frame_waits_for_its_callback_or_gives_up` for the manager's half, which
 fails if the stale count, the wait or the FIFO rule goes;
 `a_give_up_doubles_while_presents_stay_unanswered` if the back-off goes from either the
@@ -14783,3 +14785,29 @@ surface promoted by opening and closing the island both measure 8.1 to 8.7 again
 the code. Sway only, without `wp_fifo_manager_v1`, so Hyprland's figure is unmeasured. Numbers: benchmarks.md "An idle promoted
 surface's wakes".
 
+## gpu-mailbox
+
+2026-10-31. A presented surface uses `Mailbox` where the driver has it, not `Fifo`. On a
+real Hyprland 0.57, an animated panel changing size with nothing else drawing on its
+monitor froze: 0 to 1 frames/s until something else made that monitor draw (a screenshot
+freed it), in 8 runs of 15 under a burst of sizes. Mesa's `Fifo` sets a
+`wp_fifo_v1` barrier with each commit; a commit behind one waits for the monitor to present,
+and an otherwise idle monitor has nothing to present. It was there before gpu-pace's fixes
+and it would have been a Hyprland report, but the rule is to fix it here
+(fix-in-strand). Since gpu-pace the host sends one frame per frame callback, so `Fifo`'s
+queue paces nothing, and `Mailbox` sets no barrier: the same burst runs at 60 frames/s, 8
+runs of 8, with no screenshot. It also ends gpu-pace's other Hyprland cost: a present to an
+output nobody draws replaces the last one rather than queuing behind it, so with one output
+asleep for 200 s the other's panel keeps 60 to 62 frames/s where `Fifo` dipped to 31 and 32,
+Hyprland's dmabuf fds stay flat, and no acquire times out. There is no tearing, as a
+compositor shows whole buffers, and no frame is drawn to be thrown away, as the callback
+paces them. The price is about one more buffer in a surface's swapchain: 2 MiB of GPU memory
+for one 800×500 panel on each of two outputs. Frame rates at 60 and 120 Hz and wakes are
+unchanged. `Fifo` stays for a driver without `Mailbox`, with gpu-pace's rules for Mesa's wait
+(they are kept as they are on `Mailbox` too, where they cost nothing: without the protocol a
+lost callback still stops only its own surface); `STRAND_GPU_FIFO=1` forces it, for its
+tests and as an escape hatch. These are headless Hyprland monitors, not DRM, so a real
+monitor's behaviour is the owner's session to confirm. Numbers: benchmarks.md "Presenting on
+Hyprland". Proof: `mailbox_is_taken_where_the_driver_has_it`;
+`a_commit_on_a_powered_off_output_stops_no_other_surface_on_fifo` keeps the fallback tested;
+the freeze only shows on Hyprland, which no repo test reaches.

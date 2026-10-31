@@ -2294,7 +2294,9 @@ the binary sends `Renderer::paint_gpu(surface, at) -> Option<Frame>`
 once `Presented` has come for its last frame and `State::present_due`
 says that frame's frame callback has too (decisions.md gpu-pace):
 `State::ask_present_callback` asks for it as pending state before the
-frame goes, and the present commits it. A `GpuRequest::Commit` is a present
+frame goes, and the present commits it. The swapchain is `Mailbox` where the
+driver has it, since that callback already paces it, and `Fifo` otherwise or with
+`STRAND_GPU_FIFO=1` (decisions.md gpu-mailbox). A `GpuRequest::Commit` is a present
 too: where the compositor has no `wp_fifo_manager_v1` (`State::pace_commit`)
 it asks for its callback and is in flight until `Committed`, which forgets the
 callback if it presented nothing; with that protocol, where Mesa does not wait

@@ -30,6 +30,22 @@ pub(crate) struct Presented {
 }
 
 /// Why presenting is not possible, for the log.
+/// The environment variable that keeps a presented surface on `Fifo` where
+/// [`present_mode`] would not (the fallback's tests).
+const FIFO_ENV: &str = "STRAND_GPU_FIFO";
+
+/// (gpu-mailbox) `Mailbox` where the driver has it: the host already sends one
+/// frame per frame callback (decisions.md gpu-pace), so a queue adds nothing but
+/// a compositor's FIFO barrier, which an otherwise idle monitor of Hyprland never
+/// clears, and buffers waiting on an output nobody draws.
+fn present_mode(modes: &[wgpu::PresentMode], force_fifo: bool) -> wgpu::PresentMode {
+    if !force_fifo && modes.contains(&wgpu::PresentMode::Mailbox) {
+        wgpu::PresentMode::Mailbox
+    } else {
+        wgpu::PresentMode::Fifo
+    }
+}
+
 pub(crate) fn try_surface(
     dev: &Device,
     handles: RawHandles,
@@ -85,7 +101,10 @@ pub(crate) fn try_surface(
         format,
         width: width.max(1),
         height: height.max(1),
-        present_mode: wgpu::PresentMode::Fifo,
+        present_mode: present_mode(
+            &caps.present_modes,
+            std::env::var(FIFO_ENV).is_ok_and(|v| v == "1"),
+        ),
         desired_maximum_frame_latency: 2,
         alpha_mode,
         view_formats: vec![],
@@ -249,5 +268,18 @@ impl Blit {
         rp.set_pipeline(pipeline);
         rp.set_bind_group(0, &group, &[]);
         rp.draw(0..3, 0..1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wgpu::PresentMode::{Fifo, Immediate, Mailbox};
+
+    #[test]
+    fn mailbox_is_taken_where_the_driver_has_it() {
+        assert_eq!(present_mode(&[Fifo, Mailbox, Immediate], false), Mailbox);
+        assert_eq!(present_mode(&[Fifo, Immediate], false), Fifo);
+        assert_eq!(present_mode(&[Fifo, Mailbox], true), Fifo);
     }
 }

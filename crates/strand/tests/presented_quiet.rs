@@ -187,6 +187,11 @@ fn sway(dir: &Path) -> (Proc, String, PathBuf) {
 
 /// `strand run` on `shell`, with the sway its panels go on. `None`: skipped.
 fn start(name: &str, shell: &str) -> Option<Desk> {
+    start_presenting(name, shell, false)
+}
+
+/// [`start`], and with `fifo` on the present mode a driver without `Mailbox` has.
+fn start_presenting(name: &str, shell: &str, fifo: bool) -> Option<Desk> {
     if !tools() {
         return None;
     }
@@ -212,6 +217,7 @@ fn start(name: &str, shell: &str) -> Option<Desk> {
             .env("XDG_CACHE_HOME", dir.join("cache"))
             .env("XDG_STATE_HOME", dir.join("state"))
             .env("STRAND_LOG", "info,damage")
+            .env("STRAND_GPU_FIFO", if fifo { "1" } else { "0" })
             .env_remove("STRAND_MOCK")
             .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
             .env_remove("NIRI_SOCKET")
@@ -688,6 +694,17 @@ fn a_presented_content_sized_panel_is_capped_to_its_output_as_it_changes() {
 /// output came back. The panel itself waits, and draws when it does.
 #[test]
 fn a_commit_on_a_powered_off_output_stops_no_other_surface() {
+    commit_on_a_powered_off_output(false);
+}
+
+/// (gpu-mailbox) Where it could stop them: `Fifo`, whose present waits in Mesa for
+/// a frame callback.
+#[test]
+fn a_commit_on_a_powered_off_output_stops_no_other_surface_on_fifo() {
+    commit_on_a_powered_off_output(true);
+}
+
+fn commit_on_a_powered_off_output(fifo: bool) {
     let shell = r#"
 export state boost = true
 export state through = false
@@ -702,7 +719,7 @@ panel On { screens: "HEADLESS-2"; anchor: top_left; width: 1100; height: 620
     opacity: 0.5 + 0.5 * wave(600ms) }
 }
 "#;
-    let Some(mut d) = start("off", shell) else {
+    let Some(mut d) = start_presenting(if fifo { "off-fifo" } else { "off" }, shell, fifo) else {
         return;
     };
     if !d.all_promoted(2) {
