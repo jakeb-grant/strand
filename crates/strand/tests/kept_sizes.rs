@@ -269,6 +269,29 @@ impl Desk {
     }
 }
 
+/// The feature's promise: a panel that opened tall in one session maps at
+/// that height in the next, with no resize to open, and a changed config
+/// starts again.
+#[test]
+fn a_panel_maps_next_session_at_the_size_it_kept() {
+    let Some(mut desk) = Desk::new("next", &shell(40)) else {
+        return;
+    };
+    desk.maps_at(40, "nothing is kept yet");
+    desk.strand(&["set", "shell.tall", "300"]);
+    desk.asks_for(300);
+    desk.keeps(300);
+
+    desk.run();
+    desk.maps_at(300, "the size the last session kept");
+
+    // Under another config, it starts again.
+    desk.strand.take();
+    desk.save(&format!("{}# edited\n", shell(40)));
+    desk.run();
+    desk.maps_at(40, "a changed config starts again");
+}
+
 /// A reload that changes the config starts the kept sizes again at once,
 /// and what the panel measures from then on is that config's: the file
 /// never holds a size under a config that did not measure it, here the

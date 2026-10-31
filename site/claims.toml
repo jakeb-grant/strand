@@ -2790,7 +2790,7 @@ proof  = "eval/scenarios/docs/island.scn's trace: its input region is the box's 
 page   = "site/how-to/island.md"
 text   = "keeps the tallest height it has needed, across restarts"
 source = ["docs/decisions.md#kept-size"]
-proof  = "eval/scenarios/docs/island.scn's trace: the surface stays 88 tall from the frame it opens, through the close"
+proof  = "crates/strand/tests/kept_sizes.rs::a_panel_maps_next_session_at_the_size_it_kept: the first size asked for and the first buffer of the next run; eval/scenarios/docs/island.scn's trace: the surface stays 88 tall from the frame it opens, through the close"
 
 [[claim]]
 page   = "site/how-to/island.md"
