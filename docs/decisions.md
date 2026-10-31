@@ -14628,7 +14628,7 @@ form above with `still` true, 1 frame; with `still` false 14 and 15 frames.
 its memory is measured in fdinfo, not PSS.** The docs' "+21 to +23 MB" for the
 warm device on Intel is PSS, which leaves out device memory: `drm-total-gtt` was
 292,956 KiB, and `GPUActive` in `/proc/meminfo` shows those pages are real. Of
-that, 186 MiB was room wgpu's default `MemoryHints::Performance` reserved and
+that, 182 MiB was room wgpu's default `MemoryHints::Performance` reserved and
 nothing used, in a device kept for the session (gpu-first), whatever the outputs.
 `MemoryHints::MemoryUsage` brings it to 129,116 KiB with no frame-time difference
 beyond noise on the hardware bench; a 4K target's own allocation costs about 1 ms

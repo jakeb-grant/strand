@@ -810,8 +810,9 @@ is 0. Animating adds 10,240 under either setting (hover over the bar: 303,196
 and 139,356).
 
 It is real RAM. While a process held the device, the host's `GPUActive`
-(`/proc/meminfo`) rose by 305 MiB with the default and 141 MiB with
-`MemoryUsage`, three runs each: strand's figure plus the 12 MiB of the leg's own sway.
+(`/proc/meminfo`) rose by 298 MiB (305,200 KiB) with the default and 138 MiB
+(141,070 KiB) with `MemoryUsage`, three runs each: strand's figure plus the 12 MiB
+of the leg's own sway.
 `GPUReclaim`, TTM's pool of free pages, fell at the same time: the pages came
 from it first, and went back to it at exit.
 
