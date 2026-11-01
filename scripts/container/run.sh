@@ -80,6 +80,24 @@ else
   mounts+=(-v strand-cargo-registry:/opt/cargo/registry -v strand-cargo-git:/opt/cargo/git)
 fi
 
+# dbus-daemon drops a client whose uid has no name, and some tests read the
+# name. The image names 1000 (`ubuntu`, the laptop's uid); any other, such as
+# the runner's 1001, gets its passwd and group plus a line for this user.
+uid=$(id -u)
+gid=$(id -g)
+if [ "$uid" != 1000 ]; then
+  names=$ROOT/target/container-names/${IMAGE##*:}
+  if [ ! -f "$names/group" ]; then
+    mkdir -p "$names"
+    docker run --rm "$IMAGE" cat /etc/passwd >"$names/passwd"
+    echo "$(id -un):x:$uid:$gid::/tmp/home:/bin/bash" >>"$names/passwd"
+    docker run --rm "$IMAGE" cat /etc/group >"$names/group.new"
+    echo "$(id -gn):x:$gid:" >>"$names/group.new"
+    mv "$names/group.new" "$names/group"
+  fi
+  mounts+=(-v "$names/passwd:/etc/passwd:ro" -v "$names/group:/etc/group:ro")
+fi
+
 # Cores: a build alone takes them all; with others running (at most three
 # worktrees build at once, CLAUDE.md) each takes its share.
 if [ -z "${CARGO_BUILD_JOBS:-}" ]; then
@@ -170,7 +188,7 @@ esac
 mkdir -p "$ROOT/target/container"
 exec docker run --rm --init "${tty[@]}" \
   --label strand.build=1 \
-  --user "$(id -u):$(id -g)" \
+  --user "$uid:$gid" \
   --shm-size=2g \
   "${devices[@]}" "${mounts[@]}" "${envs[@]}" \
   -w "$ROOT" \

@@ -126,5 +126,22 @@ case "$runner" in *"-v $DIR/temp:$DIR/temp"*) ok "runner: RUNNER_TEMP at its own
 case "$runner" in *"sccache"*) no "runner: sccache on" ;; *) ok "runner: no compile cache" ;; esac
 case "$runner$laptop" in *"/dev/dri"*) no "a device passed unasked" ;; *) ok "no device passed unasked" ;; esac
 
+# A uid the image doesn't name gets a line of its own; 1000 needs none.
+mkdir "$DIR/fake"
+for tool in id; do
+  cat >"$DIR/fake/$tool" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in -u) echo "${FAKE_UID}" ;; -g) echo 123 ;; -un) echo runner ;; -gn) echo docker ;; esac
+FAKE
+  chmod +x "$DIR/fake/$tool"
+done
+named=$(run_args env PATH="$DIR/fake:$PATH" FAKE_UID=1001 HOME="$DIR/home" "$HERE/run.sh" true)
+file=$ROOT/target/container-names/$hash/passwd
+case "$named" in *"--user 1001:123"*"$file:/etc/passwd:ro"*"/group:/etc/group:ro"*) ok "uid 1001: its names mounted" ;; *) no "names: $named" ;; esac
+grep -q '^runner:x:1001:123::/tmp/home:' "$file" && ok "uid 1001: named in passwd" || no "passwd line"
+rm -rf "$ROOT/target/container-names/$hash"
+named=$(run_args env PATH="$DIR/fake:$PATH" FAKE_UID=1000 HOME="$DIR/home" "$HERE/run.sh" true)
+case "$named" in *"/etc/passwd"*) no "uid 1000 got a passwd" ;; *) ok "uid 1000: the image's own names" ;; esac
+
 [ "$bad" = 0 ] && echo "test-image: all passed"
 exit "$bad"

@@ -398,8 +398,8 @@ jobs:
           cache-key: site
       - name: Build the site, its CLI page held to the strand binary
         run: |
-          scripts/container/run.sh bash -c 'cargo build -q -p strand --bin strand &&
-            cargo run -q -p strand-site -- build --strand "$CARGO_TARGET_DIR/debug/strand"'
+          scripts/container/run.sh bash -c "cargo build -q -p strand --bin strand &&
+            cargo run -q -p strand-site -- build --strand \$CARGO_TARGET_DIR/debug/strand"
       - run: scripts/container/run.sh cargo test -p strand-site
       - run: scripts/container/run.sh env SITE_DIRECT=1 bash scripts/site/media.sh --check
       - run: scripts/site/shots.sh --all
