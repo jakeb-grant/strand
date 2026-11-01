@@ -15017,3 +15017,19 @@ one at a time and keeps only the newest pending run, so a third push would cance
 workflow-level cancel cannot reach deploy or release, whose `if` keeps them to main and tags, the runs that are alone in
 their group; their own groups (`railway-deploy`, `release-<ref>`, both `cancel-in-progress: false`) still decide among
 themselves as they did. A branch push and its pull request have different refs, so they don't cancel each other.
+
+(2026-11-01) The package job took 21.4 min on every branch push, 15 of them release builds, for an archive only main and tags
+publish. It now runs on a branch push or a pull request only when its inputs changed, with the shape of lock-vm's Decide step.
+The inputs, from reading package.sh, smoke.sh, test-install.sh and test-publish.sh, go past the build's own files to what
+test-install.sh runs in the installed tree: `strand new` and its template, `strand check` finding the helper, `strand replay`
+finding strand-eval, `strand-dev --version`. Any other source change that breaks the release build or the installer is caught
+on main, before deploy and release, which need this job. The skip can't reach those two: the filter step's `if` leaves out
+main, tags and dispatch, Decide skips only when the filter ran and answered false, and deploy and release run only on main and
+tags. No check is dropped from what reaches main. test-publish.sh goes with it, and `run.sh ci` still runs it in lint.
+
+(2026-11-01) The package job declared `cache-key: release` and never read that cache: its log says `No cache found` for
+`v0-rust-release-Linux-x64-bb1eb2fe-b4987f66`, against the `63ec8b6c` that budgets saves. rust-cache hashes every variable named
+`CARGO*` into the key, and `CARGO_ABOUT_VERSION` was one, so each of its builds compiled all 494 crates cold (7 min 55 s and
+6 min 11 s in that run). It is `ABOUT_VERSION` now, leaving the job with the same environment as budgets. This reads a cache
+and merges nothing: cargo's unit hash covers the compiler, flags, features and profile, and rust-cache drops the workspace's
+own crates, so a dependency is reused only where the inputs agree. A tag reads main's cache, which only main can write.

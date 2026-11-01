@@ -657,31 +657,98 @@ jobs:
   # system without the libraries (scripts/release/smoke.sh, on the
   # runner's Docker). The release job publishes the `strand-dist`
   # artifact; edge-<commit> names it, or the version on a tag.
+  # On a push to main, a tag and a dispatch it always runs, and deploy
+  # and release run only there, so they always have its real output. On
+  # other branch pushes and on pull requests it runs when its inputs
+  # changed, passing with nothing done otherwise (the same shape as
+  # lock-vm; decisions.md ci-speed-2).
   package:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      CARGO_ABOUT_VERSION: 0.9.3
+      # Not CARGO_-anything: rust-cache hashes every variable named CARGO*
+      # into its key, and one here gave this job a key no job saves, so
+      # it built cold, the `release` cache below unread (decisions.md
+      # ci-speed-2).
+      ABOUT_VERSION: 0.9.3
     steps:
       - uses: actions/checkout@v7
+      - name: Package inputs changed
+        id: paths
+        if: (github.event_name == 'push' && github.ref_type == 'branch' && github.ref != 'refs/heads/main') || github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            package:
+              # This job, the machine it starts from, and the build
+              # settings package.sh's four programs come out of.
+              - '.github/workflows/ci.yml'
+              - '.github/actions/setup/**'
+              - '.cargo/config.toml'
+              # package.sh, smoke.sh, test-install.sh, test-publish.sh,
+              # publish.sh, licenses.py, about.toml and the installer.
+              - 'scripts/release/**'
+              - 'scripts/install.sh'
+              # What the build resolves and what cargo-about reads:
+              # both workspaces' locks and every manifest.
+              - 'Cargo.lock'
+              - 'Cargo.toml'
+              - 'crates/**/Cargo.toml'
+              - 'eval/Cargo.lock'
+              - 'eval/Cargo.toml'
+              # The archive's own files.
+              - 'LICENSE-APACHE'
+              - 'LICENSE-MIT'
+              # `strand --version` and its channel (entry.rs, build.rs).
+              - 'crates/strand/build.rs'
+              - 'crates/strand/src/main.rs'
+              - 'crates/strand/src/entry.rs'
+              # What test-install.sh runs in the installed tree: `strand
+              # new` and its template, `strand check` finding the lock's
+              # helper beside it, `strand replay` finding strand-eval,
+              # `strand-dev --version`.
+              - 'crates/strand/src/new.rs'
+              - 'docs/guide/template/bar.strand'
+              - 'crates/strand/src/check.rs'
+              - 'crates/strand-auth/src/client.rs'
+              - 'crates/strand/src/report/replay.rs'
+              - 'crates/strand-dev/src/main.rs'
+      # Skips only when the filter ran and said no: on main, a tag or a
+      # dispatch it does not run, so nothing here can skip them.
+      - name: Decide
+        id: run
+        env:
+          FILTER: ${{ steps.paths.outcome }}
+          CHANGED: ${{ steps.paths.outputs.package }}
+        run: |
+          if [ "$FILTER" = success ] && [ "$CHANGED" = false ]; then
+            echo "go=false" >>"$GITHUB_OUTPUT"
+            echo "no package inputs changed: the package job is skipped"
+          else
+            echo "go=true" >>"$GITHUB_OUTPUT"
+          fi
       - uses: ./.github/actions/setup
+        if: steps.run.outputs.go == 'true'
         with:
           tier: headers
           cache-key: release
           cache-save: "false"
       - uses: actions/cache@v6
+        if: steps.run.outputs.go == 'true'
         id: about
         with:
           path: ~/.cargo-tools/cargo-about
-          key: cargo-about-${{ env.CARGO_ABOUT_VERSION }}-rust-1.97.0
+          key: cargo-about-${{ env.ABOUT_VERSION }}-rust-1.97.0
       - name: cargo-about
+        if: steps.run.outputs.go == 'true'
         run: |
           if [ "${{ steps.about.outputs.cache-hit }}" != true ]; then
-            cargo install --locked --root ~/.cargo-tools/cargo-about cargo-about --version "$CARGO_ABOUT_VERSION" --features cli
+            cargo install --locked --root ~/.cargo-tools/cargo-about cargo-about --version "$ABOUT_VERSION" --features cli
           fi
           echo "$HOME/.cargo-tools/cargo-about/bin" >> "$GITHUB_PATH"
       - name: The archive's version
+        if: steps.run.outputs.go == 'true'
         id: id
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then
@@ -690,9 +757,13 @@ jobs:
             echo "id=edge-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
           fi
       - run: scripts/release/package.sh "${{ steps.id.outputs.id }}" "$RUNNER_TEMP/dist"
+        if: steps.run.outputs.go == 'true'
       - run: scripts/release/test-publish.sh
+        if: steps.run.outputs.go == 'true'
       - run: scripts/release/smoke.sh "$RUNNER_TEMP/dist"
+        if: steps.run.outputs.go == 'true'
       - uses: actions/upload-artifact@v7
+        if: steps.run.outputs.go == 'true'
         with:
           name: strand-dist
           path: ${{ runner.temp }}/dist/

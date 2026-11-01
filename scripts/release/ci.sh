@@ -8,7 +8,7 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
-ABOUT_VERSION=$(sed -n 's/^ *CARGO_ABOUT_VERSION: //p' .github/workflows/ci.yml)
+ABOUT_VERSION=$(sed -n 's/^ *ABOUT_VERSION: //p' .github/workflows/ci.yml)
 TOOLS=target/container/tools
 if ! [ -x "$TOOLS/bin/cargo-about" ] ||
   ! scripts/container/run.sh "$TOOLS/bin/cargo-about" --version | grep -q " $ABOUT_VERSION\$"; then
