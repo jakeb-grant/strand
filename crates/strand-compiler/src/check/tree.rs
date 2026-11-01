@@ -1361,9 +1361,8 @@ impl<'a> Checker<'a> {
     }
 
     /// (keyboard) What a `list`'s `axis` and `columns` can't do: `axis:
-    /// both`, a grid along x, and a written `columns` below 1.
-    Only `axis: vertical` written out, or none, can stand
-    /// beside `columns`.
+    /// both`, a grid along x, and a written `columns` below 1. Only `axis:
+    /// vertical` written out, or none, can stand beside `columns`.
     fn list_shape(&mut self, el: &ast::Element) {
         let Some(block) = &el.block else { return };
         let prop = |name: &str| {
