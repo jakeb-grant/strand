@@ -9,6 +9,18 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
 
+# A newer push to a branch or pull request cancels the run it supersedes.
+# Nothing else is ever cancelled, or even made to wait: main, tags,
+# schedule and dispatch each get a group of their own (the run's id),
+# because a shared group, even with cancel-in-progress off, runs one at a
+# time and replaces a pending run with the next. deploy and release run
+# only on main and tags, so the run they sit in never shares a group; their
+# job-level groups keep their one-at-a-time, newest-pending behaviour
+# (decisions.md ci-speed-2).
+concurrency:
+  group: ${{ ((github.event_name == 'push' && github.ref_type == 'branch' && github.ref != 'refs/heads/main') || github.event_name == 'pull_request') && format('ci-{0}', github.ref) || format('ci-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ (github.event_name == 'push' && github.ref_type == 'branch' && github.ref != 'refs/heads/main') || github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings

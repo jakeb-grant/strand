@@ -15006,3 +15006,14 @@ slider or segmented key write that logic rejects sends no answer, so `ValueFligh
 `EDIT_IN_FLIGHT` (500 ms) and further keys build on it. No diff can stand in for an answer, since one already on its way when
 the write was sent looks the same, and clearing on it would lose the queued keys the flight is for. It takes an
 acknowledgement from logic to render that does not exist; a typed `input` has the same limit.
+
+## ci-speed-2
+
+(2026-11-01) Run 41310281111 on de671192, medians over 60 runs: 27.6 min of wall time, with every job of a superseded
+branch push running to its end. `ci.yml` now has a workflow-level concurrency group that cancels a run only on a push to a
+branch other than main and on a pull request. Those use `ci-<ref>`; main, tags, schedule and dispatch use `ci-run-<run id>`,
+so each is alone in its group. One shared group with `cancel-in-progress: false` would not do for main: GitHub runs a group
+one at a time and keeps only the newest pending run, so a third push would cancel the second and main would queue. A
+workflow-level cancel cannot reach deploy or release, whose `if` keeps them to main and tags, the runs that are alone in
+their group; their own groups (`railway-deploy`, `release-<ref>`, both `cancel-in-progress: false`) still decide among
+themselves as they did. A branch push and its pull request have different refs, so they don't cancel each other.
