@@ -1633,7 +1633,8 @@ impl Lowerer<'_> {
     }
 
     /// (flex) Whether `e` reads a node's input state: `hover`,
-    /// `pressed`, `pointer`, `focused` or `selected` of `self` or an id,
+    /// `pressed`, `pointer`, `focused`, `selected` or `selected_index` of
+    /// `self` or an id,
     /// or a field of it (`self.pointer.x`). An `on change` of only such
     /// state is input, as `on click` is.
     fn input_state(&self, e: &hir::Expr) -> bool {
@@ -1646,7 +1647,7 @@ impl Lowerer<'_> {
             if node.is_some() && matches!(base.ty.non_null(), Ty::Record(r) if Some(*r) == node) {
                 return matches!(
                     name.as_str(),
-                    "hover" | "pressed" | "pointer" | "focused" | "selected"
+                    "hover" | "pressed" | "pointer" | "focused" | "selected" | "selected_index"
                 );
             }
             cur = base;

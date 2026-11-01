@@ -17,8 +17,8 @@ use strand_scene::time::Instant;
 
 use strand_scene::input::button;
 use strand_scene::{
-    AxisSource, ButtonState, ClipboardAsk, InputEvent, KeyInput, LogicalPoint, LogicalRect,
-    Modifiers, NodeId, NodeKind, Prop, PropValue, SceneDiff, SceneOp, SurfaceId,
+    AxisSource, ButtonState, ClipboardAsk, InputEvent, KeyInput, ListAsk, LogicalPoint,
+    LogicalRect, Modifiers, NodeId, NodeKind, Prop, PropValue, SceneDiff, SceneOp, SurfaceId,
 };
 
 use crate::renderer::{Renderer, ScrollInput, ScrollKind};
@@ -116,6 +116,9 @@ pub enum Intent {
         prop: Prop,
         value: PropValue,
     },
+    /// (keyboard) `list`'s selection is at the row with this global index,
+    /// or nowhere (`results.selected_index`).
+    SelectedIndex { list: NodeId, index: Option<u32> },
     /// (M6) For the host, not logic: a focused `input` copies to or
     /// pastes from the compositor's clipboard (Ctrl+C/X/V). A paste comes
     /// back as [`InputEvent::Paste`].
@@ -497,6 +500,12 @@ pub struct Router {
     sel_index: HashMap<NodeId, u32>,
     /// Lists whose selection is a row not mounted now.
     away: HashMap<NodeId, Away>,
+    /// (keyboard) What logic's last diff asked of lists (`results.next()`),
+    /// in order, until it is applied ([`Router::settle`]).
+    asks: Vec<(NodeId, ListAsk)>,
+    /// (keyboard) Each list's selection as logic last heard it
+    /// ([`Intent::SelectedIndex`]).
+    told_index: HashMap<NodeId, u32>,
     /// The last pointer position on each surface the pointer is over.
     pointer: HashMap<SurfaceId, LogicalPoint>,
     /// (still-pointer) Where hover went under a pointer that stays still.
@@ -637,7 +646,11 @@ impl Router {
     /// true`: the list scrolled away from it) stays selected by its
     /// global index, and is selected again when the window brings it
     /// back.
+    ///
+    /// (keyboard) What it asks of lists (`results.next()`) waits for it to
+    /// be applied, and [`Router::settle`] does each in turn.
     pub fn observe(&mut self, diff: &SceneDiff) {
+        self.asks.extend_from_slice(&diff.list_asks);
         // (flex) `focus:` turned true: focus moves there (`settle`).
         for op in &diff.ops {
             if let SceneOp::SetProp {
@@ -1225,11 +1238,18 @@ impl Router {
     /// A selection moved past a virtualised list's mounted rows lands on
     /// its row once logic mounts it (and Return pressed meanwhile
     /// activates it then).
+    ///
+    /// (keyboard) Then what the diff asked of lists, in order, each from
+    /// where the one before left the selection: after the first-row rule,
+    /// so `query = q; results.select(2)` ends on row 2 of what is mounted.
     pub fn settle(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
         self.prune(scene.tree());
         self.refocus(scene.tree());
         self.land(scene);
         self.select_first_rows(scene);
+        for (list, ask) in std::mem::take(&mut self.asks) {
+            self.list_ask(scene, list, ask);
+        }
         self.index_selections(scene.tree());
         self.flush(scene)
     }
@@ -1397,9 +1417,105 @@ impl Router {
         self.sel_index.retain(|l, _| selected.contains_key(l));
     }
 
+    /// (keyboard) A handler asked `list` to move its selection (or
+    /// activate): as the arrow keys do it, from where it is now, a move in
+    /// flight included.
+    fn list_ask(&mut self, scene: &mut dyn InputScene, list: NodeId, ask: ListAsk) {
+        let Some(tree) = scene.tree() else {
+            return;
+        };
+        let Some(node) = tree.get(list).filter(|n| n.kind == NodeKind::List) else {
+            return;
+        };
+        let shape = ListShape::of(node);
+        let w = window_rows(tree, list);
+        if w.count == 0 {
+            return;
+        }
+        let cur = self.place_in(list, &w);
+        let last = w.count - 1;
+        let to = match ask {
+            ListAsk::Next => shape.step(cur, w.first, last, true),
+            ListAsk::Prev => shape.step(cur, w.first, last, false),
+            ListAsk::First => 0,
+            ListAsk::Last => last,
+            ListAsk::Select(i) => u32::try_from(i.max(0)).unwrap_or(u32::MAX).min(last),
+            ListAsk::Activate => {
+                self.activate_selected(scene, list, &w);
+                return;
+            }
+        };
+        self.moved.insert(list);
+        self.go_to(scene, list, &w, to);
+    }
+
+    /// The global index `list`'s selection is at or on its way to.
+    fn place_in(&self, list: NodeId, w: &WindowRows) -> Option<u32> {
+        self.away
+            .get(&list)
+            .map(|a| a.index)
+            .or_else(|| self.selected.get(&list).and_then(|r| w.index_of(*r)))
+    }
+
+    /// What Return does to `list`: activates its selected row, or the first
+    /// mounted row with none; a selection on its way when it lands.
+    fn activate_selected(&mut self, scene: &mut dyn InputScene, list: NodeId, w: &WindowRows) {
+        if let Some(a) = self.away.get_mut(&list) {
+            a.activate = true;
+            if !a.reveal {
+                a.reveal = true;
+                scene.reveal_index(list, a.index);
+            }
+            return;
+        }
+        let row = self
+            .selected
+            .get(&list)
+            .copied()
+            .filter(|r| w.rows.contains(r))
+            .or(w.rows.first().copied());
+        if let Some(row) = row {
+            self.event(row, NodeEvent::Activate);
+        }
+    }
+
+    /// (keyboard) Tells logic of each list whose selection is somewhere new
+    /// since it last heard.
+    fn tell_indexes(&mut self) {
+        let now = |l: &NodeId| match self.away.get(l) {
+            Some(a) => Some(a.index),
+            None => self
+                .selected
+                .contains_key(l)
+                .then(|| self.sel_index.get(l).copied())
+                .flatten(),
+        };
+        let (told, out) = (&mut self.told_index, &mut self.out);
+        told.retain(|l, _| {
+            let held = now(l).is_some();
+            if !held {
+                out.push(Intent::SelectedIndex {
+                    list: *l,
+                    index: None,
+                });
+            }
+            held
+        });
+        for l in self.selected.keys().chain(self.away.keys()) {
+            let Some(i) = now(l) else { continue };
+            if told.insert(*l, i) != Some(i) {
+                out.push(Intent::SelectedIndex {
+                    list: *l,
+                    index: Some(i),
+                });
+            }
+        }
+    }
+
     /// Widgets draw hover, press, focus and selection at once.
     fn flush(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
         self.hover_popups(scene.tree(), self.now());
+        self.tell_indexes();
         // (window) A window root's `focused` is the compositor's focus
         // (`activated`), which the host tells from its configure: the
         // keyboard's focus moving to a button in it, or to a popup of
@@ -2378,11 +2494,11 @@ impl Router {
                 .tree()
                 .map(|t| window_rows(t, list))
                 .unwrap_or_default();
-            let cur = self
-                .away
-                .get(&list)
-                .map(|a| a.index)
-                .or_else(|| self.selected.get(&list).and_then(|r| w.index_of(*r)));
+            let shape = scene
+                .tree()
+                .and_then(|t| t.get(list))
+                .map_or_else(ListShape::default, ListShape::of);
+            let cur = self.place_in(list, &w);
             let last = w.count.saturating_sub(1);
             let page = scene.rows_in_view(list).unwrap_or(1).max(1);
             // In an `input`, Home and End move its caret (Shift extends
@@ -2390,8 +2506,8 @@ impl Router {
             // ends. On a focused list they go there with any modifiers.
             let ends = kind != Some(NodeKind::Input) || key.modifiers.ctrl;
             let to = match key.name.as_str() {
-                "Down" | "KP_Down" => Some(cur.map_or(w.first, |i| (i + 1).min(last))),
-                "Up" | "KP_Up" => Some(cur.map_or(w.first, |i| i.saturating_sub(1))),
+                "Down" | "KP_Down" => Some(shape.step(cur, w.first, last, true)),
+                "Up" | "KP_Up" => Some(shape.step(cur, w.first, last, false)),
                 "Page_Down" | "Next" | "KP_Page_Down" | "KP_Next" => {
                     Some(cur.map_or(w.first, |i| i.saturating_add(page).min(last)))
                 }
@@ -2401,24 +2517,7 @@ impl Router {
                 "Home" | "KP_Home" if ends => Some(0),
                 "End" | "KP_End" if ends => Some(last),
                 "Return" | "KP_Enter" => {
-                    if let Some(a) = self.away.get_mut(&list) {
-                        // On its way: activated when it lands.
-                        a.activate = true;
-                        if !a.reveal {
-                            a.reveal = true;
-                            scene.reveal_index(list, a.index);
-                        }
-                        return;
-                    }
-                    let row = self
-                        .selected
-                        .get(&list)
-                        .copied()
-                        .filter(|r| w.rows.contains(r))
-                        .or(w.rows.first().copied());
-                    if let Some(row) = row {
-                        self.event(row, NodeEvent::Activate);
-                    }
+                    self.activate_selected(scene, list, &w);
                     return;
                 }
                 _ => None,
@@ -2907,6 +3006,35 @@ fn window_rows(tree: &SceneTree, list: NodeId) -> WindowRows {
     let mounted = first.saturating_add(rows.len() as u32);
     let count = index(Prop::RowCount).map_or(mounted, |c| c.max(mounted));
     WindowRows { first, count, rows }
+}
+
+/// (keyboard) How a `list`'s selection moves, from its props.
+#[derive(Clone, Copy, Debug, Default)]
+struct ListShape {
+    /// `wrap: true`: one move past either end goes round.
+    wrap: bool,
+}
+
+impl ListShape {
+    fn of(node: &crate::tree::Node) -> Self {
+        Self {
+            wrap: matches!(node.get(Prop::Wrap), Some(PropValue::Bool(true))),
+        }
+    }
+
+    /// One row on (`forward`) or back from `cur` among rows up to `last`,
+    /// `first` with no selection.
+    fn step(self, cur: Option<u32>, first: u32, last: u32, forward: bool) -> u32 {
+        let Some(i) = cur else {
+            return first;
+        };
+        match (forward, self.wrap) {
+            (true, true) if i >= last => 0,
+            (true, _) => i.saturating_add(1).min(last),
+            (false, true) if i == 0 => last,
+            (false, _) => i.saturating_sub(1).min(last),
+        }
+    }
 }
 
 /// (M4) Where a drop at `at` lands in `target`: the global index among

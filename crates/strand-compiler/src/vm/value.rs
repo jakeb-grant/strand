@@ -198,6 +198,10 @@ pub struct NodeState {
     /// binary says so as it feeds it. Made on first use
     /// ([`NodeState::blank`]): only thumbnails are ever told it.
     pub blank_cell: std::cell::OnceCell<Signal<bool>>,
+    /// (keyboard) The global index of a `list`'s selected row, `Null` with
+    /// none: the router says so as it moves. Made on first use
+    /// ([`NodeState::selected_index`]): only lists are ever told it.
+    pub selected_index_cell: std::cell::OnceCell<Signal<Value>>,
     /// (M6) For a conditional id (`when c { id: name }`), the element it
     /// names now: `Value::Node`, or `Null` while no condition holds.
     /// Made on first use ([`NodeState::alias`]).
@@ -276,6 +280,11 @@ impl NodeState {
                 None => make(rt),
             }
         })
+    }
+
+    /// (keyboard) `results.selected_index`'s signal, made on first use.
+    pub fn selected_index(&self, rt: &strand_core::Runtime) -> Signal<Value> {
+        *self.selected_index_cell.get_or_init(|| self.make(rt))
     }
 
     /// (M6) A conditional id's target signal (see `alias_cell`).

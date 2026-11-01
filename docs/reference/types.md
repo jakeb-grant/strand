@@ -336,6 +336,7 @@ A live handle, not data: it compares, but `persist` and settings files cannot st
 | `pressed` | `bool` | A pointer button is held down on it. |
 | `focused` | `bool` | It has keyboard focus. On a `window` (its `id:`), the compositor has it focused (its `activated` state): `w.focused`. |
 | `selected` | `bool` | It is the selected item of a `list`; arrow keys move the selection. |
+| `selected_index` | `int?` | On a `list`, the place of its selected row among all its rows, from 0, whether or not that row is mounted; null with no selection, and on other elements. `text join(" of ", (results.selected_index ?? 0) + 1, n)` follows the selection. It updates a tick after the selection moves. |
 | `width` | `float` | Its laid-out width. `when self.width < 300 { … }` is a container query, with 4 px hysteresis so it cannot flicker. |
 | `height` | `float` | Its laid-out height. |
 | `open` | `bool` | A `popup` (or another surface) is open: from the moment its `open` turns true (or the pointer opens a `trigger: hover` one) until it turns false, as its exit pose starts. False on other elements. `when cal.open { bg: $surface.hi }` styles an anchor while its popup shows. |
@@ -355,6 +356,12 @@ A live handle, not data: it compares, but `persist` and settings files cannot st
 | `action maximize()` | `w.maximize()` maximises a `window`, or restores it when it is maximised. |
 | `action fullscreen()` | `w.fullscreen()` makes a `window` fullscreen, or restores it when it is fullscreen. |
 | `action close()` | Closes a `window` as the compositor's close button does: its `open: <-> x` is written false. |
+| `action next()` | `results.next()` moves a `list`'s selection one row on, as the arrow key does: scrolled into view, a row not mounted yet included. From no selection it selects the first row shown. Several in a row all count, in order. On an empty list, nothing. On another element, a check error where `strand check` can see it, else nothing. |
+| `action prev()` | `results.prev()` moves a `list`'s selection one row back. |
+| `action first()` | `results.first()` selects a `list`'s first row. |
+| `action last()` | `results.last()` selects a `list`'s last row, mounted or not. |
+| `action select(i: int)` | `results.select(i)` selects a `list`'s row at `i`, from 0; past either end it selects the nearest end. |
+| `action activate()` | `results.activate()` does what Return does on a `list`: its selected row's `on activate` runs, or the first row shown with no selection. A row on its way is activated when it mounts. |
 
 ### `Notification`
 

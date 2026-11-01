@@ -237,6 +237,8 @@ pub(crate) fn field(vm: &Rc<Vm>, rt: &Runtime, base: &Value, name: &str) -> Resu
             "decorated" => Value::Bool(n.window(rt).decorated.get(rt)?),
             // (oi-lock) False on anything but a thumbnail told so.
             "blank" => Value::Bool(n.blank(rt).get(rt)?),
+            // (keyboard) Null on anything but a list told it has one.
+            "selected_index" => n.selected_index(rt).get(rt)?,
             _ => Value::Null,
         },
         Value::List(items) => list_field(items, name),
@@ -1081,6 +1083,20 @@ pub(crate) fn method(
                 && let Some(h) = vm.hooks()
             {
                 h.window(rt, n, ask);
+                return Ok(Value::Unit);
+            }
+            // (keyboard) `results.next()`, `results.select(i)` …: moved by
+            // the router, which holds the selection.
+            let index = args
+                .params
+                .first()
+                .and_then(Option::as_ref)
+                .and_then(Value::as_f64)
+                .map(|i| i as i64);
+            if let Some(ask) = strand_scene::ListAsk::from_action(name, index)
+                && let Some(h) = vm.hooks()
+            {
+                h.list(rt, n, ask);
                 return Ok(Value::Unit);
             }
             Ok(Value::Null)

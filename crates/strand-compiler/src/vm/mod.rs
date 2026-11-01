@@ -71,6 +71,10 @@ pub trait VmHooks {
     /// element instance `node`: asked of the compositor once the step's
     /// diff is applied. Nothing without a host that shows windows.
     fn window(&self, _rt: &Runtime, _node: &Rc<NodeState>, _ask: strand_scene::WindowAsk) {}
+    /// (keyboard) `results.next()` and the other selection actions on the
+    /// element instance `node`: the router applies them once the step's
+    /// diff is applied. Nothing without a host that shows lists.
+    fn list(&self, _rt: &Runtime, _node: &Rc<NodeState>, _ask: strand_scene::ListAsk) {}
 }
 
 /// A scope of names: a component, surface or `for` item instance (or the
@@ -400,6 +404,7 @@ impl Env {
             pointer_cell: Default::default(),
             window_cell: Default::default(),
             blank_cell: Default::default(),
+            selected_index_cell: Default::default(),
             alias_cell: Default::default(),
             claims: Default::default(),
             holders: Default::default(),

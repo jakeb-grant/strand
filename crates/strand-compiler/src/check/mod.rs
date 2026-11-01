@@ -439,6 +439,9 @@ pub(crate) struct Checker<'a> {
     /// `id:` names, found before the tree is checked so they can be used
     /// before the element that declares them.
     pub ids: HashMap<(usize, Span), (LocalId, NodeIdx)>,
+    /// (keyboard) The element a plain `id:` names, for what only one kind
+    /// of element can do (`check::not_a_list`).
+    pub id_elements: HashMap<NodeIdx, &'a ast::Element>,
     /// Programs `permit exec` allows; `None` allows any.
     pub permits: Vec<Option<Vec<String>>>,
     pub uses: Vec<(usize, Span, &'static str)>,
@@ -585,6 +588,7 @@ impl<'a> Checker<'a> {
             untyped: HashSet::new(),
             reported: HashSet::new(),
             ids: HashMap::new(),
+            id_elements: HashMap::new(),
             permits: Vec::new(),
             uses: Vec::new(),
             module: 0,

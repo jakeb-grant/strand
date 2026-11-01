@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use strand_compiler::instantiate::{Instance, NodeFlag, Storage};
+use strand_compiler::reconcile::Build;
 use strand_compiler::vm::Value;
 use strand_compiler::vm::schema_host::SchemaHost;
 use strand_compiler::{SourceMap, lower};
@@ -45,6 +46,8 @@ pub struct Attached {
 }
 
 pub struct Shell {
+    /// What a reload builds on ([`Shell::reloadable`]).
+    build: Option<Build>,
     pub rt: Runtime,
     pub host: Rc<SchemaHost>,
     pub inst: Instance,
@@ -64,6 +67,8 @@ pub struct Shell {
     pub keyboard: Option<SurfaceId>,
     /// The runtime's diagnostics so far (a throttled writer warns).
     pub diags: Vec<strand_core::Diagnostic>,
+    /// The notices logic gave so far.
+    pub notices: Vec<String>,
     /// How many pointer values logic was handed.
     pub pointer_facts: usize,
 }
@@ -117,6 +122,30 @@ impl Shell {
             &compiled.program,
             strand_compiler::schema::Schema::builtin(),
         ));
+        Self::boot(&program, None, |rt, host| {
+            Instance::new(rt, program.clone(), host, Storage::none())
+        })
+    }
+
+    /// `src` as `shell.strand`, compiled so a save can reload it
+    /// ([`Shell::reload`]).
+    pub fn reloadable(src: &str) -> Shell {
+        let mut map = SourceMap::new();
+        map.add("shell.strand", src.to_string());
+        let build = Build::compile(None, map).unwrap_or_else(|d| panic!("{d:#?}"));
+        let program = build.program.clone();
+        let inst = |rt: &Runtime, host: Rc<SchemaHost>, b: &Build| {
+            Instance::from_build(rt, b, host, Storage::none())
+        };
+        let kept = build.clone();
+        Self::boot(&program, Some(kept), |rt, host| inst(rt, host, &build))
+    }
+
+    fn boot(
+        program: &lower::Program,
+        build: Option<Build>,
+        make: impl FnOnce(&Runtime, Rc<SchemaHost>) -> Instance,
+    ) -> Shell {
         let rt = Runtime::new();
         let host = Rc::new(SchemaHost::mock(&rt, &program.types));
         let screen = host.record(
@@ -130,8 +159,9 @@ impl Shell {
         );
         host.set(&rt, "screens.all", Value::list(vec![screen]))
             .unwrap();
-        let inst = Instance::new(&rt, program, host.clone(), Storage::none());
+        let inst = make(&rt, host.clone());
         let mut sh = Shell {
+            build,
             rt,
             host,
             inst,
@@ -146,12 +176,24 @@ impl Shell {
             held: false,
             keyboard: None,
             diags: Vec::new(),
+            notices: Vec::new(),
             pointer_facts: 0,
         };
         let diff = sh.inst.tick(sh.now).diff;
         host_loop::apply(&mut sh, diff).unwrap();
         sh.settle();
         sh
+    }
+
+    /// A save of `src` as `shell.strand`: the running shell reloads it.
+    pub fn reload(&mut self, src: &str) {
+        let mut map = SourceMap::new();
+        map.add("shell.strand", src.to_string());
+        let build = Build::compile(self.build.as_ref(), map).unwrap_or_else(|d| panic!("{d:#?}"));
+        self.inst.reload(&build);
+        self.build = Some(build);
+        self.answer();
+        self.settle();
     }
 
     /// The attached surface named `name`.
@@ -212,8 +254,9 @@ impl Shell {
             panic!("runtime error: {}", e.message());
         }
         self.diags.extend(u.diagnostics);
+        self.notices.extend(u.notices);
         let mut diff = u.diff;
-        if diff.ops.is_empty() && diff.layout_seen.is_none() {
+        if diff.ops.is_empty() && diff.layout_seen.is_none() && diff.list_asks.is_empty() {
             return false;
         }
         diff.layout_seen = Some(self.r.layout_seq());
@@ -243,6 +286,13 @@ impl Shell {
         let mut idle = Vec::new();
         host_loop::input(self, &e, &mut idle).unwrap();
         self.answer();
+    }
+
+    /// An input event routed with logic busy: nothing answers until the
+    /// next [`Shell::run`], so several queue as they do on a loaded thread.
+    pub fn queue(&mut self, e: InputEvent) {
+        let mut idle = Vec::new();
+        host_loop::input(self, &e, &mut idle).unwrap();
     }
 
     /// The pointer to the output point `(x, y)`: it enters and leaves
@@ -639,6 +689,9 @@ impl LoopHost for Shell {
                 }
                 Intent::Write { node, prop, value } => {
                     let _ = self.inst.write(node, prop, value);
+                }
+                Intent::SelectedIndex { list, index } => {
+                    self.inst.set_selected_index(list, index);
                 }
                 Intent::Clipboard(_) => {}
             }

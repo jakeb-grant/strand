@@ -332,6 +332,12 @@ pub(crate) struct Ctx {
     /// (window) What handlers asked of windows this step, in order
     /// (`SceneDiff::window_asks`).
     pub(crate) window_asks: RefCell<Vec<(NodeId, strand_scene::WindowAsk)>>,
+    /// (keyboard) What handlers asked of lists this step, in order
+    /// (`SceneDiff::list_asks`).
+    pub(crate) list_asks: RefCell<Vec<(NodeId, strand_scene::ListAsk)>>,
+    /// (keyboard) A selection action on an element that is no list was
+    /// told to the tick's notices: once, or a timer repeats it for ever.
+    pub(crate) not_a_list: Cell<bool>,
 }
 
 impl Ctx {
@@ -437,6 +443,26 @@ impl VmHooks for Ctx {
             .is_some_and(|e| e.kind == NodeKind::Window && Rc::ptr_eq(&e.state, node));
         if is_window {
             self.window_asks.borrow_mut().push((id, ask));
+        }
+    }
+
+    fn list(&self, _rt: &Runtime, node: &Rc<NodeState>, ask: strand_scene::ListAsk) {
+        // A list not mounted now has nothing to move.
+        let Some(id) = node.scene.get() else { return };
+        let is_list = self
+            .em
+            .borrow()
+            .nodes
+            .get(&id)
+            .is_some_and(|e| e.kind == NodeKind::List && Rc::ptr_eq(&e.state, node));
+        if is_list {
+            self.list_asks.borrow_mut().push((id, ask));
+        } else if !self.not_a_list.replace(true) {
+            // `check::not_a_list` catches every `id:` it can see; `self`
+            // and a conditional id reach here.
+            self.notices.borrow_mut().push(format!(
+                "{ask:?} on an element that is not a `list` does nothing"
+            ));
         }
     }
 }
@@ -892,6 +918,8 @@ impl Ctx {
             lock_logic: RefCell::default(),
             history: RefCell::default(),
             window_asks: RefCell::default(),
+            list_asks: RefCell::default(),
+            not_a_list: Cell::default(),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
         let weak: std::rc::Weak<dyn VmHooks> = weak;
@@ -1832,6 +1860,7 @@ impl Instance {
             diff: SceneDiff {
                 ops,
                 window_asks: std::mem::take(&mut *self.ctx.window_asks.borrow_mut()),
+                list_asks: std::mem::take(&mut *self.ctx.list_asks.borrow_mut()),
                 ..SceneDiff::default()
             },
             errors,
@@ -1962,6 +1991,22 @@ impl Instance {
                 NodeFlag::Blank => s.blank(&self.rt),
             };
             let _ = sig.set(&self.rt, on);
+        }
+    }
+
+    /// (keyboard) Render reports where `list`'s selection is
+    /// (`results.selected_index`): a row's global index, or `None`.
+    pub fn set_selected_index(&self, list: NodeId, index: Option<u32>) {
+        let state = self
+            .ctx
+            .em
+            .borrow()
+            .nodes
+            .get(&list)
+            .map(|e| e.state.clone());
+        if let Some(s) = state {
+            let v = index.map_or(Value::Null, |i| Value::int(i64::from(i)));
+            let _ = s.selected_index(&self.rt).set(&self.rt, v);
         }
     }
 

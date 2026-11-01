@@ -108,6 +108,28 @@ impl Pointer {
     }
 }
 
+/// The `Key` record `k` of a key handler.
+fn key_record(
+    host: &SchemaHost,
+    name: &str,
+    text: &str,
+    m: strand_scene::Modifiers,
+    repeat: bool,
+) -> Value {
+    host.record(
+        "Key",
+        &[
+            ("name", Value::text(name)),
+            ("text", Value::text(text)),
+            ("ctrl", Value::Bool(m.ctrl)),
+            ("shift", Value::Bool(m.shift)),
+            ("alt", Value::Bool(m.alt)),
+            ("logo", Value::Bool(m.logo)),
+            ("repeat", Value::Bool(repeat)),
+        ],
+    )
+}
+
 /// Hands routing's intents to logic; whether logic took any (a step at
 /// the same time follows). What it refused is returned as notes.
 pub fn to_logic(
@@ -142,21 +164,28 @@ pub fn to_logic(
                     NodeEvent::Key {
                         name,
                         text,
-                        modifiers: m,
+                        modifiers,
+                        repeat,
                     } => (
                         "key",
-                        vec![host.record(
-                            "Key",
-                            &[
-                                ("name", Value::text(name.as_str())),
-                                ("text", Value::text(text.as_str())),
-                                ("ctrl", Value::Bool(m.ctrl)),
-                                ("shift", Value::Bool(m.shift)),
-                                ("alt", Value::Bool(m.alt)),
-                                ("logo", Value::Bool(m.logo)),
-                            ],
-                        )],
+                        vec![key_record(host, &name, &text, modifiers, repeat)],
                     ),
+                    // (keyboard) A key let go, and a key a claim took: for
+                    // that claim alone.
+                    NodeEvent::KeyRelease {
+                        name,
+                        text,
+                        modifiers,
+                    } => (
+                        "key_release",
+                        vec![key_record(host, &name, &text, modifiers, false)],
+                    ),
+                    NodeEvent::Claim { handler, key } => {
+                        let k = key_record(host, &key.name, &key.text, key.modifiers, key.repeat);
+                        inst.claim(node, handler, &key, vec![k], None);
+                        any = true;
+                        continue;
+                    }
                     NodeEvent::Drop { .. } => {
                         notes.push("a drop is not delivered by the sandbox yet".into());
                         continue;
@@ -169,6 +198,10 @@ pub fn to_logic(
                 if let Err(e) = inst.write(node, prop, value) {
                     notes.push(format!("write to {prop}: {e}"));
                 }
+                any = true;
+            }
+            Intent::SelectedIndex { list, index } => {
+                inst.set_selected_index(list, index);
                 any = true;
             }
             // (report) A paste's ask is answered by a `paste` step (the

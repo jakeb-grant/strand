@@ -2892,6 +2892,24 @@ proof  = "crates/strand-compiler/tests/theme.rs::a_palette_from_hand_written_col
 # --- keys ---
 [[claim]]
 page   = "site/how-to/keys.md"
+text   = "They go to the row the keys would"
+source = ["crates/strand-render/src/input.rs", "docs/spec.md#67-layout-and-input"]
+proof  = "crates/strand-compiler/tests/selection.rs::the_actions_reach_rows_beyond_the_window"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "`select(i)` past either end stops at that end"
+source = ["crates/strand-render/src/input.rs"]
+proof  = "crates/strand-compiler/tests/selection.rs::select_clamps_and_moves_stop_at_the_ends"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "`wrap: true` takes the arrows, `next()` and `prev()` round"
+source = ["crates/strand-render/src/input.rs"]
+proof  = "crates/strand-compiler/tests/selection.rs::wrap_goes_round_for_arrows_and_actions_only"
+
+[[claim]]
+page   = "site/how-to/keys.md"
 text   = "the innermost one wins"
 source = ["crates/strand-render/src/input.rs", "docs/spec.md#67-layout-and-input"]
 proof  = "crates/strand-compiler/tests/interaction.rs::the_innermost_claim_wins_and_observers_do_not_hear_it"

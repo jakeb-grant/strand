@@ -2161,6 +2161,7 @@ impl<'a> Checker<'a> {
         };
         let label = path_text(recv_ast).map_or_else(|| n.to_string(), |p| format!("{p}.{n}"));
         let reported = sigs.iter().any(|s| s.action) && self.action_check(&label, name.span);
+        self.selection_on_a_list(&recv, n, &label, name.span);
         let (overload, args, ret) = self.call_overloads(&sigs, args, &label, span);
         let ret = if reported { Ty::Error } else { ret };
         if matches!(recv.kind, ExprKind::Service(_)) && matches!(ret, Ty::Async(_)) {
@@ -2191,6 +2192,42 @@ impl<'a> Checker<'a> {
             },
             ret,
         )
+    }
+
+    /// (keyboard) `results.next()` where the checker can see `results` is
+    /// not a `list`: an `id:` written on another element, or on a call of
+    /// a component whose root is one. `self` and a conditional id it can't
+    /// see through; those do nothing at run time, with a notice.
+    fn selection_on_a_list(&mut self, recv: &hir::Expr, n: &str, label: &str, span: Span) {
+        let is_node = matches!(recv.ty, Ty::Record(r)
+            if Some(r) == self.types.find_schema_record("Node"));
+        if !is_node || strand_scene::ListAsk::from_action(n, Some(0)).is_none() {
+            return;
+        }
+        let ExprKind::Node(idx) = recv.kind else {
+            return;
+        };
+        let Some(element) = self.id_elements.get(&idx).copied() else {
+            return;
+        };
+        let kind = element.kind.name.clone();
+        let root = if element.qual.is_none() && self.schema.element(&kind).is_some() {
+            Some(kind)
+        } else if element.qual.is_none() {
+            self.global_named(self.module, &kind, super::names::Want::Component)
+                .and_then(|d| self.call_root(d))
+                .map(|(root, _)| root)
+        } else {
+            None
+        };
+        if let Some(root) = root.filter(|r| r != "list") {
+            self.error(
+                "check::not_a_list",
+                format!("`{label}` moves a `list`'s selection, and this names a `{root}`"),
+                span,
+                "not a list",
+            );
+        }
     }
 
     /// The key type of a keyed list value.

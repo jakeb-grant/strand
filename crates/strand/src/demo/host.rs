@@ -396,6 +396,7 @@ fn to_logic(intent: Intent, press: Option<strand_compiler::vm::InputCtx>) -> Opt
             value,
             input: press,
         },
+        Intent::SelectedIndex { list, index } => ToLogic::SelectedIndex { list, index },
         // (M6) The surface manager's (`Forward::input`), never logic's.
         Intent::Clipboard(_) => return None,
     })

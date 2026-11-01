@@ -291,6 +291,7 @@ impl Shell {
             ToLogic::Flag { node, flag, on } => {
                 inst.set_flag(node, flag, on);
             }
+            ToLogic::SelectedIndex { list, index } => inst.set_selected_index(list, index),
             ToLogic::Size {
                 node,
                 width,

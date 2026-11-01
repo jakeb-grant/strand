@@ -81,6 +81,46 @@ panel Keys {
 A claim that takes `(k)` gets the key too, as above. To also run the next
 claim out, call `propagate()` in it; the default stays stopped.
 
+## Moving a list from a key
+
+A list's selection moves from code as it does from the arrows. Give the list
+an `id:`, then call `next()`, `prev()`, `first()`, `last()`, `select(i)` or
+`activate()` on it from any handler:
+
+```strand file=picker.strand
+// picker.strand: Ctrl+N and Ctrl+P walk the results from the field
+export state open = false
+state query = ""
+state names: [text] = ["Files", "Firefox", "Terminal"]
+
+panel Picker {
+  anchor: center; keyboard: exclusive; open: <-> open
+  width: 300; bg: $surface; color: $fg; font: $font.ui
+  on key "ctrl+n" { results.next() }
+  on key "ctrl+p" { results.prev() }
+  on key "ctrl+y" { results.activate() }
+  col { gap: $space.2; pad: $space.3
+    input { text: <-> query; focus: true; nav: results }
+    list { id: results; height: 120; wrap: true
+      for name in names key name {
+        box { pad: $space.1
+          when self.selected { bg: $accent.alpha(0.22) }
+          on activate { open = false }
+          text name
+        }
+      }
+    }
+    text join(" of ", (results.selected_index ?? 0) + 1, names.len)
+  }
+}
+```
+
+They go to the row the keys would: scrolled into view, a row not mounted yet
+included. `select(i)` past either end stops at that end. On an empty list they
+do nothing. `results.selected_index` is the selected row's place, from 0, or
+null with none. `wrap: true` takes the arrows, `next()` and `prev()` round from
+one end to the other.
+
 ## Around a password
 
 A claim of a key that types, such as `"q"`, around a `type: password` field

@@ -1059,6 +1059,41 @@ pub enum SceneOp {
     },
 }
 
+/// (keyboard) What a config asks of a `list`'s selection from a handler
+/// (`results.next()`): what the keys do, moved by the router, which holds
+/// the selection.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ListAsk {
+    /// `results.next()`: one on, as Down does on a vertical list.
+    Next,
+    /// `results.prev()`: one back.
+    Prev,
+    /// `results.first()`.
+    First,
+    /// `results.last()`.
+    Last,
+    /// `results.select(i)`: the row at global index `i`, kept within the
+    /// rows.
+    Select(i64),
+    /// `results.activate()`: what Return does on the list.
+    Activate,
+}
+
+impl ListAsk {
+    /// The ask a `Node` action names; `index` is `select`'s argument.
+    pub fn from_action(name: &str, index: Option<i64>) -> Option<Self> {
+        Some(match name {
+            "next" => Self::Next,
+            "prev" => Self::Prev,
+            "first" => Self::First,
+            "last" => Self::Last,
+            "select" => Self::Select(index?),
+            "activate" => Self::Activate,
+            _ => return None,
+        })
+    }
+}
+
 /// One logic tick's worth of ordered ops.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SceneDiff {
@@ -1084,6 +1119,11 @@ pub struct SceneDiff {
     /// resize goes with the press that is still held (`press`, else the
     /// seat's last).
     pub window_asks: Vec<(NodeId, crate::surface::WindowAsk)>,
+    /// (keyboard) What handlers asked of the `list`s they name, in the
+    /// order they asked (`results.next()`): the router applies each once
+    /// the diff is applied, against the selection it holds, so asks from
+    /// keys queued while logic was busy all count (`Router::observe`).
+    pub list_asks: Vec<(NodeId, ListAsk)>,
     /// (kept-size) A reload committed in this diff: the hash of the config
     /// it came from. In the diff, not beside it, so the host forgets the
     /// sizes the old config measured in the same breath as it applies the
@@ -1106,6 +1146,7 @@ impl SceneDiff {
             && self.layout_seen.is_none()
             && self.reduced_motion.is_none()
             && self.window_asks.is_empty()
+            && self.list_asks.is_empty()
             && self.config.is_none()
     }
 

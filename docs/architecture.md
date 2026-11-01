@@ -43,9 +43,14 @@ a hot path.
   `GRAB_WINDOW` after; the host marks each popup the diff opens with it,
   `State::set_popup_cause`, so a surface grabs only for its own press)
   and `window_asks: Vec<(NodeId, WindowAsk)>` (applied with
-  `State::window_ask(node, ask, press)` after the diff). A diff whose
+  `State::window_ask(node, ask, press)` after the diff), and `list_asks:
+  Vec<(NodeId, ListAsk)>` (`results.next()`: `Router::observe` keeps them and
+  `Router::settle` does each in order on the scene the diff made, a move in
+  flight included, so none is lost). A diff whose
   `layout_seen` or `reduced_motion` changed is sent even with no ops.
-- **Render → logic**: routed input, layout facts
+- **Render → logic**: routed input (flags, node events, two-way writes,
+  `Intent::SelectedIndex` as `ToLogic::SelectedIndex` for
+  `results.selected_index`, sent when the place changes), layout facts
   (`Renderer::take_layout_facts`, changed boxes of `Prop::Watch` nodes,
   sent as `ToLogic::Layout { seq, sizes }`) and pointer facts
   (`Renderer::take_pointer_facts`, sent as `ToLogic::Pointer`, applied

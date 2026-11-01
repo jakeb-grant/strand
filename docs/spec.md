@@ -1385,6 +1385,28 @@ monitor, the keyboard always).
   selected, so a list laid out shorter than its row (a filtered list
   whose height follows its rows, back from no results) shows its first
   rows again once it grows (decisions.md list-scroll-regrow).
+- **A `list`'s selection from code.** `results.next()`, `.prev()`,
+  `.first()`, `.last()`, `.select(i)` and `.activate()` are actions, for any
+  handler, and do what the keys do: the same `selected` row, scrolled into
+  view, a row past the mounted window included, and Return's activation
+  (`on activate` of the selected row, the first row shown with no selection,
+  or on landing for a row on its way). From no selection `next()` and
+  `prev()` select the first row shown, as an arrow does. `select` past either
+  end selects that end. On an empty list every one does nothing. They apply
+  on the render thread a tick after the handler, once that tick's diff is
+  applied, in the order they were asked, each from where the last left the
+  selection, so repeats queued while logic was busy all count and
+  `query = q; results.select(2)` ends on row 2 of the rows mounted by then.
+  On an element `strand check` can see is not a `list` (an `id:` written on
+  it, or a component call whose root it is), they are the error
+  `check::not_a_list`; reached through `self` or a conditional id they do
+  nothing, and the first such call in a run says so to `strand watch`.
+  `results.selected_index` (`int?`) is the selected row's place among all the
+  rows, null with none and on other elements: reactive, it follows a tick
+  behind the keys, and an `on change` of it is input, as of `selected`.
+- **`wrap: true` on a `list`** takes the arrows and `next()` and `prev()`
+  round from one end to the other; Page keys, Home and End, and `select`
+  stop at the ends.
 - **Copy and paste.** A focused `input` copies its selection with
   Ctrl+C or Ctrl+Insert, cuts it with Ctrl+X or Shift+Delete and pastes
   at the caret, over the selection, with Ctrl+V or Shift+Insert

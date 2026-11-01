@@ -411,6 +411,7 @@ Also every prop and event of [`node`](#node).
 | --- | --- | --- |
 | `focus` | `bool` | Takes keyboard focus when shown, and whenever it turns true (as an `input`'s); then arrows move its selection, Return activates the selected row, and Right opens a popup the row holds (a menu's submenu). |
 | `snap` | `bool` | A wheel step or a touchpad's lift settles with a row's start at the view's start, as a `scroll`'s `snap`, rows not mounted yet included. |
+| `wrap` | `bool` | Arrows and `next()` and `prev()` go round from one end to the other. Page keys, Home and End stop at the ends. |
 
 ### `lock`
 

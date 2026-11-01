@@ -463,7 +463,7 @@ impl<'a> Checker<'a> {
     fn collect_ids(&mut self, items: &'a [ast::Item]) {
         self.push_scope();
         /// A name, the element it names, and whether a `when` gives it.
-        type Found<'b> = Vec<(&'b ast::Ident, Span, bool)>;
+        type Found<'b> = Vec<(&'b ast::Ident, Span, bool, &'b ast::Element)>;
         fn id_of(items: &[ast::Item]) -> Option<&ast::Ident> {
             items.iter().find_map(|p| match &p.kind {
                 ItemKind::Prop(p)
@@ -481,13 +481,13 @@ impl<'a> Checker<'a> {
                     ItemKind::Element(e) => {
                         if let Some(b) = &e.block {
                             if let Some(n) = id_of(&b.items) {
-                                out.push((n, i.span, false));
+                                out.push((n, i.span, false, e));
                             }
                             for w in &b.items {
                                 if let ItemKind::When(w) = &w.kind
                                     && let Some(n) = id_of(&w.body.items)
                                 {
-                                    out.push((n, i.span, true));
+                                    out.push((n, i.span, true, e));
                                 }
                             }
                             walk(&b.items, out);
@@ -525,12 +525,12 @@ impl<'a> Checker<'a> {
         // it had before conditional ids (none).
         let plain: Vec<(String, Span)> = found
             .iter()
-            .filter(|(_, _, cond)| !cond)
-            .map(|(n, _, _)| (n.name.clone(), n.span))
+            .filter(|(_, _, cond, _)| !cond)
+            .map(|(n, _, _, _)| (n.name.clone(), n.span))
             .collect();
         // Name → where first named, and whether conditionally.
         let mut seen: Vec<(String, Span, bool)> = Vec::new();
-        for (name, el_span, cond) in found {
+        for (name, el_span, cond, element) in found {
             if cond {
                 if seen.iter().any(|(n, _, was)| *n == name.name && *was) {
                     // Another `when` naming it: the same conditional id.
@@ -561,6 +561,7 @@ impl<'a> Checker<'a> {
             let local = self.bind_local(&name.name, node_ty.clone(), name.span, kind);
             if !cond {
                 self.ids.insert((self.module, el_span), (local, idx));
+                self.id_elements.insert(idx, element);
             }
         }
     }

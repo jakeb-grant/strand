@@ -1596,6 +1596,13 @@ impl Ctx {
                     }
                 }
             }
+            // (keyboard) A list keeps the place of its selection: the
+            // router, which keeps the row, says so again only on a change.
+            if let Some(a) = was.selected_index_cell.get()
+                && let Ok(v) = a.get_untracked(rt)
+            {
+                let _ = state.selected_index(rt).set(rt, v);
+            }
             // (oi-lock) So does a thumbnail told it has nothing to show.
             if let Some(a) = was.blank_cell.get()
                 && let Ok(true) = a.get_untracked(rt)

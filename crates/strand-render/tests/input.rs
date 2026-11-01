@@ -22,8 +22,12 @@ impl R {
     fn input(&mut self, e: &InputEvent, scene: &mut dyn InputScene) {
         self.out.extend(self.router.handle(e, scene));
     }
+    /// What it asked since last drained, but where a list's selection is:
+    /// `list_asks_build_on_a_selection_on_its_way` reads that.
     fn drain(&mut self) -> Vec<Intent> {
-        std::mem::take(&mut self.out)
+        let mut out = std::mem::take(&mut self.out);
+        out.retain(|i| !matches!(i, Intent::SelectedIndex { .. }));
+        out
     }
 }
 
@@ -423,7 +427,16 @@ fn keys_go_to_the_focused_input_and_its_list() {
         .set(fresh, Prop::Height, PropValue::Number(20.0));
     assert!(r.apply(d).is_empty());
     let msgs = f.router.settle(&mut r);
-    assert_eq!(msgs, [flag(rows[0], Flag::Selected, true)]);
+    assert_eq!(
+        msgs,
+        [
+            flag(rows[0], Flag::Selected, true),
+            Intent::SelectedIndex {
+                list,
+                index: Some(0)
+            }
+        ]
+    );
     assert_eq!(f.router.selected(list), Some(rows[0]));
     assert!(f.router.settle(&mut r).is_empty(), "settled");
     f.input(&key("Down", ""), &mut r);
@@ -4269,4 +4282,140 @@ fn focused_input_names_a_password() {
     );
     assert_eq!(f.router.focused_input(SurfaceId(3), tree), None);
     assert_eq!(f.router.focused_input(SurfaceId(9), tree), None);
+}
+
+/// (keyboard) What logic's diffs ask of a list goes to the router in order,
+/// each from where the last left the selection, a move past the mounted
+/// rows included: it stands on its way for the next to build on, whatever
+/// has been mounted by then, and lands when its row mounts.
+#[test]
+fn list_asks_build_on_a_selection_on_its_way() {
+    use strand_scene::{Color, ListAsk, Modifiers, NodeKind, SceneDiff, SceneOp};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let (panel, list) = (id(0), id(1));
+    let row = |i: u32| id(100 + i);
+    let mount = |d: &mut SceneDiff, first: u32| {
+        for i in first..first + 32 {
+            d.push(SceneOp::Create {
+                id: row(i),
+                kind: NodeKind::Row,
+                parent: Some(list),
+                index: i - first,
+                window: true,
+            });
+            d.set(row(i), Prop::Height, PropValue::Number(20.0));
+        }
+        d.set(list, Prop::RowFirst, PropValue::Number(first as f32));
+    };
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(200.0))
+        .set(panel, Prop::Height, PropValue::Number(100.0))
+        .set(panel, Prop::Open, PropValue::Bool(true))
+        .set(panel, Prop::Bg, PropValue::Color(Color::WHITE))
+        .create(list, NodeKind::List, Some(panel), 0)
+        .set(list, Prop::Focus, PropValue::Bool(true))
+        .set(list, Prop::Height, PropValue::Number(100.0))
+        .set(list, Prop::RowCount, PropValue::Number(2000.0));
+    mount(&mut d, 0);
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    r.attach_surface(s, panel);
+    let mut px = vec![0u8; 200 * 100 * 4];
+    let mut t = PaintTarget::new(&mut px, Size::new(200, 100), 800, Scale::ONE, 0).unwrap();
+    r.paint(s, &mut t);
+    let mut f = R::default();
+    f.attached(s, panel);
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    let asks = |f: &mut R, r: &mut Renderer, asks: &[ListAsk]| {
+        let mut d = SceneDiff::new();
+        d.list_asks = asks.iter().map(|a| (list, *a)).collect();
+        f.router.observe(&d);
+        assert!(r.apply(d).is_empty());
+        f.router.settle(r)
+    };
+    let told = |out: &[Intent]| {
+        out.iter()
+            .filter_map(|i| match i {
+                Intent::SelectedIndex { list: l, index } if *l == list => Some(*index),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // Within the mounted rows, at once, each from the last. Told once, where
+    // they ended.
+    let out = asks(&mut f, &mut r, &[ListAsk::Select(30), ListAsk::Next]);
+    assert_eq!(f.router.selected(list), Some(row(31)));
+    assert_eq!(told(&out), [Some(31)]);
+    // Off the mounted rows: on its way, and the next build on it, in this
+    // diff and the next, with nothing mounted between.
+    let out = asks(&mut f, &mut r, &[ListAsk::Next, ListAsk::Next]);
+    assert_eq!(f.router.selected(list), None);
+    assert_eq!(f.router.selected_index(list), Some(33));
+    assert_eq!(told(&out), [Some(33)]);
+    let out = asks(
+        &mut f,
+        &mut r,
+        &[ListAsk::Next, ListAsk::Prev, ListAsk::Next],
+    );
+    assert_eq!(f.router.selected_index(list), Some(34));
+    assert_eq!(told(&out), [Some(34)]);
+    // An arrow between them is on the same selection.
+    f.input(
+        &InputEvent::Key {
+            surface: s,
+            key: KeyInput {
+                name: "Down".into(),
+                text: String::new(),
+                state: ButtonState::Pressed,
+                repeat: true,
+                modifiers: Modifiers::default(),
+                time: 0,
+                latin: None,
+            },
+        },
+        &mut r,
+    );
+    assert_eq!(f.router.selected_index(list), Some(35));
+    // Activate on its way waits for the row.
+    let out = asks(&mut f, &mut r, &[ListAsk::Next, ListAsk::Activate]);
+    assert_eq!(f.router.selected_index(list), Some(36));
+    assert!(
+        !out.iter().any(|i| matches!(
+            i,
+            Intent::Event {
+                event: NodeEvent::Activate,
+                ..
+            }
+        )),
+        "{out:?}"
+    );
+    // Logic mounts it: selected and activated, nothing else asked.
+    let mut d = SceneDiff::new();
+    for i in 0..32 {
+        d.push(SceneOp::Remove {
+            id: row(i),
+            window: true,
+        });
+    }
+    mount(&mut d, 20);
+    f.router.observe(&d);
+    assert!(r.apply(d).is_empty());
+    let out = f.router.settle(&mut r);
+    assert_eq!(f.router.selected(list), Some(row(36)));
+    assert!(out.contains(&Intent::Event {
+        node: row(36),
+        event: NodeEvent::Activate
+    }));
+    assert_eq!(
+        told(&out),
+        Vec::<Option<u32>>::new(),
+        "the place did not move"
+    );
 }

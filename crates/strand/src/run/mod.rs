@@ -315,6 +315,9 @@ pub enum ToLogic {
         first: u32,
         count: u32,
     },
+    /// (keyboard) Where a `list`'s selection is
+    /// (`Instance::set_selected_index`).
+    SelectedIndex { list: NodeId, index: Option<u32> },
     /// A notice from the main thread for `strand watch` (the blur
     /// fallback's reason, decisions.md m4-surface-w1).
     Notice(String),
