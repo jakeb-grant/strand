@@ -13,9 +13,8 @@
 # from the repository root. A snippet is at least 8 characters that must occur
 # in the file, whitespace runs counting as one space, so it fails the build
 # when the words it cites go. Write it in a TOML literal string, in single
-# quotes, so its own quotes need no escaping. Prefer it to `path:line` and
-# `path:first-last`, which are checked only for being in range and are
-# on their way out.
+# quotes, so its own quotes need no escaping. `path:line` and `path:first-last`
+# fail the build: a line number goes stale without a word.
 
 # --- start-tools-help ---
 [[claim]]
@@ -1898,7 +1897,7 @@ proof  = "read"
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "On every monitor; at most one per config"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1887"]
+source = ['docs/spec.md "has at most one `lock`, across its files. It is on every monitor its `screens:` picks (all of them by default)"', 'crates/strand-compiler/src/check/lock.rs "Diagnostic::error("check::lock_twice", "a config has one `lock`")"']
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: two `lock`s give check::lock_twice"
 
 [[claim]]
@@ -2311,446 +2310,446 @@ proof  = "read"
 
 [[claim]]
 page   = "site/how-to/calendar-popup.md"
-text   = "clock of the guide's bar, with one `when` added"
-source = ["docs/design.md:196"]
-proof  = "read: design.md's Clock and Calendar, plus `id: cal` and `when cal.open`"
+text   = "clock of the guide's bar, with an `id` and one `when` added"
+source = ['docs/guide/level-3.md "popup { open: <-> open; Calendar }"']
+proof  = "read: this page's clock.strand against level 3's differs by `id: cal` and `when cal.open`, and nothing else"
 
 [[claim]]
 page   = "site/how-to/calendar-popup.md"
 text   = "`state open = false` is"
-source = ["docs/spec.md:602"]
+source = ['''docs/spec.md "directly in a component's body (one cell per instance)"''']
 proof  = "read: one cell per component instance; the page's config checks clean"
 
 [[claim]]
 page   = "site/how-to/calendar-popup.md"
 text   = "When Escape or a click away closes it, the popup"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1823"]
-proof  = "read"
+source = ['docs/spec.md "(`open: <-> open`), Escape, a click away and focus loss write `false`"']
+proof  = "crates/strand-render/tests/popups.rs::escape_closes_a_popup; crates/strand-render/tests/input.rs::click_away_closes_only_a_two_way_open"
 
 [[claim]]
 page   = "site/how-to/calendar-popup.md"
 text   = "On a bar it opens away from the bar's edge"
-source = ["docs/spec.md:310", "crates/strand-scene/src/placement.rs:720"]
+source = ['''docs/spec.md "**A popup opens away from a `bar`'s edge**"''', 'crates/strand-scene/src/placement.rs "let bar_edge = (parent.kind == NodeKind::Bar)"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/calendar-popup.md"
 text   = "is true while the popup named `cal` is open"
-source = ["docs/spec.md:948"]
+source = ['docs/spec.md "`p.open` reads the open state of the popup"', 'docs/spec.md "`when p.open { … }` styles the anchor while its popup shows."']
 proof  = "the page's config checks clean (strand-site build)"
 
 [[claim]]
 page   = "site/how-to/calendar-popup.md"
 text   = "shows minutes, so it wakes the"
-source = ["docs/reference/services.md:149"]
+source = ['docs/reference/services.md "Wakes only as often as the pattern changes (once a minute for %H:%M)."']
 proof  = "crates/strand-compiler/tests/instantiate.rs::the_hello_bar_clock_ticks_once_a_minute"
 
 [[claim]]
 page   = "site/how-to/calendar-popup.md"
 text   = "gives the days of the weeks that cover"
-source = ["docs/reference/services.md:115"]
+source = ['docs/reference/services.md "The days of the weeks that cover `month`, padded with days of the months around it"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/calendar-popup.md"
 text   = "A popup keeps a 6 px gap from the"
-source = ["docs/spec.md:313"]
+source = ['docs/spec.md "them: 6 px unless it is set, `0` touching"', 'crates/strand-scene/src/placement.rs "/// otherwise; `margin` on the side facing its anchor is the gap: 6 px"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/launcher.md"
 text   = "`strand toggle` flips an exported `bool` state."
-source = ["crates/strand/src/entry.rs:33", "docs/spec.md:2060"]
-proof  = "crates/strand-compiler/tests/token_overlay.rs (Instance::toggle)"
+source = ['crates/strand/src/entry.rs "("toggle", "flip an exported boolean")"', 'docs/spec.md "`strand toggle path` flips an exported `bool` state"']
+proof  = "crates/strand-compiler/tests/token_overlay.rs::toggle_flips_booleans_only_and_settings_fields_have_layers"
 
 [[claim]]
 page   = "site/how-to/launcher.md"
 text   = "matcher over any list, with `x => x.name` saying which text to search."
-source = ["crates/strand-compiler/src/vm/builtins.rs", "crates/strand-fuzzy/src/lib.rs"]
+source = ['''docs/spec.md "It is `apps.search`'s matcher"''', 'crates/strand-compiler/src/vm/builtins.rs "fuzzy: strand_fuzzy::Fuzzy,"', 'crates/strand-services/src/apps.rs "use strand_fuzzy::Fuzzy;"']
 proof  = "crates/strand-compiler/tests/fuzzy.rs::every_word_of_the_query_must_match"
 
 [[claim]]
 page   = "site/how-to/launcher.md"
 text   = "matched, best first, and equal scores stay in the list's order."
-source = ["docs/spec.md"]
+source = ['''docs/spec.md "`ranges: [Range]`, best first, equal scores in the list's order"''']
 proof  = "crates/strand-compiler/tests/fuzzy.rs::the_best_match_comes_first_and_ties_keep_the_list_order"
 
 [[claim]]
 page   = "site/how-to/launcher.md"
 text   = "query gives every item in the list's order."
-source = ["docs/spec.md"]
+source = ['''docs/spec.md "A blank query gives every item in the list's order"''']
 proof  = "crates/strand-compiler/tests/fuzzy.rs::an_empty_query_gives_every_item_in_order"
 
 [[claim]]
 page   = "site/how-to/launcher.md"
 text   = "spot each time `query` or a window changes, so there is no last result to"
-source = ["docs/spec.md"]
-proof  = "crates/strand-compiler/tests/fuzzy.rs::it_searches_a_services_list"
+source = ['docs/spec.md "and the result is a `[Match<T>]`"']
+proof  = "crates/strand-compiler/tests/fuzzy.rs::it_searches_a_services_list; crates/strand-compiler/tests/fuzzy.rs::a_plain_list_reruns_on_the_query_and_the_items"
 
 [[claim]]
 page   = "site/how-to/launcher.md"
 text   = "matches the apps' names fuzzily, then their"
-source = ["docs/reference/services.md:20"]
-proof  = "read"
+source = ['''docs/reference/services.md "against the apps' names, then their keywords and generic names"''']
+proof  = "crates/strand-services/tests/apps.rs::apps_lists_searches_launches_and_follows_entries"
 
 [[claim]]
 page   = "site/how-to/launcher.md"
 text   = "An empty query lists every app, the most used"
-source = ["docs/reference/services.md:20"]
-proof  = "read"
+source = ['docs/reference/services.md "An empty query lists every app, the most used first."']
+proof  = "crates/strand-services/tests/apps.rs::apps_lists_searches_launches_and_follows_entries"
 
 [[claim]]
 page   = "site/how-to/launcher.md"
 text   = "its last result while the next one runs"
-source = ["docs/spec.md:1579"]
-proof  = "crates/strand-compiler/tests/vm.rs::await_waits_for_a_pending_load"
+source = ['docs/spec.md "a search keeps its last results while the next one loads"']
+proof  = "crates/strand-compiler/tests/vm.rs::coalesce_covers_a_pending_async"
 
 [[claim]]
 page   = "site/how-to/launcher.md"
 text   = "lays out and mounts only its visible rows"
-source = ["crates/strand-compiler/src/instantiate/mount.rs:3108"]
-proof  = "read"
+source = ['docs/spec.md "A `list` container lays out and mounts only its visible rows"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_2000_row_list_mounts_only_its_window; crates/strand-render/tests/layout.rs::a_2000_row_list_lays_out_only_its_window"
 
 [[claim]]
 page   = "site/how-to/launcher.md"
 text   = "sends the arrow keys and Return from the input to"
-source = ["crates/strand-compiler/src/schema/builtin.schema:2104", "crates/strand-compiler/src/schema/builtin.schema:1812"]
-proof  = "read"
+source = ['crates/strand-compiler/src/schema/builtin.schema "/// Routes arrow keys to a `list`: `nav: results`."', 'docs/spec.md "Return activates the selected row (`on activate`)"']
+proof  = "crates/strand-render/tests/input.rs::keys_go_to_the_focused_input_and_its_list"
 
 [[claim]]
 page   = "site/how-to/launcher.md"
 text   = "each with a `name` and `a.launch()`"
-source = ["crates/strand-services-schema/src/apps.schema:16"]
+source = ['crates/strand-services-schema/src/apps.schema "`for a in h.app.actions { button a.name { on click { a.launch() } } }`."']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/notifications.md"
 text   = "takes the name as soon as it is free"
-source = ["crates/strand-services/src/notifications.rs:56"]
-proof  = "read: the conflict notice names the owner and how to stop it; NameOwnerChanged takes the name when free"
+source = ['crates/strand-services/src/notifications.rs "and asks for the name again the moment it is free, then resolves"', 'crates/strand-services/src/notifications.rs "pub fn conflict_message(owner: Option<Owner>) -> String {"']
+proof  = "crates/strand/tests/dbus_shells.rs::a_notification_conflict_is_shown_and_resolved; crates/strand-services/src/notifications.rs::the_conflict_names_the_owner_and_how_to_stop_it"
 
 [[claim]]
 page   = "site/how-to/notifications.md"
 text   = "Each one leaves it when it expires or is dismissed"
-source = ["docs/reference/services.md:340"]
-proof  = "read"
+source = ['docs/reference/services.md "The notifications to show now; each leaves when it expires or is dismissed."']
+proof  = "crates/strand-services/tests/notifications.rs::the_server_serves_the_spec_and_the_store"
 
 [[claim]]
 page   = "site/how-to/notifications.md"
 text   = "which the service"
-source = ["crates/strand-services-schema/src/notifications.schema"]
+source = ['crates/strand-services-schema/src/notifications.schema "/// A desktop notification, keyed by `id`."', 'crates/strand-services-schema/src/notifications.schema "record Notification key id {"']
 proof  = "read: Notification is keyed by id"
 
 [[claim]]
 page   = "site/how-to/notifications.md"
 text   = "The time is the sender's, or six"
-source = ["crates/strand-services-schema/src/notifications.schema:36"]
+source = ['crates/strand-services-schema/src/notifications.schema "/// How long the sender asked it to show; null leaves it to the shell:"', 'crates/strand-services-schema/src/notifications.schema "/// `after n.timeout ?? 6s { n.expire() }`."']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/notifications.md"
 text   = "`n.expire()` ends the popup as a timeout"
-source = ["crates/strand-services-schema/src/notifications.schema:63"]
-proof  = "read"
+source = ['crates/strand-services-schema/src/notifications.schema "/// Ends its popup, as a timeout does; it stays in `all`, still open"']
+proof  = "crates/strand-services/tests/notifications.rs::the_server_serves_the_spec_and_the_store"
 
 [[claim]]
 page   = "site/how-to/notifications.md"
 text   = "no timers of its own"
-source = ["crates/strand-services/src/notifications.rs:29"]
+source = ['crates/strand-services/src/notifications.rs "The server sets no timers: the shell"']
 proof  = "read: the server sets no timers; the shell expires popups"
 
 [[claim]]
 page   = "site/how-to/notifications.md"
 text   = "for senders that say (0 to 1)"
-source = ["crates/strand-services-schema/src/notifications.schema:48"]
+source = ['''crates/strand-services-schema/src/notifications.schema "/// How far along what it reports is, 0 to 1 (the sender's `value`"''']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/notifications.md"
 text   = "new notifications that are not"
-source = ["crates/strand-services/src/notifications.rs:911"]
+source = ['crates/strand-services/src/notifications.rs "// shows unless do-not-disturb holds it back."', 'crates/strand-services/src/notifications.rs "|| n.urgency == Urgency::Critical;"', 'crates/strand-services/src/notifications.rs "arrive(&mut s.all, n.clone());"']
 proof  = "read: a new popup shows unless dnd holds it back (critical excepted); it still goes in `all`"
 
 [[claim]]
 page   = "site/how-to/osd.md"
 text   = "a step from the value it has now, and it never goes below 0"
-source = ["crates/strand/src/services/mod.rs:354"]
-proof  = "crates/strand/src/services/mod.rs (set_text \"+5%\" test at line 627)"
+source = ['docs/spec.md "a signed number or percentage (`+5%`) is a step from the current value, never below 0"', 'crates/strand/src/services/mod.rs "(current()? + n).max(0.0)"']
+proof  = "crates/strand/src/services/mod.rs::strand_set_writes_service_fields"
 
 [[claim]]
 page   = "site/how-to/osd.md"
 text   = "fades out 1.2 seconds after the last one"
-source = ["docs/spec.md:1542"]
+source = ['docs/spec.md "debounces: it runs once, `T` after the last change."']
 proof  = "crates/strand-compiler/tests/instantiate.rs::on_change_skips_boot_and_debounces"
 
 [[claim]]
 page   = "site/how-to/osd.md"
 text   = "is on the focused monitor, above everything,"
-source = ["crates/strand-compiler/src/schema/builtin.schema:1874"]
-proof  = "read: osd defaults"
+source = ['docs/spec.md "defaults to the focused monitor, the overlay layer, and click-through"']
+proof  = "read: spec.md 5.1; crates/strand-compiler/tests/hit_through.rs::an_osd_is_left_alone holds the empty input region"
 
 [[claim]]
 page   = "site/how-to/osd.md"
 text   = "the first value, nor for a value a reload writes, nor when"
-source = ["docs/spec.md:1527"]
-proof  = "crates/strand-compiler/tests/instantiate.rs::on_change_skips_boot_and_debounces (a sink switch pops nothing); reload.rs::on_change_does_not_fire_on_reload"
+source = ['docs/spec.md "**never** runs for the first value (at boot or mount), for a value a reload writes (section 10.3), or when a watched service path switches to another object"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::on_change_skips_boot_and_debounces (a sink switch pops nothing); crates/strand-compiler/tests/reload.rs::on_change_does_not_fire_on_reload"
 
 [[claim]]
 page   = "site/how-to/osd.md"
 text   = "runs once, 1.2"
-source = ["docs/spec.md:1542"]
+source = ['docs/spec.md "debounces: it runs once, `T` after the last change."']
 proof  = "crates/strand-compiler/tests/instantiate.rs::on_change_skips_boot_and_debounces"
 
 [[claim]]
 page   = "site/how-to/osd.md"
 text   = "`roll: true` on the `text` rolls the digits"
-source = ["crates/strand-compiler/src/schema/builtin.schema:2037"]
+source = ['crates/strand-compiler/src/schema/builtin.schema "/// Rolls the digits when the number changes: `roll: true`."']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/osd.md"
 text   = "puts a copy on each"
-source = ["docs/spec.md:281"]
+source = ['docs/spec.md "is on each monitor it picks as a bar is: an instance per monitor with `screen` in scope and its own state"']
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: `osd O { screens: all; … text screen.name }` checks clean"
 
 [[claim]]
 page   = "site/how-to/wallpaper-theme.md"
 text   = "quantises a 128 px downscale of the image away from the logic thread"
-source = ["crates/strand-theme/src/image.rs:1", "crates/strand-theme/src/image.rs:34"]
+source = ['''crates/strand-theme/src/image.rs "a wallpaper's seed colour, quantised off-thread"''', 'crates/strand-theme/src/image.rs "pub const DOWNSCALE: u32 = 128;"']
 proof  = "read: DOWNSCALE = 128, quantised on a worker thread"
 
 [[claim]]
 page   = "site/how-to/wallpaper-theme.md"
 text   = "caches the result by the file's content"
-source = ["crates/strand-theme/src/image.rs:9"]
+source = ['crates/strand-theme/src/image.rs "from a 128 px downscale and cached by content hash."', 'crates/strand-theme/src/image.rs "seen (a wallpaper copied, touched or swapped back) costs no decode."']
 proof  = "read: BLAKE3 hash of the file"
 
 [[claim]]
 page   = "site/how-to/wallpaper-theme.md"
 text   = "It is an `Async`."
-source = ["crates/strand-compiler/src/schema/builtin.schema:1400"]
+source = ['crates/strand-compiler/src/schema/builtin.schema "fn material(image: path, variant: Variant = tonal_spot, dark: bool = false, contrast: float = 0) -> Async<Palette>"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/wallpaper-theme.md"
 text   = "While a new picture is read the old palette holds"
-source = ["crates/strand-theme/src/image.rs:7"]
+source = ['crates/strand-theme/src/image.rs "last seed it produced, so the old palette holds until the new one is"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/wallpaper-theme.md"
 text   = "**The file is watched**, and so is the target of a link to it."
-source = ["crates/strand-compiler/src/vm/theme.rs:59"]
+source = ['crates/strand-compiler/src/vm/theme.rs "/// Wallpapers the current evaluations look up (to watch, with their"']
 proof  = "crates/strand/src/run/tests.rs::the_theme_follows_the_portal_the_wallpaper_and_strand_set (the file, its symlink swapped, the target replaced)"
 
 [[claim]]
 page   = "site/how-to/wallpaper-theme.md"
 text   = "Strand makes it the first time a value is"
-source = ["docs/spec.md:2001"]
-proof  = "read"
+source = ['docs/spec.md "The first write creates a file that does not exist yet"']
+proof  = "crates/strand-core/tests/settings.rs::a_missing_directory_is_created_for_the_first_write"
 
 [[claim]]
 page   = "site/how-to/wallpaper-theme.md"
 text   = "**The last palette is kept** across restarts"
-source = ["crates/strand-theme/src/image.rs:12"]
+source = ['''crates/strand-compiler/src/vm/theme.rs "/// (M5) The persisted last palette's file name, in [`ThemeHost`]'s cache"''', 'crates/strand-theme/src/image.rs "unchanged wallpaper is answered at once and never flashes default"']
 proof  = "crates/strand/src/run/tests.rs::the_theme_follows_the_portal_the_wallpaper_and_strand_set"
 
 [[claim]]
 page   = "site/how-to/wallpaper-theme.md"
 text   = "`#rrggbb` and rewrites it after every switch"
-source = ["crates/strand-compiler/src/template/render.rs:134", "docs/spec.md:1823"]
-proof  = "read"
+source = ['docs/spec.md "`hex(c, alpha: false, hash: true)` writes `#rrggbb`"', 'docs/spec.md "A bare colour is `hex(c)`."', 'docs/spec.md "wallpaper once its `Async` palette resolves"', 'docs/spec.md "The file is written only when the rendered bytes differ from what Strand last wrote"']
+proof  = "crates/strand/tests/m5/export.rs::file_outputs_follow_the_theme (a `#` value; the flip is written once and run once)"
 
 [[claim]]
 page   = "site/how-to/wallpaper-theme.md"
 text   = "`tonal_spot` (the default),"
-source = ["crates/strand-compiler/src/schema/builtin.schema:53", "crates/strand-compiler/src/schema/builtin.schema:1400"]
+source = ['crates/strand-compiler/src/schema/builtin.schema "enum Variant { tonal_spot, vibrant, expressive, neutral, monochrome, fidelity, content, rainbow, fruit_salad }"', 'crates/strand-compiler/src/schema/builtin.schema "fn material(image: path, variant: Variant = tonal_spot,"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/wallpaper-theme.md"
 text   = "0 for normal and 1 for high"
-source = ["docs/reference/services.md:448"]
+source = ['docs/reference/services.md "as `material(contrast:)` takes it: 0 for normal, 1 for high."']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "A relative path is beside your config; `~/…` is in your home"
-source = ["docs/spec.md:1986"]
+source = ['docs/spec.md "A relative path is resolved against the config directory; `~/…` is in the home directory."']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "**Edits apply live, field by field.**"
-source = ["crates/strand-core/src/settings.rs:10"]
+source = ['docs/spec.md "Edits to the file apply live, as per-field writes."']
 proof  = "crates/strand-compiler/tests/instantiate.rs::settings_files_are_read_and_written_back"
 
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "A bad value keeps that field's last good value"
-source = ["crates/strand-core/src/settings.rs:10"]
-proof  = "read"
+source = ['''docs/spec.md "A bad value keeps that field's last good value with a diagnostic; the other fields still apply."''', '''crates/strand-core/src/settings.rs "keeps that field's last good value and reports"''']
+proof  = "crates/strand-core/tests/settings.rs::each_field_is_checked_on_its_own"
 
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "A line you delete goes back to its default."
-source = ["crates/strand-core/src/settings.rs:14"]
-proof  = "read"
+source = ['docs/spec.md "A deleted key springs back to its default."']
+proof  = "crates/strand-core/tests/settings.rs::a_deleted_key_springs_back_to_its_default"
 
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "keeping its comments, spacing and order"
-source = ["crates/strand-core/src/settings.rs:20"]
-proof  = "crates/strand-compiler/tests/instantiate.rs::strand_set_reaches_settings_that_are_not_exported (a comment kept)"
+source = ['crates/strand-core/src/settings.rs "field by field, keeping comments, spacing and order."']
+proof  = "crates/strand-core/tests/settings.rs::ui_writes_go_through_toml_edit_keeping_comments_spacing_and_order"
 
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "Writes are saved after 250 ms of"
-source = ["crates/strand-core/src/persist.rs:55"]
+source = ['crates/strand-core/src/persist.rs "pub const PERSIST_DEBOUNCE: Duration = Duration::from_millis(250);"', 'crates/strand-core/src/settings.rs "[`PERSIST_DEBOUNCE`] of quiet it is applied to what the file holds,"']
 proof  = "read: PERSIST_DEBOUNCE"
 
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "`strand set` writes a field, as the button"
-source = ["crates/strand-compiler/src/instantiate/mod.rs:2014"]
+source = ['''docs/spec.md "`strand set` on a `state` or a **settings field** is an ordinary write, the same as a handler's"''']
 proof  = "crates/strand-compiler/tests/instantiate.rs::strand_set_reaches_settings_that_are_not_exported (the file is written)"
 
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "when two files declare settings named `prefs`, only that form works"
-source = ["crates/strand-compiler/src/instantiate/mod.rs:2119"]
+source = ['docs/spec.md "`settings.field` when exactly one file declares settings with that name"', 'crates/strand-compiler/src/instantiate/mod.rs "more than one file has settings `{}`: name it as `<file>.{path}`"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "a missing file"
-source = ["docs/spec.md:2002"]
+source = ['docs/spec.md "A file that does not exist yet gives every field its default"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "Writes follow symbolic links and replace the file through a temporary"
-source = ["crates/strand-core/src/settings.rs:26"]
-proof  = "read"
+source = ['crates/strand-core/src/settings.rs "**Writes follow symlinks** and replace the target via a temp file"']
+proof  = "crates/strand-core/tests/settings.rs::writes_follow_symlinks_and_replace_the_target"
 
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "gets the"
-source = ["crates/strand-core/src/settings.rs:28"]
-proof  = "read: a read-only target gets an overlay in the state directory, with a notice"
+source = ['crates/strand-core/src/settings.rs "an overlay in `$XDG_STATE_HOME/strand/settings/` instead, with a"']
+proof  = "crates/strand-core/tests/settings.rs::a_read_only_target_goes_to_an_overlay_with_a_notice"
 
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "`segmented { options: Edge; value: <-> prefs.position }` is a picker for the edge, a segment for each of `Edge`'s variants; `options: [Edge.top, Edge.bottom]` offers only those two."
-source = ["crates/strand-compiler/src/schema/builtin.schema:2128", "crates/strand-compiler/src/check/expr.rs:538"]
+source = ['crates/strand-compiler/src/schema/builtin.schema "/// One choice of several: `segmented { options: Look; value: <-> theme.look }`."', 'crates/strand-compiler/src/schema/builtin.schema "/// The choices: an enum or a list."', '''crates/strand-compiler/src/check/expr.rs "// `options: Edge`: a schema enum itself, as a config enum's name"''']
 proof  = "crates/strand-compiler/tests/instantiate.rs::a_builtin_enum_gives_a_segmented_its_options; `options: [Edge.top, Edge.bottom]` checked clean in the container (fact-check)"
 
 [[claim]]
 page   = "site/how-to/settings-file.md"
 text   = "would let other"
-source = ["crates/strand-compiler/src/instantiate/mod.rs:2083"]
+source = ['docs/spec.md "makes a top-level value readable from other files and from the command line as `file.name`"']
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: `export state prefs from …` read as `bar.prefs.position` from another file checks clean"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "`rw` makes it"
-source = ["docs/spec.md:660"]
+source = ['docs/spec.md "`name: type rw = Property` is writable"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "`strand set ppd.profile balanced` sets the property"
-source = ["crates/strand/src/run/request/set.rs:39"]
+source = ['''crates/strand/src/run/request/set.rs "// The config's own service (`ppd.profile`): its record is in"''']
 proof  = "read: the config's own service field"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "each parameter is one argument of the method"
-source = ["docs/spec.md:825"]
-proof  = "read"
+source = ['docs/spec.md "Parameters are as above, plus `[text]`."']
+proof  = "crates/strand-services/tests/custom.rs::a_dbus_declarations_actions_call_its_methods"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "however long the daemon takes"
-source = ["docs/spec.md:831"]
+source = ['docs/spec.md "its answer is waited for however long the daemon takes"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "a misspelt method or property is an error with a"
-source = ["docs/spec.md:827"]
-proof  = "read: check::dbus_method, check::dbus_property"
+source = ['docs/spec.md "a missing method is an error with a did-you-mean, as is another number of arguments"']
+proof  = "crates/strand-compiler/tests/checker.rs::dbus_actions_are_checked_against_introspection; crates/strand-compiler/tests/checker.rs::dbus_services_are_checked_against_introspection"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "cannot read the object's methods, they are not checked and a warning"
-source = ["docs/spec.md:834"]
-proof  = "strand check in the container (scripts/container/run.sh) on a probe config: with no system bus, `from dbus system` gives the warning check::dbus_unchecked"
+source = ['''docs/spec.md "When the object's methods cannot be read, the actions are not checked and a warning says so."''']
+proof  = "crates/strand-compiler/tests/checker.rs::unread_methods_leave_actions_unchecked_with_a_warning"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "starts when the shell first reads it and"
-source = ["docs/spec.md:697"]
+source = ['docs/spec.md "A custom service starts when the program first reads it and stops 5 s after its last reader leaves, as builtin services do"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "shell stands between Strand and the program"
-source = ["docs/spec.md:718"]
-proof  = "read"
+source = ['docs/spec.md "the program is run directly, with no shell between strand and it."']
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_declared_action_asks_for_its_command_with_whole_arguments; crates/strand/tests/services.rs::a_click_runs_a_declared_actions_command"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "lists every action with its command"
-source = ["docs/spec.md:820"]
-proof  = "strand check in the container (scripts/container/run.sh) on a probe config: `strand check` prints `dispatch(ws: int) runs: hyprctl dispatch workspace {ws}`"
+source = ['''docs/spec.md "`strand check` lists every action's command"''', 'crates/strand/src/check.rs ""  {}({params}) runs: {}{}","']
+proof  = "crates/strand/src/check.rs::actions_are_listed_and_checked_against_permit_exec"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "**It runs detached.**"
-source = ["docs/spec.md:737"]
+source = ['docs/spec.md "Its command runs detached, in its own process group"', 'docs/spec.md "the handler does not wait for it"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "`strand watch` shows a notice"
-source = ["docs/spec.md:739"]
+source = ['docs/spec.md "is logged and becomes a `strand watch` notice naming the action"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "ending a run still going"
-source = ["docs/spec.md:767"]
+source = ['docs/spec.md "a newer call supersedes the one in flight, whose command is ended"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "it has 10 seconds, as a polled command has"
-source = ["docs/spec.md:785"]
+source = ['docs/spec.md "It has 10 s, as a `from poll` command has"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "A `text` result is what the program printed, trimmed."
-source = ["crates/strand/src/services/custom.rs:359"]
+source = ['crates/strand/src/services/custom.rs "/// itself, trimmed; any other type reads the output as a document (JSON,"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "(`SIGINT`, then `SIGTERM` and `SIGKILL` if the program"
-source = ["docs/spec.md:801"]
+source = ['''docs/spec.md "Each one's process group gets SIGINT, as a terminal's Ctrl-C sends it, then SIGTERM 2 s later if its program has not ended, then SIGKILL 2 s after that"''', 'crates/strand/src/run/exec.rs "/// (lockmon) `rec.stop()`: SIGINT, SIGTERM, SIGKILL ([`stop_group`])."']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "strand call notifications.clear"
-source = ["crates/strand/src/entry.rs:35", "crates/strand/src/run/request/call.rs:1"]
+source = ['crates/strand/src/entry.rs "invoke a service action (strand call notifications.clear)"', 'crates/strand/src/run/request/call.rs "//! `strand call <service.action> [args]` (S-ipc): a service-level action"']
 proof  = "read"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "git-only and marked unstable"
-source = ["docs/spec.md:701"]
+source = ['''docs/spec.md "built from `strand`'s library with services of its own (git-only and marked unstable)"''']
 proof  = "read"
 
 # Live examples (docs/live-examples.md), checked against the code and by
@@ -2823,35 +2822,36 @@ text   = "`PATH`, which may not hold `~/.local/bin`, where the"
 source = ['scripts/install.sh "BIN=${bin_dir:-$HOME/.local/bin}"', 'scripts/install.sh "for n in $LINKED; do link_into "$BIN" "$n" "$DATA/current/$n"; done"']
 proof  = "read: the links' directory; a compositor started by a display manager reads the session's PATH, not a shell profile's"
 
+
 # --- island, reporting ---
 [[claim]]
 page   = "site/how-to/island.md"
 text   = "takes the whole width of the monitor from its first frame"
-source = ["docs/decisions.md#centred-surface"]
+source = ['docs/design.md "sized by its content along that edge takes its whole output there and never resizes on that axis"', '''docs/decisions.md "panel or OSD anchored to one edge now asks for its output's size along that edge from the first frame"''']
 proof  = "crates/strand-render/tests/layout.rs::a_panel_centred_on_one_axis_never_resizes_there; eval/scenarios/docs/island.scn's trace: the surface is 460 wide on a 460 output on every frame"
 
 [[claim]]
 page   = "site/how-to/island.md"
 text   = "only the box takes the pointer"
-source = ["docs/decisions.md#centred-surface"]
+source = ['docs/decisions.md "the growth spring, the box alone taking input"']
 proof  = "eval/scenarios/docs/island.scn's trace: its input region is the box's rectangle on every frame"
 
 [[claim]]
 page   = "site/how-to/island.md"
 text   = "keeps the tallest height it has needed, across restarts"
-source = ["docs/decisions.md#kept-size"]
+source = ['docs/design.md "One sized by its content with a `~` on its size also keeps, on the axes its content sizes, the largest size it has had, across sessions under the same config"']
 proof  = "crates/strand/tests/kept_sizes.rs::a_panel_maps_next_session_at_the_size_it_kept: the first size asked for and the first buffer of the next run; eval/scenarios/docs/island.scn's trace: the surface stays 88 tall from the frame it opens, through the close"
 
 [[claim]]
 page   = "site/how-to/island.md"
 text   = "an `exit { height: 0 }` collapses the card first"
-source = ["eval/scenarios/docs/island.scn"]
+source = ['docs/decisions.md "the card collapses in four frames and the width follows only ten frames later"']
 proof  = "seen in a trace of this file with that exit: height 87 to 28 in frames 69-72, width unchanged until frame 83"
 
 [[claim]]
 page   = "site/how-to/island.md"
 text   = "`exclusive: 28` reserves room for the pill"
-source = ["docs/spec.md:334"]
+source = ['docs/spec.md "a length (in px) that much whatever its size"']
 proof  = "read: spec.md section 6, `exclusive:` on a panel takes a length"
 
 [[claim]]
@@ -2900,34 +2900,33 @@ proof  = "crates/strand-compiler/tests/theme.rs::a_palette_refuses_tokens_and_un
 [[claim]]
 page   = "site/how-to/theme-from-file.md"
 text   = "reads the file again each time it changes"
-source = ["site/concepts/services.md"]
+source = ['docs/spec.md "`from file path { fields }` reads a file, again whenever it changes"']
 proof  = "seen on headless sway: rewriting the file sprang the colours (decisions.md palette-value)"
 
 [[claim]]
 page   = "site/how-to/theme-from-file.md"
 text   = "a missing or broken"
-source = ["docs/decisions.md"]
-proof  = "seen on headless sway: a broken and a removed file both went to `from` (decisions.md palette-value)"
+source = ['docs/spec.md "A role left out or null comes from `from`"', 'docs/decisions.md "a broken or missing file sprang to `from`"']
+proof  = "crates/strand-compiler/tests/theme.rs::a_palette_follows_its_colours_and_falls_back_when_they_go; seen on headless sway: a broken and a removed file both went to `from` (decisions.md palette-value)"
 
 [[claim]]
 page   = "site/how-to/theme-from-file.md"
 text   = "which is also what you get if the file goes"
-source = ["docs/decisions.md"]
+source = ['docs/spec.md "A role left out or null comes from `from`"']
 proof  = "seen on headless sway: a removed file sprang to `from` (decisions.md palette-value)"
 
 [[claim]]
 page   = "site/how-to/theme-from-file.md"
 text   = "with no spring to write yourself"
-source = ["crates/strand-compiler/src/instantiate/mod.rs"]
+source = ['docs/spec.md "A change in its colours is a swap as any other."']
 proof  = "crates/strand-compiler/tests/theme.rs::a_palette_follows_its_colours_and_falls_back_when_they_go; seen on headless sway"
 
 [[claim]]
 page   = "site/how-to/theme-from-file.md"
 text   = "Without `from`, Strand works out the roles"
-source = ["crates/strand-theme/src/palette.rs"]
+source = ['docs/spec.md "without `from` the table derives it, and with no colour at all the result is null"']
 proof  = "crates/strand-compiler/tests/theme.rs::a_palette_from_hand_written_colours_fills_the_rest"
 
-# --- keys ---
 [[claim]]
 page   = "site/start/install.md"
 text   = "which also lets it run as root"
@@ -2946,92 +2945,95 @@ text   = "0.55 and later, and its only kind of config from 0.57"
 source = ['''docs/decisions.md "Lua is Hyprland's only kind of config from 0.57"''', 'scripts/container/hyprland-nested.sh "Hyprland --config "$XDG_RUNTIME_DIR/hyprland.lua""']
 proof  = "seen in the matrix image's hyprland 0.57.0-1, 2026-11-01: the binary holds no `hyprland.conf` and the package ships only `hyprland.lua`; https://wiki.hypr.land/0.56.0/Configuring/Start/ has hyprlang deprecated, not gone, in 0.56"
 
+
+# --- keys ---
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "the typing stays in the box"
-source = ["crates/strand-render/src/input.rs", "docs/spec.md#67-layout-and-input"]
+source = ['''docs/spec.md "a launcher's button runs and the typing stays in the field"''']
 proof  = "crates/strand-compiler/tests/focus.rs::a_click_on_a_button_leaves_a_focused_input_typing"
 
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "reading them wakes nothing while it stands still"
-source = ["crates/strand-render/src/renderer/lists.rs", "docs/spec.md#67-layout-and-input"]
+source = ['docs/spec.md "so a read wakes nothing at rest."']
 proof  = "crates/strand-compiler/tests/focus.rs::reading_scroll_y_wakes_nothing_at_rest"
 
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "They stop at the nearest container with `arrows:`"
-source = ["crates/strand-render/src/input.rs", "docs/spec.md#67-layout-and-input"]
+source = ['docs/spec.md "It is scoped to the nearest element around the focused node with an `arrows:`, and does not reach into another such element inside it"']
 proof  = "crates/strand-compiler/tests/focus.rs::arrows_stay_inside_the_nearest_container"
 
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "Down from above an empty cell of a short last line goes to the last row"
-source = ["crates/strand-render/src/input.rs", "docs/spec.md#67-layout-and-input"]
+source = ['docs/spec.md "Down from above an empty cell of a short last line goes to the last row"']
 proof  = "crates/strand-compiler/tests/selection.rs::a_grids_arrows_move_by_geometry"
 
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "Left and Right stay the caret's"
-source = ["crates/strand-render/src/input.rs"]
+source = ['''docs/spec.md "In an `input` with `nav:` to one, Up and Down move it and Left and Right stay the caret's."''', '''docs/spec.md "In an `input` with `nav:` to one, Left and Right stay the caret's"''']
 proof  = "crates/strand-compiler/tests/selection.rs::an_inputs_caret_keeps_left_and_right"
 
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "They go to the row the keys would"
-source = ["crates/strand-render/src/input.rs", "docs/spec.md#67-layout-and-input"]
+source = ['docs/spec.md "the same `selected` row, scrolled into view, a row past the mounted window included"', 'crates/strand-compiler/src/schema/builtin.schema "/// key does: scrolled into view, a row not mounted yet included."']
 proof  = "crates/strand-compiler/tests/selection.rs::the_actions_reach_rows_beyond_the_window"
 
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "`select(i)` past either end stops at that end"
-source = ["crates/strand-render/src/input.rs"]
+source = ['docs/spec.md "`select` past either end selects that end."']
 proof  = "crates/strand-compiler/tests/selection.rs::select_clamps_and_moves_stop_at_the_ends"
 
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "`wrap: true` takes the arrows, `next()` and `prev()` round"
-source = ["crates/strand-render/src/input.rs"]
+source = ['docs/spec.md "**`wrap: true` on a `list`** takes the arrows and `next()` and `prev()` round from one end to the other"']
 proof  = "crates/strand-compiler/tests/selection.rs::wrap_goes_round_for_arrows_and_actions_only"
 
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "the innermost one wins"
-source = ["crates/strand-render/src/input.rs", "docs/spec.md#67-layout-and-input"]
+source = ['docs/spec.md "The router looks from the focused node out to its surface root, the innermost first"']
 proof  = "crates/strand-compiler/tests/interaction.rs::the_innermost_claim_wins_and_observers_do_not_hear_it"
 
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "the last one written wins"
-source = ["crates/strand-scene/src/keys.rs"]
-proof  = "crates/strand-compiler/tests/interaction.rs::the_innermost_claim_wins_and_observers_do_not_hear_it"
+source = ['docs/spec.md "On one element, the last written active claim wins"', 'crates/strand-scene/src/keys.rs "/// source order: the last written wins, as among `when`s."']
+proof  = "crates/strand-scene/src/keys.rs::the_last_written_active_claim_wins"
 
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "the key carries on as if the claim were not there"
-source = ["docs/spec.md#63-conditional-style"]
+source = ['docs/spec.md "the first active claim of the key takes it"']
 proof  = "crates/strand-compiler/tests/interaction.rs::a_claim_in_when_stops_escape_only_while_it_holds"
 
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "a key matches by its name and then by its Latin name"
-source = ["crates/strand-scene/src/keys.rs"]
+source = ['''docs/spec.md "When the pattern holds Ctrl, Alt or Super it also matches by the key's Latin fallback"''']
 proof  = "crates/strand-scene/src/keys.rs::the_latin_fallback_matches_a_non_latin_layout"
 
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "It does not hear a key something claimed."
-source = ["crates/strand-render/src/input.rs"]
+source = ['docs/spec.md "and every other handler, `on key(k)` observers included, do not"']
 proof  = "crates/strand-compiler/tests/interaction.rs::the_innermost_claim_wins_and_observers_do_not_hear_it"
 
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "the default stays stopped"
-source = ["docs/spec.md#67-layout-and-input"]
+source = ['docs/spec.md "The default stays stopped: the router has stopped it before logic hears of the key."']
 proof  = "crates/strand-compiler/tests/interaction.rs::propagate_passes_a_claim_outward_with_the_default_stopped"
 
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "is an error from `strand check`"
-source = ["crates/strand-compiler/src/check/secrets.rs"]
+source = ['docs/spec.md "**Around a password.** A claim of a key that types"', 'crates/strand-compiler/src/check/secrets.rs ""a claim of `{}` would eat what is typed into a password","']
 proof  = "crates/strand-compiler/tests/secrets.rs::a_claim_that_would_eat_a_password_is_an_error"
+
