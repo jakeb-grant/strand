@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds what the lock VM scenarios run, on the HOST side: through
-# scripts/container/run.sh on the laptop (its image is the guest's
-# Ubuntu release, so the binaries run there), natively in CI's lock-vm
-# job. Writes target/lockvm/bins.env, which all.sh reads in the guest:
+# scripts/container/run.sh on the laptop and in CI's lock-vm job (its image
+# is the guest's Ubuntu release, so the binaries run there). Writes
+# target/lockvm/bins.env, which all.sh reads in the guest:
 #   SESSION_LOCK_TEST  strand-surface's tests/session_lock.rs
 #   VM_PAM_TEST        strand-auth's tests/vm_pam.rs
 #   HELPER             the strand-auth helper with the default features

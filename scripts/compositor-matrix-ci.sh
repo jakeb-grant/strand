@@ -3,8 +3,8 @@
 # archlinux:latest container (Hyprland and niri are packaged there, not
 # on the Ubuntu runner): installs sway, niri, Hyprland, labwc, grim, seatd and
 # Mesa, then runs scripts/compositor-matrix.sh for each compositor as an
-# unprivileged user (Hyprland refuses root) with the test binary built on
-# the runner (the same path: the repository is mounted where the runner
+# unprivileged user (Hyprland refuses root) with the test binary built in
+# the CI image (the same path: the repository is mounted where the runner
 # checked it out).
 #
 # Usage (as root): scripts/compositor-matrix-ci.sh TEST_BINARY

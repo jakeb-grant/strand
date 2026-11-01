@@ -10,16 +10,22 @@ on:
   workflow_dispatch:
 
 # A newer push to a branch or pull request cancels the run it supersedes.
-# Nothing else is ever cancelled, or even made to wait: main, tags,
-# schedule and dispatch each get a group of their own (the run's id),
-# because a shared group, even with cancel-in-progress off, runs one at a
-# time and replaces a pending run with the next. deploy and release run
-# only on main and tags, so the run they sit in never shares a group; their
-# job-level groups keep their one-at-a-time, newest-pending behaviour
-# (decisions.md ci-speed-2).
+# No run is cancelled for any other reason, or made to wait, here: main, tags,
+# schedule and dispatch each get a group of their own (the run's id), because
+# a shared group, even with cancel-in-progress off, runs one at a time and
+# replaces a pending run with the next. Of the job-level groups, deploy's and
+# release's run one at a time and replace a job waiting there with a newer
+# one, which is what they are for; image-publish's can only drop a run that
+# is being superseded, said at that job (decisions.md ci-speed-2).
 concurrency:
   group: ${{ ((github.event_name == 'push' && github.ref_type == 'branch' && github.ref != 'refs/heads/main') || github.event_name == 'pull_request') && format('ci-{0}', github.ref) || format('ci-run-{0}', github.run_id) }}
   cancel-in-progress: ${{ (github.event_name == 'push' && github.ref_type == 'branch' && github.ref != 'refs/heads/main') || github.event_name == 'pull_request' }}
+
+# What the repository's default gives today, written here so that changing
+# that setting can't hand every job, test code included, a token that writes.
+# The three jobs that write name their own scopes: image-publish, release and
+# prune-caches.
+permissions: read-all
 
 env:
   CARGO_TERM_COLOR: always
@@ -56,25 +62,39 @@ env:
 jobs:
   # The CI image, one for these jobs and the laptop: scripts/container/
   # Dockerfile at ghcr.io/jakeb-grant/strand-ci:<its hash>, published the
-  # first time a run needs it, never written again (decisions.md ci-speed-2).
-  # `image` looks, holding no credentials; `image-publish` is the only job
+  # first time a run needs it and not written again (decisions.md ci-speed-2).
+  # `image` looks, with no registry login; `image-publish` is the only job
   # that may write to packages, and always runs, so the jobs after it need no
-  # special `if`. Only a run with something to publish takes the shared
-  # group, where it checks again before it builds: a branch push and its pull
-  # request of one new Dockerfile would otherwise both push. GitHub keeps only
-  # the newest pending job of a group, so a third run with the same new
-  # Dockerfile cancels the second's publish, and that run needs a re-run.
+  # special `if`. A branch's runs that will publish share a group, by branch: a
+  # push and its pull request start together with one new Dockerfile, and one
+  # waits for the other, then finds the tag. GitHub keeps only the newest job
+  # waiting in a group, so a third run there replaces the second; but a third
+  # takes a new push or a reopened pull request, and the workflow's group above
+  # is already cancelling what it replaces. Every other run is alone in its
+  # group here and nothing can cancel it: main, a tag, schedule and dispatch
+  # may publish side by side with another ref, publish-image.sh asking the
+  # registry before its build and again before its push.
   # A fork's pull request gets no write access from GitHub and is not asked
   # to try: run.sh pulls the tag or, for a Dockerfile of its own, builds it.
   image:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
     outputs:
-      missing: ${{ steps.check.outputs.missing }}
+      publish: ${{ steps.check.outputs.publish }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - id: check
-        run: echo "missing=$(scripts/container/publish-image.sh missing)" >>"$GITHUB_OUTPUT"
+        env:
+          MAY_WRITE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          missing=$(scripts/container/publish-image.sh missing)
+          publish=false
+          if [ "$missing" = true ] && [ "$MAY_WRITE" = true ]; then publish=true; fi
+          echo "publish=$publish" >>"$GITHUB_OUTPUT"
 
   image-publish:
     needs: image
@@ -84,15 +104,13 @@ jobs:
       contents: read
       packages: write
     concurrency:
-      group: ${{ needs.image.outputs.missing == 'true' && 'ci-image-publish' || format('ci-image-none-{0}', github.run_id) }}
+      group: ${{ needs.image.outputs.publish == 'true' && ((github.event_name == 'push' && github.ref_type == 'branch' && github.ref != 'refs/heads/main') || github.event_name == 'pull_request') && format('ci-image-publish-{0}', github.head_ref || github.ref_name) || format('ci-image-none-{0}', github.run_id) }}
       cancel-in-progress: false
-    env:
-      PUBLISH: ${{ needs.image.outputs.missing == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     steps:
       - uses: actions/checkout@v7
-        if: env.PUBLISH == 'true'
+        if: needs.image.outputs.publish == 'true'
       - name: Publish the image
-        if: env.PUBLISH == 'true'
+        if: needs.image.outputs.publish == 'true'
         env:
           TOKEN: ${{ github.token }}
         run: |
@@ -105,7 +123,7 @@ jobs:
   # commands in the image, through run.sh as on the laptop.
   # scripts/container/ci.sh runs the same steps in order, in one container.
 
-  # Formatting and lints: no tests, the build headers only.
+  # Formatting and lints: no tests.
   lint:
     needs: image-publish
     if: github.event_name != 'schedule'
@@ -118,7 +136,6 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
-          tier: headers
           free-disk: "false"
       - run: scripts/container/run.sh cargo fmt --all --check
       - run: scripts/container/run.sh cargo clippy --workspace --all-targets
@@ -814,8 +831,12 @@ jobs:
           else
             echo "id=edge-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
           fi
-      - run: |
-          scripts/container/run.sh bash -c "PATH=\$PWD/target/container/tools/bin:\$PATH scripts/release/package.sh ${{ steps.id.outputs.id }} $RUNNER_TEMP/dist"
+      # A tag's name may hold shell syntax: it stays an argument throughout.
+      - env:
+          ARCHIVE_ID: ${{ steps.id.outputs.id }}
+        run: |
+          # shellcheck disable=SC2016
+          scripts/container/run.sh bash -c 'PATH=$PWD/target/container/tools/bin:$PATH scripts/release/package.sh "$1" "$2"' bash "$ARCHIVE_ID" "$RUNNER_TEMP/dist"
         if: steps.run.outputs.go == 'true'
       - run: scripts/container/run.sh scripts/release/test-publish.sh
         if: steps.run.outputs.go == 'true'
@@ -891,7 +912,7 @@ jobs:
   # (scripts/release/publish.sh): a push to main whose every job passed
   # replaces the `edge` pre-release's build, unless main has moved on
   # since; a tag vX, which must name the workspace's version, becomes
-  # the release vX. The only job whose token may write.
+  # the release vX. The only job whose token may write to the repository.
   release:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: [lint, test, budgets, acceptance, timing, eval, site, wasm, compositors, lock-vm, package]
@@ -943,9 +964,10 @@ jobs:
   # The dependency caches, kept to one generation each: every new Cargo.lock
   # or manifest saves a new key beside the old one, which only fills the
   # 10 GB and pushes others out (scripts/container/prune-rust-caches.sh;
-  # decisions.md ci-speed-2). The only job whose token may change caches.
+  # decisions.md ci-speed-2). The only job whose token may change caches. On
+  # dispatch too, so a change to it can be proved from its branch.
   prune-caches:
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

@@ -75,10 +75,12 @@ scripts/container/lockvm.sh <cmd>  # a command in the lock VM (KVM); CI's lock-v
   digest, sway 1.9, grim, DejaVu core only, Adwaita, dbus, python3-dbusmock,
   PipeWire, lavapipe, libpam0g-dev, Rust 1.97.0), lavapipe the only Vulkan
   driver in it, published at `ghcr.io/jakeb-grant/strand-ci:<Dockerfile
-  hash>` by CI's `image-publish` job and frozen there, never overwritten and
-  never pushed from a laptop. `run.sh` pulls that tag and builds locally only
-  when it can't be pulled (`image.sh`); a local build gives way to the
-  published image once there is one.
+  hash>` by CI's `image-publish` job and frozen there: `publish-image.sh`
+  won't write a tag that exists (the registry itself doesn't enforce it), and
+  nothing is pushed from a laptop. `run.sh` pulls that tag and builds locally
+  only when it can't be pulled (`image.sh`; on GitHub only when the registry
+  says the tag is absent, any other failed pull failing the job); a local
+  build gives way to the published image once there is one.
   It runs as your uid with the checkout at its own path (worktrees
   included), CI's env (`STRAND_REQUIRE_SWAY/DBUS/PIPEWIRE/GPU=1`,
   `RUSTFLAGS=-D warnings`, no debug info), the cores shared among the

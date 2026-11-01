@@ -36,7 +36,8 @@
 # the volume strand-sccache, shared by every worktree (decisions.md,
 # ci-speed).
 # The image is the one GitHub's jobs run, published under the Dockerfile's
-# hash: pulled when it isn't here, built when it can't be pulled (image.sh).
+# hash: pulled when it isn't here, built when it can't be pulled (image.sh
+# says when, on GitHub).
 # Under GITHUB_ACTIONS, the runner's cache and paths instead of the volumes
 # (see below).
 # Works from a git worktree: the main repository's .git is mounted too.
@@ -45,7 +46,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-[ "$#" -gt 0 ] || { sed -n '2,42p' "$0"; exit 2; }
+[ "$#" -gt 0 ] || { sed -n '2,43p' "$0"; exit 2; }
 
 IMAGE=$("$HERE/image.sh")
 

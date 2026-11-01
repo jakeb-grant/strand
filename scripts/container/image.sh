@@ -15,6 +15,12 @@
 # again, so a build made here gives way to the published image once there
 # is one. Its packages come from the day it was built, the reason pixel
 # references are only ever judged on the published image.
+#
+# Under GITHUB_ACTIONS only the registry's own "no such tag" builds (a fork's
+# new Dockerfile), with a warning. Any other failed pull is retried and then
+# fails the job, so a registry blip can't run the gates or build release
+# archives on an image nobody published; and a build from an earlier step
+# stays, so one job's steps all run on one image.
 
 set -euo pipefail
 
@@ -28,13 +34,42 @@ if [ "${1:-}" = --ref ]; then
   exit 0
 fi
 
+# Sets `why` to what the pull said; its progress goes to stderr.
+pull() {
+  { why=$(docker pull "$PUBLISHED" 2>&1 >&3); } 3>&2
+}
+# The registry's own "no such tag": the classic image store's wording, and
+# the containerd store's, `failed to resolve reference "<ref>": <ref>: not found`.
+absent() {
+  grep -qiE 'manifest unknown|no such manifest|resolve reference.*: not found$' <<<"$why"
+}
+
+why=
 if docker image inspect "$PUBLISHED" >/dev/null 2>&1; then
   # Tagged here by an earlier pull, unless someone removed the local name.
   docker image inspect "$LOCAL" >/dev/null 2>&1 || docker tag "$PUBLISHED" "$LOCAL" >&2
-elif docker pull "$PUBLISHED" 2>/dev/null >&2; then
-  docker tag "$PUBLISHED" "$LOCAL" >&2
+elif [ -n "${GITHUB_ACTIONS:-}" ] && docker image inspect "$LOCAL" >/dev/null 2>&1; then
+  echo "image.sh: $LOCAL, built by an earlier step of this job" >&2
 else
-  if docker image inspect "$LOCAL" >/dev/null 2>&1; then
+  pulled=true
+  pull || pulled=false
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    for wait in 5 20; do
+      if [ "$pulled" = true ] || absent; then break; fi
+      echo "image.sh: pulling $PUBLISHED failed, again in ${wait}s: $why" >&2
+      sleep "$wait"
+      pulled=true
+      pull || pulled=false
+    done
+    if [ "$pulled" = false ] && ! absent; then
+      echo "::error::image.sh: can't pull $PUBLISHED and the registry doesn't say it is absent: $why" >&2
+      exit 1
+    fi
+    [ "$pulled" = true ] || echo "::warning::image.sh: $PUBLISHED is not published: this job runs on an image built here" >&2
+  fi
+  if [ "$pulled" = true ]; then
+    docker tag "$PUBLISHED" "$LOCAL" >&2
+  elif docker image inspect "$LOCAL" >/dev/null 2>&1; then
     echo "image.sh: $PUBLISHED is not to be had: using $LOCAL, built on this machine" >&2
   else
     echo "image.sh: $PUBLISHED is not to be had: building $LOCAL on this machine" >&2

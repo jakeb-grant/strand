@@ -8,8 +8,8 @@ inputs:
     description: >
       "image": the job's commands run through scripts/container/run.sh, in
       the CI image the laptop runs; its dependency cache is target/container.
-      "headers": the job builds on the runner, with its build headers from
-      apt, and rustfmt and clippy.
+      "headers": `wasm`, the one job that builds on the runner, with its build
+      headers from apt, and rustfmt and clippy.
     default: image
   free-disk:
     description: Removes the image's unused SDKs first ("true" or "false").
