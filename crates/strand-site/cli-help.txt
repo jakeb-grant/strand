@@ -57,7 +57,7 @@ usage: strand export json | base24 | --template <file> [--palette '<expr>'] [-o 
 $ strand compositor-rules --help
 usage: strand compositor-rules [dir] [--classic]
 
-Prints Hyprland layer rules that blur behind the surfaces of the config at dir (default $XDG_CONFIG_HOME/strand) that ask for `blur`, matched by their strand-<Name> namespaces, for you to paste into your Hyprland config. The default is Hyprland 0.56's Lua config (hl.layer_rule); --classic prints hyprlang `layerrule =` lines for older versions. Nothing is applied to the running session.
+Prints Hyprland layer rules that blur behind the surfaces of the config at dir (default $XDG_CONFIG_HOME/strand) that ask for `blur`, matched by their strand-<Name> namespaces, for you to paste into your Hyprland config. The default is Hyprland's Lua config (hl.layer_rule, 0.55 and later); --classic prints `layerrule =` lines for a hyprlang config, which Hyprland reads no more from 0.57. Nothing is applied to the running session.
 $ strand report --help
 usage: strand report [--json] [what you saw…]
 $ strand replay --help
