@@ -302,7 +302,11 @@ index and llms.txt markdown copies (`llms.rs`), and fails, writing
 nothing, on a dead link, an example that does not check clean or is not
 formatted, a text colour under 4.5:1, a `site/claims.toml` claim its
 page or source does not bear out, a stale CLI capture, or example media
-not tied to their scenario, dark twin and approved recording. Figures
+not tied to their scenario, dark twin and approved recording. A claim's
+source is `path "snippet"`, a quote of at least 8 characters that must
+occur in the file with whitespace runs as one space, `path.md#heading`,
+or a bare `path`; `path:line` still passes while the ledger moves off it
+and `LINE_SOURCES` in `claims.rs` is `true`. Figures
 are eval scenarios (`eval/scenarios/docs/`) rendered by
 `scripts/site/media.sh`; the generator never runs the renderer. CI's
 `deploy` job uploads the site to Railway (deploy/railway/README.md).

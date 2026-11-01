@@ -6,8 +6,16 @@
 # [[claim]]
 # page   = "site/concepts/motion.md"       # the page, from the repository root
 # text   = "Below a ratio of 1 it overshoots"  # words exactly as on the page
-# source = ["crates/strand-core/src/anim.rs:120", "docs/design.md#motion-and-time"]
+# source = ['crates/strand-core/src/anim.rs "the words it cites"', "docs/design.md#motion-and-time"]
 # proof  = "crates/strand-core/tests/springs.rs::underdamped_overshoots"  # a test, or how it was seen
+#
+# A source is `path "snippet"`, `path.md#heading` or a bare `path`, the path
+# from the repository root. A snippet is at least 8 characters that must occur
+# in the file, whitespace runs counting as one space, so it fails the build
+# when the words it cites go. Write it in a TOML literal string, in single
+# quotes, so its own quotes need no escaping. Prefer it to `path:line` and
+# `path:first-last`, which are checked only for being in range and are
+# on their way out.
 
 # --- start-tools-help ---
 [[claim]]

@@ -2,8 +2,10 @@
 //! makes about Strand, with where it is proven. The build fails when a
 //! claim's `text` is not on its page (whitespace runs count as one
 //! space, so a rewrapped line still matches), when a `source` does not
-//! exist (`path`, `path:line`, `path:first-last` with the lines in the
-//! file, or `path.md#anchor` with the heading there), when a `proof` that
+//! exist (`path`, `path "snippet"` with the snippet in the file, under
+//! the same whitespace rule, `path.md#anchor` with the heading there, or
+//! while [`LINE_SOURCES`] holds, `path:line` and `path:first-last` with
+//! the lines in the file), when a `proof` that
 //! names a test (`path.rs::name`) names no such function, and when an
 //! entry lacks `page`, `text` or `source`, or has a key the format does
 //! not know. A page's repository-only spans
@@ -30,6 +32,16 @@ pub struct Claim {
 }
 
 const KEYS: &[&str] = &["page", "text", "source", "proof"];
+
+/// Whether a `path:line` source still passes. It only proves the line is
+/// in range, so it rots without a word; the ledger is moving to `path
+/// "snippet"` page by page, and this becomes `false` when no entry is left
+/// to move.
+const LINE_SOURCES: bool = true;
+
+/// The fewest characters a snippet may have, with whitespace runs as one
+/// space: a shorter one turns up in a file by chance and proves nothing.
+const MIN_SNIPPET: usize = 8;
 
 /// `s` with every run of whitespace as one space, trimmed.
 pub fn collapse(s: &str) -> String {
@@ -155,6 +167,47 @@ pub fn heading_anchors(markdown: &str) -> HashSet<String> {
 /// Why `source` (from the repository's root) points at nothing, if it
 /// does not.
 pub fn check_source(root: &Path, source: &str) -> Option<String> {
+    check_source_with(root, source, LINE_SOURCES)
+}
+
+/// A path that stays inside the repository, or why `source` names none.
+fn bad_path(source: &str, path: &str) -> Option<String> {
+    (path.is_empty() || path.starts_with('/') || path.split('/').any(|p| p == ".."))
+        .then(|| format!("`{source}`: a source is a path from the repository's root"))
+}
+
+/// Why `path "snippet"` points at nothing, if it does not. `quoted` is
+/// what follows the opening quote, so a snippet may hold quotes of its own.
+fn check_snippet(root: &Path, source: &str, path: &str, quoted: &str) -> Option<String> {
+    if let Some(e) = bad_path(source, path) {
+        return Some(e);
+    }
+    let Some(snippet) = quoted.strip_suffix('"') else {
+        return Some(format!("`{source}`: a snippet ends with `\"`"));
+    };
+    let snippet = collapse(snippet);
+    if snippet.chars().count() < MIN_SNIPPET {
+        return Some(format!(
+            "`{source}`: a snippet has at least {MIN_SNIPPET} characters"
+        ));
+    }
+    let file = root.join(path);
+    if !file.exists() {
+        return Some(format!("`{source}`: {path} does not exist"));
+    }
+    let text = match std::fs::read_to_string(&file) {
+        Ok(t) => t,
+        Err(e) => return Some(format!("`{source}`: {path}: {e}")),
+    };
+    (!collapse(&text).contains(&snippet))
+        .then(|| format!("`{source}`: {path} does not contain \"{snippet}\""))
+}
+
+fn check_source_with(root: &Path, source: &str, line_sources: bool) -> Option<String> {
+    // First, since a snippet may hold anything the other forms look for.
+    if let Some((path, quoted)) = source.split_once(" \"") {
+        return check_snippet(root, source, path, quoted);
+    }
     let (path, rest) = if let Some((p, a)) = source.split_once('#') {
         (p, Some(('#', a)))
     } else if let Some((p, l)) = source.rsplit_once(':')
@@ -165,10 +218,8 @@ pub fn check_source(root: &Path, source: &str) -> Option<String> {
     } else {
         (source, None)
     };
-    if path.is_empty() || path.starts_with('/') || path.split('/').any(|p| p == "..") {
-        return Some(format!(
-            "`{source}`: a source is a path from the repository's root"
-        ));
+    if let Some(e) = bad_path(source, path) {
+        return Some(e);
     }
     let file = root.join(path);
     if !file.exists() {
@@ -189,6 +240,9 @@ pub fn check_source(root: &Path, source: &str) -> Option<String> {
             (!heading_anchors(&text).contains(anchor))
                 .then(|| format!("`{source}`: {path} has no heading `#{anchor}`"))
         }
+        Some((_, _)) if !line_sources => Some(format!(
+            "`{source}`: a line number rots unseen; quote the line instead: `{path} \"snippet\"`"
+        )),
         Some((_, lines)) => {
             let text = match std::fs::read_to_string(&file) {
                 Ok(t) => t,
@@ -316,9 +370,9 @@ mod tests {
     /// A repository of its own: a page, a source file and a doc.
     fn repo(ledger: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!(
-            "strand-site-claims-{}-{:x}",
+            "strand-site-claims-{}-{}",
             std::process::id(),
-            blake3::hash(ledger.as_bytes()).as_bytes()[0]
+            blake3::hash(ledger.as_bytes()).to_hex()
         ));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("site/concepts")).unwrap();
@@ -356,7 +410,7 @@ mod tests {
     fn a_claim_on_its_page_with_real_sources_passes() {
         let e = errors(&format!(
             "[[claim]]\n{PAGE}text = \"Below a ratio of 1 it overshoots, and it settles.\"\n\
-             source = [\"src/anim.rs:5\", \"src/anim.rs:1-5\", \"docs/design.md#motion-and-time-1\", \"src\"]\n\
+             source = [\"docs/design.md#motion-and-time-1\", \"src\"]\n\
              proof = \"src/anim.rs::overshoots\"\n\n\
              [[claim]]\n{PAGE}text = \"it settles\"\nsource = \"src/anim.rs\"\nproof = \"seen on the page\"\n"
         ));
@@ -376,9 +430,6 @@ mod tests {
     fn a_source_that_points_at_nothing_fails() {
         for (source, why) in [
             ("src/gone.rs", "does not exist"),
-            ("src/anim.rs:6", "has 5 lines"),
-            ("src/anim.rs:0", "has 5 lines"),
-            ("src/anim.rs:4-9", "has 5 lines"),
             ("docs/design.md#motion", "no heading `#motion`"),
             ("docs/design.md#motion-and-time-2", "no heading"),
             ("src/anim.rs#x", "markdown file"),
@@ -390,6 +441,88 @@ mod tests {
             assert_eq!(e.len(), 1, "{source}: {e:?}");
             assert!(e[0].contains(why), "{source}: {e:?}");
         }
+    }
+
+    #[test]
+    fn a_snippet_in_its_file_passes_however_it_is_written_or_wrapped() {
+        let e = errors(&format!(
+            "[[claim]]\n{PAGE}text = \"it settles\"\n\
+             source = ['src/anim.rs \"fn overshoots\"']\n\n\
+             [[claim]]\n{PAGE}text = \"it settles\"\n\
+             source = \"src/anim.rs \\\"fn overshoots\\\"\"\n\n\
+             [[claim]]\n{PAGE}text = \"it settles\"\n\
+             source = 'src/anim.rs \"#[test]  fn overshoots\"'\n"
+        ));
+        assert!(e.is_empty(), "{e:?}");
+    }
+
+    #[test]
+    fn a_snippet_may_hold_what_the_other_forms_look_for() {
+        let d = repo("# a snippet holding a form\n");
+        std::fs::write(
+            d.join("src/quoted.rs"),
+            "let a = \"say \"hi\" at x.rs:12#top\";\n",
+        )
+        .unwrap();
+        let there = check_source(&d, r#"src/quoted.rs ""hi" at x.rs:12#top""#);
+        let gone = check_source(&d, r#"src/quoted.rs ""hi" at x.rs:13#top""#);
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(there, None);
+        assert!(gone.is_some_and(|e| e.contains("does not contain")));
+    }
+
+    #[test]
+    fn a_snippet_that_proves_nothing_fails_and_the_error_names_the_claim() {
+        for (source, why) in [
+            (
+                "src/anim.rs \"fn undershoots\"",
+                "does not contain \"fn undershoots\"",
+            ),
+            (
+                "src/gone.rs \"fn overshoots\"",
+                "src/gone.rs does not exist",
+            ),
+            ("src/anim.rs \"fn overshoots", "ends with"),
+            ("src/anim.rs \"\"", "at least 8 characters"),
+            ("src/anim.rs \"       \"", "at least 8 characters"),
+            ("src/anim.rs \"fn over\"", "at least 8 characters"),
+            ("src \"fn overshoots\"", "src: "),
+            ("src/anim.rs:5 \"fn overshoots\"", "does not exist"),
+            (
+                "../etc/passwd \"fn overshoots\"",
+                "from the repository's root",
+            ),
+            (" \"fn overshoots\"", "from the repository's root"),
+        ] {
+            let e = errors(&format!(
+                "[[claim]]\n{PAGE}text = \"it settles\"\nsource = ['{source}']\n"
+            ));
+            assert_eq!(e.len(), 1, "{source}: {e:?}");
+            assert!(e[0].contains(why), "{source}: {e:?}");
+            assert!(e[0].contains("\"it settles\""), "{source}: {e:?}");
+        }
+    }
+
+    #[test]
+    fn line_sources_are_checked_while_they_pass_and_fail_when_switched_off() {
+        let d = repo("# line sources\n");
+        let on = |s: &str| check_source_with(&d, s, true);
+        let off = |s: &str| check_source_with(&d, s, false);
+        assert_eq!(on("src/anim.rs:5"), None);
+        assert_eq!(on("src/anim.rs:1-5"), None);
+        for bad in ["src/anim.rs:6", "src/anim.rs:0", "src/anim.rs:4-9"] {
+            assert!(on(bad).is_some_and(|e| e.contains("has 5 lines")), "{bad}");
+        }
+        for line in ["src/anim.rs:5", "src/anim.rs:1-5"] {
+            assert!(
+                off(line).is_some_and(|e| e.contains("quote the line")),
+                "{line}"
+            );
+        }
+        assert_eq!(off("src/anim.rs \"fn overshoots\""), None);
+        assert_eq!(off("docs/design.md#motion-and-time"), None);
+        assert_eq!(off("src/anim.rs"), None);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
