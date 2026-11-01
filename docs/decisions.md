@@ -15061,3 +15061,11 @@ lint, test, timing, release, wasm, eval and site differ by profile, target or wo
 it into every job, and be written by whichever job finished first with only its own units. compositors could read `test`
 the same way, but it saves a cache of its own, which pruning should now leave in place, so it stays as it is until a run shows
 otherwise. The 10 GB limit is unchanged.
+
+(2026-11-01) Measured on this branch, run 41326056081 at 4dc65029, all jobs green in 22 min, against de671192's run. Package
+restored `v0-rust-release-Linux-x64-63ec8b6c-b4987f66` and compiled 167 crates, not 494: its two release builds went from
+14 min 6 s to 10 min 21 s and the job from 19 to 14 min, and smoke.sh passed on the result. lock-vm restored the test key and
+its builds went from 13 min 28 s to 5 min 43 s, the job from 24 to 15 min, its scenarios passing. Four pushes in a row each
+cancelled the run before. The package skip itself has not run on GitHub, since this branch changes ci.yml and so runs the job;
+prune-caches first runs on the schedule after this reaches main. actionlint 1.7.7 (`rhysd/actionlint`, sha256:887a259a) reports
+nothing on either workflow.
