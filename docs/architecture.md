@@ -302,8 +302,11 @@ Dev-dependencies, tests only:
   strand-web      ~> strand-site
 
 eval/ (strand-eval)  the animation evaluation sandbox, its own workspace; it
-                     uses strand-fake-wayland, and nothing under crates/ depends
-                     on it
+                     uses strand-compiler, strand-core, strand-fake-wayland,
+                     strand-gpu, strand-icons, strand-render, strand-scene,
+                     strand-services-schema, strand-surface and strand-text,
+                     strand-theme in its tests, and nothing under crates/
+                     depends on it
 ```
 
 `strand-scene` has no heavy dependencies: render and surface build

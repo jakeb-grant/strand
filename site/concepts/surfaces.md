@@ -115,13 +115,14 @@ resizing in two ways:
   (`anchor: top` with no `width`), it takes the whole monitor that way from its first
   frame and never resizes there. Only its box takes the pointer. A panel centred on
   both axes keeps its content's size.
-- **It keeps.** With a `~` on its size (`size: auto ~ morph`), it also keeps the
+- **It keeps.** With a `~` on its size (`size: auto ~ $motion.spatial`), it also keeps the
   largest size it has had, on the axes its content sizes, across restarts. Only the
   first open under a config resizes, and a save that changes the config starts again.
 
 `exclusive: true` and `~ instant` do not keep, and a size you write out with a `~`
 (`height: open ? 200 : 28 ~ 100ms`) resizes at each change. For a panel that must not
-resize, let its content size it and write `size: auto ~`.
+resize, let its content size it and write `size: auto ~ $motion.spatial`, or `~` with
+any curve but `instant`.
 
 ## Popups
 

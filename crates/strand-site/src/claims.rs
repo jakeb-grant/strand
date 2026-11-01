@@ -162,7 +162,11 @@ pub fn heading_anchors(markdown: &str) -> HashSet<String> {
 
 /// A path that stays inside the repository, or why `source` names none.
 fn bad_path(source: &str, path: &str) -> Option<String> {
-    (path.is_empty() || path.starts_with('/') || path.split('/').any(|p| p == ".."))
+    // An empty part is an empty path, an absolute one or a doubled `/`. Each
+    // spelling is refused so one file has one path, which the own-page and
+    // ledger check compares.
+    path.split('/')
+        .any(|p| matches!(p, "" | "." | ".."))
         .then(|| format!("`{source}`: a source is a path from the repository's root"))
 }
 
@@ -504,6 +508,21 @@ mod tests {
             assert_eq!(e.len(), 1, "{source}: {e:?}");
             assert!(e[0].contains(why), "{source}: {e:?}");
             assert!(e[0].contains("\"it settles\""), "{source}: {e:?}");
+        }
+    }
+
+    #[test]
+    fn a_path_spelt_any_other_way_fails() {
+        for path in ["./src", "src/", "docs//design.md", "/src", "../src"] {
+            for source in [path.to_string(), format!("{path} \\\"it overshoots\\\"")] {
+                let e = errors(&format!(
+                    "[[claim]]\n{PAGE}text = \"it settles\"\nsource = [\"{source}\"]\n"
+                ));
+                assert!(
+                    e.iter().any(|m| m.contains("the repository's root")),
+                    "{source}: {e:?}"
+                );
+            }
         }
     }
 

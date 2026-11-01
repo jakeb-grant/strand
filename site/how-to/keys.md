@@ -169,7 +169,7 @@ whichever has it, and `node.focus()` moves it from any handler.
 | On a focused | Key | Does |
 |---|---|---|
 | `button` or anything not below | Return, space | its `on activate` if it has one, else `on click` |
-| `list` row | Return, space | selects the row, then runs its `on click` and its `on activate`, or the list's |
+| `list` row | Return, space | selects the row and runs its `on click`, then its `on activate`, or the list's |
 | element inside a `list` row | Return, space | as a `button` does, and selects the row and runs its `on activate` |
 | `input` | Return | its `on activate`, or with `nav:` the selected row's |
 | `list` | Return | the selected row's `on activate` |
@@ -185,9 +185,10 @@ whichever has it, and `node.focus()` moves it from any handler.
 
 A step is the slider's `step:`, or a hundredth of its `range` without one. A claim
 beats every one of these, as it beats any default. Space on a `scroll` or `list`
-only pages, so it never clicks what is around it. Return and space press once,
-however long the key is held. A `slider` or `segmented` without `<->` shows its
-value and leaves these keys alone.
+only pages, so it never clicks what is around it. Held, it goes on paging.
+Return and space press a node once, however long the key is held. Return on an
+`input` or a `list` is no press: held, it runs `on activate` again with each repeat.
+A `slider` or `segmented` without `<->` shows its value and leaves these keys alone.
 
 The mouse is not the keyboard here. A pointer's click runs `on activate` only on a
 `list`'s row; anywhere else it runs `on click`. So a `button` with only an

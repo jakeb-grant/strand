@@ -1575,6 +1575,29 @@ fn return_on_a_focused_row_does_what_a_click_on_it_does() {
     );
 }
 
+/// Only a press ignores a repeat: an `input`'s and a `list`'s Return is its
+/// own, so holding it activates again (site/how-to/keys.md).
+#[test]
+fn a_held_return_activates_an_input_and_a_list_again() {
+    for node in [
+        "input { focus: true; on activate { acts += 1 } }",
+        "list { focus: true; height: 40; on activate { acts += 1 }\n box { height: 20 }\n}",
+    ] {
+        let mut sh = entered(&format!(
+            "state acts = 0\n\
+             panel P {{ anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+               {node}\n\
+             }}\n"
+        ));
+        tap(&mut sh, "Return");
+        assert_eq!(sh.num("acts"), 1.0, "{node}: the press");
+        let e = key_with(&sh, "Return", "", true, false);
+        sh.send(e);
+        sh.settle();
+        assert_eq!(sh.num("acts"), 2.0, "{node}: the repeat");
+    }
+}
+
 /// A row with its own `on activate` hears it once, not as a press and again.
 #[test]
 fn return_on_a_row_with_its_own_activate_runs_it_once() {

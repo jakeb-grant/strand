@@ -3024,7 +3024,7 @@ proof  = "crates/strand-compiler/tests/focus.rs::return_prefers_activate_over_cl
 
 [[claim]]
 page   = "site/how-to/keys.md"
-text   = "selects the row, then runs its `on click` and its `on activate`, or the list's"
+text   = "selects the row and runs its `on click`, then its `on activate`, or the list's"
 source = ['''docs/spec.md "and on the row itself its `on click` and then `on activate`, the list's if it has none, as a pointer's click there"''']
 proof  = "crates/strand-compiler/tests/focus.rs::return_on_a_focused_row_does_what_a_click_on_it_does"
 
@@ -3049,7 +3049,7 @@ proof  = "crates/strand-compiler/tests/focus.rs::a_display_slider_ignores_its_ke
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "A pointer's click runs `on activate` only on a `list`'s row"
-source = ['crates/strand-render/src/input.rs "let activate = if event == NodeEvent::Click { list_row(scene.tree(), &under)"', '''crates/strand-compiler/src/schema/builtin.schema "/// Return or space on any other focused node. A pointer's click runs it only"''']
+source = ['crates/strand-render/src/input.rs "let activate = if event == NodeEvent::Click { list_row(scene.tree(), &under)"', '''crates/strand-compiler/src/schema/builtin.schema "/// `input` and pages a `scroll` or `list`. A pointer's click runs it only on a"''']
 proof  = "crates/strand-compiler/tests/focus.rs::a_pointers_click_runs_no_activate_off_a_list_row"
 
 [[claim]]
@@ -3111,6 +3111,12 @@ page   = "site/concepts/surfaces.md"
 text   = "`exclusive: true` and `~ instant` do not keep"
 source = ['docs/design.md "`exclusive: true` and `~ instant` do not keep"']
 proof  = "read: design.md, Growth springs"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "let its content size it and write `size: auto ~ $motion.spatial`"
+source = ['docs/design.md "let its content size it and write `size: auto` with a curve"', 'crates/strand-compiler/src/syntax/parser/items.rs "self.eat(K::Tilde).map(|_| self.expr())"']
+proof  = "crates/strand/tests/kept_sizes.rs::a_panel_maps_next_session_at_the_size_it_kept"
 
 [[claim]]
 page   = "site/concepts/surfaces.md"
@@ -3234,14 +3240,26 @@ proof  = "read: input.rs presses any focused node but an `input` or `list` on Re
 
 [[claim]]
 page   = "site/how-to/keys.md"
-text   = "Return and space press once, however long the key is held."
+text   = "Return and space press a node once, however long the key is held."
 source = ['docs/spec.md "A repeat does nothing: holding it is not many clicks."']
 proof  = "crates/strand-compiler/tests/focus.rs::return_and_space_click_a_focused_button"
 
 [[claim]]
 page   = "site/how-to/keys.md"
+text   = "Return on an `input` or a `list` is no press: held, it runs `on activate` again with each repeat."
+source = ['crates/strand-render/src/input.rs "// not many clicks. An `input` and a `list` have their own."']
+proof  = "crates/strand-compiler/tests/focus.rs::a_held_return_activates_an_input_and_a_list_again"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "Held, it goes on paging."
+source = ['docs/spec.md "as the Page keys do, repeating, and go to no click."']
+proof  = "read: input.rs takes space on a `scroll` or `list` before the press path's repeat check"
+
+[[claim]]
+page   = "site/how-to/keys.md"
 text   = "So a `button` with only an `on activate` answers Return and ignores the mouse."
-source = ['''crates/strand-compiler/src/schema/builtin.schema "/// on a `list`'s row: elsewhere it runs `on click`, so a `button` the mouse"''']
+source = ['''crates/strand-compiler/src/schema/builtin.schema "/// `list`'s row: elsewhere it runs `on click`, so a `button` the mouse should"''']
 proof  = "crates/strand-compiler/tests/focus.rs::return_prefers_activate_over_click; crates/strand-compiler/tests/focus.rs::a_pointers_click_runs_no_activate_off_a_list_row"
 
 [[claim]]
