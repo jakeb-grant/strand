@@ -11,7 +11,7 @@ use super::Vm;
 use super::exec::{Args, EventCtx};
 use super::value::{AsyncValue, CallValue, NodeState, Num, PendingOp, Value, time_in_logic};
 use crate::hir::{BinaryOp, UnaryOp};
-use crate::ty::{Prim, Ty, TypeTable};
+use crate::ty::{Prim, RecordId, Ty, TypeTable};
 
 fn fail(msg: impl Into<String>) -> Error {
     Error::failed(msg.into())
@@ -1300,6 +1300,65 @@ fn num_method(n: f64, u: Num, name: &str, args: &Args) -> Result<Value, Error> {
     })
 }
 
+/// One query of `xs.fuzzy` and the records it makes, so a whole list and a
+/// chain's per-item step ([`crate::instantiate`]) make the same `Match<T>`.
+pub(crate) struct FuzzySearch {
+    fuzzy: strand_fuzzy::Fuzzy,
+    record: RecordId,
+    range: Option<RecordId>,
+}
+
+impl FuzzySearch {
+    pub(crate) fn new(types: &TypeTable, record: RecordId, query: &str) -> Self {
+        Self {
+            // As `apps.search`.
+            fuzzy: strand_fuzzy::Fuzzy::new(query.trim()),
+            record,
+            range: types.find_schema_record("Range"),
+        }
+    }
+
+    /// `item`'s `Match<T>` for the `text` its selector gave; `None` when it
+    /// does not match. In the order of the schema's `Match`.
+    pub(crate) fn of(&mut self, item: &Value, text: &Value) -> Option<Value> {
+        let (score, ranges) = self.fuzzy.matches(text.as_text().unwrap_or(""))?;
+        let ranges = match self.range {
+            Some(range) => ranges
+                .into_iter()
+                .map(|r| {
+                    Value::record(
+                        range,
+                        vec![Value::int(i64::from(r.start)), Value::int(i64::from(r.end))],
+                    )
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        Some(Value::record(
+            self.record,
+            vec![
+                item.clone(),
+                Value::Num(f64::from(score), Num::Float),
+                Value::list(ranges),
+            ],
+        ))
+    }
+}
+
+/// A `Match<T>`'s score (its second field).
+fn score_of(m: &Value) -> f64 {
+    m.as_record()
+        .and_then(|r| r.fields.get(1))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0)
+}
+
+/// Which of two `Match<T>`s goes first: the higher score. Equal for ties,
+/// which a stable sort leaves in list order.
+pub(crate) fn better_match(a: &Value, b: &Value) -> std::cmp::Ordering {
+    score_of(b).total_cmp(&score_of(a))
+}
+
 fn list_method(
     vm: &Rc<Vm>,
     rt: &Runtime,
@@ -1336,6 +1395,21 @@ fn list_method(
             // standard sort may panic on one that is not.
             keyed.sort_by(|a, b| total_compare(&a.0, &b.0));
             Value::list(keyed.into_iter().map(|(_, v)| v).collect())
+        }
+        "fuzzy" => {
+            // The lowering's last argument: the `Match<T>` to make.
+            let by = args.get(1).cloned().unwrap_or(Value::Null);
+            let record = RecordId(args.num(2).unwrap_or(0.0) as u32);
+            let query = args.get(0).and_then(Value::as_text).unwrap_or("");
+            let mut search = FuzzySearch::new(types, record, query);
+            let mut out = Vec::new();
+            for v in items {
+                let text = vm.call(rt, &by, vec![v.clone()])?;
+                out.extend(search.of(v, &text));
+            }
+            // Stable: ties keep the list's order.
+            out.sort_by(better_match);
+            Value::list(out)
         }
         "take" => {
             let n = args.num(0).unwrap_or(0.0).max(0.0) as usize;

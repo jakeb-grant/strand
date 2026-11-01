@@ -2351,6 +2351,30 @@ proof  = "crates/strand-compiler/tests/token_overlay.rs (Instance::toggle)"
 
 [[claim]]
 page   = "site/how-to/launcher.md"
+text   = "matcher over any list, with `x => x.name` saying which text to search."
+source = ["crates/strand-compiler/src/vm/builtins.rs", "crates/strand-fuzzy/src/lib.rs"]
+proof  = "crates/strand-compiler/tests/fuzzy.rs::every_word_of_the_query_must_match"
+
+[[claim]]
+page   = "site/how-to/launcher.md"
+text   = "matched, best first, and equal scores stay in the list's order."
+source = ["docs/spec.md"]
+proof  = "crates/strand-compiler/tests/fuzzy.rs::the_best_match_comes_first_and_ties_keep_the_list_order"
+
+[[claim]]
+page   = "site/how-to/launcher.md"
+text   = "query gives every item in the list's order."
+source = ["docs/spec.md"]
+proof  = "crates/strand-compiler/tests/fuzzy.rs::an_empty_query_gives_every_item_in_order"
+
+[[claim]]
+page   = "site/how-to/launcher.md"
+text   = "spot each time `query` or a window changes, so there is no last result to"
+source = ["docs/spec.md"]
+proof  = "crates/strand-compiler/tests/fuzzy.rs::it_searches_a_services_list"
+
+[[claim]]
+page   = "site/how-to/launcher.md"
 text   = "matches the apps' names fuzzily, then their"
 source = ["docs/reference/services.md:20"]
 proof  = "read"

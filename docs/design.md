@@ -765,7 +765,7 @@ Services are typed Rust structs that start lazily when a shell first references 
 | Own zbus clients | StatusNotifierItem host plus DBusMenu | system-tray 0.8.9 was the first choice; it only connects to the machine's session bus and leaves detached tasks running after its client is dropped (decisions.md, wave4-a2) |
 | Own zbus `#[interface]` | Notification server | notify-rust's server is experimental; fail clearly if dunst or mako owns the name |
 | freedesktop-desktop-entry 0.8; own icon theme lookup | Launcher data and icons | Watched live; freedesktop-icons 0.4 was the first choice, but its theme and lookup caches are process statics nothing can refresh, so it cannot follow a theme change (decisions.md, wave4-a3) |
-| nucleo 0.5 | Fuzzy matching with match ranges | Releases stalled since 2024; wrap it, fork if needed |
+| nucleo-matcher 0.3 (nucleo 0.5's matcher) | Fuzzy matching with match ranges, for `apps.search` and `xs.fuzzy` | Releases stalled since 2024; wrap it (`strand-fuzzy`), fork if needed. The matcher alone, since the compiler links it and builds for wasm and nucleo's worker pool is not used (decisions.md keyboard, piece 3) |
 | swayipc-async 3.0; own Hyprland and niri IPC | Compositor adapters | `hyprland` and `niri-ipc` crates are GPL-3.0; their IPC is simple JSON over a socket |
 | rustix inotify, blake3 | Live reload | Directory watches without `IN_OPEN`; see live reload |
 | taffy 0.14, parley 0.11, swash | Layout and text | taffy runs on the render thread |

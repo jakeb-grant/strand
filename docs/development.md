@@ -29,6 +29,7 @@ Each crate is one box in the runtime architecture:
 | `strand-services` | Lazy, refcounted services over zbus, PipeWire and compositor IPC | M3 |
 | `strand-services-macros` | `#[service]`, `#[derive(Store)]`, `#[derive(Data)]`, `#[derive(Call)]` | M3 |
 | `strand-services-schema` | The builtin services' schema texts, for the checker and LSP without the service runtime | M3 |
+| `strand-fuzzy` | The fuzzy matcher `apps.search` and `xs.fuzzy` share: nucleo's, with ranges in characters | M6 |
 | `strand-icons` | freedesktop icon theme lookup shared by the renderer and the apps service | M3 |
 | `strand-introspect` | D-Bus introspection that checks no-code `from dbus` services | M3 |
 | `strand-text` | parley shaping and per-scale glyph atlases on a worker thread | M0 |

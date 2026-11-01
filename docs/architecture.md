@@ -240,10 +240,12 @@ strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Pain
   |   strand-theme     (palette schema, material(), importers; colour maths in strand-scene)
   |     ^
   strand-core ── strand-compiler ── strand-dev (LSP, inspector; links
-     ^                                strand-services-schema and strand-introspect,
-     |                                not the runtime)
+     ^        |                       strand-services-schema and strand-introspect,
+     |        └── strand-fuzzy        not the runtime)
+     |            (nucleo's matcher wrapped; no Strand crate)
      strand-services ──> strand-watch (EventSink, CompositorEvent; portal follow;
           |                            strand-watch depends on no Strand crate)
+          ├── strand-fuzzy (`apps.search`, the matcher `xs.fuzzy` uses)
           ├── strand-services-macros (#[service], #[derive(Store, Data, Call)])
           ├── strand-services-schema (the builtin services' schema texts)
           ├── strand-icons (apps' icons, the renderer's lookup)
@@ -364,6 +366,12 @@ strand-scene <── strand-gpu (wgpu, vello_gpu, vello_common, raw-window-handl
                    strand (binary) [gpu]       wayland-backend client_system
 strand-compiler [shaders] ──> naga (check-time; same version as wgpu's)
 ```
+
+**`strand-fuzzy`** is the one fuzzy matcher, `Fuzzy`: nucleo-matcher
+wrapped, with ranges in characters. `apps.search` uses it on the services
+runtime and `xs.fuzzy` on the logic thread, so they rank and mark alike.
+It depends on no Strand crate and builds for wasm, so the compiler can
+link it; the `Range` record each builds from its ranges stays its own.
 
 **`strand-icons`** is the Icon Theme Specification lookup (`lookup`,
 `resolve`, `exists`, `invalidate`, `set_desktop_theme`), used by the
@@ -1747,9 +1755,11 @@ Public interfaces:
     swapping branch fragments.
   - `for` keeps one item per key with its own value cell, following a
     keyed source's diffs (else `rt.keyed_memo`); a `.filter`/`.map`/
-    `.take`/`.sort_by` chain on a keyed source, or a `let` holding one,
-    is one incremental view, so one new notification is one diff from
-    the service to the scene. Reads like `xs.len` are `Op::Keyed`,
+    `.take`/`.sort_by`/`.fuzzy` chain on a keyed source, or a `let`
+    holding one, is one incremental view, so one new notification is one
+    diff from the service to the scene. A `.fuzzy` step is core's map (an
+    item to its `Match<T>` or null), filter and stable sort by score, and
+    the lowering gives it the record it makes. Reads like `xs.len` are `Op::Keyed`,
     never building the list.
   - `await` on a pending value with nothing to wait on is an error
     value, never a silent null.
@@ -2481,7 +2491,8 @@ inspect`, `src/inspect/`; protocol and write-back in "M5 interfaces
 ### `strand-services`
 
 The service contract. `strand-services` depends on `strand-core`,
-`strand-watch`, `strand-auth`, `strand-icons`, `strand-introspect`, its
+`strand-watch`, `strand-auth`, `strand-fuzzy`, `strand-icons`,
+`strand-introspect`, its
 proc-macro crate `strand-services-macros` (re-exported) and
 `strand-services-schema` (the builtin services' schema texts as
 constants and `schemas()`, with no dependencies: what `strand-dev`

@@ -61,7 +61,9 @@ impl MemberInfo {
 
 /// List methods that transform a loading list into a loading list
 /// (`hits.take(3)` is `Async<[Hit]>`).
-pub const ASYNC_TRANSFORMS: &[&str] = &["filter", "map", "sort_by", "take", "skip", "reverse"];
+pub const ASYNC_TRANSFORMS: &[&str] = &[
+    "filter", "map", "sort_by", "fuzzy", "take", "skip", "reverse",
+];
 
 fn param(name: &str, ty: Ty) -> ParamSig {
     ParamSig {
@@ -76,7 +78,8 @@ fn param(name: &str, ty: Ty) -> ParamSig {
 /// The members of a list of `elem`. `key` is the type of the list's key
 /// (`[T] key field`, or a keyed record's), [`Ty::Error`] when it has
 /// none. `map`'s result is `[any]` here; the checker types it by the
-/// function it is given.
+/// function it is given, and `fuzzy`'s by the item (`Match<T>`, a record
+/// made for `T`; this only names it).
 pub fn list_members(elem: &Ty, keyed: bool, key: &Ty) -> Vec<MemberInfo> {
     let t = elem.clone();
     let list = Ty::List(Box::new(t.clone()), keyed);
@@ -118,6 +121,29 @@ pub fn list_members(elem: &Ty, keyed: bool, key: &Ty) -> Vec<MemberInfo> {
             list.clone(),
             false,
             "The items ordered by `by`.",
+        ),
+        m(
+            "fuzzy",
+            vec![
+                param("query", Ty::TEXT),
+                param(
+                    "by",
+                    Ty::Fn(Arc::new(FnSig::positional(vec![t.clone()], Ty::TEXT))),
+                ),
+            ],
+            Ty::List(
+                Box::new(match &t {
+                    Ty::Opaque(n) => Ty::opaque(format!("Match<{n}>").as_str()),
+                    _ => Ty::opaque("Match"),
+                }),
+                keyed,
+            ),
+            false,
+            "The items whose text from `by` matches `query` fuzzily, each with \
+             its score and matched ranges (`Match<T>`), best first, ties in \
+             list order: `apps.search`'s matcher, so every word of `query` must \
+             match. An empty query gives every item in list order, with score 0 \
+             and no ranges.",
         ),
         m(
             "take",
@@ -339,9 +365,11 @@ pub fn members_of(t: &Ty, schema: &Schema, types: &TypeTable) -> Vec<MemberInfo>
         }
         Ty::Record(r) => {
             let rec = types.record(*r);
+            // `Match<Pin>` is documented as `Match`.
+            let documented = rec.name.split('<').next().unwrap_or(&rec.name);
             let doc = |m: &str| {
                 schema
-                    .doc(&DocKey::Member(rec.name.clone(), m.to_string()))
+                    .doc(&DocKey::Member(documented.to_string(), m.to_string()))
                     .map(str::to_string)
             };
             let mut v: Vec<MemberInfo> = rec

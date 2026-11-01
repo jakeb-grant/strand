@@ -2400,6 +2400,8 @@ impl<'a> Checker<'a> {
                 })
                 .unwrap_or(Ty::Error);
             Ty::List(Box::new(produced), keyed)
+        } else if n == "fuzzy" {
+            Ty::List(Box::new(self.match_of(&t)), keyed)
         } else {
             ret
         };

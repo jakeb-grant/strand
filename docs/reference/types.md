@@ -324,6 +324,18 @@ claim (`on key "ctrl+n" (k)`).
 | `logo` | `bool` | The logo (Super) key is held. |
 | `repeat` | `bool` | A repeat of a key held down. |
 
+### `Match`
+
+What `xs.fuzzy(query, by)` gives for an item of `xs`, as `Match<T>`
+for items of type `T`: the item, its score and the matched ranges.
+Keyed by the item's key when it has one.
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `any` | The item itself, a `T`. |
+| `score` | `float` | Its score: higher is a better match; 0 for an empty query. |
+| `ranges` | `[Range]` | The matched character ranges of the text `by` gave: `marks: m.ranges`. Empty for an empty query. |
+
 ### `Node`
 
 A node of the tree: `self`, or an element given an `id:`.

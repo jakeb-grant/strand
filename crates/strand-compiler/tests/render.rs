@@ -522,6 +522,91 @@ fn marks_of(query: &str, name: &str) -> Vec<strand_scene::PropValue> {
         .collect()
 }
 
+/// `marks: m.ranges` from `xs.fuzzy` paints the letters it matched, on text
+/// where characters, bytes and grapheme clusters all differ: the frame is
+/// the one hand-written character ranges draw, and it has the marks' colour.
+#[test]
+fn fuzzy_ranges_paint_the_matched_letters() {
+    let page = |rows: &str| {
+        format!(
+            "state items = [\"\u{c9}crire\", \"Cafe\u{301} Files\", \"\u{6587}\u{5b57}\u{5217} text\"]\n\
+             bar B {{ edge: top; height: 24\n  row {{ gap: 12\n{rows}\n  }}\n}}\n"
+        )
+    };
+    let look = "color: #404040; mark_color: #ff2020";
+    let fuzzy = page(&format!(
+        "    for m in items.fuzzy(\"cr\", x => x) key m.item {{ text m.item {{ {look}; marks: m.ranges }} }}\n\
+         \x20   for m in items.fuzzy(\"fil\", x => x) key m.item {{ text m.item {{ {look}; marks: m.ranges }} }}\n\
+         \x20   for m in items.fuzzy(\"tex\", x => x) key m.item {{ text m.item {{ {look}; marks: m.ranges }} }}"
+    ));
+    let by_hand = page(&format!(
+        "    text items[0] ?? \"\" {{ {look}; marks: [Range(start: 1, end: 3)] }}\n\
+         \x20   text items[1] ?? \"\" {{ {look}; marks: [Range(start: 6, end: 9)] }}\n\
+         \x20   text items[2] ?? \"\" {{ {look}; marks: [Range(start: 4, end: 7)] }}"
+    ));
+    let unmarked = page(&format!(
+        "    text items[0] ?? \"\" {{ {look} }}\n\
+         \x20   text items[1] ?? \"\" {{ {look} }}\n\
+         \x20   text items[2] ?? \"\" {{ {look} }}"
+    ));
+    let size = Size::new(320, 24);
+    let drawn = paint_bar(&fuzzy, size);
+    assert!(
+        drawn == paint_bar(&by_hand, size),
+        "fuzzy's ranges mark what character ranges mark"
+    );
+    assert!(
+        drawn != paint_bar(&unmarked, size),
+        "and something is marked"
+    );
+    // Premultiplied BGRA: red and hardly any green is a mark's pixel.
+    let red = drawn
+        .chunks_exact(4)
+        .filter(|p| p[2] > 200 && p[1] < 80)
+        .count();
+    assert!(red > 20, "the marks' colour is drawn: {red} pixels");
+    assert_matches_ref("fuzzy_marks", size, &drawn, 8);
+}
+
+/// A config's one bar painted at `size`, from scratch.
+fn paint_bar(src: &str, size: Size) -> Vec<u8> {
+    let mut map = SourceMap::new();
+    map.add("bar.strand".to_string(), src.to_string());
+    let compiled = strand_compiler::compile(&map);
+    assert_eq!(compiled.errors(), 0, "{:?}", compiled.diagnostics);
+    let program = Arc::new(lower::lower(
+        &compiled.program,
+        strand_compiler::schema::Schema::builtin(),
+    ));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+    let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+    host.set(&rt, "screens.all", Value::list(vec![screen]))
+        .unwrap();
+    let inst = Instance::new(
+        &rt,
+        program,
+        host.clone(),
+        strand_compiler::instantiate::Storage::none(),
+    );
+    let mut r = renderer();
+    assert!(r.apply(inst.flush().diff).is_empty());
+    let bar = r
+        .take_surface_changes()
+        .into_iter()
+        .find_map(|(id, c)| matches!(c, SurfaceChange::Created(_)).then_some(id))
+        .unwrap();
+    let surface = SurfaceId(1);
+    r.attach_surface(surface, bar);
+    r.configure_surface(surface, size, Scale::ONE);
+    let mut pixels = vec![0u8; (size.w * size.h * 4) as usize];
+    {
+        let mut t = PaintTarget::new(&mut pixels, size, size.w * 4, Scale::ONE, 0).unwrap();
+        r.paint(surface, &mut t);
+    }
+    pixels
+}
+
 /// Reads `refs/<name>.png` (RGBA) and compares it with `pixels`
 /// (premultiplied BGRA) within `tolerance` per channel; `STRAND_BLESS=1`
 /// writes it instead. On a mismatch the frame is written beside it as

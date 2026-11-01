@@ -661,7 +661,14 @@ impl Lowerer<'_> {
                     let site = self.expr_chunk(e);
                     c.emit(Op::AsyncSite(site), span);
                 } else {
-                    self.call(c, callee, args, span, service_async && self.frame > 0);
+                    self.call(
+                        c,
+                        callee,
+                        args,
+                        &e.ty,
+                        span,
+                        service_async && self.frame > 0,
+                    );
                     // (M6) `xs.sum()` of numbers with a unit: plus the
                     // unit's zero, so an empty list's sum is `0ms` (or
                     // `0%`, `0.0`), not the whole `0` the VM starts from.
@@ -681,7 +688,15 @@ impl Lowerer<'_> {
 
     /// `fetch`: an async service method called in a handler, `fn` or
     /// lambda ([`Op::FetchMethod`]).
-    fn call(&mut self, c: &mut Chunk, callee: &Callee, args: &[CallArg], span: Span, fetch: bool) {
+    fn call(
+        &mut self,
+        c: &mut Chunk,
+        callee: &Callee,
+        args: &[CallArg],
+        result: &Ty,
+        span: Span,
+        fetch: bool,
+    ) {
         match callee {
             Callee::Fn(d) => {
                 let arity = self.out_fn_arity(*d);
@@ -750,6 +765,18 @@ impl Lowerer<'_> {
                 }
                 let arity = arity.unwrap_or(args.len());
                 let map = self.push_args(c, args, arity, variadic.map(usize::from));
+                // `xs.fuzzy`: the `Match<T>` to make, as a last argument
+                // the source doesn't write.
+                if name == "fuzzy"
+                    && let Some(r) = super::fuzzy_record(result)
+                {
+                    let id = c.constant(Const::Num(f64::from(r.0), Num::Int));
+                    c.emit(Op::Const(id), span);
+                    if let Some(m) = c.args.last_mut() {
+                        m.params.push(2);
+                        m.arity = 3;
+                    }
+                }
                 let n = c.name(name);
                 if fetch {
                     c.emit(Op::FetchMethod { name: n, args: map }, span);

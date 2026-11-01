@@ -1277,6 +1277,43 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// `Match<T>`, the record `xs.fuzzy` gives for items of type `elem`: the
+    /// schema's `Match` with `item: T` under its own name, one per `T`, so
+    /// `m.item.name` is checked and all that takes a record (fields, reloads,
+    /// `for` keys) needs nothing new. A keyed item keys it by `item.<key>`,
+    /// as `Hit` is by `app.id`.
+    pub(crate) fn match_of(&mut self, elem: &Ty) -> Ty {
+        if elem.is_error() {
+            return Ty::Error;
+        }
+        // By its item, not its name: a type's shown name changes once
+        // another file declares the same one.
+        let made = self.types.records.iter().rposition(|r| {
+            r.name.starts_with("Match<") && r.field("item").is_some_and(|item| item.ty == *elem)
+        });
+        if let Some(i) = made {
+            return Ty::Record(crate::ty::RecordId(i as u32));
+        }
+        let name = format!("Match<{}>", self.show(elem));
+        let Some(template) = self.types.find_schema_record("Match") else {
+            return Ty::Error;
+        };
+        let mut def = self.types.record(template).clone();
+        def.name = name;
+        if let Some(item) = def.fields.iter_mut().find(|f| f.name == "item") {
+            item.ty = elem.clone();
+        }
+        def.key = match elem.non_null() {
+            Ty::Record(r) => self.types.record(*r).key.as_ref().map(|path| {
+                std::iter::once("item".to_string())
+                    .chain(path.iter().cloned())
+                    .collect()
+            }),
+            _ => None,
+        };
+        Ty::Record(self.types.add_record(def))
+    }
+
     /// True if member `name` of a `recv` hands on the receiver's items
     /// (`.first`, `.filter(…)`, `.map(…)`), false if its type is fixed
     /// (`.len`, `.count(…)`, `.round()`, a record's declared field).
@@ -1473,6 +1510,25 @@ impl<'a> Checker<'a> {
                             self.error(
                                 "check::unknown_type",
                                 "`Async` takes one type: `Async<T>`",
+                                span,
+                                "expected one type argument",
+                            );
+                            Ty::Error
+                        }
+                    };
+                }
+                // `Match<T>`, what `xs.fuzzy` gives; a config's own `type
+                // Match` hides it, as it hides any schema type.
+                if name == ["Match"] && !self.types.user_named("Match") {
+                    return match args.as_slice() {
+                        [a] => {
+                            let elem = self.resolve_type(a);
+                            self.match_of(&elem)
+                        }
+                        _ => {
+                            self.error(
+                                "check::unknown_type",
+                                "`Match` takes one type: `Match<T>`",
                                 span,
                                 "expected one type argument",
                             );

@@ -1140,9 +1140,9 @@ monitor, the keyboard always).
   `enter`.
 - `state xs: [T] key f = []` declares a keyed collection: each item's
   key is its field `f`. Handlers change it with `push`, `insert`,
-  `remove_key`, `move` and `update`. `.filter`, `.map`, `.take` and
-  `.sort_by` on a keyed collection or a service list keep keys and update
-  incrementally.
+  `remove_key`, `move` and `update`. `.filter`, `.map`, `.take`,
+  `.sort_by` and `.fuzzy` on a keyed collection or a service list keep
+  keys and update incrementally.
 - A `list` container lays out and mounts only its visible rows
   (virtualisation is the container's job, not the loop's).
 - Rows that change above a `list`'s view keep the rows in view where
@@ -1492,6 +1492,17 @@ monitor, the keyboard always).
   `T` is expected; using it directly is a load error.
 - Using an `Async<T>` where a `T` is expected is a load error, except
   for the reads through an `Async` list that section 8.6 lists.
+- `xs.fuzzy(query, by)` searches any list. `by` is a pure function giving
+  an item's `text`, and the result is a `[Match<T>]`: for each item that
+  matches, its `item: T`, `score: float` and `ranges: [Range]`, best first,
+  equal scores in the list's order. It is `apps.search`'s matcher: lower
+  case matches either case, accents are ignored unless the query has them,
+  and every word of the query must match. A blank query gives every item in
+  the list's order, with score 0 and no ranges. `ranges` count characters,
+  as `marks:` does: `text m.item.name { marks: m.ranges }`. Items with a key
+  keep it, so rows keep their state as the query changes. `Match<T>` can be
+  written as a type, as `Async<T>` can; a config's own `type Match` takes
+  the name instead.
 - A list's members (`len`, `filter`, `find`, `push`, …) are listed in
   docs/reference/functions.md under `[T]`. `xs[i]` counts from 0 and
   reads `null` past the end. `xs.index_of(test)` is the index of the
@@ -1754,8 +1765,8 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   through in two ways, and only these:
   - `.len` and `for x in a` read its last list (empty before the first
     load).
-  - `filter`, `map`, `sort_by`, `take`, `skip` and `reverse` on it give
-    an `Async<[U]>` that keeps its `.pending` and `.error`; a plain list
+  - `filter`, `map`, `sort_by`, `fuzzy`, `take`, `skip` and `reverse` on
+    it give an `Async<[U]>` that keeps its `.pending` and `.error`; a plain list
     still needs `??` (`hits.take(3) ?? []`).
   - Any other read of it is a load error: element reads (`.first`,
     `.last`), other list methods (`join`, `find`, `contains`, …) and an

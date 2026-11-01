@@ -14914,3 +14914,18 @@ layout of a short row only. A horizontal list with no height of its own is as ta
 since rows past the window can't be measured, so it may grow as taller ones scroll in. A drop's `at` on a grid
 still comes from one axis (`drop_index`) and is not exact across lines; a grid that is reordered by dragging is
 later work.
+
+(2026-10-31, piece 3) `xs.fuzzy(query, x => x.name)` gives `[Match<T>]`. Records have no type
+parameters, and a record with `item: any` would leave `m.item.name` unchecked, so the checker makes one
+record per item type, the schema's `Match` with `item: T`, named `Match<Pin>`: fields, hover, reloads and
+`for` keys then need nothing new, and a keyed item keys it by `item.<key>`, as `Hit` is by `app.id`. It is
+writable as a type, as `Async<T>` is, since a component can't take a row otherwise and the name is what
+errors print; this adds one reserved generic name and no grammar, and a config's own `type Match` keeps
+the name. The VM has no static types, so the lowering passes the record as a last argument the source
+doesn't write. The matcher moves to a new leaf crate, `strand-fuzzy`, used by the compiler and
+`strand-services`: `strand-core` is the reactive graph and has no business with a matcher, and neither of
+the two can depend on the other. It links nucleo-matcher 0.3 rather than nucleo 0.5, whose only other
+parts are the worker pool and item stream that neither caller uses and that a wasm build can't run; the
+matcher is the same code, so `apps.search` ranks as before. `by` returns one text: several (name and
+keywords) would need `Match` to say which text its `ranges` are of, which `apps.search` answers by dropping
+the ranges of a keyword match, and nothing here needs it yet; a selector can join them.

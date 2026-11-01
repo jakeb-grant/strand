@@ -615,6 +615,19 @@ provisional record Hit key app.id {
   ranges: [Range]
 }
 
+/// What `xs.fuzzy(query, by)` gives for an item of `xs`, as `Match<T>`
+/// for items of type `T`: the item, its score and the matched ranges.
+/// Keyed by the item's key when it has one.
+record Match {
+  /// The item itself, a `T`.
+  item: any
+  /// Its score: higher is a better match; 0 for an empty query.
+  score: float
+  /// The matched character ranges of the text `by` gave: `marks: m.ranges`.
+  /// Empty for an empty query.
+  ranges: [Range]
+}
+
 /// A Bluetooth device, paired or in range, keyed by `address`.
 provisional record BluetoothDevice key address {
   /// Its address.

@@ -1,0 +1,21 @@
+[package]
+name = "strand-fuzzy"
+description = "The fuzzy matcher `apps.search` and `xs.fuzzy` share: nucleo's, wrapped, with ranges in characters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The matcher of nucleo 0.5 (design.md's table: "wrap it, fork if
+# needed"), without nucleo's worker pool: strand-compiler links this and
+# builds for wasm, and one search runs on its caller's thread.
+nucleo-matcher = "0.3.1"
+# The grapheme clusters nucleo matches by (its default segmentation),
+# mapped back to the character ranges a match reports.
+unicode-segmentation = "1.13.3"
+
+[lints]
+workspace = true

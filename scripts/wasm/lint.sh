@@ -12,7 +12,7 @@ export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-target/wasm}
 # The members strand-web builds for the browser: `cargo tree -p
 # strand-web --target wasm32-unknown-unknown -e normal` lists them, and
 # a new one fails here until it is named.
-crates=(strand-web strand-compiler strand-core strand-icons strand-render strand-scene
+crates=(strand-web strand-compiler strand-core strand-fuzzy strand-icons strand-render strand-scene
   strand-services-schema strand-text strand-theme)
 tree=$(cargo tree -q -p strand-web --target wasm32-unknown-unknown -e normal --prefix none \
   | sed -n 's/^\(strand[a-z-]*\) v.*/\1/p' | sort -u)

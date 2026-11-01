@@ -881,6 +881,21 @@ stopping its frames with a test shim and `dpms off`.
 | The same at 120 Hz | 123, 621, 480 | 123, 617, 449 |
 | GPU memory (`drm-resident-gtt`) with one 800×500 panel on each of two outputs | 135,284 KiB | 137,332 KiB |
 
+## Fuzzy search over a list (keyboard)
+
+`xs.fuzzy(q, x => x.name).take(50)` drawn as 50 marked rows over 5,000 records, one keystroke to
+the scene diff on the logic thread, without layout or paint:
+`cargo test --profile timing -p strand-compiler --test fuzzy five -- --nocapture`, in the container, on
+the owner's laptop, 2026-10-31.
+
+| Source | Median | Worst of 9 queries |
+| --- | --- | --- |
+| A keyed `state` (core's view: map, filter, stable sort) | 1.6 ms | 2.5 ms |
+| A plain `state` list (the whole list, compared) | 1.1 ms | 1.5 ms |
+
+One selector call per item per keystroke, whichever the source; on the keyed view one changed item is
+one call (`a_keyed_chain_reruns_on_the_query_and_item_by_item`).
+
 ## An idle promoted surface's wakes (gpu-idle-wakes)
 
 Per-thread context switches from `/proc`, four outputs of Ubuntu's sway on GLES2,

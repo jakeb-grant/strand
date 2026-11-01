@@ -22,6 +22,7 @@ use super::Ctx;
 use crate::lower::{Chain, ChainOp, ChainRoot, ChunkId, For, ForKey, Program};
 use crate::ty::Ty;
 use crate::vm::Env;
+use crate::vm::builtins::{FuzzySearch, better_match};
 use crate::vm::value::{Slot, Value, ValueKey};
 
 /// A step's tracked parameters: its lambda (compared by code and
@@ -32,6 +33,8 @@ struct StepParams {
     f: Value,
     code: Option<(u32, Vec<(crate::hir::LocalId, Value)>)>,
     touched: Vec<Value>,
+    /// `fuzzy`'s query; null for the other steps.
+    query: Value,
 }
 
 impl PartialEq for StepParams {
@@ -41,7 +44,7 @@ impl PartialEq for StepParams {
             (None, None) => self.f == other.f,
             _ => false,
         };
-        same_f && self.touched == other.touched
+        same_f && self.touched == other.touched && self.query == other.query
     }
 }
 
@@ -121,11 +124,14 @@ impl Ctx {
         let prog = self.vm.prog.clone();
         // A lambda calling a service method reads more than its
         // parameters can say: compare whole lists instead.
-        if chain.steps.iter().any(|(_, c)| {
-            prog.reads(*c)
+        let calls_service = |c: ChunkId| {
+            prog.reads(c)
                 .services
                 .iter()
                 .any(|(_, field)| field.is_none())
+        };
+        if chain.steps.iter().any(|(op, c)| {
+            calls_service(*c) || matches!(op, ChainOp::Fuzzy { query, .. } if calls_service(*query))
         }) {
             return None;
         }
@@ -165,6 +171,10 @@ impl Ctx {
         S: KeyedSource<ValueKey, Value>,
     {
         let (ctx, e) = (self.clone(), env.clone());
+        let query = match op {
+            ChainOp::Fuzzy { query, .. } => Some(query),
+            _ => None,
+        };
         let m = if op == ChainOp::Take {
             src.take_with(rt, move |rt| {
                 let n = ctx.eval(rt, arg, &e)?;
@@ -181,6 +191,10 @@ impl Ctx {
                     f,
                     code,
                     touched: ctx.touch(rt, arg, &e)?,
+                    query: match query {
+                        Some(q) => ctx.eval(rt, q, &e)?,
+                        None => Value::Null,
+                    },
                 })
             };
             // The lambda, per item, untracked (its reads beyond the item
@@ -188,7 +202,7 @@ impl Ctx {
             // counts as filtered out / null / equal.
             let (vm, weak, me) = (self.vm.clone(), rt.downgrade(), Rc::downgrade(self));
             let last: Rc<RefCell<Option<String>>> = Rc::default();
-            let what = what.clone();
+            let named = what.clone();
             let call = move |p: &StepParams, v: &Value| -> Option<Value> {
                 let rt = weak.upgrade()?;
                 match rt.untrack(|rt| vm.call(rt, &p.f, vec![v.clone()])) {
@@ -198,7 +212,7 @@ impl Ctx {
                         if last.borrow().as_deref() != Some(msg.as_str()) {
                             *last.borrow_mut() = Some(msg);
                             if let Some(ctx) = me.upgrade() {
-                                ctx.error(what.to_string(), err);
+                                ctx.error(named.to_string(), err);
                             }
                         }
                         None
@@ -206,6 +220,9 @@ impl Ctx {
                 }
             };
             match op {
+                ChainOp::Fuzzy { record, .. } => {
+                    return self.fuzzy_step(rt, src, params, call, record, query, arg, env, what);
+                }
                 ChainOp::Filter => src.filter_with(rt, params, move |p, v| {
                     call(p, v).is_some_and(|r| r.truthy())
                 }),
@@ -224,6 +241,60 @@ impl Ctx {
         extra.extend(self.read_ids(rt, &[arg], env));
         let _ = rt.reads_from(m.id(), &extra);
         m
+    }
+
+    /// `.fuzzy` over `src`, as core's operators: each item to its `Match<T>`
+    /// or null (one changed item is one match; a new query or selector
+    /// rebuilds), the nulls left out, then a stable sort by score. Keys stay
+    /// the source's and ties its order.
+    #[allow(clippy::too_many_arguments)]
+    fn fuzzy_step<S>(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        src: S,
+        params: impl Fn(&Runtime) -> Result<StepParams, Error> + 'static,
+        call: impl Fn(&StepParams, &Value) -> Option<Value> + 'static,
+        record: crate::ty::RecordId,
+        query: Option<ChunkId>,
+        by: ChunkId,
+        env: &Rc<Env>,
+        what: &Rc<str>,
+    ) -> Derived
+    where
+        S: KeyedSource<ValueKey, Value>,
+    {
+        // One matcher per query: nucleo's scratch memory is not per item.
+        let search: RefCell<Option<(Value, FuzzySearch)>> = RefCell::new(None);
+        let vm = self.vm.clone();
+        let matched = src.map_with(rt, params, move |p, v| {
+            let Some(text) = call(p, v) else {
+                return Value::Null;
+            };
+            let mut search = search.borrow_mut();
+            let current = match search.take() {
+                Some((q, s)) if q == p.query => (q, s),
+                _ => {
+                    let q = p.query.as_text().unwrap_or("");
+                    let s = FuzzySearch::new(&vm.prog.types, record, q);
+                    (p.query.clone(), s)
+                }
+            };
+            let (_, s) = search.insert(current);
+            s.of(v, &text).unwrap_or(Value::Null)
+        });
+        let kept = matched.filter_with(rt, |_| Ok(()), |_: &(), v| !v.is_null());
+        let sorted = kept.sort_by_with(rt, |_| Ok(()), |_: &(), a, b| better_match(a, b));
+        let mut read = vec![by];
+        read.extend(query);
+        for m in [matched, kept, sorted] {
+            rt.set_name(m.id(), &**what);
+        }
+        let mut extra = vec![src.node()];
+        extra.extend(self.read_ids(rt, &read, env));
+        let _ = rt.reads_from(matched.id(), &extra);
+        let _ = rt.reads_from(kept.id(), &[matched.id()]);
+        let _ = rt.reads_from(sorted.id(), &[kept.id()]);
+        sorted
     }
 
     /// Read (tracked) everything `chunk` can read in `env`, as values to
@@ -301,14 +372,17 @@ impl Ctx {
 /// The collection at the bottom of `chain` (through view `let`s) and
 /// whether a `map` is on the way.
 fn base_of(prog: &Program, chain: &Chain) -> (ChainRoot, bool) {
-    let mut maps = chain.steps.iter().any(|(op, _)| *op == ChainOp::Map);
+    // What a loop over it gets is not the collection's items, so not by
+    // the collection's key: `map`'s and `fuzzy`'s steps keep the source's.
+    let makes = |op: &ChainOp| matches!(op, ChainOp::Map | ChainOp::Fuzzy { .. });
+    let mut maps = chain.steps.iter().any(|(op, _)| makes(op));
     let mut root = chain.root.clone();
     for _ in 0..64 {
         let ChainRoot::Def(d) = &root else { break };
         let Some(next) = prog.let_chains.get(d) else {
             break;
         };
-        maps |= next.steps.iter().any(|(op, _)| *op == ChainOp::Map);
+        maps |= next.steps.iter().any(|(op, _)| makes(op));
         root = next.root.clone();
     }
     (root, maps)

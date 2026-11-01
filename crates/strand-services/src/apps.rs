@@ -38,8 +38,7 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use freedesktop_desktop_entry::DesktopEntry;
-use nucleo::Matcher;
-use nucleo::pattern::{CaseMatching, Normalization, Pattern};
+use strand_fuzzy::Fuzzy;
 
 use crate::{Call, Cx, Msg, ServiceError, Store, service};
 
@@ -703,108 +702,15 @@ fn unix_now() -> u64 {
 
 // --- Search -----------------------------------------------------------------
 
-/// Consecutive character indices as `[start, end)` ranges.
-fn ranges_of(mut indices: Vec<u32>) -> Vec<Range> {
-    indices.sort_unstable();
-    indices.dedup();
-    let mut out: Vec<Range> = Vec::new();
-    for i in indices {
-        let i = i64::from(i);
-        match out.last_mut() {
-            Some(r) if r.end == i => r.end = i + 1,
-            _ => out.push(Range {
-                start: i,
-                end: i + 1,
-            }),
-        }
-    }
-    out
-}
-
-/// The fuzzy matcher (nucleo's), wrapped: one per search.
-pub struct Fuzzy {
-    pattern: Pattern,
-    matcher: Matcher,
-    buf: Vec<char>,
-    /// The character offset where each grapheme of the text in `buf`
-    /// starts, and the text's length in characters last.
-    starts: Vec<u32>,
-}
-
-impl std::fmt::Debug for Fuzzy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Fuzzy")
-    }
-}
-
-impl Fuzzy {
-    /// A matcher for `query` (smart case: lower case matches either
-    /// case; accents ignored unless the query has them; words separated
-    /// by spaces must all match).
-    pub fn new(query: &str) -> Fuzzy {
-        Fuzzy {
-            pattern: Pattern::parse(query, CaseMatching::Smart, Normalization::Smart),
-            matcher: Matcher::new(nucleo::Config::DEFAULT),
-            buf: Vec::new(),
-            starts: Vec::new(),
-        }
-    }
-
-    /// `text` as nucleo matches it: ASCII as is, anything else one
-    /// character per grapheme cluster (its first, as nucleo's own
-    /// `Utf32Str::new` does; but never its ASCII shortcut over the bytes
-    /// of a text whose clusters all start in ASCII, `e` + U+0301 say,
-    /// which would match the combining mark's bytes as characters).
-    /// `starts` maps the clusters back to characters.
-    fn hay<'a>(
-        text: &'a str,
-        buf: &'a mut Vec<char>,
-        starts: &mut Vec<u32>,
-    ) -> nucleo::Utf32Str<'a> {
-        use unicode_segmentation::UnicodeSegmentation;
-        starts.clear();
-        if text.is_ascii() {
-            return nucleo::Utf32Str::Ascii(text.as_bytes());
-        }
-        buf.clear();
-        let mut at = 0u32;
-        for g in text.graphemes(true) {
-            if let Some(c) = g.chars().next() {
-                buf.push(c);
-                starts.push(at);
-            }
-            at = at.saturating_add(u32::try_from(g.chars().count()).unwrap_or(u32::MAX));
-        }
-        starts.push(at);
-        nucleo::Utf32Str::Unicode(buf)
-    }
-
-    /// `text`'s score and the matched characters as ranges (character
-    /// indices: a matched grapheme cluster covers all its characters);
-    /// `None` when it does not match.
-    pub fn matches(&mut self, text: &str) -> Option<(u32, Vec<Range>)> {
-        let hay = Self::hay(text, &mut self.buf, &mut self.starts);
-        let mut indices = Vec::new();
-        let score = self.pattern.indices(hay, &mut self.matcher, &mut indices)?;
-        if !self.starts.is_empty() {
-            let starts = &self.starts;
-            indices = indices
-                .iter()
-                .filter_map(|&g| {
-                    let (a, b) = (starts.get(g as usize)?, starts.get(g as usize + 1)?);
-                    Some(*a..*b)
-                })
-                .flatten()
-                .collect();
-        }
-        Some((score, ranges_of(indices)))
-    }
-
-    /// `text`'s score, without ranges.
-    pub fn score(&mut self, text: &str) -> Option<u32> {
-        let hay = Self::hay(text, &mut self.buf, &mut self.starts);
-        self.pattern.score(hay, &mut self.matcher)
-    }
+/// A match's character ranges as the schema's `Range`s.
+fn ranges_of(ranges: Vec<std::ops::Range<u32>>) -> Vec<Range> {
+    ranges
+        .into_iter()
+        .map(|r| Range {
+            start: i64::from(r.start),
+            end: i64::from(r.end),
+        })
+        .collect()
 }
 
 /// `apps.search(query)` over `entries`: see the module docs. Best first
@@ -825,7 +731,7 @@ pub fn search(entries: &[Entry], frecency: &Frecency, query: &str, now: u64) -> 
         let mut fuzzy = Fuzzy::new(query);
         for e in entries {
             let (score, ranges) = match fuzzy.matches(&e.app.name) {
-                Some((s, r)) => (f64::from(s), r),
+                Some((s, r)) => (f64::from(s), ranges_of(r)),
                 None => {
                     let best = e.also.iter().filter_map(|t| fuzzy.score(t)).max();
                     match best {
@@ -1261,28 +1167,20 @@ mod tests {
         assert!(command(&entry("%f")).is_err(), "nothing left to run");
     }
 
-    /// Ranges count characters, as the schema's `Range` and the
-    /// renderer's marks do, though nucleo matches grapheme clusters: a
-    /// matched cluster covers all its characters, and the characters
-    /// after a combining mark keep their places.
+    /// strand-fuzzy's test of the same name holds the rule; a hit carries
+    /// its ranges as they are.
     #[test]
     fn match_ranges_are_characters_not_clusters() {
-        let r = |s, e| Range { start: s, end: e };
-        // `e` + U+0301: the clusters all start in ASCII.
-        let (_, ranges) = Fuzzy::new("fil").matches("Cafe\u{301} Files").unwrap();
-        assert_eq!(ranges, vec![r(6, 9)]);
-        let (_, ranges) = Fuzzy::new("cafe").matches("Cafe\u{301} Files").unwrap();
-        assert_eq!(ranges, vec![r(0, 5)], "the mark goes with its letter");
-        // Devanagari: फ़ा इ लें, clusters of three, one and three characters.
-        let (_, ranges) = Fuzzy::new("\u{932}")
-            .matches("\u{92b}\u{93c}\u{93e}\u{907}\u{932}\u{947}\u{902}")
-            .unwrap();
-        assert_eq!(ranges, vec![r(4, 7)]);
-        // A cluster-free text is unchanged.
-        let (_, ranges) = Fuzzy::new("efo").matches("Firefox").unwrap();
-        assert_eq!(ranges, vec![r(3, 6)]);
-        let (_, ranges) = Fuzzy::new("öl").matches("Größe öl").unwrap();
-        assert_eq!(ranges, vec![r(6, 8)]);
+        let e = Entry {
+            app: App {
+                id: "a".into(),
+                name: "Cafe\u{301} Files".into(),
+                ..App::default()
+            },
+            ..entry("x")
+        };
+        let hits = search(&[e], &Frecency::default(), "fil", 0);
+        assert_eq!(hits[0].ranges, vec![Range { start: 6, end: 9 }]);
     }
 
     #[test]

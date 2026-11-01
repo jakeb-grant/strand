@@ -456,6 +456,20 @@ pub enum ChainOp {
     Map,
     Take,
     SortBy,
+    /// `.fuzzy(query, by)`: the step's chunk is `by`.
+    Fuzzy {
+        query: ChunkId,
+        /// The `Match<T>` it makes.
+        record: RecordId,
+    },
+}
+
+/// The `Match<T>` a `.fuzzy` call of type `ty` makes.
+pub(crate) fn fuzzy_record(ty: &Ty) -> Option<RecordId> {
+    match ty.non_null().list_elem()?.0 {
+        Ty::Record(r) => Some(*r),
+        _ => None,
+    }
 }
 
 /// How a `for` item is identified.
@@ -1174,7 +1188,12 @@ impl Lowerer<'_> {
             args,
         } = &cur.kind
         {
-            if !matches!(name.as_str(), "filter" | "map" | "take" | "sort_by") || args.len() != 1 {
+            let shaped = match name.as_str() {
+                "filter" | "map" | "take" | "sort_by" => args.len() == 1,
+                "fuzzy" => args.len() == 2,
+                _ => false,
+            };
+            if !shaped {
                 return None;
             }
             n += 1;
@@ -1441,12 +1460,13 @@ impl Lowerer<'_> {
         } = &cur.kind
         {
             let op = match name.as_str() {
-                "filter" => ChainOp::Filter,
-                "map" => ChainOp::Map,
-                "take" => ChainOp::Take,
-                _ => ChainOp::SortBy,
+                "filter" => Some(ChainOp::Filter),
+                "map" => Some(ChainOp::Map),
+                "take" => Some(ChainOp::Take),
+                "fuzzy" => None,
+                _ => Some(ChainOp::SortBy),
             };
-            steps.push((op, &args[0]));
+            steps.push((op, args, fuzzy_record(&cur.ty)));
             cur = receiver;
         }
         let root = match &cur.kind {
@@ -1458,11 +1478,29 @@ impl Lowerer<'_> {
             _ => return None,
         };
         steps.reverse();
-        let steps = steps
-            .into_iter()
-            .map(|(op, arg)| (op, self.expr_chunk(&arg.value)))
-            .collect();
-        Some(Chain { root, steps })
+        let mut lowered = Vec::with_capacity(steps.len());
+        for (op, args, record) in steps {
+            lowered.push(match op {
+                Some(op) => (op, self.expr_chunk(&args[0].value)),
+                None => {
+                    // By parameter: `xs.fuzzy(by: f, query: q)` may swap them.
+                    let at = |i: usize| {
+                        args.iter()
+                            .enumerate()
+                            .find(|(n, a)| a.param.unwrap_or(*n) == i)
+                            .map_or(&args[i], |(_, a)| a)
+                    };
+                    let query = self.expr_chunk(&at(0).value);
+                    let by = self.expr_chunk(&at(1).value);
+                    let record = record?;
+                    (ChainOp::Fuzzy { query, record }, by)
+                }
+            });
+        }
+        Some(Chain {
+            root,
+            steps: lowered,
+        })
     }
 
     fn first_param(&self, d: DefId) -> String {
@@ -1684,6 +1722,13 @@ impl Lowerer<'_> {
             {
                 self.root_key(receiver)
             }
+            // A `Match<T>` holds its item: `item.<key>`.
+            hir::ExprKind::Call {
+                callee: hir::Callee::Method { receiver, name, .. },
+                ..
+            } if name == "fuzzy" => self
+                .root_key(receiver)
+                .map(|path| std::iter::once("item".to_string()).chain(path).collect()),
             _ => None,
         }
     }

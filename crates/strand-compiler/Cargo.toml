@@ -16,6 +16,8 @@ shaders = ["dep:naga"]
 
 [dependencies]
 strand-core.workspace = true
+# `xs.fuzzy`: the matcher `apps.search` uses.
+strand-fuzzy.workspace = true
 naga = { version = "30.0.1", default-features = false, features = ["wgsl-in"], optional = true }
 strand-scene.workspace = true
 strand-theme.workspace = true

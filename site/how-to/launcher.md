@@ -84,6 +84,44 @@ reach it.
 - **`marks: h.ranges`** highlights the letters that matched in
   `$accent`.
 
+## Search any list
+
+`apps.search` knows about apps. `xs.fuzzy(query, x => x.name)` is the same
+matcher over any list, with `x => x.name` saying which text to search.
+Each result holds the original `item`, its `score` and the `ranges` that
+matched, best first, and equal scores stay in the list's order. An empty
+query gives every item in the list's order. Here it switches windows:
+
+```strand file=switcher.strand
+// switcher.strand. Bind a key to: strand toggle switcher.open
+export state open = false
+state query = ""
+let found = windows.all.fuzzy(query, w => w.title).take(50)
+
+panel Switcher {
+  screens: focused; layer: overlay; anchor: center; keyboard: exclusive
+  open: <-> open
+  on show { query = "" }
+  col { width: 600; pad: $space.3; gap: $space.2; bg: $surface
+    input { text: <-> query; placeholder: "Search windows"; focus: true; nav: results }
+    list { id: results; max_height: 420
+      for m in found {
+        row { pad: $space.2
+          when selected { bg: $accent.container }
+          on activate { m.item.focus(); open = false }
+          text m.item.title { marks: m.ranges; mark_color: $accent }
+        }
+      }
+    }
+  }
+}
+```
+
+Unlike `apps.search` this is not an `Async`: the list is searched on the
+spot each time `query` or a window changes, so there is no last result to
+keep. It adds no history either; to rank by use, keep your own counts and
+`sort_by` them.
+
 ## Variations
 
 - **More than starting an app.** `h.app.actions` lists the extra
