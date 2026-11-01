@@ -14,7 +14,7 @@ pub enum Block {
     /// a component's name or a surface kind; `None` in a component body).
     Tree {
         element: Option<String>,
-        /// `when`, poses and selectors hold props only.
+        /// `when`, poses and selectors hold props (a `when`, handlers too).
         props_only: bool,
         /// A prop's sub-block (`stroke: … { cap: round }`): the prop.
         sub_of: Option<String>,

@@ -822,8 +822,19 @@ impl Parser<'_> {
                 self.bump();
                 path.push(self.ident("an event name"));
             }
+            let keys = self.key_patterns(&path);
             let params = self.at(K::LParen).then(|| self.params());
-            if params.is_none() && !self.at(K::LBrace) && self.same_line() {
+            if params.is_some() && self.at(K::String) && self.same_line() {
+                self.expected_with(
+                    "`{` to start the handler",
+                    Some(
+                        "key patterns come before the parameter: `on key \"ctrl+n\" (k) { … }`"
+                            .into(),
+                    ),
+                );
+                self.key_patterns(&path);
+            }
+            if params.is_none() && keys.is_empty() && !self.at(K::LBrace) && self.same_line() {
                 let fix = (path.len() == 1)
                     .then(|| closest(&path[0].name, ["change"]))
                     .flatten();
@@ -831,12 +842,36 @@ impl Parser<'_> {
                     self.expected_suggesting("`{` to start the handler", path[0].span, fix);
                 }
             }
-            Event::Named { path, params }
+            Event::Named { path, keys, params }
         };
         ItemKind::On(On {
             event,
             body: self.stmt_block("the handler"),
         })
+    }
+
+    /// (keyboard) The patterns after an event: `"ctrl+n", "down"`. A string
+    /// alone (`"down" (k)` is no call), or, after `on key`, any expression
+    /// for the checker to refuse with what to write.
+    fn key_patterns(&mut self, path: &[Ident]) -> Vec<Expr> {
+        let mut keys = Vec::new();
+        let key = matches!(path, [p] if p.name == "key");
+        if !self.same_line()
+            || !(self.at(K::String)
+                || (key && !self.at(K::LParen) && !self.at(K::LBrace) && self.at(K::Ident)))
+        {
+            return keys;
+        }
+        loop {
+            keys.push(if self.at(K::String) {
+                self.primary()
+            } else {
+                self.expr()
+            });
+            if self.eat(K::Comma).is_none() {
+                return keys;
+            }
+        }
     }
 
     /// `after T while cond { … }`, `every T while cond { … }`.

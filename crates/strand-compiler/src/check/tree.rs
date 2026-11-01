@@ -14,6 +14,12 @@ use crate::syntax::Span;
 use crate::syntax::ast::{self, ItemKind};
 use crate::ty::{FieldDef, FnSig, Origin, ParamSig, Prim, RecordDef, Ty};
 
+/// (keyboard) Whether `on …` names an event of its element, the handlers a
+/// `when` may hold (not `on change` or a service's event).
+fn element_event(o: &ast::On) -> bool {
+    matches!(&o.event, ast::Event::Named { path, .. } if path.len() == 1)
+}
+
 /// Why `persist` and settings files refuse a type.
 const PLAIN_DATA_HELP: &str = "only plain data is stored: numbers, text, paths, colours, enums, and lists and records of those; for a node or a live item (a window, an app) store its key instead";
 
@@ -687,7 +693,10 @@ impl<'a> Checker<'a> {
             ItemKind::Element(e) => {
                 self.element(e, span, place == Place::Children { list_item: true })
             }
-            ItemKind::When(w) => self.item_when(w, span, place),
+            ItemKind::When(w) => {
+                out.1.extend(self.item_when(w, span, place));
+                None
+            }
             ItemKind::If(i) => Some(Node::If(self.tree_if(i, span))),
             ItemKind::For(f) => Some(Node::For(self.tree_for(f, span))),
             ItemKind::Match(m) => Some(Node::Match(self.tree_match(m, span))),
@@ -746,14 +755,37 @@ impl<'a> Checker<'a> {
     }
 
     #[inline(never)]
-    fn item_when(&mut self, w: &'a ast::When, span: Span, place: Place) -> Option<Node> {
+    fn item_when(&mut self, w: &'a ast::When, span: Span, place: Place) -> Vec<Node> {
         if !self.node_needed(place, "`when`", span) {
-            return None;
+            return Vec::new();
         }
         let cond = self.expect(&w.cond, &Ty::BOOL, "`when`");
-        let (props, _) = self.tree_items(&w.body.items, Place::Props);
+        // (keyboard) An element's handlers may sit here too, and come out
+        // beside the `when` carrying its condition, so what walks handlers
+        // and conditions needs no new case.
+        let mut handlers = Vec::new();
+        let mut out = (Vec::new(), Vec::new());
+        for item in &w.body.items {
+            match &item.kind {
+                ItemKind::On(o) if element_event(o) => {
+                    self.reset_attr(item);
+                    let h = self.item_on(o, item.span, place);
+                    handlers.extend(h.map(|n| match n {
+                        Node::Handler(h) => Node::Handler(hir::Handler {
+                            when: Some(cond.clone()),
+                            ..h
+                        }),
+                        n => n,
+                    }));
+                }
+                _ => self.tree_item(item, Place::Props, &mut out),
+            }
+        }
+        let props = out.0;
         self.duplicate_props(&props);
-        Some(Node::When(hir::When { cond, props, span }))
+        let mut nodes = vec![Node::When(hir::When { cond, props, span })];
+        nodes.append(&mut handlers);
+        nodes
     }
 
     #[inline(never)]
@@ -779,7 +811,22 @@ impl<'a> Checker<'a> {
             self.nodes.pop();
             return h.map(Node::Handler);
         }
-        self.handler(o, span).map(Node::Handler)
+        let h = self.handler(o, span)?;
+        // (keyboard) An `if`, `for` or `match` body's element handlers have
+        // no element to be on, and a claim there would claim nothing.
+        if !h.keys.is_empty() && matches!(place, Place::Children { .. }) {
+            self.error(
+                "check::key_pattern",
+                "a key claim belongs directly on its element",
+                span,
+                "in an `if`, `for` or `match` body",
+            )
+            .help = Some(
+                "put it on the element, in a `when` to turn it on and off: `when view != home { on key \"escape\" { … } }`"
+                    .into(),
+            );
+        }
+        Some(Node::Handler(h))
     }
 
     #[inline(never)]
@@ -996,7 +1043,7 @@ impl<'a> Checker<'a> {
             format!("`{what}` is not a prop"),
         )
         .help = Some(
-            "`when`, poses and selectors set props of their element; use `if` to add children"
+            "`when`, poses and selectors set props of their element (a `when` may also hold its element's handlers); use `if` to add children"
                 .into(),
         );
     }
@@ -1010,7 +1057,7 @@ impl<'a> Checker<'a> {
         } else {
             (
                 format!("{what} cannot go in this block"),
-                "this block holds props only".to_string(),
+                "this block holds props only; a `when` may also hold its element's handlers, such as `on click`".to_string(),
             )
         };
         self.error("check::misplaced", msg, span, "not here").help = Some(help);

@@ -307,3 +307,101 @@ fn harmless_reads_and_the_meant_calls_do_not_warn() {
         none
     );
 }
+
+/// (keyboard) A claim that takes `(k)` hears keys as `on key(k)` does; one
+/// without it hears nothing.
+#[test]
+fn a_claim_hears_keys_only_with_its_k() {
+    let say = "permit exec \"say\"\naction say(t: text) [\"say\", t]\n";
+    assert_eq!(
+        flows(&format!(
+            "{say}bar Top {{\n  state pw = \"\"\n  box {{ on key \"ctrl+s\" (k) {{ say(k.name) }}\n    input {{ type: password; text: <-> pw }} }}\n}}\n"
+        )),
+        ["k.name"]
+    );
+    assert_eq!(
+        flows(&format!(
+            "{say}bar Top {{\n  state pw = \"\"\n  box {{ on key \"ctrl+s\" {{ say(\"saved\") }}\n    input {{ type: password; text: <-> pw }} }}\n}}\n"
+        )),
+        Vec::<String>::new()
+    );
+    // `on key_release(k)` hears them too.
+    assert_eq!(
+        flows(&format!(
+            "{say}bar Top {{\n  state pw = \"\"\n  box {{ on key_release(k) {{ say(k.text) }}\n    input {{ type: password; text: <-> pw }} }}\n}}\n"
+        )),
+        ["k.text"]
+    );
+}
+
+/// (keyboard) A claim of a key that types, on or around a password field or
+/// around any input in a lock, is an error: it would eat the password. With
+/// a modifier, on a key that types nothing, or beside the field, it is not.
+#[test]
+fn a_claim_that_would_eat_a_password_is_an_error() {
+    let errors = |src: &str| -> Vec<String> {
+        let mut map = SourceMap::new();
+        map.add("shell.strand".to_string(), src.to_string());
+        compile(&map)
+            .diagnostics
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.code.to_string())
+            .collect()
+    };
+    let code = ["check::claim_around_password"];
+    let pw = "input { type: password; text: <-> pw }";
+    let bar = |claim: &str, inner: &str| {
+        format!("bar Top {{\n  state pw = \"\"\n  box {{ {claim}\n    row {{ {inner} }} }}\n}}\n")
+    };
+    assert_eq!(errors(&bar("on key \"q\" { }", pw)), code);
+    assert_eq!(errors(&bar("on key \"shift+q\" { }", pw)), code);
+    assert_eq!(errors(&bar("on key \"?\" { }", pw)), code);
+    assert_eq!(errors(&bar("on key \"space\" { }", pw)), code);
+    assert_eq!(
+        errors(&bar("when pw == \"\" { on key \"q\" { } }", pw)),
+        code
+    );
+    // On the field itself, and through a component.
+    assert_eq!(
+        errors(
+            "bar Top {\n  state pw = \"\"\n  input { type: password; text: <-> pw; on key \"q\" { } }\n}\n"
+        ),
+        code
+    );
+    assert_eq!(
+        errors(
+            "component F {\n  state pw = \"\"\n  input { type: password; text: <-> pw }\n}\nbar Top {\n  box { on key \"q\" { }; F { } }\n}\n"
+        ),
+        code
+    );
+    // Any input in a lock.
+    let lock = |claim: &str| {
+        format!(
+            "state s = \"\"\nlock L {{\n  {claim}\n  input {{ text: <-> s; on activate {{ auth.submit(s) }} }}\n}}\n"
+        )
+    };
+    assert_eq!(errors(&lock("on key \"q\" { }")), code);
+    assert_eq!(errors(&lock("on key \"ctrl+q\" { }")), Vec::<String>::new());
+    // These leave typing alone.
+    for ok in ["ctrl+q", "alt+1", "esc", "enter", "tab", "backspace"] {
+        assert_eq!(
+            errors(&bar(&format!("on key \"{ok}\" {{ }}"), pw)),
+            Vec::<String>::new(),
+            "{ok}"
+        );
+    }
+    // Around a plain input, or beside the field.
+    assert_eq!(
+        errors(
+            "bar Top {\n  state q = \"\"\n  box { on key \"q\" { }; input { text: <-> q } }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        errors(
+            "bar Top {\n  state pw = \"\"\n  row { box { on key \"q\" { } }; input { type: password; text: <-> pw } }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+}

@@ -371,12 +371,13 @@ props! {
     /// content (`Bool`). A drag source in it is not that element's item,
     /// so the element is not a nested list for it.
     NotRow = "not_row": Snap,
-    /// (flex) On an element with an `on key` handler (`Bool`). Set by
-    /// the compiler, never written in source: Tab and Shift+Tab move
-    /// focus only while no element from the focused node out to its
-    /// surface carries it, since the handler that hears a key takes it
-    /// (spec.md 6.7).
-    OnKey = "on_key": Snap,
+    /// (keyboard) The active `on key "ctrl+n" { … }` claims of an element,
+    /// in source order ([`PropValue::KeyClaims`]). Set by the compiler,
+    /// never written in source, and again when a `when` around one flips:
+    /// logic runs on another thread and cannot answer "handled" in time,
+    /// so the router matches these from the focused node out, before any
+    /// default (spec.md 6.7).
+    KeyClaims = "key_claims": Snap,
     /// (lockmon) On an `input` of a lock's instance: a key (`Text`) it
     /// shares with the same input of the lock on every other monitor.
     /// Set by the compiler, never written in source: the input's twins
@@ -701,6 +702,9 @@ pub enum PropValue {
     /// (history) A `graph`'s kept history (the value of
     /// [`Prop::Backlog`]).
     Backlog(Arc<crate::backlog::Backlog>),
+    /// (keyboard) A node's active key claims (the value of
+    /// [`Prop::KeyClaims`]).
+    KeyClaims(Arc<[crate::keys::KeyClaim]>),
 }
 
 /// (M4) A compiled `keyframes` block, sent inline with `play` so render
@@ -1328,7 +1332,7 @@ mod tests {
             (Prop::RowFirst, "row_first"),
             (Prop::DropRows, "drop_rows"),
             (Prop::NotRow, "not_row"),
-            (Prop::OnKey, "on_key"),
+            (Prop::KeyClaims, "key_claims"),
             (Prop::Backlog, "backlog"),
         ] {
             assert_eq!(p.name(), name);

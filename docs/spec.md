@@ -521,7 +521,9 @@ monitor, the keyboard always).
   be `password` writes (`text: <-> pw`) is a password (`password`
   written on it or in one of its `when` blocks, or a `type` read from
   elsewhere, such as a component's parameter), and so is the key an
-  `on key(k)` on or around one hears (`k.text`, `k.name`). So is any value made from
+  `on key(k)`, an `on key_release(k)` or a claim that takes `(k)` (`on key
+  "ctrl+s" (k)`) on or around one hears (`k.text`, `k.name`); a claim
+  without `(k)` hears nothing. So is any value made from
   it through `let`s, `state`s it is written to, list writes, `for`
   bindings, component and `fn` parameters, the result of a `fn` or of a
   lambda whose body passes it on (a `fn` making dots of it does not),
@@ -915,8 +917,12 @@ monitor, the keyboard always).
 
 - `when cond { props }` applies its props while `cond` is true; when it
   turns false, those props return to the values they would otherwise
-  have. A `when` block holds props only; a child, handler or other item
-  in it is a load error.
+  have. A `when` block holds props and its element's event handlers
+  (`on click`, `on key`, …); a child, an `on change`, a service's event,
+  a timer or other item in it is a load error. A handler in a `when` runs
+  only while the condition holds; with it false the event goes on out as
+  if the handler were not there, and a key claim claims nothing (section
+  6.7). (decisions.md keyboard)
 - **Source order wins.** When several `when`s, or a `when` and the
   node's own props, set the same prop, the one written last among those
   that apply wins, as in CSS. There is no other precedence.
@@ -1269,12 +1275,53 @@ monitor, the keyboard always).
   Shift+Tab move focus between the surface's `input`s and `list`s in
   tree order, round from the last to the first, skipping those not
   shown (at `opacity: 0`, theirs or an ancestor's, or playing their
-  exit pose, as a page going away does). Tab is a default that a handler takes over: when the
-  focused node or one around it has an `on key` handler, that handler
-  hears Tab and focus stays (it moves focus itself with `focus:`), and
-  Ctrl, Alt or Super held leave Tab to handlers too. A surface that
-  closes lets its focus go, as when the keyboard leaves it.
-  (decisions.md flex, 2026-10-24)
+  exit pose, as a page going away does). Tab is a default that a claim
+  takes over: `on key "tab" { … }` on the focused node or one around it
+  runs and focus stays (it moves focus itself with `focus:`). An `on
+  key(k)` only hears Tab, and focus moves. Ctrl, Alt or Super held leave
+  Tab alone. A surface that closes lets its focus go, as when the
+  keyboard leaves it. (decisions.md flex, 2026-10-24; keyboard)
+- **A pattern claims a key.** `on key "ctrl+n", "down" { … }` runs for
+  those keys, the patterns string literals, an optional `(k)` after them
+  (`on key "esc" (k) { … }`). The router looks from the focused node out
+  to its surface root, the innermost first, before any default and any
+  other handler; the first active claim of the key takes it. Its handler
+  alone runs, and the key's defaults (typing, a list's keys, Return,
+  Tab, Escape closing) and every other handler, `on key(k)` observers
+  included, do not. On one element, the last written active claim wins,
+  as among `when`s. Claims fire on repeats too. A drag's Escape stays the
+  drag's: it cancels the drag first. A claim sits directly on its
+  element or in a `when` there, not in an `if`, `for` or `match` body (a
+  load error).
+  - `propagate()` in a claim passes the key to the next enclosing active
+    claim of it. The default stays stopped: the router has stopped it
+    before logic hears of the key.
+  - The active patterns are a reactive prop of the node, since logic runs
+    on another thread and cannot answer "handled" in time. So a key
+    arriving in the same tick as a change of a `when` is judged by the old
+    value. A claim whose `when` is false by the time its body would start
+    (keys queued while logic was busy) does not run; its key is spent.
+  - **Patterns.** Modifiers `ctrl`, `shift`, `alt` and `super`, joined with
+    `+` before the key, in any case, and exact: `"n"` is not Ctrl+N. A
+    letter is `"a"`, which is not Shift+A, or `"shift+a"`. A single other
+    character (`"?"`, `"1"`, `"+"`) is the text the key types, and ignores
+    Shift. Named keys are xkb's names in any case (`Escape`, `Return`,
+    `Page_Down`, `F5`), and `esc`, `enter` (Return and the keypad's),
+    `tab`, `space`, `up`, `down`, `left`, `right`, `pgup`, `pgdn`,
+    `backspace`, `del`. `shift+tab` matches `ISO_Left_Tab`. A key matches
+    by its name, then by its Latin fallback, so `ctrl+n` works on a Russian
+    layout. An unknown modifier or a name that is no key is a load error
+    naming the closest, as is a pattern that is not a literal.
+  - **Around a password.** A claim of a key that types (no Ctrl, Alt or
+    Super on a letter, a character or `space`) on or around a `type:
+    password` input, or around any `input` in a `lock`, is a load error
+    (`check::claim_around_password`), even in a `when`: it would eat what
+    is typed there, and a lock that cannot be typed into cannot be left.
+    (decisions.md keyboard)
+- **`on key(k)` observes.** It hears each press and repeat (`k.repeat`) on
+  the focused path that no claim took, whether or not a default then
+  takes the key too. `on key_release(k)` hears a key let go the same way,
+  and claims nothing; it hears a claimed key's release too.
 - **`cursor:`** sets the pointer's shape over a node, one of
   `CursorShape` (the CSS cursor names in snake_case: `default`,
   `pointer`, `text`, `crosshair`, `grab`, `grabbing`, `move`,

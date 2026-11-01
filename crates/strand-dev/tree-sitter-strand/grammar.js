@@ -484,6 +484,11 @@ module.exports = grammar({
         ),
         seq(
           field('event', $.event_name),
+          // (keyboard) `on key "ctrl+n", "down" (k)`.
+          optional(seq(
+            field('key', $.string),
+            repeat(seq(',', field('key', $.string))),
+          )),
           optional(field('parameters', $.parameters)),
         ),
       ),

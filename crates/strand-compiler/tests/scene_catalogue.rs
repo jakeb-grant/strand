@@ -44,8 +44,8 @@ const COMPILER_SET: &[Prop] = &[
     Prop::DropRows,
     // M5.
     Prop::NotRow,
-    // flex.
-    Prop::OnKey,
+    // keyboard.
+    Prop::KeyClaims,
     // lockmon.
     Prop::Twin,
 ];

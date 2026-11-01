@@ -12,6 +12,7 @@ pub mod effect;
 pub mod geometry;
 pub mod id;
 pub mod input;
+pub mod keys;
 pub mod motion;
 pub mod paint;
 pub mod placement;
@@ -35,6 +36,7 @@ pub use input::{
     AxisDelta, AxisSource, ButtonState, ClipboardAsk, DropKind, DropPayload, InputEvent, KeyInput,
     Modifiers, drag_export, drag_identity, drag_type,
 };
+pub use keys::{KEY_MODIFIERS, KeyClaim, KeyPattern, KeyPatternError, claiming, key_names};
 pub use motion::{Curve, Motion, MotionView, Spring};
 pub use paint::{
     BYTES_PER_PIXEL, BlurRegion, DragImage, FramePixels, PaintTarget, Painter, SurfacePose,

@@ -291,7 +291,8 @@ impl Facts {
             }
             ItemKind::On(o) => {
                 match &o.event {
-                    Event::Named { params, .. } => {
+                    Event::Named { keys, params, .. } => {
+                        self.exprs(keys);
                         if let Some(ps) = params {
                             self.params(ps);
                         }

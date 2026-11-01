@@ -347,8 +347,13 @@ fn item_kind(kind: &ItemKind, span: Span) -> TreeNode {
         }),
         ItemKind::On(o) => {
             let mut n = match &o.event {
-                Event::Named { path, params: ps } => {
-                    let mut n = TreeNode::node(format!("on {}", ident_path(path)), span);
+                Event::Named {
+                    path,
+                    keys,
+                    params: ps,
+                } => {
+                    let mut n = TreeNode::node(format!("on {}", ident_path(path)), span)
+                        .with_all(keys.iter().map(expr));
                     if let Some(ps) = ps {
                         n = n.with(params(ps, params_span(ps, span)));
                     }

@@ -615,6 +615,12 @@ pub struct MatchNode {
 #[derive(Clone, Debug)]
 pub struct Handler {
     pub event: Event,
+    /// (keyboard) `on key "ctrl+n", "down"`: the patterns it claims.
+    pub keys: Vec<strand_scene::KeyPattern>,
+    /// (keyboard) The `when` it is written in: it runs, and claims, only
+    /// while this holds. The `When` it came from stays beside it, for what
+    /// walks conditions.
+    pub when: Option<Expr>,
     pub params: Vec<LocalId>,
     pub body: Vec<Stmt>,
     pub span: Span,

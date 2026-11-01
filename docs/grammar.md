@@ -538,15 +538,17 @@ tree_arm = pattern '=>' ( tree_block | tree_item )
 
 `when hover { bg: $accent.hover }`, `if battery.present { Battery }`,
 `for ws in workspaces.on(screen) { Dot ws }`,
-`for p in prefs.pins key p.app { … }`. A `when` block holds props only; the
-parser accepts any tree item there and the checker reports children.
+`for p in prefs.pins key p.app { … }`. A `when` block holds props and its
+element's event handlers; the parser accepts any tree item there and the
+checker reports children, `on change`, a service's event and timers.
 
 ### Events, timers and poses
 
 ```
 on_handler = kw:on ( kw:change change_targets ( SAME_LINE kw:after expr )?
-                   | IDENT ( '.' IDENT )* params? ) stmt_block
+                   | IDENT ( '.' IDENT )* key_patterns? params? ) stmt_block
 change_targets = expr ( ',' expr )*
+key_patterns = STRING ( ',' STRING )*               // `on key` only
 timer = ( kw:after | kw:every ) expr ( SAME_LINE kw:while expr )? stmt_block
 pose  = ( kw:enter | kw:exit ) tree_block
 slot  = kw:slot
@@ -558,6 +560,8 @@ selector = HASH tree_block
 on click { ws.focus() }
 on scroll(dy) { audio.sink.volume -= dy * 0.05 }
 on drop(p: Pin, at: int) { pins.move(p.app, at) }
+on key "ctrl+n", "down" { results_next() }
+on key "esc" (k) { back(k.repeat) }
 on notifications.received(n) { log.push(n) }
 on change audio.sink.volume, audio.sink.muted after 1.2s { shown = false }
 after n.timeout ?? 6s while !hover && n.urgency != critical { n.expire() }

@@ -33,6 +33,7 @@
 - [A theme from a file](how-to/theme-from-file.md)
 - [A settings file](how-to/settings-file.md)
 - [A D-Bus method or an action](how-to/dbus-and-actions.md)
+- [Keyboard shortcuts](how-to/keys.md)
 
 ## Concepts
 - [The language in brief](concepts/language.md)

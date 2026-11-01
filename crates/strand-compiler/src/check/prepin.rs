@@ -174,7 +174,7 @@ impl<'a> Walk<'a> {
             }
             ItemKind::On(o) => {
                 self.floats.clear();
-                if let ast::Event::Named { path, params } = &o.event {
+                if let ast::Event::Named { path, params, .. } = &o.event {
                     self.params(params.as_ref());
                     self.event_floats(path, params.as_deref(), element);
                 }

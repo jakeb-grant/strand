@@ -361,11 +361,23 @@ fn to_logic(intent: Intent, press: Option<strand_compiler::vm::InputCtx>) -> Opt
                     name,
                     text,
                     modifiers,
+                    repeat,
                 } => NodeEvent::Key {
                     name,
                     text,
                     modifiers,
+                    repeat,
                 },
+                RouteEvent::KeyRelease {
+                    name,
+                    text,
+                    modifiers,
+                } => NodeEvent::KeyRelease {
+                    name,
+                    text,
+                    modifiers,
+                },
+                RouteEvent::Claim { handler, key } => NodeEvent::Claim { handler, key },
                 RouteEvent::Dismiss => NodeEvent::Dismiss,
                 RouteEvent::Drop {
                     payload,

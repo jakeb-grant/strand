@@ -493,6 +493,10 @@ pub enum StateInit {
 #[derive(Clone, Debug)]
 pub struct Handler {
     pub event: Event,
+    /// (keyboard) `on key "ctrl+n", "down"`: the patterns it claims.
+    pub keys: Vec<strand_scene::KeyPattern>,
+    /// (keyboard) The condition of the `when` it is written in.
+    pub when: Option<ChunkId>,
     pub params: Vec<LocalId>,
     pub body: ChunkId,
     pub span: Span,
@@ -1620,6 +1624,8 @@ impl Lowerer<'_> {
         };
         Handler {
             event,
+            keys: h.keys.clone(),
+            when: h.when.as_ref().map(|c| self.expr_chunk(c)),
             params: h.params.clone(),
             body: self.stmts_chunk(&h.body, h.span),
             span: h.span,

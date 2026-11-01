@@ -2888,3 +2888,46 @@ page   = "site/how-to/theme-from-file.md"
 text   = "Without `from`, Strand works out the roles"
 source = ["crates/strand-theme/src/palette.rs"]
 proof  = "crates/strand-compiler/tests/theme.rs::a_palette_from_hand_written_colours_fills_the_rest"
+
+# --- keys ---
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "the innermost one wins"
+source = ["crates/strand-render/src/input.rs", "docs/spec.md#67-layout-and-input"]
+proof  = "crates/strand-compiler/tests/interaction.rs::the_innermost_claim_wins_and_observers_do_not_hear_it"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "the last one written wins"
+source = ["crates/strand-scene/src/keys.rs"]
+proof  = "crates/strand-compiler/tests/interaction.rs::the_innermost_claim_wins_and_observers_do_not_hear_it"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "the key carries on as if the claim were not there"
+source = ["docs/spec.md#63-conditional-style"]
+proof  = "crates/strand-compiler/tests/interaction.rs::a_claim_in_when_stops_escape_only_while_it_holds"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "and then by its Latin name"
+source = ["crates/strand-scene/src/keys.rs"]
+proof  = "crates/strand-scene/src/keys.rs::the_latin_fallback_matches_a_non_latin_layout"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "It does not hear a key something claimed."
+source = ["crates/strand-render/src/input.rs"]
+proof  = "crates/strand-compiler/tests/interaction.rs::the_innermost_claim_wins_and_observers_do_not_hear_it"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "the default stays stopped"
+source = ["docs/spec.md#67-layout-and-input"]
+proof  = "crates/strand-compiler/tests/interaction.rs::propagate_passes_a_claim_outward_with_the_default_stopped"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "is an error from `strand check`"
+source = ["crates/strand-compiler/src/check/secrets.rs"]
+proof  = "crates/strand-compiler/tests/secrets.rs::a_claim_that_would_eat_a_password_is_an_error"

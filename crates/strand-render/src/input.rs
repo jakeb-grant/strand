@@ -52,12 +52,26 @@ pub enum NodeEvent {
     Scroll { dy: f64, dx: f64 },
     /// A list row chosen with Enter or a click (`on activate`).
     Activate,
-    /// A key pressed while the node has focus (`on key(k)`).
+    /// A key pressed (or repeating) while the node has focus (`on
+    /// key(k)`), which only observes.
     Key {
         name: String,
         text: String,
         modifiers: Modifiers,
+        repeat: bool,
     },
+    /// (keyboard) A key let go while the node has focus (`on
+    /// key_release(k)`).
+    KeyRelease {
+        name: String,
+        text: String,
+        modifiers: Modifiers,
+    },
+    /// (keyboard) A key this node claimed (`on key "ctrl+n" { … }`): for
+    /// its claim numbered `handler` ([`strand_scene::KeyClaim`]) alone, on
+    /// no other handler. `key` is all of it, for `k` and for `propagate()`
+    /// to match the next claim out.
+    Claim { handler: u32, key: KeyInput },
     /// Escape, a click away or focus loss closed a popup (`on dismiss`).
     Dismiss,
     /// (M4) Something was dropped on the node (`on drop(value, at)`):
@@ -1740,6 +1754,17 @@ impl Router {
                         return;
                     }
                     self.key(surface, root, key, scene);
+                } else {
+                    // (keyboard) Heard as a press is, and claims nothing.
+                    let focus = self.focus.get(&surface).copied().unwrap_or(root);
+                    self.event(
+                        focus,
+                        NodeEvent::KeyRelease {
+                            name: key.name.clone(),
+                            text: key.text.clone(),
+                            modifiers: key.modifiers,
+                        },
+                    );
                 }
             }
             // (M4) `wl_data_device`: another program's drag, or ours
@@ -2254,6 +2279,18 @@ impl Router {
         scene: &mut dyn InputScene,
     ) {
         let focus = self.focus.get(&surface).copied().unwrap_or(root);
+        // (keyboard) A claim comes before every default and every other
+        // handler: its key goes to it and nowhere else.
+        if let Some((node, handler)) = scene.tree().and_then(|t| claim_of(t, root, focus, key)) {
+            self.event(
+                node,
+                NodeEvent::Claim {
+                    handler,
+                    key: key.clone(),
+                },
+            );
+            return;
+        }
         let node = scene.tree().and_then(|t| t.get(focus));
         let kind = node.map(|n| n.kind);
         let nav = match node.and_then(|n| n.get(Prop::Nav)) {
@@ -2269,6 +2306,7 @@ impl Router {
                 name: key.name.clone(),
                 text: key.text.clone(),
                 modifiers: key.modifiers,
+                repeat: key.repeat,
             },
         );
         if key.name == "Escape" && open {
@@ -2277,13 +2315,12 @@ impl Router {
         }
         // (flex) Tab and Shift+Tab move focus between the surface's
         // `input`s and `list`s in tree order, round from the last to the
-        // first, unless an `on key` hears them: a handler takes the keys
-        // it hears (spec.md 6.7), and moves focus itself with `focus:`.
+        // first; a config that wants them claims them (spec.md 6.7), and
+        // moves focus itself with `focus:`.
         if matches!(key.name.as_str(), "Tab" | "ISO_Left_Tab" | "KP_Tab")
             && !key.modifiers.ctrl
             && !key.modifiers.alt
             && !key.modifiers.logo
-            && !scene.tree().is_some_and(|t| hears_keys(t, root, focus))
         {
             let back = key.name == "ISO_Left_Tab" || key.modifiers.shift;
             if let Some(next) = scene
@@ -2762,21 +2799,24 @@ fn next_focusable(tree: &SceneTree, root: NodeId, from: NodeId, back: bool) -> O
     all.get(i).copied().filter(|n| *n != from)
 }
 
-/// (flex) True if `from` or an element out to its surface `root` has an
-/// `on key` handler (`Prop::OnKey`, which the compiler sets).
-fn hears_keys(tree: &SceneTree, root: NodeId, from: NodeId) -> bool {
+/// (keyboard) The claim `key` goes to: the innermost node from `from` out
+/// to its surface `root` with an active claim of it, and that claim's
+/// number there.
+fn claim_of(tree: &SceneTree, root: NodeId, from: NodeId, key: &KeyInput) -> Option<(NodeId, u32)> {
     let mut cur = Some(from);
     while let Some(id) = cur {
-        let Some(n) = tree.get(id) else { return false };
-        if matches!(n.get(Prop::OnKey), Some(PropValue::Bool(true))) {
-            return true;
+        let n = tree.get(id)?;
+        if let Some(PropValue::KeyClaims(claims)) = n.get(Prop::KeyClaims)
+            && let Some(handler) = strand_scene::claiming(claims, key)
+        {
+            return Some((id, handler));
         }
         if id == root {
-            return false;
+            return None;
         }
         cur = n.parent;
     }
-    false
+    None
 }
 
 /// The first node under `root` (depth first) with `focus: true`.

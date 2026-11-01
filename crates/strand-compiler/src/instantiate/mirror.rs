@@ -341,6 +341,13 @@ pub fn show(v: &PropValue) -> String {
         PropValue::DrawList(ops) => format!("draw [{} ops]", ops.len()),
         PropValue::Shader(code) => format!("shader {:?}", code.path),
         PropValue::Keyframes(k) => format!("keyframes {} #{}", k.name, k.seq),
+        PropValue::KeyClaims(claims) => {
+            let patterns: Vec<&str> = claims
+                .iter()
+                .flat_map(|c| c.patterns.iter().map(|p| p.written()))
+                .collect();
+            format!("key claims {patterns:?}")
+        }
         PropValue::Backlog(b) => format!("backlog [{} points]", b.points.len()),
     }
 }

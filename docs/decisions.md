@@ -14881,3 +14881,15 @@ vim engine, which a `state` and `when` give. `strand toggle x value` and `strand
 own actions were proposed and dropped: m5-owner Q13 ruled the second out, and an exported `bool` per
 shortcut with `on change` already gives "this key opens that view, again closes it". Secret flow
 (`check::secrets`) treats a claim that takes `(k)` as hearing keys; one without it hears nothing.
+
+(2026-10-31, piece 1) Four things the shape above left open. A claim of a key that types, around a
+`type: password` input or any `input` in a `lock`, is a check error (`check::claim_around_password`)
+and not a warning, even in a `when`, which can't be proved to exclude the field: a lock whose letters
+are eaten can't be left, and giving the claim a modifier or moving it off the field's path is always
+possible. A claim whose `when` is false by the time its body starts doesn't run: the sentence above
+judges the key by the old value, and the router does, so its default stays stopped, but several keys
+queued while logic is busy (a held Escape counting a depth down) would otherwise run a handler past
+the condition that spec.md 6.3 says it runs under; the key is spent. A drag's Escape stays the drag's,
+so a gesture always has a way out. And a claim in an `if`, `for` or `match` body is a check error,
+since those bodies mount with no element and an element's handler there has never run; a `when` is
+the way to turn one on and off.

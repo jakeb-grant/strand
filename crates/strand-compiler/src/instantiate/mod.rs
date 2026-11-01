@@ -404,7 +404,9 @@ impl VmHooks for Ctx {
             .nodes
             .get(&scene)
             .and_then(|e| e.parent.filter(|_| !e.surface));
-        if let Some(p) = parent {
+        if let Some(key) = &ctx.claim {
+            self.next_claim(rt, parent, key, ctx.args.clone(), ctx.input);
+        } else if let Some(p) = parent {
             self.route(rt, p, &ctx.event, ctx.args.clone(), ctx.input);
         }
     }
@@ -577,6 +579,8 @@ impl Ctx {
                     entry.parent.filter(|_| !entry.surface),
                 )
             };
+            // (keyboard) A handler whose `when` is false is not there.
+            let queues: Vec<_> = queues.into_iter().filter(|l| l.active(rt)).collect();
             if !queues.is_empty() {
                 // One context for every handler of the event on this
                 // element: `propagate()` passes it on once.
@@ -584,14 +588,81 @@ impl Ctx {
                 ctx.input = input;
                 let ctx = Rc::new(ctx);
                 let mut ok = false;
-                for q in queues {
-                    ok |= q.emit(rt, ctx.clone()).is_ok();
+                for l in queues {
+                    ok |= l.queue.emit(rt, ctx.clone()).is_ok();
                 }
                 return ok;
             }
             cur = parent;
         }
         false
+    }
+
+    /// (keyboard) Runs the claim numbered `handler` of `node` for `key`,
+    /// and no other handler. A claim whose `when` turned false since the
+    /// router chose it (keys queued while logic was busy) does not run its
+    /// body (`mount_handler`): its key is spent, since the router has
+    /// stopped the default.
+    fn run_claim(
+        &self,
+        rt: &Runtime,
+        node: NodeId,
+        handler: u32,
+        key: &strand_scene::KeyInput,
+        args: Vec<Value>,
+        input: Option<crate::vm::InputCtx>,
+    ) -> bool {
+        let (claim, state) = {
+            let em = self.em.borrow();
+            let Some(entry) = em.nodes.get(&node) else {
+                return false;
+            };
+            (
+                entry.key_claims.get(handler as usize).cloned(),
+                entry.state.clone(),
+            )
+        };
+        let Some(claim) = claim else {
+            return false;
+        };
+        let mut ctx = EventCtx::new(Some(state), Some(node), "key", args);
+        ctx.input = input;
+        ctx.claim = Some(Rc::new(key.clone()));
+        claim.listener.queue.emit(rt, Rc::new(ctx)).is_ok()
+    }
+
+    /// (keyboard) `propagate()` in a claim: the next active claim of `key`
+    /// from `from` out to its surface. The default stays stopped, since
+    /// the router stopped it before logic heard of the key.
+    fn next_claim(
+        &self,
+        rt: &Runtime,
+        from: Option<NodeId>,
+        key: &strand_scene::KeyInput,
+        args: Vec<Value>,
+        input: Option<crate::vm::InputCtx>,
+    ) {
+        let mut cur = from;
+        while let Some(n) = cur {
+            let (claims, parent) = {
+                let em = self.em.borrow();
+                let Some(entry) = em.nodes.get(&n) else {
+                    return;
+                };
+                (
+                    entry.key_claims.clone(),
+                    entry.parent.filter(|_| !entry.surface),
+                )
+            };
+            let found = claims
+                .iter()
+                .rposition(|c| c.listener.active(rt) && c.patterns.iter().any(|p| p.matches(key)));
+            if let Some(i) = found {
+                self.run_claim(rt, n, i as u32, key, args, input);
+                return;
+            }
+            cur = parent;
+        }
     }
 
     /// The built-in palette: `material(seed: system.accent ?? #7aa2f7,
@@ -1851,6 +1922,21 @@ impl Instance {
         input: Option<crate::vm::InputCtx>,
     ) -> bool {
         self.ctx.route(&self.rt, node, event, args, input)
+    }
+
+    /// (keyboard) Runs the claim numbered `handler` of `node` for `key`
+    /// (`on key "ctrl+n" { … }`, as the router chose it); `args` holds the
+    /// `Key` record for its `(k)`. Returns whether it ran.
+    pub fn claim(
+        &self,
+        node: NodeId,
+        handler: u32,
+        key: &strand_scene::KeyInput,
+        args: Vec<Value>,
+        input: Option<crate::vm::InputCtx>,
+    ) -> bool {
+        self.ctx
+            .run_claim(&self.rt, node, handler, key, args, input)
     }
 
     /// Render reports a node flag (`hover` and friends).

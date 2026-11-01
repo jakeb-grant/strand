@@ -5,6 +5,7 @@ use crate::hir::{self, Event, LocalKind, StmtKind, Target};
 use crate::syntax::Span;
 use crate::syntax::ast::{self, AssignOp};
 use crate::ty::{ParamSig, Prim, Ty};
+use strand_scene::{KEY_MODIFIERS, KeyPattern, KeyPatternError};
 
 impl<'a> Checker<'a> {
     pub(crate) fn stmts(&mut self, items: &'a [ast::Stmt]) -> Vec<hir::Stmt> {
@@ -376,6 +377,7 @@ impl<'a> Checker<'a> {
     pub(crate) fn handler(&mut self, o: &'a ast::On, span: Span) -> Option<hir::Handler> {
         // Always `Some`; an unknown event is reported and its body still checked.
         let saved = self.ctx;
+        let mut keys = Vec::new();
         let (event, params): (Event, Vec<hir::LocalId>) = match &o.event {
             ast::Event::Change { targets, debounce } => {
                 let mut ts = Vec::new();
@@ -420,7 +422,11 @@ impl<'a> Checker<'a> {
                     Vec::new(),
                 )
             }
-            ast::Event::Named { path, params } => {
+            ast::Event::Named {
+                path,
+                keys: written,
+                params,
+            } => {
                 let (event, sig_params, known) = match self.event_params(path, span) {
                     Some((e, p)) => (e, p, true),
                     None => (
@@ -429,6 +435,7 @@ impl<'a> Checker<'a> {
                         false,
                     ),
                 };
+                keys = self.key_patterns(&event, written);
                 self.push_scope();
                 let mut locals = Vec::new();
                 let given = params.as_deref().unwrap_or(&[]);
@@ -506,10 +513,87 @@ impl<'a> Checker<'a> {
         self.ctx = saved;
         Some(hir::Handler {
             event,
+            keys,
+            when: None,
             params,
             body,
             span,
         })
+    }
+
+    /// (keyboard) The patterns `on key "ctrl+n", "down"` claims: each a
+    /// string literal that reads as a key.
+    fn key_patterns(&mut self, event: &Event, written: &'a [ast::Expr]) -> Vec<KeyPattern> {
+        let Some(first) = written.first() else {
+            return Vec::new();
+        };
+        if !matches!(event, Event::Element(e) if e == "key") {
+            self.error(
+                "check::key_pattern",
+                "only `on key` takes key patterns",
+                first.span,
+                "not `on key`",
+            );
+            return Vec::new();
+        }
+        let mut keys = Vec::new();
+        for e in written {
+            let ast::ExprKind::String(s) = &e.kind else {
+                self.expr(e, None);
+                self.error(
+                    "check::key_pattern",
+                    "a key pattern is a string literal",
+                    e.span,
+                    "not a literal",
+                )
+                .help = Some(
+                    "the router matches patterns without asking logic, so they are fixed: `on key \"ctrl+n\" { … }`; to turn one on and off, put it in a `when`"
+                        .into(),
+                );
+                continue;
+            };
+            match KeyPattern::parse(&s.value) {
+                Ok(k) => keys.push(k),
+                Err(err) => self.key_pattern_error(e.span, &err),
+            }
+        }
+        keys
+    }
+
+    /// A pattern that does not parse, with the closest it could have meant.
+    fn key_pattern_error(&mut self, span: Span, err: &KeyPatternError) {
+        let closest = match err {
+            KeyPatternError::NoKey => None,
+            KeyPatternError::UnknownModifier(m) => {
+                crate::diagnostic::suggest(&m.to_ascii_lowercase(), KEY_MODIFIERS.iter().copied())
+                    .map(str::to_string)
+            }
+            KeyPatternError::UnknownKey(k) => {
+                let names: Vec<String> = strand_scene::key_names().collect();
+                Self::closest(&k.to_ascii_lowercase(), &names)
+            }
+        };
+        let help = match err {
+            KeyPatternError::NoKey => "write modifiers before a key: `ctrl+n`".to_string(),
+            KeyPatternError::UnknownModifier(_) => match closest {
+                Some(c) => format!(
+                    "did you mean `{c}`? the modifiers are `ctrl`, `shift`, `alt` and `super`"
+                ),
+                None => "the modifiers are `ctrl`, `shift`, `alt` and `super`".to_string(),
+            },
+            KeyPatternError::UnknownKey(_) => match closest {
+                Some(c) => format!("did you mean `{c}`?"),
+                None => "a key is one character or a key's name, such as `escape`, `pgdn` or `F5`"
+                    .to_string(),
+            },
+        };
+        self.error(
+            "check::key_pattern",
+            err.to_string(),
+            span,
+            "not a key pattern",
+        )
+        .help = Some(help);
     }
 
     /// The event `path` names and the values it gives.

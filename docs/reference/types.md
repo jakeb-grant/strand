@@ -311,7 +311,8 @@ Keyed by `timeout`.
 
 ### `Key`
 
-A key press: `on key(k: Key)`.
+A key: `on key(k: Key)`, `on key_release(k: Key)`, or the `(k)` of a
+claim (`on key "ctrl+n" (k)`).
 
 | Field | Type | |
 | --- | --- | --- |
@@ -321,6 +322,7 @@ A key press: `on key(k: Key)`.
 | `shift` | `bool` | Shift is held. |
 | `alt` | `bool` | Alt is held. |
 | `logo` | `bool` | The logo (Super) key is held. |
+| `repeat` | `bool` | A repeat of a key held down. |
 
 ### `Node`
 

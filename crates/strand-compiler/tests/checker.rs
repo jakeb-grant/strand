@@ -3732,3 +3732,89 @@ fn keyboard_is_a_lock_screens_caps_lock_warning() {
         Vec::<String>::new()
     );
 }
+
+/// The errors `src` gets, as `code: message`.
+fn errors_of(src: &str) -> Vec<String> {
+    let (c, _) = compile_files(&[("shell.strand", src.to_string())]);
+    c.diagnostics
+        .iter()
+        .filter(|d| d.is_error())
+        .map(|d| {
+            let help = d.help.clone().unwrap_or_default();
+            format!("{}: {} | {help}", d.code, d.message)
+        })
+        .collect()
+}
+
+fn on_box(body: &str) -> String {
+    format!(
+        "state n = 0\nstate on = true\nlet name = \"a\"\nbar B {{\n  box {{\n    {body}\n  }}\n}}\n"
+    )
+}
+
+/// (keyboard) Patterns are checked: an unknown modifier or a multi-character
+/// name is an error naming the closest, and a pattern is a literal on `on
+/// key` alone.
+#[test]
+fn key_patterns_are_checked() {
+    for good in [
+        "on key \"ctrl+n\", \"down\" { n += 1 }",
+        "on key \"shift+tab\" (k) { n += 1 }",
+        "on key \"Page_Down\", \"F5\", \"?\", \"1\", \"ctrl++\" { n += 1 }",
+        "when on { on key \"esc\" { n += 1 } }",
+    ] {
+        assert_eq!(errors_of(&on_box(good)), Vec::<String>::new(), "{good}");
+    }
+    for (bad, want) in [
+        ("on key \"ctl+n\" { }", "did you mean `ctrl`"),
+        ("on key \"ctrl+escpe\" { }", "did you mean `escape`"),
+        ("on key \"page_dwn\" { }", "did you mean `page_down`"),
+        ("on key \"ctrl+\" { }", "names no key"),
+        ("on key name { }", "string literal"),
+        ("on key \"a\", name { }", "string literal"),
+        ("on click \"a\" { }", "only `on key`"),
+        ("on key_release \"a\" (k) { }", "only `on key`"),
+        ("if on { on key \"a\" { } }", "directly on its element"),
+    ] {
+        let errs = errors_of(&on_box(bad));
+        assert!(
+            errs.iter()
+                .any(|e| e.starts_with("check::key_pattern") && e.contains(want)),
+            "{bad}: {errs:?}"
+        );
+    }
+    let errs = errors_of(&on_box("on key(k) \"a\" { }"));
+    assert!(
+        errs.iter().any(|e| e.contains("come before the parameter")),
+        "{errs:?}"
+    );
+}
+
+/// (keyboard) A `when` holds an element's handlers and props; anything
+/// else stays an error there.
+#[test]
+fn a_when_holds_only_props_and_element_handlers() {
+    for good in [
+        "when on { bg: #000000; on click { n += 1 } }",
+        "when on { on activate { n += 1 } }",
+        "when hover { on key(k) { n += 1 } }",
+    ] {
+        assert_eq!(errors_of(&on_box(good)), Vec::<String>::new(), "{good}");
+    }
+    for bad in [
+        "when on { on change n { n += 1 } }",
+        "when on { on audio.changed { } }",
+        "when on { after 1s { n += 1 } }",
+        "when on { every 1s { n += 1 } }",
+        "when on { text \"a\" }",
+        "when on { if on { } }",
+        "when on { when on { } }",
+    ] {
+        let errs = errors_of(&on_box(bad));
+        assert!(!errs.is_empty(), "{bad} is an error");
+        assert!(
+            errs.iter().any(|e| e.starts_with("check::")),
+            "{bad}: {errs:?}"
+        );
+    }
+}

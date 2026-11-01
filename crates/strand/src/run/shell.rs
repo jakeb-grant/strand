@@ -258,7 +258,12 @@ impl Shell {
                     return;
                 }
                 self.press.handled(input);
-                inst.event_with(node, event.name(), event.args_with(&self.host), input);
+                let args = event.args_with(&self.host);
+                if let NodeEvent::Claim { handler, key } = &event {
+                    inst.claim(node, *handler, key, args, input);
+                } else {
+                    inst.event_with(node, event.name(), args, input);
+                }
             }
             ToLogic::Layout { seq, sizes } => {
                 for (node, rect) in sizes {

@@ -781,6 +781,28 @@ impl Shell {
 
 /// Routing's intents to logic, as eval's `input::to_logic` hands them;
 /// whether logic took any.
+/// The `Key` record `k` of a key handler.
+fn key_record(
+    host: &SchemaHost,
+    name: &str,
+    text: &str,
+    m: strand_scene::Modifiers,
+    repeat: bool,
+) -> Value {
+    host.record(
+        "Key",
+        &[
+            ("name", Value::text(name)),
+            ("text", Value::text(text)),
+            ("ctrl", Value::Bool(m.ctrl)),
+            ("shift", Value::Bool(m.shift)),
+            ("alt", Value::Bool(m.alt)),
+            ("logo", Value::Bool(m.logo)),
+            ("repeat", Value::Bool(repeat)),
+        ],
+    )
+}
+
 fn to_logic(
     inst: &Instance,
     host: &SchemaHost,
@@ -813,21 +835,26 @@ fn to_logic(
                     NodeEvent::Key {
                         name,
                         text,
-                        modifiers: m,
+                        modifiers,
+                        repeat,
                     } => (
                         "key",
-                        vec![host.record(
-                            "Key",
-                            &[
-                                ("name", Value::text(name.as_str())),
-                                ("text", Value::text(text.as_str())),
-                                ("ctrl", Value::Bool(m.ctrl)),
-                                ("shift", Value::Bool(m.shift)),
-                                ("alt", Value::Bool(m.alt)),
-                                ("logo", Value::Bool(m.logo)),
-                            ],
-                        )],
+                        vec![key_record(host, &name, &text, modifiers, repeat)],
                     ),
+                    NodeEvent::KeyRelease {
+                        name,
+                        text,
+                        modifiers,
+                    } => (
+                        "key_release",
+                        vec![key_record(host, &name, &text, modifiers, false)],
+                    ),
+                    NodeEvent::Claim { handler, key } => {
+                        let k = key_record(host, &key.name, &key.text, key.modifiers, key.repeat);
+                        inst.claim(node, handler, &key, vec![k], None);
+                        any = true;
+                        continue;
+                    }
                     NodeEvent::Drop { .. } => {
                         notes.push("a drop is not delivered on the web".into());
                         continue;

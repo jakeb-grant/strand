@@ -41,6 +41,9 @@ pub struct EventCtx {
     /// the handler's actions get it until its first `await`
     /// ([`super::action_ctx`]).
     pub input: Option<super::InputCtx>,
+    /// (keyboard) The key of a claim (`on key "…"`): `propagate()` passes
+    /// it to the next claim of it, not to observers.
+    pub claim: Option<Rc<strand_scene::KeyInput>>,
 }
 
 impl EventCtx {
@@ -57,6 +60,7 @@ impl EventCtx {
             args,
             propagated: std::cell::Cell::new(false),
             input: None,
+            claim: None,
         }
     }
 }

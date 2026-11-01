@@ -15,7 +15,7 @@ use strand_scene::{NodeKind, Prop as SceneProp, PropValue, SceneOp, TokenTable, 
 
 use super::Ctx;
 use super::convert;
-use super::emit::{Binding, FragId, NodeEntry, PropOut};
+use super::emit::{Binding, ClaimRec, FragId, Listener, NodeEntry, PropOut};
 use crate::hir::{DefId, LocalId, PoseKind, TimerKind};
 use crate::lower::{
     ChunkId, Element, ElementKind, Event, For, ForKey, Handler, Node, Program, Prop, StateInit,
@@ -1633,6 +1633,7 @@ impl Ctx {
                     parent: parent_scene,
                     state: state.clone(),
                     events: HashMap::new(),
+                    key_claims: Vec::new(),
                     two_way: Vec::new(),
                     bindings: Vec::new(),
                     key: Some(key),
@@ -4057,6 +4058,30 @@ impl Ctx {
         }
     }
 
+    /// (keyboard) Tells render the claims active on `scene` now
+    /// (`Prop::KeyClaims`), in source order.
+    fn send_key_claims(self: &Rc<Self>, rt: &Runtime, scene: strand_scene::NodeId) {
+        let claims: Vec<ClaimRec> = match self.em.borrow().nodes.get(&scene) {
+            Some(entry) => entry.key_claims.clone(),
+            None => return,
+        };
+        let active: Vec<strand_scene::KeyClaim> = claims
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.listener.active(rt))
+            .map(|(i, c)| strand_scene::KeyClaim {
+                handler: i as u32,
+                patterns: c.patterns.clone(),
+            })
+            .collect();
+        self.em.borrow_mut().set(
+            scene,
+            SceneProp::KeyClaims,
+            PropValue::KeyClaims(active.into()),
+            Transition::Instant,
+        );
+    }
+
     pub(crate) fn mount_handler(
         self: &Rc<Self>,
         rt: &Runtime,
@@ -4083,6 +4108,13 @@ impl Ctx {
                     env,
                     Some(el.scene),
                 );
+                let when = h.when.map(|c| {
+                    let (me, e) = (self.clone(), env.clone());
+                    let m = rt.memo(move |rt| Ok(me.eval(rt, c, &e)?.truthy()));
+                    self.declare_reads(rt, m.id(), &[c], env, &[]);
+                    rt.set_name(m.id(), "handler's when");
+                    m
+                });
                 let (e, me) = (env.clone(), self.clone());
                 let r = q.on(rt, move |rt, ctx| {
                     if let Some(want) = &accepts
@@ -4099,6 +4131,16 @@ impl Ctx {
                         .zip(ctx.args.iter().cloned())
                         .collect();
                     let fut = vm.handler(rt, body, e.clone(), frame, Some(ctx.clone()));
+                    // (keyboard) Asked as the body starts: keys queued while
+                    // logic was busy all arrive here before the first runs,
+                    // and it may turn the condition false for the next.
+                    let (rt2, keep) = (rt.clone(), when);
+                    let fut = async move {
+                        match keep {
+                            Some(w) if !w.get_untracked(&rt2).unwrap_or(false) => Ok(()),
+                            _ => fut.await,
+                        }
+                    };
                     rt.spawn_input(Some(site), me.reporting(loc.clone(), fut));
                     Ok(())
                 });
@@ -4107,21 +4149,33 @@ impl Ctx {
                 self.keep_handler(rt, env, file, h.span, site);
                 if let Ok(l) = r {
                     let _ = rt.reads_from(l, &[]);
-                    let mut em = self.em.borrow_mut();
-                    if let Some(entry) = em.nodes.get_mut(&el.scene) {
-                        // Several `on click` on one element all run, in
-                        // source order.
-                        entry.events.entry(name.clone()).or_default().push(q);
+                    let listener = Listener { queue: q, when };
+                    let claim = !h.keys.is_empty();
+                    if let Some(entry) = self.em.borrow_mut().nodes.get_mut(&el.scene) {
+                        if claim {
+                            entry.key_claims.push(ClaimRec {
+                                listener,
+                                patterns: h.keys.clone(),
+                            });
+                        } else {
+                            // Several `on click` on one element all run, in
+                            // source order.
+                            entry.events.entry(name.clone()).or_default().push(listener);
+                        }
                     }
-                    // (flex) Render leaves Tab to an element that hears
-                    // keys (`Prop::OnKey`).
-                    if name == "key" {
-                        em.set(
-                            el.scene,
-                            SceneProp::OnKey,
-                            PropValue::Bool(true),
-                            Transition::Instant,
-                        );
+                    if claim {
+                        self.send_key_claims(rt, el.scene);
+                        // (keyboard) Render matches what is active, so it
+                        // hears of a `when` that flips.
+                        if let Some(w) = when {
+                            let (me, scene) = (self.clone(), el.scene);
+                            let effect = rt.effect(move |rt| {
+                                let _ = w.get(rt);
+                                rt.untrack(|rt| me.send_key_claims(rt, scene));
+                                Ok(())
+                            });
+                            rt.set_name(effect.id(), "key claim's when");
+                        }
                     }
                 }
             }

@@ -511,7 +511,7 @@ impl Parser<'_> {
         self.ident("a field name")
     }
 
-    fn primary(&mut self) -> Expr {
+    pub(crate) fn primary(&mut self) -> Expr {
         if self.prev_kind().is_some_and(demands_operand) && self.dangling_at_line_end() {
             return self.error_expr();
         }

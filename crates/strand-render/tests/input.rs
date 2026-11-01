@@ -376,7 +376,8 @@ fn keys_go_to_the_focused_input_and_its_list() {
         event: NodeEvent::Key {
             name: "a".into(),
             text: "a".into(),
-            modifiers: Modifiers::default()
+            modifiers: Modifiers::default(),
+            repeat: false,
         }
     }));
     // A click on a list row: clicked, selected and activated.
@@ -3129,7 +3130,8 @@ fn return_activates_a_plain_input() {
                     event: NodeEvent::Key {
                         name: name.into(),
                         text: "\r".into(),
-                        modifiers: Modifiers::default()
+                        modifiers: Modifiers::default(),
+                        repeat: false,
                     }
                 },
                 Intent::Event {

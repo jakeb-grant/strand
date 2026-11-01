@@ -73,6 +73,29 @@ impl BootRead {
     }
 }
 
+/// An `on …` handler of an element: its input queue, and the condition of
+/// the `when` it sits in.
+#[derive(Clone)]
+pub(crate) struct Listener {
+    pub queue: strand_core::EventQueue<Rc<EventCtx>>,
+    pub when: Option<strand_core::Memo<bool>>,
+}
+
+impl Listener {
+    /// Whether it runs now: not while its `when` is false, or faulted.
+    pub fn active(&self, rt: &strand_core::Runtime) -> bool {
+        self.when
+            .is_none_or(|w| w.get_untracked(rt).unwrap_or(false))
+    }
+}
+
+/// (keyboard) An `on key "…"` claim of an element.
+#[derive(Clone)]
+pub(crate) struct ClaimRec {
+    pub listener: Listener,
+    pub patterns: Vec<strand_scene::KeyPattern>,
+}
+
 /// An element instance the emitter knows.
 pub(crate) struct NodeEntry {
     /// The element it instantiates, and where it is written.
@@ -86,7 +109,10 @@ pub(crate) struct NodeEntry {
     pub state: Rc<NodeState>,
     /// Input queues of its `on …` handlers, by event name, in source
     /// order.
-    pub events: HashMap<String, Vec<strand_core::EventQueue<Rc<EventCtx>>>>,
+    pub events: HashMap<String, Vec<Listener>>,
+    /// (keyboard) Its `on key "…"` claims, in source order; a claim's
+    /// number is its place here (`strand_scene::KeyClaim::handler`).
+    pub key_claims: Vec<ClaimRec>,
     /// `<->` props: where a widget write goes.
     pub two_way: Vec<(Prop, crate::lower::TwoWay, Rc<crate::vm::Env>)>,
     /// Watched memos bound to this node.

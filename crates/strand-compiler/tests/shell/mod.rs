@@ -68,6 +68,28 @@ pub struct Shell {
     pub pointer_facts: usize,
 }
 
+/// The `Key` record `k` of a key handler.
+fn key_record(
+    host: &SchemaHost,
+    name: &str,
+    text: &str,
+    m: strand_scene::Modifiers,
+    repeat: bool,
+) -> Value {
+    host.record(
+        "Key",
+        &[
+            ("name", Value::text(name)),
+            ("text", Value::text(text)),
+            ("ctrl", Value::Bool(m.ctrl)),
+            ("shift", Value::Bool(m.shift)),
+            ("alt", Value::Bool(m.alt)),
+            ("logo", Value::Bool(m.logo)),
+            ("repeat", Value::Bool(repeat)),
+        ],
+    )
+}
+
 fn renderer() -> Renderer {
     let data = std::fs::read(test_font_path()).unwrap();
     let engine = TextEngine::new(FontConfig::isolated(vec![Arc::new(data)]));
@@ -577,6 +599,13 @@ impl LoopHost for Shell {
                     };
                     self.inst.set_flag(node, flag, on);
                 }
+                Intent::Event {
+                    node,
+                    event: NodeEvent::Claim { handler, key },
+                } => {
+                    let k = key_record(&self.host, &key.name, &key.text, key.modifiers, key.repeat);
+                    self.inst.claim(node, handler, &key, vec![k], None);
+                }
                 Intent::Event { node, event } => {
                     let (name, args) = match event {
                         NodeEvent::Click => ("click", vec![]),
@@ -590,20 +619,19 @@ impl LoopHost for Shell {
                         NodeEvent::Key {
                             name,
                             text,
-                            modifiers: m,
+                            modifiers,
+                            repeat,
                         } => (
                             "key",
-                            vec![self.host.record(
-                                "Key",
-                                &[
-                                    ("name", Value::text(name.as_str())),
-                                    ("text", Value::text(text.as_str())),
-                                    ("ctrl", Value::Bool(m.ctrl)),
-                                    ("shift", Value::Bool(m.shift)),
-                                    ("alt", Value::Bool(m.alt)),
-                                    ("logo", Value::Bool(m.logo)),
-                                ],
-                            )],
+                            vec![key_record(&self.host, &name, &text, modifiers, repeat)],
+                        ),
+                        NodeEvent::KeyRelease {
+                            name,
+                            text,
+                            modifiers,
+                        } => (
+                            "key_release",
+                            vec![key_record(&self.host, &name, &text, modifiers, false)],
                         ),
                         _ => continue,
                     };

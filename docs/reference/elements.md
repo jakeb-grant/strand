@@ -83,7 +83,8 @@ What every element accepts. Every visual prop springs; `x`, `y`,
 | `on middle` | A middle click. |
 | `on scroll(dy: float, dx: float)` | A scroll: `on scroll(dy) { … }`. |
 | `on drop(value: any, at: int)` | Something was dropped on it: a `drag:` source's value or a `Drop` from another program, and the index it landed at. |
-| `on key(key: Key)` | A key press while it has focus. |
+| `on key(key: Key)` | A key press (and each repeat) while it or something in it has focus. `on key(k) { … }` only observes: the key still does its default. With patterns it claims the keys: `on key "ctrl+n", "down" { … }` runs for those, the innermost claim first, and stops their default and every other handler; `(k)` after the patterns gives the key, and `propagate()` passes it to the next claim out, with the default still stopped. Modifiers are `ctrl`, `shift`, `alt` and `super`, exact; a letter is `"a"` or `"shift+a"`; a single other character (`"?"`, `"1"`) is what the key types and ignores Shift; named keys are xkb's (`Escape`, `Page_Down`, `F5`) in any case, and `esc`, `enter`, `tab`, `space`, `up`, `down`, `left`, `right`, `pgup`, `pgdn`, `backspace` and `del`. |
+| `on key_release(key: Key)` | A key let go while it or something in it has focus. It only observes. |
 | `on activate` | It was chosen: clicked, Enter while selected in a `list`, or Enter in an `input` with no `nav:` list. |
 
 ### `surface`
@@ -373,7 +374,7 @@ Also every prop and event of [`node`](#node).
 | `text` | `<-> text` | Its text, bound two-way. |
 | `placeholder` | `text` | Shown while it is empty. |
 | `type` | `InputKind` | `password` masks it, and the text it binds is a password: `check::secret_flow` warns where that reaches anything that shows, keeps or sends it, other than `auth.submit`, `polkit.respond`, `greetd.submit` and a network's `connect_with` (its length and whether it is empty are free to show). |
-| `focus` | `bool` | Takes keyboard focus when shown, and again whenever it turns true while its surface has the keyboard (`focus: mode == search`). Tab and Shift+Tab move focus between a surface's inputs and lists, unless an `on key` around the focused one hears keys: then Tab is that handler's. |
+| `focus` | `bool` | Takes keyboard focus when shown, and again whenever it turns true while its surface has the keyboard (`focus: mode == search`). Tab and Shift+Tab move focus between a surface's inputs and lists, unless a claim takes them (`on key "tab" { … }`). |
 | `nav` | `Node` | Routes arrow keys to a `list`: `nav: results`. |
 
 ### `letters`

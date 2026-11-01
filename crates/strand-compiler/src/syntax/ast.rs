@@ -329,7 +329,7 @@ pub enum HeadArg {
     Named(Ident, Expr),
 }
 
-/// `when cond { props }`.
+/// `when cond { props and element handlers }`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct When {
     pub cond: Expr,
@@ -391,9 +391,13 @@ pub struct On {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
-    /// `click`, `notifications.received(n)`, `drop(p: Pin, at: int)`.
+    /// `click`, `notifications.received(n)`, `drop(p: Pin, at: int)`,
+    /// (keyboard) `key "ctrl+n", "down" (k)`.
     Named {
         path: Vec<Ident>,
+        /// The key patterns it claims, as written (the checker wants each
+        /// a string literal).
+        keys: Vec<Expr>,
         params: Option<Vec<Param>>,
     },
     /// `change a, b after T`.

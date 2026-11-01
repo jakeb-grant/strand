@@ -1211,9 +1211,16 @@ is being saved, so the idle-wakeup windows hold.
     by `Prop::Step`). A graph's `Value` does not spring.
   - **Layout and input props** (flex). `Prop::Wrap`, `Prop::Axis`,
     `Prop::Snap`; `Prop::Cursor` is resolved by the Router and handed to
-    strand-surface (`SurfaceHost::cursor`); `Prop::OnKey` marks an
-    element with `on key`, and Tab moves focus in render only when no
-    element from the focused node out to its surface has it.
+    strand-surface (`SurfaceHost::cursor`).
+  - **Key claims** (keyboard). `strand_scene::KeyPattern` is the one parse
+    and match of `on key "ctrl+n"`, shared by the checker and the Router.
+    Logic sets an element's active claims as `Prop::KeyClaims`
+    (`PropValue::KeyClaims`, each claim's number and patterns, in source
+    order), again when a `when` around one flips. The Router walks from
+    the focused node out to its surface before any default, and sends
+    `NodeEvent::Claim { handler, key }`, which the host hands to
+    `Instance::claim`: that claim's handler alone runs, never `route`'s
+    bubbling through observers.
   - **Virtualised lists.** On a `list` whose direct child is a `for`,
     logic sets `Prop::RowCount` and `Prop::RowFirst`, and `Create`/
     `Remove` carry `window: true` for rows the window mounts or unmounts

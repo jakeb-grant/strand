@@ -128,6 +128,7 @@ fn kind(v: &PropValue) -> &'static str {
         PropValue::Shader(_) => "a shader",
         PropValue::Keyframes(_) => "keyframes",
         PropValue::Backlog(_) => "a backlog",
+        PropValue::KeyClaims(_) => "key claims",
     }
 }
 

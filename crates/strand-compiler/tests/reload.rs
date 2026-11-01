@@ -1723,3 +1723,63 @@ fn a_rename_beside_a_same_named_component_keeps_its_state() {
         shell.scene.texts()
     );
 }
+
+/// The patterns `node` claims now, as written.
+fn claims_of(shell: &Shell, node: strand_scene::NodeId) -> Vec<String> {
+    match shell.scene.prop(node, Prop::KeyClaims) {
+        Some(strand_scene::PropValue::KeyClaims(c)) => c
+            .iter()
+            .flat_map(|c| c.patterns.iter().map(|p| p.written().to_string()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// (keyboard) A node's claims survive a reload that does not touch them,
+/// follow one that does (a pattern edited, a claim added, wrapped in a
+/// `when`, removed), and a `when` still flips them afterwards; each is
+/// what a cold boot would send.
+#[test]
+fn key_claims_follow_a_reload_and_a_when() {
+    let src = |claim: &str, label: &str| {
+        format!("export state on = false\nbar Top {{\n  {claim}\n  text \"{label}\"\n}}\n")
+    };
+    let start = src("on key \"a\" { }", "x");
+    let mut shell = boot(&[("bar.strand", &start)]);
+    let bar = shell.scene.roots()[0];
+    assert_eq!(claims_of(&shell, bar), ["a"]);
+    // An edit elsewhere keeps them.
+    let other = src("on key \"a\" { }", "y");
+    let (_, ops) = shell.reload(&[("bar.strand", &other)]);
+    assert_eq!(claims_of(&shell, bar), ["a"]);
+    assert!(
+        !ops.iter().any(|o| matches!(
+            o,
+            SceneOp::SetProp {
+                prop: Prop::KeyClaims,
+                ..
+            }
+        )),
+        "{ops:#?}"
+    );
+    // A pattern edited, another claim added.
+    let edited = src("on key \"b\" { }\n  on key \"c\", \"d\" { }", "y");
+    shell.reload(&[("bar.strand", &edited)]);
+    assert_eq!(claims_of(&shell, bar), ["b", "c", "d"]);
+    shell.assert_cold_boot(&[("bar.strand", &edited)]);
+    // In a `when`, false: none active; and it flips.
+    let guarded = src("when on { on key \"e\" { } }", "y");
+    shell.reload(&[("bar.strand", &guarded)]);
+    assert_eq!(claims_of(&shell, bar), Vec::<String>::new());
+    shell.assert_cold_boot(&[("bar.strand", &guarded)]);
+    shell
+        .inst
+        .set_value("bar", "on", Value::Bool(true))
+        .unwrap();
+    shell.flush();
+    assert_eq!(claims_of(&shell, bar), ["e"]);
+    // Removed: a reload's new instance sends none, and the node has none.
+    let gone = src("", "y");
+    shell.reload(&[("bar.strand", &gone)]);
+    assert_eq!(claims_of(&shell, bar), Vec::<String>::new());
+}

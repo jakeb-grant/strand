@@ -148,6 +148,20 @@ pub enum NodeEvent {
         name: String,
         text: String,
         modifiers: strand_scene::Modifiers,
+        repeat: bool,
+    },
+    /// (keyboard) A key let go while the node has focus (`on
+    /// key_release(k)`).
+    KeyRelease {
+        name: String,
+        text: String,
+        modifiers: strand_scene::Modifiers,
+    },
+    /// (keyboard) A key the node claimed, for its claim numbered `handler`
+    /// alone (`on key "ctrl+n"`; `Instance::claim`).
+    Claim {
+        handler: u32,
+        key: strand_scene::KeyInput,
     },
     /// Escape or a click away closed a popup (`on dismiss`).
     Dismiss,
@@ -173,7 +187,8 @@ impl NodeEvent {
             NodeEvent::Scroll { .. } => "scroll",
             NodeEvent::Middle => "middle",
             NodeEvent::Activate => "activate",
-            NodeEvent::Key { .. } => "key",
+            NodeEvent::Key { .. } | NodeEvent::Claim { .. } => "key",
+            NodeEvent::KeyRelease { .. } => "key_release",
             NodeEvent::Dismiss => "dismiss",
             NodeEvent::Drop { .. } => "drop",
         }
@@ -194,21 +209,46 @@ impl NodeEvent {
             NodeEvent::Key {
                 name,
                 text,
-                modifiers: m,
-            } => vec![host.record(
-                "Key",
-                &[
-                    ("name", Value::text(name.as_str())),
-                    ("text", Value::text(text.as_str())),
-                    ("ctrl", Value::Bool(m.ctrl)),
-                    ("shift", Value::Bool(m.shift)),
-                    ("alt", Value::Bool(m.alt)),
-                    ("logo", Value::Bool(m.logo)),
-                ],
+                modifiers,
+                repeat,
+            } => vec![key_record(host, name, text, *modifiers, *repeat)],
+            NodeEvent::KeyRelease {
+                name,
+                text,
+                modifiers,
+            } => vec![key_record(host, name, text, *modifiers, false)],
+            NodeEvent::Claim { key, .. } => vec![key_record(
+                host,
+                &key.name,
+                &key.text,
+                key.modifiers,
+                key.repeat,
             )],
             e => e.args(),
         }
     }
+}
+
+/// The `Key` record `k` of a key handler.
+fn key_record(
+    host: &SchemaHost,
+    name: &str,
+    text: &str,
+    m: strand_scene::Modifiers,
+    repeat: bool,
+) -> Value {
+    host.record(
+        "Key",
+        &[
+            ("name", Value::text(name)),
+            ("text", Value::text(text)),
+            ("ctrl", Value::Bool(m.ctrl)),
+            ("shift", Value::Bool(m.shift)),
+            ("alt", Value::Bool(m.alt)),
+            ("logo", Value::Bool(m.logo)),
+            ("repeat", Value::Bool(repeat)),
+        ],
+    )
 }
 
 /// What the main thread tells the logic thread.

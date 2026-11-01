@@ -120,6 +120,7 @@ pub(super) fn flow(
         elem: "element",
         password: false,
         keys: false,
+        lock: false,
         bodies: HashMap::new(),
         params: HashMap::new(),
         fn_params: HashMap::new(),
@@ -586,11 +587,17 @@ fn password_input(types: &TypeTable, el: &hir::Element) -> bool {
                 .any(|n| matches!(n, Node::When(w) if typed(&w.props))))
 }
 
+/// Whether `h` is told keys: `on key(k)`, `on key_release(k)` or a claim
+/// that takes `(k)`.
+fn key_event(h: &hir::Handler) -> bool {
+    matches!(&h.event, hir::Event::Element(e) if e == "key" || e == "key_release")
+}
+
 /// Whether an `on key` is among `nodes` (an element's own, through
 /// `if`, `for` and `match`).
 fn hears_keys(nodes: &[Node]) -> bool {
     nodes.iter().any(|n| match n {
-        Node::Handler(h) => matches!(&h.event, hir::Event::Element(e) if e == "key"),
+        Node::Handler(h) => key_event(h),
         Node::If(i) => hears_keys(&i.then) || hears_keys(&i.else_),
         Node::For(f) => hears_keys(&f.body),
         Node::Match(m) => m.arms.iter().any(|(_, b)| hears_keys(b)),
@@ -620,6 +627,8 @@ struct Walk<'a> {
     params: HashMap<DefId, Vec<(String, LocalId)>>,
     /// Each `fn`'s parameters.
     fn_params: HashMap<DefId, Vec<LocalId>>,
+    /// (keyboard) Inside a `lock`, every `input` of which takes a secret.
+    lock: bool,
     /// The `persist` states.
     persisted: HashSet<DefId>,
     sources: Vec<(Place, Origin)>,
@@ -738,7 +747,7 @@ impl<'a> Walk<'a> {
                     // `k.name` (a `bool` of them, `k.name == "Return"`,
                     // carries none).
                     if self.keys
-                        && matches!(&h.event, hir::Event::Element(e) if e == "key")
+                        && key_event(h)
                         && let Some(&k) = h.params.first()
                     {
                         self.sources.push((
@@ -768,7 +777,48 @@ impl<'a> Walk<'a> {
         }
     }
 
+    /// (keyboard) A claim of a key that types, on or around a password
+    /// input or in a `lock` around any input, would eat what is typed
+    /// there: an error, since a lock that cannot be typed into cannot be
+    /// left, and a `when` cannot be proved to exclude the field.
+    fn claims_around_password(&mut self, el: &'a hir::Element) {
+        let lock = self.lock || matches!(&el.kind, ElementKind::Builtin(k) if k == "lock");
+        let holds = |w: &Self, fields: &[Node]| w.holds_field(fields, lock, &mut HashSet::new());
+        let around = password_input(self.types, el)
+            || (lock && matches!(&el.kind, ElementKind::Builtin(k) if k == "input"))
+            || holds(self, &el.children)
+            || matches!(&el.kind, ElementKind::Component(d)
+                if self.bodies.get(d).is_some_and(|b| holds(self, b)));
+        if !around {
+            return;
+        }
+        for n in el.children.iter() {
+            let Node::Handler(h) = n else { continue };
+            if let Some(k) = h.keys.iter().find(|k| k.types_text()) {
+                let mut d = Diagnostic::error(
+                    "check::claim_around_password",
+                    format!(
+                        "a claim of `{}` would eat what is typed into a password",
+                        k.written()
+                    ),
+                )
+                .with_label_in(
+                    self.file,
+                    h.span,
+                    "it takes this key before the field",
+                );
+                d.help = Some(
+                    "a claim stops typing in every input it is around: give it a modifier (`ctrl+…`), or put it on an element the field is not inside".into(),
+                );
+                self.now.push(d);
+            }
+        }
+    }
+
     fn element(&mut self, el: &'a hir::Element) {
+        self.claims_around_password(el);
+        let saved_lock = self.lock;
+        self.lock |= matches!(&el.kind, ElementKind::Builtin(k) if k == "lock");
         let saved = (self.elem, self.password, self.keys);
         self.elem = "element";
         self.password = false;
@@ -812,37 +862,40 @@ impl<'a> Walk<'a> {
                 self.password = password;
                 self.keys = password
                     || (hears_keys(&el.children)
-                        && self.holds_password(&el.children, &mut HashSet::new()));
+                        && self.holds_field(&el.children, false, &mut HashSet::new()));
             }
             ElementKind::Unknown(_) => {}
         }
         self.nodes(&el.children);
         (self.elem, self.password, self.keys) = saved;
+        self.lock = saved_lock;
     }
 
     /// Whether a password input is among `nodes`, in components called
-    /// there too.
-    fn holds_password(&self, nodes: &[Node], seen: &mut HashSet<DefId>) -> bool {
+    /// there too; with `any`, whatever `input` (a `lock`'s).
+    fn holds_field(&self, nodes: &[Node], any: bool, seen: &mut HashSet<DefId>) -> bool {
         nodes.iter().any(|n| match n {
             Node::Element(e) => match &e.kind {
-                ElementKind::Builtin(_) => {
-                    password_input(self.types, e) || self.holds_password(&e.children, seen)
+                ElementKind::Builtin(k) => {
+                    password_input(self.types, e)
+                        || (any && k == "input")
+                        || self.holds_field(&e.children, any, seen)
                 }
                 ElementKind::Component(d) => {
-                    self.holds_password(&e.children, seen)
+                    self.holds_field(&e.children, any, seen)
                         || (seen.insert(*d)
                             && self
                                 .bodies
                                 .get(d)
-                                .is_some_and(|b| self.holds_password(b, seen)))
+                                .is_some_and(|b| self.holds_field(b, any, seen)))
                 }
                 ElementKind::Unknown(_) => false,
             },
             Node::If(i) => {
-                self.holds_password(&i.then, seen) || self.holds_password(&i.else_, seen)
+                self.holds_field(&i.then, any, seen) || self.holds_field(&i.else_, any, seen)
             }
-            Node::For(f) => self.holds_password(&f.body, seen),
-            Node::Match(m) => m.arms.iter().any(|(_, b)| self.holds_password(b, seen)),
+            Node::For(f) => self.holds_field(&f.body, any, seen),
+            Node::Match(m) => m.arms.iter().any(|(_, b)| self.holds_field(b, any, seen)),
             _ => false,
         })
     }
