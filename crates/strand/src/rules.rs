@@ -208,7 +208,7 @@ fn regex_escape(s: &str) -> String {
     out
 }
 
-/// The rules as Hyprland 0.56's Lua config (`hl.layer_rule`).
+/// The rules as Hyprland's Lua config (`hl.layer_rule`, 0.55 and later).
 pub fn lua(rules: &[Rule]) -> String {
     let mut out = String::new();
     for r in rules {
@@ -278,8 +278,9 @@ pub(crate) const USAGE: &str = "usage: strand compositor-rules [dir] [--classic]
     Prints Hyprland layer rules that blur behind the surfaces of the config \
     at dir (default $XDG_CONFIG_HOME/strand) that ask for `blur`, matched by \
     their strand-<Name> namespaces, for you to paste into your Hyprland \
-    config. The default is Hyprland 0.56's Lua config (hl.layer_rule); \
-    --classic prints hyprlang `layerrule =` lines for older versions. \
+    config. The default is Hyprland's Lua config (hl.layer_rule, 0.55 and \
+    later); --classic prints `layerrule =` lines for a hyprlang config, which \
+    Hyprland reads no more from 0.57. \
     Nothing is applied to the running session.\n";
 
 /// What `strand compositor-rules` was asked for.
@@ -399,7 +400,7 @@ lock Gate { on key(k) { auth.submit(k.name) }; box { blur: 4 } }
         );
     }
 
-    /// Hyprland 0.56's Lua form and the classic hyprlang lines, matched
+    /// Hyprland's Lua form and the classic hyprlang lines, matched
     /// by the exact namespace, with `ignore_alpha` keeping the shadows
     /// and transparent margins sharp.
     #[test]

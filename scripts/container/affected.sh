@@ -14,6 +14,11 @@
 # eval/scenarios/docs/). Other files outside crates/
 # (scripts, .github) test nothing here; ci covers them.
 #
+# site/claims.toml quotes lines of crates and scripts, so rewording one can
+# fail the site's build. A changed file a `source` of the ledger names adds
+# the pseudo-target `strand-site:build`: strand-site's build test alone,
+# unless strand-site is picked already.
+#
 # The animation evaluation sandbox (eval/, its own workspace) is the
 # pseudo-target `eval`: a change under eval/ or scripts/eval/, or to the
 # root Cargo.toml or Cargo.lock (its lock and profiles are checked
@@ -109,16 +114,34 @@ elif [ "$deep" = 1 ] && [ "${#pick[@]}" -gt 0 ]; then
   done
 fi
 
+# The changed files the ledger's sources name: each source is a quote, the
+# path, then ` "snippet"`, `#heading` or the closing quote. A snippet can look
+# like a source, which costs one needless run. AFFECTED_LEDGER stands in for
+# the file: the tests'.
+ledger=${AFFECTED_LEDGER:-site/claims.toml}
+sitebuild=0
+if [ -z "${pick[strand-site]:-}" ] && [ -f "$ledger" ]; then
+  cited=$(awk '/^source *=/,/]$/' "$ledger" |
+    { grep -oE "[\"'][A-Za-z0-9_./+@-]+( \"|#|[\"'])" || true; } |
+    sed -E "s/^[\"']//; s/( \"|#|[\"'])\$//" | sort -u)
+  quoted=$(comm -12 <(sort -u <<<"$changed") <(cat <<<"$cited"))
+  if [ -n "$quoted" ]; then
+    sitebuild=1
+    echo "affected: $ledger quotes $(echo $quoted): strand-site's build test runs"
+  fi
+fi
+
 [ "$anim" = 1 ] && [ "$eval" = 0 ] &&
   echo "affected: strand-render changed: its eval-hooks build is checked; \`scripts/container/run.sh eval check eval/scenarios/curated eval/scenarios/regressions\` runs the sandbox's scenarios on it"
-if [ "${#pick[@]}" -eq 0 ] && [ "$eval" = 0 ]; then
+if [ "${#pick[@]}" -eq 0 ] && [ "$eval" = 0 ] && [ "$sitebuild" = 0 ]; then
   echo "affected: no crate changed since $base ($mb); ci covers the rest"
   exit 0
 fi
 
 crates=$(printf '%s\n' "${!pick[@]}" | sed '/^$/d' | sort)
 targets=$crates
-[ "$eval" = 1 ] && targets=$(printf 'eval\n%s\n' "$crates" | sed '/^$/d')
+[ "$sitebuild" = 1 ] && targets=$(printf 'strand-site:build\n%s\n' "$targets" | sed '/^$/d')
+[ "$eval" = 1 ] && targets=$(printf 'eval\n%s\n' "$targets" | sed '/^$/d')
 echo "affected since $base ($(git rev-parse --short "$mb" 2>/dev/null || echo "$mb")): $(echo $targets)"
 [ "$list" = 1 ] && exit 0
 if [ "$eval" = 1 ]; then
@@ -126,6 +149,7 @@ if [ "$eval" = 1 ]; then
 elif [ "$anim" = 1 ]; then
   cargo check -p strand-render --features eval-hooks
 fi
+[ "$sitebuild" = 0 ] || cargo test -p strand-site --test build
 [ -n "$crates" ] || exit 0
 args=()
 for c in $crates; do args+=(-p "$c"); done

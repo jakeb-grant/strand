@@ -40,9 +40,9 @@
 //! `windowtitlev2` does not change a title back (a spurious `Update`).
 //!
 //! Actions are `dispatch` requests in one of two dialects. Before 0.55,
-//! and on 0.55 with a hyprlang config, a dispatcher and its argument
+//! and on 0.55 or 0.56 with a hyprlang config, a dispatcher and its argument
 //! (`dispatch workspace 3`); with a Lua config (0.55 on, the only kind
-//! from 0.56) the request's argument is evaluated as `return
+//! from 0.57) the request's argument is evaluated as `return
 //! hl.dispatch(<argument>)`, so it must be a dispatcher object (`dispatch
 //! hl.dsp.focus({ workspace = "3" })`). Each dialect's Hyprland refuses
 //! the other's form in its own words: a Lua Hyprland answers a classic
@@ -1257,7 +1257,7 @@ fn refuses_dialect(reply: &str) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Dialect {
     /// A dispatcher object, `hl.dsp.focus({ workspace = "3" })`: a Lua
-    /// config (0.55 on; the only kind from 0.56).
+    /// config (0.55 on; the only kind from 0.57).
     Lua,
     /// A dispatcher and its argument, `workspace 3`: a hyprlang config.
     Classic,

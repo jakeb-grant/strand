@@ -250,7 +250,8 @@ Hyprland blurs layer surfaces through its own layer rules instead:
 `strand compositor-rules` prints the rules for your config, to paste
 into your Hyprland config. Strand never applies them itself. They are
 Lua (`hl.layer_rule`) by default, and `--classic` prints hyprlang
-`layerrule` lines for an older config.
+`layerrule` lines for a hyprlang config, which Hyprland reads no more
+from 0.57.
 
 Strand also uses these when the compositor offers them:
 `wp_viewporter`, `wp_fractional_scale_manager_v1`, `wp_presentation`,

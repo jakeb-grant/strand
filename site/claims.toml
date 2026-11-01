@@ -17,8 +17,8 @@
 # fail the build: a line number goes stale without a word. So does a source that
 # is the claim's own page or this file, which hold the words whatever is true.
 #
-# Rewording a line this file quotes fails the site's build, and `affected` does
-# not run strand-site for a change to a crate or script: see CLAUDE.md, "Checks".
+# Rewording a line this file quotes fails the site's build, so `affected` runs
+# strand-site's build test for a changed file a `source` here names.
 
 # --- start-tools-help ---
 [[claim]]
@@ -85,7 +85,7 @@ proof  = "scripts/release/smoke.sh: ubuntu:24.04 with exactly these installs and
 page   = "site/start/install.md"
 text   = "`sudo dnf install pipewire-libs libxkbcommon libwayland-client fontconfig`"
 source = ['scripts/install.sh "sudo dnf install pipewire-libs libxkbcommon libwayland-client fontconfig"']
-proof  = "not run: the Fedora packages that hold libpipewire-0.3.so.0, libxkbcommon.so.0, libwayland-client.so.0 and libfontconfig.so.1 (packages.fedoraproject.org, 2026-10-29)"
+proof  = "ran 2026-11-01 in disposable fedora:40 (glibc 2.39) and fedora:latest (Fedora 44, glibc 2.43) containers: `dnf repoquery --whatprovides` names pipewire-libs, libxkbcommon, libwayland-client and fontconfig for libpipewire-0.3.so.0, libxkbcommon.so.0, libwayland-client.so.0 and libfontconfig.so.1, the four strand's ELF NEEDED adds to glibc; before this command `ldd strand` found none of the four, after it (dnf exit 0) none is missing and a strand built at 68506217 ran `--version` and `check`"
 
 [[claim]]
 page   = "site/start/install.md"
@@ -270,9 +270,15 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 
 [[claim]]
 page   = "site/start/install.md"
+text   = "`layerrule` lines for a hyprlang config, which Hyprland reads no more"
+source = ['crates/strand/src/rules.rs "The rules as the classic hyprlang `layerrule` lines"']
+proof  = "ran 2026-11-01 in strand-hyprland-nested:6ed1628e9b78 (hyprland 0.57.0-1): `Hyprland --verify-config` refuses a hyprlang file with `old.conf:1: syntax error near '-'`; v0.56.0's source has src/config/legacy and v0.57.0's does not"
+
+[[claim]]
+page   = "site/start/install.md"
 text   = "Lua (`hl.layer_rule`) by default, and `--classic` prints hyprlang"
-source = ['''crates/strand/src/rules.rs "The rules as Hyprland 0.56's Lua config (`hl.layer_rule`)."''', 'crates/strand/src/rules.rs "The rules as the classic hyprlang `layerrule` lines"']
-proof  = "read: lua() writes hl.layer_rule({ … }), classic() writes `layerrule =` lines; --classic picks classic (USAGE)"
+source = ['''crates/strand/src/rules.rs "The rules as Hyprland's Lua config (`hl.layer_rule`, 0.55 and later)."''', 'crates/strand/src/rules.rs "The rules as the classic hyprlang `layerrule` lines"']
+proof  = "read: lua() writes hl.layer_rule({ … }), classic() writes `layerrule =` lines; --classic picks classic (USAGE). What lua() writes passed `Hyprland --verify-config` in strand-hyprland-nested:6ed1628e9b78 (0.57.0-1), 2026-11-01; hl.layer_rule and those fields are in the source at tag v0.55.0 (src/config/lua/bindings/LuaBindingsConfigRules.cpp, LayerRuleEffectContainer.cpp)"
 
 [[claim]]
 page   = "site/start/install.md"
@@ -578,7 +584,7 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 page   = "site/start/running.md"
 text   = "spawn-at-startup \"strand\" \"run\""
 source = ['crates/strand/src/entry.rs "[] => Ok(Action::Run(None)),"']
-proof  = "niri's config syntax; strand run takes no other argument"
+proof  = "the page's whole kdl block passed `niri validate -c` (niri 26.04, archlinux:latest, 2026-11-01; a misspelt action in it exits 1); strand run takes no other argument"
 
 [[claim]]
 page   = "site/start/running.md"
@@ -3005,9 +3011,21 @@ proof  = "read: a tag push always boots the VM, and the release job needs the lo
 
 [[claim]]
 page   = "site/start/running.md"
+text   = "hl.bind(\"SUPER + D\", hl.dsp.exec_cmd(\"strand toggle launcher.open\"))"
+source = ['crates/strand/src/entry.rs "[] => Ok(Action::Run(None)),"', 'crates/strand/src/ipc/query.rs "`toggle` flips an exported boolean"']
+proof  = "the page's Lua block, with `{ locked = true, repeating = true }` as hl.bind's third argument, passed `Hyprland --verify-config` in strand-hyprland-nested:6ed1628e9b78 (0.57.0-1), 2026-11-01; `hl.nope(1)` in it exits 1"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "`allow-when-locked=true` in niri"
+source = ['crates/strand/src/ipc/query.rs "`toggle` flips an exported boolean"']
+proof  = "a bind with allow-when-locked=true passed `niri validate -c` (niri 26.04, archlinux:latest, 2026-11-01)"
+
+[[claim]]
+page   = "site/start/running.md"
 text   = "0.55 and later, and its only kind of config from 0.57"
 source = ['scripts/container/hyprland-nested.sh "Hyprland --config "$XDG_RUNTIME_DIR/hyprland.lua""']
-proof  = "seen in the matrix image's hyprland 0.57.0-1, 2026-11-01: the binary holds no `hyprland.conf` and the package ships only `hyprland.lua`; https://wiki.hypr.land/0.56.0/Configuring/Start/ has hyprlang deprecated, not gone, in 0.56"
+proof  = "ran 2026-11-01 in strand-hyprland-nested:6ed1628e9b78 (hyprland 0.57.0-1): `Hyprland --verify-config` passes a Lua file and refuses a hyprlang one with `old.conf:1: syntax error near '-'`, the binary holds no `hyprland.conf` and the package ships only `hyprland.lua`. The source at each tag agrees: v0.54.3 has only example/hyprland.conf, v0.55.0 and v0.56.0 have src/config/lua beside src/config/legacy, v0.57.0 has no src/config/legacy"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
