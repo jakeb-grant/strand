@@ -43,7 +43,11 @@ scripts/container/run.sh affected     # the tests of the crates you changed
 since the merge base with `main` (committed or not), and for the crates
 whose tests read `docs/` when docs changed. Add `--deep` when you change
 an interface other crates use (it adds every crate depending on yours),
-`--list` to see the choice without running it. While fixing one failure,
+`--list` to see the choice without running it. It picks strand-site only for
+`docs/` and `site/`, yet `site/claims.toml` quotes lines from the crates and
+scripts too, so rewording one fails the site's build: after changing a comment
+or message, run `run.sh cargo test -p strand-site --test build`, or the final
+`site` step finds it. While fixing one failure,
 rerun that test alone (`run.sh cargo test -p <crate> --test <file>
 <name>`), not a suite.
 

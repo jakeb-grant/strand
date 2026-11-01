@@ -51,9 +51,9 @@ moves from workspace 1 to 3, then to 2:
 ## Sizes
 
 - **`width`, `height` and `size`** take logical pixels (`36` is
-  `36px`), a percentage of the parent (`40%`) or `ch`, 0.6 of the node's font
-  size, about one digit's width (`4ch`). Unset, or `auto`, a node is
-  the size of what it holds.
+  `36px`), a percentage of the parent (`40%`) or `ch`, 0.6 of the node's
+  font size, about one digit's width (`4ch`). Unset, or `auto`, a node
+  is the size of what it holds.
 - **`min_width`, `max_width`, `min_height` and `max_height`** bound
   it: `max_height: 420` on a list makes it scroll past 420 px.
 - **`pad`** is space inside a node's edge and **`margin`** space

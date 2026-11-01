@@ -14,7 +14,11 @@
 # in the file, whitespace runs counting as one space, so it fails the build
 # when the words it cites go. Write it in a TOML literal string, in single
 # quotes, so its own quotes need no escaping. `path:line` and `path:first-last`
-# fail the build: a line number goes stale without a word.
+# fail the build: a line number goes stale without a word. So does a source that
+# is the claim's own page or this file, which hold the words whatever is true.
+#
+# Rewording a line this file quotes fails the site's build, and `affected` does
+# not run strand-site for a change to a crate or script: see CLAUDE.md, "Checks".
 
 # --- start-tools-help ---
 [[claim]]
@@ -56,7 +60,7 @@ proof  = "package.sh fails when a program needs a newer glibc than MIN_GLIBC; sc
 [[claim]]
 page   = "site/start/install.md"
 text   = "The releases are built on Ubuntu 24.04."
-source = ['''.github/workflows/ci.yml "package: if: github.event_name != 'schedule' runs-on: ubuntu-24.04"''']
+source = ['''.github/workflows/ci.yml "if: github.event_name != 'schedule' runs-on: ubuntu-24.04 timeout-minutes: 60 env:"''']
 proof  = "the package job runs-on ubuntu-24.04"
 
 [[claim]]
@@ -183,8 +187,8 @@ proof  = "read"
 [[claim]]
 page   = "site/start/install.md"
 text   = "libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev libpam0g-dev"
-source = ['.github/workflows/ci.yml "libwayland-dev libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev libpam0g-dev"']
-proof  = "the compositors job builds strand's tests with exactly these"
+source = ['scripts/container/Dockerfile "libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev"', '''scripts/container/Dockerfile "libpam0g-dev for strand-auth's PAM helper"''']
+proof  = "the CI image every build and test runs in installs these"
 
 [[claim]]
 page   = "site/start/install.md"
@@ -375,7 +379,7 @@ proof  = "read"
 [[claim]]
 page   = "site/start/running.md"
 text   = "nothing to show and waits: the first file you save there appears."
-source = ['crates/strand/src/run/logic.rs "the fixed config later mounts against this host."']
+source = ['crates/strand/src/run/mod.rs "nothing to run yet: no .strand file"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): an empty directory, then a saved bar.strand, which `strand report` then listed"
 
 [[claim]]
@@ -1825,7 +1829,7 @@ proof  = "read"
 [[claim]]
 page   = "site/concepts/layout.md"
 text   = "There is no alignment for one child alone."
-source = ['docs/spec.md "`place: absolute` takes a node out of the flow, placed by `x` and `y`."', 'crates/strand-compiler/src/check/tree.rs ""check::unknown_prop","']
+source = ["crates/strand-compiler/src/schema/builtin.schema"]
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: `align_self` is check::unknown_prop"
 
 [[claim]]
@@ -2665,7 +2669,7 @@ proof  = "read: the config's own service field"
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
 text   = "each parameter is one argument of the method"
-source = ['docs/spec.md "Parameters are as above, plus `[text]`."']
+source = ['docs/spec.md "a missing method is an error with a did-you-mean, as is another number of arguments"']
 proof  = "crates/strand-services/tests/custom.rs::a_dbus_declarations_actions_call_its_methods"
 
 [[claim]]
@@ -2996,7 +3000,7 @@ proof  = "read: a tag push always boots the VM, and the release job needs the lo
 [[claim]]
 page   = "site/start/running.md"
 text   = "0.55 and later, and its only kind of config from 0.57"
-source = ['''docs/decisions.md "Lua is Hyprland's only kind of config from 0.57"''', 'scripts/container/hyprland-nested.sh "Hyprland --config "$XDG_RUNTIME_DIR/hyprland.lua""']
+source = ['scripts/container/hyprland-nested.sh "Hyprland --config "$XDG_RUNTIME_DIR/hyprland.lua""']
 proof  = "seen in the matrix image's hyprland 0.57.0-1, 2026-11-01: the binary holds no `hyprland.conf` and the package ships only `hyprland.lua`; https://wiki.hypr.land/0.56.0/Configuring/Start/ has hyprlang deprecated, not gone, in 0.56"
 
 [[claim]]

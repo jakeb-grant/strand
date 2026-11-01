@@ -282,7 +282,7 @@ of the test suite runs on a headless sway 1.9 on Ubuntu 24.04.
 
 ### How a release is made
 
-CI's `package` job builds the archive the script installs on every push
+CI's `package` job builds the archive the script installs
 (`scripts/release/package.sh`) and tests the script against it in fresh
 containers (`scripts/release/smoke.sh`). The `release` job publishes it
 once every other job has passed: a push to `main` as the `edge`

@@ -5,12 +5,15 @@
 //! exist (`path`, `path "snippet"` with the snippet in the file, under
 //! the same whitespace rule, or `path.md#anchor` with the heading there),
 //! when a source is `path:line` or `path:first-last`, which only says a
-//! line is in range and rots unseen, when a `proof` that names a test (`path.rs::name`) names no such function, and when an
-//! entry lacks `page`, `text` or `source`, or has a key the format does
-//! not know. A page's repository-only spans
-//! ([`crate::markdown::shown`]) are not on it. Whether the source says what the text says is for the
-//! people who check the site: the ledger only keeps a claim from
-//! outliving the words it was written for or the code it points at.
+//! line is in range and rots unseen, when a source is the claim's own
+//! page or the ledger, which hold its words whatever is true, when a
+//! `proof` that names a test (`path.rs::name`) names no such function,
+//! and when an entry lacks `page`, `text` or `source`, or has a key the
+//! format does not know. A page's repository-only spans
+//! ([`crate::markdown::shown`]) are not on it. Whether the source says
+//! what the text says is for the people who check the site: the ledger
+//! only keeps a claim from outliving the words it was written for or the
+//! code it points at.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -190,6 +193,12 @@ fn check_snippet(root: &Path, source: &str, path: &str, quoted: &str) -> Option<
         .then(|| format!("`{source}`: {path} does not contain \"{snippet}\""))
 }
 
+/// The path `source` names, in any of its forms.
+fn source_path(source: &str) -> &str {
+    let path = source.split_once(" \"").map_or(source, |(p, _)| p);
+    path.split_once('#').map_or(path, |(p, _)| p)
+}
+
 /// Why `source` (from the repository's root) points at nothing, if it
 /// does not.
 pub fn check_source(root: &Path, source: &str) -> Option<String> {
@@ -324,7 +333,13 @@ pub fn check(root: &Path) -> Vec<String> {
             Err(e) => errors.push(format!("{at}: {}: {e}", c.page)),
         }
         for s in &c.source {
-            if let Some(e) = check_source(root, s) {
+            let path = source_path(s);
+            if path == c.page || path == LEDGER {
+                errors.push(format!(
+                    "{at}: source `{s}`: a claim's own page and the ledger hold its words, \
+                     so they prove nothing; cite what makes it true"
+                ));
+            } else if let Some(e) = check_source(root, s) {
                 errors.push(format!("{at}: source {e}"));
             }
         }
@@ -387,6 +402,23 @@ mod tests {
              [[claim]]\n{PAGE}text = \"it settles\"\nsource = \"src/anim.rs\"\nproof = \"seen on the page\"\n"
         ));
         assert!(e.is_empty(), "{e:?}");
+    }
+
+    #[test]
+    fn a_source_that_holds_the_claims_own_words_fails() {
+        for source in [
+            "site/concepts/motion.md \\\"it settles too\\\"",
+            "site/concepts/motion.md#motion",
+            "site/concepts/motion.md",
+            "site/claims.toml \\\"it settles too\\\"",
+            "site/claims.toml",
+        ] {
+            let e = errors(&format!(
+                "[[claim]]\n{PAGE}text = \"it settles\"\nsource = [\"{source}\"]\n"
+            ));
+            assert_eq!(e.len(), 1, "{source}: {e:?}");
+            assert!(e[0].contains("prove nothing"), "{source}: {e:?}");
+        }
     }
 
     #[test]

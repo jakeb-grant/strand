@@ -2,8 +2,8 @@
 
 A clock in the middle of the bar that opens a month calendar when you
 click it. Escape, or a click anywhere else, closes it. It is the
-clock of the guide's bar, with an `id` and one `when` added to light it while
-the calendar shows; the guide's
+clock of the guide's bar, with an `id` and one `when` added to light it
+while the calendar shows; the guide's
 [level 3](../../docs/guide/level-3.md#a-clock-with-a-calendar) builds
 it step by step.
 

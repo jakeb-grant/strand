@@ -158,8 +158,9 @@ releases, both made by CI from the same archive
 strand-eval built with the release profile, the licenses and every
 dependency's license in `THIRD-PARTY-LICENSES.txt`):
 
-- **edge**: every push to `main` whose every CI job passed replaces the
-  build on the `edge` pre-release (`scripts/release/publish.sh`). Its
+- **edge**: a push to `main` whose every CI job passed replaces the
+  build on the `edge` pre-release, unless a newer push has come by then,
+  whose own run publishes it (`scripts/release/publish.sh`). Its
   archive is `strand-edge-<12 hex digits of the commit>-x86_64-linux.tar.gz`.
   The `edge` tag stays at the commit the pre-release was first made
   from, since moving a tag breaks `git fetch` for anyone who has it.
