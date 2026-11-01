@@ -804,8 +804,10 @@ fn windows_are_linked_to_their_apps() {
             .into_iter()
             .find(|w| w.app_id == class)
     };
-    until(&rt, &s, "the windows", || {
-        window("Chromium-browser").is_some() && window("Spotify").is_some()
+    // The windows come first and the desktop entries after them
+    // (`windows_are_published_before_the_desktop_entries_are_read`).
+    until(&rt, &s, "the windows, linked", || {
+        window("Chromium-browser").is_some_and(|w| w.app.is_some()) && window("Spotify").is_some()
     });
     let chromium = window("Chromium-browser").unwrap();
     assert_eq!(chromium.icon, "chromium");
