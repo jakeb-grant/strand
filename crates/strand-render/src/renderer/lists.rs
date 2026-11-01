@@ -45,6 +45,30 @@ pub struct ScrollInput {
     pub time: u32,
 }
 
+/// (keyboard) A `scroll`'s or `list`'s position moved from code or a key
+/// ([`Renderer::scroll_move`]). `y` alone, on one that runs only along x, is
+/// along x, as a wheel is.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum ScrollMove {
+    /// To these offsets, springing.
+    To { y: Option<f32>, x: Option<f32> },
+    /// By this much from where it is heading, as a wheel step.
+    By { dy: Option<f32>, dx: Option<f32> },
+    /// By this many views, along the way it runs (y on one that runs both).
+    Pages(f32),
+    /// Every `scroll` and `list` around the node shows it, each moving at
+    /// once and as little as it takes, as for a list's selected row.
+    Reveal,
+    /// This list shows its child `row` ([`Renderer::scroll_into_view`]).
+    RevealRow(NodeId),
+    /// This list shows its row at this index ([`Renderer::reveal_index`]).
+    RevealIndex(u32),
+}
+
+/// The asks waiting for a layout, at most: a timer moving a scroll nobody
+/// shows keeps only its last.
+const SCROLL_MOVES_HELD: usize = 64;
+
 /// Frames painted with a list in view, those whose view showed content
 /// with no row there (rows still being mounted or laid out), and those
 /// whose view was held back at the edge of the mounted rows while the
@@ -84,6 +108,14 @@ pub(crate) struct Lists {
     revealing: HashSet<NodeId>,
     /// Rows laid out by scroll steps (tests: each row once).
     scroll_rows: usize,
+    /// (keyboard) Moves waiting for the layout of the surface showing their
+    /// node ([`Renderer::scroll_move`]), in order.
+    moves: Vec<(NodeId, ScrollMove)>,
+    /// (keyboard) The nodes whose position logic reads (`Prop::Watch` with
+    /// `scroll`): only these are reported.
+    watched: HashSet<NodeId>,
+    /// (keyboard) What it was last told of each, `(x, y)`.
+    told: HashMap<NodeId, (f32, f32)>,
     /// Nodes the diff being applied mounted for a list's window (rows
     /// with `window: true` and everything created under them): they
     /// show at rest, so neither their creation nor their props animate.
@@ -394,6 +426,264 @@ impl Renderer {
             self.lists.revealing.insert(id);
             self.scrolled(id);
         }
+    }
+
+    /// (keyboard) A move of a `scroll` or `list`, or a reveal of any node,
+    /// from code or a key. It is made now if what it reads is laid out, and
+    /// else once it is, in the order they were asked: a position past the
+    /// content a diff just added, and a node it just mounted, need the
+    /// layout that diff brings.
+    pub fn scroll_move(&mut self, id: NodeId, mv: ScrollMove) {
+        if mv == ScrollMove::Reveal && !self.in_a_scroll(id) {
+            return;
+        }
+        // A row's reveal stands whatever layout comes (`ScrollState::revealed`).
+        let stands = matches!(mv, ScrollMove::RevealRow(_) | ScrollMove::RevealIndex(_));
+        // Moves on one surface keep their order; another's wait holds up nothing.
+        let root = self.tree.root_of(id);
+        let behind = self
+            .lists
+            .moves
+            .iter()
+            .any(|(n, _)| self.tree.root_of(*n) == root);
+        if !behind && (stands || self.laid_surface(id).is_some()) {
+            self.make_scroll_move(id, mv);
+            return;
+        }
+        if self.lists.moves.len() >= SCROLL_MOVES_HELD {
+            self.lists.moves.remove(0);
+        }
+        self.lists.moves.push((id, mv));
+    }
+
+    /// Whether a `scroll` or `list` is around `id`.
+    fn in_a_scroll(&self, id: NodeId) -> bool {
+        let mut up = self.tree.get(id).and_then(|n| n.parent);
+        while let Some(p) = up {
+            let Some(n) = self.tree.get(p) else {
+                return false;
+            };
+            if scrolls_content(&self.tree, p) {
+                return true;
+            }
+            if n.kind.is_surface() {
+                return false;
+            }
+            up = n.parent;
+        }
+        false
+    }
+
+    /// A surface showing `id`, if each one showing it has its layout.
+    fn laid_surface(&self, id: NodeId) -> Option<SurfaceId> {
+        let root = self.tree.root_of(id)?;
+        let mut showing = self.surfaces.iter().filter(|(_, s)| s.root == root);
+        if showing
+            .clone()
+            .any(|(_, s)| s.layout_dirty || s.boxes.is_none())
+        {
+            return None;
+        }
+        showing.next().map(|(id, _)| *id)
+    }
+
+    /// A layout is done: the moves it was waited for.
+    pub(super) fn run_scroll_moves(&mut self) {
+        if self.lists.moves.is_empty() {
+            return;
+        }
+        let mut waiting: Vec<(NodeId, ScrollMove)> = Vec::new();
+        let mut held = HashSet::new();
+        for (id, mv) in std::mem::take(&mut self.lists.moves) {
+            if !self.tree.contains_live(id) {
+                continue;
+            }
+            let root = self.tree.root_of(id);
+            if held.contains(&root) || self.laid_surface(id).is_none() {
+                // (No later move of its surface passes it.)
+                held.insert(root);
+                waiting.push((id, mv));
+            } else {
+                self.make_scroll_move(id, mv);
+            }
+        }
+        self.lists.moves = waiting;
+    }
+
+    fn make_scroll_move(&mut self, id: NodeId, mv: ScrollMove) {
+        let (y, x) = match mv {
+            ScrollMove::Reveal => return self.reveal_node(id),
+            ScrollMove::RevealRow(row) => return self.scroll_into_view(id, row),
+            ScrollMove::RevealIndex(i) => return self.reveal_index(id, i),
+            ScrollMove::To { y, x } => (y, x),
+            ScrollMove::By { dy, dx } => (dy, dx),
+            ScrollMove::Pages(n) => (Some(n), None),
+        };
+        let Some(node) = self
+            .tree
+            .get(id)
+            .filter(|_| scrolls_content(&self.tree, id))
+        else {
+            return;
+        };
+        let axes = scroll_axes(node);
+        let (y, x) = if axes == [true, false] && x.is_none() {
+            (None, y)
+        } else {
+            (y, x)
+        };
+        let curve = self.scroll_curve();
+        let last = self.laid_surface(id).and_then(|s| self.last_frame(s));
+        let mut moved = false;
+        for (along_x, value) in [
+            (false, y.filter(|_| axes[1])),
+            (true, x.filter(|_| axes[0])),
+        ] {
+            let Some(v) = value else { continue };
+            let st = self.axis_state(id, along_x);
+            moved |= match mv {
+                ScrollMove::To { .. } => st.spring_towards(v, curve, last),
+                ScrollMove::Pages(_) => {
+                    let view = st.viewport;
+                    st.wheel(v * view, curve, last)
+                }
+                _ => st.wheel(v, curve, last),
+            };
+        }
+        if moved {
+            self.lists.revealing.remove(&id);
+            self.scrolled(id);
+        }
+    }
+
+    /// `node` shows: the innermost `scroll` or `list` around it first, then
+    /// each out, in view of where the one inside it moved it.
+    fn reveal_node(&mut self, node: NodeId) {
+        let Some(surface) = self.laid_surface(node) else {
+            return;
+        };
+        let rect_of = |r: &Self, n: NodeId| {
+            r.surfaces
+                .get(&surface)
+                .and_then(|s| s.boxes.as_ref())
+                .and_then(|b| b.rects.get(&n).copied())
+        };
+        let own = rect_of(self, node);
+        // How far the moves so far carry it on the surface.
+        let (mut sx, mut sy) = (0.0f32, 0.0f32);
+        let mut child = node;
+        let mut up = self.tree.get(node).and_then(|n| n.parent);
+        while let Some(a) = up {
+            let Some(n) = self.tree.get(a) else {
+                return;
+            };
+            let (surface_node, parent, kind) = (n.kind.is_surface(), n.parent, n.kind);
+            let axes = scroll_axes(n);
+            let horizontal = list_horizontal(n);
+            let lb = self
+                .surfaces
+                .get(&surface)
+                .and_then(|s| s.boxes.as_ref())
+                .and_then(|b| b.lists.get(&a).copied());
+            if let Some(lb) = lb {
+                match kind {
+                    NodeKind::List => {
+                        self.scroll_into_view(a, child);
+                        let to = self.scrolls.get(&a).map_or(lb.applied, |s| s.offset);
+                        if horizontal {
+                            sx -= to - lb.applied;
+                        } else {
+                            sy -= to - lb.applied;
+                        }
+                    }
+                    NodeKind::Scroll => {
+                        if let Some(r) = own.or_else(|| rect_of(self, child)) {
+                            let mut moved = false;
+                            if axes[1] {
+                                let y = r.y + sy - lb.content.y + lb.applied;
+                                let to = self.reveal_along(a, false, y, r.h, &mut moved);
+                                sy -= to - lb.applied;
+                            }
+                            if axes[0] {
+                                let x = r.x + sx - lb.content.x + lb.applied_x;
+                                let to = self.reveal_along(a, true, x, r.w, &mut moved);
+                                sx -= to - lb.applied_x;
+                            }
+                            if moved {
+                                self.lists.revealing.remove(&a);
+                                self.scrolled(a);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if surface_node {
+                return;
+            }
+            child = a;
+            up = parent;
+        }
+    }
+
+    /// `scroll` `id` along x (`x`) or y lands, at once, where content from
+    /// `at` for `len` shows, moving as little as it takes. The offset.
+    fn reveal_along(&mut self, id: NodeId, x: bool, at: f32, len: f32, moved: &mut bool) -> f32 {
+        let st = self.axis_state(id, x);
+        let to = keep_in_view(st.target(), at, len, st.viewport)
+            .clamp(0.0, (st.content - st.viewport).max(0.0));
+        st.stop();
+        if st.offset != to {
+            st.offset = to;
+            *moved = true;
+        }
+        to
+    }
+
+    /// (keyboard) Where the `scroll`s and `list`s logic reads the position of
+    /// (`s.scroll_y`) are, those that moved since it was last told: `(node,
+    /// x, y)`, what each shows. Nothing, at no cost, when none is read.
+    pub fn take_scroll_facts(&mut self) -> Vec<(NodeId, f32, f32)> {
+        if self.lists.watched.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for id in &self.lists.watched {
+            let Some(st) = self.scrolls.get(id) else {
+                continue;
+            };
+            let (x, y) = if self.tree.get(*id).is_some_and(list_horizontal) {
+                (st.shown, 0.0)
+            } else {
+                (st.across.as_ref().map_or(0.0, |a| a.shown), st.shown)
+            };
+            if self.lists.told.get(id).copied().unwrap_or((0.0, 0.0)) != (x, y) {
+                out.push((*id, x, y));
+            }
+        }
+        for (id, x, y) in &out {
+            self.lists.told.insert(*id, (*x, *y));
+        }
+        out.sort_by_key(|(id, ..)| *id);
+        out
+    }
+
+    /// (keyboard) The watched nodes changed (a diff set `Prop::Watch`).
+    pub(super) fn watch_scrolls(&mut self, ids: &[NodeId]) {
+        for id in ids {
+            let reads = matches!(
+                self.tree.get(*id).and_then(|n| n.get(Prop::Watch)),
+                Some(PropValue::Keyword(k)) if k.split('_').any(|p| p == "scroll")
+            );
+            if reads {
+                self.lists.watched.insert(*id);
+            } else {
+                self.lists.watched.remove(id);
+            }
+        }
+        let tree = &self.tree;
+        self.lists.watched.retain(|n| tree.contains_live(*n));
+        self.lists.told.retain(|n, _| tree.contains_live(*n));
     }
 
     /// How many rows of list `id` its view shows at once (at the rows'

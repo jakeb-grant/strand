@@ -288,6 +288,11 @@ impl Shell {
                     log::debug!("write to {prop}: {}", self.secrets.redact_error(&e));
                 }
             }
+            ToLogic::Scroll(at) => {
+                for (node, x, y) in at {
+                    inst.set_scroll(node, x, y);
+                }
+            }
             ToLogic::Flag { node, flag, on } => {
                 inst.set_flag(node, flag, on);
             }

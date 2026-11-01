@@ -1603,6 +1603,18 @@ impl Ctx {
             {
                 let _ = state.selected_index(rt).set(rt, v);
             }
+            // (keyboard) A scroll keeps its place, which render says again
+            // only on a change.
+            for (a, b) in [
+                (was.scroll_x_cell.get(), state.scroll_x(rt)),
+                (was.scroll_y_cell.get(), state.scroll_y(rt)),
+            ] {
+                if let Some(a) = a
+                    && let Ok(v) = a.get_untracked(rt)
+                {
+                    let _ = b.set(rt, v);
+                }
+            }
             // (oi-lock) So does a thumbnail told it has nothing to show.
             if let Some(a) = was.blank_cell.get()
                 && let Ok(true) = a.get_untracked(rt)

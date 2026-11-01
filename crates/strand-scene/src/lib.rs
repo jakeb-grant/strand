@@ -43,8 +43,9 @@ pub use paint::{
     TargetError,
 };
 pub use protocol::{
-    Border, Corners, Easing, Font, GradientStop, Insets, Keyframes, Length, ListAsk, NodeKind,
-    Paint, Prop, PropClass, PropValue, SceneDiff, SceneOp, Shadow, Transition, source_is_file,
+    Border, Corners, Easing, Font, GradientStop, Insets, Keyframes, Length, ListAsk, NodeAsk,
+    NodeKind, Paint, Prop, PropClass, PropValue, SceneDiff, SceneOp, Shadow, Transition,
+    source_is_file,
 };
 pub use provenance::{ProvenanceStep, StepKind};
 pub use shader::{PRELUDE, ShaderCode, UniformSlot, UniformType};

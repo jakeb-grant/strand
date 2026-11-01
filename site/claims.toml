@@ -2916,6 +2916,24 @@ proof  = "crates/strand-compiler/tests/theme.rs::a_palette_from_hand_written_col
 # --- keys ---
 [[claim]]
 page   = "site/how-to/keys.md"
+text   = "the typing stays in the box"
+source = ["crates/strand-render/src/input.rs", "docs/spec.md#67-layout-and-input"]
+proof  = "crates/strand-compiler/tests/focus.rs::a_click_on_a_button_leaves_a_focused_input_typing"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "reading them wakes nothing while it stands still"
+source = ["crates/strand-render/src/renderer/lists.rs", "docs/spec.md#67-layout-and-input"]
+proof  = "crates/strand-compiler/tests/focus.rs::reading_scroll_y_wakes_nothing_at_rest"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "They stop at the nearest container with `arrows:`"
+source = ["crates/strand-render/src/input.rs", "docs/spec.md#67-layout-and-input"]
+proof  = "crates/strand-compiler/tests/focus.rs::arrows_stay_inside_the_nearest_container"
+
+[[claim]]
+page   = "site/how-to/keys.md"
 text   = "Down from above an empty cell of a short last line goes to the last row"
 source = ["crates/strand-render/src/input.rs", "docs/spec.md#67-layout-and-input"]
 proof  = "crates/strand-compiler/tests/selection.rs::a_grids_arrows_move_by_geometry"

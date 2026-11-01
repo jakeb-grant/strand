@@ -18,10 +18,11 @@ use strand_scene::time::Instant;
 use strand_scene::input::button;
 use strand_scene::{
     AxisSource, ButtonState, ClipboardAsk, InputEvent, KeyInput, ListAsk, LogicalPoint,
-    LogicalRect, Modifiers, NodeId, NodeKind, Prop, PropValue, SceneDiff, SceneOp, SurfaceId,
+    LogicalRect, Modifiers, NodeAsk, NodeId, NodeKind, Prop, PropValue, SceneDiff, SceneOp,
+    SurfaceId,
 };
 
-use crate::renderer::{Renderer, ScrollInput, ScrollKind};
+use crate::renderer::{Renderer, ScrollInput, ScrollKind, ScrollMove};
 use crate::tree::SceneTree;
 use crate::widgets::{Caret, Edit};
 
@@ -52,6 +53,9 @@ pub enum NodeEvent {
     Scroll { dy: f64, dx: f64 },
     /// A list row chosen with Enter or a click (`on activate`).
     Activate,
+    /// (keyboard) Return or space on a focused node: its own `on activate`
+    /// if it has one, else `on click`, which only logic can tell.
+    Press,
     /// A key pressed (or repeating) while the node has focus (`on
     /// key(k)`), which only observes.
     Key {
@@ -176,6 +180,11 @@ pub trait InputScene {
     fn reveal(&mut self, list: NodeId, row: NodeId) {
         let _ = (list, row);
     }
+    /// (keyboard) Moves `scroll` or `list` `node`, or reveals it
+    /// ([`Renderer::scroll_move`]).
+    fn scroll_move(&mut self, node: NodeId, mv: ScrollMove) {
+        let _ = (node, mv);
+    }
     /// (M4) Scrolls virtualised list `list` so its row at global index
     /// `index` is in view, mounted or not (see
     /// [`Renderer::reveal_index`]): its window follows, and the row
@@ -280,10 +289,13 @@ impl InputScene for Renderer {
         Some(Renderer::tree(self))
     }
     fn reveal(&mut self, list: NodeId, row: NodeId) {
-        self.scroll_into_view(list, row);
+        Renderer::scroll_move(self, list, ScrollMove::RevealRow(row));
+    }
+    fn scroll_move(&mut self, node: NodeId, mv: ScrollMove) {
+        Renderer::scroll_move(self, node, mv);
     }
     fn reveal_index(&mut self, list: NodeId, index: u32) {
-        Renderer::reveal_index(self, list, index);
+        Renderer::scroll_move(self, list, ScrollMove::RevealIndex(index));
     }
     fn rows_in_view(&self, list: NodeId) -> Option<u32> {
         Renderer::rows_in_view(self, list)
@@ -500,9 +512,19 @@ pub struct Router {
     sel_index: HashMap<NodeId, u32>,
     /// Lists whose selection is a row not mounted now.
     away: HashMap<NodeId, Away>,
-    /// (keyboard) What logic's last diff asked of lists (`results.next()`),
-    /// in order, until it is applied ([`Router::settle`]).
-    asks: Vec<(NodeId, ListAsk)>,
+    /// (keyboard) What logic's last diff asked of nodes (`results.next()`,
+    /// `node.focus()`), in order, until it is applied ([`Router::settle`]).
+    asks: Vec<(NodeId, NodeAsk)>,
+    /// (keyboard) The surfaces that hold the keyboard, whether or not the
+    /// node focused on one is still there.
+    keyboard: HashSet<SurfaceId>,
+    /// (keyboard) The node `node.focus()` named on a surface (by its root)
+    /// that did not hold the keyboard: it takes focus when the keyboard
+    /// comes.
+    focus_wanted: HashMap<NodeId, NodeId>,
+    /// (keyboard) The `value`s keys wrote to a slider or `segmented` that
+    /// logic has not answered: the next key builds on the last.
+    value_flights: HashMap<NodeId, ValueFlight>,
     /// (keyboard) Each list's selection as logic last heard it
     /// ([`Intent::SelectedIndex`]).
     told_index: HashMap<NodeId, u32>,
@@ -562,6 +584,23 @@ pub struct Router {
     /// ([`Router::set_now`]): a host on a virtual clock's.
     now: Option<Instant>,
 }
+
+/// (keyboard) Keys' writes to a widget's `value` on their way through logic.
+#[derive(Debug)]
+struct ValueFlight {
+    /// The last written.
+    latest: PropValue,
+    /// Those written before it, oldest first.
+    pending: Vec<PropValue>,
+    at: Instant,
+}
+
+/// (keyboard) How far an arrow key moves a focused `scroll`, logical pixels.
+const KEY_SCROLL_STEP: f32 = 40.0;
+
+/// (keyboard) The fraction of its range an arrow key moves a `slider` with no
+/// `step:`.
+const KEY_SLIDER_STEP: f32 = 0.01;
 
 /// (M6) How long a `trigger: hover` popup stays open after the pointer
 /// leaves both it and the element it is anchored to (spec.md 6.3): the
@@ -650,7 +689,7 @@ impl Router {
     /// (keyboard) What it asks of lists (`results.next()`) waits for it to
     /// be applied, and [`Router::settle`] does each in turn.
     pub fn observe(&mut self, diff: &SceneDiff) {
-        self.asks.extend_from_slice(&diff.list_asks);
+        self.asks.extend_from_slice(&diff.asks);
         // (flex) `focus:` turned true: focus moves there (`settle`).
         for op in &diff.ops {
             if let SceneOp::SetProp {
@@ -748,6 +787,31 @@ impl Router {
                 });
             }
         }
+        // (keyboard) A `value` a key wrote coming back, or logic's own.
+        if !self.value_flights.is_empty() {
+            for op in &diff.ops {
+                let SceneOp::SetProp {
+                    id,
+                    prop: Prop::Value,
+                    value,
+                    ..
+                } = op
+                else {
+                    continue;
+                };
+                let Some(f) = self.value_flights.get_mut(id) else {
+                    continue;
+                };
+                match f.pending.iter().position(|p| p == value) {
+                    Some(i) if *value != f.latest => {
+                        f.pending.drain(..=i);
+                    }
+                    _ => {
+                        self.value_flights.remove(id);
+                    }
+                }
+            }
+        }
         if self.edits.is_empty() {
             return;
         }
@@ -781,6 +845,7 @@ impl Router {
 
     /// `surface` is gone: its hover, press and focus go with it.
     pub fn detached(&mut self, surface: SurfaceId) {
+        self.keyboard.remove(&surface);
         self.surfaces.remove(&surface);
         self.hovered.remove(&surface);
         self.still.remove(&surface);
@@ -1242,13 +1307,29 @@ impl Router {
     /// (keyboard) Then what the diff asked of lists, in order, each from
     /// where the one before left the selection: after the first-row rule,
     /// so `query = q; results.select(2)` ends on row 2 of what is mounted.
+    /// So are `node.focus()`, `node.reveal()` and a scroll's position, in
+    /// the same order: what asks after a `focus()` finds it there.
     pub fn settle(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
         self.prune(scene.tree());
-        self.refocus(scene.tree());
+        self.refocus(scene);
         self.land(scene);
         self.select_first_rows(scene);
-        for (list, ask) in std::mem::take(&mut self.asks) {
-            self.list_ask(scene, list, ask);
+        let mut refocused = false;
+        for (node, ask) in std::mem::take(&mut self.asks) {
+            match ask {
+                NodeAsk::List(ask) => self.list_ask(scene, node, ask),
+                NodeAsk::Focus => {
+                    self.focus_ask(scene, node);
+                    refocused = true;
+                }
+                NodeAsk::Reveal => scene.scroll_move(node, ScrollMove::Reveal),
+                NodeAsk::ScrollTo { y, x } => scene.scroll_move(node, ScrollMove::To { y, x }),
+                NodeAsk::ScrollBy { dy, dx } => scene.scroll_move(node, ScrollMove::By { dy, dx }),
+            }
+        }
+        // An `input` a `focus()` reached starts its `nav` list.
+        if refocused {
+            self.select_first_rows(scene);
         }
         self.index_selections(scene.tree());
         self.flush(scene)
@@ -1349,28 +1430,55 @@ impl Router {
     /// the keyboard focus of its surface, if that surface has the
     /// keyboard (one that has not yet takes its first `focus: true` node
     /// when it enters). The last to turn true on a surface wins.
-    fn refocus(&mut self, tree: Option<&SceneTree>) {
-        let turned = std::mem::take(&mut self.focus_turned);
-        let Some(tree) = tree else {
-            return;
+    fn refocus(&mut self, scene: &mut dyn InputScene) {
+        for node in std::mem::take(&mut self.focus_turned) {
+            self.focus_holders(scene, node)
+                .into_iter()
+                .for_each(|s| self.focus_on(scene, s, node));
+        }
+    }
+
+    /// (keyboard) The surfaces showing `node` that hold the keyboard.
+    fn focus_holders(&self, scene: &dyn InputScene, node: NodeId) -> Vec<SurfaceId> {
+        let Some(tree) = scene.tree().filter(|t| t.contains_live(node)) else {
+            return Vec::new();
         };
-        for node in turned {
-            if !tree.contains_live(node) {
-                continue;
-            }
-            let Some(root) = tree.root_of(node) else {
-                continue;
-            };
-            let surfaces: Vec<SurfaceId> = self
-                .surfaces
-                .iter()
-                .filter(|(s, r)| **r == root && self.focus.contains_key(s))
-                .map(|(s, _)| *s)
-                .collect();
-            for s in surfaces {
-                self.set_focus(s, Some(node));
+        let Some(root) = tree.root_of(node) else {
+            return Vec::new();
+        };
+        self.surfaces
+            .iter()
+            .filter(|(s, r)| {
+                **r == root && (self.keyboard.contains(s) || self.focus.contains_key(s))
+            })
+            .map(|(s, _)| *s)
+            .collect()
+    }
+
+    /// (keyboard) `node.focus()`: focus moves there now on a surface that
+    /// holds the keyboard, and when the keyboard comes on one that does not.
+    fn focus_ask(&mut self, scene: &mut dyn InputScene, node: NodeId) {
+        let holders = self.focus_holders(scene, node);
+        if holders.is_empty() {
+            let root = scene
+                .tree()
+                .filter(|t| t.contains_live(node))
+                .and_then(|t| t.root_of(node));
+            if let Some(root) = root {
+                self.focus_wanted.insert(root, node);
             }
         }
+        for s in holders {
+            self.focus_on(scene, s, node);
+        }
+    }
+
+    /// (keyboard) Focus moves to `node`, and every `scroll` and `list` around
+    /// it shows it. A click uses [`Router::set_focus`] alone: what is under
+    /// the pointer stays there.
+    fn focus_on(&mut self, scene: &mut dyn InputScene, surface: SurfaceId, node: NodeId) {
+        self.set_focus(surface, Some(node));
+        scene.scroll_move(node, ScrollMove::Reveal);
     }
 
     /// Selections that were away from their list's mounted rows and
@@ -1791,11 +1899,14 @@ impl Router {
                 // that grabbed it: no leave came between) stays where Tab
                 // or a click had moved it.
                 if self.focus.contains_key(&surface) {
+                    self.keyboard.insert(surface);
                     return;
                 }
+                self.keyboard.insert(surface);
                 // (oi-lock) The keyboard moved here from another
-                // monitor's lock: its field's twin here, else the input
-                // with `focus: true`, else the surface.
+                // monitor's lock: its field's twin here, else the node a
+                // `focus()` named while it was away, else the input with
+                // `focus: true`, else the surface.
                 let twin = self.focused_twin.as_ref().and_then(|k| {
                     let tree = scene.tree()?;
                     let mut here: Vec<NodeId> = self
@@ -1807,10 +1918,15 @@ impl Router {
                     here.sort();
                     here.first().copied()
                 });
+                let wanted = self
+                    .focus_wanted
+                    .remove(&root)
+                    .filter(|n| scene.tree().is_some_and(|t| t.contains_live(*n)));
                 let first = twin
+                    .or(wanted)
                     .or_else(|| scene.tree().and_then(|t| first_with_focus(t, root)))
                     .unwrap_or(root);
-                self.set_focus(surface, Some(first));
+                self.focus_on(scene, surface, first);
                 // Fresh focus (the surface opened again) starts its
                 // `nav` list at the top: the first row is selected again
                 // (`settle`), not the one selected when it last closed.
@@ -1827,6 +1943,7 @@ impl Router {
                 }
             }
             InputEvent::KeyboardLeave { .. } => {
+                self.keyboard.remove(&surface);
                 self.set_focus(surface, None);
                 self.pending_paste.remove(&surface);
                 // Focus loss closes a surface bound `open: <-> x`; (window)
@@ -2119,12 +2236,32 @@ impl Router {
                         self.flag(n, Flag::Pressed, true);
                     }
                     self.pressed.insert(surface, under.clone());
-                    // A click focuses the `input` or `list` under it.
+                    // A click focuses the `input`, `list` or node with a
+                    // `focus:` under it. (keyboard) With none, a `button`,
+                    // `slider` or `segmented`, unless an `input` or `list`
+                    // has focus: they keep the keys, so a launcher's button
+                    // leaves the typing in its field and a menu's row its
+                    // arrows.
                     let target = scene.tree().and_then(|tree| {
-                        under.iter().copied().find(|n| {
-                            tree.get(*n)
-                                .is_some_and(|n| matches!(n.kind, NodeKind::Input | NodeKind::List))
-                        })
+                        let root = self.surfaces.get(&surface).copied();
+                        let of = |n: &NodeId| tree.get(*n).filter(|_| Some(*n) != root);
+                        let holds_keys = self
+                            .focus
+                            .get(&surface)
+                            .and_then(|f| tree.get(*f))
+                            .is_some_and(|f| matches!(f.kind, NodeKind::Input | NodeKind::List));
+                        under
+                            .iter()
+                            .find(|n| of(n).is_some_and(claims_click_focus))
+                            .or_else(|| {
+                                under.iter().find(|n| {
+                                    !holds_keys
+                                        && of(n).is_some_and(|n| {
+                                            !no_hit(n) && focusable_by_kind(n.kind)
+                                        })
+                                })
+                            })
+                            .copied()
                     });
                     // A click on the list an `input` steers with `nav`
                     // leaves the typing on the input.
@@ -2293,6 +2430,8 @@ impl Router {
             self.focused_twin = None;
         }
         self.focus.retain(|_, n| live(*n));
+        self.focus_wanted.retain(|_, n| live(*n));
+        self.value_flights.retain(|n, _| live(*n));
         self.pending_paste.retain(|_, n| live(*n));
     }
 
@@ -2429,10 +2568,10 @@ impl Router {
             self.close(scene, root);
             return;
         }
-        // (flex) Tab and Shift+Tab move focus between the surface's
-        // `input`s and `list`s in tree order, round from the last to the
-        // first; a config that wants them claims them (spec.md 6.7), and
-        // moves focus itself with `focus:`.
+        // (flex) Tab and Shift+Tab move focus between what the surface can
+        // focus, in tree order, round from the last to the first; a config
+        // that wants them claims them (spec.md 6.7), and moves focus itself
+        // with `focus:` or `node.focus()`.
         if matches!(key.name.as_str(), "Tab" | "ISO_Left_Tab" | "KP_Tab")
             && !key.modifiers.ctrl
             && !key.modifiers.alt
@@ -2443,7 +2582,44 @@ impl Router {
                 .tree()
                 .and_then(|t| next_focusable(t, root, focus, back))
             {
-                self.set_focus(surface, Some(next));
+                self.focus_on(scene, surface, next);
+                return;
+            }
+        }
+        // (keyboard) The keys a focused node acts on, Ctrl, Alt and Super
+        // left alone. First an arrow that is not its own, inside a container
+        // with `arrows:`.
+        if !key.modifiers.ctrl && !key.modifiers.alt && !key.modifiers.logo {
+            if let Some(dir) = Dir::of(key)
+                && !scene
+                    .tree()
+                    .is_some_and(|t| arrow_is_its_own(t, focus, nav.is_some(), dir))
+                && let Some(next) = arrow_target(&*scene, surface, root, focus, dir)
+            {
+                self.focus_on(scene, surface, next);
+                return;
+            }
+            let took = focus != root
+                && match kind {
+                    Some(NodeKind::Slider) => self.slider_key(scene, focus, key),
+                    Some(NodeKind::Segmented) => self.segmented_key(scene, focus, key),
+                    Some(NodeKind::Scroll) => scroll_key(scene, focus, key),
+                    _ => false,
+                };
+            if took {
+                return;
+            }
+            // Return or space does what a click does, once: holding it is
+            // not many clicks. An `input` and a `list` have their own.
+            if focus != root
+                && !key.repeat
+                && !matches!(kind, Some(NodeKind::Input | NodeKind::List))
+                && matches!(
+                    key.name.as_str(),
+                    "Return" | "KP_Enter" | "space" | "KP_Space"
+                )
+            {
+                self.press(scene, focus);
                 return;
             }
         }
@@ -2556,7 +2732,7 @@ impl Router {
                 self.event(focus, NodeEvent::Activate);
                 return;
             }
-            let password = node.is_some_and(|n| {
+            let password = scene.tree().and_then(|t| t.get(focus)).is_some_and(|n| {
                 matches!(n.get(Prop::InputType), Some(PropValue::Keyword(k)) if k == "password")
             });
             let (now, caret, pending) = self.typed_text(focus, scene);
@@ -2592,6 +2768,136 @@ impl Router {
                 edit => self.apply_edit(focus, edit, pending, scene),
             }
         }
+    }
+
+    /// (keyboard) Return or space on focused `node`: as a click on it, its
+    /// row in a `list` selected and activated too.
+    fn press(&mut self, scene: &mut dyn InputScene, node: NodeId) {
+        self.event(node, NodeEvent::Press);
+        let row = scene.tree().and_then(|t| {
+            let mut chain = ancestors(t, node);
+            chain.insert(0, node);
+            list_row(Some(t), &chain)
+        });
+        if let Some((list, row)) = row {
+            self.moved.insert(list);
+            self.select(scene, list, Some(row));
+            if row != node {
+                self.event(row, NodeEvent::Activate);
+            }
+        }
+    }
+
+    /// (keyboard) A `value` a key builds on: the last it wrote, while logic
+    /// has not answered, else what the scene shows.
+    fn value_now(&self, scene: &dyn InputScene, node: NodeId) -> Option<PropValue> {
+        let shown = scene.tree()?.get(node)?.get(Prop::Value).cloned();
+        let now = self.now();
+        let flying = self.value_flights.get(&node).filter(|f| {
+            now.saturating_duration_since(f.at) < EDIT_IN_FLIGHT
+                && (f.pending.is_empty() || shown.as_ref() != Some(&f.latest))
+        });
+        flying.map(|f| f.latest.clone()).or(shown)
+    }
+
+    /// (keyboard) A key writes `value` to `node`, as a drag or a click does.
+    fn write_value(&mut self, node: NodeId, value: PropValue) {
+        let at = self.now();
+        let f = self.value_flights.entry(node).or_insert(ValueFlight {
+            latest: value.clone(),
+            pending: Vec::new(),
+            at,
+        });
+        if f.latest != value {
+            let was = std::mem::replace(&mut f.latest, value.clone());
+            f.pending.push(was);
+        }
+        f.at = at;
+        self.emit(Intent::Write {
+            node,
+            prop: Prop::Value,
+            value,
+        });
+    }
+
+    /// (keyboard) A focused `slider`'s keys. Whether `key` is one; one whose
+    /// `value` is not bound two-way writes nothing, as a drag does not.
+    fn slider_key(&mut self, scene: &mut dyn InputScene, slider: NodeId, key: &KeyInput) -> bool {
+        let by = match key.name.as_str() {
+            "Left" | "KP_Left" | "Down" | "KP_Down" => Some(-1.0),
+            "Right" | "KP_Right" | "Up" | "KP_Up" => Some(1.0),
+            "Page_Down" | "Next" | "KP_Page_Down" | "KP_Next" => Some(-10.0),
+            "Page_Up" | "Prior" | "KP_Page_Up" | "KP_Prior" => Some(10.0),
+            "Home" | "KP_Home" | "End" | "KP_End" => None,
+            _ => return false,
+        };
+        if !value_two_way(scene.tree(), slider) {
+            return false;
+        }
+        let Some(n) = scene.tree().and_then(|t| t.get(slider)) else {
+            return true;
+        };
+        let Some(range) = crate::range::Spec::of(n.get(Prop::Range)).map(|s| s.fixed()) else {
+            return true;
+        };
+        let step = match n.get(Prop::Step) {
+            Some(PropValue::Number(s)) if *s > 0.0 && s.is_finite() => Some(*s),
+            _ => None,
+        };
+        let now = match self.value_now(scene, slider) {
+            Some(PropValue::Number(v)) => v,
+            _ => range.lo,
+        };
+        // The fraction it goes to: a step in the range's units, the way the
+        // range grows.
+        let f = match by {
+            Some(by) => {
+                let pace = step.unwrap_or(KEY_SLIDER_STEP * (range.hi - range.lo).abs());
+                let up = if range.hi < range.lo { -1.0 } else { 1.0 };
+                range.frac(now + by * pace * up)
+            }
+            None if matches!(key.name.as_str(), "Home" | "KP_Home") => Some(0.0),
+            None => Some(1.0),
+        };
+        let Some(f) = f else {
+            return true;
+        };
+        let to = step.and_then(|s| range.snap(f, s)).unwrap_or(range.at(f));
+        if to != now {
+            self.write_value(slider, PropValue::Number(to));
+        }
+        true
+    }
+
+    /// (keyboard) A focused `segmented`'s keys: Left and Right choose the
+    /// option beside the chosen one, stopping at the ends.
+    fn segmented_key(&mut self, scene: &mut dyn InputScene, seg: NodeId, key: &KeyInput) -> bool {
+        let forward = match key.name.as_str() {
+            "Right" | "KP_Right" => true,
+            "Left" | "KP_Left" => false,
+            _ => return false,
+        };
+        if !value_two_way(scene.tree(), seg) {
+            return false;
+        }
+        let opts = crate::widgets::options(
+            scene
+                .tree()
+                .and_then(|t| t.get(seg))
+                .and_then(|n| n.get(Prop::Options)),
+        );
+        let now = self
+            .value_now(scene, seg)
+            .and_then(|v| opts.iter().position(|o| *o == v));
+        let to = match (now, forward) {
+            (Some(i), true) => (i + 1).min(opts.len().saturating_sub(1)),
+            (Some(i), false) => i.saturating_sub(1),
+            (None, _) => 0,
+        };
+        if let Some(v) = opts.get(to).filter(|_| now != Some(to)) {
+            self.write_value(seg, v.clone());
+        }
+        true
     }
 
     /// The text an edit of `input` builds on, its caret, and what the
@@ -2883,13 +3189,46 @@ impl Router {
     }
 }
 
-/// (flex) The `input` or `list` after `from` under `root` in tree order
-/// (before it with `back`), round from the end; the first (last) when
-/// `from` is none of them. Nested surfaces (popups) are their own, and
-/// what is not shown is skipped: a node leaving (a page no longer
-/// current among them) or at `opacity: 0`, its subtree with it, as the
-/// pointer passes them by (spec.md 6.7). `None` when there is no other.
-fn next_focusable(tree: &SceneTree, root: NodeId, from: NodeId, back: bool) -> Option<NodeId> {
+/// (keyboard) A kind of node focusable with no `focus:` written.
+fn focusable_by_kind(kind: NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Input
+            | NodeKind::List
+            | NodeKind::Button
+            | NodeKind::Slider
+            | NodeKind::Segmented
+    )
+}
+
+/// (keyboard) Whether `focus:` is written on `n`, with any value.
+fn focus_written(n: &crate::tree::Node) -> bool {
+    n.get(Prop::Focus)
+        .is_some_and(|v| !matches!(v, PropValue::Unset))
+}
+
+/// (keyboard) `hit: none`: it takes no input, while its children take theirs.
+fn no_hit(n: &crate::tree::Node) -> bool {
+    matches!(n.get(Prop::Hit), Some(PropValue::Keyword(k)) if k == "none")
+}
+
+/// (keyboard) Whether Tab and the arrows can land on `n`.
+fn focusable(n: &crate::tree::Node) -> bool {
+    !no_hit(n) && (focusable_by_kind(n.kind) || focus_written(n))
+}
+
+/// (keyboard) Whether a click on `n` always focuses it: a `button`, `slider`
+/// or `segmented` with no `focus:` does so only when nothing holds the keys.
+fn claims_click_focus(n: &crate::tree::Node) -> bool {
+    !no_hit(n) && (matches!(n.kind, NodeKind::Input | NodeKind::List) || focus_written(n))
+}
+
+/// (keyboard) The nodes under `root` keys can focus, in tree order. Nested
+/// surfaces (popups) are their own, and what is not shown is skipped: a node
+/// leaving or at `opacity: 0`, its subtree with it (spec.md 6.7). `keep` is
+/// listed too, focusable or not, so a walk goes on from it; with `sealed`,
+/// what is inside another container with `arrows:` is left out.
+fn focusables(tree: &SceneTree, root: NodeId, keep: NodeId, sealed: bool) -> Vec<NodeId> {
     let mut all = Vec::new();
     let mut stack = vec![root];
     while let Some(id) = stack.pop() {
@@ -2900,11 +3239,22 @@ fn next_focusable(tree: &SceneTree, root: NodeId, from: NodeId, back: bool) -> O
         if matches!(n.get(Prop::Opacity), Some(PropValue::Number(o)) if *o <= 0.0) {
             continue;
         }
-        if matches!(n.kind, NodeKind::Input | NodeKind::List) {
+        if id == keep || (id != root && focusable(n)) {
             all.push(id);
+        }
+        if sealed && id != root && arrows_of(n).is_some() {
+            continue;
         }
         stack.extend(n.children.iter().rev());
     }
+    all
+}
+
+/// (flex) What is focusable after `from` under `root` in tree order
+/// (before it with `back`), round from the end. `None` when there is no
+/// other.
+fn next_focusable(tree: &SceneTree, root: NodeId, from: NodeId, back: bool) -> Option<NodeId> {
+    let all = focusables(tree, root, from, false);
     let at = all.iter().position(|n| *n == from);
     let len = all.len();
     let i = match (at, back) {
@@ -2914,6 +3264,170 @@ fn next_focusable(tree: &SceneTree, root: NodeId, from: NodeId, back: bool) -> O
         (None, true) => len.checked_sub(1)?,
     };
     all.get(i).copied().filter(|n| *n != from)
+}
+
+/// (keyboard) An arrow key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Dir {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl Dir {
+    fn of(key: &KeyInput) -> Option<Dir> {
+        Some(match key.name.as_str() {
+            "Up" | "KP_Up" => Dir::Up,
+            "Down" | "KP_Down" => Dir::Down,
+            "Left" | "KP_Left" => Dir::Left,
+            "Right" | "KP_Right" => Dir::Right,
+            _ => return None,
+        })
+    }
+
+    fn sideways(self) -> bool {
+        matches!(self, Dir::Left | Dir::Right)
+    }
+}
+
+/// (keyboard) `n`'s `arrows:`: whether it wraps, if it has one.
+fn arrows_of(n: &crate::tree::Node) -> Option<bool> {
+    match n.get(Prop::Arrows) {
+        Some(PropValue::Keyword(k)) if k == "focus" => Some(false),
+        Some(PropValue::Keyword(k)) if k == "focus_wrap" => Some(true),
+        _ => None,
+    }
+}
+
+/// (keyboard) Whether focused `node` uses arrow `dir` itself, so `arrows:`
+/// around it does not get it: an `input`'s caret, or its `nav` list's rows,
+/// a `list`, a `slider` and a `segmented` bound two-way, and a `scroll` along
+/// the way it runs.
+fn arrow_is_its_own(tree: &SceneTree, node: NodeId, nav: bool, dir: Dir) -> bool {
+    let Some(n) = tree.get(node) else {
+        return false;
+    };
+    match n.kind {
+        NodeKind::Input => dir.sideways() || nav,
+        NodeKind::List => true,
+        NodeKind::Slider => value_two_way(Some(tree), node),
+        NodeKind::Segmented => dir.sideways() && value_two_way(Some(tree), node),
+        NodeKind::Scroll => crate::layout::scroll_axes(n)[usize::from(!dir.sideways())],
+        _ => false,
+    }
+}
+
+/// (keyboard) Where arrow `dir` moves focus from `from`, inside the nearest
+/// container around it with `arrows:` and no further: the focusable node
+/// wholly past it that way whose box is nearest, first of those level with it
+/// (`None` when there is none). The container wrapping, one level with it at
+/// the far end. A container that is itself focused goes to its first.
+fn arrow_target(
+    scene: &dyn InputScene,
+    surface: SurfaceId,
+    root: NodeId,
+    from: NodeId,
+    dir: Dir,
+) -> Option<NodeId> {
+    let tree = scene.tree()?;
+    let mut scope = from;
+    let wrap = loop {
+        let n = tree.get(scope)?;
+        if let Some(wrap) = arrows_of(n) {
+            break wrap;
+        }
+        if scope == root {
+            return None;
+        }
+        scope = n.parent?;
+    };
+    let shown = |r: &LogicalRect| r.w > 0.0 && r.h > 0.0;
+    let all: Vec<(NodeId, LogicalRect)> = focusables(tree, scope, from, true)
+        .into_iter()
+        .filter(|n| *n != from)
+        .filter_map(|n| Some((n, scene.node_rect(surface, n).filter(shown)?)))
+        .collect();
+    if from == scope {
+        return all.first().map(|(n, _)| *n);
+    }
+    let at = scene.node_rect(surface, from)?;
+    // A box as (start, end) along the way it moves and across it.
+    let spans = |r: &LogicalRect| {
+        let (x, y) = ((r.x, r.x + r.w), (r.y, r.y + r.h));
+        match dir {
+            Dir::Right => (x, y),
+            Dir::Left => ((-x.1, -x.0), y),
+            Dir::Down => (y, x),
+            Dir::Up => ((-y.1, -y.0), x),
+        }
+    };
+    let (along, across) = spans(&at);
+    let mid = (across.0 + across.1) / 2.0;
+    let scored = |r: &LogicalRect| {
+        let (a, c) = spans(r);
+        let apart = (c.0 - across.1).max(across.0 - c.1).max(0.0);
+        let level = c.0 < across.1 && across.0 < c.1;
+        let off_mid = ((c.0 + c.1) / 2.0 - mid).abs();
+        (a.0, level, apart, off_mid)
+    };
+    let nearest = all
+        .iter()
+        .filter(|(_, r)| scored(r).0 >= along.1 - 1.0)
+        .map(|(n, r)| {
+            let (start, level, apart, off_mid) = scored(r);
+            let gap = (start - along.1).max(0.0);
+            (*n, !level, gap + 2.0 * apart, off_mid)
+        })
+        .min_by(|a, b| {
+            a.1.cmp(&b.1)
+                .then(a.2.total_cmp(&b.2))
+                .then(a.3.total_cmp(&b.3))
+        })
+        .map(|(n, ..)| n);
+    if nearest.is_some() || !wrap {
+        return nearest;
+    }
+    all.iter()
+        .filter(|(_, r)| scored(r).1)
+        .min_by(|(_, a), (_, b)| {
+            let (a, b) = (scored(a), scored(b));
+            a.0.total_cmp(&b.0).then(a.3.total_cmp(&b.3))
+        })
+        .map(|(n, _)| *n)
+}
+
+/// (keyboard) A focused `scroll`'s keys: a step, a view, an end. Whether `key`
+/// is one. An arrow across the way it runs is not, on a `scroll` with one way
+/// (but the way a wheel goes: Up and Down on one along x).
+fn scroll_key(scene: &mut dyn InputScene, node: NodeId, key: &KeyInput) -> bool {
+    let axes = scene
+        .tree()
+        .and_then(|t| t.get(node))
+        .map_or([false, true], crate::layout::scroll_axes);
+    let by = |dy: f32, dx: f32| ScrollMove::By {
+        dy: (dx == 0.0).then_some(dy),
+        dx: (dx != 0.0).then_some(dx),
+    };
+    let mv = match key.name.as_str() {
+        "Up" | "KP_Up" => by(-KEY_SCROLL_STEP, 0.0),
+        "Down" | "KP_Down" => by(KEY_SCROLL_STEP, 0.0),
+        "Left" | "KP_Left" if axes[0] => by(0.0, -KEY_SCROLL_STEP),
+        "Right" | "KP_Right" if axes[0] => by(0.0, KEY_SCROLL_STEP),
+        "Page_Up" | "Prior" | "KP_Page_Up" | "KP_Prior" => ScrollMove::Pages(-1.0),
+        "Page_Down" | "Next" | "KP_Page_Down" | "KP_Next" => ScrollMove::Pages(1.0),
+        "Home" | "KP_Home" => ScrollMove::To {
+            y: Some(0.0),
+            x: None,
+        },
+        "End" | "KP_End" => ScrollMove::To {
+            y: Some(f32::INFINITY),
+            x: None,
+        },
+        _ => return false,
+    };
+    scene.scroll_move(node, mv);
+    true
 }
 
 /// (keyboard) The claim `key` goes to: the innermost node from `from` out

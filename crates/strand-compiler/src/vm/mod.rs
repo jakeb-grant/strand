@@ -71,10 +71,11 @@ pub trait VmHooks {
     /// element instance `node`: asked of the compositor once the step's
     /// diff is applied. Nothing without a host that shows windows.
     fn window(&self, _rt: &Runtime, _node: &Rc<NodeState>, _ask: strand_scene::WindowAsk) {}
-    /// (keyboard) `results.next()` and the other selection actions on the
-    /// element instance `node`: the router applies them once the step's
-    /// diff is applied. Nothing without a host that shows lists.
-    fn list(&self, _rt: &Runtime, _node: &Rc<NodeState>, _ask: strand_scene::ListAsk) {}
+    /// (keyboard) `results.next()`, `node.focus()`, `s.scroll_to(y)` and the
+    /// other actions on the element instance `node`: the router applies them
+    /// once the step's diff is applied. Nothing without a host that shows
+    /// them.
+    fn ask(&self, _rt: &Runtime, _node: &Rc<NodeState>, _ask: strand_scene::NodeAsk) {}
 }
 
 /// A scope of names: a component, surface or `for` item instance (or the
@@ -405,6 +406,8 @@ impl Env {
             window_cell: Default::default(),
             blank_cell: Default::default(),
             selected_index_cell: Default::default(),
+            scroll_x_cell: Default::default(),
+            scroll_y_cell: Default::default(),
             alias_cell: Default::default(),
             claims: Default::default(),
             holders: Default::default(),
@@ -1114,7 +1117,8 @@ impl Vm {
 /// after the press that caused them, which set the tray's click point:
 /// a button press on the node (`click`, `secondary`, `middle`, and
 /// `activate` on a clicked row) or a key press, which sets (0, 0)
-/// (`key`, and `activate` from Return). The others come with no press
+/// (`key`, `activate` from Return, and `activate` or `click` from Return
+/// or space on a focused node). The others come with no press
 /// of their own and must not take the last one's point: `scroll` (a
 /// wheel), `dismiss` (a click away the compositor saw, or focus loss)
 /// and `drop` (a press that started the drag elsewhere, or in another

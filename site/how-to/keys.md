@@ -159,6 +159,93 @@ Down from above an empty cell of a short last line goes to the last row. With
 In an `input` with `nav:` to either, Left and Right stay the caret's. To give
 them to the list, claim them: `on key "right" { results.next() }`.
 
+## Focus and what it does
+
+Fields, lists, buttons, sliders and segmented controls can all have the
+keyboard's focus, and so can any element you write a `focus:` on, even
+`focus: false`. Tab and Shift+Tab walk them in order. `when focused { … }` styles
+whichever has it, and `node.focus()` moves it from any handler.
+
+| On a focused | Key | Does |
+|---|---|---|
+| anything | Return, space | its `on activate` if it has one, else `on click` |
+| `slider` | Left, Down / Right, Up | a step down / up |
+| | Page keys | ten steps |
+| | Home, End | the ends |
+| `segmented` | Left, Right | the choice beside this one |
+| `scroll` | arrows | a step |
+| | Page keys | a view |
+| | Home, End | the ends |
+
+A step is the slider's `step:`, or a hundredth of its `range` without one. A claim
+beats every one of these, as it beats any default.
+
+A press on a button focuses it, but not away from a field or a list: a button
+beside a search box runs and the typing stays in the box. An element you wrote
+`focus:` on takes focus from a press whatever has it.
+
+## Moving focus with the arrows
+
+`arrows: focus` on a container makes the arrows inside it move focus to the
+nearest thing that way, by where things are laid out, so it works on a row, a
+column or tiles of any size. `arrows: focus_wrap` goes round at the ends.
+
+```strand file=power.strand
+// power.strand: a menu of tiles, the arrows between them
+export state open = false
+
+panel Power {
+  anchor: center; keyboard: exclusive; open: <-> open
+  bg: $surface; color: $fg; font: $font.ui
+  col { arrows: focus; gap: $space.2; pad: $space.3
+    row { gap: $space.2
+      button "Lock" { focus: true; when focused { bg: $accent } }
+      button "Sleep" { when focused { bg: $accent } }
+    }
+    button "Shut down" { when focused { bg: $accent } }
+  }
+}
+```
+
+They stop at the nearest container with `arrows:`, and don't reach into another
+one inside it. An element that uses an arrow keeps it: a field's caret, a list,
+a slider, a segmented control's Left and Right, a `scroll` the way it runs.
+
+## Scrolling from code
+
+Give a `scroll` an `id:`, then move it and read it back. A `list` takes the same:
+
+```strand file=log.strand
+// log.strand: a page that scrolls by key, and says how far it went
+export state open = false
+state lines: [text] = ["one", "two", "three", "four", "five", "six"]
+
+panel Log {
+  anchor: center; keyboard: exclusive; open: <-> open
+  width: 300; bg: $surface; color: $fg; font: $font.ui
+  on key "g" { page.scroll_to(0) }
+  on key "j" { page.scroll_by(40) }
+  on key "z" { last.reveal() }
+  col { gap: $space.2; pad: $space.3
+    text join("", page.scroll_y.round(), " px")
+    scroll { id: page; focus: true; height: 60
+      col {
+        for line in lines key line { text line }
+        text "the end" { id: last }
+      }
+    }
+  }
+}
+```
+
+`scroll_to(y)` and `scroll_by(dy)` spring as a wheel does, and stop at the ends.
+On one that runs along x, they go along x; on `axis: both`, write
+`scroll_to(x: 40)` or `scroll_by(dx: 40)`. `scroll_y` and `scroll_x` follow what
+is drawn, and reading them wakes nothing while it stands still. `node.reveal()`
+on any element scrolls whatever is around it, as little as it takes, at once.
+Focus moving onto something in a `scroll` by a key or from code does the same; a
+press doesn't, so what you pressed stays under the pointer.
+
 ## Around a password
 
 A claim of a key that types, such as `"q"`, around a `type: password` field

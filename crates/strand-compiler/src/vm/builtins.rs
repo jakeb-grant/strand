@@ -239,6 +239,19 @@ pub(crate) fn field(vm: &Rc<Vm>, rt: &Runtime, base: &Value, name: &str) -> Resu
             "blank" => Value::Bool(n.blank(rt).get(rt)?),
             // (keyboard) Null on anything but a list told it has one.
             "selected_index" => n.selected_index(rt).get(rt)?,
+            // (keyboard) Render reports it only for a node this is read of.
+            "scroll_x" | "scroll_y" => {
+                vm.watch(n, NodeState::WATCH_SCROLL);
+                let s = if name == "scroll_x" {
+                    n.scroll_x(rt)
+                } else {
+                    n.scroll_y(rt)
+                };
+                match s.get(rt)? {
+                    Value::Null => Value::float(0.0),
+                    v => v,
+                }
+            }
             _ => Value::Null,
         },
         Value::List(items) => list_field(items, name),
@@ -1085,18 +1098,18 @@ pub(crate) fn method(
                 h.window(rt, n, ask);
                 return Ok(Value::Unit);
             }
-            // (keyboard) `results.next()`, `results.select(i)` …: moved by
-            // the router, which holds the selection.
-            let index = args
-                .params
-                .first()
-                .and_then(Option::as_ref)
-                .and_then(Value::as_f64)
-                .map(|i| i as i64);
-            if let Some(ask) = strand_scene::ListAsk::from_action(name, index)
+            // (keyboard) `results.next()`, `node.focus()`, `s.scroll_to(y)`
+            // …: done by the router, which holds the selection and focus.
+            let number = |i: usize| {
+                args.params
+                    .get(i)
+                    .and_then(Option::as_ref)
+                    .and_then(Value::as_f64)
+            };
+            if let Some(ask) = strand_scene::NodeAsk::from_action(name, number(0), number(1))
                 && let Some(h) = vm.hooks()
             {
-                h.list(rt, n, ask);
+                h.ask(rt, n, ask);
                 return Ok(Value::Unit);
             }
             Ok(Value::Null)

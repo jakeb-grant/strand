@@ -14936,3 +14936,21 @@ someone types into must mean what it says, and nucleo's `Pattern::parse` read `!
 `Atom::new` and no whitespace escape, since `Pattern::new` would still read `\ ` as an escape and split on
 spaces only; plain words score as they did. A known limit: text with decomposed accents (`e` + U+0301)
 doesn't match a precomposed query (`é`), since a cluster is matched by its first character.
+
+(2026-11-01, piece 4) What the shape above left open for focus and scroll. A press focuses an `input`, `list` or node
+with a written `focus:` under it, and a `button`, `slider` or `segmented` only when no `input` or `list` has focus and
+none of those is under it too: a launcher's button beside its field must not take the typing, a menu's row of buttons
+must not take a focused list's arrows, and a config that wants otherwise writes `focus:` on the button. A press moves
+no `scroll`, though focus by anything else reveals, since what was pressed must stay under the pointer for its release.
+`wrap: true` from the sketch became `arrows: focus_wrap`, since `wrap:` on `row` and `col` already means running children
+on, and a strip of tiles wanting round arrows would have had its layout changed. Nesting seals both ways: arrows don't
+leave the nearest `arrows:` nor enter another inside it, as a way in with no way out is worse than Tab. `SceneDiff`'s
+`list_asks` became `asks`, of `NodeAsk`, since order across lists, focus and scrolls is what the asks are for. Return
+or space goes to logic as one event (`NodeEvent::Press`), since only logic knows whether a node has an active `on
+activate`; a repeat fires nothing, as a held key is not many clicks; a node in a list's row also selects and activates
+the row, as a pointer does. A focused `list` keeps its own keys, so space there stays nothing. `scroll_to` and
+`scroll_by` take `y` and `x` by name or place, a lone `y` going along x on a scroll that runs only that way, which is
+how the wheel reads it and saves a third pair of names. A position or a reveal waits for the layout of the diff that
+asked, as what it reads may be what that diff mounted; a size still springing there is not waited for, so reveal
+what was mounted rather than what grows. No focus ring is drawn by default: `when focused` is the config's look, and a
+ring after every press would change how a mouse-only shell looks.

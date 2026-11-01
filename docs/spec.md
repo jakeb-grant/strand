@@ -1269,18 +1269,74 @@ monitor, the keyboard always).
   knob and the value written alike; the value written is the decimal
   the step and the low end spell (`range: 0, 1; step: 0.1` writes
   `0.9`, never `0.90000004`). (decisions.md flex, 2026-10-24)
-- **Focus.** A surface that takes the keyboard focuses its first node
-  with `focus: true`; `focus:` is reactive, so when it turns true on a
-  node of a surface that has the keyboard, focus moves there. Tab and
-  Shift+Tab move focus between the surface's `input`s and `list`s in
-  tree order, round from the last to the first, skipping those not
-  shown (at `opacity: 0`, theirs or an ancestor's, or playing their
-  exit pose, as a page going away does). Tab is a default that a claim
-  takes over: `on key "tab" { … }` on the focused node or one around it
-  runs and focus stays (it moves focus itself with `focus:`). An `on
-  key(k)` only hears Tab, and focus moves. Ctrl, Alt or Super held leave
-  Tab alone. A surface that closes lets its focus go, as when the
-  keyboard leaves it. (decisions.md flex, 2026-10-24; keyboard)
+- **Focus.** `input`, `list`, `button`, `slider` and `segmented` are
+  focusable, and so is any element with a `focus:`, whatever its value. A
+  surface that takes the keyboard focuses its first node with `focus: true`;
+  `focus:` is reactive, so when it turns true on a node of a surface that has
+  the keyboard, focus moves there. `node.focus()` moves it from any handler,
+  on any element, in order with the other asks of that tick (below); on a
+  surface without the keyboard it waits for the keyboard. Tab and Shift+Tab
+  move focus between the surface's focusable nodes in tree order, round from
+  the last to the first, skipping `hit: none` and those not shown (at
+  `opacity: 0`, theirs or an ancestor's, or playing their exit pose, as a
+  page going away does). A left press focuses the `input`, `list` or node with
+  a `focus:` under it, or else a `button`, `slider` or `segmented` under it
+  unless an `input` or `list` has focus, which keeps the keys: a launcher's
+  button runs and the typing stays in the field. Tab is a default that a claim
+  takes over: `on key "tab" { … }` on the focused node or one around it runs
+  and focus stays (it moves focus itself with `focus:`). An `on key(k)` only
+  hears Tab, and focus moves. Ctrl, Alt or Super held leave Tab alone. A
+  surface that closes lets its focus go, as when the keyboard leaves it. Focus
+  moved by anything but a press shows the node, as `node.reveal()` does: a
+  press leaves what is under the pointer where it is. (decisions.md flex,
+  2026-10-24; keyboard)
+- **Keys of what is focused.** Each is a default a claim takes over, and Ctrl,
+  Alt or Super held leave them alone.
+  - Return or space on a focused node runs its own `on activate` if it has an
+    active one, else `on click`, which goes outward as a pointer's does; on a
+    node in a `list`'s row the row is selected and its `on activate` runs too.
+    A repeat does nothing: holding it is not many clicks. An `input` and a
+    `list` have their own Return, and the surface itself has none.
+  - A `slider` bound two-way: Left and Down step down, Right and Up step up,
+    Page keys ten steps, Home and End go to the ends. A step is its `step:`,
+    else a hundredth of its `range`. It writes as a drag does, the decimal the
+    step spells; keys queued while logic is busy all count.
+  - A `segmented` bound two-way: Left and Right choose the option beside the
+    chosen one, stopping at the ends.
+  - A `scroll` with a `focus:`: arrows step 40 logical pixels along the ways it
+    runs (Up and Down go along x on one that runs only that way, as a wheel
+    does), Page keys go a view, Home and End to the ends, each springing as a
+    wheel step.
+- **`arrows: focus` on any element** makes arrow keys inside it move focus to
+  the focusable node nearest that way by their laid-out boxes: of those wholly
+  past the focused node's edge, first those level with it, then the smallest
+  gap, then the middle nearest, then tree order. With nothing that way, focus
+  stays; `arrows: focus_wrap` goes instead to the far end among those level
+  with it. It is scoped to the nearest element around the focused node with an
+  `arrows:`, and does not reach into another such element inside it or out of
+  it, so Tab crosses between them. An element that uses an arrow keeps it: an
+  `input` Left and Right for its caret, and Up and Down with a `nav:`; a
+  `list`; a `slider` and a `segmented`'s Left and Right, bound two-way; a
+  `scroll` along the ways it runs. The other arrows move focus, and if nothing
+  is that way they do what they would have. A container that is focused itself
+  goes to its first. A claim beats it. (`wrap: true` is taken: on `row` and
+  `col` it wraps their children. decisions.md keyboard.)
+- **A scroll from code.** `s.scroll_y` and `s.scroll_x` read how far a `scroll`
+  or `list` is scrolled, as drawn, a frame behind and reactive: render reports
+  them only for a node they are read of, and only when they change, so a read
+  wakes nothing at rest. An `on change` of them is input, as of `selected`.
+  `s.scroll_to(y)` springs there, kept within the content (a `snap: true` one
+  to the nearest child); `s.scroll_by(dy)` springs by that much from where it
+  is heading, as a wheel step. Each takes `x:` or `dx:` too; `y` alone on one
+  that runs only along x is along x. `node.reveal()` on any element moves every
+  `scroll` and `list` around it, the innermost first, as little as it takes to
+  show it, at once, as a list's selected row. These are asks, as
+  `results.next()` is: in the tick's order, and a position or a reveal waits
+  for the layout of the diff it came with, so it sees what that diff mounted,
+  though not a size still springing there. `scroll_to` and `scroll_by` on an
+  element `strand check` can see does not scroll are the error
+  `check::not_a_scroll`; through `self` or a conditional id they do nothing,
+  and the first says so to `strand watch`. (decisions.md keyboard)
 - **A pattern claims a key.** `on key "ctrl+n", "down" { … }` runs for
   those keys, the patterns string literals, an optional `(k)` after them
   (`on key "esc" (k) { … }`). The router looks from the focused node out

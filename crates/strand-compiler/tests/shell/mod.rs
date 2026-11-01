@@ -256,7 +256,7 @@ impl Shell {
         self.diags.extend(u.diagnostics);
         self.notices.extend(u.notices);
         let mut diff = u.diff;
-        if diff.ops.is_empty() && diff.layout_seen.is_none() && diff.list_asks.is_empty() {
+        if diff.ops.is_empty() && diff.layout_seen.is_none() && diff.asks.is_empty() {
             return false;
         }
         diff.layout_seen = Some(self.r.layout_seq());
@@ -662,6 +662,7 @@ impl LoopHost for Shell {
                         NodeEvent::Secondary => ("secondary", vec![]),
                         NodeEvent::Middle => ("middle", vec![]),
                         NodeEvent::Activate => ("activate", vec![]),
+                        NodeEvent::Press => ("press", vec![]),
                         NodeEvent::Dismiss => ("dismiss", vec![]),
                         NodeEvent::Scroll { dy, dx } => {
                             ("scroll", vec![Value::float(dy), Value::float(dx)])
@@ -706,6 +707,9 @@ impl LoopHost for Shell {
         for (n, p) in self.r.take_pointer_facts() {
             self.pointer_facts += 1;
             self.inst.set_pointer(n, p);
+        }
+        for (n, x, y) in self.r.take_scroll_facts() {
+            self.inst.set_scroll(n, x, y);
         }
         for (n, w) in self.r.take_list_windows() {
             self.inst.set_list_window(n, w.start, w.end - w.start);

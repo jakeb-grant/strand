@@ -359,6 +359,19 @@ impl ScrollState {
         true
     }
 
+    /// (keyboard) `s.scroll_to(y)`: the offset springs to `to`, kept within
+    /// the content (a `snap: true` one to the snap point nearest it). Returns
+    /// true if that moves its target.
+    pub(crate) fn spring_towards(&mut self, to: f32, curve: Curve, last: Option<Duration>) -> bool {
+        let to = self.snap_near(to.clamp(0.0, self.max_offset()));
+        if to == self.target() {
+            return false;
+        }
+        self.reveal = None;
+        self.spring_to(to, curve, last);
+        true
+    }
+
     /// The offset springs to `to` along `curve` (lands at once with
     /// [`Curve::Instant`]).
     fn spring_to(&mut self, to: f32, curve: Curve, last: Option<Duration>) {

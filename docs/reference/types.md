@@ -359,6 +359,8 @@ A live handle, not data: it compares, but `persist` and settings files cannot st
 | `tiled` | `bool` | A `window` the compositor tiles against another window or a screen edge on any side: drawn square there, with no shadow. False on other elements. |
 | `decorated` | `bool` | A `window` whose title bar and borders the compositor draws (`decorations: server` where it offers them). While false the config draws its own: `if !w.decorated { TitleBar }`. False on other elements. |
 | `blank` | `bool` | A `thumbnail` with nothing to show, which draws nothing: its window went, its screen could not be captured, or inside a `lock` its monitor has no still from before the lock (it was plugged in while locked). `when still.blank { … }` styles that monitor's lock its own way. It turns true a frame after the thumbnail is first drawn, and false when a frame comes. False on other elements. |
+| `scroll_y` | `float` | How far a `scroll` or `list` is scrolled along y, logical pixels from its content's top, as drawn: it follows a spring frame by frame. 0 on other elements. Render reports it only for an element this or `scroll_x` is read of, and nothing wakes while it stands still. |
+| `scroll_x` | `float` | How far a `scroll` or `list` is scrolled along x. 0 on other elements. |
 
 | Method | |
 | --- | --- |
@@ -374,6 +376,10 @@ A live handle, not data: it compares, but `persist` and settings files cannot st
 | `action last()` | `results.last()` selects a `list`'s last row, mounted or not. |
 | `action select(i: int)` | `results.select(i)` selects a `list`'s row at `i`, from 0; past either end it selects the nearest end. |
 | `action activate()` | `results.activate()` does what Return does on a `list`: its selected row's `on activate` runs, or the first row shown with no selection. A row on its way is activated when it mounts. |
+| `action scroll_to(y: float? = null, x: float? = null)` | `s.scroll_to(y)` springs a `scroll` or `list` to that offset, kept within its content, a `snap: true` one to the nearest child. `s.scroll_to(x: 40)` and `s.scroll_to(0, 40)` go along x; `y` alone on one that runs only along x is along x, as a wheel is. On another element, a check error where `strand check` can see it, else nothing. |
+| `action scroll_by(dy: float? = null, dx: float? = null)` | `s.scroll_by(dy)` moves a `scroll` or `list` by that much, from where it is heading, springing as a wheel step does; `dx` along x. |
+| `action focus()` | `field.focus()` moves its surface's keyboard focus to any element, shown by every `scroll` around it. A surface without the keyboard takes it when the keyboard comes. |
+| `action reveal()` | `row.reveal()` scrolls every `scroll` and `list` around any element as little as it takes to show it, at once, as a list's selected row. |
 
 ### `Notification`
 
@@ -724,6 +730,7 @@ A variant is written bare where its enum is expected (`edge: top`).
 | --- | --- |
 | `Align` | `start`, `center`, `end`, `stretch`, `baseline` |
 | `Anchor` | `center`, `top`, `bottom`, `left`, `right`, `top_left`, `top_right`, `bottom_left`, `bottom_right` |
+| `Arrows` | `focus`, `focus_wrap` |
 | `Axis` | `vertical`, `horizontal`, `both`. Which way a `scroll` scrolls. |
 | `Blend` | `normal`, `screen`, `add`, `multiply`, `overlay`, `difference` |
 | `BlurFallback` | `tint`, `none` |

@@ -357,6 +357,7 @@ fn to_logic(intent: Intent, press: Option<strand_compiler::vm::InputCtx>) -> Opt
                 RouteEvent::Middle => NodeEvent::Middle,
                 RouteEvent::Scroll { dy, dx } => NodeEvent::Scroll { dy, dx },
                 RouteEvent::Activate => NodeEvent::Activate,
+                RouteEvent::Press => NodeEvent::Press,
                 RouteEvent::Key {
                     name,
                     text,
@@ -751,6 +752,13 @@ impl Host {
             && let Some(f) = &self.logic
         {
             f.send(ToLogic::Pointer(at));
+        }
+        // (keyboard) Where the scrolls logic reads the position of are.
+        let at = self.renderer.take_scroll_facts();
+        if !at.is_empty()
+            && let Some(f) = &self.logic
+        {
+            f.send(ToLogic::Scroll(at));
         }
     }
 }

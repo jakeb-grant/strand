@@ -71,6 +71,8 @@ What every element accepts. Every visual prop springs; `x`, `y`,
 | `stroke.wave` | `float, length` | A wavy stroke: its amplitude and wavelength. |
 | `stroke.cap` | `Cap` | The line caps. |
 | `stroke.dash` | `length, length` | Dash and gap lengths. |
+| `focus` | `bool` | Makes it focusable, with any value: Tab, Shift+Tab and a click reach it (`input`, `list`, `button`, `slider` and `segmented` are focusable without it). True, it takes keyboard focus when shown, and again whenever it turns true while its surface has the keyboard (`focus: mode == search`). Focused, Return or space runs its `on activate` if it has one, else `on click`. |
+| `arrows` | `Arrows` | Arrow keys inside it move focus to the nearest focusable element that way, by their laid-out boxes: `arrows: focus`, and `focus_wrap` to go round from one end to the other. They stay inside the nearest one, and an element that uses an arrow itself keeps it: a focused `input`'s caret, a `list`, a `slider`, a `segmented`'s Left and Right, and a `scroll` along the way it runs. A `scroll` that holds the next element shows it. |
 | `enter` | `Pose \| PoseName` | The pose it enters from: `enter { opacity: 0 }`, `popin(0.8)`, `slide(top)`, `fade` or `slidefade`. `exit` mirrors it unless given. |
 | `exit` | `Pose \| PoseName` | The pose it leaves by; the subtree unmounts once it has played. |
 | `transition` | `SwapTransition \| SwapKind` | How its content swaps on `if`, `pages` and image changes: `wipe(left)`, `disc`, `dissolve` or `pixelate`; `none` for no mask. |
@@ -177,7 +179,9 @@ Also every prop and event of [`node`](#node).
 element button(text -> text): node
 ```
 
-A button with a label: `button "‹" { on click { … } }`.
+A button with a label: `button "‹" { on click { … } }`. Focusable: Tab
+reaches it, Return or space runs it, and a click focuses it unless an
+`input` or `list` has focus, which keeps it.
 
 Also every prop and event of [`node`](#node).
 
@@ -374,7 +378,6 @@ Also every prop and event of [`node`](#node).
 | `text` | `<-> text` | Its text, bound two-way. |
 | `placeholder` | `text` | Shown while it is empty. |
 | `type` | `InputKind` | `password` masks it, and the text it binds is a password: `check::secret_flow` warns where that reaches anything that shows, keeps or sends it, other than `auth.submit`, `polkit.respond`, `greetd.submit` and a network's `connect_with` (its length and whether it is empty are free to show). |
-| `focus` | `bool` | Takes keyboard focus when shown, and again whenever it turns true while its surface has the keyboard (`focus: mode == search`). Tab and Shift+Tab move focus between a surface's inputs and lists, unless a claim takes them (`on key "tab" { … }`). |
 | `nav` | `Node` | Routes arrow keys to a `list`: `nav: results`. |
 
 ### `letters`
@@ -406,11 +409,14 @@ element list: node
 Virtualised; arrow keys move the selection, and `axis` and `columns`
 lay it out as a strip or a grid, the arrows following.
 
+Focused, arrows move its selection, Return activates the selected row, and
+Right (Down on a horizontal list) opens a popup the row holds (a menu's
+submenu).
+
 Also every prop and event of [`node`](#node).
 
 | Prop | Type | |
 | --- | --- | --- |
-| `focus` | `bool` | Takes keyboard focus when shown, and whenever it turns true (as an `input`'s); then arrows move its selection, Return activates the selected row, and Right (Down on a horizontal list) opens a popup the row holds (a menu's submenu). |
 | `snap` | `bool` | A wheel step or a touchpad's lift settles with a row's start at the view's start, as a `scroll`'s `snap`, rows not mounted yet included. |
 | `wrap` | `bool` | Arrows and `next()` and `prev()` go round from one end to the other. Page keys, Home and End stop at the ends. |
 | `axis` | `Axis` | Which way its rows run: `vertical` (the default) or `horizontal`, a strip scrolled and virtualised along x, as tall as its tallest row laid out unless given a height, with each row filling that height unless it has its own. On a horizontal list Left and Right move the selection, Up and Down don't, and Down opens a popup the row holds, and Up closes one opened from another. In an `input` with `nav:` to one, Left and Right stay the caret's, unless a claim takes them. `both` is a check error, since a list has one line of rows to move along. |
@@ -612,7 +618,8 @@ Also every prop and event of [`node`](#node).
 element scroll: node
 ```
 
-Scrolls its content.
+Scrolls its content. With a `focus:` it takes keys when focused: arrows
+step, Page keys go a view, Home and End to the ends.
 
 Also every prop and event of [`node`](#node).
 
@@ -628,6 +635,7 @@ element segmented: node
 ```
 
 One choice of several: `segmented { options: Look; value: <-> theme.look }`.
+Focused, Left and Right choose the option beside the chosen one.
 
 It takes no children.
 
@@ -663,7 +671,9 @@ writes values in its `range`: `slider { value: <-> percent; range: 0,
 upward: its value grows from the bottom (its written `width` and
 `height` decide, else its laid-out box; one growing from a written 0,
 `width: 0; grow: 1`, runs along that axis; a drag keeps the way it
-began).
+began). Focused: Left and Down step down, Right and Up step up, Page keys
+go ten steps and Home and End to the ends, a step being its `step:`, else
+a hundredth of its range.
 
 It takes no children.
 

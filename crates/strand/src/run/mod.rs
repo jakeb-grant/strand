@@ -143,6 +143,9 @@ pub enum NodeEvent {
     Middle,
     /// A list row chosen with Enter (`on activate`).
     Activate,
+    /// (keyboard) Return or space on a focused node: its `on activate`, else
+    /// its `on click`.
+    Press,
     /// A key pressed while the node has focus (`on key(k)`).
     Key {
         name: String,
@@ -187,6 +190,8 @@ impl NodeEvent {
             NodeEvent::Scroll { .. } => "scroll",
             NodeEvent::Middle => "middle",
             NodeEvent::Activate => "activate",
+            // `Instance::event` makes it `activate` or `click`.
+            NodeEvent::Press => "press",
             NodeEvent::Key { .. } | NodeEvent::Claim { .. } => "key",
             NodeEvent::KeyRelease { .. } => "key_release",
             NodeEvent::Dismiss => "dismiss",
@@ -297,6 +302,10 @@ pub enum ToLogic {
     /// where it is in each node's laid-out box, or `None` once it is not
     /// over it.
     Pointer(Vec<(NodeId, Option<strand_scene::LogicalPoint>)>),
+    /// (keyboard) Where the `scroll`s and `list`s logic reads the position of
+    /// are (`Renderer::take_scroll_facts`), once a frame while one moves:
+    /// `(node, x, y)`.
+    Scroll(Vec<(NodeId, f32, f32)>),
     /// A widget or the surface wrote a two-way prop: an `input`'s
     /// `text`, a surface's `open` (Escape, click-away, focus loss, Right
     /// on a row holding a submenu); (M6) `input` is the press that

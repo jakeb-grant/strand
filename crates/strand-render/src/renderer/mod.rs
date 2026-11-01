@@ -45,7 +45,7 @@ pub use backend::GPU_WAIT;
 
 pub use feed::{FeedDemand, FeedKind, THUMBNAIL_STEP};
 pub use frame::PaintTimes;
-pub use lists::{ListFrames, ScrollInput, ScrollKind};
+pub use lists::{ListFrames, ScrollInput, ScrollKind, ScrollMove};
 pub use specs::resize_share;
 pub use summary::FrameSummary;
 pub use text::TextBackend;

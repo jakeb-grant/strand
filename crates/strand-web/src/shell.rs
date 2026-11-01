@@ -479,8 +479,12 @@ impl Shell {
     fn give_facts(&mut self) -> bool {
         let facts = self.r.take_layout_facts();
         let pointer = self.r.take_pointer_facts();
-        if facts.is_empty() && pointer.is_empty() {
+        let scrolls = self.r.take_scroll_facts();
+        if facts.is_empty() && pointer.is_empty() && scrolls.is_empty() {
             return false;
+        }
+        for (n, x, y) in scrolls {
+            self.inst.set_scroll(n, x, y);
         }
         for (n, b) in facts {
             self.inst.set_box(n, b);
@@ -828,6 +832,7 @@ fn to_logic(
                     NodeEvent::Secondary => ("secondary", Vec::new()),
                     NodeEvent::Middle => ("middle", Vec::new()),
                     NodeEvent::Activate => ("activate", Vec::new()),
+                    NodeEvent::Press => ("press", Vec::new()),
                     NodeEvent::Dismiss => ("dismiss", Vec::new()),
                     NodeEvent::Scroll { dy, dx } => {
                         ("scroll", vec![Value::float(dy), Value::float(dx)])

@@ -2201,7 +2201,13 @@ impl<'a> Checker<'a> {
     fn selection_on_a_list(&mut self, recv: &hir::Expr, n: &str, label: &str, span: Span) {
         let is_node = matches!(recv.ty, Ty::Record(r)
             if Some(r) == self.types.find_schema_record("Node"));
-        if !is_node || strand_scene::ListAsk::from_action(n, Some(0)).is_none() {
+        let ask = strand_scene::NodeAsk::from_action(n, Some(0.0), None);
+        let wants: &[&str] = match ask {
+            Some(strand_scene::NodeAsk::List(_)) => &["list"],
+            Some(a) if a.scrolls() => &["scroll", "list"],
+            _ => return,
+        };
+        if !is_node {
             return;
         }
         let ExprKind::Node(idx) = recv.kind else {
@@ -2220,7 +2226,17 @@ impl<'a> Checker<'a> {
         } else {
             None
         };
-        if let Some(root) = root.filter(|r| r != "list") {
+        let Some(root) = root.filter(|r| !wants.contains(&r.as_str())) else {
+            return;
+        };
+        if wants.contains(&"scroll") {
+            self.error(
+                "check::not_a_scroll",
+                format!("`{label}` moves a `scroll` or `list`, and this names a `{root}`"),
+                span,
+                "does not scroll",
+            );
+        } else {
             self.error(
                 "check::not_a_list",
                 format!("`{label}` moves a `list`'s selection, and this names a `{root}`"),

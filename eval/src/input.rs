@@ -157,6 +157,7 @@ pub fn to_logic(
                     NodeEvent::Secondary => ("secondary", Vec::new()),
                     NodeEvent::Middle => ("middle", Vec::new()),
                     NodeEvent::Activate => ("activate", Vec::new()),
+                    NodeEvent::Press => ("press", Vec::new()),
                     NodeEvent::Dismiss => ("dismiss", Vec::new()),
                     NodeEvent::Scroll { dy, dx } => {
                         ("scroll", vec![Value::float(dy), Value::float(dx)])

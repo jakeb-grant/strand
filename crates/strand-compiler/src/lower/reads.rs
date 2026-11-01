@@ -312,6 +312,7 @@ pub(crate) fn alias_watch(prog: &mut Program) {
                         let bits = match chunk.names[*f as usize].as_str() {
                             "pointer" => NodeState::WATCH_POINTER,
                             "width" | "height" => NodeState::WATCH_SIZE,
+                            "scroll_x" | "scroll_y" => NodeState::WATCH_SCROLL,
                             _ => 0,
                         };
                         if bits != 0 {
@@ -327,6 +328,7 @@ pub(crate) fn alias_watch(prog: &mut Program) {
                     "box" => NodeState::WATCH_BOX,
                     "width" | "height" => NodeState::WATCH_SIZE,
                     "pointer" => NodeState::WATCH_POINTER,
+                    "scroll_x" | "scroll_y" => NodeState::WATCH_SCROLL,
                     _ => 0,
                 },
                 _ => NodeState::WATCH_BOX | NodeState::WATCH_SIZE,

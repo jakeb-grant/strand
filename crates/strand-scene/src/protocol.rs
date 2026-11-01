@@ -275,6 +275,9 @@ props! {
     Source = "source": Snap,
     Fit = "fit": Snap,
     Focus = "focus": Snap,
+    /// (keyboard) `arrows: focus` on a container: arrow keys inside it move
+    /// focus by the laid-out boxes (`focus_wrap`: and round at the ends).
+    Arrows = "arrows": Snap,
     Nav = "nav": Snap,
     Hit = "hit": Snap,
     Tooltip = "tooltip": Snap,
@@ -1094,6 +1097,50 @@ impl ListAsk {
     }
 }
 
+/// (keyboard) What a handler asks of the node it names, applied in order
+/// once the diff is ([`SceneDiff::asks`]): a `list`'s selection, focus, and
+/// a `scroll`'s or `list`'s position.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum NodeAsk {
+    /// `results.next()` and the rest.
+    List(ListAsk),
+    /// `node.focus()`: the keyboard focus of its surface moves there.
+    Focus,
+    /// `node.reveal()`: every `scroll` and `list` around it moves as little
+    /// as it takes to show it.
+    Reveal,
+    /// `s.scroll_to(y, x)`: the offsets given spring there. `y` alone, on a
+    /// scroll that runs only along x, is along x, as a wheel is.
+    ScrollTo { y: Option<f32>, x: Option<f32> },
+    /// `s.scroll_by(dy, dx)`: from where it is heading, springing as a wheel
+    /// step does, with the same reading of `dy` alone.
+    ScrollBy { dy: Option<f32>, dx: Option<f32> },
+}
+
+impl NodeAsk {
+    /// The ask a `Node` action names. `a` and `b` are its numbers: `select`'s
+    /// index, or the two offsets of the scroll actions.
+    pub fn from_action(name: &str, a: Option<f64>, b: Option<f64>) -> Option<Self> {
+        let px = |v: Option<f64>| v.map(|v| v as f32).filter(|v| v.is_finite());
+        Some(match name {
+            "focus" => Self::Focus,
+            "reveal" => Self::Reveal,
+            "scroll_to" => Self::ScrollTo { y: px(a), x: px(b) },
+            "scroll_by" => Self::ScrollBy {
+                dy: px(a),
+                dx: px(b),
+            },
+            _ => return Some(Self::List(ListAsk::from_action(name, a.map(|i| i as i64))?)),
+        })
+    }
+
+    /// Whether it moves a `scroll` or `list`, and means nothing on another
+    /// element.
+    pub fn scrolls(self) -> bool {
+        matches!(self, Self::ScrollTo { .. } | Self::ScrollBy { .. })
+    }
+}
+
 /// One logic tick's worth of ordered ops.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SceneDiff {
@@ -1119,11 +1166,12 @@ pub struct SceneDiff {
     /// resize goes with the press that is still held (`press`, else the
     /// seat's last).
     pub window_asks: Vec<(NodeId, crate::surface::WindowAsk)>,
-    /// (keyboard) What handlers asked of the `list`s they name, in the
-    /// order they asked (`results.next()`): the router applies each once
-    /// the diff is applied, against the selection it holds, so asks from
-    /// keys queued while logic was busy all count (`Router::observe`).
-    pub list_asks: Vec<(NodeId, ListAsk)>,
+    /// (keyboard) What handlers asked of the nodes they name, in the order
+    /// they asked (`results.next()`, `node.focus()`, `s.scroll_to(y)`): the
+    /// router applies each once the diff is applied, against the selection
+    /// and focus it holds, so asks from keys queued while logic was busy all
+    /// count (`Router::observe`).
+    pub asks: Vec<(NodeId, NodeAsk)>,
     /// (kept-size) A reload committed in this diff: the hash of the config
     /// it came from. In the diff, not beside it, so the host forgets the
     /// sizes the old config measured in the same breath as it applies the
@@ -1146,7 +1194,7 @@ impl SceneDiff {
             && self.layout_seen.is_none()
             && self.reduced_motion.is_none()
             && self.window_asks.is_empty()
-            && self.list_asks.is_empty()
+            && self.asks.is_empty()
             && self.config.is_none()
     }
 

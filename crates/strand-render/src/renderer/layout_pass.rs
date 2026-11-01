@@ -906,6 +906,7 @@ impl Renderer {
         }
         self.place_waiting_popups(root);
         self.report_facts(id);
+        self.run_scroll_moves();
     }
 
     /// (wave-cost) The nearest box above `id` that `stable` accepts:

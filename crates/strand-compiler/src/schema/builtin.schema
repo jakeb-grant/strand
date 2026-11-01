@@ -15,6 +15,7 @@ enum Anchor { center, top, bottom, left, right, top_left, top_right, bottom_left
 enum PopupAnchor { pointer }
 /// Which way a `scroll` scrolls.
 enum Axis { vertical, horizontal, both }
+enum Arrows { focus, focus_wrap }
 enum Align { start, center, end, stretch, baseline }
 enum Justify { start, center, end, space_between, space_around, space_evenly }
 enum Layer { background, bottom, top, overlay }
@@ -199,6 +200,29 @@ handle record Node {
   /// row's `on activate` runs, or the first row shown with no selection.
   /// A row on its way is activated when it mounts.
   action activate()
+  /// How far a `scroll` or `list` is scrolled along y, logical pixels from
+  /// its content's top, as drawn: it follows a spring frame by frame. 0 on
+  /// other elements. Render reports it only for an element this or `scroll_x`
+  /// is read of, and nothing wakes while it stands still.
+  scroll_y: float
+  /// How far a `scroll` or `list` is scrolled along x. 0 on other elements.
+  scroll_x: float
+  /// `s.scroll_to(y)` springs a `scroll` or `list` to that offset, kept within
+  /// its content, a `snap: true` one to the nearest child. `s.scroll_to(x:
+  /// 40)` and `s.scroll_to(0, 40)` go along x; `y` alone on one that runs only
+  /// along x is along x, as a wheel is. On another element, a check error
+  /// where `strand check` can see it, else nothing.
+  action scroll_to(y: float? = null, x: float? = null)
+  /// `s.scroll_by(dy)` moves a `scroll` or `list` by that much, from where it
+  /// is heading, springing as a wheel step does; `dx` along x.
+  action scroll_by(dy: float? = null, dx: float? = null)
+  /// `field.focus()` moves its surface's keyboard focus to any element, shown
+  /// by every `scroll` around it. A surface without the keyboard takes it
+  /// when the keyboard comes.
+  action focus()
+  /// `row.reveal()` scrolls every `scroll` and `list` around any element as
+  /// little as it takes to show it, at once, as a list's selected row.
+  action reveal()
 }
 
 /// A point (`self.pointer`), logical pixels.
@@ -1848,6 +1872,20 @@ group node {
     /// Dash and gap lengths.
     dash: (length, length)
   }
+  /// Makes it focusable, with any value: Tab, Shift+Tab and a click reach it
+  /// (`input`, `list`, `button`, `slider` and `segmented` are focusable
+  /// without it). True, it takes keyboard focus when shown, and again whenever
+  /// it turns true while its surface has the keyboard (`focus: mode ==
+  /// search`). Focused, Return or space runs its `on activate` if it has one,
+  /// else `on click`.
+  focus: bool
+  /// Arrow keys inside it move focus to the nearest focusable element that
+  /// way, by their laid-out boxes: `arrows: focus`, and `focus_wrap` to go
+  /// round from one end to the other. They stay inside the nearest one, and an
+  /// element that uses an arrow itself keeps it: a focused `input`'s caret, a
+  /// `list`, a `slider`, a `segmented`'s Left and Right, and a `scroll` along
+  /// the way it runs. A `scroll` that holds the next element shows it.
+  arrows: Arrows
   /// The pose it enters from: `enter { opacity: 0 }`, `popin(0.8)`,
   /// `slide(top)`, `fade` or `slidefade`. `exit` mirrors it unless given.
   enter: Pose | PoseName
@@ -2049,7 +2087,8 @@ element grid: node {
   /// How many columns: `columns: 7`.
   columns: int
 }
-/// Scrolls its content.
+/// Scrolls its content. With a `focus:` it takes keys when focused: arrows
+/// step, Page keys go a view, Home and End to the ends.
 element scroll: node {
   /// Which way it scrolls: `vertical` (the default), `horizontal` (its
   /// children in a row; a wheel without a sideways motion scrolls it
@@ -2065,12 +2104,11 @@ element scroll: node {
 }
 /// Virtualised; arrow keys move the selection, and `axis` and `columns`
 /// lay it out as a strip or a grid, the arrows following.
+///
+/// Focused, arrows move its selection, Return activates the selected row, and
+/// Right (Down on a horizontal list) opens a popup the row holds (a menu's
+/// submenu).
 element list: node {
-  /// Takes keyboard focus when shown, and whenever it turns true (as an
-  /// `input`'s); then arrows move its selection, Return
-  /// activates the selected row, and Right (Down on a horizontal list)
-  /// opens a popup the row holds (a menu's submenu).
-  focus: bool
   /// A wheel step or a touchpad's lift settles with a row's start at the
   /// view's start, as a `scroll`'s `snap`, rows not mounted yet
   /// included.
@@ -2153,7 +2191,9 @@ element image(text? -> source): node {
   fit: Fit
   flags leaf
 }
-/// A button with a label: `button "‹" { on click { … } }`.
+/// A button with a label: `button "‹" { on click { … } }`. Focusable: Tab
+/// reaches it, Return or space runs it, and a click focuses it unless an
+/// `input` or `list` has focus, which keeps it.
 element button(text -> text): node {}
 /// A slider: `slider { value: <-> audio.sink.volume }`. Dragged, it
 /// writes values in its `range`: `slider { value: <-> percent; range: 0,
@@ -2161,7 +2201,9 @@ element button(text -> text): node {}
 /// upward: its value grows from the bottom (its written `width` and
 /// `height` decide, else its laid-out box; one growing from a written 0,
 /// `width: 0; grow: 1`, runs along that axis; a drag keeps the way it
-/// began).
+/// began). Focused: Left and Down step down, Right and Up step up, Page keys
+/// go ten steps and Home and End to the ends, a step being its `step:`, else
+/// a hundredth of its range.
 element slider: node {
   /// Its value, in `range` (0 to 1 when unset), bound two-way; a value
   /// outside it is drawn at its nearer end.
@@ -2194,11 +2236,6 @@ element input: node {
   /// `greetd.submit` and a network's `connect_with` (its length and
   /// whether it is empty are free to show).
   type: InputKind
-  /// Takes keyboard focus when shown, and again whenever it turns true
-  /// while its surface has the keyboard (`focus: mode == search`). Tab
-  /// and Shift+Tab move focus between a surface's inputs and lists,
-  /// unless a claim takes them (`on key "tab" { … }`).
-  focus: bool
   /// Routes arrow keys to a `list`: `nav: results`.
   nav: Node
   flags leaf
@@ -2223,6 +2260,7 @@ element meter(float -> value): node {
   flags leaf
 }
 /// One choice of several: `segmented { options: Look; value: <-> theme.look }`.
+/// Focused, Left and Right choose the option beside the chosen one.
 element segmented: node {
   /// The choices: an enum or a list.
   options: any

@@ -4290,7 +4290,7 @@ fn focused_input_names_a_password() {
 /// has been mounted by then, and lands when its row mounts.
 #[test]
 fn list_asks_build_on_a_selection_on_its_way() {
-    use strand_scene::{Color, ListAsk, Modifiers, NodeKind, SceneDiff, SceneOp};
+    use strand_scene::{Color, ListAsk, Modifiers, NodeAsk, NodeKind, SceneDiff, SceneOp};
     let data = std::fs::read(strand_text::test_font_path()).unwrap();
     let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
         std::sync::Arc::new(data),
@@ -4334,7 +4334,7 @@ fn list_asks_build_on_a_selection_on_its_way() {
     f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
     let asks = |f: &mut R, r: &mut Renderer, asks: &[ListAsk]| {
         let mut d = SceneDiff::new();
-        d.list_asks = asks.iter().map(|a| (list, *a)).collect();
+        d.asks = asks.iter().map(|a| (list, NodeAsk::List(*a))).collect();
         f.router.observe(&d);
         assert!(r.apply(d).is_empty());
         f.router.settle(r)
@@ -4418,4 +4418,185 @@ fn list_asks_build_on_a_selection_on_its_way() {
         Vec::<Option<u32>>::new(),
         "the place did not move"
     );
+}
+
+/// (keyboard) A panel with a button and a box with a `focus:`, entered, under
+/// a router; the button's and the box's nodes.
+fn focus_panel() -> (R, Renderer, SurfaceId, NodeId, NodeId) {
+    use strand_scene::{NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let (panel, col, button, boxed) = (id(0), id(1), id(2), id(3));
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(200.0))
+        .set(panel, Prop::Height, PropValue::Number(100.0))
+        .set(panel, Prop::Open, PropValue::Bool(true))
+        .create(col, NodeKind::Col, Some(panel), 0)
+        .create(button, NodeKind::Button, Some(col), 0)
+        .set(button, Prop::Height, PropValue::Number(20.0))
+        .create(boxed, NodeKind::Box, Some(col), 1)
+        .set(boxed, Prop::Height, PropValue::Number(20.0))
+        .set(boxed, Prop::Focus, PropValue::Bool(false));
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    r.attach_surface(s, panel);
+    let mut px = vec![0u8; 200 * 100 * 4];
+    let mut t = PaintTarget::new(&mut px, Size::new(200, 100), 800, Scale::ONE, 0).unwrap();
+    r.paint(s, &mut t);
+    let mut f = R::default();
+    f.attached(s, panel);
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    f.drain();
+    (f, r, s, button, boxed)
+}
+
+fn plain_key(s: SurfaceId, name: &str) -> InputEvent {
+    InputEvent::Key {
+        surface: s,
+        key: KeyInput {
+            name: name.into(),
+            text: String::new(),
+            state: ButtonState::Pressed,
+            repeat: false,
+            modifiers: strand_scene::Modifiers::default(),
+            time: 0,
+            latin: None,
+        },
+    }
+}
+
+/// Return or space goes to logic as one event, since only logic knows of
+/// `on activate`; on the surface itself it is nothing.
+#[test]
+fn return_on_a_focused_button_is_a_press() {
+    let (mut f, mut r, s, button, _) = focus_panel();
+    let pressed = |out: &[Intent], n: NodeId| {
+        out.contains(&Intent::Event {
+            node: n,
+            event: NodeEvent::Press,
+        })
+    };
+    f.input(&plain_key(s, "Return"), &mut r);
+    assert!(!f.drain().iter().any(|i| matches!(
+        i,
+        Intent::Event {
+            event: NodeEvent::Press,
+            ..
+        }
+    )));
+    f.input(&plain_key(s, "Tab"), &mut r);
+    assert_eq!(f.router.focused(s), Some(button));
+    f.drain();
+    f.input(&plain_key(s, "space"), &mut r);
+    assert!(pressed(&f.drain(), button));
+}
+
+/// `node.focus()` is an ask: the last on a surface wins, with what comes
+/// between it told in order, on any node.
+#[test]
+fn focus_asks_move_focus_in_order() {
+    use strand_scene::{NodeAsk, SceneDiff};
+    let (mut f, mut r, s, button, boxed) = focus_panel();
+    let mut d = SceneDiff::new();
+    d.asks = vec![(boxed, NodeAsk::Focus), (button, NodeAsk::Focus)];
+    f.router.observe(&d);
+    assert!(r.apply(d).is_empty());
+    let out = f.router.settle(&mut r);
+    assert_eq!(f.router.focused(s), Some(button));
+    let flags: Vec<(NodeId, bool)> = out
+        .iter()
+        .filter_map(|i| match i {
+            Intent::Flag {
+                node,
+                flag: Flag::Focused,
+                on,
+            } => Some((*node, *on)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        flags.ends_with(&[(boxed, true), (boxed, false), (button, true)]),
+        "{flags:?}"
+    );
+}
+
+/// A move on a surface nobody shows waits, and does not hold up one that is
+/// shown, which no layout may come to release.
+#[test]
+fn a_scroll_move_waiting_on_a_hidden_surface_holds_up_no_other() {
+    use strand_render::ScrollMove;
+    use strand_scene::{NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let mut d = SceneDiff::new();
+    for (panel, scroll, content) in [(id(0), id(1), id(2)), (id(10), id(11), id(12))] {
+        d.create(panel, NodeKind::Panel, None, 0)
+            .set(panel, Prop::Width, PropValue::Number(100.0))
+            .set(panel, Prop::Height, PropValue::Number(100.0))
+            .set(panel, Prop::Open, PropValue::Bool(true))
+            .create(scroll, NodeKind::Scroll, Some(panel), 0)
+            .set(scroll, Prop::Height, PropValue::Number(100.0))
+            .create(content, NodeKind::Box, Some(scroll), 0)
+            .set(content, Prop::Height, PropValue::Number(500.0));
+    }
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    r.attach_surface(s, id(0));
+    let mut px = vec![0u8; 100 * 100 * 4];
+    let mut t = PaintTarget::new(&mut px, Size::new(100, 100), 400, Scale::ONE, 0).unwrap();
+    r.paint(s, &mut t);
+    let to = |y: f32| ScrollMove::To {
+        y: Some(y),
+        x: None,
+    };
+    r.scroll_move(id(11), to(10.0));
+    r.scroll_move(id(1), to(30.0));
+    assert_eq!(r.scroll_state(id(1)).unwrap().target(), 30.0);
+}
+
+/// `apply` lays out every surface with a size, so a move waits only on a
+/// surface not laid out yet: a reveal asked before it shows runs when it does.
+#[test]
+fn a_reveal_asked_before_its_surface_shows_runs_when_it_does() {
+    use strand_render::ScrollMove;
+    use strand_scene::{NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let (panel, scroll, col, end) = (id(0), id(1), id(2), id(3));
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(100.0))
+        .set(panel, Prop::Height, PropValue::Number(100.0))
+        .set(panel, Prop::Open, PropValue::Bool(true))
+        .create(scroll, NodeKind::Scroll, Some(panel), 0)
+        .set(scroll, Prop::Height, PropValue::Number(100.0))
+        .create(col, NodeKind::Col, Some(scroll), 0)
+        .create(id(4), NodeKind::Box, Some(col), 0)
+        .set(id(4), Prop::Height, PropValue::Number(300.0))
+        .create(end, NodeKind::Box, Some(col), 1)
+        .set(end, Prop::Height, PropValue::Number(20.0));
+    assert!(r.apply(d).is_empty());
+    r.scroll_move(end, ScrollMove::Reveal);
+    let s = SurfaceId(1);
+    r.attach_surface(s, panel);
+    let mut px = vec![0u8; 100 * 100 * 4];
+    let mut t = PaintTarget::new(&mut px, Size::new(100, 100), 400, Scale::ONE, 0).unwrap();
+    r.paint(s, &mut t);
+    assert_eq!(r.scroll_state(scroll).unwrap().target(), 220.0);
+    let mut t = PaintTarget::new(&mut px, Size::new(100, 100), 400, Scale::ONE, 0).unwrap();
+    r.paint(s, &mut t);
+    assert_eq!(r.scroll_offset(scroll), Some(220.0), "and drawn there");
 }

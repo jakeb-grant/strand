@@ -75,6 +75,7 @@ pub use renderer::{
     QUERY_WAIT, RESIZE_WAIT, Renderer, TOOLTIP_DELAY, TextBackend, resize_share,
 };
 pub use renderer::{
-    FeedDemand, FeedKind, ListFrames, PaintTimes, ScrollInput, ScrollKind, THUMBNAIL_STEP,
+    FeedDemand, FeedKind, ListFrames, PaintTimes, ScrollInput, ScrollKind, ScrollMove,
+    THUMBNAIL_STEP,
 };
 pub use tree::{Node, PropEntry, SceneError, SceneTree};

@@ -332,12 +332,14 @@ pub(crate) struct Ctx {
     /// (window) What handlers asked of windows this step, in order
     /// (`SceneDiff::window_asks`).
     pub(crate) window_asks: RefCell<Vec<(NodeId, strand_scene::WindowAsk)>>,
-    /// (keyboard) What handlers asked of lists this step, in order
-    /// (`SceneDiff::list_asks`).
-    pub(crate) list_asks: RefCell<Vec<(NodeId, strand_scene::ListAsk)>>,
+    /// (keyboard) What handlers asked of nodes this step, in order
+    /// (`SceneDiff::asks`).
+    pub(crate) asks: RefCell<Vec<(NodeId, strand_scene::NodeAsk)>>,
     /// (keyboard) A selection action on an element that is no list was
     /// told to the tick's notices: once, or a timer repeats it for ever.
     pub(crate) not_a_list: Cell<bool>,
+    /// (keyboard) So was a scroll action on an element that does not scroll.
+    pub(crate) not_a_scroll: Cell<bool>,
 }
 
 impl Ctx {
@@ -446,24 +448,37 @@ impl VmHooks for Ctx {
         }
     }
 
-    fn list(&self, _rt: &Runtime, node: &Rc<NodeState>, ask: strand_scene::ListAsk) {
-        // A list not mounted now has nothing to move.
+    fn ask(&self, _rt: &Runtime, node: &Rc<NodeState>, ask: strand_scene::NodeAsk) {
+        use strand_scene::NodeAsk;
+        // A node not mounted now has nothing to move.
         let Some(id) = node.scene.get() else { return };
-        let is_list = self
+        let kind = self
             .em
             .borrow()
             .nodes
             .get(&id)
-            .is_some_and(|e| e.kind == NodeKind::List && Rc::ptr_eq(&e.state, node));
-        if is_list {
-            self.list_asks.borrow_mut().push((id, ask));
-        } else if !self.not_a_list.replace(true) {
-            // `check::not_a_list` catches every `id:` it can see; `self`
-            // and a conditional id reach here.
-            self.notices.borrow_mut().push(format!(
-                "{ask:?} on an element that is not a `list` does nothing"
-            ));
+            .filter(|e| Rc::ptr_eq(&e.state, node))
+            .map(|e| e.kind);
+        let Some(kind) = kind else { return };
+        // `check::not_a_list` and `check::not_a_scroll` catch every `id:`
+        // they can see; `self` and a conditional id reach here.
+        if matches!(ask, NodeAsk::List(_)) && kind != NodeKind::List {
+            if !self.not_a_list.replace(true) {
+                self.notices.borrow_mut().push(format!(
+                    "{ask:?} on an element that is not a `list` does nothing"
+                ));
+            }
+            return;
         }
+        if ask.scrolls() && !matches!(kind, NodeKind::List | NodeKind::Scroll) {
+            if !self.not_a_scroll.replace(true) {
+                self.notices.borrow_mut().push(format!(
+                    "{ask:?} on an element that is not a `scroll` or `list` does nothing"
+                ));
+            }
+            return;
+        }
+        self.asks.borrow_mut().push((id, ask));
     }
 }
 
@@ -590,6 +605,19 @@ impl Ctx {
         args: Vec<Value>,
         input: Option<crate::vm::InputCtx>,
     ) -> bool {
+        // (keyboard) Return or space on a focused node: its own `on activate`
+        // if it has one that is active, else a click, as a pointer's would be.
+        let event = if event == "press" {
+            let em = self.em.borrow();
+            let activates = em.nodes.get(&node).is_some_and(|e| {
+                e.events
+                    .get("activate")
+                    .is_some_and(|q| q.iter().any(|l| l.active(rt)))
+            });
+            if activates { "activate" } else { "click" }
+        } else {
+            event
+        };
         let mut cur = Some(node);
         while let Some(n) = cur {
             let (queues, state, parent) = {
@@ -918,8 +946,9 @@ impl Ctx {
             lock_logic: RefCell::default(),
             history: RefCell::default(),
             window_asks: RefCell::default(),
-            list_asks: RefCell::default(),
+            asks: RefCell::default(),
             not_a_list: Cell::default(),
+            not_a_scroll: Cell::default(),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
         let weak: std::rc::Weak<dyn VmHooks> = weak;
@@ -1797,6 +1826,9 @@ impl Instance {
             if bits & NodeState::WATCH_POINTER != 0 {
                 kw.push("pointer");
             }
+            if bits & NodeState::WATCH_SCROLL != 0 {
+                kw.push("scroll");
+            }
             let kw = if kw.is_empty() {
                 "size".to_string()
             } else {
@@ -1860,7 +1892,7 @@ impl Instance {
             diff: SceneDiff {
                 ops,
                 window_asks: std::mem::take(&mut *self.ctx.window_asks.borrow_mut()),
-                list_asks: std::mem::take(&mut *self.ctx.list_asks.borrow_mut()),
+                asks: std::mem::take(&mut *self.ctx.asks.borrow_mut()),
                 ..SceneDiff::default()
             },
             errors,
@@ -2007,6 +2039,26 @@ impl Instance {
         if let Some(s) = state {
             let v = index.map_or(Value::Null, |i| Value::int(i64::from(i)));
             let _ = s.selected_index(&self.rt).set(&self.rt, v);
+        }
+    }
+
+    /// (keyboard) Render reports where a `scroll` or `list` whose position is
+    /// read is scrolled to (`s.scroll_x`, `s.scroll_y`).
+    pub fn set_scroll(&self, node: NodeId, x: f32, y: f32) {
+        let state = self
+            .ctx
+            .em
+            .borrow()
+            .nodes
+            .get(&node)
+            .map(|e| e.state.clone());
+        if let Some(s) = state {
+            let _ = s
+                .scroll_x(&self.rt)
+                .set(&self.rt, Value::float(f64::from(x)));
+            let _ = s
+                .scroll_y(&self.rt)
+                .set(&self.rt, Value::float(f64::from(y)));
         }
     }
 

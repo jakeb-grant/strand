@@ -296,6 +296,7 @@ impl Renderer {
         self.facts_sent.retain(|(_, n), _| tree.contains(*n));
         // Newly watched nodes: their box as laid out now (`facts.rs`).
         self.watch_pointer(&watched);
+        self.watch_scrolls(&watched);
         self.report_watched(watched);
         let tree = &self.tree;
         self.scrolls.retain(|n, _| tree.contains(*n));

@@ -43,12 +43,15 @@ a hot path.
   `GRAB_WINDOW` after; the host marks each popup the diff opens with it,
   `State::set_popup_cause`, so a surface grabs only for its own press)
   and `window_asks: Vec<(NodeId, WindowAsk)>` (applied with
-  `State::window_ask(node, ask, press)` after the diff), and `list_asks:
-  Vec<(NodeId, ListAsk)>` (`results.next()`: `Router::observe` keeps them and
-  `Router::settle` does each in order on the scene the diff made, a move in
-  flight included, so none is lost). A diff whose
+  `State::window_ask(node, ask, press)` after the diff), and `asks:
+  Vec<(NodeId, NodeAsk)>` (`results.next()`, `node.focus()`, `node.reveal()`,
+  `s.scroll_to(y)`: `Router::observe` keeps them and `Router::settle` does each
+  in order on the scene the diff made, a move in flight included, so none is
+  lost; a position waits there for its surface's layout, `Renderer::scroll_move`). A diff whose
   `layout_seen` or `reduced_motion` changed is sent even with no ops.
 - **Render → logic**: routed input (flags, node events, two-way writes,
+  `Renderer::take_scroll_facts` as `ToLogic::Scroll` for `s.scroll_y`, only
+  for nodes it is read of (`Prop::Watch` with `scroll`),
   `Intent::SelectedIndex` as `ToLogic::SelectedIndex` for
   `results.selected_index`, sent when the place changes), layout facts
   (`Renderer::take_layout_facts`, changed boxes of `Prop::Watch` nodes,

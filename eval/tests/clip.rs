@@ -1488,7 +1488,7 @@ fn a_clip_says_each_elements_value_and_states() {
     );
     assert!(
         rows.iter()
-            .any(|r| r.contains("hover press, drag ") && r.ends_with(" of its range")),
+            .any(|r| r.contains("hover press focus, drag ") && r.ends_with(" of its range")),
         "{b}"
     );
     let _ = std::fs::remove_dir_all(out.parent().unwrap());

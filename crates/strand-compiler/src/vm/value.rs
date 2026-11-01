@@ -202,6 +202,10 @@ pub struct NodeState {
     /// none: the router says so as it moves. Made on first use
     /// ([`NodeState::selected_index`]): only lists are ever told it.
     pub selected_index_cell: std::cell::OnceCell<Signal<Value>>,
+    /// (keyboard) A `scroll`'s or `list`'s position, `Null` until render
+    /// says so, which it does only once one is read ([`NodeState::WATCH_SCROLL`]).
+    pub scroll_x_cell: std::cell::OnceCell<Signal<Value>>,
+    pub scroll_y_cell: std::cell::OnceCell<Signal<Value>>,
     /// (M6) For a conditional id (`when c { id: name }`), the element it
     /// names now: `Value::Node`, or `Null` while no condition holds.
     /// Made on first use ([`NodeState::alias`]).
@@ -244,6 +248,9 @@ impl NodeState {
     /// (flex) A binding or handler reads `pointer`: render reports the
     /// pointer over it, once a frame while it moves.
     pub const WATCH_POINTER: u8 = 8;
+    /// (keyboard) A binding or handler reads `scroll_x` or `scroll_y`:
+    /// render reports the position, once a frame while it moves.
+    pub const WATCH_SCROLL: u8 = 16;
 
     /// (M6) `id.box`'s signal, made on first use in the element's scope.
     pub fn rect(&self, rt: &strand_core::Runtime) -> Signal<Value> {
@@ -285,6 +292,16 @@ impl NodeState {
     /// (keyboard) `results.selected_index`'s signal, made on first use.
     pub fn selected_index(&self, rt: &strand_core::Runtime) -> Signal<Value> {
         *self.selected_index_cell.get_or_init(|| self.make(rt))
+    }
+
+    /// (keyboard) `s.scroll_x`'s signal, made on first use.
+    pub fn scroll_x(&self, rt: &strand_core::Runtime) -> Signal<Value> {
+        *self.scroll_x_cell.get_or_init(|| self.make(rt))
+    }
+
+    /// (keyboard) `s.scroll_y`'s signal, made on first use.
+    pub fn scroll_y(&self, rt: &strand_core::Runtime) -> Signal<Value> {
+        *self.scroll_y_cell.get_or_init(|| self.make(rt))
     }
 
     /// (M6) A conditional id's target signal (see `alias_cell`).
