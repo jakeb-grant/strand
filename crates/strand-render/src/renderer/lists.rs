@@ -65,8 +65,9 @@ pub enum ScrollMove {
     RevealIndex(u32),
 }
 
-/// The asks waiting for a layout, at most: a timer moving a scroll nobody
-/// shows keeps only its last.
+/// The moves a surface holds for its layout, at most, the oldest going first.
+/// A node holds its last of each kind (`Renderer::scroll_move`), so this bounds
+/// nodes, not time: a timer moving a scroll nobody shows holds one.
 const SCROLL_MOVES_HELD: usize = 64;
 
 /// Frames painted with a list in view, those whose view showed content
@@ -450,8 +451,17 @@ impl Renderer {
             self.make_scroll_move(id, mv);
             return;
         }
-        if self.lists.moves.len() >= SCROLL_MOVES_HELD {
-            self.lists.moves.remove(0);
+        let kind = std::mem::discriminant(&mv);
+        let tree = &self.tree;
+        self.lists.moves.retain(|(n, m)| {
+            tree.contains_live(*n) && !(*n == id && std::mem::discriminant(m) == kind)
+        });
+        let mine = |n: &NodeId| tree.root_of(*n) == root;
+        let held = self.lists.moves.iter().filter(|(n, _)| mine(n)).count();
+        if held >= SCROLL_MOVES_HELD
+            && let Some(oldest) = self.lists.moves.iter().position(|(n, _)| mine(n))
+        {
+            self.lists.moves.remove(oldest);
         }
         self.lists.moves.push((id, mv));
     }

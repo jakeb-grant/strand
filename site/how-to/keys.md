@@ -150,7 +150,7 @@ panel Wallpapers {
 | Up, Down | do nothing, but Down opens a row's popup and Up closes a submenu | a line, in the same column |
 | Left, Right | one row | one row, stopping at a line's end |
 | `next()`, `prev()` | one row | one row, across lines |
-| Page keys | a view of rows | a view of lines |
+| Page keys, space and Shift+space on a focused list | a view of rows | a view of lines |
 | Each row is | as wide as it needs, and fills the list's height | a share of the list's width, and fills its line's height |
 
 Down from above an empty cell of a short last line goes to the last row. With

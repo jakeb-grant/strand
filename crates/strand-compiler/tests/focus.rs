@@ -1303,3 +1303,347 @@ fn check_says_a_box_does_not_scroll() {
     assert!(codes("list", "b.scroll_by(dx: 3)").is_empty());
     assert!(codes("box", "b.focus(); b.reveal()").is_empty());
 }
+
+// Focus on what stops being shown or taking input.
+
+fn panel_of(sh: &Shell) -> NodeId {
+    sh.nodes("P", NodeKind::Panel)[0]
+}
+
+fn type_a(sh: &mut Shell) {
+    let key = key_with(sh, "a", "a", false, false);
+    sh.send(key);
+    sh.settle();
+}
+
+/// A focused button turning `opacity: 0` is not pressed, `focused` clears, and
+/// with nothing else to go to focus is the surface's until it shows again.
+#[test]
+fn a_button_no_longer_shown_takes_no_press() {
+    let mut sh = entered(
+        "state clicks = 0\nstate hide = false\nstate lit = true\n\
+         panel P { anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+           on click { clicks += 100 }\n\
+           button \"b\" { focus: true; opacity: hide ? 0 : 1\n\
+             on click { clicks += 1 }\n\
+             on change self.focused { lit = self.focused }\n\
+           }\n\
+         }\n",
+    );
+    let (panel, button) = (panel_of(&sh), sh.nodes("P", NodeKind::Button)[0]);
+    assert_eq!(focused(&sh), Some(button));
+    sh.set("hide", strand_compiler::vm::Value::Bool(true));
+    assert_eq!(focused(&sh), Some(panel));
+    assert_eq!(sh.get("lit"), strand_compiler::vm::Value::Bool(false));
+    tap(&mut sh, "Return");
+    tap(&mut sh, "space");
+    assert_eq!(sh.num("clicks"), 0.0);
+    sh.set("hide", strand_compiler::vm::Value::Bool(false));
+    assert_eq!(focused(&sh), Some(button), "back when it shows");
+    assert_eq!(sh.get("lit"), strand_compiler::vm::Value::Bool(true));
+    tap(&mut sh, "Return");
+    assert_eq!(sh.num("clicks"), 1.0);
+}
+
+/// `hit: none` hands focus to what Tab would next, and focus moved on
+/// meanwhile stays where it went when the node takes input again.
+#[test]
+fn a_button_turning_hit_none_hands_focus_on_as_tab_would() {
+    let mut sh = entered(
+        "state hide = false\nstate clicks = 0\n\
+         panel P { anchor: top_left; width: 300; height: 200; keyboard: exclusive\n\
+           col {\n\
+             button \"a\" { }\n\
+             button \"b\" { focus: true; when hide { hit: none }; on click { clicks += 1 } }\n\
+             button \"c\" { on click { clicks += 10 } }\n\
+           }\n\
+         }\n",
+    );
+    let b = sh.nodes("P", NodeKind::Button);
+    assert_eq!(focused(&sh), Some(b[1]));
+    sh.set("hide", strand_compiler::vm::Value::Bool(true));
+    assert_eq!(focused(&sh), Some(b[2]));
+    tap(&mut sh, "Return");
+    assert_eq!(
+        sh.num("clicks"),
+        10.0,
+        "what focus is on now, not what it left"
+    );
+    tap(&mut sh, "Tab");
+    assert_eq!(focused(&sh), Some(b[0]));
+    sh.set("hide", strand_compiler::vm::Value::Bool(false));
+    assert_eq!(focused(&sh), Some(b[0]), "it moved on");
+}
+
+/// Hidden with a box around it: on to the node after it, not the first.
+#[test]
+fn focus_hidden_with_its_box_goes_to_the_node_after_it() {
+    let mut sh = entered(
+        "state hide = false\n\
+         panel P { anchor: top_left; width: 300; height: 200; keyboard: exclusive\n\
+           col {\n\
+             button \"a\" { }\n\
+             box { opacity: hide ? 0 : 1; button \"b\" { focus: true } }\n\
+             button \"c\" { }\n\
+           }\n\
+         }\n",
+    );
+    let b = sh.nodes("P", NodeKind::Button);
+    sh.set("hide", strand_compiler::vm::Value::Bool(true));
+    assert_eq!(focused(&sh), Some(b[2]));
+}
+
+#[test]
+fn an_input_no_longer_shown_takes_no_typing() {
+    let mut sh = entered(
+        "state hide = false\nstate query = \"\"\nstate typed = 0\n\
+         panel P { anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+           on change query { typed += 1 }\n\
+           input { focus: true; text: <-> query; when hide { hit: none } }\n\
+         }\n",
+    );
+    type_a(&mut sh);
+    assert_eq!(sh.num("typed"), 1.0);
+    sh.set("hide", strand_compiler::vm::Value::Bool(true));
+    assert_eq!(focused(&sh), Some(panel_of(&sh)));
+    type_a(&mut sh);
+    assert_eq!(sh.num("typed"), 1.0);
+}
+
+#[test]
+fn a_list_no_longer_shown_takes_no_keys() {
+    let mut sh = entered(
+        "state hide = false\n\
+         panel P { anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+           list { focus: true; height: 80; opacity: hide ? 0 : 1\n\
+             box { height: 20 }\n\
+             box { height: 20 }\n\
+             box { height: 20 }\n\
+           }\n\
+         }\n",
+    );
+    let list = sh.nodes("P", NodeKind::List)[0];
+    tap(&mut sh, "Down");
+    let at = sh.router.selected_index(list);
+    assert!(at.is_some());
+    sh.set("hide", strand_compiler::vm::Value::Bool(true));
+    tap(&mut sh, "Down");
+    assert_eq!(sh.router.selected_index(list), at);
+    assert_eq!(focused(&sh), Some(panel_of(&sh)));
+}
+
+/// A launcher fading out: what was typed stands, Escape still closes it, and
+/// opened again before the fade ends it types on.
+#[test]
+fn a_fading_launcher_still_closes_and_types_on_when_it_comes_back() {
+    let mut sh = entered(
+        "state fade = false\nstate o = true\nstate query = \"\"\nstate typed = 0\n\
+         panel P { open: <-> o; anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+           on change query { typed += 1 }\n\
+           input { focus: true; text: <-> query; opacity: fade ? 0 : 1 }\n\
+         }\n",
+    );
+    let input = sh.nodes("P", NodeKind::Input)[0];
+    let key = key_with(&sh, "a", "a", false, false);
+    sh.send(key);
+    sh.set("fade", strand_compiler::vm::Value::Bool(true));
+    assert_eq!(sh.num("typed"), 1.0, "the key before the fade counts");
+    type_a(&mut sh);
+    assert_eq!(sh.num("typed"), 1.0, "and none during it");
+    sh.set("fade", strand_compiler::vm::Value::Bool(false));
+    assert_eq!(focused(&sh), Some(input));
+    type_a(&mut sh);
+    assert_eq!(sh.num("typed"), 2.0);
+    sh.set("fade", strand_compiler::vm::Value::Bool(true));
+    tap(&mut sh, "Escape");
+    assert_eq!(sh.get("o"), strand_compiler::vm::Value::Bool(false));
+}
+
+// What existing shells keep.
+
+/// A list is one stop, whatever its rows hold, unless a row's node writes
+/// `focus:`.
+#[test]
+fn a_list_is_one_tab_stop() {
+    let mut sh = entered(&format!(
+        "state at = 0\n\
+         panel P {{ anchor: top_left; width: 300; height: 400; keyboard: exclusive\n\
+           col {{\n\
+             input {{ {} }}\n\
+             list {{ height: 120; {}\n\
+               box {{ height: 20; button \"x\" {{ {} }} }}\n\
+               box {{ height: 20; slider {{ {} }} }}\n\
+               box {{ height: 20; input {{ {} }} }}\n\
+               box {{ height: 20; button \"y\" {{ focus: false; {} }} }}\n\
+             }}\n\
+             input {{ {} }}\n\
+           }}\n\
+         }}\n",
+        tell(1),
+        tell(2),
+        tell(90),
+        tell(91),
+        tell(92),
+        tell(3),
+        tell(4),
+    ));
+    let mut seen = Vec::new();
+    for _ in 0..5 {
+        tap(&mut sh, "Tab");
+        seen.push(sh.num("at") as u32);
+    }
+    assert_eq!(seen, [1, 2, 3, 4, 1]);
+}
+
+fn on_demand_bar() -> Shell {
+    Shell::new(
+        "panel P { anchor: top_left; width: 300; height: 100; keyboard: on_demand\n\
+           col {\n\
+             button \"b\" { height: 30; width: 100 }\n\
+             input { focus: true }\n\
+           }\n\
+         }\n",
+    )
+}
+
+/// The press that brought the keyboard, on a button, leaves `focus: true` to
+/// take it.
+#[test]
+fn a_press_before_the_keyboard_does_not_beat_focus_true() {
+    let mut sh = on_demand_bar();
+    sh.settle();
+    sh.click(10.0, 10.0);
+    sh.settle();
+    sh.keyboard_to("P");
+    sh.settle();
+    assert_eq!(focused(&sh), Some(sh.nodes("P", NodeKind::Input)[0]));
+}
+
+/// The keyboard back from a popup that grabbed it, no leave between, finds
+/// focus where Tab left it.
+#[test]
+fn focus_held_with_the_keyboard_stays_when_it_comes_back() {
+    let mut sh = on_demand_bar();
+    sh.settle();
+    sh.keyboard_to("P");
+    tap(&mut sh, "ISO_Left_Tab");
+    let button = sh.nodes("P", NodeKind::Button)[0];
+    assert_eq!(focused(&sh), Some(button));
+    sh.keyboard_to("P");
+    assert_eq!(focused(&sh), Some(button));
+}
+
+/// Return on a focused row: what a pointer's click on it does, once each.
+#[test]
+fn return_on_a_focused_row_does_what_a_click_on_it_does() {
+    let mut sh = entered(
+        "state clicks = 0\nstate acts = 0\n\
+         panel P { anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+           list { height: 100; on activate { acts += 1 }\n\
+             box { height: 40; focus: true; on click { clicks += 1 } }\n\
+           }\n\
+         }\n",
+    );
+    let list = sh.nodes("P", NodeKind::List)[0];
+    tap(&mut sh, "Return");
+    assert_eq!((sh.num("acts"), sh.num("clicks")), (1.0, 1.0), "the key");
+    assert_eq!(sh.router.selected_index(list), Some(0));
+    sh.click(10.0, 10.0);
+    sh.settle();
+    assert_eq!(
+        (sh.num("acts"), sh.num("clicks")),
+        (2.0, 2.0),
+        "the pointer"
+    );
+}
+
+/// A row with its own `on activate` hears it once, not as a press and again.
+#[test]
+fn return_on_a_row_with_its_own_activate_runs_it_once() {
+    let mut sh = entered(
+        "state clicks = 0\nstate acts = 0\n\
+         panel P { anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+           list { height: 100\n\
+             box { height: 40; focus: true; on activate { acts += 1 }; on click { clicks += 1 } }\n\
+           }\n\
+         }\n",
+    );
+    tap(&mut sh, "Return");
+    assert_eq!((sh.num("acts"), sh.num("clicks")), (1.0, 1.0));
+}
+
+/// Up and Down are a horizontal scroll's own, inside `arrows:` too.
+#[test]
+fn up_and_down_stay_a_horizontal_scrolls_inside_arrows() {
+    let mut sh = entered(
+        "panel P { anchor: top_left; width: 300; height: 300; keyboard: exclusive\n\
+           col { arrows: focus\n\
+             button \"a\" { }\n\
+             scroll { height: 50; width: 200; axis: horizontal; focus: true\n\
+               box { width: 800; height: 50 }\n\
+             }\n\
+             button \"c\" { }\n\
+           }\n\
+         }\n",
+    );
+    let s = scroll_node(&sh);
+    let x = |sh: &Shell| {
+        sh.r.scroll_state(s)
+            .and_then(|st| st.across.as_ref())
+            .map_or(0.0, |a| a.offset)
+    };
+    tap(&mut sh, "Down");
+    assert_eq!(focused(&sh), Some(s));
+    assert_eq!(x(&sh), 40.0);
+    tap(&mut sh, "Up");
+    assert_eq!(focused(&sh), Some(s));
+    assert_eq!(x(&sh), 0.0);
+}
+
+/// Space and Shift+space page a focused scroll, and click nothing around it.
+#[test]
+fn space_pages_a_focused_scroll() {
+    let mut sh = entered(
+        "state clicks = 0\n\
+         panel P { anchor: top_left; width: 200; height: 100; keyboard: exclusive\n\
+           box { on click { clicks += 1 }\n\
+             scroll { height: 100; width: 200; focus: true\n\
+               box { height: 1000 }\n\
+             }\n\
+           }\n\
+         }\n",
+    );
+    let s = scroll_node(&sh);
+    tap(&mut sh, "space");
+    assert_eq!(offset(&sh, s), 100.0);
+    tap(&mut sh, "space");
+    assert_eq!(offset(&sh, s), 200.0);
+    sh.key("space", true);
+    sh.settle();
+    assert_eq!(offset(&sh, s), 100.0);
+    assert_eq!(sh.num("clicks"), 0.0);
+}
+
+/// On a list, a view of rows, as the Page keys.
+#[test]
+fn space_pages_a_focused_list() {
+    let mut sh = entered(
+        "state clicks = 0\n\
+         panel P { anchor: top_left; width: 200; height: 100; keyboard: exclusive\n\
+           on click { clicks += 1 }\n\
+           list { focus: true; height: 40\n\
+             for i in [0, 1, 2, 3, 4, 5, 6, 7] key i { box { height: 20 } }\n\
+           }\n\
+         }\n",
+    );
+    let list = sh.nodes("P", NodeKind::List)[0];
+    tap(&mut sh, "Down");
+    let at = sh.router.selected_index(list).unwrap();
+    tap(&mut sh, "space");
+    let paged = sh.router.selected_index(list).unwrap();
+    assert!(paged > at, "{at} to {paged}");
+    sh.key("space", true);
+    sh.settle();
+    assert_eq!(sh.router.selected_index(list), Some(at));
+    assert_eq!(sh.num("clicks"), 0.0);
+}

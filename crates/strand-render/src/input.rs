@@ -525,6 +525,10 @@ pub struct Router {
     /// (keyboard) The `value`s keys wrote to a slider or `segmented` that
     /// logic has not answered: the next key builds on the last.
     value_flights: HashMap<NodeId, ValueFlight>,
+    /// (keyboard) A surface's focus that left a node no longer shown or
+    /// hittable, and the node it went to: it comes back when the first shows
+    /// again, unless focus moved on meanwhile.
+    focus_lost: HashMap<SurfaceId, (NodeId, NodeId)>,
     /// (keyboard) Each list's selection as logic last heard it
     /// ([`Intent::SelectedIndex`]).
     told_index: HashMap<NodeId, u32>,
@@ -1327,6 +1331,7 @@ impl Router {
                 NodeAsk::ScrollBy { dy, dx } => scene.scroll_move(node, ScrollMove::By { dy, dx }),
             }
         }
+        self.focus_follows_shown(&*scene);
         // An `input` a `focus()` reached starts its `nav` list.
         if refocused {
             self.select_first_rows(scene);
@@ -1435,6 +1440,57 @@ impl Router {
             self.focus_holders(scene, node)
                 .into_iter()
                 .for_each(|s| self.focus_on(scene, s, node));
+        }
+    }
+
+    /// (keyboard) Focus does not stay on a node no longer shown or hittable: it
+    /// moves as Tab would, to the surface on one that is closing, and shows
+    /// nothing moving, since a fade is no reason to scroll. When that node
+    /// shows again focus comes back, so a launcher opened again mid-fade types
+    /// on, its `focus: true` having never turned.
+    fn focus_follows_shown(&mut self, scene: &dyn InputScene) {
+        let Some(tree) = scene.tree() else {
+            return;
+        };
+        let focus = &self.focus;
+        self.focus_lost
+            .retain(|s, (lost, placed)| focus.get(s) == Some(placed) && tree.contains_live(*lost));
+        let back: Vec<(SurfaceId, NodeId)> = self
+            .focus_lost
+            .iter()
+            .filter(|(s, (lost, _))| {
+                self.surfaces
+                    .get(s)
+                    .is_some_and(|root| holds_focus(tree, *root, *lost))
+            })
+            .map(|(s, (lost, _))| (*s, *lost))
+            .collect();
+        for (s, node) in back {
+            self.focus_lost.remove(&s);
+            self.set_focus(s, Some(node));
+        }
+        let gone: Vec<(SurfaceId, NodeId, NodeId)> = self
+            .focus
+            .iter()
+            .filter_map(|(s, n)| {
+                let root = *self.surfaces.get(s)?;
+                (!holds_focus(tree, root, *n)).then_some((*s, root, *n))
+            })
+            .collect();
+        for (s, root, node) in gone {
+            let closing = tree
+                .get(root)
+                .is_some_and(|r| matches!(r.get(Prop::Open), Some(PropValue::Bool(false))));
+            let next = (!closing)
+                .then(|| next_focusable(tree, root, node, false))
+                .flatten()
+                .unwrap_or(root);
+            let lost = match self.focus_lost.get(&s) {
+                Some((lost, placed)) if *placed == node => *lost,
+                _ => node,
+            };
+            self.focus_lost.insert(s, (lost, next));
+            self.set_focus(s, Some(next));
         }
     }
 
@@ -1897,8 +1953,17 @@ impl Router {
             InputEvent::KeyboardEnter { .. } => {
                 // Focus held from before (the keyboard back from a popup
                 // that grabbed it: no leave came between) stays where Tab
-                // or a click had moved it.
-                if self.focus.contains_key(&surface) {
+                // or a click had moved it. (keyboard) A press that came before
+                // the keyboard, on a `button`, `slider` or `segmented`, does not
+                // beat a `focus: true`, on a bar that takes it `on_demand`.
+                let beaten = !self.keyboard.contains(&surface)
+                    && scene.tree().is_some_and(|t| {
+                        self.focus.get(&surface).is_some_and(|f| {
+                            t.get(*f).is_some_and(|n| !claims_click_focus(n))
+                                && first_with_focus(t, root).is_some()
+                        })
+                    });
+                if self.focus.contains_key(&surface) && !beaten {
                     self.keyboard.insert(surface);
                     return;
                 }
@@ -2431,6 +2496,7 @@ impl Router {
         }
         self.focus.retain(|_, n| live(*n));
         self.focus_wanted.retain(|_, n| live(*n));
+        self.focus_lost.retain(|_, (n, _)| live(*n));
         self.value_flights.retain(|n, _| live(*n));
         self.pending_paste.retain(|_, n| live(*n));
     }
@@ -2533,6 +2599,7 @@ impl Router {
         key: &KeyInput,
         scene: &mut dyn InputScene,
     ) {
+        self.focus_follows_shown(&*scene);
         let focus = self.focus.get(&surface).copied().unwrap_or(root);
         // (keyboard) A claim comes before every default and every other
         // handler: its key goes to it and nowhere else.
@@ -2695,7 +2762,17 @@ impl Router {
             // the selection); Ctrl+Home and Ctrl+End go to the list's
             // ends. On a focused list they go there with any modifiers.
             let ends = kind != Some(NodeKind::Input) || key.modifiers.ctrl;
+            // (keyboard) Space pages a focused list; in an `input` it is text.
+            let spaced = matches!(key.name.as_str(), "space" | "KP_Space")
+                && kind == Some(NodeKind::List)
+                && !key.modifiers.ctrl
+                && !key.modifiers.alt
+                && !key.modifiers.logo;
             let to = match key.name.as_str() {
+                _ if spaced && key.modifiers.shift => {
+                    Some(cur.map_or(w.first, |i| i.saturating_sub(page)))
+                }
+                _ if spaced => Some(cur.map_or(w.first, |i| i.saturating_add(page).min(last))),
                 "Down" | "KP_Down" if !shape.horizontal => {
                     Some(shape.line(cur, w.first, last, true))
                 }
@@ -2771,20 +2848,28 @@ impl Router {
     }
 
     /// (keyboard) Return or space on focused `node`: as a click on it, its
-    /// row in a `list` selected and activated too.
+    /// row in a `list` selected and activated too. On the row itself, just what
+    /// a pointer's click there does: its click, then the row's `on activate` or
+    /// the list's.
     fn press(&mut self, scene: &mut dyn InputScene, node: NodeId) {
-        self.event(node, NodeEvent::Press);
         let row = scene.tree().and_then(|t| {
             let mut chain = ancestors(t, node);
             chain.insert(0, node);
             list_row(Some(t), &chain)
         });
+        let on_row = row.is_some_and(|(_, row)| row == node);
+        self.event(
+            node,
+            if on_row {
+                NodeEvent::Click
+            } else {
+                NodeEvent::Press
+            },
+        );
         if let Some((list, row)) = row {
             self.moved.insert(list);
             self.select(scene, list, Some(row));
-            if row != node {
-                self.event(row, NodeEvent::Activate);
-            }
+            self.event(row, NodeEvent::Activate);
         }
     }
 
@@ -3217,6 +3302,37 @@ fn focusable(n: &crate::tree::Node) -> bool {
     !no_hit(n) && (focusable_by_kind(n.kind) || focus_written(n))
 }
 
+/// (keyboard) Whether focus can stay on `node` under `root`: the surface always
+/// can, and what is alive, takes input, and is not at `opacity: 0` with
+/// everything around it shown.
+fn holds_focus(tree: &SceneTree, root: NodeId, node: NodeId) -> bool {
+    if node == root {
+        return true;
+    }
+    if !tree.contains_live(node) || tree.get(node).is_none_or(no_hit) {
+        return false;
+    }
+    let mut cur = Some(node);
+    while let Some(id) = cur {
+        let Some(n) = tree.get(id) else {
+            return false;
+        };
+        if hidden(n) {
+            return false;
+        }
+        if id == root {
+            break;
+        }
+        cur = n.parent;
+    }
+    true
+}
+
+/// (keyboard) `opacity: 0`: not drawn and not hit, its subtree with it.
+fn hidden(n: &crate::tree::Node) -> bool {
+    matches!(n.get(Prop::Opacity), Some(PropValue::Number(o)) if *o <= 0.0)
+}
+
 /// (keyboard) Whether a click on `n` always focuses it: a `button`, `slider`
 /// or `segmented` with no `focus:` does so only when nothing holds the keys.
 fn claims_click_focus(n: &crate::tree::Node) -> bool {
@@ -3225,27 +3341,28 @@ fn claims_click_focus(n: &crate::tree::Node) -> bool {
 
 /// (keyboard) The nodes under `root` keys can focus, in tree order. Nested
 /// surfaces (popups) are their own, and what is not shown is skipped: a node
-/// leaving or at `opacity: 0`, its subtree with it (spec.md 6.7). `keep` is
-/// listed too, focusable or not, so a walk goes on from it; with `sealed`,
-/// what is inside another container with `arrows:` is left out.
+/// leaving or at `opacity: 0`, its subtree with it (spec.md 6.7). A `list` is
+/// one stop: what is in its rows is one only with a `focus:` written. `keep`
+/// is listed too, focusable, shown or not, so a walk goes on from it; with
+/// `sealed`, what is inside another container with `arrows:` is left out.
 fn focusables(tree: &SceneTree, root: NodeId, keep: NodeId, sealed: bool) -> Vec<NodeId> {
     let mut all = Vec::new();
-    let mut stack = vec![root];
-    while let Some(id) = stack.pop() {
+    let mut stack = vec![(root, false, false)];
+    while let Some((id, was_hidden, in_list)) = stack.pop() {
         let Some(n) = tree.get(id) else { continue };
         if id != root && (n.kind.is_surface() || !tree.contains_live(id)) {
             continue;
         }
-        if matches!(n.get(Prop::Opacity), Some(PropValue::Number(o)) if *o <= 0.0) {
-            continue;
-        }
-        if id == keep || (id != root && focusable(n)) {
+        let is_hidden = was_hidden || hidden(n);
+        let stops = id != root && !is_hidden && focusable(n) && (!in_list || focus_written(n));
+        if id == keep || stops {
             all.push(id);
         }
         if sealed && id != root && arrows_of(n).is_some() {
             continue;
         }
-        stack.extend(n.children.iter().rev());
+        let in_list = in_list || n.kind == NodeKind::List;
+        stack.extend(n.children.iter().rev().map(|c| (*c, is_hidden, in_list)));
     }
     all
 }
@@ -3303,7 +3420,7 @@ fn arrows_of(n: &crate::tree::Node) -> Option<bool> {
 /// (keyboard) Whether focused `node` uses arrow `dir` itself, so `arrows:`
 /// around it does not get it: an `input`'s caret, or its `nav` list's rows,
 /// a `list`, a `slider` and a `segmented` bound two-way, and a `scroll` along
-/// the way it runs.
+/// the way it runs, with Up and Down on one along x too ([`scroll_key`]).
 fn arrow_is_its_own(tree: &SceneTree, node: NodeId, nav: bool, dir: Dir) -> bool {
     let Some(n) = tree.get(node) else {
         return false;
@@ -3313,7 +3430,7 @@ fn arrow_is_its_own(tree: &SceneTree, node: NodeId, nav: bool, dir: Dir) -> bool
         NodeKind::List => true,
         NodeKind::Slider => value_two_way(Some(tree), node),
         NodeKind::Segmented => dir.sideways() && value_two_way(Some(tree), node),
-        NodeKind::Scroll => crate::layout::scroll_axes(n)[usize::from(!dir.sideways())],
+        NodeKind::Scroll => !dir.sideways() || crate::layout::scroll_axes(n)[0],
         _ => false,
     }
 }
@@ -3416,6 +3533,7 @@ fn scroll_key(scene: &mut dyn InputScene, node: NodeId, key: &KeyInput) -> bool 
         "Right" | "KP_Right" if axes[0] => by(0.0, KEY_SCROLL_STEP),
         "Page_Up" | "Prior" | "KP_Page_Up" | "KP_Prior" => ScrollMove::Pages(-1.0),
         "Page_Down" | "Next" | "KP_Page_Down" | "KP_Next" => ScrollMove::Pages(1.0),
+        "space" | "KP_Space" => ScrollMove::Pages(if key.modifiers.shift { -1.0 } else { 1.0 }),
         "Home" | "KP_Home" => ScrollMove::To {
             y: Some(0.0),
             x: None,

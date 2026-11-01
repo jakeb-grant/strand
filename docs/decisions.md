@@ -14948,7 +14948,7 @@ leave the nearest `arrows:` nor enter another inside it, as a way in with no way
 `list_asks` became `asks`, of `NodeAsk`, since order across lists, focus and scrolls is what the asks are for. Return
 or space goes to logic as one event (`NodeEvent::Press`), since only logic knows whether a node has an active `on
 activate`; a repeat fires nothing, as a held key is not many clicks; a node in a list's row also selects and activates
-the row, as a pointer does. A focused `list` keeps its own keys, so space there stays nothing. `scroll_to` and
+the row, as a pointer does. A focused `list` keeps its own keys, and space pages it (below). `scroll_to` and
 `scroll_by` take `y` and `x` by name or place, a lone `y` going along x on a scroll that runs only that way, which is
 how the wheel reads it and saves a third pair of names. A position or a reveal waits for the layout of the diff that
 asked, as what it reads may be what that diff mounted; a size still springing there is not waited for, so reveal
@@ -14987,3 +14987,22 @@ pending, after a finished or cancelled sequence included, is an ordinary key. Th
 Escape only. Swapping the depressed, latched and locked masks can't be seen in a key's text, since xkb reads their
 effective sum, so `levels_layouts_and_chords_type_as_ever_with_a_table_loaded` catches masks put in the wrong place
 against the layout (seen failing with the depressed mask and the group swapped).
+
+(2026-11-01, piece 4's review) What the review of focus decided. Focus on a node no longer shown or hittable moves as Tab
+would next, or to the surface when it is closing or nothing else can take it, and `focused` clears, for `input` and `list`
+as for the rest. It moves when the diff applies and not at the next key, so `when focused` follows at once and a key finds
+the new place; a Return right after a button hides itself therefore presses the node focus landed on, which shows as
+focused, the same as after a Tab. The move reveals nothing, since a fade is no reason to scroll. The router remembers the
+node and gives focus back when it shows again, unless focus moved on meanwhile: without that a launcher opened again
+mid-fade would stop typing, its `focus: true` having never turned. A `list` is one Tab stop and what is in its rows is one
+only with `focus:` written, an `input` in a row included, so a list of 50 row buttons no longer stands between two fields.
+A press on a `button`, `slider` or `segmented` before the keyboard comes does not beat `focus: true` when it does; focus
+held with the keyboard, back from a popup that grabbed it, still stays. Return on a focused row is what a pointer's click
+there is, its click and then one `Activate`, the list's handler included. A scroll move waiting for a layout is held as the
+last per node and kind, so a `scroll_by` waiting on a closed popup holds its last and not their sum, with 64 per surface.
+Up and Down are always a focused `scroll`'s own, as `scroll_key` takes them. Space and Shift+space page a focused `scroll`
+or `list`, whether or not there is anywhere to go, so space never falls through to a click around it. A known limit: a
+slider or segmented key write that logic rejects sends no answer, so `ValueFlight` keeps the unshown value until
+`EDIT_IN_FLIGHT` (500 ms) and further keys build on it. No diff can stand in for an answer, since one already on its way when
+the write was sent looks the same, and clearing on it would lose the queued keys the flight is for. It takes an
+acknowledgement from logic to render that does not exist; a typed `input` has the same limit.

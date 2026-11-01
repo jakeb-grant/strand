@@ -1279,10 +1279,16 @@ monitor, the keyboard always).
   move focus between the surface's focusable nodes in tree order, round from
   the last to the first, skipping `hit: none` and those not shown (at
   `opacity: 0`, theirs or an ancestor's, or playing their exit pose, as a
-  page going away does). A left press focuses the `input`, `list` or node with
+  page going away does). A `list` is one stop: what is in its rows is one only
+  with a `focus:` written. Focus on a node that stops being shown or taking
+  input moves on as Tab would, or to the surface on one closing or with
+  nothing else, so a key neither presses it nor types in it; it comes back when
+  the node shows again, unless focus moved on meanwhile. A left press focuses the `input`, `list` or node with
   a `focus:` under it, or else a `button`, `slider` or `segmented` under it
   unless an `input` or `list` has focus, which keeps the keys: a launcher's
-  button runs and the typing stays in the field. Tab is a default that a claim
+  button runs and the typing stays in the field. A press before the keyboard
+  comes, on one of those three, does not beat a `focus: true` when it does. Tab
+  is a default that a claim
   takes over: `on key "tab" { … }` on the focused node or one around it runs
   and focus stays (it moves focus itself with `focus:`). An `on key(k)` only
   hears Tab, and focus moves. Ctrl, Alt or Super held leave Tab alone. A
@@ -1294,9 +1300,12 @@ monitor, the keyboard always).
   Alt or Super held leave them alone.
   - Return or space on a focused node runs its own `on activate` if it has an
     active one, else `on click`, which goes outward as a pointer's does; on a
-    node in a `list`'s row the row is selected and its `on activate` runs too.
-    A repeat does nothing: holding it is not many clicks. An `input` and a
-    `list` have their own Return, and the surface itself has none.
+    node in a `list`'s row the row is selected and its `on activate` runs too,
+    and on the row itself its `on click` and then `on activate`, the list's if
+    it has none, as a pointer's click there. A repeat does nothing: holding it is not many clicks. An `input` and a
+    `list` have their own Return, and the surface itself has none. Space and
+    Shift+space page a focused `scroll` or `list` forward and back, as the Page
+    keys do, repeating, and go to no click.
   - A `slider` bound two-way: Left and Down step down, Right and Up step up,
     Page keys ten steps, Home and End go to the ends. A step is its `step:`,
     else a hundredth of its `range`. It writes as a drag does, the decimal the

@@ -4600,3 +4600,164 @@ fn a_reveal_asked_before_its_surface_shows_runs_when_it_does() {
     r.paint(s, &mut t);
     assert_eq!(r.scroll_offset(scroll), Some(220.0), "and drawn there");
 }
+
+/// A surface closing keeps nothing else lit while it goes: focus leaving a node
+/// that fades as it closes goes to the surface, not on to a sibling.
+#[test]
+fn focus_fading_on_a_closing_surface_goes_to_the_surface() {
+    use strand_scene::SceneDiff;
+    let (mut f, mut r, s, button, boxed) = focus_panel();
+    let panel = NodeId::new(0, 0);
+    let mut d = SceneDiff::new();
+    d.asks = vec![(button, strand_scene::NodeAsk::Focus)];
+    f.router.observe(&d);
+    assert!(r.apply(d).is_empty());
+    f.router.settle(&mut r);
+    assert_eq!(f.router.focused(s), Some(button));
+    let mut d = SceneDiff::new();
+    d.set(button, Prop::Opacity, PropValue::Number(0.0)).set(
+        panel,
+        Prop::Open,
+        PropValue::Bool(false),
+    );
+    f.router.observe(&d);
+    assert!(r.apply(d).is_empty());
+    f.router.settle(&mut r);
+    assert_eq!(f.router.focused(s), Some(panel));
+    assert_ne!(f.router.focused(s), Some(boxed));
+}
+
+/// Two hidden panels with a scroll over a tall child each; the scrolls and the
+/// last child of the second.
+fn two_hidden_scrolls() -> (Renderer, NodeId, NodeId, NodeId) {
+    use strand_scene::{NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let mut d = SceneDiff::new();
+    for at in [0, 10] {
+        let (panel, scroll, col) = (id(at), id(at + 1), id(at + 2));
+        d.create(panel, NodeKind::Panel, None, 0)
+            .set(panel, Prop::Width, PropValue::Number(100.0))
+            .set(panel, Prop::Height, PropValue::Number(100.0))
+            .set(panel, Prop::Open, PropValue::Bool(true))
+            .create(scroll, NodeKind::Scroll, Some(panel), 0)
+            .set(scroll, Prop::Height, PropValue::Number(100.0))
+            .create(col, NodeKind::Col, Some(scroll), 0)
+            .create(id(at + 3), NodeKind::Box, Some(col), 0)
+            .set(id(at + 3), Prop::Height, PropValue::Number(300.0))
+            .create(id(at + 4), NodeKind::Box, Some(col), 1)
+            .set(id(at + 4), Prop::Height, PropValue::Number(20.0));
+    }
+    assert!(r.apply(d).is_empty());
+    (r, id(1), id(11), id(14))
+}
+
+fn show(r: &mut Renderer, surface: u32, root: NodeId) {
+    let s = SurfaceId(surface);
+    r.attach_surface(s, root);
+    let mut px = vec![0u8; 100 * 100 * 4];
+    let mut t = PaintTarget::new(&mut px, Size::new(100, 100), 400, Scale::ONE, 0).unwrap();
+    r.paint(s, &mut t);
+}
+
+/// A timer moving a closed popup's scroll holds its last move, and takes no
+/// other surface's reveal with it.
+#[test]
+fn a_timer_on_a_hidden_scroll_holds_one_move_and_evicts_no_reveal() {
+    use strand_render::ScrollMove;
+    let (mut r, a, b, end) = two_hidden_scrolls();
+    r.scroll_move(end, ScrollMove::Reveal);
+    for _ in 0..200 {
+        r.scroll_move(
+            a,
+            ScrollMove::By {
+                dy: Some(10.0),
+                dx: None,
+            },
+        );
+    }
+    show(&mut r, 2, NodeId::new(10, 0));
+    assert_eq!(
+        r.scroll_state(b).unwrap().target(),
+        220.0,
+        "the reveal stood"
+    );
+    show(&mut r, 1, NodeId::new(0, 0));
+    assert_eq!(r.scroll_state(a).unwrap().target(), 10.0, "its last alone");
+}
+
+/// Kinds are held apart: a reveal is not replaced by a move after it.
+#[test]
+fn a_node_holds_its_last_move_of_each_kind() {
+    use strand_render::ScrollMove;
+    let (mut r, _, b, _) = two_hidden_scrolls();
+    r.scroll_move(
+        b,
+        ScrollMove::To {
+            y: Some(5.0),
+            x: None,
+        },
+    );
+    r.scroll_move(
+        b,
+        ScrollMove::To {
+            y: Some(50.0),
+            x: None,
+        },
+    );
+    r.scroll_move(
+        b,
+        ScrollMove::By {
+            dy: Some(7.0),
+            dx: None,
+        },
+    );
+    show(&mut r, 2, NodeId::new(10, 0));
+    assert_eq!(r.scroll_state(b).unwrap().target(), 57.0);
+}
+
+/// More nodes waiting than a surface holds: its oldest goes, its newest stays.
+#[test]
+fn a_surface_holds_a_bounded_number_of_moves() {
+    use strand_render::ScrollMove;
+    use strand_scene::{NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let id = |i| NodeId::new(i, 0);
+    let (panel, col) = (id(0), id(1));
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Width, PropValue::Number(100.0))
+        .set(panel, Prop::Height, PropValue::Number(100.0))
+        .set(panel, Prop::Open, PropValue::Bool(true))
+        .create(col, NodeKind::Col, Some(panel), 0);
+    let scrolls: Vec<NodeId> = (0..70).map(|i| id(10 + 2 * i)).collect();
+    for (i, s) in scrolls.iter().enumerate() {
+        let inner = id(11 + 2 * i as u32);
+        d.create(*s, NodeKind::Scroll, Some(col), i as u32)
+            .set(*s, Prop::Height, PropValue::Number(1.0))
+            .create(inner, NodeKind::Box, Some(*s), 0)
+            .set(inner, Prop::Height, PropValue::Number(50.0));
+    }
+    assert!(r.apply(d).is_empty());
+    for s in &scrolls {
+        r.scroll_move(
+            *s,
+            ScrollMove::To {
+                y: Some(10.0),
+                x: None,
+            },
+        );
+    }
+    show(&mut r, 1, panel);
+    let target = |r: &Renderer, s: NodeId| r.scroll_state(s).map_or(0.0, |st| st.target());
+    assert_eq!(target(&r, scrolls[0]), 0.0, "the oldest went");
+    assert_eq!(target(&r, scrolls[69]), 10.0, "the newest stayed");
+}
