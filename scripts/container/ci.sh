@@ -152,6 +152,7 @@ step "scripts/release/test-publish.sh" 5 scripts/release/test-publish.sh
 step "scripts/container/test-gpu-measure.sh" 5 scripts/container/test-gpu-measure.sh
 step "scripts/test-size-report.sh" 5 scripts/test-size-report.sh
 step "scripts/container/test-tests-ran.sh" 5 scripts/container/test-tests-ran.sh
+step "scripts/container/test-build-script-index.sh" 5 scripts/container/test-build-script-index.sh
 step "scripts/container/test-affected.sh" 5 scripts/container/test-affected.sh
 step "scripts/container/test-prune-rust-caches.sh" 5 scripts/container/test-prune-rust-caches.sh
 step "scripts/container/test-check-path-filters.sh" 5 scripts/container/test-check-path-filters.sh
@@ -176,6 +177,10 @@ job=budgets
 # M5's size ledger: the .text gate test adds each build's half here, and
 # ledger.sh prints the line after the job.
 export STRAND_LEDGER_FILE=$LOGS/ledger
+# The three test binaries and `strand` in one build, so they link side by
+# side (decisions.md ci-speed-2).
+step "cargo test --release -p strand --test demo --test services --test budgets --no-run" 60 \
+  cargo test --release -p strand --test demo --test services --test budgets --no-run
 step "cargo test --release -p strand --test demo" 60 \
   cargo test --release -p strand --test demo
 step "cargo test --release -p strand --test services" 60 \

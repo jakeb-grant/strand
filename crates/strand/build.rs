@@ -18,8 +18,17 @@ fn main() {
     let commit = git(&["rev-parse", "HEAD"]).filter(|c| !c.is_empty());
     let value = match &commit {
         Some(c) => {
-            let dirty = git(&["status", "--porcelain", "--untracked-files=no"])
-                .is_some_and(|s| !s.is_empty());
+            // `--no-optional-locks`: a plain `status` writes a refreshed
+            // index, and the index is watched below, so on a fresh checkout
+            // the next cargo command built `strand` again (decisions.md
+            // ci-speed-2).
+            let dirty = git(&[
+                "--no-optional-locks",
+                "status",
+                "--porcelain",
+                "--untracked-files=no",
+            ])
+            .is_some_and(|s| !s.is_empty());
             if dirty {
                 format!("{c}-dirty")
             } else {

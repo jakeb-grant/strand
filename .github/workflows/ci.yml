@@ -159,7 +159,9 @@ jobs:
       # gates), check-tree-sitter.sh, the budgets ledger line and the static
       # checks of the owner-only gpu-measure.sh (never run here),
       # size-report.sh's crate attribution, tests-ran.sh (a filtered
-      # test step that runs no test fails), affected.sh's choice of
+      # test step that runs no test fails), strand's build script leaving
+      # git's index alone (its write made the next step rebuild the
+      # binary), affected.sh's choice of
       # crates (the laptop's inner loop, CLAUDE.md), prune-rust-caches.sh
       # (the nightly cache pruning) and check-path-filters.sh, which then holds the lock-vm and package
       # jobs' path filters to the tree: an entry naming a moved file would
@@ -172,6 +174,7 @@ jobs:
       - run: scripts/container/run.sh scripts/container/test-gpu-measure.sh
       - run: scripts/container/run.sh scripts/test-size-report.sh
       - run: scripts/container/run.sh scripts/container/test-tests-ran.sh
+      - run: scripts/container/run.sh scripts/container/test-build-script-index.sh
       - run: scripts/container/run.sh scripts/container/test-affected.sh
       - run: scripts/container/run.sh scripts/container/test-prune-rust-caches.sh
       - run: scripts/container/run.sh scripts/container/test-check-path-filters.sh
@@ -238,6 +241,10 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           cache-key: release
+      # The three test binaries and `strand` in one build, so they link side
+      # by side; the shipped binary's fat LTO link happens once (decisions.md
+      # ci-speed-2).
+      - run: scripts/container/run.sh cargo test --release -p strand --test demo --test services --test budgets --no-run
       # The bar's PSS budget (42 MB target warns, 48 MB ceiling fails, GPU cold: no render node, no software adapter accepted, decisions.md gpu-first) is checked on a release build (design.md, "Testing": budgets).
       - run: scripts/container/run.sh cargo test --release -p strand --test demo
       # The same gate and the idle budget on the real services (private
