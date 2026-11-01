@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # CI's image and image-publish jobs (.github/workflows/ci.yml): publishes
 # scripts/container/Dockerfile under its hash tag (image.sh --ref), once.
-# A published tag is not written again: nothing here pushes unless the
-# registry has just said the tag is absent, asked before the build and again
-# after it, since a run on another ref may have published meanwhile. This
-# script is the only guard, as GHCR has no immutable tags and whoever can push
-# a branch runs that branch's copy of it (they could edit the workflow as
-# well). The laptop never runs this.
+# Nothing here pushes unless the registry has just said the tag is absent,
+# asked before the build and again after it, since a run on another ref may
+# have published meanwhile. The second answer and the push aren't atomic, so
+# two refs publishing one new Dockerfile inside that window both push: the
+# last wins, jobs under that hash may run on either image, and the two differ
+# only if the apt archive moved between their builds. This script is the only
+# guard, as GHCR has no immutable tags and whoever can push a branch runs that
+# branch's copy of it (they could edit the workflow as well). The laptop never
+# runs this.
 #
 # Usage: publish-image.sh missing  prints true unless the tag is there, for
 #                                  the image job, which has no registry login
@@ -53,7 +56,7 @@ case "${1:-}" in
     docker push "$REF"
     ;;
   *)
-    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
     ;;
 esac

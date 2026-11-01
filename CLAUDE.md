@@ -76,7 +76,7 @@ scripts/container/lockvm.sh <cmd>  # a command in the lock VM (KVM); CI's lock-v
   PipeWire, lavapipe, libpam0g-dev, Rust 1.97.0), lavapipe the only Vulkan
   driver in it, published at `ghcr.io/jakeb-grant/strand-ci:<Dockerfile
   hash>` by CI's `image-publish` job and frozen there: `publish-image.sh`
-  won't write a tag that exists (the registry itself doesn't enforce it), and
+  won't write a tag it finds there (the registry itself doesn't enforce it), and
   nothing is pushed from a laptop. `run.sh` pulls that tag and builds locally
   only when it can't be pulled (`image.sh`; on GitHub only when the registry
   says the tag is absent, any other failed pull failing the job); a local
@@ -99,8 +99,9 @@ scripts/container/lockvm.sh <cmd>  # a command in the lock VM (KVM); CI's lock-v
   unless `STRAND_STRICT_GPU=1`. `lockvm.sh` boots the lock VM
   (`Dockerfile.lockvm`, only `/dev/kvm` passed in) and runs a command in
   the guest; `LOCKVM_TCG=1` emulates without KVM.
-- `ci` treats the wall-clock gates in the timing steps (theme_swap_bench,
-  reload_latency, list_scroll_bench) as advisory: when every failure in a step is a gate
+- `ci` treats the wall-clock gates in the timing job's seven steps
+  (theme_swap_bench, reload_latency, list_scroll_bench, motion, morph,
+  anim_bench, the compiler's theme swap) as advisory: when every failure in a step is a gate
   miss (a panic starting "timing gate missed", `gate-misses.sh`), it
   prints WARN with its numbers and the run goes on; any other failure in
   those steps fails. GitHub's `timing` job enforces the gates.

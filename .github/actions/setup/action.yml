@@ -71,8 +71,15 @@ runs:
       with:
         toolchain: 1.97.0
         components: ${{ inputs.tier == 'headers' && 'rustfmt, clippy' || '' }}
+    # The image's hash goes into the key's env hash: cargo's fingerprint
+    # doesn't cover the C compiler or the system headers, so without it a new
+    # image would keep the old one's C objects and bindgen output in the gates
+    # and the archive until a manifest changed (decisions.md ci-speed-2).
     - uses: Swatinem/rust-cache@v2
+      env:
+        STRAND_CI_IMAGE: ${{ inputs.tier == 'image' && hashFiles('scripts/container/Dockerfile') || '' }}
       with:
         shared-key: ${{ inputs.cache-key }}
+        env-vars: STRAND_CI_IMAGE
         workspaces: ${{ inputs.tier == 'image' && '. -> target/container' || '. -> target' }}
         save-if: ${{ inputs.cache-save }}

@@ -158,6 +158,8 @@ step "scripts/container/test-prune-rust-caches.sh" 5 scripts/container/test-prun
 step "scripts/container/test-check-path-filters.sh" 5 scripts/container/test-check-path-filters.sh
 step "scripts/container/check-path-filters.sh" 1 scripts/container/check-path-filters.sh
 step "scripts/container/test-image.sh" 5 scripts/container/test-image.sh
+# ci.yml's lint ends with test-run-env.sh, which has no step here: it needs a
+# real docker and ci.yml's env on the runner, and this runs inside the image.
 
 job=test
 step "cargo test -p strand-services --no-default-features --lib" 60 \
@@ -188,7 +190,7 @@ step "cargo test --release -p strand --test services" 60 \
 step "cargo test --release -p strand --test budgets" 60 \
   cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
 step "cargo test --release -p strand --no-default-features --test budgets (.text gate)" 60 \
-  cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
+  scripts/container/tests-ran.sh cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
 step "size ledger" 1 scripts/container/ledger.sh "$STRAND_LEDGER_FILE"
 
 job=acceptance
@@ -208,13 +210,13 @@ timing_step "reload_latency (--profile timing, STRAND_LATENCY_ROUNDS=$ROUNDS)" 6
 timing_step "cargo test --profile timing -p strand-render --test list_scroll_bench" 30 \
   cargo test --profile timing -p strand-render --test list_scroll_bench -- --nocapture
 timing_step "cargo test --profile timing -p strand-render --test motion (frame time)" 30 \
-  cargo test --profile timing -p strand-render --test motion animated_frames_fit_the_refresh_budget -- --nocapture
+  scripts/container/tests-ran.sh cargo test --profile timing -p strand-render --test motion animated_frames_fit_the_refresh_budget -- --nocapture
 timing_step "cargo test --profile timing -p strand-render --test morph (island card frame time)" 30 \
-  cargo test --profile timing -p strand-render --test morph the_island_card_swells_within_the_frame_budget -- --nocapture
+  scripts/container/tests-ran.sh cargo test --profile timing -p strand-render --test morph the_island_card_swells_within_the_frame_budget -- --nocapture
 timing_step "cargo test --profile timing -p strand-render --test anim_bench (animated CPU frames)" 30 \
-  cargo test --profile timing -p strand-render --test anim_bench animated_cpu_frames_hold_their_gates -- --nocapture --test-threads=1
+  scripts/container/tests-ran.sh cargo test --profile timing -p strand-render --test anim_bench animated_cpu_frames_hold_their_gates -- --nocapture --test-threads=1
 timing_step "cargo test --profile timing -p strand-compiler --test theme (theme swap logic)" 30 \
-  cargo test --profile timing -p strand-compiler --test theme a_theme_swap_is_under_five_milliseconds_of_logic -- --nocapture
+  scripts/container/tests-ran.sh cargo test --profile timing -p strand-compiler --test theme a_theme_swap_is_under_five_milliseconds_of_logic -- --nocapture
 
 # The animation evaluation sandbox (eval/, docs/eval.md): its own
 # workspace, so its steps are scripts/eval/ci.sh's 1 to 7 (fmt, clippy,

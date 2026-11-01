@@ -30,8 +30,10 @@ on:
           (scripts/eval/repeat.sh; 1 runs the matrix once, as nightly)
         default: "1"
 
-# As ci.yml, whatever the repository's default token setting becomes.
-permissions: read-all
+# As ci.yml, whatever the repository's default token setting becomes: all
+# this workflow uses is the checkout.
+permissions:
+  contents: read
 
 # As ci.yml: the GPU leg runs on lavapipe and fails without it. The jobs
 # run in the CI image, through run.sh; this workflow publishes nothing, so

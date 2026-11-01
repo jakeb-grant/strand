@@ -15,17 +15,20 @@ on:
 # a shared group, even with cancel-in-progress off, runs one at a time and
 # replaces a pending run with the next. Of the job-level groups, deploy's and
 # release's run one at a time and replace a job waiting there with a newer
-# one, which is what they are for; image-publish's can only drop a run that
-# is being superseded, said at that job (decisions.md ci-speed-2).
+# one, which is what they are for; image-publish's can drop a third run of a
+# branch that publishes a new Dockerfile, said at that job (decisions.md
+# ci-speed-2).
 concurrency:
   group: ${{ ((github.event_name == 'push' && github.ref_type == 'branch' && github.ref != 'refs/heads/main') || github.event_name == 'pull_request') && format('ci-{0}', github.ref) || format('ci-run-{0}', github.run_id) }}
   cancel-in-progress: ${{ (github.event_name == 'push' && github.ref_type == 'branch' && github.ref != 'refs/heads/main') || github.event_name == 'pull_request' }}
 
-# What the repository's default gives today, written here so that changing
-# that setting can't hand every job, test code included, a token that writes.
-# The three jobs that write name their own scopes: image-publish, release and
-# prune-caches.
-permissions: read-all
+# All the check jobs use: the checkout, and paths-filter's list of a pull
+# request's files. Written here so that changing the repository's default can't
+# hand every job, test code included, a token that writes. The three jobs that
+# write name their own scopes: image-publish, release and prune-caches.
+permissions:
+  contents: read
+  pull-requests: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -62,15 +65,19 @@ env:
 jobs:
   # The CI image, one for these jobs and the laptop: scripts/container/
   # Dockerfile at ghcr.io/jakeb-grant/strand-ci:<its hash>, published the
-  # first time a run needs it and not written again (decisions.md ci-speed-2).
+  # first time a run needs it (decisions.md ci-speed-2; publish-image.sh says
+  # what can write a tag twice).
   # `image` looks, with no registry login; `image-publish` is the only job
   # that may write to packages, and always runs, so the jobs after it need no
   # special `if`. A branch's runs that will publish share a group, by branch: a
   # push and its pull request start together with one new Dockerfile, and one
   # waits for the other, then finds the tag. GitHub keeps only the newest job
-  # waiting in a group, so a third run there replaces the second; but a third
-  # takes a new push or a reopened pull request, and the workflow's group above
-  # is already cancelling what it replaces. Every other run is alone in its
+  # waiting in a group, so a third run there replaces the second. A third
+  # usually takes a new push or a reopened pull request, which the workflow's
+  # group above is already cancelling; but two pull requests from one branch to
+  # different bases have groups of their own there and share this one, so the
+  # middle run's job is cancelled with nothing superseding it. That run shows as
+  # cancelled, not green, and a re-run passes. Every other run is alone in its
   # group here and nothing can cancel it: main, a tag, schedule and dispatch
   # may publish side by side with another ref, publish-image.sh asking the
   # registry before its build and again before its push.
@@ -109,6 +116,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         if: needs.image.outputs.publish == 'true'
+        with:
+          persist-credentials: false
       - name: Publish the image
         if: needs.image.outputs.publish == 'true'
         env:
@@ -242,8 +251,8 @@ jobs:
         with:
           cache-key: release
       # The three test binaries and `strand` in one build, so they link side
-      # by side; the shipped binary's fat LTO link happens once (decisions.md
-      # ci-speed-2).
+      # by side; the gated binary's fat LTO link happens once. The package job
+      # builds another program with other features (decisions.md ci-speed-2).
       - run: scripts/container/run.sh cargo test --release -p strand --test demo --test services --test budgets --no-run
       # The bar's PSS budget (42 MB target warns, 48 MB ceiling fails, GPU cold: no render node, no software adapter accepted, decisions.md gpu-first) is checked on a release build (design.md, "Testing": budgets).
       - run: scripts/container/run.sh cargo test --release -p strand --test demo
@@ -269,7 +278,7 @@ jobs:
       # backend's is 29,097,984 B), both re-based on wave-cost's
       # tree with a 512 KiB reserve (decisions.md growth, services-round, wave-cost;
       # docs/architecture.md, "`strand-gpu`").
-      - run: scripts/container/run.sh cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
+      - run: scripts/container/run.sh scripts/container/tests-ran.sh cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
         env:
           STRAND_LEDGER_FILE: ${{ runner.temp }}/ledger
       # M5's size ledger line (scripts/container/ledger.sh):
@@ -340,21 +349,21 @@ jobs:
       # The launcher's enter and a toast's exit: every frame within a
       # 60 Hz refresh and the median within half of it, on an optimised
       # build (features.md, M2's motion box).
-      - run: scripts/container/run.sh cargo test --profile timing -p strand-render --test motion animated_frames_fit_the_refresh_budget -- --nocapture
+      - run: scripts/container/run.sh scripts/container/tests-ran.sh cargo test --profile timing -p strand-render --test motion animated_frames_fit_the_refresh_budget -- --nocapture
       # The owner's notch card (1470 × 708 at scale 1.5) swelling and
       # folding: the median frame within half a 60 Hz refresh and every
       # frame within one, on an optimised build (owner-testing.md bug 17).
-      - run: scripts/container/run.sh cargo test --profile timing -p strand-render --test morph the_island_card_swells_within_the_frame_budget -- --nocapture
+      - run: scripts/container/run.sh scripts/container/tests-ran.sh cargo test --profile timing -p strand-render --test morph the_island_card_swells_within_the_frame_budget -- --nocapture
       # The animation review's CPU wins (decisions.md perf-gates): the
       # cover's mask, the transformed gradients of a shared morph and a
       # staggered grid, a list scrolled and a palette spring, each run's
       # median frame within a 120 Hz refresh and its p95 within a 60 Hz
       # one, and where the win was the encoding, its mean within 1 ms.
-      - run: scripts/container/run.sh cargo test --profile timing -p strand-render --test anim_bench animated_cpu_frames_hold_their_gates -- --nocapture --test-threads=1
+      - run: scripts/container/run.sh scripts/container/tests-ran.sh cargo test --profile timing -p strand-render --test anim_bench animated_cpu_frames_hold_their_gates -- --nocapture --test-threads=1
       # The logic side of a theme swap (design.md's theme.strand, from
       # the write of `theme.look` to `SetTokens`) within design.md's
       # 5 ms by the median of 15 swaps, on an optimised build.
-      - run: scripts/container/run.sh cargo test --profile timing -p strand-compiler --test theme a_theme_swap_is_under_five_milliseconds_of_logic -- --nocapture
+      - run: scripts/container/run.sh scripts/container/tests-ran.sh cargo test --profile timing -p strand-compiler --test theme a_theme_swap_is_under_five_milliseconds_of_logic -- --nocapture
 
   # The animation evaluation sandbox (eval/, docs/eval.md): its own Cargo
   # workspace, so none of the jobs above builds it. scripts/eval/ci.sh's
@@ -740,9 +749,11 @@ jobs:
   # artifact; edge-<commit> names it, or the version on a tag.
   # On a push to main, a tag and a dispatch it always runs, and deploy
   # and release run only there, so they always have its real output. On
-  # other branch pushes and on pull requests it runs when its inputs
-  # changed, passing with nothing done otherwise (the same shape as
-  # lock-vm; decisions.md ci-speed-2).
+  # other branch pushes and on pull requests it runs when anything that
+  # goes into the archive changed, all source included, since main moves on
+  # what the branch's run proved; it passes with nothing done otherwise,
+  # for a change only to docs, the site or other scripts (the same shape
+  # as lock-vm; decisions.md ci-speed-2).
   package:
     needs: image-publish
     if: github.event_name != 'schedule'
@@ -776,30 +787,20 @@ jobs:
               # publish.sh, licenses.py, about.toml and the installer.
               - 'scripts/release/**'
               - 'scripts/install.sh'
-              # What the build resolves and what cargo-about reads:
-              # both workspaces' locks and every manifest.
+              # What the build resolves and what cargo-about reads.
               - 'Cargo.lock'
               - 'Cargo.toml'
-              - 'crates/**/Cargo.toml'
-              - 'eval/Cargo.lock'
-              - 'eval/Cargo.toml'
+              # Every source of the four programs and of what test-install.sh
+              # runs in the installed tree: a compiler change can make `strand
+              # check` reject its config, any source can raise the glibc floor
+              # or warn only in release.
+              - 'crates/**'
+              - 'eval/**'
               # The archive's own files.
               - 'LICENSE-APACHE'
               - 'LICENSE-MIT'
-              # `strand --version` and its channel (entry.rs, build.rs).
-              - 'crates/strand/build.rs'
-              - 'crates/strand/src/main.rs'
-              - 'crates/strand/src/entry.rs'
-              # What test-install.sh runs in the installed tree: `strand
-              # new` and its template, `strand check` finding the lock's
-              # helper beside it, `strand replay` finding strand-eval,
-              # `strand-dev --version`.
-              - 'crates/strand/src/new.rs'
+              # `strand new`'s template, compiled in from outside crates/.
               - 'docs/guide/template/bar.strand'
-              - 'crates/strand/src/check.rs'
-              - 'crates/strand-auth/src/client.rs'
-              - 'crates/strand/src/report/replay.rs'
-              - 'crates/strand-dev/src/main.rs'
       # Skips only when the filter ran and said no: on main, a tag or a
       # dispatch it does not run, so nothing here can skip them.
       - name: Decide
@@ -960,7 +961,7 @@ jobs:
           STRAND_FUZZ_SEED: ${{ github.run_id }}
       # The same 10,000 edits on the instance level, and the state table,
       # on the same profile so the job builds one optimised tree.
-      - run: scripts/container/run.sh cargo test --profile timing -p strand-compiler --test reload random_ -- --nocapture
+      - run: scripts/container/run.sh scripts/container/tests-ran.sh cargo test --profile timing -p strand-compiler --test reload random_ -- --nocapture
         env:
           STRAND_RELOAD_FUZZ: "10000"
           STRAND_STATE_FUZZ: "2000"
