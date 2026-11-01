@@ -14954,3 +14954,20 @@ how the wheel reads it and saves a third pair of names. A position or a reveal w
 asked, as what it reads may be what that diff mounted; a size still springing there is not waited for, so reveal
 what was mounted rather than what grows. No focus ring is drawn by default: `when focused` is the config's look, and a
 ring after every press would change how a mouse-only shell looks.
+
+(2026-11-01, piece 5) The shape above says `seat.rs` doesn't do compose, but SCTK already did: its `KeyEvent::utf8`
+comes from a compose state of its own, read from the same locale variables. What was missing is that the state is
+private, so nothing could reset it, and a dead key pressed in one panel finished in the next
+(`dead_keys_and_compose_type_the_composed_text_under_real_names` fails so with Strand's own table off). There is no way
+to turn SCTK's off, so `manager/compose.rs` keeps per keyboard its own xkb state and compose state, and SCTK's text is
+used only where no table loaded or a keymap didn't compile, which is what typing was. That costs a second keymap state
+per keyboard and a second table, the table read when a keyboard first reaches a surface, so a bar that never holds the
+keyboard pays nothing for it. A held key repeats what its press typed, not the key fed again: holding the last key of a
+sequence gives `ééé`, not `éee`, a held dead key is one key of its sequence, and a key whose press cancelled a sequence
+repeats nothing. A pointer press also ends a sequence, since a click can move focus to another `input` and the seat
+can't see focus inside a surface; focus moved from code within one surface doesn't end one, and the next key finishes
+it there. Passwords: the seat holds a press's text only in `Zeroizing` strings, wiped when the repeat stops. Copies it
+can't wipe are SCTK's event, the `xkbcommon` crate's stack buffer and each `KeyInput.text` past the seat, which are the
+same copies a plain typed key makes, and a composed character is a table entry and no more secret than one. A
+compositor's own repeats (`wl_keyboard` version 10) reach `repeat_key` with no text from SCTK, composed or not, as
+they did, which this leaves alone.

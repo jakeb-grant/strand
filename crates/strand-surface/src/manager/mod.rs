@@ -80,6 +80,7 @@ use strand_scene::{KeyInput, Modifiers};
 mod activation;
 mod catcher;
 mod commit;
+mod compose;
 // (M4) Drag and drop is the lists stream's file, `src/dnd.rs`, but part
 // of the manager: it reaches `State` as the other parts here do.
 #[path = "../dnd.rs"]
@@ -876,6 +877,12 @@ pub struct State<H: SurfaceHost + 'static> {
     /// (M6) Each keyboard's Latin keysyms, from its keymap
     /// ([`seat::LatinKeys`]).
     latin_keys: HashMap<ObjectId, seat::LatinKeys>,
+    /// (keyboard) Each keyboard's text state ([`compose::KeyText`]), from
+    /// its keymap.
+    key_texts: HashMap<ObjectId, compose::KeyText>,
+    /// (keyboard) The locale's compose table, read when a keyboard first
+    /// reaches a surface; the inner `None`: it has none.
+    compose_table: Option<Option<xkbcommon::xkb::compose::Table>>,
     /// (gap 31) Each keyboard's keymap's layout names, by layout index.
     layout_names: HashMap<ObjectId, Vec<String>>,
     /// (gap 31) Each keyboard's lock keys and active layout (Caps Lock,
@@ -1161,6 +1168,8 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             key_repeat: None,
             raw_modifiers: HashMap::new(),
             latin_keys: HashMap::new(),
+            key_texts: HashMap::new(),
+            compose_table: None,
             layout_names: HashMap::new(),
             lock_keys: HashMap::new(),
             focus_keyboard: None,

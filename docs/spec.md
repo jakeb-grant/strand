@@ -1485,6 +1485,19 @@ monitor, the keyboard always).
   Down move it and Left and Right stay the caret's. Its keys are all taken, so
   a row's popup opens by no key of the list's. `axis:` beside it is
   `check::list_axis` unless written `vertical`. `grid` stays a layout element.
+- **Dead keys and Compose.** A focused `input` types what the keyboard
+  composes, on layouts such as `de`, `fr` and `us(intl)`, from xkb's compose
+  table for the locale (`LC_ALL`, `LC_CTYPE`, `LANG`, else `C`; `XCOMPOSEFILE`
+  and `~/.XCompose` as xkb reads them). No table is no error: keys type what
+  they type. A key inside a sequence has an empty `k.text` and types nothing;
+  the key that ends it has the composed text; a key that cancels it has an
+  empty `k.text`, as xkb's state says, and the key after it is itself again.
+  `k.name` is always the real key (`dead_acute`, `Multi_key`, `e`), so claims
+  match as ever. Escape, the keyboard leaving, keys going to another surface
+  and a pointer press end a sequence; moving focus by Tab cancels one as any
+  other key does. A held key repeats what its press typed, composed or
+  nothing, and is no further key of a sequence. A `type: password` input
+  composes as any other. An input method (`text-input-v3`) is not supported.
 - **Copy and paste.** A focused `input` copies its selection with
   Ctrl+C or Ctrl+Insert, cuts it with Ctrl+X or Shift+Delete and pastes
   at the caret, over the selection, with Ctrl+V or Shift+Insert

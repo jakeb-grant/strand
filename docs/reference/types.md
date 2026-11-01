@@ -317,7 +317,7 @@ claim (`on key "ctrl+n" (k)`).
 | Field | Type | |
 | --- | --- | --- |
 | `name` | `text` | The key's name, such as `Escape`, `Return` or `a`. |
-| `text` | `text` | The text the key types; empty for keys that type none. |
+| `text` | `text` | The text the key types: empty for keys that type none and for a key inside a dead-key or Compose sequence, the composed text on the key that ends one. |
 | `ctrl` | `bool` | Ctrl is held. |
 | `shift` | `bool` | Shift is held. |
 | `alt` | `bool` | Alt is held. |

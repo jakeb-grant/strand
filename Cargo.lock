@@ -3251,6 +3251,7 @@ dependencies = [
  "wayland-protocols-wlr",
  "wayland-server",
  "xkbcommon",
+ "zeroize",
 ]
 
 [[package]]

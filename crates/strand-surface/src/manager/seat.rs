@@ -1,7 +1,9 @@
 //! Seats: pointer and keyboard input, key repeat and the events sent to
 //! the host.
 
+use super::compose::{self, KeyText};
 use super::*;
+use zeroize::Zeroizing;
 
 impl<H: SurfaceHost + 'static> State<H> {
     // ---- events ----------------------------------------------------------
@@ -19,11 +21,31 @@ impl<H: SurfaceHost + 'static> State<H> {
             .map(key_name)
     }
 
-    /// A key event on the surface with keyboard focus (`latin`: the
-    /// Latin keysym's name shortcuts match, [`LatinKeys`]).
+    /// What a press of `event` on `keyboard` types, composed if a compose
+    /// table loaded ([`KeyText`]). It takes SCTK's copy out of `event`,
+    /// so that what repeats the key holds only the wiped one returned.
+    fn press_text(
+        &mut self,
+        keyboard: &wl_keyboard::WlKeyboard,
+        event: &mut KeyEvent,
+    ) -> Zeroizing<String> {
+        let sctk = Zeroizing::new(event.utf8.take().unwrap_or_default());
+        let Some(surface) = self.grab_focus.or(self.keyboard_focus) else {
+            return sctk;
+        };
+        match self.key_texts.get_mut(&keyboard.id()) {
+            Some(k) => k.press(surface, event.raw_code, event.keysym, sctk),
+            None => sctk,
+        }
+    }
+
+    /// A key event on the surface with keyboard focus (`text`: what it
+    /// types; `latin`: the Latin keysym's name shortcuts match,
+    /// [`LatinKeys`]).
     pub(super) fn key(
         &mut self,
-        event: KeyEvent,
+        event: &KeyEvent,
+        text: &str,
         latin: Option<String>,
         state: ButtonState,
         repeat: bool,
@@ -33,10 +55,11 @@ impl<H: SurfaceHost + 'static> State<H> {
             return;
         };
         let name = key_name(event.keysym);
-        let text = event
-            .utf8
-            .filter(|t| t.chars().all(|c| !c.is_control()))
-            .unwrap_or_default();
+        let text = if text.chars().any(char::is_control) {
+            String::new()
+        } else {
+            text.to_string()
+        };
         self.send_input(InputEvent::Key {
             surface,
             key: KeyInput {
@@ -53,8 +76,15 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     /// Repeats `event` (just pressed on `keyboard`) at the keyboard's
     /// rate after its delay, from a calloop timer of ours; modifiers do
-    /// not repeat. Replaces any key repeating before.
-    pub(super) fn start_repeat(&mut self, keyboard: &wl_keyboard::WlKeyboard, event: KeyEvent) {
+    /// not repeat. Replaces any key repeating before. A repeat types what
+    /// the press typed (`text`), composed or nothing, and is no key of a
+    /// sequence: a held dead key stays one dead key.
+    pub(super) fn start_repeat(
+        &mut self,
+        keyboard: &wl_keyboard::WlKeyboard,
+        event: KeyEvent,
+        text: Zeroizing<String>,
+    ) {
         self.stop_repeat();
         let Some(RepeatInfo::Repeat { rate, delay }) = self.repeat_info.get(&keyboard.id()) else {
             return;
@@ -75,7 +105,7 @@ impl<H: SurfaceHost + 'static> State<H> {
                     state.key_repeat = None;
                     return TimeoutAction::Drop;
                 }
-                state.key(event.clone(), latin.clone(), ButtonState::Pressed, true);
+                state.key(&event, &text, latin.clone(), ButtonState::Pressed, true);
                 TimeoutAction::ToDuration(interval)
             },
         );
@@ -364,6 +394,7 @@ impl<H: SurfaceHost + 'static> SeatHandler for State<H> {
                 self.repeat_info.remove(k);
                 self.raw_modifiers.remove(k);
                 self.latin_keys.remove(k);
+                self.key_texts.remove(k);
                 self.layout_names.remove(k);
                 self.lock_keys.remove(k);
                 if self.focus_keyboard.as_ref() == Some(k) {
@@ -502,6 +533,11 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                         });
                     }
                     self.last_pressed = Some(surface);
+                    // A press may focus another `input`, which the seat
+                    // does not see: a sequence under way ends here.
+                    for k in self.key_texts.values_mut() {
+                        k.reset();
+                    }
                     InputEvent::PointerButton {
                         surface,
                         position,
@@ -628,6 +664,15 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
             // this same keyboard's still current state when the enter
             // ends a leave held or sent in the same dispatch.
             self.lock_keys.remove(&keyboard.id());
+            // Only a keyboard that reaches a surface pays for a compose
+            // table, read once.
+            let table = self.compose_table.get_or_insert_with(compose::locale_table);
+            if let Some(k) = self.key_texts.get_mut(&keyboard.id()) {
+                if let Some(table) = table {
+                    k.set_table(table);
+                }
+                k.reset();
+            }
             self.keyboard_focus = Some(id);
             self.send_input(InputEvent::KeyboardEnter { surface: id });
             self.sync_popup_keyboard();
@@ -638,11 +683,14 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
+        keyboard: &wl_keyboard::WlKeyboard,
         surface: &wl_surface::WlSurface,
         _: u32,
     ) {
         self.stop_repeat();
+        if let Some(k) = self.key_texts.get_mut(&keyboard.id()) {
+            k.reset();
+        }
         // (lockmon) A solid lock surface's keys went to the content
         // focused then, which the focused output no longer names.
         let id = self.surface_for(surface).or(self.keyboard_focus);
@@ -683,7 +731,7 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         _: &QueueHandle<Self>,
         keyboard: &wl_keyboard::WlKeyboard,
         serial: u32,
-        event: KeyEvent,
+        mut event: KeyEvent,
     ) {
         if let Some((seat, _)) = self.keyboards.iter().find(|(_, k)| k == keyboard) {
             let seat = seat.clone();
@@ -702,8 +750,9 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
             });
         }
         let latin = self.latin(keyboard, &event);
-        self.key(event.clone(), latin, ButtonState::Pressed, false);
-        self.start_repeat(keyboard, event);
+        let text = self.press_text(keyboard, &mut event);
+        self.key(&event, &text, latin, ButtonState::Pressed, false);
+        self.start_repeat(keyboard, event, text);
     }
 
     fn repeat_key(
@@ -715,7 +764,8 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         event: KeyEvent,
     ) {
         let latin = self.latin(keyboard, &event);
-        self.key(event, latin, ButtonState::Pressed, true);
+        let text = event.utf8.clone().unwrap_or_default();
+        self.key(&event, &text, latin, ButtonState::Pressed, true);
     }
 
     fn release_key(
@@ -734,7 +784,7 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
             self.stop_repeat();
         }
         let latin = self.latin(keyboard, &event);
-        self.key(event, latin, ButtonState::Released, false);
+        self.key(&event, "", latin, ButtonState::Released, false);
     }
 
     fn update_keymap(
@@ -746,7 +796,20 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
     ) {
         // SCTK hands the keymap only for the call: it is compiled again
         // from its text, once, for the Latin keys and the layout names.
-        let (latin, names) = match compile_keymap(&keymap.as_string()) {
+        let compiled = compile_keymap(&keymap.as_string());
+        // A sequence does not outlive its keymap. With no keymap compiled
+        // SCTK's own text stands, as with no compose table.
+        match &compiled {
+            Some(keymap) => {
+                let table = self.compose_table.as_ref().and_then(|t| t.as_ref());
+                self.key_texts
+                    .insert(keyboard.id(), KeyText::new(keymap, table));
+            }
+            None => {
+                self.key_texts.remove(&keyboard.id());
+            }
+        }
+        let (latin, names) = match compiled {
             Some(keymap) => (LatinKeys::of(&keymap), layout_names_of(&keymap)),
             None => {
                 log::warn!(
@@ -780,6 +843,9 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         raw: RawModifiers,
         layout: u32,
     ) {
+        if let Some(k) = self.key_texts.get_mut(&keyboard.id()) {
+            k.update_modifiers(raw.depressed, raw.latched, raw.locked, layout);
+        }
         let raw = (raw.depressed, raw.latched, raw.locked, layout);
         let id = keyboard.id();
         let changed = self.raw_modifiers.insert(id.clone(), raw) != Some(raw);

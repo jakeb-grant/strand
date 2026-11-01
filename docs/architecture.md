@@ -2017,8 +2017,11 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   keymap is also compiled with `xkbcommon` 0.8 (the release SCTK links;
   `seat::compile_keymap`) into `seat::LatinKeys`, so a non-ASCII key
   carries `KeyInput::latin` and `KeyInput::shortcut()` matches Ctrl+V
-  under `ru` as `v` (`name`, what `on key(k)` sees, is unchanged). The
-  focused keyboard's lock keys, layout names and modifiers are reported
+  under `ru` as `v` (`name`, what `on key(k)` sees, is unchanged). A
+  press's `text` comes from `compose::KeyText`, each keyboard's own xkb
+  and compose state from the locale's table, since SCTK's compose state
+  can't be reset (decisions.md keyboard, piece 5). The focused keyboard's
+  lock keys, layout names and modifiers are reported
   as `KeyboardState` through `SurfaceHost::keyboard_state` (`None` when
   none of ours has the keys); the host forwards them to
   `strand_services::keyboard::focused`.
