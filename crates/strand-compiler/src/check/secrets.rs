@@ -858,6 +858,13 @@ impl<'a> Walk<'a> {
     /// there: an error, since a lock that cannot be typed into cannot be
     /// left, and a `when` cannot be proved to exclude the field.
     fn claims_around_password(&mut self, el: &'a hir::Element) {
+        // Looking for a field walks the calls below `el`, so only for a
+        // claim: on every element a long chain of calls would be quadratic.
+        let claims_text =
+            |n: &Node| matches!(n, Node::Handler(h) if h.keys.iter().any(|k| k.types_text()));
+        if !el.children.iter().any(claims_text) {
+            return;
+        }
         let lock = self.lock || matches!(&el.kind, ElementKind::Builtin(k) if k == "lock");
         let around = password_input(self.types, el)
             || (lock && matches!(&el.kind, ElementKind::Builtin(k) if k == "input"))
