@@ -420,3 +420,447 @@ fn a_reload_keeps_the_selection() {
     press(&mut sh, "n");
     assert_eq!(sh.router.selected_index(l), Some(4));
 }
+
+/// A panel with a list and claims, for the shapes below: rows as given in
+/// `row`, the list's `props`, `w` by `h` itself.
+fn shaped(count: u32, w: u32, h: u32, props: &str, row: &str) -> Shell {
+    let items = (0..count)
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut sh = Shell::new(&format!(
+        "state items: [int] = [{items}]\n\
+         state activated = -1\n\
+         panel L {{ anchor: top_left; width: {w}; height: {h}; keyboard: exclusive; bg: #000000\n\
+           on key \"n\" {{ results.next() }}\n\
+           on key \"p\" {{ results.prev() }}\n\
+           on key \"l\" {{ results.last() }}\n\
+           list {{ id: results; focus: true; grow: 1; {props}\n\
+             for i in items key i {{\n\
+               box {{ {row}; bg: #203040\n\
+                 when self.selected {{ bg: #ff0000 }}\n\
+                 on activate {{ activated = i }}\n\
+               }}\n\
+             }}\n\
+           }}\n\
+         }}\n"
+    ));
+    sh.keyboard_to("L");
+    sh.settle();
+    sh
+}
+
+fn row_box(sh: &Shell, i: usize) -> strand_scene::LogicalRect {
+    let row = sh.r.tree().get(list(sh)).unwrap().children[i];
+    let s = sh.surface("L").id;
+    *sh.r.boxes(s).unwrap().rects.get(&row).unwrap()
+}
+
+/// `axis: horizontal`: rows lie in a line, Left and Right move the selection
+/// and scroll it into view along x, and Up and Down do nothing.
+#[test]
+fn a_horizontal_lists_keys_and_layout_run_along_x() {
+    let mut sh = shaped(20, 300, 100, "axis: horizontal; gap: 10", "width: 90");
+    let (a, b) = (row_box(&sh, 0), row_box(&sh, 1));
+    assert_eq!(
+        (a.x, a.y, a.w, a.h),
+        (0.0, 0.0, 90.0, 100.0),
+        "fills across"
+    );
+    assert_eq!((b.x, b.y), (100.0, 0.0));
+    press(&mut sh, "Right");
+    assert_eq!(index(&sh), Some(0), "from none: the first");
+    press(&mut sh, "Right");
+    press(&mut sh, "Right");
+    assert_eq!(index(&sh), Some(2));
+    press(&mut sh, "Left");
+    assert_eq!(index(&sh), Some(1));
+    press(&mut sh, "Down");
+    press(&mut sh, "Up");
+    assert_eq!(index(&sh), Some(1), "not its keys");
+    press(&mut sh, "n");
+    assert_eq!(index(&sh), Some(2), "next() goes along it");
+    for _ in 0..3 {
+        press(&mut sh, "Right");
+    }
+    sh.settle();
+    assert_eq!(index(&sh), Some(5));
+    // The view moved along x, as little as it takes: row 5's right edge at
+    // the view's.
+    assert_eq!(
+        sh.r.scroll_offset(list(&sh)),
+        Some(5.0 * 100.0 + 90.0 - 300.0)
+    );
+    assert_eq!(row_box(&sh, 5).x, 300.0 - 90.0);
+    assert_eq!(row_box(&sh, 5).y, 0.0, "nothing moved along y");
+    press(&mut sh, "Page_Down");
+    assert!(index(&sh) > Some(5), "Page keys move it by a view");
+    press(&mut sh, "End");
+    sh.settle();
+    assert_eq!(index(&sh), Some(19));
+    press(&mut sh, "Right");
+    assert_eq!(index(&sh), Some(19), "stops at the end");
+}
+
+/// A horizontal list virtualises along x: 2,000 rows mount a window, the
+/// selection goes past it and lands, and no frame shows a gap.
+#[test]
+fn a_horizontal_list_virtualises_along_x() {
+    let mut sh = shaped(2000, 300, 60, "axis: horizontal", "width: 50");
+    let mounted = sh.r.tree().get(list(&sh)).unwrap().children.len();
+    assert!(mounted < 100, "only a window mounts: {mounted}");
+    press(&mut sh, "l");
+    assert_eq!(index(&sh), Some(1999));
+    sh.settle();
+    let sel = sh.router.selected(list(&sh)).expect("it landed");
+    let s = sh.surface("L").id;
+    let r = *sh.r.boxes(s).unwrap().rects.get(&sel).unwrap();
+    assert_eq!(r.x + r.w, 300.0, "the last row at the view's end");
+    let st = sh.r.scroll_state(list(&sh)).unwrap();
+    assert_eq!(st.offset, 2000.0 * 50.0 - 300.0);
+    assert!(st.across.is_none(), "a list has one offset");
+    press(&mut sh, "Home");
+    sh.settle();
+    assert_eq!(sh.r.scroll_offset(list(&sh)), Some(0.0));
+    assert_eq!(sh.r.list_frames().gaps, 0);
+}
+
+/// A plain wheel scrolls a horizontal list sideways.
+#[test]
+fn a_wheel_scrolls_a_horizontal_list() {
+    let mut sh = shaped(50, 300, 60, "axis: horizontal", "width: 50");
+    sh.move_to(100.0, 30.0);
+    sh.wheel(0.0, 2.0);
+    sh.settle();
+    let at = sh.r.scroll_offset(list(&sh)).unwrap();
+    assert!(at > 0.0, "{at}");
+    assert_eq!(row_box(&sh, 0).x, -at);
+    assert_eq!(row_box(&sh, 0).y, 0.0);
+}
+
+/// With no height it is as tall as its tallest row, and shorter rows fill it.
+#[test]
+fn a_horizontal_list_is_as_tall_as_its_tallest_row() {
+    let mut sh = Shell::new(
+        "panel L { anchor: top_left; width: 300; height: 200; keyboard: exclusive\n\
+           col {\n\
+             list { axis: horizontal; gap: 5\n\
+               box { width: 40; height: 30 }\n\
+               box { width: 40; height: 50 }\n\
+               box { width: 40 }\n\
+             }\n\
+           }\n\
+         }\n",
+    );
+    sh.settle();
+    let l = list(&sh);
+    let s = sh.surface("L").id;
+    let boxes = sh.r.boxes(s).unwrap();
+    assert_eq!(boxes.rects[&l].h, 50.0);
+    assert_eq!(boxes.rects[&l].w, 300.0);
+    let rows = &sh.r.tree().get(l).unwrap().children;
+    assert_eq!(boxes.rects[&rows[0]].h, 30.0, "its own height");
+    assert_eq!(boxes.rects[&rows[2]].h, 50.0, "fills");
+    assert_eq!(boxes.rects[&rows[2]].x, 90.0);
+}
+
+/// In an `input` with `nav:` to a horizontal list, Left and Right stay the
+/// caret's; a claim can take them.
+#[test]
+fn an_inputs_caret_keeps_left_and_right() {
+    let src = |claim: &str| {
+        format!(
+            "state q = \"ab\"\n\
+             panel L {{ anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+               {claim}\n\
+               col {{\n\
+                 input {{ height: 30; text: <-> q; focus: true; nav: results }}\n\
+                 list {{ id: results; axis: horizontal; height: 60\n\
+                   for i in [\"a\", \"b\", \"c\"] key i {{ box {{ width: 50 }} }}\n\
+                 }}\n\
+               }}\n\
+             }}\n"
+        )
+    };
+    let mut sh = Shell::new(&src(""));
+    sh.keyboard_to("L");
+    sh.settle();
+    assert_eq!(index(&sh), Some(0));
+    let typed = |sh: &Shell| match sh.inst.value_of("shell", "q") {
+        Ok(Value::Text(t)) => t.to_string(),
+        v => panic!("q is {v:?}"),
+    };
+    press(&mut sh, "Left");
+    assert_eq!(index(&sh), Some(0), "the list stays");
+    press(&mut sh, "x");
+    assert_eq!(typed(&sh), "axb", "the caret moved");
+    press(&mut sh, "Right");
+    assert_eq!(index(&sh), Some(0));
+    press(&mut sh, "y");
+    assert_eq!(typed(&sh), "axby");
+
+    let mut sh = Shell::new(&src(
+        "on key \"right\" { results.next() }\n on key \"left\" { results.prev() }",
+    ));
+    sh.keyboard_to("L");
+    sh.settle();
+    press(&mut sh, "Right");
+    assert_eq!(index(&sh), Some(1), "a claim took it");
+    press(&mut sh, "Left");
+    assert_eq!(index(&sh), Some(0));
+}
+
+/// A horizontal list's row opens its popup with Down, and in a popup opened
+/// from another, Up closes it; a vertical list's Right and Left stay as they
+/// were.
+#[test]
+fn a_horizontal_lists_submenu_key_is_down() {
+    let src = |axis: &str| {
+        format!(
+            "state sub = false\n\
+             panel L {{ anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+               list {{ focus: true; height: 60; {axis}\n\
+                 box {{ width: 50; height: 20\n\
+                   popup {{ open: <-> sub; width: 50; height: 50; text \"x\" }}\n\
+                 }}\n\
+               }}\n\
+             }}\n"
+        )
+    };
+    let mut sh = Shell::new(&src("axis: horizontal"));
+    sh.keyboard_to("L");
+    sh.settle();
+    press(&mut sh, "Right");
+    assert!(!sh.inst.value_of("shell", "sub").unwrap().truthy());
+    press(&mut sh, "Down");
+    assert!(sh.inst.value_of("shell", "sub").unwrap().truthy(), "Down");
+
+    let mut sh = Shell::new(&src(""));
+    sh.keyboard_to("L");
+    sh.settle();
+    press(&mut sh, "Down");
+    assert!(!sh.inst.value_of("shell", "sub").unwrap().truthy());
+    press(&mut sh, "Right");
+    assert!(sh.inst.value_of("shell", "sub").unwrap().truthy(), "Right");
+}
+
+/// `axis: both` on a list and `axis` beside `columns` are check errors;
+/// `axis: vertical` beside `columns` isn't.
+#[test]
+fn axis_both_and_a_horizontal_grid_are_check_errors() {
+    let list = |p: &str| {
+        format!("panel L {{ anchor: top_left; width: 100; height: 100\n  list {{ {p} }}\n}}\n")
+    };
+    assert_eq!(check_codes(&list("axis: both")), ["check::list_axis"]);
+    assert_eq!(
+        check_codes(&list("axis: horizontal; columns: 2")),
+        ["check::list_axis"]
+    );
+    assert!(check_codes(&list("axis: vertical; columns: 2")).is_empty());
+    assert!(check_codes(&list("axis: horizontal")).is_empty());
+    assert!(check_codes(&list("columns: 2; wrap: true")).is_empty());
+}
+
+/// `columns: 3`, seven rows: Up and Down move a line, Left and Right one and
+/// not past a line's end, `next()` and `prev()` one across lines, and Down
+/// from above an empty cell of the short last line goes to the last row.
+#[test]
+fn a_grids_arrows_move_by_geometry() {
+    let mut sh = shaped(7, 300, 200, "columns: 3", "height: 40");
+    press(&mut sh, "Down");
+    assert_eq!(index(&sh), Some(0), "from none: the first");
+    press(&mut sh, "Down");
+    assert_eq!(index(&sh), Some(3));
+    press(&mut sh, "Down");
+    assert_eq!(index(&sh), Some(6));
+    press(&mut sh, "Down");
+    assert_eq!(index(&sh), Some(6), "the last line: stays");
+    press(&mut sh, "Up");
+    assert_eq!(index(&sh), Some(3));
+    press(&mut sh, "Right");
+    assert_eq!(index(&sh), Some(4));
+    press(&mut sh, "Right");
+    assert_eq!(index(&sh), Some(5));
+    press(&mut sh, "Right");
+    assert_eq!(index(&sh), Some(5), "no line wrapping");
+    press(&mut sh, "Down");
+    assert_eq!(index(&sh), Some(6), "above an empty cell: the last row");
+    press(&mut sh, "Up");
+    assert_eq!(index(&sh), Some(3));
+    press(&mut sh, "Left");
+    assert_eq!(index(&sh), Some(3), "no line wrapping");
+    press(&mut sh, "Up");
+    assert_eq!(index(&sh), Some(0));
+    press(&mut sh, "Up");
+    assert_eq!(index(&sh), Some(0));
+    press(&mut sh, "n");
+    press(&mut sh, "n");
+    press(&mut sh, "n");
+    assert_eq!(index(&sh), Some(3), "next() goes across lines");
+    press(&mut sh, "p");
+    assert_eq!(index(&sh), Some(2));
+    press(&mut sh, "Return");
+    assert_eq!(sh.num("activated"), 2.0);
+    press(&mut sh, "Home");
+    assert_eq!(index(&sh), Some(0));
+    press(&mut sh, "End");
+    assert_eq!(index(&sh), Some(6));
+}
+
+/// `wrap: true` on a grid: off an end goes round. Up from the first line to
+/// the same column of the last, or its last row if that cell is empty; Down
+/// from the last line to the same column of the first; Left and Right on to
+/// the next line, and round.
+#[test]
+fn a_wrapping_grid_goes_round() {
+    let mut sh = shaped(7, 300, 200, "columns: 3; wrap: true", "height: 40");
+    press(&mut sh, "Home");
+    press(&mut sh, "Up");
+    assert_eq!(index(&sh), Some(6), "column 0");
+    press(&mut sh, "Down");
+    assert_eq!(index(&sh), Some(0), "back to column 0");
+    press(&mut sh, "Right");
+    press(&mut sh, "Up");
+    assert_eq!(index(&sh), Some(6), "column 1 is empty below: the last row");
+    press(&mut sh, "Home");
+    press(&mut sh, "Left");
+    assert_eq!(index(&sh), Some(6), "Left off the start");
+    press(&mut sh, "Right");
+    assert_eq!(index(&sh), Some(0), "Right off the end");
+    press(&mut sh, "Right");
+    press(&mut sh, "Right");
+    press(&mut sh, "Right");
+    assert_eq!(index(&sh), Some(3), "on to the next line");
+    press(&mut sh, "Left");
+    assert_eq!(index(&sh), Some(2), "and back");
+    press(&mut sh, "End");
+    press(&mut sh, "n");
+    assert_eq!(index(&sh), Some(0), "next() too");
+    press(&mut sh, "Page_Up");
+    assert_eq!(index(&sh), Some(0), "Page does not");
+}
+
+/// Page keys move a view of lines; the selection scrolls by the line; rows
+/// past the window land, in the column they were in.
+#[test]
+fn a_grid_virtualises_and_scrolls_by_the_line() {
+    let mut sh = shaped(3000, 300, 100, "columns: 3", "height: 20");
+    let mounted = sh.r.tree().get(list(&sh)).unwrap().children.len();
+    assert!(mounted < 200, "only a window mounts: {mounted}");
+    assert_eq!(mounted % 3, 0, "whole lines: {mounted}");
+    press(&mut sh, "Home");
+    press(&mut sh, "Right");
+    assert_eq!(index(&sh), Some(1));
+    press(&mut sh, "Page_Down");
+    assert_eq!(index(&sh), Some(1 + 5 * 3), "five lines show");
+    let st = sh.r.scroll_state(list(&sh)).unwrap();
+    assert_eq!(st.content, 1000.0 * 20.0, "a thousand lines");
+    assert_eq!(sh.r.scroll_offset(list(&sh)), Some(20.0), "by the line");
+    press(&mut sh, "l");
+    assert_eq!(index(&sh), Some(2999));
+    sh.settle();
+    assert!(sh.router.selected(list(&sh)).is_some(), "it landed");
+    assert_eq!(sh.r.scroll_offset(list(&sh)), Some(1000.0 * 20.0 - 100.0));
+    let first = sh.router.selected_index(list(&sh)).unwrap();
+    press(&mut sh, "Up");
+    assert_eq!(index(&sh), Some(first - 3));
+    assert_eq!(sh.r.list_frames().gaps, 0);
+    // A short last line counts as a line.
+    let sh = shaped(3001, 300, 100, "columns: 3", "height: 20");
+    assert_eq!(sh.r.scroll_state(list(&sh)).unwrap().content, 1001.0 * 20.0);
+}
+
+/// `columns:` divides the list's width among cells, `gap` between; a line is
+/// as tall as its tallest, whose shorter neighbours fill it; drawn so.
+#[test]
+fn a_grid_lays_out_cells_and_draws_them() {
+    let mut sh = Shell::new(
+        "panel L { anchor: top_left; width: 300; height: 120; keyboard: exclusive; bg: #000000\n\
+           list { id: results; focus: true; grow: 1; columns: 3; gap: 6; pad: 10\n\
+             box { height: 30; bg: #ff0000 }\n\
+             box { height: 40; bg: #00ff00 }\n\
+             box { height: 20; bg: #0000ff }\n\
+             box { height: 20; bg: #ffff00 }\n\
+           }\n\
+         }\n",
+    );
+    sh.keyboard_to("L");
+    sh.settle();
+    let at = |i| {
+        let r = row_box(&sh, i);
+        (r.x, r.y, r.w, r.h)
+    };
+    // (280 + 6) / 3 = 95.33 a cell and gap: whole pixels, the last one ending
+    // at the content's edge.
+    assert_eq!(at(0), (10.0, 10.0, 89.0, 30.0), "its own height");
+    assert_eq!(at(1), (105.0, 10.0, 90.0, 40.0));
+    assert_eq!(at(2), (201.0, 10.0, 89.0, 20.0));
+    assert_eq!(
+        at(3),
+        (10.0, 56.0, 89.0, 20.0),
+        "the next line, at 10 + 40 + 6"
+    );
+    let shot = sh.shot("L");
+    shell::assert_matches_ref("list_columns", shot.0, &shot.1, 2);
+    let red = shell::px(&shot, 20, 20);
+    let (green, blue) = (shell::px(&shot, 110, 20), shell::px(&shot, 210, 20));
+    assert_eq!((red[2], red[1], red[0]), (255, 0, 0));
+    assert_eq!((green[2], green[1], green[0]), (0, 255, 0));
+    assert_eq!((blue[2], blue[1], blue[0]), (0, 0, 255));
+    assert_eq!(shell::px(&shot, 100, 20)[1], 0, "the gap is the panel's");
+    let yellow = shell::px(&shot, 20, 60);
+    assert_eq!((yellow[2], yellow[1], yellow[0]), (255, 255, 0));
+}
+
+/// Cells with no height of their own: the tallest measures the line and the
+/// rest fill it.
+#[test]
+fn a_grids_line_is_filled_by_its_shorter_cells() {
+    let mut sh = Shell::new(
+        "panel L { anchor: top_left; width: 300; height: 120\n\
+           list { grow: 1; columns: 2\n\
+             box { box { height: 10 } }\n\
+             box { box { height: 44 } }\n\
+           }\n\
+         }\n",
+    );
+    sh.settle();
+    assert_eq!(row_box(&sh, 0).h, 44.0);
+    assert_eq!(row_box(&sh, 1).h, 44.0);
+}
+
+/// A horizontal list and a grid drawn with the selection on them.
+#[test]
+fn a_horizontal_list_draws_along_x() {
+    let mut sh = shaped(9, 200, 60, "axis: horizontal; gap: 10", "width: 50");
+    press(&mut sh, "Right");
+    press(&mut sh, "Right");
+    let shot = sh.shot("L");
+    shell::assert_matches_ref("list_horizontal", shot.0, &shot.1, 2);
+    let (off, on) = (shell::px(&shot, 25, 30), shell::px(&shot, 85, 30));
+    assert_eq!((off[2], off[1], off[0]), (0x20, 0x30, 0x40));
+    assert_eq!((on[2], on[1], on[0]), (255, 0, 0));
+    assert_eq!(shell::px(&shot, 55, 30)[2], 0, "the gap is the panel's");
+}
+
+/// A `nav:` grid: Up and Down are the list's, Left and Right the caret's.
+#[test]
+fn a_nav_grid_leaves_left_and_right_to_the_caret() {
+    let mut sh = Shell::new(
+        "state q = \"\"\n\
+         panel L { anchor: top_left; width: 300; height: 130; keyboard: exclusive\n\
+           col {\n\
+             input { height: 30; text: <-> q; focus: true; nav: results }\n\
+             list { id: results; height: 100; columns: 2\n\
+               for i in [\"a\", \"b\", \"c\"] key i { box { height: 20 } }\n\
+             }\n\
+           }\n\
+         }\n",
+    );
+    sh.keyboard_to("L");
+    sh.settle();
+    press(&mut sh, "Right");
+    assert_eq!(index(&sh), Some(0));
+    press(&mut sh, "Down");
+    assert_eq!(index(&sh), Some(2));
+}

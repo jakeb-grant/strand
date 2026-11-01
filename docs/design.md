@@ -438,7 +438,7 @@ Flex layout is the default and absolute placement is opt-in; every visual prop s
 
 **Layout**
 
-- **Containers** on [taffy](https://github.com/DioxusLabs/taffy) 0.14: `row`, `col`, `stack`, `grid`, `scroll`, `list` (virtualised), `split` (start/centre/end with a truly centred middle), `spacer`. Flex props plus `min_*`/`max_*`. `place: absolute` when you really want coordinates.
+- **Containers** on [taffy](https://github.com/DioxusLabs/taffy) 0.14: `row`, `col`, `stack`, `grid`, `scroll`, `list` (virtualised; `axis: horizontal` a strip, `columns: n` a grid, with one selection and arrows that follow), `split` (start/centre/end with a truly centred middle), `spacer`. Flex props plus `min_*`/`max_*`. `place: absolute` when you really want coordinates.
 - **Shrinking.** In a full row or column, children give way by `shrink` (a flex factor, default 1 as in CSS). An `image` or `icon` sized in absolute lengths (`size`, `width` or `height` in px or `ch`, none of them a percentage) defaults to `shrink: 0` instead, as a CSS replaced element keeps its automatic minimum size: a 32 px icon stays 32 px beside a long label that is cut. A percentage size is relative to the container, so that image gives way as any box does; an explicit `shrink:` overrides either default.
 - **Container queries.** `when self.width < 300 { … }`, with 4 px hysteresis so it can't flicker, and at most one extra pass per frame.
 - **Wrapping.** `wrap: true` on a `row` or `col` runs its children on in another line when one is full (tags, chips, an icon grid that reflows), `gap` between lines too.
@@ -459,7 +459,7 @@ Flex layout is the default and absolute placement is opt-in; every visual prop s
 
 **Input and structure**
 
-- **Events** go to the innermost handler; `propagate()` passes one on. `keyboard: none | on_demand | exclusive` sets focus. `nav: results` routes arrow keys from an input to a list. An `input` copies, cuts and pastes through the compositor's clipboard with the usual keys (Ctrl+C, Ctrl+X, Ctrl+V and their Insert and Delete forms, matched on the Latin layout's keys under a non-Latin one); a password copies nothing, and the lock neither copies nor pastes.
+- **Events** go to the innermost handler; `propagate()` passes one on. `keyboard: none | on_demand | exclusive` sets focus. `nav: results` routes arrow keys from an input to a list, and `results.next()`, `.prev()`, `.first()`, `.last()`, `.select(i)` and `.activate()` do the same from any handler; `results.selected_index` reads it back. An `input` copies, cuts and pastes through the compositor's clipboard with the usual keys (Ctrl+C, Ctrl+X, Ctrl+V and their Insert and Delete forms, matched on the Latin layout's keys under a non-Latin one); a password copies nothing, and the lock neither copies nor pastes.
 - **Drag and drop.** `drag: pin` on the source; `on drop(p: Pin, at: int) { pins.move(p.app, at) }` on the target. Reordering springs by key. Files, apps and text from other programs arrive as typed `Drop` values.
 - **Pages.** `pages current: page { page wifi {…}; page bluetooth {…} }` gives directional transitions. Hidden pages unmount, so a Wi-Fi scan stops when you leave that page.
 - **Popups** are anchored xdg\_popups that nest, which is how tray menus work. `tooltip: expr` adds a tooltip. `anchor: pointer` opens one where the press that opened it went down: a context menu at the click.

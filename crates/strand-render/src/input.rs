@@ -2451,12 +2451,22 @@ impl Router {
             Some(NodeKind::List) => Some(focus),
             _ => nav,
         };
+        let shape = list
+            .and_then(|l| scene.tree().and_then(|t| t.get(l)))
+            .map_or_else(ListShape::default, ListShape::of);
         // Submenus (tray menus): Right on a row that holds a popup opens
-        // it; Left closes a popup that opened from another popup.
-        if kind != Some(NodeKind::Input) {
+        // it; Left closes a popup that opened from another popup. (keyboard)
+        // Down and Up on a horizontal list, whose Right and Left move it; a
+        // grid uses all four.
+        if kind != Some(NodeKind::Input) && shape.cols == 1 {
             let tree = scene.tree();
+            let (opens, closes) = if shape.horizontal {
+                (["Down", "KP_Down"], ["Up", "KP_Up"])
+            } else {
+                (["Right", "KP_Right"], ["Left", "KP_Left"])
+            };
             match key.name.as_str() {
-                "Right" | "KP_Right" => {
+                k if opens.contains(&k) => {
                     let rows = list
                         .and_then(|l| self.selected.get(&l))
                         .into_iter()
@@ -2482,7 +2492,7 @@ impl Router {
                         return;
                     }
                 }
-                "Left" | "KP_Left" if open && tree.is_some_and(|t| nested_popup(t, root)) => {
+                k if closes.contains(&k) && open && tree.is_some_and(|t| nested_popup(t, root)) => {
                     self.close(scene, root);
                     return;
                 }
@@ -2494,20 +2504,28 @@ impl Router {
                 .tree()
                 .map(|t| window_rows(t, list))
                 .unwrap_or_default();
-            let shape = scene
-                .tree()
-                .and_then(|t| t.get(list))
-                .map_or_else(ListShape::default, ListShape::of);
             let cur = self.place_in(list, &w);
             let last = w.count.saturating_sub(1);
-            let page = scene.rows_in_view(list).unwrap_or(1).max(1);
+            // (keyboard) A view of rows: of lines, in a grid.
+            let page = scene
+                .rows_in_view(list)
+                .unwrap_or(1)
+                .max(1)
+                .saturating_mul(shape.cols);
+            // An `input` keeps Left and Right for its caret, unless a claim
+            // takes them.
+            let sideways = kind != Some(NodeKind::Input) && (shape.horizontal || shape.cols > 1);
             // In an `input`, Home and End move its caret (Shift extends
             // the selection); Ctrl+Home and Ctrl+End go to the list's
             // ends. On a focused list they go there with any modifiers.
             let ends = kind != Some(NodeKind::Input) || key.modifiers.ctrl;
             let to = match key.name.as_str() {
-                "Down" | "KP_Down" => Some(shape.step(cur, w.first, last, true)),
-                "Up" | "KP_Up" => Some(shape.step(cur, w.first, last, false)),
+                "Down" | "KP_Down" if !shape.horizontal => {
+                    Some(shape.line(cur, w.first, last, true))
+                }
+                "Up" | "KP_Up" if !shape.horizontal => Some(shape.line(cur, w.first, last, false)),
+                "Right" | "KP_Right" if sideways => Some(shape.beside(cur, w.first, last, true)),
+                "Left" | "KP_Left" if sideways => Some(shape.beside(cur, w.first, last, false)),
                 "Page_Down" | "Next" | "KP_Page_Down" | "KP_Next" => {
                     Some(cur.map_or(w.first, |i| i.saturating_add(page).min(last)))
                 }
@@ -3009,16 +3027,79 @@ fn window_rows(tree: &SceneTree, list: NodeId) -> WindowRows {
 }
 
 /// (keyboard) How a `list`'s selection moves, from its props.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 struct ListShape {
     /// `wrap: true`: one move past either end goes round.
     wrap: bool,
+    /// `axis: horizontal`.
+    horizontal: bool,
+    /// `columns:`, 1 without.
+    cols: u32,
+}
+
+impl Default for ListShape {
+    fn default() -> Self {
+        Self {
+            wrap: false,
+            horizontal: false,
+            cols: 1,
+        }
+    }
 }
 
 impl ListShape {
     fn of(node: &crate::tree::Node) -> Self {
         Self {
             wrap: matches!(node.get(Prop::Wrap), Some(PropValue::Bool(true))),
+            horizontal: crate::layout::list_horizontal(node),
+            cols: crate::layout::list_columns(node),
+        }
+    }
+
+    /// One row on or back along a line: in a grid, not past the line's end
+    /// but with `wrap`, which carries on to the next line and round.
+    fn beside(self, cur: Option<u32>, first: u32, last: u32, forward: bool) -> u32 {
+        if self.cols == 1 || self.wrap {
+            return self.step(cur, first, last, forward);
+        }
+        let Some(i) = cur else {
+            return first;
+        };
+        let at = i % self.cols;
+        match forward {
+            true if at + 1 == self.cols || i >= last => i.min(last),
+            true => i + 1,
+            false if at == 0 => i,
+            false => i - 1,
+        }
+    }
+
+    /// One line on (`down`) or back from `cur`, the same column: in a grid,
+    /// from above an empty cell of a short last line to its last row; off
+    /// either end nowhere, or with `wrap` to that column on the other end.
+    /// A line is a row with no `columns:`.
+    fn line(self, cur: Option<u32>, first: u32, last: u32, down: bool) -> u32 {
+        let n = self.cols;
+        if n == 1 {
+            return self.step(cur, first, last, down);
+        }
+        let Some(i) = cur else {
+            return first;
+        };
+        let i = i.min(last);
+        if down {
+            match i.saturating_add(n) {
+                to if to <= last => to,
+                _ if i / n < last / n => last,
+                _ if self.wrap => i % n,
+                _ => i,
+            }
+        } else {
+            match i.checked_sub(n) {
+                Some(to) => to,
+                None if self.wrap => (last / n * n + i % n).min(last),
+                None => i,
+            }
         }
     }
 

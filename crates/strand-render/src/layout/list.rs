@@ -15,6 +15,12 @@
 //! [`WINDOW_OVERSCAN`] viewports ahead of what is shown; what is painted
 //! never leaves the mounted rows ([`ScrollState::shown`]), so no frame
 //! shows a gap where rows are still on their way.
+//!
+//! (keyboard) `axis: horizontal` runs the same along x: what is named height
+//! and top below is a row's extent and start along the list's axis, and the
+//! list is as tall as its tallest row laid out. `columns: n` puts `n` rows
+//! on a line: each is as wide as the list's width shares out and a line is
+//! as tall as its tallest, its rows stretched to that.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -148,6 +154,9 @@ pub struct ScrollState {
     /// (flex) `snap: true`: where its children start, from the last
     /// layout; a wheel step and a touchpad's lift settle on one.
     pub(crate) snaps: Option<Snaps>,
+    /// (keyboard) A horizontal list: its tallest row laid out, which sizes
+    /// it where nothing else does.
+    pub(crate) cross: f32,
 }
 
 /// (flex) Where a `snap: true` scroll's or list's children start along
@@ -167,12 +176,31 @@ pub(crate) struct Snaps {
 /// list and a `scroll` run along y unless the scroll's `axis:` says
 /// `horizontal` or `both`.
 pub(crate) fn scroll_axes(node: &crate::tree::Node) -> [bool; 2] {
+    if list_horizontal(node) {
+        return [true, false];
+    }
     match (node.kind, node.get(Prop::Axis)) {
         (NodeKind::Scroll, Some(PropValue::Keyword(k))) if k == "horizontal" => [true, false],
         (NodeKind::Scroll, Some(PropValue::Keyword(k))) if k == "both" => [true, true],
         (NodeKind::Scroll | NodeKind::List, _) => [false, true],
         _ => [false, false],
     }
+}
+
+/// (keyboard) Whether `node` is a `list` that runs along x (`axis:
+/// horizontal`).
+pub(crate) fn list_horizontal(node: &crate::tree::Node) -> bool {
+    node.kind == NodeKind::List
+        && matches!(node.get(Prop::Axis), Some(PropValue::Keyword(k)) if k == "horizontal")
+}
+
+/// (keyboard) How many rows a `list` puts on a line (`columns:`), one along
+/// x, where `strand check` allows no more.
+pub(crate) fn list_columns(node: &crate::tree::Node) -> u32 {
+    if list_horizontal(node) {
+        return 1;
+    }
+    num(node.get(Prop::Columns)).map_or(1, |n| n.clamp(1.0, 1000.0) as u32)
 }
 
 /// (flex) Whether `node` has `snap: true`.
@@ -582,6 +610,28 @@ pub struct ListBox {
     /// offset its boxes show, and the x offsets it can show.
     pub applied_x: f32,
     pub bounds_x: (f32, f32),
+    /// (keyboard) A horizontal list: `applied`, `laid` and `bounds` are
+    /// along x.
+    pub horizontal: bool,
+}
+
+impl ListBox {
+    /// The content box's extent along the way it scrolls.
+    pub(crate) fn view(&self) -> f32 {
+        if self.horizontal {
+            self.content.w
+        } else {
+            self.content.h
+        }
+    }
+}
+
+/// (keyboard) What a list's measure goes by: its rows' total extent along
+/// its axis and, along x, its tallest row laid out.
+#[derive(Copy, Clone, Debug, Default)]
+pub(super) struct ListSize {
+    pub main: f32,
+    pub cross: Option<f32>,
 }
 
 /// The rows of a list in the scene: `(row_count, row_first)` for a list
@@ -621,6 +671,29 @@ pub(super) fn list_cap(inputs: &LayoutInput, style: &Style) -> Option<f32> {
     Some((cap - pad.top - pad.bottom - border.top - border.bottom).max(0.0))
 }
 
+/// (keyboard) [`list_cap`] along x, for a horizontal list.
+pub(super) fn list_cap_x(inputs: &LayoutInput, style: &Style) -> Option<f32> {
+    use taffy::util::{MaybeResolve, ResolveOrZero};
+    let calc = |_: *const (), _: f32| 0.0;
+    let parent = inputs.parent_size.width;
+    let size: Option<f32> = style.size.width.maybe_resolve(parent, calc);
+    let max: Option<f32> = style.max_size.width.maybe_resolve(parent, calc);
+    let cap = match (size, max) {
+        (Some(a), Some(b)) => a.min(b),
+        (a, b) => a.or(b)?,
+    };
+    let pad = style.padding.resolve_or_zero(parent, calc);
+    let border = style.border.resolve_or_zero(parent, calc);
+    Some((cap - pad.left - pad.right - border.left - border.right).max(0.0))
+}
+
+/// (keyboard) The index just past the line of `rows` that starts at `j`,
+/// the mounted rows starting at global index `first` with `cols` on a line.
+fn line_end(j: usize, first: u32, cols: u32, rows: usize) -> usize {
+    let at = (first as usize + j) % cols as usize;
+    (j + cols as usize - at).min(rows)
+}
+
 /// The rows' total height a list's measure starts from: measured row
 /// heights, else the list's estimate, plus gaps, with the rows logic has
 /// not mounted at the estimate.
@@ -629,14 +702,57 @@ pub(super) fn rows_height(tree: &SceneTree, id: NodeId, st: &ScrollState, gap: f
     let Some(node) = tree.get(id) else {
         return 0.0;
     };
-    let (count, _) = window_of(node);
+    let (count, first) = window_of(node);
+    let cols = list_columns(node);
     let rows = &node.children;
-    let unmounted = count.saturating_sub(rows.len() as u32) as f32;
-    let mounted: f32 = rows
-        .iter()
-        .map(|r| st.heights.get(r).copied().unwrap_or(est))
-        .sum();
-    (mounted + unmounted * est + gap * count.saturating_sub(1) as f32).max(0.0)
+    let lines = count.div_ceil(cols);
+    let (mut mounted, mut j, mut in_lines) = (0.0f32, 0, 0u32);
+    while j < rows.len() {
+        let end = line_end(j, first, cols, rows.len());
+        mounted += rows[j..end]
+            .iter()
+            .map(|r| st.heights.get(r).copied().unwrap_or(est))
+            .fold(0.0, f32::max);
+        in_lines += 1;
+        j = end;
+    }
+    let unmounted = lines.saturating_sub(in_lines) as f32;
+    (mounted + unmounted * est + gap * lines.saturating_sub(1) as f32).max(0.0)
+}
+
+/// (keyboard) Where the row at global index `index` of a list lies along its
+/// axis (its line's start and extent), its mounted `rows` starting at
+/// `first`, those not mounted at the estimate.
+pub(crate) fn row_span(
+    st: &ScrollState,
+    rows: &[NodeId],
+    first: u32,
+    gap: f32,
+    cols: u32,
+    index: u32,
+) -> (f32, f32) {
+    let est = st.estimate();
+    let line = index / cols;
+    let first_line = first / cols;
+    if line < first_line {
+        return (line as f32 * (est + gap), est);
+    }
+    let mut y = first_line as f32 * (est + gap);
+    let (mut l, mut j) = (first_line, 0);
+    while j < rows.len() {
+        let end = line_end(j, first, cols, rows.len());
+        let h = rows[j..end]
+            .iter()
+            .map(|r| st.heights.get(r).copied().unwrap_or(est))
+            .fold(0.0, f32::max);
+        if l == line {
+            return (y, h);
+        }
+        y += h + gap;
+        l += 1;
+        j = end;
+    }
+    (y + (line - l) as f32 * (est + gap), est)
 }
 
 impl<'a> Build<'a> {
@@ -670,16 +786,19 @@ struct Placement {
     pitch: f32,
     count: u32,
     first: u32,
+    /// (keyboard) How many rows are on a line (`columns:`).
+    cols: u32,
 }
 
 impl Placement {
-    /// The global index of the row at content height `y`.
+    /// The global index of a row on the line at content height `y`.
     fn index_at(&self, y: f32) -> u32 {
         let n = self.ys.len() as u32;
         let i = if y < self.top || n == 0 {
-            (y.max(0.0) / self.pitch) as u32
+            (y.max(0.0) / self.pitch) as u32 * self.cols
         } else if y >= self.bottom {
-            self.first + n + ((y - self.bottom) / self.pitch) as u32
+            let past = ((y - self.bottom) / self.pitch) as u32;
+            ((self.first + n).div_ceil(self.cols) + past) * self.cols
         } else {
             let j = self.ys.partition_point(|t| *t <= y).saturating_sub(1);
             self.first + j as u32
@@ -697,24 +816,29 @@ impl Placement {
         }
         let n = self.ys.len() as u32;
         let est = self.est;
+        let line = index / self.cols;
         Some(if index < self.first || n == 0 {
-            (index as f32 * self.pitch, est)
+            (line as f32 * self.pitch, est)
         } else if index >= self.first + n {
-            let past = (index - self.first - n) as f32;
-            (self.bottom + past * self.pitch, est)
+            // On the last line mounted, if that line is short of it.
+            let ended = (self.first + n).div_ceil(self.cols);
+            match line.checked_sub(ended) {
+                Some(past) => (self.bottom + past as f32 * self.pitch, est),
+                None => (self.ys[n as usize - 1], self.hs[n as usize - 1]),
+            }
         } else {
             let j = (index - self.first) as usize;
             (self.ys[j], self.hs[j])
         })
     }
 
-    /// The rows from content height `a` to `b`.
+    /// The rows from content height `a` to `b`, whole lines.
     fn rows(&self, a: f32, b: f32) -> Range<u32> {
         if self.count == 0 {
             return 0..0;
         }
-        let lo = self.index_at(a).min(self.count - 1);
-        let hi = (self.index_at(b) + 1).min(self.count);
+        let lo = self.index_at(a).min(self.count - 1) / self.cols * self.cols;
+        let hi = ((self.index_at(b) / self.cols + 1) * self.cols).min(self.count);
         lo..hi.max(lo)
     }
 }
@@ -752,25 +876,57 @@ pub(super) fn place_list(
     let rows = &node.children;
     let windowed = node.get(Prop::RowCount).is_some();
     let (count, first) = window_of(node);
+    let horizontal = list_horizontal(node);
+    let cols = list_columns(node);
+    // (keyboard) The axis it runs along, for what a row's size says there.
+    let main = usize::from(!horizontal);
+    let view = if horizontal { content.w } else { content.h };
+    // (keyboard) A cell's left and width in a line: whole pixels, so its
+    // text stays sharp and the last cell ends at the list's edge.
+    let cell = |i: u32| {
+        if cols == 1 {
+            return (0.0, content.w);
+        }
+        let share = (content.w + gap) / cols as f32;
+        let at = (i % cols) as f32;
+        let left = (at * share).round();
+        (left, (((at + 1.0) * share - gap).round() - left).max(0.0))
+    };
     let place = |st: &ScrollState| {
         let est = st.estimate();
         let pitch = (est + gap).max(1.0);
-        let top = first as f32 * pitch;
+        let top = (first / cols) as f32 * pitch;
         let mut ys = Vec::with_capacity(rows.len());
         let mut hs = Vec::with_capacity(rows.len());
         let mut y = top;
-        for r in rows {
-            let h = st.heights.get(r).copied().unwrap_or(est);
-            ys.push(y);
-            hs.push(h);
+        let mut j = 0;
+        while j < rows.len() {
+            let end = line_end(j, first, cols, rows.len());
+            let line = &rows[j..end];
+            let h = line
+                .iter()
+                .map(|r| st.heights.get(r).copied().unwrap_or(est))
+                .fold(0.0, f32::max);
+            for _ in line {
+                ys.push(y);
+                hs.push(h);
+            }
             // A collapsing row takes its gap along (as in a column).
-            let g = match sizes.get(r) {
-                Some(f) if f.collapse[1] && f.size[1].is_some() => gap.min(h),
-                _ => gap,
+            let collapsing = |r: &NodeId| {
+                sizes
+                    .get(r)
+                    .is_some_and(|f| f.collapse[main] && f.size[main].is_some())
+            };
+            let g = if line.iter().all(collapsing) {
+                gap.min(h)
+            } else {
+                gap
             };
             y += h + g;
+            j = end;
         }
-        let after = count.saturating_sub(first + rows.len() as u32) as f32;
+        let ended = (first + rows.len() as u32).div_ceil(cols);
+        let after = count.div_ceil(cols).saturating_sub(ended) as f32;
         let total = if count == 0 {
             0.0
         } else {
@@ -786,6 +942,7 @@ pub(super) fn place_list(
             pitch,
             count,
             first,
+            cols,
         }
     };
     let st = scrolls.entry(id).or_default();
@@ -808,8 +965,8 @@ pub(super) fn place_list(
             st.shift(d);
         }
     }
-    let resized = (st.viewport - content.h).abs() > 0.5;
-    st.viewport = content.h;
+    let resized = (st.viewport - view).abs() > 0.5;
+    st.viewport = view;
     st.content = p.total;
     // The row a reveal brought into view stays there in the view the
     // list has now, from where the reveal started (list-scroll-regrow).
@@ -818,7 +975,7 @@ pub(super) fn place_list(
     }
     if let Some(r) = st.reveal.filter(|r| r.due && st.motion.is_none()) {
         match p.span(rows, r.row, r.index) {
-            Some((y, h)) => st.offset = keep_in_view(r.from, y, h, content.h),
+            Some((y, h)) => st.offset = keep_in_view(r.from, y, h, view),
             // The row is gone: what selects next reveals again.
             None => st.reveal = None,
         }
@@ -838,7 +995,10 @@ pub(super) fn place_list(
     // assumed (one entering at `height: 0` where the estimate was a whole
     // row) moves it, and the view follows in the next pass.
     let mut measured_above = 0.0f32;
-    let view = content.h;
+    // (keyboard) Measured rows on a line move it by their tallest, not their
+    // sum: the place this pass draws it stands in.
+    let drawn_at = anchor.map(|j| p.ys[j]);
+    let mut tallest = 0.0f32;
     let margin = layout_margin(view);
     let (lo, hi) = (shown - margin, shown + view + margin);
     out.rows_total += count as usize;
@@ -852,15 +1012,21 @@ pub(super) fn place_list(
         let Some(row) = tree.get(*rid) else {
             continue;
         };
-        let at = (content.x, content.y + y - shown);
+        let (left, width) = cell(first + j as u32);
+        let at = if horizontal {
+            (content.x + y - shown, content.y)
+        } else {
+            (content.x + left, content.y + y - shown)
+        };
         // Laid out before and nothing it reads changed: moved there.
         if let Some(old) = reuse
             && let Some(r) = old.rects.get(&row.id)
-            && (r.w - content.w).abs() < 0.01
+            && (horizontal || (r.w - width).abs() < 0.01)
         {
             let (dx, dy) = (at.0 - r.x, at.1 - r.y);
             move_subtree(tree, row.id, old, out, dx, dy);
-            laid = (laid.0.min(y), laid.1.max(y + r.h));
+            let extent = if horizontal { r.w } else { r.h };
+            laid = (laid.0.min(y), laid.1.max(y + extent));
             continue;
         }
         let mut b = Build::new(tree, false, sizes, texts);
@@ -869,22 +1035,44 @@ pub(super) fn place_list(
             continue;
         };
         // Rows stretch across the list, as in a column.
-        if let Ok(mut s) = b.taffy.style(t).cloned()
+        if !horizontal
+            && let Ok(mut s) = b.taffy.style(t).cloned()
             && s.size.width.is_auto()
         {
-            s.size.width = length(content.w);
+            s.size.width = length(width);
             let _ = b.taffy.set_style(t, s);
         }
-        b.compute(
-            t,
-            taffy::Size {
-                width: AvailableSpace::Definite(content.w),
-                height: AvailableSpace::MaxContent,
+        let avail = taffy::Size {
+            width: if horizontal {
+                AvailableSpace::MaxContent
+            } else {
+                AvailableSpace::Definite(width)
             },
-            texts,
-            scrolls,
-        );
-        let h = b.taffy.layout(t).map_or(0.0, |l| l.size.height.round());
+            height: AvailableSpace::MaxContent,
+        };
+        b.compute(t, avail, texts, scrolls);
+        let measured = b.taffy.layout(t).map_or((0.0, 0.0), |l| {
+            (l.size.width.round(), l.size.height.round())
+        });
+        let h = if horizontal { measured.0 } else { measured.1 };
+        tallest = tallest.max(measured.1);
+        // (keyboard) Across a horizontal list, and down a line of cells, a
+        // row with no height of its own fills what is there, once what it
+        // needs is known.
+        let fill = if horizontal {
+            Some(content.h)
+        } else {
+            (cols > 1).then_some(h0)
+        };
+        if let Some(fill) = fill
+            && measured.1 + 0.5 < fill
+            && let Ok(mut s) = b.taffy.style(t).cloned()
+            && s.size.height.is_auto()
+        {
+            s.size.height = length(fill);
+            let _ = b.taffy.set_style(t, s);
+            b.compute(t, avail, texts, scrolls);
+        }
         let st = scrolls.entry(id).or_default();
         // Off what this pass assumed for it: the rows below are misplaced.
         let assumed = st.heights.insert(*rid, h).unwrap_or(h0);
@@ -906,6 +1094,18 @@ pub(super) fn place_list(
         let live: HashSet<NodeId> = rows.iter().copied().collect();
         st.heights.retain(|k, _| live.contains(k));
     }
+    // (keyboard) What it is as tall as: on a scroll that only moved the view,
+    // the tallest seen; a row that changes that lays it all out again.
+    if horizontal {
+        let was = st.cross;
+        st.cross = match reuse {
+            Some(_) => was.max(tallest),
+            None => tallest,
+        };
+        if (st.cross - was).abs() > 0.5 {
+            changed = true;
+        }
+    }
     // Scrolling goes by what was just measured.
     let p = place(st);
     st.content = p.total;
@@ -914,7 +1114,13 @@ pub(super) fn place_list(
     if let Some(r) = &mut st.reveal {
         r.due = changed;
     }
-    st.anchor = anchor.map(|j| (rows[j], p.ys[j] - measured_above));
+    st.anchor = anchor.map(|j| {
+        let was = match drawn_at {
+            Some(y) if cols > 1 => y,
+            _ => p.ys[j] - measured_above,
+        };
+        (rows[j], was)
+    });
     st.window = windowed.then(|| {
         let (a, b) = (st.target().min(st.offset), st.target().max(st.offset));
         ListWindow {
@@ -939,6 +1145,7 @@ pub(super) fn place_list(
             }),
             content,
             bounds,
+            horizontal,
             ..ListBox::default()
         },
     );

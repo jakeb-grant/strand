@@ -121,6 +121,44 @@ do nothing. `results.selected_index` is the selected row's place, from 0, or
 null with none. `wrap: true` takes the arrows, `next()` and `prev()` round from
 one end to the other.
 
+## A strip or a grid
+
+`axis: horizontal` lays a list out in a line, and `columns: 4` as a grid. It is
+still one list with one selection, and the arrows follow the layout:
+
+```strand file=wallpapers.strand
+// wallpapers.strand: a grid the arrows walk, going round at the ends
+export state open = false
+state names: [text] = ["Dune", "Forest", "Harbour", "Lake", "Peak"]
+
+panel Wallpapers {
+  anchor: center; keyboard: exclusive; open: <-> open
+  width: 400; height: 240; bg: $surface; color: $fg; font: $font.ui
+  list { focus: true; grow: 1; columns: 3; gap: $space.2; pad: $space.3; wrap: true
+    for name in names key name {
+      box { height: 80; pad: $space.1
+        when self.selected { bg: $accent.alpha(0.22) }
+        text name
+      }
+    }
+  }
+}
+```
+
+| | `axis: horizontal` | `columns: n` |
+|---|---|---|
+| Up, Down | do nothing, but Down opens a row's popup and Up closes a submenu | a line, in the same column |
+| Left, Right | one row | one row, stopping at a line's end |
+| `next()`, `prev()` | one row | one row, across lines |
+| Page keys | a view of rows | a view of lines |
+| Each row is | as wide as it needs, and fills the list's height | a share of the list's width, and fills its line's height |
+
+Down from above an empty cell of a short last line goes to the last row. With
+`wrap: true`, moving off an end goes round.
+
+In an `input` with `nav:` to either, Left and Right stay the caret's. To give
+them to the list, claim them: `on key "right" { results.next() }`.
+
 ## Around a password
 
 A claim of a key that types, such as `"q"`, around a `type: password` field

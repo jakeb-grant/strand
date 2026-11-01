@@ -1360,6 +1360,42 @@ impl<'a> Checker<'a> {
         d.add_suggestion(width.name.span, "stroke");
     }
 
+    /// (keyboard) What a `list`'s `axis` and `columns` can't do: `axis:
+    /// both`, and a grid along x. Only `axis: vertical` written out, or
+    /// none, can stand beside `columns`.
+    fn list_shape(&mut self, el: &ast::Element) {
+        let Some(block) = &el.block else { return };
+        let prop = |name: &str| {
+            block.items.iter().find_map(|i| match &i.kind {
+                ast::ItemKind::Prop(p) if p.name.name == name => Some(p),
+                _ => None,
+            })
+        };
+        let Some(axis) = prop("axis") else { return };
+        let word = match &axis.value.kind {
+            ast::ExprKind::Name(n) => Some(n.name.as_str()),
+            _ => None,
+        };
+        if word == Some("both") {
+            self.error(
+                "check::list_axis",
+                "a `list` runs one way: `vertical` or `horizontal`",
+                axis.value.span,
+                "not a way a list runs",
+            );
+        } else if word != Some("vertical")
+            && let Some(columns) = prop("columns")
+        {
+            self.error(
+                "check::list_axis",
+                "`columns` is a grid of vertical lines, so a `list` with it can't run along `axis`",
+                columns.name.span,
+                "needs `axis: vertical`",
+            )
+            .help = Some("use `columns` alone for a grid, or `axis` alone for a strip".into());
+        }
+    }
+
     /// Checks before the block: placement, the node and the positional.
     #[inline(never)]
     fn element_head(
@@ -1394,6 +1430,9 @@ impl<'a> Checker<'a> {
         }
         if kind == "arc" {
             self.arc_width(el);
+        }
+        if kind == "list" {
+            self.list_shape(el);
         }
         if let Some(parent) = self.misplaced_in(schema) {
             self.error(

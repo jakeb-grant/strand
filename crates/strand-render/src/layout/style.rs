@@ -356,7 +356,11 @@ impl<'a> Build<'a> {
             }
             NodeKind::List => {
                 // A leaf to taffy; its rows are laid out after.
-                style.overflow.y = Overflow::Scroll;
+                if super::list::list_horizontal(node) {
+                    style.overflow.x = Overflow::Scroll;
+                } else {
+                    style.overflow.y = Overflow::Scroll;
+                }
                 style.scrollbar_width = 0.0;
                 let t = self
                     .taffy

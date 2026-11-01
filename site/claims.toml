@@ -2892,6 +2892,18 @@ proof  = "crates/strand-compiler/tests/theme.rs::a_palette_from_hand_written_col
 # --- keys ---
 [[claim]]
 page   = "site/how-to/keys.md"
+text   = "Down from above an empty cell of a short last line goes to the last row"
+source = ["crates/strand-render/src/input.rs", "docs/spec.md#67-layout-and-input"]
+proof  = "crates/strand-compiler/tests/selection.rs::a_grids_arrows_move_by_geometry"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "Left and Right stay the caret's"
+source = ["crates/strand-render/src/input.rs"]
+proof  = "crates/strand-compiler/tests/selection.rs::an_inputs_caret_keeps_left_and_right"
+
+[[claim]]
+page   = "site/how-to/keys.md"
 text   = "They go to the row the keys would"
 source = ["crates/strand-render/src/input.rs", "docs/spec.md#67-layout-and-input"]
 proof  = "crates/strand-compiler/tests/selection.rs::the_actions_reach_rows_beyond_the_window"

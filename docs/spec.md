@@ -1407,6 +1407,28 @@ monitor, the keyboard always).
 - **`wrap: true` on a `list`** takes the arrows and `next()` and `prev()`
   round from one end to the other; Page keys, Home and End, and `select`
   stop at the ends.
+- **`axis: horizontal` on a `list`** lays its rows in a line, scrolled,
+  virtualised and kept in view along x, with a plain wheel going sideways. It
+  is as tall as its tallest row laid out unless something else sizes it, and
+  a row with no height of its own fills it. Left and Right move the selection,
+  and Up and Down don't. In an `input` with `nav:` to one, Left and Right stay
+  the caret's, since that is what a text field's arrows are for; a config that
+  wants them claims them (`on key "right" { results.next() }`). A row's popup
+  opens with Down, and Up closes one opened from another, in place of a
+  vertical list's Right and Left. `axis: both` is the error `check::list_axis`.
+- **`columns: n` on a `list`** is a grid in one list, with one selection. A
+  cell is a share of the list's width, `gap` between, on whole pixels; a line
+  is as tall as its tallest cell, and a cell with no height of its own fills
+  it. Up and Down move a line in the same column, and Down from above an empty
+  cell of a short last line goes to the last row. Left and Right move one and
+  stop at a line's end. Page keys move a view of lines, Home and End go to the
+  ends, and `next()` and `prev()` move one across lines. With `wrap: true` Up
+  and Down off an end go to that column at the other (the last row, if that
+  cell is empty), and Left and Right carry on to the next line and round. It
+  virtualises and scrolls by the line. In an `input` with `nav:` to one, Up and
+  Down move it and Left and Right stay the caret's. Its keys are all taken, so
+  a row's popup opens by no key of the list's. `axis:` beside it is
+  `check::list_axis` unless written `vertical`. `grid` stays a layout element.
 - **Copy and paste.** A focused `input` copies its selection with
   Ctrl+C or Ctrl+Insert, cuts it with Ctrl+X or Shift+Delete and pastes
   at the caret, over the selection, with Ctrl+V or Shift+Insert

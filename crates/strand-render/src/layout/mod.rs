@@ -50,12 +50,13 @@ mod list;
 mod style;
 mod text;
 
-use list::rows_height;
 pub use list::{
     FLING_DECAY, LAYOUT_OVERSCAN, ListBox, ListWindow, ScrollState, WINDOW_NEED, WINDOW_OVERSCAN,
 };
+use list::{ListSize, rows_height};
 pub(crate) use list::{
-    keep_in_view, layout_margin, relayout_list, scroll_axes, scrolls_content, translate_under,
+    keep_in_view, layout_margin, list_columns, list_horizontal, relayout_list, row_span,
+    scroll_axes, scrolls_content, translate_under,
 };
 pub(crate) use text::TextSizes;
 use text::measure_leaf;
@@ -756,7 +757,7 @@ impl<'a> Build<'a> {
         texts: &dyn TextSizes,
         scrolls: &mut HashMap<NodeId, ScrollState>,
     ) {
-        let mut lists: HashMap<NodeId, f32> = HashMap::new();
+        let mut lists: HashMap<NodeId, ListSize> = HashMap::new();
         for (id, _, _) in &self.lists {
             let st = scrolls.entry(*id).or_default();
             let gap = self
@@ -765,7 +766,15 @@ impl<'a> Build<'a> {
                 .and_then(|n| num(n.get(Prop::Gap)))
                 .unwrap_or(0.0)
                 .max(0.0);
-            lists.insert(*id, rows_height(self.tree, *id, st, gap));
+            let main = rows_height(self.tree, *id, st, gap);
+            let horizontal = self.tree.get(*id).is_some_and(list::list_horizontal);
+            // Its first pass: a row's worth, until it has laid one out.
+            let cross = horizontal.then_some(if st.cross > 0.0 {
+                st.cross
+            } else {
+                LIST_ROW_ESTIMATE
+            });
+            lists.insert(*id, ListSize { main, cross });
         }
         let _ = self.taffy.compute_layout_with_measure(
             t,
@@ -885,6 +894,7 @@ impl<'a> Build<'a> {
                         bounds,
                         applied_x: dx,
                         bounds_x,
+                        horizontal: false,
                     },
                 );
             }

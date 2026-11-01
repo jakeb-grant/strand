@@ -18,7 +18,8 @@ use super::Renderer;
 use super::layout_pass::TextInfo;
 use crate::anim::{exit_pose, is_pose, page_slide};
 use crate::layout::{
-    keep_in_view, layout_margin, relayout_list, scroll_axes, scrolls_content, translate_under,
+    keep_in_view, layout_margin, list_columns, list_horizontal, relayout_list, row_span,
+    scroll_axes, scrolls_content, translate_under,
 };
 
 /// What moved a scroll ([`Renderer::scroll_input`]).
@@ -165,10 +166,12 @@ impl Renderer {
         Some(id)
     }
 
-    /// (flex) The scroll state of `id` along x (`x`), else along y.
+    /// (flex) The scroll state of `id` along x (`x`), else along y. (keyboard)
+    /// A list has one, along the way it runs.
     fn axis_state(&mut self, id: NodeId, x: bool) -> &mut crate::layout::ScrollState {
+        let list = self.tree.get(id).is_some_and(|n| n.kind == NodeKind::List);
         let st = self.scrolls.entry(id).or_default();
-        if x {
+        if x && !list {
             st.across.get_or_insert_with(Default::default)
         } else {
             st
@@ -372,31 +375,13 @@ impl Renderer {
             .unwrap_or(0.0)
             .max(0.0);
         let first = row_first(node);
+        let cols = list_columns(node);
         let st = self.scrolls.entry(id).or_default();
-        let est = if st.heights.is_empty() {
-            crate::layout::LIST_ROW_ESTIMATE
-        } else {
-            st.heights.values().sum::<f32>() / st.heights.len() as f32
-        };
-        let h = |r: &NodeId| st.heights.get(r).copied().unwrap_or(est);
         let row = index
             .checked_sub(first)
             .and_then(|j| rows.get(j as usize))
             .copied();
-        let (y, rh) = if index < first {
-            (index as f32 * (est + gap), est)
-        } else {
-            let j = (index - first) as usize;
-            let top = first as f32 * (est + gap);
-            if j < rows.len() {
-                let y = top + rows[..j].iter().map(|r| h(r) + gap).sum::<f32>();
-                (y, h(&rows[j]))
-            } else {
-                let mounted = rows.iter().map(|r| h(r) + gap).sum::<f32>();
-                let past = (j - rows.len()) as f32 * (est + gap);
-                (top + mounted + past, est)
-            }
-        };
+        let (y, rh) = row_span(st, &rows, first, gap, cols, index);
         let before = st.offset;
         let to = keep_in_view(before, y, rh, st.viewport);
         st.stop();
@@ -577,7 +562,7 @@ impl Renderer {
                 continue;
             };
             let shown = st.offset.clamp(lb.bounds.0, lb.bounds.1);
-            let view = lb.content.h;
+            let view = lb.view();
             let fits = match lb.laid {
                 // A `scroll` holds all of its content.
                 None => true,
@@ -592,12 +577,12 @@ impl Renderer {
                     a.shown = a.offset.clamp(lb.bounds_x.0, lb.bounds_x.1);
                     a.shown
                 });
-                translate_under(
-                    &self.tree,
-                    id,
-                    boxes,
-                    (lb.applied_x - shown_x, lb.applied - shown),
-                );
+                let by = if lb.horizontal {
+                    (lb.applied - shown, 0.0)
+                } else {
+                    (lb.applied_x - shown_x, lb.applied - shown)
+                };
+                translate_under(&self.tree, id, boxes, by);
                 st.shown = shown;
                 if let Some(l) = boxes.lists.get_mut(&id) {
                     l.applied = shown;
@@ -662,10 +647,19 @@ impl Renderer {
             let Some(st) = self.scrolls.get(id) else {
                 continue;
             };
-            let view = lb.content;
-            if view.h <= 0.0 || st.content <= 0.0 || node.children.is_empty() {
+            let horizontal = list_horizontal(node);
+            let (view_at, view) = if horizontal {
+                (lb.content.x, lb.content.w)
+            } else {
+                (lb.content.y, lb.content.h)
+            };
+            if view <= 0.0 || st.content <= 0.0 || node.children.is_empty() {
                 continue;
             }
+            // A box's start and extent along the list.
+            let along = |r: &strand_scene::LogicalRect| {
+                if horizontal { (r.x, r.w) } else { (r.y, r.h) }
+            };
             any = true;
             // Shown short of where the scroll is: held at the mounted
             // rows' edge (a reveal's hold is not a stall).
@@ -678,18 +672,22 @@ impl Renderer {
                 at_offset.push(*id);
             }
             // The part of the view the content reaches.
-            let bottom = view.y + view.h.min(st.content - lb.applied);
+            let bottom = view_at + view.min(st.content - lb.applied);
             let mut spans: Vec<(f32, f32)> = node
                 .children
                 .iter()
                 .filter_map(|r| boxes.rects.get(r))
-                .map(|r| (r.y, r.y + r.h))
+                .map(|r| {
+                    let (a, n) = along(r);
+                    (a, a + n)
+                })
                 .collect();
-            if let Some(j) = node
-                .children
-                .iter()
-                .position(|r| boxes.rects.get(r).is_some_and(|r| r.y + r.h > view.y + 0.5))
-            {
+            if let Some(j) = node.children.iter().position(|r| {
+                boxes.rects.get(r).is_some_and(|r| {
+                    let (a, n) = along(r);
+                    a + n > view_at + 0.5
+                })
+            }) {
                 top = Some(row_first(node) + j as u32);
             }
             spans.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -700,7 +698,7 @@ impl Renderer {
                 .unwrap_or(0.0)
                 .max(0.0)
                 + 1.0;
-            let mut reached = view.y;
+            let mut reached = view_at;
             for (a, b) in spans {
                 if a > reached + slack {
                     break;

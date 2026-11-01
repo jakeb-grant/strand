@@ -14904,3 +14904,13 @@ as in the lock, and what calls give a `slot` as around; it follows the calls rat
 every call. Named keys are a table for checking typos, with `XF86*` and `dead_*` taken as written because
 those families are open; a typo there goes unreported. A character pattern with an explicit `shift` is an
 error rather than ignoring it: `"shift+1"` used to claim plain `1`.
+
+(2026-11-01, piece 2) What the shape above left open for `axis:` and `columns:`. In an `input` with `nav:`,
+Left and Right stay the caret's on a strip and a grid alike: taking them would make a field's text uneditable
+by the arrows the moment its list changed shape, and a claim gives them to the list in one line. A grid has no
+submenu key, since its four arrows all move it. A cell or strip row with no height of its own fills its line or
+the list, as `grid`'s cells and a column's rows do, so a selected row's background is even; that costs a second
+layout of a short row only. A horizontal list with no height of its own is as tall as its tallest row laid out,
+since rows past the window can't be measured, so it may grow as taller ones scroll in. A drop's `at` on a grid
+still comes from one axis (`drop_index`) and is not exact across lines; a grid that is reordered by dragging is
+later work.

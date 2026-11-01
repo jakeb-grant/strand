@@ -8,7 +8,7 @@ use taffy::prelude::{AvailableSpace, LengthPercentageAuto, Style};
 use taffy::{LayoutInput, LayoutOutput, compute_leaf_layout};
 
 use super::Ctx;
-use super::list::list_cap;
+use super::list::{ListSize, list_cap, list_cap_x};
 
 /// Delivered text layouts, as layout sees them: sizes in logical pixels.
 pub(crate) trait TextSizes {
@@ -157,13 +157,16 @@ pub(super) fn measure_text(
 /// widgets, and a list's rows (capped by its `height`/`max_height`).
 pub(super) fn measure_leaf(
     texts: &dyn TextSizes,
-    lists: &HashMap<NodeId, f32>,
+    lists: &HashMap<NodeId, ListSize>,
     inputs: LayoutInput,
     ctx: Option<&mut Ctx>,
     style: &Style,
 ) -> LayoutOutput {
     let cap = matches!(ctx, Some(Ctx::List(_)))
         .then(|| list_cap(&inputs, style))
+        .flatten();
+    let cap_x = matches!(ctx, Some(Ctx::List(_)))
+        .then(|| list_cap_x(&inputs, style))
         .flatten();
     let width_of = |d: LengthPercentageAuto| -> Option<f32> {
         use taffy::util::MaybeResolve;
@@ -238,7 +241,19 @@ pub(super) fn measure_leaf(
                 }
             }
             Some(Ctx::List(id)) => {
-                let h = lists.get(id).copied().unwrap_or_default();
+                let size = lists.get(id).copied().unwrap_or_default();
+                // (keyboard) Along x: the same, across.
+                if let Some(cross) = size.cross {
+                    let w = match avail.width {
+                        AvailableSpace::MinContent => 0.0,
+                        _ => cap_x.map_or(size.main, |c| size.main.min(c)),
+                    };
+                    return taffy::Size {
+                        width: known.width.unwrap_or(w),
+                        height: known.height.unwrap_or(cross),
+                    };
+                }
+                let h = size.main;
                 // A scroll container: its rows past `height` or
                 // `max_height` scroll, so that is all its parent sees of
                 // them, and its smallest size is none.
