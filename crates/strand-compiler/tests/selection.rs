@@ -255,6 +255,11 @@ fn on_another_element_they_are_a_check_error() {
     };
     assert_eq!(check_codes(&comp("col")), ["check::not_a_list"]);
     assert!(check_codes(&comp("list")).is_empty());
+    assert_eq!(
+        check_codes(&with("list { id: r; columns: 0 }", "r.next()")),
+        ["check::list_axis"]
+    );
+    assert!(check_codes(&with("list { id: r; columns: 3 }", "r.next()")).is_empty());
 }
 
 /// Through `self`, which it can't see through, it does nothing at run time,
@@ -863,4 +868,27 @@ fn a_nav_grid_leaves_left_and_right_to_the_caret() {
     assert_eq!(index(&sh), Some(0));
     press(&mut sh, "Down");
     assert_eq!(index(&sh), Some(2));
+}
+
+/// `strand check` lets a component whose root is a `list` take `next()`, so
+/// the call's `id:` moves that list when it runs.
+#[test]
+fn a_component_rooted_in_a_list_moves_from_code() {
+    let mut sh = Shell::new(
+        "state items: [int] = [0, 1, 2]\n\
+         component C { list { height: 60; focus: true; slot } }\n\
+         panel L { anchor: top_left; width: 300; height: 60; keyboard: exclusive\n\
+           on key \"n\" { results.next() }\n\
+           C { id: results\n\
+             for i in items key i { box { height: 20 } }\n\
+           }\n\
+         }\n",
+    );
+    sh.keyboard_to("L");
+    sh.settle();
+    assert_eq!(index(&sh), None);
+    press(&mut sh, "n");
+    assert_eq!(index(&sh), Some(0));
+    press(&mut sh, "n");
+    assert_eq!(index(&sh), Some(1));
 }
