@@ -602,7 +602,8 @@ impl Ctx {
     /// and no other handler. A claim whose `when` turned false since the
     /// router chose it (keys queued while logic was busy) does not run its
     /// body (`mount_handler`): its key is spent, since the router has
-    /// stopped the default.
+    /// stopped the default. So is a key sent for a claim that is no longer
+    /// one of it (a reload renumbered them under a key in flight).
     fn run_claim(
         &self,
         rt: &Runtime,
@@ -622,7 +623,7 @@ impl Ctx {
                 entry.state.clone(),
             )
         };
-        let Some(claim) = claim else {
+        let Some(claim) = claim.filter(|c| c.patterns.iter().any(|p| p.matches(key))) else {
             return false;
         };
         let mut ctx = EventCtx::new(Some(state), Some(node), "key", args);

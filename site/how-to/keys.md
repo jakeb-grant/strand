@@ -50,13 +50,17 @@ Any handler of an element may sit in a `when`, `on click` too.
 |---|---|
 | `"ctrl+n"`, `"ctrl+shift+p"` | Modifiers `ctrl`, `shift`, `alt`, `super`, before the key. They are exact: `"n"` is not Ctrl+N |
 | `"a"`, `"shift+a"` | A letter, in any case. `"a"` is not Shift+A |
-| `"?"`, `"1"` | Any other single character: what the key types, however it took Shift to type it |
+| `"?"`, `"1"` | Any other single character: what the key types, however it took Shift to type it. Write `"!"`, not `"shift+1"` |
 | `"esc"`, `"enter"`, `"tab"`, `"space"` | Short names, with `up`, `down`, `left`, `right`, `pgup`, `pgdn`, `backspace`, `del` |
-| `"Page_Down"`, `"F5"` | A key's own name, in any case |
+| `"Page_Down"`, `"F5"`, `"XF86AudioMute"` | A key's own name, in any case |
 
-`ctrl+n` also works on a Russian layout, since a key matches by its name
-and then by its Latin name. `strand check` says when a pattern names no key,
-and which it thinks you meant.
+With Ctrl, Alt or Super held, a key matches by its name and then by its
+Latin name, so `ctrl+n` also works on a Russian layout. A plain `"j"` matches
+only a key called that, and leaves the Cyrillic letter on it to be typed.
+
+`strand check` says when a pattern names no key, and which it thinks you
+meant. It knows the common names; any name starting `XF86` or `dead_` is
+taken as written, unchecked.
 
 ## Hearing keys without taking them
 

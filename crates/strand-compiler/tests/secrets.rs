@@ -405,3 +405,64 @@ fn a_claim_that_would_eat_a_password_is_an_error() {
         Vec::<String>::new()
     );
 }
+
+fn claim_errors(src: &str) -> usize {
+    let mut map = SourceMap::new();
+    map.add("shell.strand".to_string(), src.to_string());
+    compile(&map)
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "check::claim_around_password")
+        .count()
+}
+
+/// (keyboard) A component a `lock` calls, however deep, is in the lock: a
+/// claim in its body around any input is the error. The same component called
+/// only elsewhere, around a plain input, is fine.
+#[test]
+fn a_claim_in_a_component_a_lock_calls_is_in_the_lock() {
+    let f = "state s = \"\"\ncomponent F { box { on key \"q\" { }; input { text: <-> s; on activate { auth.submit(s) } } } }\n";
+    assert_eq!(claim_errors(&format!("{f}lock L {{ F {{ }} }}\n")), 1);
+    assert_eq!(
+        claim_errors(&format!(
+            "{f}component G {{ row {{ F {{ }} }} }}\nlock L {{ G {{ }} }}\n"
+        )),
+        1,
+        "through another component"
+    );
+    assert_eq!(claim_errors(&format!("{f}bar B {{ F {{ }} }}\n")), 0);
+}
+
+/// (keyboard) What a call gives a `slot` is around in the component's body:
+/// a password there, through other components' slots too, is the error; a
+/// slot given none is fine.
+#[test]
+fn a_claim_around_a_slot_given_a_password_is_an_error() {
+    let f = "component F { box { on key \"q\" { }; slot } }\n";
+    let pw = "input { type: password; text: <-> pw }";
+    assert_eq!(
+        claim_errors(&format!("{f}bar B {{ state pw = \"\"\n  F {{ {pw} }} }}\n")),
+        1
+    );
+    assert_eq!(
+        claim_errors(&format!(
+            "{f}component G {{ F {{ slot }} }}\nbar B {{ state pw = \"\"\n  G {{ {pw} }} }}\n"
+        )),
+        1,
+        "through a slot in a slot"
+    );
+    assert_eq!(
+        claim_errors(&format!(
+            "{f}bar B {{ state q = \"\"\n  F {{ input {{ text: <-> q }} }} }}\n"
+        )),
+        0,
+        "a plain input"
+    );
+    // In a lock, any input in a slot.
+    assert_eq!(
+        claim_errors(&format!(
+            "{f}state s = \"\"\nlock L {{ F {{ input {{ text: <-> s; on activate {{ auth.submit(s) }} }} }} }}\n"
+        )),
+        1
+    );
+}

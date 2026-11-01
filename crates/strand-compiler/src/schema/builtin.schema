@@ -1839,9 +1839,11 @@ group node {
   /// passes it to the next claim out, with the default still stopped.
   /// Modifiers are `ctrl`, `shift`, `alt` and `super`, exact; a letter is
   /// `"a"` or `"shift+a"`; a single other character (`"?"`, `"1"`) is what
-  /// the key types and ignores Shift; named keys are xkb's (`Escape`,
-  /// `Page_Down`, `F5`) in any case, and `esc`, `enter`, `tab`, `space`,
-  /// `up`, `down`, `left`, `right`, `pgup`, `pgdn`, `backspace` and `del`.
+  /// the key types, written with no `shift`; named keys are a table of xkb's
+  /// in any case (`Escape`, `Page_Down`, `F5`; spec.md 6.7 lists it), `esc`,
+  /// `enter`, `tab`, `space`, `up`, `down`, `left`, `right`, `pgup`, `pgdn`,
+  /// `backspace` and `del`, and any name starting `XF86` or `dead_`, unchecked.
+  /// With Ctrl, Alt or Super a key also matches by its Latin name.
   on key(key: Key)
   /// A key let go while it or something in it has focus. It only observes.
   on key_release(key: Key)

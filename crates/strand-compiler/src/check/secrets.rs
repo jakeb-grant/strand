@@ -121,6 +121,9 @@ pub(super) fn flow(
         password: false,
         keys: false,
         lock: false,
+        locked: HashSet::new(),
+        component: None,
+        slot_args: HashMap::new(),
         bodies: HashMap::new(),
         params: HashMap::new(),
         fn_params: HashMap::new(),
@@ -145,6 +148,20 @@ pub(super) fn flow(
                 }
                 Item::Fn(fd) => {
                     w.fn_params.insert(fd.def, fd.params.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+    for f in files {
+        for item in &f.items {
+            match item {
+                Item::Component(c) => slot_args_in(&c.body, Some(c.def), &mut w.slot_args),
+                Item::Surface(s) => {
+                    slot_args_in(&s.element.children, None, &mut w.slot_args);
+                    if matches!(&s.element.kind, ElementKind::Builtin(k) if k == "lock") {
+                        called_in(&s.element.children, &w.bodies, &mut w.locked);
+                    }
                 }
                 _ => {}
             }
@@ -605,6 +622,53 @@ fn hears_keys(nodes: &[Node]) -> bool {
     })
 }
 
+/// (keyboard) What each component's calls give its `slot`, with the
+/// component each call is in.
+type SlotArgs<'a> = HashMap<DefId, Vec<(Option<DefId>, &'a [Node])>>;
+
+/// The bodies of `nodes` a tree goes through: an element's, each `if`,
+/// `for` and `match` branch.
+fn nested(n: &Node) -> Vec<&[Node]> {
+    match n {
+        Node::Element(e) => vec![&e.children],
+        Node::If(i) => vec![&i.then, &i.else_],
+        Node::For(f) => vec![&f.body],
+        Node::Match(m) => m.arms.iter().map(|(_, b)| b.as_slice()).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// (keyboard) Records what each component call among `nodes` gives its
+/// `slot`; `caller` is the component they are in.
+fn slot_args_in<'a>(nodes: &'a [Node], caller: Option<DefId>, out: &mut SlotArgs<'a>) {
+    for n in nodes {
+        if let Node::Element(e) = n
+            && let ElementKind::Component(d) = &e.kind
+        {
+            out.entry(*d).or_default().push((caller, &e.children));
+        }
+        for body in nested(n) {
+            slot_args_in(body, caller, out);
+        }
+    }
+}
+
+/// (keyboard) Every component `nodes` call, and those call, into `out`.
+fn called_in(nodes: &[Node], bodies: &HashMap<DefId, &[Node]>, out: &mut HashSet<DefId>) {
+    for n in nodes {
+        if let Node::Element(e) = n
+            && let ElementKind::Component(d) = &e.kind
+            && out.insert(*d)
+            && let Some(b) = bodies.get(d)
+        {
+            called_in(b, bodies, out);
+        }
+        for body in nested(n) {
+            called_in(body, bodies, out);
+        }
+    }
+}
+
 /// The walk that collects sources, flows and sinks.
 struct Walk<'a> {
     defs: &'a [Def],
@@ -629,6 +693,14 @@ struct Walk<'a> {
     fn_params: HashMap<DefId, Vec<LocalId>>,
     /// (keyboard) Inside a `lock`, every `input` of which takes a secret.
     lock: bool,
+    /// (keyboard) The components a `lock` calls, however deep: their bodies
+    /// count as inside it, wherever else they are called.
+    locked: HashSet<DefId>,
+    /// (keyboard) The component whose body is being walked.
+    component: Option<DefId>,
+    /// (keyboard) What each component's calls give its `slot`, with the
+    /// component each call is in.
+    slot_args: SlotArgs<'a>,
     /// The `persist` states.
     persisted: HashSet<DefId>,
     sources: Vec<(Place, Origin)>,
@@ -650,7 +722,11 @@ impl<'a> Walk<'a> {
                         self.flow(Place::Local(p.local), d);
                     }
                 }
+                self.lock = self.locked.contains(&c.def);
+                self.component = Some(c.def);
                 self.nodes(&c.body);
+                self.lock = false;
+                self.component = None;
             }
             Item::Surface(s) => self.element(&s.element),
             Item::State(s) => self.state(s),
@@ -783,12 +859,13 @@ impl<'a> Walk<'a> {
     /// left, and a `when` cannot be proved to exclude the field.
     fn claims_around_password(&mut self, el: &'a hir::Element) {
         let lock = self.lock || matches!(&el.kind, ElementKind::Builtin(k) if k == "lock");
-        let holds = |w: &Self, fields: &[Node]| w.holds_field(fields, lock, &mut HashSet::new());
         let around = password_input(self.types, el)
             || (lock && matches!(&el.kind, ElementKind::Builtin(k) if k == "input"))
-            || holds(self, &el.children)
+            || self.holds_field(&el.children, lock, self.component, &mut HashSet::new())
             || matches!(&el.kind, ElementKind::Component(d)
-                if self.bodies.get(d).is_some_and(|b| holds(self, b)));
+            if self.bodies.get(d).is_some_and(|b| {
+                self.holds_field(b, lock, Some(*d), &mut HashSet::new())
+            }));
         if !around {
             return;
         }
@@ -862,7 +939,12 @@ impl<'a> Walk<'a> {
                 self.password = password;
                 self.keys = password
                     || (hears_keys(&el.children)
-                        && self.holds_field(&el.children, false, &mut HashSet::new()));
+                        && self.holds_field(
+                            &el.children,
+                            false,
+                            self.component,
+                            &mut HashSet::new(),
+                        ));
             }
             ElementKind::Unknown(_) => {}
         }
@@ -872,30 +954,51 @@ impl<'a> Walk<'a> {
     }
 
     /// Whether a password input is among `nodes`, in components called
-    /// there too; with `any`, whatever `input` (a `lock`'s).
-    fn holds_field(&self, nodes: &[Node], any: bool, seen: &mut HashSet<DefId>) -> bool {
+    /// there too and in what any call gives a `slot` among them, `nodes`
+    /// being in the body of `slot_of`; with `any`, whatever `input` (a
+    /// `lock`'s). `seen` holds each component's body (`false`) and slot
+    /// (`true`) already looked in.
+    fn holds_field(
+        &self,
+        nodes: &[Node],
+        any: bool,
+        slot_of: Option<DefId>,
+        seen: &mut HashSet<(DefId, bool)>,
+    ) -> bool {
         nodes.iter().any(|n| match n {
             Node::Element(e) => match &e.kind {
                 ElementKind::Builtin(k) => {
                     password_input(self.types, e)
                         || (any && k == "input")
-                        || self.holds_field(&e.children, any, seen)
+                        || self.holds_field(&e.children, any, slot_of, seen)
                 }
                 ElementKind::Component(d) => {
-                    self.holds_field(&e.children, any, seen)
-                        || (seen.insert(*d)
+                    self.holds_field(&e.children, any, slot_of, seen)
+                        || (seen.insert((*d, false))
                             && self
                                 .bodies
                                 .get(d)
-                                .is_some_and(|b| self.holds_field(b, any, seen)))
+                                .is_some_and(|b| self.holds_field(b, any, Some(*d), seen)))
                 }
                 ElementKind::Unknown(_) => false,
             },
             Node::If(i) => {
-                self.holds_field(&i.then, any, seen) || self.holds_field(&i.else_, any, seen)
+                self.holds_field(&i.then, any, slot_of, seen)
+                    || self.holds_field(&i.else_, any, slot_of, seen)
             }
-            Node::For(f) => self.holds_field(&f.body, any, seen),
-            Node::Match(m) => m.arms.iter().any(|(_, b)| self.holds_field(b, any, seen)),
+            Node::For(f) => self.holds_field(&f.body, any, slot_of, seen),
+            Node::Match(m) => m
+                .arms
+                .iter()
+                .any(|(_, b)| self.holds_field(b, any, slot_of, seen)),
+            Node::Slot(_) => slot_of.is_some_and(|d| {
+                seen.insert((d, true))
+                    && self.slot_args.get(&d).is_some_and(|calls| {
+                        calls
+                            .iter()
+                            .any(|(caller, given)| self.holds_field(given, any, *caller, seen))
+                    })
+            }),
             _ => false,
         })
     }

@@ -54,12 +54,11 @@ const NAMED: &[Named] = named![
         "F20", "F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28", "F29", "F30", "F31", "F32",
         "F33", "F34", "F35", "KP_0", "KP_1", "KP_2", "KP_3", "KP_4", "KP_5", "KP_6", "KP_7",
         "KP_8", "KP_9", "KP_Add", "KP_Subtract", "KP_Multiply", "KP_Divide", "KP_Decimal",
-        "KP_Separator", "KP_Equal", "XF86AudioRaiseVolume", "XF86AudioLowerVolume",
-        "XF86AudioMute", "XF86AudioMicMute", "XF86AudioPlay", "XF86AudioPause", "XF86AudioStop",
-        "XF86AudioNext", "XF86AudioPrev", "XF86MonBrightnessUp", "XF86MonBrightnessDown",
-        "XF86Search", "XF86Calculator", "XF86Mail", "XF86Explorer", "XF86Tools", "XF86Back",
-        "XF86Forward", "XF86Reload", "XF86HomePage", "XF86PowerOff", "XF86Sleep",
-        "exclam", "quotedbl", "numbersign", "dollar", "percent", "ampersand", "apostrophe",
+        "KP_Separator", "KP_Equal", "Multi_key", "Hyper_L", "Hyper_R", "Shift_Lock", "Mode_switch", "ISO_Level5_Shift",
+    "ISO_Next_Group", "ISO_Prev_Group", "Begin", "KP_Begin", "Undo", "Redo", "Help", "Find",
+    "Cancel", "Select", "Execute", "Break", "Sys_Req", "Clear", "Linefeed", "KP_F1", "KP_F2",
+    "KP_F3", "KP_F4", "Muhenkan", "Henkan", "Hiragana", "Katakana", "Hangul",
+    "exclam", "quotedbl", "numbersign", "dollar", "percent", "ampersand", "apostrophe",
         "parenleft", "parenright", "asterisk", "plus", "comma", "minus", "period", "slash",
         "colon", "semicolon", "less", "equal", "greater", "question", "at", "bracketleft",
         "backslash", "bracketright", "asciicircum", "underscore", "grave", "braceleft", "bar",
@@ -105,6 +104,21 @@ const CHARACTERS: &[(char, &str)] = &[
     ('~', "asciitilde"),
 ];
 
+/// Key names taken as written, unchecked: their families are too long and
+/// too open for a table (`XF86AudioMedia`, `dead_acute`).
+const OPEN_PREFIXES: &[&str] = &["xf86", "dead_"];
+
+/// Whether `key` starts with one of [`OPEN_PREFIXES`], in any case, and goes
+/// on as a keysym name does.
+fn open_name(key: &str) -> bool {
+    OPEN_PREFIXES.iter().any(|p| {
+        key.get(..p.len())
+            .is_some_and(|h| h.eq_ignore_ascii_case(p))
+            && key.len() > p.len()
+            && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
 /// Every name a pattern may give a key, in lower case: what the checker
 /// suggests from.
 pub fn key_names() -> impl Iterator<Item = String> {
@@ -115,7 +129,7 @@ pub fn key_names() -> impl Iterator<Item = String> {
 }
 
 /// The key part of a [`KeyPattern`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum PatternKey {
     /// A letter, in lower case: the key's name or the Latin name it falls
     /// back on, in either case, or the letter it types (a non-Latin
@@ -126,6 +140,8 @@ enum PatternKey {
     Character(char),
     /// One of the table's named keys.
     Named(&'static [&'static str]),
+    /// A name of an open family ([`OPEN_PREFIXES`]), as written.
+    Open(String),
 }
 
 /// A pattern that does not parse.
@@ -137,6 +153,13 @@ pub enum KeyPatternError {
     UnknownModifier(String),
     /// A name of several characters that is not in the table.
     UnknownKey(String),
+    /// A modifier named twice.
+    DuplicateModifier(String),
+    /// A `+` that joins nothing (`"++"`, `"+a"`, `"ctrl++a"`).
+    StrayPlus,
+    /// `shift` on a single non-letter character (`"shift+1"`), which
+    /// matches what the key types: with Shift, another character.
+    ShiftOnCharacter(char),
 }
 
 impl fmt::Display for KeyPatternError {
@@ -145,6 +168,11 @@ impl fmt::Display for KeyPatternError {
             KeyPatternError::NoKey => write!(f, "this key pattern names no key"),
             KeyPatternError::UnknownModifier(m) => write!(f, "`{m}` is not a modifier"),
             KeyPatternError::UnknownKey(k) => write!(f, "`{k}` is not a key"),
+            KeyPatternError::DuplicateModifier(m) => write!(f, "`{m}` is named twice"),
+            KeyPatternError::StrayPlus => write!(f, "this `+` joins nothing"),
+            KeyPatternError::ShiftOnCharacter(c) => {
+                write!(f, "`shift+{c}` is not a key: `{c}` is what a key types")
+            }
         }
     }
 }
@@ -170,9 +198,11 @@ impl KeyPattern {
             None => ("", src),
             Some(("", "")) => ("", "+"),
             Some((m, "")) => match m.strip_suffix('+') {
+                Some("") => return Err(KeyPatternError::StrayPlus),
                 Some(m) => (m, "+"),
                 None => return Err(KeyPatternError::NoKey),
             },
+            Some(("", _)) => return Err(KeyPatternError::StrayPlus),
             Some((m, k)) => (m, k),
         };
         let mut pattern = KeyPattern {
@@ -185,12 +215,16 @@ impl KeyPattern {
         };
         if !mods.is_empty() {
             for m in mods.split('+') {
-                match m.to_ascii_lowercase().as_str() {
-                    "ctrl" => pattern.ctrl = true,
-                    "shift" => pattern.shift = true,
-                    "alt" => pattern.alt = true,
-                    "super" => pattern.logo = true,
+                let held = match m.to_ascii_lowercase().as_str() {
+                    "" => return Err(KeyPatternError::StrayPlus),
+                    "ctrl" => &mut pattern.ctrl,
+                    "shift" => &mut pattern.shift,
+                    "alt" => &mut pattern.alt,
+                    "super" => &mut pattern.logo,
                     _ => return Err(KeyPatternError::UnknownModifier(m.to_string())),
+                };
+                if std::mem::replace(held, true) {
+                    return Err(KeyPatternError::DuplicateModifier(m.to_string()));
                 }
             }
         }
@@ -200,7 +234,9 @@ impl KeyPattern {
             (Some(c), None) if c.is_alphabetic() => {
                 PatternKey::Letter(c.to_lowercase().next().unwrap_or(c))
             }
+            (Some(c), None) if pattern.shift => return Err(KeyPatternError::ShiftOnCharacter(c)),
             (Some(c), None) => PatternKey::Character(c),
+            _ if open_name(key) => PatternKey::Open(key.to_string()),
             _ => NAMED
                 .iter()
                 .find(|(names, _)| names.iter().any(|n| n.eq_ignore_ascii_case(key)))
@@ -210,8 +246,10 @@ impl KeyPattern {
         Ok(pattern)
     }
 
-    /// Whether `key` is this pattern: by the key's name, then its Latin
-    /// fallback, so `ctrl+n` works on a Russian layout.
+    /// Whether `key` is this pattern: by the key's name, then, when the
+    /// pattern holds Ctrl, Alt or Super, its Latin fallback, as an input's
+    /// shortcuts do: `ctrl+n` works on a Russian layout, and a plain `j`
+    /// leaves the Cyrillic letter on that key to be typed.
     pub fn matches(&self, key: &KeyInput) -> bool {
         let m = key.modifiers;
         if m.ctrl != self.ctrl || m.alt != self.alt || m.logo != self.logo {
@@ -219,14 +257,15 @@ impl KeyPattern {
         }
         let named = |want: &str| {
             key.name.eq_ignore_ascii_case(want)
-                || key
-                    .latin
-                    .as_deref()
-                    .is_some_and(|l| l.eq_ignore_ascii_case(want))
+                || ((self.ctrl || self.alt || self.logo)
+                    && key
+                        .latin
+                        .as_deref()
+                        .is_some_and(|l| l.eq_ignore_ascii_case(want)))
         };
         // `ISO_Left_Tab` is what Shift+Tab is called: it says Shift itself.
         let shift = m.shift || key.name == "ISO_Left_Tab";
-        match self.key {
+        match &self.key {
             PatternKey::Letter(c) => {
                 let mut buf = [0; 4];
                 let letter = &*c.encode_utf8(&mut buf);
@@ -239,10 +278,11 @@ impl KeyPattern {
                     || named(character)
                     || CHARACTERS
                         .iter()
-                        .find(|(ch, _)| *ch == c)
+                        .find(|(ch, _)| ch == c)
                         .is_some_and(|(_, name)| named(name))
             }
             PatternKey::Named(keys) => shift == self.shift && keys.iter().any(|k| named(k)),
+            PatternKey::Open(name) => shift == self.shift && named(name),
         }
     }
 
@@ -252,9 +292,10 @@ impl KeyPattern {
         !self.ctrl
             && !self.alt
             && !self.logo
-            && match self.key {
+            && match &self.key {
                 PatternKey::Letter(_) | PatternKey::Character(_) => true,
                 PatternKey::Named(keys) => keys.contains(&"space"),
+                PatternKey::Open(_) => false,
             }
     }
 
@@ -392,15 +433,30 @@ mod tests {
         key.latin = Some("n".into());
         assert!(pat("ctrl+n").matches(&key));
         assert!(!pat("ctrl+m").matches(&key));
-        // The name comes first: its own letter matches by what it types.
+        assert!(pat("alt+n").matches(&KeyInput {
+            modifiers: Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+            ..key.clone()
+        }));
+        // With no Ctrl, Alt or Super, the key is the Cyrillic letter it types.
         let mut ya = press("Cyrillic_ya", "я", "");
         ya.latin = Some("z".into());
         assert!(pat("я").matches(&ya));
-        assert!(pat("z").matches(&ya));
+        assert!(
+            !pat("z").matches(&ya),
+            "a plain letter leaves it to be typed"
+        );
+        let mut te = press("Cyrillic_TE", "Т", "s");
+        te.latin = Some("n".into());
+        assert!(!pat("shift+n").matches(&te), "Shift alone is plain too");
         // Punctuation's Latin name.
         let mut dot = press("Cyrillic_yu", "ю", "c");
         dot.latin = Some("period".into());
         assert!(pat("ctrl+.").matches(&dot));
+        dot.modifiers.ctrl = false;
+        assert!(!pat(".").matches(&dot));
     }
 
     #[test]
@@ -417,6 +473,49 @@ mod tests {
             Err(UnknownKey("escpe".into()))
         );
         assert!(key_names().any(|n| n == "page_down"));
+        assert_eq!(
+            KeyPattern::parse("ctrl+ctrl+n"),
+            Err(DuplicateModifier("ctrl".into()))
+        );
+        assert_eq!(
+            KeyPattern::parse("Ctrl+ctrl+n"),
+            Err(DuplicateModifier("ctrl".into()))
+        );
+        for stray in ["++", "+a", "ctrl++a"] {
+            assert_eq!(KeyPattern::parse(stray), Err(StrayPlus), "{stray}");
+        }
+        assert_eq!(KeyPattern::parse("shift+1"), Err(ShiftOnCharacter('1')));
+        assert_eq!(
+            KeyPattern::parse("ctrl+shift+?"),
+            Err(ShiftOnCharacter('?'))
+        );
+        // `+` stays a key, and Shift a letter's or a named key's.
+        assert!(KeyPattern::parse("+").is_ok() && KeyPattern::parse("ctrl++").is_ok());
+        assert!(KeyPattern::parse("shift+a").is_ok() && KeyPattern::parse("shift+f5").is_ok());
+    }
+
+    #[test]
+    fn open_families_and_the_common_names_are_keys() {
+        for (p, name) in [
+            ("XF86AudioMedia", "XF86AudioMedia"),
+            ("xf86wlan", "XF86WLAN"),
+            ("XF86KbdBrightnessUp", "XF86KbdBrightnessUp"),
+            ("dead_acute", "dead_acute"),
+            ("Multi_key", "Multi_key"),
+            ("Hyper_L", "Hyper_L"),
+            ("Begin", "Begin"),
+            ("Undo", "Undo"),
+            ("Help", "Help"),
+        ] {
+            assert!(pat(p).matches(&press(name, "", "")), "{p}");
+            assert!(!pat(p).matches(&press("a", "a", "")), "{p}");
+            assert!(!pat(p).types_text(), "{p}");
+        }
+        assert!(pat("ctrl+XF86Search").matches(&press("XF86Search", "", "c")));
+        // The prefix alone, or what no keysym is called, is not one.
+        for bad in ["XF86", "dead_", "XF86 Audio"] {
+            assert!(KeyPattern::parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

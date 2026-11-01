@@ -14893,3 +14893,14 @@ the condition that spec.md 6.3 says it runs under; the key is spent. A drag's Es
 so a gesture always has a way out. And a claim in an `if`, `for` or `match` body is a check error,
 since those bodies mount with no element and an element's handler there has never run; a `when` is
 the way to turn one on and off.
+
+(2026-10-31, piece 1's review) An element's handler directly in an `if`, `for` or `match` body checked
+clean and never ran, so every such handler is now a check error, as a claim there was. The Latin fallback
+applies only to a pattern holding Ctrl, Alt or Super, as an input's shortcuts do: a plain `on key "j"`
+around an `input` was eating the Cyrillic letter on that key under `ru`, so plain patterns match the name
+alone, which narrows the sentence above. `check::claim_around_password` counts a component a `lock` calls
+as in the lock, and what calls give a `slot` as around; it follows the calls rather than calling every
+`slot` a field, since a shell's `j` and `k` around a slot of plain rows is a real pattern and the walk has
+every call. Named keys are a table for checking typos, with `XF86*` and `dead_*` taken as written because
+those families are open; a typo there goes unreported. A character pattern with an explicit `shift` is an
+error rather than ignoring it: `"shift+1"` used to claim plain `1`.

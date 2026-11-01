@@ -3774,7 +3774,9 @@ fn key_patterns_are_checked() {
         ("on key \"a\", name { }", "string literal"),
         ("on click \"a\" { }", "only `on key`"),
         ("on key_release \"a\" (k) { }", "only `on key`"),
-        ("if on { on key \"a\" { } }", "directly on its element"),
+        ("on key \"ctrl+ctrl+n\" { }", "named twice"),
+        ("on key \"++\" { }", "joins nothing"),
+        ("on key \"shift+1\" { }", "write the character it types"),
     ] {
         let errs = errors_of(&on_box(bad));
         assert!(
@@ -3816,5 +3818,43 @@ fn a_when_holds_only_props_and_element_handlers() {
             errs.iter().any(|e| e.starts_with("check::")),
             "{bad}: {errs:?}"
         );
+    }
+}
+
+/// (keyboard) An `if`, `for` or `match` body mounts with no element, so an
+/// element's handler there is an error pointing at `when`; other handlers
+/// run anywhere, and a handler on an element in the body is that element's.
+#[test]
+fn an_element_handler_with_no_element_is_an_error() {
+    for bad in [
+        "if on { on click { n += 1 } }",
+        "if on { } else { on click { n += 1 } }",
+        "for x in [1] key x { on click { n += 1 } }",
+        "match on { true => { on click { n += 1 } }\n _ => { } }",
+        "if on { on key \"a\" { n += 1 } }",
+        "if on { on key(k) { n += 1 } }",
+        "if on { when on { on click { n += 1 } } }",
+    ] {
+        let errs = errors_of(&on_box(bad));
+        assert!(
+            errs.iter()
+                .any(|e| e.starts_with("check::misplaced") && e.contains("`when`")),
+            "{bad}: {errs:?}"
+        );
+    }
+    // A component's top level has no element either.
+    let errs = errors_of(
+        "state n = 0\ncomponent C {\n  on click { n += 1 }\n  box { }\n}\nbar B { C { } }\n",
+    );
+    assert!(
+        errs.iter().any(|e| e.starts_with("check::no_node")),
+        "{errs:?}"
+    );
+    for good in [
+        "if on { box { on click { n += 1 } } }",
+        "for x in [1] key x { box { on click { n += 1 } } }",
+        "if on { on change n { n += 1 } }",
+    ] {
+        assert_eq!(errors_of(&on_box(good)), Vec::<String>::new(), "{good}");
     }
 }

@@ -812,17 +812,17 @@ impl<'a> Checker<'a> {
             return h.map(Node::Handler);
         }
         let h = self.handler(o, span)?;
-        // (keyboard) An `if`, `for` or `match` body's element handlers have
-        // no element to be on, and a claim there would claim nothing.
-        if !h.keys.is_empty() && matches!(place, Place::Children { .. }) {
+        // (keyboard) An `if`, `for` or `match` body mounts with no element,
+        // so an element's handler there would never run.
+        if matches!(h.event, hir::Event::Element(_)) && matches!(place, Place::Children { .. }) {
             self.error(
-                "check::key_pattern",
-                "a key claim belongs directly on its element",
+                "check::misplaced",
+                "an element's handler belongs directly on its element",
                 span,
-                "in an `if`, `for` or `match` body",
+                "in an `if`, `for` or `match` body, it would never run",
             )
             .help = Some(
-                "put it on the element, in a `when` to turn it on and off: `when view != home { on key \"escape\" { … } }`"
+                "put it on the element, in a `when` to turn it on and off: `when view != home { on click { … } }`; or on an element in this body"
                     .into(),
             );
         }

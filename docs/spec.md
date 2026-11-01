@@ -1291,8 +1291,9 @@ monitor, the keyboard always).
   included, do not. On one element, the last written active claim wins,
   as among `when`s. Claims fire on repeats too. A drag's Escape stays the
   drag's: it cancels the drag first. A claim sits directly on its
-  element or in a `when` there, not in an `if`, `for` or `match` body (a
-  load error).
+  element or in a `when` there, as every element event's handler does: in
+  an `if`, `for` or `match` body it is a load error, since those bodies
+  have no element.
   - `propagate()` in a claim passes the key to the next enclosing active
     claim of it. The default stays stopped: the router has stopped it
     before logic hears of the key.
@@ -1302,21 +1303,42 @@ monitor, the keyboard always).
     value. A claim whose `when` is false by the time its body would start
     (keys queued while logic was busy) does not run; its key is spent.
   - **Patterns.** Modifiers `ctrl`, `shift`, `alt` and `super`, joined with
-    `+` before the key, in any case, and exact: `"n"` is not Ctrl+N. A
-    letter is `"a"`, which is not Shift+A, or `"shift+a"`. A single other
-    character (`"?"`, `"1"`, `"+"`) is the text the key types, and ignores
-    Shift. Named keys are xkb's names in any case (`Escape`, `Return`,
-    `Page_Down`, `F5`), and `esc`, `enter` (Return and the keypad's),
-    `tab`, `space`, `up`, `down`, `left`, `right`, `pgup`, `pgdn`,
-    `backspace`, `del`. `shift+tab` matches `ISO_Left_Tab`. A key matches
-    by its name, then by its Latin fallback, so `ctrl+n` works on a Russian
-    layout. An unknown modifier or a name that is no key is a load error
-    naming the closest, as is a pattern that is not a literal.
+    `+` before the key, each once, in any case, and exact: `"n"` is not
+    Ctrl+N. A letter is `"a"`, which is not Shift+A, or `"shift+a"`. A single
+    other character (`"?"`, `"1"`, `"+"`) is the text the key types, and
+    ignores Shift; `shift` on one is a load error (`"shift+1"`: write what it
+    types, `"!"`).
+    A longer name, in any case, is one of: the short names `esc`, `enter`
+    (Return and the keypad's), `tab` (and `shift+tab` matches
+    `ISO_Left_Tab`), `space`, `up`, `down`, `left`, `right`, `home`, `end`,
+    `pgup`, `pgdn`, `backspace`, `del`, `ins`, each with its keypad twin where
+    it has one; these xkb names: `Escape`, `Return`, `KP_Enter`,
+    `ISO_Left_Tab`, `Page_Up`, `Page_Down`, `Prior`, `Next`, `Delete`,
+    `Insert`, `Menu`, `Print`, `Pause`, `Scroll_Lock`, `Caps_Lock`, `Num_Lock`,
+    `Shift_Lock`, the modifier keys (`Shift_L`, `Control_L`, `Alt_L`,
+    `Super_L`, `Meta_L`, `Hyper_L` and their `_R`), `ISO_Level3_Shift`,
+    `ISO_Level5_Shift`, `ISO_Next_Group`, `ISO_Prev_Group`, `Mode_switch`,
+    `Multi_key`, `Begin`, `Undo`, `Redo`, `Help`, `Find`, `Cancel`, `Select`,
+    `Execute`, `Break`, `Sys_Req`, `Clear`, `Linefeed`, `F1` to `F35`, `KP_0`
+    to `KP_9`, `KP_F1` to `KP_F4`, `KP_Begin`, `KP_Add`, `KP_Subtract`,
+    `KP_Multiply`, `KP_Divide`, `KP_Decimal`, `KP_Separator`, `KP_Equal`,
+    `Muhenkan`, `Henkan`, `Hiragana`, `Katakana`, `Hangul`, and the ASCII
+    punctuation's (`slash`, `question`, …); and any name starting `XF86` or
+    `dead_`, taken as written and not checked. Anything else is a load error
+    naming the closest, as are a pattern that is not a literal, an unknown or
+    repeated modifier, and a stray `+` (`"++"`, `"+a"`).
+    A key matches by its name. When the pattern holds Ctrl, Alt or Super it
+    also matches by the key's Latin fallback, as an input's shortcuts do, so
+    `ctrl+n` works on a Russian layout, and a plain `"j"` leaves the Cyrillic
+    letter on that key to be typed (a letter also matches what the key types,
+    so `"я"` is that key under `ru`).
   - **Around a password.** A claim of a key that types (no Ctrl, Alt or
     Super on a letter, a character or `space`) on or around a `type:
-    password` input, or around any `input` in a `lock`, is a load error
-    (`check::claim_around_password`), even in a `when`: it would eat what
-    is typed there, and a lock that cannot be typed into cannot be left.
+    password` input, or around any `input` in a `lock` or in a component
+    a `lock` calls, is a load error (`check::claim_around_password`), even
+    in a `when`: it would eat what is typed there, and a lock that cannot
+    be typed into cannot be left. What a call gives a `slot` in the
+    component's body counts as around.
     (decisions.md keyboard)
 - **`on key(k)` observes.** It hears each press and repeat (`k.repeat`) on
   the focused path that no claim took, whether or not a default then
@@ -1619,7 +1641,9 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   enclosing node (`click`, `secondary`, `scroll(dy)`, `activate`,
   `drop(v, at)`, a surface's `show`, a popup's `dismiss`), or of a
   service (`on notifications.received(n)`). Which events exist, and
-  their parameters, are schema entries.
+  their parameters, are schema entries. A node's event needs a node: its
+  handler directly in an `if`, `for` or `match` body is a load error
+  (put it on an element there, or use `when`).
 - **`on change a, b { … }`** runs when any watched value changes. It
   **never** runs for the first value (at boot or mount), for a value a
   reload writes (section 10.3), or when a watched service path switches

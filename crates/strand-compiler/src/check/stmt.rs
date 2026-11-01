@@ -563,7 +563,6 @@ impl<'a> Checker<'a> {
     /// A pattern that does not parse, with the closest it could have meant.
     fn key_pattern_error(&mut self, span: Span, err: &KeyPatternError) {
         let closest = match err {
-            KeyPatternError::NoKey => None,
             KeyPatternError::UnknownModifier(m) => {
                 crate::diagnostic::suggest(&m.to_ascii_lowercase(), KEY_MODIFIERS.iter().copied())
                     .map(str::to_string)
@@ -572,6 +571,7 @@ impl<'a> Checker<'a> {
                 let names: Vec<String> = strand_scene::key_names().collect();
                 Self::closest(&k.to_ascii_lowercase(), &names)
             }
+            _ => None,
         };
         let help = match err {
             KeyPatternError::NoKey => "write modifiers before a key: `ctrl+n`".to_string(),
@@ -586,6 +586,15 @@ impl<'a> Checker<'a> {
                 None => "a key is one character or a key's name, such as `escape`, `pgdn` or `F5`"
                     .to_string(),
             },
+            KeyPatternError::DuplicateModifier(_) => "name each modifier once".to_string(),
+            KeyPatternError::StrayPlus => {
+                "`+` joins modifiers to a key: `ctrl+n`; the `+` key itself is `\"+\"` or `\"ctrl++\"`"
+                    .to_string()
+            }
+            KeyPatternError::ShiftOnCharacter(_) => {
+                "write the character it types, with no `shift`: `\"!\"`, not `\"shift+1\"`"
+                    .to_string()
+            }
         };
         self.error(
             "check::key_pattern",

@@ -1783,3 +1783,40 @@ fn key_claims_follow_a_reload_and_a_when() {
     shell.reload(&[("bar.strand", &gone)]);
     assert_eq!(claims_of(&shell, bar), Vec::<String>::new());
 }
+
+/// (keyboard) A key the router sent for a claim's number before a reload
+/// renumbered the claims is spent: the claim now at that number is not of it,
+/// so it does not run.
+#[test]
+fn a_stale_claim_number_after_a_reload_spends_the_key() {
+    let src = |first: &str, second: &str| {
+        format!(
+            "export state a = 0\nexport state b = 0\nbar Top {{\n  on key \"{first}\" {{ a += 1 }}\n  on key \"{second}\" {{ b += 1 }}\n  text \"x\"\n}}\n"
+        )
+    };
+    let start = src("a", "b");
+    let mut shell = boot(&[("bar.strand", &start)]);
+    let bar = shell.scene.roots()[0];
+    let key = strand_scene::KeyInput {
+        name: "a".into(),
+        text: "a".into(),
+        state: strand_scene::ButtonState::Pressed,
+        repeat: false,
+        modifiers: Default::default(),
+        time: 0,
+        latin: None,
+    };
+    assert!(shell.inst.claim(bar, 0, &key, Vec::new(), None));
+    shell.flush();
+    assert_eq!(shell.value("bar", "a"), Value::int(1));
+    let swapped = src("b", "a");
+    shell.reload(&[("bar.strand", &swapped)]);
+    assert!(!shell.inst.claim(bar, 0, &key, Vec::new(), None));
+    shell.flush();
+    assert_eq!(shell.value("bar", "a"), Value::int(1), "spent");
+    assert_eq!(shell.value("bar", "b"), Value::int(0));
+    // The claim that is of it still runs.
+    assert!(shell.inst.claim(bar, 1, &key, Vec::new(), None));
+    shell.flush();
+    assert_eq!(shell.value("bar", "b"), Value::int(1));
+}

@@ -2910,7 +2910,7 @@ proof  = "crates/strand-compiler/tests/interaction.rs::a_claim_in_when_stops_esc
 
 [[claim]]
 page   = "site/how-to/keys.md"
-text   = "and then by its Latin name"
+text   = "a key matches by its name and then by its Latin name"
 source = ["crates/strand-scene/src/keys.rs"]
 proof  = "crates/strand-scene/src/keys.rs::the_latin_fallback_matches_a_non_latin_layout"
 
