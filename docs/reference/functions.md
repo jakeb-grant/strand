@@ -123,7 +123,7 @@ A list of `T` items. `remove_key`, `move` and `update` are a keyed list's (`[T] 
 | `fn filter(keep: fn(T) -> bool) -> [T]` | The items `keep` is true for. |
 | `fn map(f: fn(T) -> any) -> [any]` | Each item through `f`. |
 | `fn sort_by(by: fn(T) -> any) -> [T]` | The items ordered by `by`. |
-| `fn fuzzy(query: text, by: fn(T) -> text) -> [Match<T>]` | The items whose text from `by` matches `query` fuzzily, each with its score and matched ranges (`Match<T>`), best first, ties in list order: `apps.search`'s matcher, so every word of `query` must match. An empty query gives every item in list order, with score 0 and no ranges. |
+| `fn fuzzy(query: text, by: fn(T) -> text) -> [Match<T>]` | The items whose text from `by` matches `query` fuzzily, each with its score and matched ranges (`Match<T>`), best first, ties in list order: `apps.search`'s matcher, so every word of `query` must match, and `!`, `^`, `$` and `'` are plain characters. An empty query gives every item in list order, with score 0 and no ranges. |
 | `fn take(count: int) -> [T]` | The first `count` items. |
 | `fn skip(count: int) -> [T]` | All but the first `count` items. |
 | `fn reverse() -> [T]` | The items in reverse order. |

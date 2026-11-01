@@ -14929,3 +14929,10 @@ parts are the worker pool and item stream that neither caller uses and that a wa
 matcher is the same code, so `apps.search` ranks as before. `by` returns one text: several (name and
 keywords) would need `Match` to say which text its `ranges` are of, which `apps.search` answers by dropping
 the ranges of a keyword match, and nothing here needs it yet; a selector can join them.
+
+(2026-10-31, piece 3, the review) A query has no operators, in `xs.fuzzy` and `apps.search` alike: a box
+someone types into must mean what it says, and nucleo's `Pattern::parse` read `!fire` as "not fire" and
+`don't` as `don` plus a substring `t`. Every whitespace-separated word is a fuzzy atom, built with
+`Atom::new` and no whitespace escape, since `Pattern::new` would still read `\ ` as an escape and split on
+spaces only; plain words score as they did. A known limit: text with decomposed accents (`e` + U+0301)
+doesn't match a precomposed query (`é`), since a cluster is matched by its first character.

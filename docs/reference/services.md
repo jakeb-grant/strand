@@ -17,7 +17,7 @@ live.
 
 | Method | |
 | --- | --- |
-| `fn search(query: text) -> Async<[Hit]>` | Fuzzy match of `query` (nucleo) against the apps' names, then their keywords and generic names, plus frecency (how often and how lately each was launched); best first. An empty query lists every app, the most used first. Runs only when asked: `let hits = apps.search(query)` keeps its last result while searching. |
+| `fn search(query: text) -> Async<[Hit]>` | Fuzzy match of each word of `query` (nucleo, with none of its operators: `!`, `^`, `$` and `'` are plain characters) against the apps' names, then their keywords and generic names, plus frecency (how often and how lately each was launched); best first. An empty query lists every app, the most used first. Runs only when asked: `let hits = apps.search(query)` keeps its last result while searching. |
 
 ## `audio`
 

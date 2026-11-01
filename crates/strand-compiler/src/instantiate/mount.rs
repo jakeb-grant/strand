@@ -4631,8 +4631,10 @@ pub(crate) fn drag_type(types: &crate::ty::TypeTable, v: &Value) -> String {
 /// name and of its identity (a keyed record's key, else itself) in a
 /// lossless encoding ([`identity_bytes`]), so values the language calls
 /// equal (`==`, what `move` finds; one pin drawn on the dock of each
-/// monitor) have equal identities, the same on every build, and values
-/// it does not (`["a, b"]` and `["a", "b"]`) differ.
+/// monitor) have equal identities, and values it does not (`["a, b"]`
+/// and `["a", "b"]`) differ. Stable while a program runs, not between
+/// programs: a record's or enum's index in the type table is part of it, so
+/// a schema or config adding a type can change it.
 fn drag_identity(types: &crate::ty::TypeTable, v: &Value) -> String {
     let mut bytes = drag_type(types, v).into_bytes();
     bytes.push(0);

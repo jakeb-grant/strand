@@ -396,6 +396,48 @@ fn it_chains_with_take_and_filter() {
     assert_eq!(shell.texts(), ["bbb", "then bbb"]);
 }
 
+/// A written `key` is the rows' identity, not the source's: a `for` asking
+/// for its own key isn't the view's, as with `filter`. One new window under
+/// the old title is the same row by `key m.item.title` and a new one by the
+/// `id` the record keys by; a retitled window, the other way about.
+#[test]
+fn a_written_key_is_the_one_used() {
+    let src = |key: &str| {
+        format!(
+            "export state q = \"\"\n\
+             bar B {{\n  \
+               for m in windows.all.fuzzy(q, w => w.title){key} {{ text m.item.title }}\n\
+             }}\n"
+        )
+    };
+    let start = |rt: &Runtime, host: &SchemaHost| {
+        let list = vec![window(host, "a", "one")];
+        host.set(rt, "windows.all", Value::list(list)).unwrap();
+    };
+    let swap = |shell: &mut Shell, id: &str, title: &str| {
+        let list = vec![window(&shell.host, id, title)];
+        shell
+            .host
+            .set(&shell.rt, "windows.all", Value::list(list))
+            .unwrap();
+        shell.flush();
+    };
+    let mut by_title = boot_with(&src(" key m.item.title"), start);
+    let row = by_title.scene.find_text("one").unwrap();
+    swap(&mut by_title, "b", "one");
+    assert_eq!(by_title.scene.find_text("one"), Some(row), "the same title");
+    swap(&mut by_title, "b", "two");
+    assert_ne!(by_title.scene.find_text("two"), Some(row), "another title");
+
+    let mut by_id = boot_with(&src(""), start);
+    let row = by_id.scene.find_text("one").unwrap();
+    swap(&mut by_id, "b", "one");
+    assert_ne!(by_id.scene.find_text("one"), Some(row), "another id");
+    let row = by_id.scene.find_text("one").unwrap();
+    swap(&mut by_id, "b", "two");
+    assert_eq!(by_id.scene.find_text("two"), Some(row), "the same id");
+}
+
 fn window(host: &SchemaHost, id: &str, title: &str) -> Value {
     host.record(
         "Window",
@@ -421,10 +463,8 @@ fn it_searches_a_services_list() {
         ];
         host.set(rt, "windows.all", Value::list(list)).unwrap();
     });
-    let mut texts = shell.texts();
-    assert_eq!(texts.len(), 2);
-    texts.sort();
-    assert_eq!(texts, ["Bonfire", "Firefox"]);
+    // The word's start beats its inside, whichever the list has first.
+    assert_eq!(shell.texts(), ["Firefox", "Bonfire"]);
     let firefox = shell.scene.find_text("Firefox").unwrap();
     assert_eq!(
         shell.scene.prop(firefox, Prop::Marks),
@@ -554,7 +594,9 @@ fn a_reload_moving_record_ids_keeps_the_matches_readable() {
         ),
         Some(&first),
     );
-    let _ = shell.inst.reload(&next);
+    let report = shell.inst.reload(&next);
+    assert!(report.reset.is_empty(), "{report:?}");
+    assert_eq!(report.kept, ["f.q", "f.items"], "{report:?}");
     shell.flush();
     assert_eq!(shell.texts(), ["apple"]);
     assert_eq!(shell.number("n"), 0.0);
@@ -709,8 +751,9 @@ fn five_thousand_items_per_keystroke() {
             let t = Instant::now();
             shell.set("q", Value::text(q));
             times.push(t.elapsed().as_secs_f64() * 1000.0);
-            assert!(
-                shell.calls() - before >= 5000,
+            assert_eq!(
+                shell.calls() - before,
+                5000,
                 "{what} {q}: one selector call per item"
             );
             assert!(shell.texts().len() <= 50);

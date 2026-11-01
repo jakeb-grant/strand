@@ -142,7 +142,7 @@ pub fn list_members(elem: &Ty, keyed: bool, key: &Ty) -> Vec<MemberInfo> {
             "The items whose text from `by` matches `query` fuzzily, each with \
              its score and matched ranges (`Match<T>`), best first, ties in \
              list order: `apps.search`'s matcher, so every word of `query` must \
-             match. An empty query gives every item in list order, with score 0 \
+             match, and `!`, `^`, `$` and `'` are plain characters. An empty query gives every item in list order, with score 0 \
              and no ranges.",
         ),
         m(

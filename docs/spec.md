@@ -1497,7 +1497,9 @@ monitor, the keyboard always).
   matches, its `item: T`, `score: float` and `ranges: [Range]`, best first,
   equal scores in the list's order. It is `apps.search`'s matcher: lower
   case matches either case, accents are ignored unless the query has them,
-  and every word of the query must match. A blank query gives every item in
+  and every word of the query must match; `!`, `^`, `$` and `'` are plain
+  characters, not operators, so `don't` looks for those letters, there and
+  in `apps.search`. A blank query gives every item in
   the list's order, with score 0 and no ranges. `ranges` count characters,
   as `marks:` does: `text m.item.name { marks: m.ranges }`. Items with a key
   keep it, so rows keep their state as the query changes. `Match<T>` can be

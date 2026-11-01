@@ -464,9 +464,15 @@ pub enum ChainOp {
     },
 }
 
-/// The `Match<T>` a `.fuzzy` call of type `ty` makes.
-pub(crate) fn fuzzy_record(ty: &Ty) -> Option<RecordId> {
-    match ty.non_null().list_elem()?.0 {
+/// The `Match<T>` the list method `.fuzzy` makes, called on `receiver` and
+/// giving `result`; none for a method of that name on anything but a list
+/// (a service's or record's own).
+pub(crate) fn fuzzy_record(receiver: &Ty, name: &str, result: &Ty) -> Option<RecordId> {
+    if name != "fuzzy" {
+        return None;
+    }
+    receiver.non_null().list_elem()?;
+    match result.non_null().list_elem()?.0 {
         Ty::Record(r) => Some(*r),
         _ => None,
     }
@@ -1466,7 +1472,7 @@ impl Lowerer<'_> {
                 "fuzzy" => None,
                 _ => Some(ChainOp::SortBy),
             };
-            steps.push((op, args, fuzzy_record(&cur.ty)));
+            steps.push((op, args, fuzzy_record(&receiver.ty, name, &cur.ty)));
             cur = receiver;
         }
         let root = match &cur.kind {
@@ -1950,6 +1956,40 @@ fn single_root(nodes: &[Node]) -> Option<NodeIdx> {
 
 #[cfg(test)]
 mod tests {
+    /// The hidden argument is the list method's: a service or record with a
+    /// method of that name, giving records too, gets what it was called with.
+    #[test]
+    fn only_the_list_method_takes_a_record() {
+        use crate::ty::{RecordId, Ty};
+        let rec = Ty::Record(RecordId(7));
+        let list = Ty::List(Box::new(rec.clone()), false);
+        let text_list = Ty::List(Box::new(Ty::TEXT), false);
+        let loading = Ty::Async(Box::new(text_list.clone()));
+        let made = Ty::Async(Box::new(list.clone()));
+        let some = Some(RecordId(7));
+        assert_eq!(super::fuzzy_record(&text_list, "fuzzy", &list), some);
+        assert_eq!(
+            super::fuzzy_record(
+                &text_list.clone().optional(),
+                "fuzzy",
+                &list.clone().optional()
+            ),
+            some
+        );
+        assert_eq!(super::fuzzy_record(&loading, "fuzzy", &made), some);
+        assert_eq!(
+            super::fuzzy_record(&rec, "fuzzy", &list),
+            None,
+            "a record's"
+        );
+        assert_eq!(
+            super::fuzzy_record(&Ty::Unit, "fuzzy", &list),
+            None,
+            "a service's"
+        );
+        assert_eq!(super::fuzzy_record(&text_list, "other", &list), None);
+    }
+
     use super::*;
     use crate::SourceMap;
 

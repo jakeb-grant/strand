@@ -767,9 +767,7 @@ impl Lowerer<'_> {
                 let map = self.push_args(c, args, arity, variadic.map(usize::from));
                 // `xs.fuzzy`: the `Match<T>` to make, as a last argument
                 // the source doesn't write.
-                if name == "fuzzy"
-                    && let Some(r) = super::fuzzy_record(result)
-                {
+                if let Some(r) = super::fuzzy_record(&receiver.ty, name, result) {
                     let id = c.constant(Const::Num(f64::from(r.0), Num::Int));
                     c.emit(Op::Const(id), span);
                     if let Some(m) = c.args.last_mut() {

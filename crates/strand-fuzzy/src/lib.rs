@@ -6,7 +6,7 @@
 
 use std::ops::Range;
 
-use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 
 /// Consecutive character indices as `[start, end)` ranges.
@@ -43,11 +43,22 @@ impl std::fmt::Debug for Fuzzy {
 impl Fuzzy {
     /// A matcher for `query` (smart case: lower case matches either
     /// case; accents ignored unless the query has them; words separated
-    /// by spaces must all match). A blank query matches every text with
-    /// score 0 and no ranges.
+    /// by whitespace must all match). A blank query matches every text with
+    /// score 0 and no ranges. A query means what it says: nucleo's `!`, `^`,
+    /// `$` and `'` operators and its `\ ` escape are plain characters, which
+    /// `Pattern::parse` would read as syntax (`don't` as `don` and a
+    /// substring `t`), and `Pattern::new` would still read the escape.
     pub fn new(query: &str) -> Fuzzy {
+        let mut pattern = Pattern::default();
+        pattern.atoms = query
+            .split_whitespace()
+            .map(|word| {
+                let (case, norm) = (CaseMatching::Smart, Normalization::Smart);
+                Atom::new(word, case, norm, AtomKind::Fuzzy, false)
+            })
+            .collect();
         Fuzzy {
-            pattern: Pattern::parse(query, CaseMatching::Smart, Normalization::Smart),
+            pattern,
             matcher: Matcher::new(Config::DEFAULT),
             buf: Vec::new(),
             starts: Vec::new(),
@@ -142,6 +153,35 @@ mod tests {
             assert_eq!(f.matches(""), Some((0, Vec::new())));
             assert_eq!(f.matches("Größe"), Some((0, Vec::new())));
         }
+    }
+
+    /// What the query says, each of nucleo's operators a plain character.
+    #[test]
+    fn a_query_has_no_operators() {
+        for (query, yes, no) in [
+            ("don't", "Don't Panic", "Donut"),
+            ("!fire", "!fire alarm", "Foot"),
+            ("!fire", "!fire alarm", "Firefox"),
+            ("^a", "x^a", "apple"),
+            ("a$", "a$b", "banana"),
+            ("'x", "it'x", "x"),
+            ("a\\ b", "a\\ b", "a b"),
+        ] {
+            let mut f = Fuzzy::new(query);
+            assert!(f.matches(yes).is_some(), "{query:?} matches {yes:?}");
+            assert!(f.matches(no).is_none(), "{query:?} is not {no:?}");
+        }
+        // Its characters are marked, as any others.
+        let (_, ranges) = Fuzzy::new("don't").matches("Don't Panic").unwrap();
+        assert_eq!(ranges, vec![0..5]);
+    }
+
+    /// Any whitespace separates words, as a tab pasted into a search box.
+    #[test]
+    fn whitespace_separates_words() {
+        let mut f = Fuzzy::new(" fi\tox\n");
+        assert_eq!(f.matches("Firefox").map(|m| m.1), Some(vec![0..2, 5..7]));
+        assert!(f.matches("Files").is_none());
     }
 
     #[test]

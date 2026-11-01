@@ -1183,6 +1183,38 @@ mod tests {
         assert_eq!(hits[0].ranges, vec![Range { start: 6, end: 9 }]);
     }
 
+    /// `!`, `^`, `$` and `'` are characters of the query, not nucleo's
+    /// operators; a plain query finds what it found.
+    #[test]
+    fn a_search_query_has_no_operators() {
+        let mk = |id: &str, name: &str| Entry {
+            app: App {
+                id: id.into(),
+                name: name.into(),
+                ..App::default()
+            },
+            ..entry("x")
+        };
+        let entries = vec![
+            mk("firefox", "Firefox"),
+            mk("foot", "Foot"),
+            mk("dont", "Don't Starve"),
+        ];
+        let ids = |q: &str| -> Vec<String> {
+            search(&entries, &Frecency::default(), q, 0)
+                .into_iter()
+                .map(|h| h.app.id)
+                .collect()
+        };
+        assert_eq!(ids("!fire"), Vec::<String>::new(), "not everything else");
+        assert_eq!(ids("^foot"), Vec::<String>::new());
+        assert_eq!(ids("foot$"), Vec::<String>::new());
+        assert_eq!(ids("'foot"), Vec::<String>::new());
+        assert_eq!(ids("don't"), ["dont"]);
+        assert_eq!(ids("fire"), ["firefox"]);
+        assert_eq!(ids("fo ot"), ["foot"]);
+    }
+
     #[test]
     fn search_matches_names_with_ranges_then_keywords_and_frecency() {
         let mk = |id: &str, name: &str, also: &[&str]| Entry {
