@@ -15,7 +15,7 @@ it opens from.
 | `osd` | A passing display: volume, brightness | On the focused monitor, `overlay` layer; clicks pass through it |
 | `popup` | A menu or card anchored to an element | Opens below its element (away from the edge on a bar), 6 px from it; mounts its children only while shown |
 | `window` | An app's window, which the compositor manages | Tiles, floats and moves as any app's window does |
-| `lock` | The lock screen | On every monitor; at most one per config |
+| `lock` | The lock screen | On every monitor unless `screens:` picks some; at most one per config |
 
 Bars, panels and OSDs are layer-shell surfaces: the compositor puts
 them on a **layer** above or below windows, `background`, `bottom`,
@@ -39,6 +39,11 @@ can match it: `strand-Top` for `bar Top`.
   `enter { … }` and `exit { … }` are where it animates from and to.
 - **`inhibit_idle: true`** keeps the screen from dimming or locking
   while the surface is shown.
+- **`hit: none`** on the surface lets the pointer through to what is
+  behind it wherever none of its nodes takes input. Write it on each box
+  inside that should let the pointer through too, since a box takes the
+  pointer across its whole area whether it draws or not, a plain `col`
+  included.
 
 A bar reserves its edge, so windows are laid out beside it.
 `exclusive:` on a `bar` or `panel` says how much: `true` its
@@ -100,6 +105,24 @@ State declared in a component or a surface is per instance, so a
 calendar opened on one monitor's bar stays closed on the others. State
 declared at the top level of a file is one for the whole shell.
 
+## A panel the size of what it holds
+
+A compositor may animate every resize of a surface, so a panel that resizes to open
+or close can twitch at both ends. A panel or OSD whose content sizes it avoids
+resizing in two ways:
+
+- **It spans.** Anchored to one edge and sized by its content along that edge
+  (`anchor: top` with no `width`), it takes the whole monitor that way from its first
+  frame and never resizes there. Only its box takes the pointer. A panel centred on
+  both axes keeps its content's size.
+- **It keeps.** With a `~` on its size (`size: auto ~ morph`), it also keeps the
+  largest size it has had, on the axes its content sizes, across restarts. Only the
+  first open under a config resizes, and a save that changes the config starts again.
+
+`exclusive: true` and `~ instant` do not keep, and a size you write out with a `~`
+(`height: open ? 200 : 28 ~ 100ms`) resizes at each change. For a panel that must not
+resize, let its content size it and write `size: auto ~`.
+
 ## Popups
 
 `popup { … }` is written inside the element it belongs to and opens
@@ -133,8 +156,9 @@ compositor, while `w.move()`, `w.maximize()` and `w.close()` ask it.
 ## The lock screen
 
 `lock { … }` is the lock screen, on the `ext-session-lock` protocol. It
-is on every monitor, with one password shared between them, and
-something in it must call `auth.submit`, or it is a load error, since
+is on every monitor its `screens:` picks, all of them by default, and a
+monitor it does not pick shows a solid in the lock's `bg`. There is one
+password shared between them, and something in it must call `auth.submit`, or it is a load error, since
 it would have no way out. It fails closed: if anything in it faults, a built-in password field takes
 its place. A save that changes it waits until you unlock. The guide's
 [level 4](../../docs/guide/level-4.md) builds one.

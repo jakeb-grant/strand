@@ -14,7 +14,7 @@ are props. If you know CSS flexbox, most of this is familiar.
 | `grid` | In a grid of `columns:` columns |
 | `split` | In three parts, `start`, `center` and `end`, with `center` centred on the whole whatever the others hold |
 | `scroll` | In a view that scrolls along its `axis:` |
-| `list` | In a column that scrolls, laying out and mounting only its visible rows |
+| `list` | In a column that scrolls, or a line with `axis: horizontal`, or a grid with `columns:`, laying out and mounting only its visible rows |
 
 `spacer` takes the space left in its row or column, and `box` is a
 plain box to style. A surface, a `box` and a `popup` lay their children

@@ -3,7 +3,7 @@ $ strand --help
 usage: strand <command> [args]
 
 commands:
-  run               run the config [dir] (default $XDG_CONFIG_HOME/strand; --demo: the M0 hello bar)
+  run               run the config [dir] (default $XDG_CONFIG_HOME/strand; --demo: a built-in hello bar)
   check             check the config without running it [dir | file]
   fmt               format .strand files in place [--check] [paths]
   watch             stream reload events, faults and notices (--json)

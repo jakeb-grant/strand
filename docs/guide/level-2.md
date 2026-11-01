@@ -203,7 +203,7 @@ app; **`on secondary`** is the other button. Here it calls
 `item.menu.opened` to true. An app that draws its own menu shows it
 then. Most apps (nm-applet, Discord, Steam) hand their menu to Strand
 instead, and Strand draws nothing until your bar has a `popup` showing
-`item.menu.items` while `item.menu.opened` is true. Bar (a) has no such
+`item.menu.items` while `item.menu.opened` is true. This bar has no such
 popup, so for those apps a right click does nothing visible yet;
 [level 3](level-3.md) teaches `popup`, and the doc of the tray service's
 `TrayMenu` record gives that menu popup.

@@ -1896,7 +1896,7 @@ proof  = "read"
 
 [[claim]]
 page   = "site/concepts/surfaces.md"
-text   = "On every monitor; at most one per config"
+text   = "On every monitor unless `screens:` picks some; at most one per config"
 source = ['docs/spec.md "has at most one `lock`, across its files. It is on every monitor its `screens:` picks (all of them by default)"', 'crates/strand-compiler/src/check/lock.rs "Diagnostic::error("check::lock_twice", "a config has one `lock`")"']
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: two `lock`s give check::lock_twice"
 
@@ -2822,6 +2822,47 @@ text   = "`PATH`, which may not hold `~/.local/bin`, where the"
 source = ['scripts/install.sh "BIN=${bin_dir:-$HOME/.local/bin}"', 'scripts/install.sh "for n in $LINKED; do link_into "$BIN" "$n" "$DATA/current/$n"; done"']
 proof  = "read: the links' directory; a compositor started by a display manager reads the session's PATH, not a shell profile's"
 
+[[claim]]
+page   = "site/concepts/layout.md"
+text   = "In a column that scrolls, or a line with `axis: horizontal`, or a grid with `columns:`"
+source = ['docs/design.md "`list` (virtualised; `axis: horizontal` a strip, `columns: n` a grid, with one selection and arrows that follow)"']
+proof  = "crates/strand-compiler/tests/focus.rs (a `list` with `axis: horizontal`)"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "so when a list scrolls or a row closes under a pointer that stays"
+source = ['docs/spec.md "(a list scrolled, a row closed, an animation)"']
+proof  = "crates/strand-compiler/tests/pointer.rs::hover_and_the_cursor_follow_rows_moving_under_a_still_pointer"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "Only its box takes the pointer."
+source = ['docs/design.md "While its box is short of its buffer, the box alone takes the pointer"', '''docs/decisions.md "out as a held surface's is (`RootSize::Placed`, the growth spring, the box"''']
+proof  = "crates/strand-render/tests/growth.rs::the_margin_a_growth_has_not_reached_passes_the_pointer"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "A panel centred on both axes keeps its content's size."
+source = ['''docs/decisions.md "A surface centred on both axes keeps its content's size"''']
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "Only the first open under a config resizes, and a save that changes the config starts again."
+source = ['docs/design.md "a reload that changes the config starts again"']
+proof  = "crates/strand/tests/kept_sizes.rs::a_reload_that_changes_the_config_starts_the_kept_sizes_again"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "resizes at each change."
+source = ['docs/design.md "a size written out with a `~` (`height: open ? 200 : 28 ~ 100ms`) still resizes at each change"']
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "since a box takes the pointer across its whole area whether it draws or not, a plain `col` included."
+source = ['crates/strand-compiler/src/schema/builtin.schema "/// takes the pointer across its whole box whether it draws or not:"', 'crates/strand-compiler/src/schema/builtin.schema "/// pointer through too, since a box without it, a plain `col` included,"']
+proof  = "crates/strand-render/tests/boxes.rs::hit_none_takes_no_input_in_its_own_box"
 
 # --- island, reporting ---
 [[claim]]
@@ -2853,6 +2894,19 @@ page   = "site/how-to/island.md"
 text   = "`exclusive: 28` reserves room for the pill"
 source = ['docs/spec.md "a length (in px) that much whatever its size"']
 proof  = "read: spec.md section 6, `exclusive:` on a panel takes a length"
+
+[[claim]]
+page   = "site/how-to/island.md"
+text   = "`exclusive: true` and `~ instant` do not keep"
+source = ['docs/design.md "`exclusive: true` and `~ instant` do not keep"', 'crates/strand-render/src/renderer/specs.rs "strand_scene::Transition::Default | strand_scene::Transition::Instant"', 'crates/strand-render/src/renderer/specs.rs "!matches!(spec.exclusive, strand_scene::Exclusive::Auto)"']
+proof  = "read: specs.rs keeps a size only under a `~` other than `instant`, with no `exclusive: true`, and only when content sizes it"
+
+[[claim]]
+page   = "site/how-to/island.md"
+text   = "A written `width` or `height` has no span on that axis and keeps nothing"
+source = ['docs/design.md "A panel or OSD anchored to one edge and sized by its content along that edge takes its whole output there"', 'docs/design.md "also keeps, on the axes its content sizes, the largest size it has had"']
+proof  = "crates/strand-render/tests/layout.rs::a_panel_centred_on_one_axis_never_resizes_there holds the span; read: specs.rs keeps only when `content_sized`, and design.md's two rules are for what content sizes"
+
 
 [[claim]]
 page   = "site/tools/reporting.md"
@@ -2945,8 +2999,127 @@ text   = "0.55 and later, and its only kind of config from 0.57"
 source = ['''docs/decisions.md "Lua is Hyprland's only kind of config from 0.57"''', 'scripts/container/hyprland-nested.sh "Hyprland --config "$XDG_RUNTIME_DIR/hyprland.lua""']
 proof  = "seen in the matrix image's hyprland 0.57.0-1, 2026-11-01: the binary holds no `hyprland.conf` and the package ships only `hyprland.lua`; https://wiki.hypr.land/0.56.0/Configuring/Start/ has hyprlang deprecated, not gone, in 0.56"
 
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "Pasting works, with Ctrl+V."
+source = ['docs/spec.md "at the caret, over the selection, with Ctrl+V or Shift+Insert"']
+proof  = "crates/strand-render/tests/input.rs::ctrl_v_asks_to_paste_and_the_paste_lands_at_the_caret"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "Dead keys and Compose need no input method"
+source = ['crates/strand-surface/src/manager/compose.rs "Dead keys and Compose sequences: what a key press types."', 'docs/spec.md "An input method (`text-input-v3`) is not supported."']
+proof  = "crates/strand-surface/tests/compose.rs::dead_keys_and_compose_type_the_composed_text_under_real_names"
 
 # --- keys ---
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "its `on activate` if it has one, else `on click`"
+source = ['docs/spec.md "Return or space on a focused node runs its own `on activate` if it has an active one, else `on click`"']
+proof  = "crates/strand-compiler/tests/focus.rs::return_prefers_activate_over_click"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "selects the row, then runs its `on click` and its `on activate`, or the list's"
+source = ['''docs/spec.md "and on the row itself its `on click` and then `on activate`, the list's if it has none, as a pointer's click there"''']
+proof  = "crates/strand-compiler/tests/focus.rs::return_on_a_focused_row_does_what_a_click_on_it_does"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "as a `button` does, and selects the row and runs its `on activate`"
+source = ['''docs/spec.md "on a node in a `list`'s row the row is selected and its `on activate` runs too"''']
+proof  = "crates/strand-compiler/tests/focus.rs::return_on_a_button_in_a_row_activates_the_row"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "Space on a `scroll` or `list` only pages, so it never clicks what is around it."
+source = ['docs/spec.md "Space and Shift+space page a focused `scroll` or `list` forward and back, as the Page keys do, repeating, and go to no click."']
+proof  = "crates/strand-compiler/tests/focus.rs::space_pages_a_focused_scroll; crates/strand-compiler/tests/focus.rs::space_pages_a_focused_list"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "A `slider` or `segmented` without `<->` shows its value and leaves these keys alone."
+source = ['docs/spec.md "A `slider` bound two-way: Left and Down step down"', 'docs/spec.md "A `segmented` bound two-way: Left and Right choose the option"']
+proof  = "crates/strand-compiler/tests/focus.rs::a_display_slider_ignores_its_keys"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "A pointer's click runs `on activate` only on a `list`'s row"
+source = ['crates/strand-render/src/input.rs "let activate = if event == NodeEvent::Click { list_row(scene.tree(), &under)"', '''crates/strand-compiler/src/schema/builtin.schema "/// Return or space on any other focused node. A pointer's click runs it only"''']
+proof  = "crates/strand-compiler/tests/focus.rs::a_pointers_click_runs_no_activate_off_a_list_row"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "a dead key and then `e` types `é`"
+source = ['docs/spec.md "A focused `input` types what the keyboard composes, on layouts such as `de`, `fr` and `us(intl)`"', 'crates/strand-surface/src/manager/compose.rs "//! (keyboard) Dead keys and Compose sequences: what a key press types."']
+proof  = "crates/strand-surface/tests/compose.rs::dead_keys_and_compose_type_the_composed_text_under_real_names"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "Escape in the middle of a sequence ends it and does nothing else"
+source = ['docs/spec.md "An Escape that ends a sequence is spent: no handler, claim or default hears its press or release"']
+proof  = "crates/strand-surface/src/manager/compose.rs::escape_ending_a_sequence_is_consumed_and_otherwise_ordinary"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "A sequence also ends when focus leaves it"
+source = ['docs/spec.md "Escape, the keyboard leaving, keys going to another surface, the focused surface closing and a pointer press end a sequence"']
+proof  = "crates/strand-surface/src/manager/compose.rs::a_sequence_ends_when_the_keyboard_leaves_or_the_surface_changes"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "A key held with Ctrl, Alt or Super ends one"
+source = ['docs/spec.md "A press with Ctrl, Alt or Super held is no key of a sequence and ends one"']
+proof  = "crates/strand-surface/src/manager/compose.rs::a_modifier_is_no_part_of_a_sequence_and_picks_the_result"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "Strand has no input method: `text-input-v3` is not supported"
+source = ['docs/spec.md "An input method (`text-input-v3`) is not supported."']
+proof  = "read: strand-surface binds no text-input protocol"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "Strand does not support input methods (`text-input-v3`)"
+source = ['docs/spec.md "An input method (`text-input-v3`) is not supported."']
+proof  = "grep: strand-surface binds no text-input protocol"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "a monitor it does not pick shows a solid in the lock's `bg`"
+source = ['''docs/spec.md "Every monitor not picked shows a solid in the lock's colour (its `bg`)."''']
+proof  = "read: spec.md's lock paragraph; run in the lock VM by crates/strand/tests/lock.rs"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "it takes the whole monitor that way from its first frame and never resizes there"
+source = ['docs/design.md "sized by its content along that edge takes its whole output there and never resizes on that axis"', 'docs/decisions.md "edge from the first frame its bounds are known"']
+proof  = "crates/strand-render/tests/layout.rs::a_panel_centred_on_one_axis_never_resizes_there"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "it also keeps the largest size it has had, on the axes its content sizes, across restarts"
+source = ['docs/design.md "One sized by its content with a `~` on its size also keeps, on the axes its content sizes, the largest size it has had, across sessions under the same config"']
+proof  = "crates/strand/tests/kept_sizes.rs::a_panel_maps_next_session_at_the_size_it_kept"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "`exclusive: true` and `~ instant` do not keep"
+source = ['docs/design.md "`exclusive: true` and `~ instant` do not keep"']
+proof  = "read: design.md, Growth springs"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "lets the pointer through to what is behind it wherever none of its nodes takes input"
+source = ['''crates/strand-compiler/src/schema/builtin.schema "/// surface's root it lets the pointer through to what is behind the"''', 'crates/strand-compiler/src/schema/builtin.schema "/// surface wherever none of its nodes takes input: write it among the"']
+proof  = "crates/strand-render/tests/boxes.rs::hit_none_takes_no_input_in_its_own_box"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "`hover` follows what is under the pointer as drawn"
+source = ['docs/spec.md "`hover` and the cursor follow what is under the pointer as the last frame drew it"']
+proof  = "crates/strand-compiler/tests/pointer.rs::hover_and_the_cursor_follow_rows_moving_under_a_still_pointer"
+
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "the typing stays in the box"
@@ -3037,3 +3210,93 @@ text   = "is an error from `strand check`"
 source = ['docs/spec.md "**Around a password.** A claim of a key that types"', 'crates/strand-compiler/src/check/secrets.rs ""a claim of `{}` would eat what is typed into a password","']
 proof  = "crates/strand-compiler/tests/secrets.rs::a_claim_that_would_eat_a_password_is_an_error"
 
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "its `on activate`, or with `nav:` the selected row's"
+source = ['''crates/strand-compiler/src/schema/builtin.schema "/// the list's if it has none), Return in an `input` with no `nav:` list, or"''', 'docs/spec.md "Return activates the selected row (`on activate`)"']
+proof  = "crates/strand-render/tests/input.rs::return_activates_a_plain_input; crates/strand-render/tests/input.rs::keys_go_to_the_focused_input_and_its_list"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "| `list` | Return | the selected row's `on activate` |"
+source = ['docs/spec.md "Return activates the selected row (`on activate`)"']
+proof  = "crates/strand-render/tests/input.rs::keys_go_to_the_focused_input_and_its_list"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "| | Return | as a `button` does |"
+source = ['docs/spec.md "An `input` and a `list` have their own Return"', 'crates/strand-render/src/input.rs "// not many clicks. An `input` and a `list` have their own."']
+proof  = "read: input.rs presses any focused node but an `input` or `list` on Return, a `scroll` included"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "Return and space press once, however long the key is held."
+source = ['docs/spec.md "A repeat does nothing: holding it is not many clicks."']
+proof  = "crates/strand-compiler/tests/focus.rs::return_and_space_click_a_focused_button"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "So a `button` with only an `on activate` answers Return and ignores the mouse."
+source = ['''crates/strand-compiler/src/schema/builtin.schema "/// on a `list`'s row: elsewhere it runs `on click`, so a `button` the mouse"''']
+proof  = "crates/strand-compiler/tests/focus.rs::return_prefers_activate_over_click; crates/strand-compiler/tests/focus.rs::a_pointers_click_runs_no_activate_off_a_list_row"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "from xkb's table for your locale and your `~/.XCompose`"
+source = ['''docs/spec.md "from xkb's compose table for the locale"''', '''crates/strand-surface/src/manager/compose.rs "/// and `~/.XCompose` are libxkbcommon's to honour."''']
+proof  = "crates/strand-surface/src/manager/compose.rs::the_locale_is_the_first_of_lc_all_lc_ctype_and_lang"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "with no table keys type what they type"
+source = ['docs/spec.md "No table is no error: keys type what they type."']
+proof  = "crates/strand-surface/src/manager/compose.rs::with_no_table_a_key_types_what_sctk_says"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "The keys of a sequence type nothing until the last one."
+source = ['docs/spec.md "A key inside a sequence has an empty `k.text` and types nothing; the key that ends it has the composed text"']
+proof  = "crates/strand-surface/src/manager/compose.rs::a_compose_sequence_types_its_result_on_its_last_key"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "A handler still hears each by its real name"
+source = ['docs/spec.md "`k.name` is always the real key (`dead_acute`, `Multi_key`, `e`), so claims match as ever."']
+proof  = "crates/strand-surface/tests/compose.rs::dead_keys_and_compose_type_the_composed_text_under_real_names"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "`k.text` is empty until the key that finishes the sequence"
+source = ['docs/spec.md "A key inside a sequence has an empty `k.text` and types nothing; the key that ends it has the composed text"']
+proof  = "crates/strand-surface/tests/compose.rs::dead_keys_and_compose_type_the_composed_text_under_real_names"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "no handler hears that Escape, and the launcher stays open"
+source = ['''docs/spec.md "no handler, claim or default hears its press or release, so it doesn't also close a launcher"''']
+proof  = "crates/strand-surface/src/manager/compose.rs::escape_ending_a_sequence_is_consumed_and_otherwise_ordinary"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "while AltGr types and composes"
+source = ['docs/spec.md "AltGr types, and composes."']
+proof  = "crates/strand-surface/tests/compose.rs::levels_layouts_and_chords_type_as_ever_with_a_table_loaded"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "though it can be pasted with Ctrl+V"
+source = ['docs/spec.md "at the caret, over the selection, with Ctrl+V or Shift+Insert"']
+proof  = "crates/strand-render/tests/input.rs::ctrl_v_asks_to_paste_and_the_paste_lands_at_the_caret"
+
+# --- docs-sweep: the environment ---
+[[claim]]
+page   = "site/start/running.md"
+text   = "the one the settings portal names, else GTK's `gtk-icon-theme-name`, else Adwaita."
+source = ['crates/strand-icons/src/lib.rs "else the settings"', 'crates/strand-icons/src/lib.rs "else Adwaita"']
+proof  = "crates/strand-services/tests/builtin.rs::the_portal_icon_theme_is_followed_live"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "set `STRAND_ICON_THEME`"
+source = ['crates/strand-icons/src/lib.rs "std::env::var("STRAND_ICON_THEME")"']
+proof  = "crates/strand-services/tests/builtin.rs::the_portal_icon_theme_is_followed_live"

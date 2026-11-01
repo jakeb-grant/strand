@@ -168,17 +168,31 @@ whichever has it, and `node.focus()` moves it from any handler.
 
 | On a focused | Key | Does |
 |---|---|---|
-| anything | Return, space | its `on activate` if it has one, else `on click` |
-| `slider` | Left, Down / Right, Up | a step down / up |
+| `button` or anything not below | Return, space | its `on activate` if it has one, else `on click` |
+| `list` row | Return, space | selects the row, then runs its `on click` and its `on activate`, or the list's |
+| element inside a `list` row | Return, space | as a `button` does, and selects the row and runs its `on activate` |
+| `input` | Return | its `on activate`, or with `nav:` the selected row's |
+| `list` | Return | the selected row's `on activate` |
+| | Page keys, space, Shift+space | a view of rows |
+| `slider` bound two-way | Left, Down / Right, Up | a step down / up |
 | | Page keys | ten steps |
 | | Home, End | the ends |
-| `segmented` | Left, Right | the choice beside this one |
+| `segmented` bound two-way | Left, Right | the choice beside this one |
 | `scroll` | arrows | a step |
-| | Page keys | a view |
+| | Page keys, space, Shift+space | a view |
 | | Home, End | the ends |
+| | Return | as a `button` does |
 
 A step is the slider's `step:`, or a hundredth of its `range` without one. A claim
-beats every one of these, as it beats any default.
+beats every one of these, as it beats any default. Space on a `scroll` or `list`
+only pages, so it never clicks what is around it. Return and space press once,
+however long the key is held. A `slider` or `segmented` without `<->` shows its
+value and leaves these keys alone.
+
+The mouse is not the keyboard here. A pointer's click runs `on activate` only on a
+`list`'s row; anywhere else it runs `on click`. So a `button` with only an
+`on activate` answers Return and ignores the mouse. Give a button `on click`, and
+both reach it.
 
 A press on a button focuses it, but not away from a field or a list: a button
 beside a search box runs and the typing stays in the box. An element you wrote
@@ -245,6 +259,27 @@ is drawn, and reading them wakes nothing while it stands still. `node.reveal()`
 on any element scrolls whatever is around it, as little as it takes, at once.
 Focus moving onto something in a `scroll` by a key or from code does the same; a
 press doesn't, so what you pressed stays under the pointer.
+
+## Dead keys, Compose and input methods
+
+A focused `input` types what your keyboard composes. On a layout such as `de`,
+`fr` or `us(intl)`, a dead key and then `e` types `é`, and a Compose key works the
+same way, from xkb's table for your locale and your `~/.XCompose`. There is nothing
+to turn on, and with no table keys type what they type.
+
+The keys of a sequence type nothing until the last one. A handler still hears each
+by its real name, `dead_acute`, `Multi_key` or `e`, so your claims match as ever,
+and `k.text` is empty until the key that finishes the sequence.
+
+Escape in the middle of a sequence ends it and does nothing else: no handler hears
+that Escape, and the launcher stays open. The next Escape closes it. A sequence also
+ends when focus leaves it: the keyboard leaving, keys going to another surface, the
+surface closing or a pointer press. A key held with Ctrl, Alt or Super ends one and
+acts as usual, while AltGr types and composes.
+
+Strand has no input method: `text-input-v3` is not supported, so Fcitx and IBus
+cannot type into an `input`. Chinese, Japanese or Korean text that needs one cannot
+be typed there, though it can be pasted with Ctrl+V.
 
 ## Around a password
 

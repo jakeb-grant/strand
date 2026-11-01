@@ -327,6 +327,24 @@ fn return_prefers_activate_over_click() {
     assert_eq!((sh.num("acts"), sh.num("clicks")), (1.0, 1.0));
 }
 
+/// The keyboard's `on activate` is not the mouse's: off a list's row a
+/// pointer's click runs `on click` and nothing else.
+#[test]
+fn a_pointers_click_runs_no_activate_off_a_list_row() {
+    let mut sh = entered(
+        "state clicks = 0\nstate acts = 0\n\
+         panel P { anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+           button \"b\" { width: 100; height: 40\n\
+             on click { clicks += 1 }\n\
+             on activate { acts += 1 }\n\
+           }\n\
+         }\n",
+    );
+    sh.click(10.0, 10.0);
+    sh.settle();
+    assert_eq!((sh.num("acts"), sh.num("clicks")), (0.0, 1.0));
+}
+
 /// A button in a list's row: its click, and the row chosen, as a pointer's.
 #[test]
 fn return_on_a_button_in_a_row_activates_the_row() {

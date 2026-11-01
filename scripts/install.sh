@@ -35,7 +35,7 @@ usage: install.sh [--edge | --release | --version X | --from FILE]
                   [--bin-dir DIR] [--force] [--uninstall]
 
 Installs Strand for this user, or updates it: strand, strand-auth,
-strand-dev and strand-eval into ~/.local/share/strand/<version>/, with
+strand-dev and strand-eval into ~/.local/share/strand/versions/<version>/, with
 `strand` and `strand-dev` linked from ~/.local/bin. No root needed.
 
   --edge          the newest build of main that passed CI

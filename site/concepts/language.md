@@ -83,7 +83,9 @@ text "Battery" {
 ```
 
 `hover`, `pressed`, `focused` and `selected` are the state of the node
-the `when` is written in.
+the `when` is written in. `hover` follows what is under the pointer as
+drawn, so when a list scrolls or a row closes under a pointer that stays
+still, it moves to what is there now.
 
 ## Expressions
 

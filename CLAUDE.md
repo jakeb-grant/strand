@@ -24,6 +24,10 @@ reason.
 - Every feature lands with tests. Rendering lands with offline PNG tests.
 - Tick `docs/features.md` boxes for features you finish, with the test that
   proves them.
+- A citation of `owner-testing.md` ("bug N", "gap N") means the retired file
+  as it is at 3c11916b: `git show 3c11916b:docs/owner-testing.md`.
+- `scripts/decisions-index.sh` lists `docs/decisions.md`'s tracks with their
+  dates and first lines; grep it to find a track.
 
 ## Checks
 
@@ -63,7 +67,7 @@ Everything builds and tests in Docker images that match CI:
 scripts/container/run.sh cargo test -p strand-watch   # any command
 scripts/container/run.sh ci        # every step of CI's check jobs, in order
 CI_JOB=timing scripts/container/run.sh ci   # one job: lint, test, budgets,
-                                             # acceptance or timing
+                                             # acceptance, timing, eval or site
 scripts/container/run.sh shell     # a bash in the image
 scripts/container/matrix.sh        # CI's compositors job: sway, niri, Hyprland, labwc
 scripts/container/gpu.sh           # advisory real-GPU leg (renderD128 only)
@@ -93,7 +97,8 @@ scripts/container/lockvm.sh <cmd>  # a command in the lock VM (KVM); CI's lock-v
   (`Dockerfile.lockvm`, only `/dev/kvm` passed in) and runs a command in
   the guest; `LOCKVM_TCG=1` emulates without KVM.
 - `ci` treats the wall-clock gates in the timing steps (theme_swap_bench,
-  reload_latency, list_scroll_bench) as advisory: when every failure in a step is a gate
+  reload_latency, list_scroll_bench, the frame-time tests of motion, morph
+  and anim_bench, and strand-compiler's theme swap) as advisory: when every failure in a step is a gate
   miss (a panic starting "timing gate missed", `gate-misses.sh`), it
   prints WARN with its numbers and the run goes on; any other failure in
   those steps fails. GitHub's `timing` job enforces the gates.

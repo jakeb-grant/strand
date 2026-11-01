@@ -199,6 +199,13 @@ mapped, each reload and each service starting or stopping. The topic `damage`
 (`STRAND_LOG=damage`, or `STRAND_LOG=info,damage` with a level) prints
 one line per painted frame with the rectangles it repainted.
 
+## Icons
+
+An `icon` looks its name up in your desktop's icon theme: the one the
+settings portal names, else GTK's `gtk-icon-theme-name`, else Adwaita.
+To use another without changing the desktop's, set `STRAND_ICON_THEME`
+in the environment `strand run` starts in.
+
 ## Start it and bind keys
 
 Start `strand run` from your compositor's startup commands, so it runs
