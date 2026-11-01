@@ -35,21 +35,19 @@
 # strand-cargo-registry and strand-cargo-git, and sccache's compile cache
 # the volume strand-sccache, shared by every worktree (decisions.md,
 # ci-speed).
-# The image is tagged by the Dockerfile's hash and built when missing.
+# The image is the one GitHub's jobs run, published under the Dockerfile's
+# hash: pulled when it isn't here, built when it can't be pulled (image.sh).
+# Under GITHUB_ACTIONS, the runner's cache and paths instead of the volumes
+# (see below).
 # Works from a git worktree: the main repository's .git is mounted too.
 
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-[ "$#" -gt 0 ] || { sed -n '2,39p' "$0"; exit 2; }
+[ "$#" -gt 0 ] || { sed -n '2,42p' "$0"; exit 2; }
 
-hash=$(sha256sum "$HERE/Dockerfile" | cut -c1-12)
-IMAGE=strand-ci:$hash
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "building $IMAGE" >&2
-  docker build -t "$IMAGE" -f "$HERE/Dockerfile" "$HERE" >&2
-fi
+IMAGE=$("$HERE/image.sh")
 
 mounts=(-v "$ROOT:$ROOT")
 # A worktree's .git is a file pointing into the main repository's
@@ -59,7 +57,28 @@ case "$common" in
   "" | "$ROOT"/*) ;;
   *) mounts+=(-v "$common:$common") ;;
 esac
-mounts+=(-v strand-cargo-registry:/opt/cargo/registry -v strand-cargo-git:/opt/cargo/git)
+# GitHub's jobs: Swatinem/rust-cache saves and restores ~/.cargo's registry
+# and git checkouts, which a named volume would hide from it, and a target
+# directory it restores already holds what sccache would give back, so
+# there is no compile cache (RUN_SCCACHE=1 still asks for one). RUNNER_TEMP,
+# which holds GITHUB_STEP_SUMMARY's file and the jobs' own paths, appears at
+# its own path (decisions.md ci-speed-2).
+ci_envs=()
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+  mkdir -p "$HOME/.cargo/registry" "$HOME/.cargo/git"
+  mounts+=(-v "$HOME/.cargo/registry:/opt/cargo/registry" -v "$HOME/.cargo/git:/opt/cargo/git")
+  [ -z "${RUNNER_TEMP:-}" ] || mounts+=(-v "$RUNNER_TEMP:$RUNNER_TEMP")
+  RUN_SCCACHE=${RUN_SCCACHE:-0}
+  # ci.yml's top env and what the setup action's steps add, as the tests saw
+  # them on the runner (test-run-env.sh holds this to ci.yml).
+  for name in CI GITHUB_ACTIONS GITHUB_STEP_SUMMARY RUNNER_TEMP \
+    CARGO_INCREMENTAL CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG RUSTFLAGS RUST_BACKTRACE \
+    VK_DRIVER_FILES VK_ICD_FILENAMES LP_NATIVE_VECTOR_WIDTH; do
+    [ -z "${!name+set}" ] || ci_envs+=(-e "$name")
+  done
+else
+  mounts+=(-v strand-cargo-registry:/opt/cargo/registry -v strand-cargo-git:/opt/cargo/git)
+fi
 
 # Cores: a build alone takes them all; with others running (at most three
 # worktrees build at once, CLAUDE.md) each takes its share.
@@ -102,6 +121,7 @@ fi
 while IFS='=' read -r name _; do
   envs+=(-e "$name")
 done < <(env | grep -E '^(STRAND|SIZE_REPORT)_[A-Z0-9_]*=' || true)
+envs+=("${ci_envs[@]}")
 [ -n "${CI_FROM:-}" ] && envs+=(-e CI_FROM)
 [ -n "${CI_JOB:-}" ] && envs+=(-e CI_JOB)
 

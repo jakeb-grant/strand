@@ -54,18 +54,63 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  # The CI image, one for these jobs and the laptop: scripts/container/
+  # Dockerfile at ghcr.io/jakeb-grant/strand-ci:<its hash>, published the
+  # first time a run needs it, never written again (decisions.md ci-speed-2).
+  # `image` looks, holding no credentials; `image-publish` is the only job
+  # that may write to packages, and always runs, so the jobs after it need no
+  # special `if`. Only a run with something to publish takes the shared
+  # group, where it checks again before it builds: a branch push and its pull
+  # request of one new Dockerfile would otherwise both push. GitHub keeps only
+  # the newest pending job of a group, so a third run with the same new
+  # Dockerfile cancels the second's publish, and that run needs a re-run.
+  # A fork's pull request gets no write access from GitHub and is not asked
+  # to try: run.sh pulls the tag or, for a Dockerfile of its own, builds it.
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      missing: ${{ steps.check.outputs.missing }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: check
+        run: echo "missing=$(scripts/container/publish-image.sh missing)" >>"$GITHUB_OUTPUT"
+
+  image-publish:
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: ${{ needs.image.outputs.missing == 'true' && 'ci-image-publish' || format('ci-image-none-{0}', github.run_id) }}
+      cancel-in-progress: false
+    env:
+      PUBLISH: ${{ needs.image.outputs.missing == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    steps:
+      - uses: actions/checkout@v7
+        if: env.PUBLISH == 'true'
+      - name: Publish the image
+        if: env.PUBLISH == 'true'
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          scripts/container/publish-image.sh publish
+
   # The checks of every push, split into jobs that run side by side (the
   # single `check` job took about 23 min; docs/decisions.md, laptop-ci).
-  # Each job starts from .github/actions/setup. scripts/container/ci.sh
-  # runs the same steps in order, in one container.
+  # Each job starts from .github/actions/setup, and all but `wasm` run their
+  # commands in the image, through run.sh as on the laptop.
+  # scripts/container/ci.sh runs the same steps in order, in one container.
 
   # Formatting and lints: no tests, the build headers only.
   lint:
+    needs: image-publish
     if: github.event_name != 'schedule'
-    # Pinned: the pixel references (crates/strand/tests/refs) come from
-    # 24.04's sway 1.9, fonts-dejavu-core 2.37 and adwaita-icon-theme 46;
-    # a newer image would change glyph and icon pixels. Every job uses
-    # the same image.
+    # The runner's release only matters to `wasm` and to what runs on the
+    # host's Docker; the pixel references come from the CI image's packages.
     runs-on: ubuntu-24.04
     # A hang fails instead of holding the runner for GitHub's default 6 h.
     timeout-minutes: 60
@@ -75,42 +120,24 @@ jobs:
         with:
           tier: headers
           free-disk: "false"
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets
+      - run: scripts/container/run.sh cargo fmt --all --check
+      - run: scripts/container/run.sh cargo clippy --workspace --all-targets
       # niri's IPC (design.md, "Risks") and PipeWire audio (libpipewire)
       # sit behind default-on features; the build without them must stay
       # clean too.
-      - run: cargo clippy -p strand-services --no-default-features --all-targets
+      - run: scripts/container/run.sh cargo clippy -p strand-services --no-default-features --all-targets
       # The CPU core without the GPU backend (no wgpu, vello_gpu, naga or
       # libwayland-client; the CPU-only `.text` gate's build).
-      - run: cargo clippy -p strand --no-default-features --all-targets
-      - run: cargo build -p strand --no-default-features
+      - run: scripts/container/run.sh cargo clippy -p strand --no-default-features --all-targets
+      - run: scripts/container/run.sh cargo build -p strand --no-default-features
       # Targets behind a non-default feature (strand's `[[test]] lock`
       # needs `faults`, and so does run/lock.rs's fault module) are out
       # of the default build: lint them too.
-      - run: cargo clippy --workspace --all-targets --all-features
-      # The tree-sitter CLI: a pinned prebuilt release checked by its
-      # sha256, in this job only (no cargo install, nothing in the other
-      # jobs). The same version and sha256 are in
-      # scripts/container/Dockerfile; edit both together
-      # (scripts/container/test-check-tree-sitter.sh compares them).
-      - name: tree-sitter CLI (pinned)
-        env:
-          TREE_SITTER_VERSION: "0.27.0"
-          TREE_SITTER_SHA256: "20a1f39ec1c45f2211492dcb8881c802b643b554bb196869a29ac3778277fa77"
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSfL -o "$RUNNER_TEMP/tree-sitter.gz" \
-            "https://github.com/tree-sitter/tree-sitter/releases/download/v${TREE_SITTER_VERSION}/tree-sitter-linux-x64.gz"
-          echo "${TREE_SITTER_SHA256}  $RUNNER_TEMP/tree-sitter.gz" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/bin"
-          gunzip -c "$RUNNER_TEMP/tree-sitter.gz" >"$RUNNER_TEMP/bin/tree-sitter"
-          chmod 0755 "$RUNNER_TEMP/bin/tree-sitter"
-          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
-          "$RUNNER_TEMP/bin/tree-sitter" --version
+      - run: scripts/container/run.sh cargo clippy --workspace --all-targets --all-features
       # The committed parser.c and grammar.json match grammar.js
       # (docs/architecture.md, "tree-sitter layout"; no grammar yet
       # passes).
-      - run: scripts/check-tree-sitter.sh
+      - run: scripts/container/run.sh scripts/check-tree-sitter.sh
       # The CI scripts' own tests: gate-misses.sh (the advisory timing
       # gates), check-tree-sitter.sh, the budgets ledger line and the static
       # checks of the owner-only gpu-measure.sh (never run here),
@@ -119,38 +146,43 @@ jobs:
       # crates (the laptop's inner loop, CLAUDE.md), prune-rust-caches.sh
       # (the nightly cache pruning) and check-path-filters.sh, which then holds the lock-vm and package
       # jobs' path filters to the tree: an entry naming a moved file would
-      # silently stop that job running for it.
-      - run: scripts/container/test-gate-misses.sh
-      - run: scripts/container/test-check-tree-sitter.sh
-      - run: scripts/container/test-ledger.sh
-      - run: scripts/container/test-gpu-measure.sh
-      - run: scripts/test-size-report.sh
-      - run: scripts/container/test-tests-ran.sh
-      - run: scripts/container/test-affected.sh
-      - run: scripts/container/test-prune-rust-caches.sh
-      - run: scripts/container/test-check-path-filters.sh
-      - run: scripts/container/check-path-filters.sh
+      # silently stop that job running for it; image.sh, publish-image.sh and
+      # what run.sh passes, on a stand-in docker; then, on the runner's real
+      # one, that ci.yml's top env reaches the container.
+      - run: scripts/container/run.sh scripts/container/test-gate-misses.sh
+      - run: scripts/container/run.sh scripts/container/test-check-tree-sitter.sh
+      - run: scripts/container/run.sh scripts/container/test-ledger.sh
+      - run: scripts/container/run.sh scripts/container/test-gpu-measure.sh
+      - run: scripts/container/run.sh scripts/test-size-report.sh
+      - run: scripts/container/run.sh scripts/container/test-tests-ran.sh
+      - run: scripts/container/run.sh scripts/container/test-affected.sh
+      - run: scripts/container/run.sh scripts/container/test-prune-rust-caches.sh
+      - run: scripts/container/run.sh scripts/container/test-check-path-filters.sh
+      - run: scripts/container/run.sh scripts/container/check-path-filters.sh
+      - run: scripts/container/run.sh scripts/container/test-image.sh
+      - run: scripts/container/test-run-env.sh
 
   # The debug test build: the workspace's tests, the 100 reloads and the
   # reload fuzzer's short run.
   test:
+    needs: image-publish
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
-      - run: cargo test -p strand-services --no-default-features --lib
+      - run: scripts/container/run.sh cargo test -p strand-services --no-default-features --lib
       # The reload fuzzer runs on its own below (timing-sensitive saves),
       # and the 100 reloads too.
-      - run: cargo test --workspace -- --skip random_edits_through_five_save_styles --skip a_hundred_reloads_reconnect_and_restart_nothing
+      - run: scripts/container/run.sh cargo test --workspace -- --skip random_edits_through_five_save_styles --skip a_hundred_reloads_reconnect_and_restart_nothing
       # strand-auth's PAM tier and its no-faults check need the helper's
       # test hooks, asked for by name: no plain test build turns them on.
-      - run: cargo test -p strand-auth --features faults
+      - run: scripts/container/run.sh cargo test -p strand-auth --features faults
       # A presented surface under frames that send nothing. Alone, since
       # `--workspace` turns on the `eval` crate's `eval-hooks` in strand-render,
       # which draws every frame, so that build never sees this path.
-      - run: cargo test -p strand --test presented_quiet
+      - run: scripts/container/run.sh cargo test -p strand --test presented_quiet
         timeout-minutes: 10
       # M3 exit, "100 reloads with no reconnects": a shell reading every
       # builtin service but screens and auth (python-dbusmock's daemons,
@@ -164,14 +196,14 @@ jobs:
       # restarts alone).
       # It takes under a minute; its own watchdog prints the stage and
       # the logs and aborts after 5 min, this bound backs it.
-      - run: cargo test -p strand --test reloads -- --nocapture
+      - run: scripts/container/run.sh cargo test -p strand --test reloads -- --nocapture
         timeout-minutes: 10
       # The reload fuzzer's short run: 60 edits through the five save
       # styles and the sway pipeline, on tmpfs, alone (a descheduled test
       # thread splits a delete-and-create save; a gap of at most 20 ms,
       # still past the 15 ms coalescing, leaves it 30 ms of the watcher's
       # 50 ms grace).
-      - run: scripts/container/tests-ran.sh cargo test -p strand --lib random_edits_through_five_save_styles -- --nocapture --test-threads=1
+      - run: scripts/container/run.sh scripts/container/tests-ran.sh cargo test -p strand --lib random_edits_through_five_save_styles -- --nocapture --test-threads=1
         env:
           STRAND_FUZZ_MAX_GAP_MS: "20"
 
@@ -179,6 +211,7 @@ jobs:
   # opt-levels are what the budgets rest on (crates/strand/tests/
   # budgets.rs checks them).
   budgets:
+    needs: image-publish
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -189,10 +222,10 @@ jobs:
         with:
           cache-key: release
       # The bar's PSS budget (42 MB target warns, 48 MB ceiling fails, GPU cold: no render node, no software adapter accepted, decisions.md gpu-first) is checked on a release build (design.md, "Testing": budgets).
-      - run: cargo test --release -p strand --test demo
+      - run: scripts/container/run.sh cargo test --release -p strand --test demo
       # The same gate and the idle budget on the real services (private
       # bus, mock portal): `the_real_services_sleep_when_nothing_changes`.
-      - run: cargo test --release -p strand --test services -- --test-threads=1
+      - run: scripts/container/run.sh cargo test --release -p strand --test services -- --test-threads=1
       # M3 exit, "memory verified": design.md's bar on two 2560x1440
       # outputs reading battery, network, audio, workspaces, windows,
       # tray and notifications on the real backends (python-dbusmock's
@@ -205,14 +238,14 @@ jobs:
       # (launcher open at 2x, two toasts, the OSD) printed against
       # 296 / 324 MiB warm and 76 MB / 128 MiB cold, decisions.md
       # m5-open-budgets, seam-snap and gpu-first (the warm device).
-      - run: cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
+      - run: scripts/container/run.sh cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
         env:
           STRAND_LEDGER_FILE: ${{ runner.temp }}/ledger
       # The CPU core's .text keeps its own gate (24,903,680 B; the GPU
       # backend's is 29,097,984 B), both re-based on wave-cost's
       # tree with a 512 KiB reserve (decisions.md growth, services-round, wave-cost;
       # docs/architecture.md, "`strand-gpu`").
-      - run: cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
+      - run: scripts/container/run.sh cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
         env:
           STRAND_LEDGER_FILE: ${{ runner.temp }}/ledger
       # M5's size ledger line (scripts/container/ledger.sh):
@@ -230,6 +263,7 @@ jobs:
   # slides and swaps are caught (the test job runs them in debug without
   # those).
   acceptance:
+    needs: image-publish
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -239,7 +273,7 @@ jobs:
         with:
           cache-key: release
           cache-save: "false"
-      - run: cargo test --release -p strand --test acceptance -- --nocapture --test-threads=1
+      - run: scripts/container/run.sh cargo test --release -p strand --test acceptance -- --nocapture --test-threads=1
       # A screenshot that missed its reference, with its diff.
       - uses: actions/upload-artifact@v7
         if: failure()
@@ -252,6 +286,7 @@ jobs:
   # opt-levels without its link-time optimisation, which they do not
   # measure.
   timing:
+    needs: image-publish
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -261,7 +296,7 @@ jobs:
       # A theme swap within design.md's 5 ms of work (logic's re-resolve,
       # the render thread's springs and contrast check, the token graph
       # of every frame) on an optimised build.
-      - run: cargo test --profile timing -p strand-render --test theme_swap_bench -- --nocapture
+      - run: scripts/container/run.sh cargo test --profile timing -p strand-render --test theme_swap_bench -- --nocapture
       # Save → pixels p95 within design.md's 35 ms (token) and 50 ms
       # (markup) on an optimised build, to the painted buffer and to the
       # frame sway presents, and a monitor or portal change (a mock
@@ -270,32 +305,32 @@ jobs:
       # 50 edits each so p95 is not the worst of 20 samples (the token
       # gate's headroom is thin: 1.6 ms at p95 in GitHub run 37647946808,
       # 0.5 ms in a reviewer's local run).
-      - run: scripts/container/tests-ran.sh cargo test --profile timing -p strand --lib reload_latency -- --nocapture --test-threads=1
+      - run: scripts/container/run.sh scripts/container/tests-ran.sh cargo test --profile timing -p strand --lib reload_latency -- --nocapture --test-threads=1
         env:
           STRAND_LATENCY_ROUNDS: "50"
       # M4 exit "smooth 2,000-row scrolling": a 2,000-row list's render
       # frame p95 within 3.5 ms at 60 and 144 Hz on an optimised build,
       # with logic's window answers 50 ms late and no stalled frame
       # (decisions.md m4-lists-w1).
-      - run: cargo test --profile timing -p strand-render --test list_scroll_bench -- --nocapture
+      - run: scripts/container/run.sh cargo test --profile timing -p strand-render --test list_scroll_bench -- --nocapture
       # The launcher's enter and a toast's exit: every frame within a
       # 60 Hz refresh and the median within half of it, on an optimised
       # build (features.md, M2's motion box).
-      - run: cargo test --profile timing -p strand-render --test motion animated_frames_fit_the_refresh_budget -- --nocapture
+      - run: scripts/container/run.sh cargo test --profile timing -p strand-render --test motion animated_frames_fit_the_refresh_budget -- --nocapture
       # The owner's notch card (1470 × 708 at scale 1.5) swelling and
       # folding: the median frame within half a 60 Hz refresh and every
       # frame within one, on an optimised build (owner-testing.md bug 17).
-      - run: cargo test --profile timing -p strand-render --test morph the_island_card_swells_within_the_frame_budget -- --nocapture
+      - run: scripts/container/run.sh cargo test --profile timing -p strand-render --test morph the_island_card_swells_within_the_frame_budget -- --nocapture
       # The animation review's CPU wins (decisions.md perf-gates): the
       # cover's mask, the transformed gradients of a shared morph and a
       # staggered grid, a list scrolled and a palette spring, each run's
       # median frame within a 120 Hz refresh and its p95 within a 60 Hz
       # one, and where the win was the encoding, its mean within 1 ms.
-      - run: cargo test --profile timing -p strand-render --test anim_bench animated_cpu_frames_hold_their_gates -- --nocapture --test-threads=1
+      - run: scripts/container/run.sh cargo test --profile timing -p strand-render --test anim_bench animated_cpu_frames_hold_their_gates -- --nocapture --test-threads=1
       # The logic side of a theme swap (design.md's theme.strand, from
       # the write of `theme.look` to `SetTokens`) within design.md's
       # 5 ms by the median of 15 swaps, on an optimised build.
-      - run: cargo test --profile timing -p strand-compiler --test theme a_theme_swap_is_under_five_milliseconds_of_logic -- --nocapture
+      - run: scripts/container/run.sh cargo test --profile timing -p strand-compiler --test theme a_theme_swap_is_under_five_milliseconds_of_logic -- --nocapture
 
   # The animation evaluation sandbox (eval/, docs/eval.md): its own Cargo
   # workspace, so none of the jobs above builds it. scripts/eval/ci.sh's
@@ -312,6 +347,7 @@ jobs:
   # shell), which builds strand's report test too, hence 50 minutes. The
   # mutants run nightly (eval-matrix.yml).
   eval:
+    needs: image-publish
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 50
@@ -324,7 +360,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           cache-key: eval
-      - run: scripts/eval/ci.sh
+      - run: scripts/container/run.sh scripts/eval/ci.sh
       # The report: every scenario's trace, checks, frames and viewer, and
       # the matrix's grid and summary (a changed cell is approved from a
       # local run, scripts/container/run.sh eval matrix-all).
@@ -347,10 +383,11 @@ jobs:
   # committed ones, pixel for pixel (scripts/site/media.sh --check); and
   # every page in headless Chromium at three widths, light and dark, from
   # file:// with no network (scripts/site/shots.sh --all, eval's pinned
-  # Playwright image on the runner's Docker, as eval-matrix.yml's viewer
-  # check): a console error, a failed request, a page wider than the
+  # Playwright image, on the runner's Docker and not in the CI image, as
+  # eval-matrix.yml's viewer check): a console error, a failed request, a page wider than the
   # screen or a search or player that does not work fails it.
   site:
+    needs: image-publish
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 50
@@ -361,12 +398,10 @@ jobs:
           cache-key: site
       - name: Build the site, its CLI page held to the strand binary
         run: |
-          cargo build -q -p strand --bin strand
-          cargo run -q -p strand-site -- build --strand target/debug/strand
-      - run: cargo test -p strand-site
-      - run: scripts/site/media.sh --check
-        env:
-          SITE_DIRECT: "1"
+          scripts/container/run.sh bash -c 'cargo build -q -p strand --bin strand &&
+            cargo run -q -p strand-site -- build --strand "$CARGO_TARGET_DIR/debug/strand"'
+      - run: scripts/container/run.sh cargo test -p strand-site
+      - run: scripts/container/run.sh env SITE_DIRECT=1 bash scripts/site/media.sh --check
       - run: scripts/site/shots.sh --all
       - uses: actions/upload-artifact@v7
         if: always()
@@ -389,6 +424,9 @@ jobs:
   # `site-live` is the site to publish: target/site with its wasm/.
   # The tools are scripts/wasm/Dockerfile's, at the same versions:
   # wasm-bindgen-cli matching the crate in Cargo.lock, binaryen 124.
+  # The one job left on the runner, with its build headers from apt: the
+  # image has no wasm target or tools, and an image of scripts/wasm/Dockerfile
+  # would be built per run or published beside it (decisions.md ci-speed-2).
   wasm:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
@@ -451,8 +489,8 @@ jobs:
   # bar in `strand run` against each live compositor, compared with what
   # its own CLI reports (crates/strand/tests/compositor_matrix.rs, run by
   # scripts/compositor-matrix.sh). Hyprland and niri are packaged on Arch,
-  # not on the Ubuntu runner: the test is built here and run in an
-  # archlinux:latest container. Hyprland's aquamarine allocates on a DRM
+  # not on the Ubuntu runner: the test is built in the CI image and run in
+  # an archlinux:latest container, as scripts/container/matrix.sh does. Hyprland's aquamarine allocates on a DRM
   # node even for headless outputs, so the runner loads vkms (a virtual
   # KMS card, rendered by Mesa's llvmpipe) and passes it in; niri runs
   # nested (winit) in a headless sway; sway runs headless.
@@ -462,27 +500,23 @@ jobs:
   # compositor and its package version (an annotation and the job
   # summary; decisions.md laptop-resilience).
   compositors:
+    needs: image-publish
     name: "${{ github.event_name == 'schedule' && 'compositors (nightly: archlinux:latest Hyprland, niri, sway, labwc)' || 'compositors' }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - name: Build headers
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev libpam0g-dev
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/setup
         with:
-          toolchain: 1.97.0
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: compositors
+          free-disk: "false"
+          cache-key: compositors
       - name: Build the compositor matrix test
         id: build
         run: |
           # The binary's path from cargo's JSON messages: the human
           # "Executable" line carries colour codes under CARGO_TERM_COLOR.
-          cargo test -p strand --test compositor_matrix --no-run --message-format=json >build.json
+          # The same path inside and outside the container.
+          scripts/container/run.sh cargo test -p strand --test compositor_matrix --no-run --message-format=json >build.json
           test=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "compositor_matrix" and .executable != null) | .executable' build.json | tail -1)
           echo "matrix test: $test"
           test -x "$test"
@@ -535,6 +569,7 @@ jobs:
   # unpinned; a tag archive GitHub regenerates fails with a message
   # saying so.
   lock-vm:
+    needs: image-publish
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -619,6 +654,10 @@ jobs:
               # This job's definition and the machine it starts from.
               - '.github/workflows/ci.yml'
               - '.github/actions/setup/**'
+              - 'scripts/container/Dockerfile'
+              - 'scripts/container/image.sh'
+              - 'scripts/container/machine.sh'
+              - 'scripts/container/run.sh'
       - name: Decide
         id: run
         run: |
@@ -640,8 +679,8 @@ jobs:
       # lock on headless sway, the strand binary's fault matrix (built
       # with `--features faults`) and the shipping helper against real
       # pam_unix, (services-round) the polkit agent against polkitd and
-      # the greeter against greetd, built here (the guest is the
-      # runner's Ubuntu release). (lockmon) The polkit agent runs twice:
+      # the greeter against greetd, built here in the CI image (the
+      # guest is its Ubuntu release). (lockmon) The polkit agent runs twice:
       # against Ubuntu's polkit 124 and its setuid helper, and against
       # polkit 127, which Dockerfile.lockvm builds from its release
       # tarball (sha256-pinned; meson 1.4.2 from PyPI) into /opt/polkit127,
@@ -653,12 +692,11 @@ jobs:
       - uses: ./.github/actions/setup
         if: steps.run.outputs.go == 'true'
         with:
-          tier: headers
           cache-key: test
           cache-save: "false"
       - name: Build the lock VM scenarios' binaries
         if: steps.run.outputs.go == 'true'
-        run: bash scripts/lockvm/scenarios/build.sh
+        run: scripts/container/run.sh bash scripts/lockvm/scenarios/build.sh
       - name: Lock VM scenarios
         if: steps.run.outputs.go == 'true'
         run: scripts/container/lockvm.sh bash scripts/lockvm/scenarios/all.sh
@@ -681,6 +719,7 @@ jobs:
   # changed, passing with nothing done otherwise (the same shape as
   # lock-vm; decisions.md ci-speed-2).
   package:
+    needs: image-publish
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -703,6 +742,10 @@ jobs:
               # settings package.sh's four programs come out of.
               - '.github/workflows/ci.yml'
               - '.github/actions/setup/**'
+              - 'scripts/container/Dockerfile'
+              - 'scripts/container/image.sh'
+              - 'scripts/container/machine.sh'
+              - 'scripts/container/run.sh'
               - '.cargo/config.toml'
               # package.sh, smoke.sh, test-install.sh, test-publish.sh,
               # publish.sh, licenses.py, about.toml and the installer.
@@ -749,22 +792,19 @@ jobs:
       - uses: ./.github/actions/setup
         if: steps.run.outputs.go == 'true'
         with:
-          tier: headers
           cache-key: release
           cache-save: "false"
+      # As scripts/release/ci.sh: built in the image, kept in its target.
       - uses: actions/cache@v6
         if: steps.run.outputs.go == 'true'
         id: about
         with:
-          path: ~/.cargo-tools/cargo-about
-          key: cargo-about-${{ env.ABOUT_VERSION }}-rust-1.97.0
+          path: target/container/tools
+          key: cargo-about-${{ env.ABOUT_VERSION }}-rust-1.97.0-image
       - name: cargo-about
-        if: steps.run.outputs.go == 'true'
+        if: steps.run.outputs.go == 'true' && steps.about.outputs.cache-hit != 'true'
         run: |
-          if [ "${{ steps.about.outputs.cache-hit }}" != true ]; then
-            cargo install --locked --root ~/.cargo-tools/cargo-about cargo-about --version "$ABOUT_VERSION" --features cli
-          fi
-          echo "$HOME/.cargo-tools/cargo-about/bin" >> "$GITHUB_PATH"
+          scripts/container/run.sh cargo install --locked --root target/container/tools cargo-about --version "$ABOUT_VERSION" --features cli
       - name: The archive's version
         if: steps.run.outputs.go == 'true'
         id: id
@@ -774,9 +814,10 @@ jobs:
           else
             echo "id=edge-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
           fi
-      - run: scripts/release/package.sh "${{ steps.id.outputs.id }}" "$RUNNER_TEMP/dist"
+      - run: |
+          scripts/container/run.sh bash -c "PATH=\$PWD/target/container/tools/bin:\$PATH scripts/release/package.sh ${{ steps.id.outputs.id }} $RUNNER_TEMP/dist"
         if: steps.run.outputs.go == 'true'
-      - run: scripts/release/test-publish.sh
+      - run: scripts/container/run.sh scripts/release/test-publish.sh
         if: steps.run.outputs.go == 'true'
       - run: scripts/release/smoke.sh "$RUNNER_TEMP/dist"
         if: steps.run.outputs.go == 'true'
@@ -872,6 +913,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
   nightly:
+    needs: image-publish
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -882,19 +924,19 @@ jobs:
       # editor styles into a live pipeline on tmpfs (/dev/shm), and in
       # place into the pipeline on headless sway. On the `timing`
       # profile, the latency run's build below.
-      - run: scripts/container/tests-ran.sh cargo test --profile timing -p strand --lib random_edits_through_five_save_styles -- --nocapture
+      - run: scripts/container/run.sh scripts/container/tests-ran.sh cargo test --profile timing -p strand --lib random_edits_through_five_save_styles -- --nocapture
         env:
           STRAND_FUZZ_EDITS: "10000"
           # A new sequence each night; the seed is printed to replay it.
           STRAND_FUZZ_SEED: ${{ github.run_id }}
       # The same 10,000 edits on the instance level, and the state table,
       # on the same profile so the job builds one optimised tree.
-      - run: cargo test --profile timing -p strand-compiler --test reload random_ -- --nocapture
+      - run: scripts/container/run.sh cargo test --profile timing -p strand-compiler --test reload random_ -- --nocapture
         env:
           STRAND_RELOAD_FUZZ: "10000"
           STRAND_STATE_FUZZ: "2000"
       # The timing job's latency gate with 200 edits each.
-      - run: scripts/container/tests-ran.sh cargo test --profile timing -p strand --lib reload_latency -- --nocapture --test-threads=1
+      - run: scripts/container/run.sh scripts/container/tests-ran.sh cargo test --profile timing -p strand --lib reload_latency -- --nocapture --test-threads=1
         env:
           STRAND_LATENCY_ROUNDS: "200"
 

@@ -121,30 +121,15 @@ timing_step() {
 }
 
 # .github/actions/setup (every job).
-step "Services tier tools" 1 bash -c '
-  dbus-daemon --version | head -1 &&
-  python3 -c "import dbusmock" && dpkg -s python3-dbusmock | grep "^Version" &&
-  pipewire --version'
+step "Services tier tools" 1 scripts/container/machine.sh services
 # The GPU tier (M4): lavapipe is the image's only Vulkan driver
 # (VK_DRIVER_FILES, Dockerfile) and the GPU tests require it.
 export STRAND_REQUIRE_GPU=1
 # Lavapipe is a software adapter, which strand counts as no device
 # unless this is set (docs/architecture.md, "`strand-gpu`").
 export STRAND_GPU_SOFTWARE=1
-step "GPU tier device (lavapipe)" 1 bash -c '
-  dpkg -s mesa-vulkan-drivers | grep "^Version"
-  out=$(vulkaninfo --summary 2>&1)
-  printf "%s\n" "$out" | sed -n "/^Devices/,\$p"
-  printf "%s\n" "$out" | grep -Eq "driverName += llvmpipe" || { echo "no lavapipe (llvmpipe) Vulkan device"; exit 1; }'
-step "Reference package versions" 1 bash -c '
-  sway --version
-  dpkg -s fonts-dejavu-core adwaita-icon-theme | grep -E "^(Package|Version)"
-  dpkg -l "fonts-*" | grep "^ii" || true
-  fc-list : family style file | sort
-  fc-match -s "sans-serif:italic" | head -5
-  readlink -f /usr/share/icons/default/index.theme || true
-  ls /usr/share/icons/Adwaita/cursors/default
-  rustc --version'
+step "GPU tier device (lavapipe)" 1 scripts/container/machine.sh gpu
+step "Reference package versions" 1 scripts/container/machine.sh references
 
 job=lint
 step "cargo fmt --all --check" 60 cargo fmt --all --check
@@ -171,6 +156,7 @@ step "scripts/container/test-affected.sh" 5 scripts/container/test-affected.sh
 step "scripts/container/test-prune-rust-caches.sh" 5 scripts/container/test-prune-rust-caches.sh
 step "scripts/container/test-check-path-filters.sh" 5 scripts/container/test-check-path-filters.sh
 step "scripts/container/check-path-filters.sh" 1 scripts/container/check-path-filters.sh
+step "scripts/container/test-image.sh" 5 scripts/container/test-image.sh
 
 job=test
 step "cargo test -p strand-services --no-default-features --lib" 60 \

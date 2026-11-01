@@ -70,10 +70,15 @@ scripts/container/gpu.sh           # advisory real-GPU leg (renderD128 only)
 scripts/container/lockvm.sh <cmd>  # a command in the lock VM (KVM); CI's lock-vm job
 ```
 
-- `run.sh` uses `scripts/container/Dockerfile`: Ubuntu 24.04 with exactly
-  CI's apt packages (sway 1.9, grim, DejaVu core only, Adwaita, dbus,
-  python3-dbusmock, PipeWire, lavapipe, libpam0g-dev) and Rust 1.97.0, so
-  pixel references match CI; lavapipe is the only Vulkan driver in it.
+- `run.sh` uses one image with GitHub's jobs, so pixel references can't
+  differ between the two: `scripts/container/Dockerfile` (Ubuntu 24.04 by
+  digest, sway 1.9, grim, DejaVu core only, Adwaita, dbus, python3-dbusmock,
+  PipeWire, lavapipe, libpam0g-dev, Rust 1.97.0), lavapipe the only Vulkan
+  driver in it, published at `ghcr.io/jakeb-grant/strand-ci:<Dockerfile
+  hash>` by CI's `image-publish` job and frozen there, never overwritten and
+  never pushed from a laptop. `run.sh` pulls that tag and builds locally only
+  when it can't be pulled (`image.sh`); a local build gives way to the
+  published image once there is one.
   It runs as your uid with the checkout at its own path (worktrees
   included), CI's env (`STRAND_REQUIRE_SWAY/DBUS/PIPEWIRE/GPU=1`,
   `RUSTFLAGS=-D warnings`, no debug info), the cores shared among the
@@ -102,8 +107,13 @@ scripts/container/lockvm.sh <cmd>  # a command in the lock VM (KVM); CI's lock-v
   test's end, after its functional assertions (`Gates` in
   theme_swap_bench, `failed` in bench.rs); a functional assertion never
   does. Memory budgets, pixel tests and the rest stay strict.
-- When the Dockerfile changes, the image is rebuilt (tagged by its hash);
-  edit it together with `.github/workflows/ci.yml`.
+- CI's jobs run through `run.sh` too (`wasm` alone stays on the runner);
+  under `GITHUB_ACTIONS` it takes `~/.cargo` for rust-cache in place of the
+  volumes, leaves sccache off, mounts `RUNNER_TEMP` at its own path and
+  passes CI's env (`test-run-env.sh` holds that to `ci.yml`).
+- A changed Dockerfile is a new hash, so a new image with that day's apt
+  packages, published by the first run of CI that sees it: the pixel tests
+  must pass on it there. Edit it together with `.github/workflows/ci.yml`.
 
 ## Working rules
 

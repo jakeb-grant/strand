@@ -30,7 +30,10 @@ on:
           (scripts/eval/repeat.sh; 1 runs the matrix once, as nightly)
         default: "1"
 
-# As ci.yml: the GPU leg runs on lavapipe and fails without it.
+# As ci.yml: the GPU leg runs on lavapipe and fails without it. The jobs
+# run in the CI image, through run.sh; this workflow publishes nothing, so
+# on a dispatch from a branch with a new Dockerfile that ci.yml has not
+# published yet, run.sh builds it.
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -54,7 +57,7 @@ jobs:
           cache-key: eval
           cache-save: "false"
       # Appends its summary.md (the failing and stale cells) to the job's.
-      - run: scripts/eval/matrix.sh
+      - run: scripts/container/run.sh env HZ="$HZ" EFFECTS="$EFFECTS" OUT="$OUT" bash scripts/eval/matrix.sh
         if: (inputs.repeat || '1') == '1'
         env:
           HZ: ${{ inputs.hz || '60,144' }}
@@ -63,14 +66,14 @@ jobs:
       # The stability run (docs/eval.md, "Stability"): the gate and the
       # matrix `repeat` times, each held to its references, and every
       # run's trace digests the first run's.
-      - run: scripts/eval/repeat.sh "$REPEAT"
+      - run: scripts/container/run.sh env HZ="$HZ" EFFECTS="$EFFECTS" OUT="$OUT" bash scripts/eval/repeat.sh "$REPEAT"
         if: (inputs.repeat || '1') != '1'
         env:
           REPEAT: ${{ inputs.repeat }}
           HZ: ${{ inputs.hz || '60,144' }}
           EFFECTS: ${{ inputs.effects }}
           OUT: target/eval/repeat
-      - run: scripts/eval/mutants.sh
+      - run: scripts/container/run.sh bash scripts/eval/mutants.sh
         if: always() && (inputs.mutants || 'true') == 'true'
       # The viewer in a real browser (docs/eval.md, "The viewer in a
       # browser"): headless Chromium in a pinned Playwright image, no

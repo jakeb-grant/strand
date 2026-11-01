@@ -12,12 +12,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 [ "$#" -gt 0 ] || { sed -n '2,8p' "$0"; exit 2; }
 
-base_hash=$(sha256sum "$ROOT/scripts/container/Dockerfile" | cut -c1-12)
-BASE=strand-ci:$base_hash
-if ! docker image inspect "$BASE" >/dev/null 2>&1; then
-  echo "building $BASE" >&2
-  docker build -t "$BASE" -f "$ROOT/scripts/container/Dockerfile" "$ROOT/scripts/container" >&2
-fi
+BASE=$("$ROOT/scripts/container/image.sh")
 hash=$( (cat "$ROOT/scripts/container/Dockerfile" "$HERE/Dockerfile") | sha256sum | cut -c1-12)
 IMAGE=strand-wasm:$hash
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then

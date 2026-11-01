@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests scripts/check-tree-sitter.sh on a toy grammar, and that the
-# Dockerfile and ci.yml's lint job pin the same tree-sitter CLI.
+# Dockerfile alone pins the tree-sitter CLI.
 # Run: scripts/container/run.sh scripts/container/test-check-tree-sitter.sh
 
 set -uo pipefail
@@ -22,19 +22,17 @@ expect() {
   if [ "$got" = "$want" ]; then ok "$name"; else no "$name: exit $got, wanted $want"; sed 's/^/     /' "$DIR/out"; fi
 }
 
-# The pins agree.
+# The Dockerfile pins the CLI, and only there: the lint job runs in its image.
 d_ver=$(sed -n 's/^ARG TREE_SITTER_VERSION=//p' "$HERE/Dockerfile")
 d_sha=$(sed -n 's/^ARG TREE_SITTER_SHA256=//p' "$HERE/Dockerfile")
-c_ver=$(sed -n 's/^ *TREE_SITTER_VERSION: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$ROOT/.github/workflows/ci.yml")
-c_sha=$(sed -n 's/^ *TREE_SITTER_SHA256: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$ROOT/.github/workflows/ci.yml")
-if [ -n "$d_ver" ] && [ "$d_ver" = "$c_ver" ] && [ -n "$d_sha" ] && [ "$d_sha" = "$c_sha" ]; then
-  ok "Dockerfile and ci.yml pin tree-sitter $d_ver with the same sha256"
+if [ -n "$d_ver" ] && [ "${#d_sha}" = 64 ]; then
+  ok "the Dockerfile pins tree-sitter $d_ver with a sha256"
 else
-  no "the pins differ: Dockerfile $d_ver $d_sha, ci.yml $c_ver $c_sha"
+  no "the Dockerfile's pin: version '$d_ver', sha256 '$d_sha'"
 fi
-case "$(grep -c 'TREE_SITTER_SHA256:' "$ROOT/.github/workflows/ci.yml")" in
-  1) ok "ci.yml fetches the CLI in one job" ;;
-  *) no "ci.yml names TREE_SITTER_SHA256 more than once (the CLI belongs to the lint job only)" ;;
+case "$(grep -c 'TREE_SITTER_SHA256' "$ROOT/.github/workflows/ci.yml")" in
+  0) ok "ci.yml fetches no CLI of its own" ;;
+  *) no "ci.yml names TREE_SITTER_SHA256 (the CLI belongs to the image)" ;;
 esac
 
 PKG=$DIR/pkg

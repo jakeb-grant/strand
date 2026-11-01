@@ -1,13 +1,17 @@
-# The CI `check` job's machine (.github/workflows/ci.yml) as an image:
+# The machine CI's jobs and the laptop both run (scripts/container/run.sh):
 # Ubuntu 24.04 (the pixel references come from its sway 1.9,
-# fonts-dejavu-core 2.37 and adwaita-icon-theme 46), the job's apt
-# packages, the same fonts-dejavu-extra removal and Rust 1.97.0.
-# Built and run by scripts/container/run.sh.
-FROM ubuntu:24.04
+# fonts-dejavu-core 2.37 and adwaita-icon-theme 46), these apt packages,
+# the fonts-dejavu-extra removal and Rust 1.97.0.
+# Published once per hash of this file at ghcr.io/jakeb-grant/strand-ci
+# (ci.yml's image-publish, publish-image.sh; image.sh pulls it), which
+# freezes the apt packages too: any edit here publishes a new image with
+# the day's packages, which the pixel references must then pass on.
+# The base is pinned by digest; ubuntu:24.04's multi-arch index, 2026-11-01.
+FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
 
 ENV DEBIAN_FRONTEND=noninteractive
-# The CI check job's install step, package for package, plus git, jq,
-# ca-certificates and curl (rustup, the matrix test's build parsing).
+# The test tier's packages, plus git, jq, ca-certificates and curl
+# (rustup, the matrix test's build parsing).
 # The GPU tier (M4): Mesa's lavapipe (software Vulkan) with the loader
 # and vulkaninfo; libpam0g-dev for strand-auth's PAM helper.
 RUN apt-get update \
@@ -33,8 +37,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 RUN mkdir -p /opt/cargo/registry /opt/cargo/git && chmod 0777 /opt/cargo/registry /opt/cargo/git
 ENV LANG=C.UTF-8
 
-# Lavapipe is the only Vulkan driver the loader offers (as in CI's env,
-# .github/workflows/ci.yml): the image also ships Mesa's hardware ICDs,
+# Lavapipe is the only Vulkan driver the loader offers (ci.yml's top env
+# says the same): the image also ships Mesa's hardware ICDs,
 # which must never be picked up (scripts/container/gpu.sh selects a
 # hardware ICD on purpose). VK_ICD_FILENAMES is the deprecated spelling
 # older loaders read. A fixed llvmpipe vector width keeps GPU-tier pixels
@@ -48,9 +52,7 @@ ENV VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json \
 # check that the committed parser.c and grammar.json match grammar.js
 # (scripts/check-tree-sitter.sh). `generate --js-runtime native`
 # evaluates grammar.js with the CLI's built-in QuickJS, so no node
-# (decisions.md m5-infra, spike 2). The same version and sha256 are in
-# .github/workflows/ci.yml's lint job; edit both together
-# (scripts/container/test-check-tree-sitter.sh compares them).
+# (decisions.md m5-infra, spike 2). The lint job takes it from here.
 ARG TREE_SITTER_VERSION=0.27.0
 ARG TREE_SITTER_SHA256=20a1f39ec1c45f2211492dcb8881c802b643b554bb196869a29ac3778277fa77
 RUN curl --proto '=https' --tlsv1.2 -sSfL -o /tmp/tree-sitter.gz \
@@ -64,8 +66,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSfL -o /tmp/tree-sitter.gz \
 # sccache, the laptop's compile cache (decisions.md, ci-speed): run.sh
 # wraps rustc with it, the cache in the named volume strand-sccache, so a
 # fresh worktree takes its dependencies from the cache instead of
-# compiling them again. Local only: GitHub's jobs keep Swatinem/
-# rust-cache, and the compiler's output is the same either way. A pinned
+# compiling them again. Local only: on GitHub run.sh leaves it off, for
+# Swatinem/rust-cache, and the compiler's output is the same either way. A pinned
 # prebuilt release checked by its sha256.
 ARG SCCACHE_VERSION=0.18.0
 ARG SCCACHE_SHA256=45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
