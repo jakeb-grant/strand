@@ -32,7 +32,7 @@ if [ "${MATRIX_REBUILD:-}" = 1 ] || ! docker image inspect "$image" >/dev/null 2
   # so exec(2) of them fails (compositor-matrix-ci.sh does the same).
   docker build -t "$image" - <<EOF
 FROM $base
-RUN pacman -Syu --noconfirm --needed jq vulkan-intel vulkan-radeon vulkan-swrast \\
+RUN pacman -Syu --noconfirm --needed jq python vulkan-intel vulkan-radeon vulkan-swrast \\
  && pacman -Scc --noconfirm >/dev/null \\
  && for b in /usr/bin/Hyprland /usr/bin/Hyprland-bin /usr/bin/labwc; do \\
       [ ! -e "\$b" ] || setcap -r "\$b" 2>/dev/null || true; done

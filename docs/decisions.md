@@ -14843,3 +14843,41 @@ Run with a `from file` service on headless sway under lavapipe: rewriting the fi
 surface and accent over about 8 captures, a broken or missing file sprang to `from`,
 and 7 restarts showed the file's colours on the first frame drawn, with no fallback frame, so nothing
 was added for startup. Proof: the five `palette` tests in `tests/theme.rs`.
+
+## keyboard
+
+(2026-10-31) Anything a pointer can do, a key can do, and the config says what each key means. Strand
+knows nothing of menus, levels or modes: a shell builds those from `state`. Today a key handler can't
+stop a default, a `list`'s selection can't be moved from code, only `input` and `list` hold focus, a
+`scroll` can't be scrolled from code, and fuzzy search covers only apps. Run on nested Hyprland 0.57
+before designing: keys reach a panel, every key sent 10 ms or more after `strand set` returned arrived
+(39 of 48 with none), and `keyboard:` changes while a surface is open, both ways.
+
+Five pieces, built in this order, each documented in spec.md and the reference as it lands:
+
+1. **A pattern claims a key.** `on key "ctrl+n", "down" { … }` runs for those keys and stops the
+   default and every other handler; `on key(k)` stays, and only observes, so it no longer takes Tab
+   (gap 6). Logic runs on another thread and can't answer "handled" in time, so claims are not handler
+   code: the compiler sets the active patterns as a prop of the node and the router matches them, from
+   the focused node outward, the innermost first, before any default. Handlers may now sit in `when`,
+   which lifts a rule rather than adding a syntax: `when view != home { on key "escape" { view = home } }`
+   lets Escape reach the default at the top level. A condition is therefore reactive, as any prop is,
+   and a key in the same tick as a change is judged by the old value. Patterns use the name a key has
+   or its Latin fallback, so they work on non-Latin layouts, and are checked by `strand check`. `Key`
+   gains `repeat`, and `on key_release(k)` is delivered, since `KeyInput` has both.
+2. **Selection.** `results.next()`, `.prev()`, `.first()`, `.last()`, `.select(i)`, `.activate()`, and
+   `wrap:` on `list`. `axis:` and `columns:` make one `list` a strip or a grid with arrows read from the
+   layout, so there is no second selection concept. Selection stays apart from focus: it is an index,
+   since virtualised rows beyond the window have no node to focus.
+3. **Search.** `xs.fuzzy(query, x => x.name)` over any list, giving each item with its score and match
+   ranges, beside the list methods. Frecency is a stored history, not an argument, so it is not in this.
+4. **Focus and scroll.** `focus:` on any node, `node.focus()`, arrows moving focus by geometry where a
+   container asks, Return activating, arrows changing a `slider`; a `scroll`'s position read and written.
+5. **Text.** Compose and dead keys in `input`, which `seat.rs` doesn't do. An input method
+   (`text-input-v3`) is later and is not designed here.
+
+Not built: a menu or back-stack system; global key grabs, which stay the compositor's; a leader or
+vim engine, which a `state` and `when` give. `strand toggle x value` and `strand call` on a config's
+own actions were proposed and dropped: m5-owner Q13 ruled the second out, and an exported `bool` per
+shortcut with `on change` already gives "this key opens that view, again closes it". Secret flow
+(`check::secrets`) treats a claim that takes `(k)` as hearing keys; one without it hears nothing.
