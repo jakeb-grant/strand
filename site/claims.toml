@@ -21,103 +21,103 @@
 [[claim]]
 page   = "site/start/install.md"
 text   = "It needs no root, and writes only to `~/.local/share/strand` and `~/.local/bin`."
-source = ["scripts/install.sh:91", "scripts/install.sh:97-98"]
+source = ['scripts/install.sh "*) data_home=$HOME/.local/share ;;"', 'scripts/install.sh "DATA=$data_home/strand"', 'scripts/install.sh "BIN=${bin_dir:-$HOME/.local/bin}"']
 proof  = "scripts/release/test-install.sh full (scripts/release/smoke.sh, CI's package job): installs as a user with an empty home into those two"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "It downloads the newest release from GitHub and checks it against its checksum."
-source = ["scripts/install.sh:244", "scripts/install.sh:274"]
+source = ['scripts/install.sh "what="the newest release" ref=releases/latest"', 'scripts/install.sh "does not match its checksum: the download is damaged"']
 proof  = "scripts/release/test-install.sh full: a checksum that does not match is refused and current stays"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "Then it starts the new `strand` once before switching to it, so a build that cannot run on your system changes nothing."
-source = ["scripts/install.sh:304"]
+source = ['scripts/install.sh "# Unpacks the archive and starts the new strand once, before anything"', 'scripts/install.sh "the new strand does not start on this system; nothing was changed"']
 proof  = "scripts/release/test-install.sh nolibs and oldglibc: refused, nothing installed"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "`strand 0.1.0 (a764f45c0d1e)`."
-source = ["crates/strand/src/entry.rs:146", "crates/strand/build.rs", "Cargo.toml:8"]
+source = ['crates/strand/src/entry.rs "`strand 0.1.0 (a764f45c0d1e)`."', 'crates/strand/build.rs "println!("cargo:rustc-env=STRAND_COMMIT={value}");"', 'Cargo.toml "version = "0.1.0""']
 proof  = "crates/strand/src/entry.rs::tests::the_version_names_the_commit_and_the_channel"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "Every release on GitHub carries the same script."
-source = ["scripts/release/publish.sh:53", "scripts/release/publish.sh:81-84"]
+source = ['scripts/release/publish.sh "gh release upload edge "$DIST/install.sh" --clobber"', 'scripts/release/publish.sh ""$archive.sha256" "$archive" "$DIST/install.sh""']
 proof  = "scripts/release/test-publish.sh: edge's and a tag's releases hold install.sh"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "**Linux on x86\\_64 with glibc 2.39 or newer**"
-source = ["scripts/install.sh:22", "scripts/release/package.sh:51-56"]
+source = ['scripts/install.sh "ARCH=x86_64"', 'scripts/install.sh "MIN_GLIBC=2.39"', '''scripts/release/package.sh "newer than install.sh's MIN_GLIBC=$min"''']
 proof  = "package.sh fails when a program needs a newer glibc than MIN_GLIBC; scripts/release/test-install.sh oldglibc: Ubuntu 22.04 (2.35) is refused"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "The releases are built on Ubuntu 24.04."
-source = [".github/workflows/ci.yml:645"]
+source = ['''.github/workflows/ci.yml "package: if: github.event_name != 'schedule' runs-on: ubuntu-24.04"''']
 proof  = "the package job runs-on ubuntu-24.04"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "the script names it, stops, and prints the command that installs them"
-source = ["scripts/install.sh:295", "scripts/install.sh:310-318"]
+source = ['scripts/install.sh "s/^/  missing: /"', 'scripts/install.sh "Strand needs these libraries; install them with your package manager:"']
 proof  = "scripts/release/test-install.sh nolibs: names libpipewire-0.3.so.0 and the apt command"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "`sudo pacman -S libpipewire libxkbcommon wayland fontconfig`"
-source = ["scripts/install.sh:314", "scripts/release/smoke.sh"]
+source = ['scripts/install.sh "sudo pacman -S libpipewire libxkbcommon wayland fontconfig"', 'scripts/release/smoke.sh "ARCH_LIBS="libpipewire libxkbcommon wayland fontconfig""']
 proof  = "scripts/release/smoke.sh: archlinux:latest with exactly these installs and runs strand"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "`sudo apt install libpipewire-0.3-0t64 libxkbcommon0 libwayland-client0 libfontconfig1`"
-source = ["scripts/install.sh:315", "scripts/release/smoke.sh"]
+source = ['scripts/install.sh "sudo apt install libpipewire-0.3-0t64 libxkbcommon0 libwayland-client0 libfontconfig1"', 'scripts/release/smoke.sh "UBUNTU_LIBS="libpipewire-0.3-0t64 libxkbcommon0 libwayland-client0 libfontconfig1""']
 proof  = "scripts/release/smoke.sh: ubuntu:24.04 with exactly these installs and runs strand"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "`sudo dnf install pipewire-libs libxkbcommon libwayland-client fontconfig`"
-source = ["scripts/install.sh:316"]
+source = ['scripts/install.sh "sudo dnf install pipewire-libs libxkbcommon libwayland-client fontconfig"']
 proof  = "not run: the Fedora packages that hold libpipewire-0.3.so.0, libxkbcommon.so.0, libwayland-client.so.0 and libfontconfig.so.1 (packages.fedoraproject.org, 2026-10-29)"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "It stays beside `strand`, off your `PATH`"
-source = ["scripts/install.sh:24"]
+source = ['scripts/install.sh "LINKED="strand strand-dev""']
 proof  = "scripts/release/test-install.sh full: strand-auth is beside strand, not linked"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "The script will not run as root: it installs Strand for one user."
-source = ["scripts/install.sh:91"]
+source = ['scripts/install.sh "run this as your own user, not root: it installs Strand for one user"']
 proof  = "scripts/release/smoke.sh: root is refused (Ubuntu 24.04)"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "also will not replace a `strand` in `~/.local/bin` that it did not put there"
-source = ["scripts/install.sh:332"]
+source = ['''scripts/install.sh "is already there and is not this installer's"''']
 proof  = "scripts/release/test-install.sh full: refused and left, then replaced with --force"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "When the newest build is the one installed, it says so and changes nothing."
-source = ["scripts/install.sh:391"]
+source = ['scripts/install.sh "is installed already and up to date."']
 proof  = "scripts/release/test-install.sh full: again: up to date"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "Commands such as `strand toggle` run the new version straight away, and still work with the older shell."
-source = ["crates/strand/src/ipc/mod.rs:6-11", "crates/strand-core/src/ipc.rs:154"]
+source = ['crates/strand/src/ipc/mod.rs "so a newer client can probe an older shell."', '''crates/strand-core/src/ipc.rs "then a client hears `unknown command`, M4's answer word for word"''']
 proof  = "read: protocol version 1; a command an older shell does not know is answered `unknown command`, the connection kept"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "The script keeps the version it replaced, and any version a program is still running from"
-source = ["scripts/install.sh:342"]
+source = ['scripts/install.sh "prune "$id" "$before""', 'scripts/install.sh "Kept $v: a program still runs from it."']
 proof  = "scripts/release/test-install.sh full: an edge build an LSP still runs from is kept, removed once it stops"
 
 [[claim]]
@@ -128,405 +128,411 @@ proof  = "grep: no crate under crates/ asks GitHub or a release URL for anything
 
 [[claim]]
 page   = "site/start/install.md"
-text   = "Every push to `main` that passes CI replaces it."
-source = [".github/workflows/ci.yml:748-750", "scripts/release/publish.sh:35-58"]
-proof  = "scripts/release/test-publish.sh"
+text   = "A push to `main` that passes CI replaces it, unless a newer push has come by then."
+source = ['.github/workflows/ci.yml "a push to main whose every job passed"', '''.github/workflows/ci.yml "replaces the `edge` pre-release's build, unless main has moved on"''', '''scripts/release/publish.sh "that push's run publishes edge"''']
+proof  = "scripts/release/test-publish.sh: nothing is published once main has moved on"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "The script remembers the channel."
-source = ["scripts/install.sh:369"]
+source = ['scripts/install.sh "channel=$(cat "$DATA/channel" 2>/dev/null || echo release)"']
 proof  = "scripts/release/test-install.sh full: again with no flag after --edge installs edge"
 
 [[claim]]
 page   = "site/start/install.md"
-text   = "A build on either channel passed the whole of CI first"
-source = [".github/workflows/ci.yml:750"]
+text   = "A build on either channel passed CI first"
+source = ['''.github/workflows/ci.yml "startsWith(github.ref, 'refs/tags/v')) needs: [lint, test, budgets, acceptance, timing, eval, site, wasm, compositors, lock-vm, package]"''']
 proof  = "read: the release job needs every other job, the package job's smoke test among them"
 
 [[claim]]
 page   = "site/start/install.md"
+text   = "An edge build ran those only if its push changed the lock's code; they run on `main` every night as well."
+source = ['.github/workflows/ci.yml "cron: "17 3 * * *""', '.github/workflows/ci.yml "schedule:* | workflow_dispatch:* | push:tag:* | *:true)"', '.github/workflows/ci.yml "no lock paths changed: the lock VM tier is skipped"']
+proof  = "read: the lock-vm job's Decide step boots the VM on a schedule, a dispatch, a tag, or when a lock path changed"
+
+[[claim]]
+page   = "site/start/install.md"
 text   = "While a `strand` from there is running it refuses"
-source = ["scripts/install.sh:143-160"]
+source = ['scripts/install.sh "busy=$(running_from "$DATA/versions")"', 'scripts/install.sh "strand is running from $DATA; stop it first"']
 proof  = "scripts/release/test-install.sh full: uninstall while it runs: refused"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "Without that file it uses your system's `login` service, which needs nothing installed, and says so once in the log."
-source = ["crates/strand-auth/src/client.rs:293", "crates/strand-auth/src/main.rs:173"]
+source = ['crates/strand-auth/src/client.rs "The one-time warning that the `login` service stands in for a"', 'crates/strand-auth/src/main.rs "`strand` when libpam will read a `strand` service file, else `login`"']
 proof  = "crates/strand-auth/tests/pam.rs::a_missing_strand_service_falls_back_to_login_with_one_warning"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "the lock screen's helper. It is the only program in the workspace that links libpam."
-source = ["crates/strand-auth/Cargo.toml:13", "crates/strand-auth/src/pam.rs:70"]
+source = ['crates/strand-auth/Cargo.toml "only code in the workspace that links libpam"', 'crates/strand-auth/src/pam.rs "#[link(name = "pam")]"']
 proof  = "grep: the only #[link(name = \"pam\")] in crates/"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "When the helper is missing, `strand run` and `strand check` say where to put it: beside the `strand` that is running, with `cargo install --locked --path crates/strand-auth --root <prefix>` when that `strand` is in `<prefix>/bin`, else by copying `target/release/strand-auth` into its directory."
-source = ["crates/strand/src/check.rs:352"]
+source = ['crates/strand/src/check.rs "from the strand checkout, `cargo install --locked --path crates/strand-auth"', 'crates/strand/src/check.rs "target/release/strand-auth into {}, beside this strand"', 'crates/strand/src/run/lock.rs "crate::check::helper_install_hint(exe)"']
 proof  = "crates/strand/src/check.rs::tests::the_helper_hint_names_the_directory_beside_strand"
 
 
 [[claim]]
 page   = "site/start/install.md"
 text   = 'The workspace sets `rust-version = "1.97"`.'
-source = ["Cargo.toml:11"]
+source = ['Cargo.toml "rust-version = "1.97""']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev libpam0g-dev"
-source = [".github/workflows/ci.yml:341"]
+source = ['.github/workflows/ci.yml "libwayland-dev libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev libpam0g-dev"']
 proof  = "the compositors job builds strand's tests with exactly these"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "cargo build --release -p strand -p strand-auth"
-source = ["crates/strand/Cargo.toml", "crates/strand-auth/Cargo.toml"]
+source = ['crates/strand/Cargo.toml "name = "strand""', 'crates/strand-auth/Cargo.toml "name = "strand-auth""']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): the same build in debug wrote strand and strand-auth"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "`/usr/libexec/strand`, `/usr/lib/strand` and `/usr/local/libexec/strand`, and nowhere else: never on your `PATH`, since it is the program your password is handed to."
-source = ["crates/strand-auth/src/client.rs:266", "crates/strand/src/check.rs:346"]
+source = ['crates/strand-auth/src/client.rs ""/usr/libexec/strand", "/usr/lib/strand", "/usr/local/libexec/strand","', 'crates/strand/src/check.rs "`~/.cargo/bin` or on `PATH` for the program passwords are handed to"']
 proof  = "read: default_helper tries beside the executable first, then the three directories, and nothing else"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "When a config has a `lock` and there is no helper, `strand run` warns at start, or at the reload that adds the `lock`, that the lock would have no way to unlock, and `strand check` reports an error for the config."
-source = ["crates/strand/src/run/lock.rs:986", "crates/strand/src/run/shell.rs:410", "crates/strand/src/check.rs:317"]
+source = ['crates/strand/src/run/lock.rs "session with no way to unlock it but a TTY"', 'crates/strand/src/run/lock.rs "`lock` hears nothing (strand-fixes); one that a reload gives a lock"', 'crates/strand/src/run/shell.rs "pub(super) fn tell_lock_helper(&mut self)"', 'crates/strand/src/check.rs ""check::lock_no_helper","']
 proof  = "crates/strand/src/run/lock.rs::tests::no_helper_is_said_only_for_a_config_with_a_lock; crates/strand/src/check.rs::tests::a_lock_without_the_helper_is_an_error"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "A shell with no lock screen runs without the helper and says nothing about it."
-source = ["crates/strand/src/run/shell.rs:410", "crates/strand/src/check.rs:317"]
+source = ['crates/strand/src/run/lock.rs "if mocked || helper || !lock_now || lock_before {"', 'crates/strand/src/check.rs "ItemKind::Surface(s) if s.kind.name == "lock" => Some((p.file_id, s.kind.span)),"']
 proof  = "crates/strand/src/run/lock.rs::tests::no_helper_is_said_only_for_a_config_with_a_lock"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "The GPU backend is a default feature. To build without it:"
-source = ["crates/strand/Cargo.toml:11"]
+source = ['crates/strand/Cargo.toml "default = ["gpu"]"']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "That build links no wgpu, vello\\_gpu or naga, and draws everything on"
-source = ["Cargo.toml:20", "crates/strand-render/src/renderer/mod.rs:1088"]
-proof  = "CI's lint job builds it (.github/workflows/ci.yml:75)"
+source = ['Cargo.toml "from here, so `strand --no-default-features` links no wgpu, vello_gpu,"', 'crates/strand-render/src/renderer/mod.rs "reason: strand_scene::GpuStatus::NOT_BUILT.into(),"', '.github/workflows/ci.yml "cargo build -p strand --no-default-features"']
+proof  = "CI's lint job builds it"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "`cargo build --release --manifest-path eval/Cargo.toml`. It is a"
-source = ["eval/Cargo.toml:14"]
+source = ['eval/Cargo.toml "# Its own workspace, not a member of the root one"', 'eval/Cargo.toml "[workspace]"']
 proof  = "its own [workspace], so cargo puts its target/ beside its manifest"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "`wl_shm` and `zwlr_layer_shell_v1` (layer shell). Without one of them,"
-source = ["crates/strand-surface/src/manager/mod.rs:1033"]
+source = ['crates/strand-surface/src/manager/mod.rs "SurfaceError::MissingGlobal("wl_compositor")"', 'crates/strand-surface/src/manager/mod.rs "SurfaceError::MissingGlobal("zwlr_layer_shell_v1")"', 'crates/strand-surface/src/manager/mod.rs "SurfaceError::MissingGlobal("wl_shm")"']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "\"the compositor does not offer zwlr\\_layer\\_shell\\_v1\"."
-source = ["crates/strand-surface/src/manager/mod.rs:394"]
+source = ['crates/strand-surface/src/manager/mod.rs "Self::MissingGlobal(g) => write!(f, "the compositor does not offer {g}"),"']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "| `xdg_wm_base` | `window` surfaces and popups | windows and popups are not shown |"
-source = ["crates/strand-surface/src/manager/window.rs:146", "crates/strand-surface/src/manager/popup.rs:270"]
+source = ['crates/strand-surface/src/manager/window.rs "no xdg_wm_base, windows are not shown"', 'crates/strand-surface/src/manager/popup.rs "no xdg_wm_base, popups are not shown"']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "a `lock` cannot lock the session, and `strand run` warns at start"
-source = ["crates/strand/src/run/lock.rs:971"]
+source = ['crates/strand/src/run/lock.rs "lock: the compositor does not offer ext-session-lock: a `lock` cannot lock"']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "`blur` draws its tint fallback, and Strand says why once"
-source = ["crates/strand-surface/src/caps.rs:82", "crates/strand/src/demo/host.rs:481"]
-proof  = "crates/strand-render/tests/paint.rs::blur_tints_until_the_compositor_blurs"
+source = ['crates/strand-surface/src/caps.rs "so `blur` draws its tint fallback"', 'crates/strand/src/demo/host.rs "self.said = true;"']
+proof  = "crates/strand-render/tests/paint.rs::blur_tints_until_the_compositor_blurs; crates/strand/src/demo/host.rs::tests::the_blur_fallback_is_said_once_with_its_reason"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "`strand compositor-rules` prints the rules for your config, to paste"
-source = ["crates/strand/src/rules.rs:1"]
+source = ['crates/strand/src/rules.rs "prints a rule for every surface whose tree asks for `blur`"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): printed the Lua header and `No surface asks for blur: no rules.`"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "Lua (`hl.layer_rule`) by default, and `--classic` prints hyprlang"
-source = ["crates/strand/src/rules.rs:211", "crates/strand/src/rules.rs:234"]
+source = ['''crates/strand/src/rules.rs "The rules as Hyprland 0.56's Lua config (`hl.layer_rule`)."''', 'crates/strand/src/rules.rs "The rules as the classic hyprlang `layerrule` lines"']
 proof  = "read: lua() writes hl.layer_rule({ … }), classic() writes `layerrule =` lines; --classic picks classic (USAGE)"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "into your Hyprland config. Strand never applies them itself."
-source = ["crates/strand/src/rules.rs:6"]
+source = ['crates/strand/src/rules.rs "Strand never applies them itself."']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "`wp_viewporter`, `wp_fractional_scale_manager_v1`, `wp_presentation`,"
-source = ["crates/strand-surface/src/manager/mod.rs:1037", "crates/strand-surface/src/activation.rs:58", "crates/strand-surface/src/manager/mod.rs:1097"]
+source = ['crates/strand-surface/src/manager/mod.rs ".bind::<WpViewporter, _, _>(&qh, 1..=1, StrandGlobal) .ok()"', 'crates/strand-surface/src/manager/mod.rs ".bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, StrandGlobal)"', 'crates/strand-surface/src/manager/mod.rs ".bind::<WpPresentation, _, _>(&qh, 1..=1, StrandGlobal) .ok()"']
 proof  = "read: each is bound with .ok()"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "`xdg_activation_v1`. `strand report` lists every global your"
-source = ["crates/strand/src/report/mod.rs:295"]
+source = ['crates/strand-surface/src/activation.rs ".bind::<XdgActivationV1, _, _>(qh, 1..=1, StrandGlobal) .ok()"', 'crates/strand/src/report/mod.rs "writeln!(out, "  {} v{}", s(&g["interface"]), g["version"]);"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): 44 globals with their versions"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "and niri's own IPC. On a compositor without one of those adapters, the"
-source = ["crates/strand-services/src/wm/detect.rs:70", "crates/strand-services/src/wm/protocol.rs:1"]
+source = ['crates/strand-services/src/wm/detect.rs "Detects the compositor from `env`: `HYPRLAND_INSTANCE_SIGNATURE`,"', 'crates/strand-services/src/wm/protocol.rs "The standard protocols, compositor-agnostic: `ext-foreign-toplevel-list-v1`"', 'crates/strand-services/src/wm/protocol.rs "actions on a compositor with no IPC adapter (labwc, wayfire, river;"']
 proof  = "crates/strand/tests/compositor_matrix.rs::the_stores_follow_a_compositor_without_ipc (labwc)"
 
 [[claim]]
 page   = "site/start/install.md"
 text   = "Strand is tested on **sway**, **Hyprland**, **niri** and **labwc** on every change."
-source = [".github/workflows/ci.yml:332", "scripts/compositor-matrix-ci.sh:28"]
+source = ['''.github/workflows/ci.yml "|| 'compositors' }}" runs-on: ubuntu-24.04"''', 'scripts/compositor-matrix-ci.sh "MATRIX=${MATRIX:-sway niri hyprland labwc}"']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "`$XDG_CONFIG_HOME/strand`, or `~/.config/strand` when"
-source = ["crates/strand/src/check.rs:38"]
-proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): `strand new` with only HOME set wrote ~/.config/strand/bar.strand"
+source = ['crates/strand/src/check.rs "/// `$XDG_CONFIG_HOME/strand`, else `$HOME/.config/strand`."']
+proof  = "crates/strand/src/check.rs::tests::default_dir_prefers_xdg; ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): `strand new` with only HOME set wrote ~/.config/strand/bar.strand"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "directory uses that one when you give none."
-source = ["crates/strand/src/entry.rs:301", "crates/strand/src/fmt.rs:78", "crates/strand/src/new.rs:97"]
+source = ['crates/strand/src/entry.rs "let dir = dir.or_else(|| { cli::default_dir("', 'crates/strand/src/check.rs "[] => match default_dir("', 'crates/strand/src/fmt.rs "/// The config directory formatted when no path is given."', 'crates/strand/src/new.rs "[] => crate::check::default_dir("']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "three directories below it. There is no entry file and nothing to"
-source = ["crates/strand-compiler/src/source.rs:79"]
+source = ['crates/strand-compiler/src/source.rs "pub const MAX_DEPTH: usize = 3;"', 'docs/spec.md "There are no imports and no entry file. Every module is loaded."']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "import. Files and directories whose names start with `.` are skipped,"
-source = ["crates/strand-compiler/src/source.rs:107"]
+source = ['crates/strand-compiler/src/source.rs "names starting with `.` are skipped, files and directories alike;"', 'docs/spec.md "There are no imports and no entry file."']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "and symlinks are followed, so a config kept in a dotfiles repository"
-source = ["crates/strand-compiler/src/source.rs:108"]
+source = ['crates/strand-compiler/src/source.rs "symlinks are followed (stowed dotfiles)."']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "files that sit deeper than three directories, since they are not"
-source = ["crates/strand/src/check.rs:134"]
+source = ['crates/strand/src/check.rs "holds .strand files but is more than {} directories deep,"', 'crates/strand/src/check.rs "so they are not loaded"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): a file in a/b/c/d/ gave the warning"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "`strand new` writes one file, `bar.strand`, the guide's hello bar, and"
-source = ["crates/strand/src/new.rs:12", "crates/strand/src/new.rs:15"]
+source = ['''crates/strand/src/new.rs "/// The starter config, byte for byte the guide's level-1 block."''', 'crates/strand/src/new.rs "pub(crate) const FILE: &str = "bar.strand";"']
 proof  = "crates/strand/src/new.rs::tests::a_new_or_empty_dir_gets_the_template"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "start it with `strand run`"
-source = ["crates/strand/src/new.rs:107"]
+source = ['crates/strand/src/new.rs ""wrote {}\nstart it with `strand run{}`\n","']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "It makes the directory if it is missing. It refuses a directory that"
-source = ["crates/strand/src/new.rs:62"]
+source = ['crates/strand/src/new.rs "std::fs::create_dir_all(dir).map_err(io(dir))?;"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): `strand new <missing dir>` made it"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "already holds anything, even a hidden file, and writes nothing there."
-source = ["crates/strand/src/new.rs:55"]
+source = ['crates/strand/src/new.rs "if entries.next().is_some() { return Err(NewError::NotEmpty(dir.into()));"']
 proof  = "crates/strand/src/new.rs::tests::a_non_empty_dir_or_a_file_is_refused; ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "it gets SIGINT or SIGTERM (Ctrl-C in its terminal). Before it ends it"
-source = ["crates/strand/src/run/mod.rs:35"]
+source = ['crates/strand/src/run/mod.rs "SIGINT, SIGTERM and the compositor going away end the run the same"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): SIGTERM ended it with status 0"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "writes the `persist` state and settings it has not saved yet. `strand run"
-source = ["crates/strand/src/run/mod.rs:38"]
+source = ['crates/strand/src/run/mod.rs "debounced `persist` and settings writes reach the disk."']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "nothing to show and waits: the first file you save there appears."
-source = ["crates/strand/src/run/mod.rs:647"]
+source = ['crates/strand/src/run/logic.rs "the fixed config later mounts against this host."']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): an empty directory, then a saved bar.strand, which `strand report` then listed"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "It says so once as it starts, in its log: \"… nothing to run yet: no .strand file\"."
-source = ["crates/strand/src/run/mod.rs:608", "crates/strand/src/run/mod.rs:649"]
+source = ['crates/strand/src/run/mod.rs "log::warn!("{}: nothing to run yet: no .strand file", dir.display());"']
 proof  = "crates/strand/src/run/tests.rs::an_empty_config_has_nothing_to_run"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "together, as \"save all\" does, count as one change."
-source = ["crates/strand-watch/src/lib.rs:9"]
-proof  = "crates/strand/src/fuzz.rs::random_edits_through_five_save_styles"
+source = ['crates/strand-watch/src/event.rs "All file changes of one coalesced quiet period ("save all" is one batch)."']
+proof  = "crates/strand-watch/tests/saves.rs::save_all_is_one_batch"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "A save that does not check leaves the last good shell running. A"
-source = ["docs/design.md#the-pipeline"]
-proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): `strand watch` showed the typo `held back`"
+source = ["docs/design.md#the-pipeline", 'docs/spec.md "**Keep the last good tree.** On error the running shell stays as it was."']
+proof  = "crates/strand/src/run/tests.rs::saves_reload_live_with_state_kept; ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): `strand watch` showed the typo `held back`"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "quarter of a second later an overlay lists the problems, and the fix"
-source = ["crates/strand/src/overlay.rs:23"]
+source = ['crates/strand/src/overlay.rs "pub const QUIET: Duration = Duration::from_millis(250);"']
 proof  = "crates/strand/src/overlay.rs::tests::the_quiet_period_and_dismissal"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "`$XDG_CACHE_HOME/strand/last-good` (`~/.cache/strand/last-good` by"
-source = ["crates/strand-compiler/src/reconcile/loader.rs:680"]
+source = ['crates/strand-compiler/src/reconcile/loader.rs "/// `$XDG_CACHE_HOME/strand/last-good` (or `~/.cache/…`)."']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): ~/.cache/strand/last-good held an entry per config after a run"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "default). A config that is broken when the shell starts runs that last"
-source = ["crates/strand/src/run/logic.rs:314"]
+source = ['docs/spec.md "The last good sources are cached, so a config broken at boot runs its last good version."', 'crates/strand/src/run/logic.rs "the config does not compile: running its last good version"']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "good version, with the overlay up. With no last good version yet, only"
-source = ["crates/strand/src/run/logic.rs:314"]
+source = ['crates/strand/src/run/logic.rs "// version (or nothing) with the overlay up."']
 proof  = "crates/strand/src/run/tests.rs::a_config_broken_at_first_boot_runs_once_fixed"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "an error status when it finds an error, so it works in scripts and"
-source = ["crates/strand/src/entry.rs:262"]
+source = ['docs/spec.md "`strand check` reports it and exits with an error;"', 'crates/strand/src/entry.rs "return if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE };"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): exit 1 with errors, 0 when clean"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "strand check: 1 file in /home/you/.config/strand: 0 errors, 0 warnings"
-source = ["crates/strand/src/check.rs:247"]
+source = ['crates/strand/src/check.rs ""strand check: {} in {}: {}, {}{}","']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "`strand check bar.strand` checks it together with the rest of its"
-source = ["crates/strand/src/check.rs:75"]
+source = ['crates/strand/src/check.rs "Given a file, checks it with the rest of its config"', 'crates/strand/src/check.rs "only the diagnostics that point into `file` are reported."']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): `strand check …/bar.strand` said `checked with the 1 file in …`"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "path it formats the config directory; it also takes directories and"
-source = ["crates/strand/src/fmt.rs:78"]
+source = ['crates/strand/src/fmt.rs "/// The config directory formatted when no path is given."', 'crates/strand/src/fmt.rs "paths.push(PathBuf::from(s))"']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "formatted and exits with an error status when there is one:"
-source = ["crates/strand/src/fmt.rs:73"]
+source = ['crates/strand/src/fmt.rs "let ok = report.failed == 0 && (!check || report.changed.is_empty());"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): exit 1"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "strand fmt: 2 files, 1 not formatted"
-source = ["crates/strand/src/fmt.rs:124"]
+source = ['crates/strand/src/fmt.rs ""strand fmt: {} file{}, {n} {}{}","', 'crates/strand/src/fmt.rs "text.contains("2 files, 1 not formatted")"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "A file with syntax errors is reported and left as it was. A formatted"
-source = ["crates/strand/src/fmt.rs:172"]
+source = ['crates/strand/src/fmt.rs "not formatted: it has syntax errors"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): `not formatted: it has syntax errors`, exit 1"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "file replaces the old one through a rename, so a symlinked file stays"
-source = ["crates/strand/src/fmt.rs:190"]
+source = ['crates/strand/src/fmt.rs "renamed over it: a symlink stays a link"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): the link was still a link after `strand fmt` on it"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "`strand watch` connects to the running shell and prints each event"
-source = ["crates/strand/src/ipc/cli.rs:101", "crates/strand/src/ipc/describe.rs:7"]
+source = ['crates/strand/src/ipc/cli.rs "/// `strand watch [--json]`: print every event until the shell ends."', 'crates/strand/src/ipc/describe.rs "/// An event as text for people."']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "reload (20.6 ms): prop"
-source = ["crates/strand/src/ipc/describe.rs:26"]
+source = ['crates/strand/src/ipc/describe.rs ""reload ({ms:.1} ms): {}\n","']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): the hello bar's height changed, then `heigth` (the times vary)"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "  /home/you/.config/strand/bar.strand:5:14: error[check::unknown_prop]: unknown prop \"heigth\" on \"bar\"; did you mean \"height\"?"
-source = ["crates/strand/src/ipc/describe.rs:51"]
+source = ['crates/strand/src/ipc/describe.rs "out.push_str(&format!("  {}\n", s(&d["short"])));"', 'crates/strand-compiler/src/check/tree.rs "format!("unknown prop `{name}` on `{kind}`"),"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "line, for scripts. Its first line, `{\"event\":\"watching\",\"v\":1}`, says"
-source = ["crates/strand/src/ipc/cli.rs:118"]
+source = ['crates/strand/src/ipc/cli.rs "// Scripts know from this line on that no event is missed."', 'crates/strand/src/ipc/cli.rs "json!({"event": "watching", "v": VERSION})"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "the config now and prints that reload's event as `strand watch` does."
-source = ["crates/strand/src/ipc/cli.rs:54"]
+source = ['crates/strand/src/ipc/cli.rs "Ok(answer.get("event").map(describe).unwrap_or_default())"', 'crates/strand/src/ipc/mod.rs "rescan the config now; the"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): printed `reload (1.5 ms): no change`"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "`strand reload --hard` also drops every state that is not `persist`"
-source = ["crates/strand-compiler/src/instantiate/mod.rs:1448"]
+source = ['crates/strand-compiler/src/instantiate/mod.rs "`strand reload --hard`: drop every non-persisted state and"', 'docs/spec.md "**`strand reload --hard`** drops non-persisted state and recreates"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): `reload (7.4 ms): hard`, the surface made again (surface 3 on, surface 1 detached)"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "hard reload waits until you unlock."
-source = ["crates/strand/src/run/mod.rs:20"]
+source = ['crates/strand/src/run/mod.rs "(a lock edit, or a hard reload, waits while a lock is shown)"']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "- `strand set <path> <value>` writes an exported `state`, a settings"
-source = ["crates/strand/src/run/request/set.rs:14"]
+source = ['''crates/strand/src/run/request/set.rs "// A service's `rw` field"''', 'crates/strand/src/run/request/set.rs "a token (`$accent`) to its overlay; everything"', 'docs/spec.md "`strand set path value` writes an exported `state` or a field of one"']
 proof  = "crates/strand/tests/m5/cli.rs; ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "number or percentage, such as `+5%`, steps from its current value."
-source = ["crates/strand/src/services/mod.rs:260"]
+source = ['crates/strand/src/services/mod.rs "variant, `null`. A number with a sign is a step from the current"']
 proof  = "read"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "- `strand toggle <path>` flips an exported `bool` state."
-source = ["crates/strand/src/ipc/query.rs:71"]
+source = ['crates/strand/src/ipc/query.rs "`toggle` flips an exported boolean"', 'docs/spec.md "`strand toggle path` flips an exported `bool` state;"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): launcher.open false, then true"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "- `strand get <path>` prints an exported value, a settings field or a"
-source = ["crates/strand/src/ipc/query.rs:57"]
+source = ['docs/spec.md "`strand get path` reads an exported value, a settings field or a"', 'crates/strand/src/ipc/query.rs "field, or a token with the token spelling"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
@@ -538,61 +544,61 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 [[claim]]
 page   = "site/start/running.md"
 text   = "'$accent' '#ff5555'` lays a token over the theme until `strand clear"
-source = ["crates/strand/src/run/request/set.rs:26"]
+source = ['crates/strand/src/run/request/set.rs ".set_token_overlay(token, value)"']
 proof  = "crates/strand/tests/m5/cli.rs::get_toggle_and_a_token_overlay_over_the_socket; ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "level, one of `off`, `error`, `warn`, `info`, `debug` and `trace`, with"
-source = ["crates/strand/src/logging.rs:16"]
+source = ['crates/strand/src/logging.rs ""off" => config.level = LevelFilter::Off,"', 'crates/strand/src/logging.rs ""trace" => config.level = LevelFilter::Trace,"', 'crates/strand/src/logging.rs "level: LevelFilter::Warn,"']
 proof  = "crates/strand/src/logging.rs::tests::parses_levels_and_topics"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "strand: WARN strand::run::logic: no IPC socket (strand reload, strand watch): …"
-source = ["crates/strand/src/logging.rs:59", "crates/strand/src/run/logic.rs:124"]
+source = ['crates/strand/src/logging.rs ""strand: {} {}: {}","', 'crates/strand/src/run/logic.rs ""no IPC socket (strand reload, strand watch): {}: {e}","']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "`info` adds what the shell does as it runs, such as each surface"
-source = ["crates/strand/src/logging.rs:16"]
+source = ['crates/strand/src/demo/host.rs ""surface {} on {}","', 'crates/strand/src/run/shell.rs "log::info!("{}", ipc::describe(&ev).trim_end());"', 'crates/strand-services/src/client.rs ""service `{}` started (run {})","', 'crates/strand-services/src/client.rs "log::info!("service `{}` stopped", self.name);"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check) with STRAND_LOG=info: surface, reload and service started/stopped lines"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "one line per painted frame with the rectangles it repainted."
-source = ["crates/strand/src/demo/host.rs:1004"]
+source = ['crates/strand/src/demo/host.rs ""strand: damage surface={} buffer={}x{} scale={} age={} area={} rects={}"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check) with STRAND_LOG=damage: `strand: damage surface=1 … rects=1280x32+0+0 …`"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "spawn-at-startup \"strand\" \"run\""
-source = ["crates/strand/src/entry.rs:193"]
+source = ['crates/strand/src/entry.rs "[] => Ok(Action::Run(None)),"']
 proof  = "niri's config syntax; strand run takes no other argument"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "The shell connects to the display `WAYLAND_DISPLAY` names, and the"
-source = ["crates/strand-surface/src/manager/mod.rs:1013"]
+source = ['crates/strand-surface/src/manager/mod.rs "/// Connects to the compositor named by `WAYLAND_DISPLAY`."', 'crates/strand-surface/src/manager/mod.rs "Connection::connect_to_env().map_err(SurfaceError::Connect)?;"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): with WAYLAND_DISPLAY unset to a missing one, `cannot connect to the Wayland compositor`"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "for that display (`strand-wayland-1.sock`). Its log then goes wherever"
-source = ["crates/strand-core/src/ipc.rs:599"]
+source = ['crates/strand-core/src/ipc.rs "Some(dir.join(format!("strand-{display}.sock")))"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "A second `strand run` on the same display finds the socket taken: it"
-source = ["crates/strand/src/ipc/server.rs:91", "crates/strand/src/run/logic.rs:124"]
+source = ['crates/strand/src/ipc/server.rs "format!("another strand answers on {}", path.display()),"', 'crates/strand/src/run/logic.rs ""no IPC socket (strand reload, strand watch): {}: {e}","']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "its own `STRAND_SOCKET` and `STRAND_STATE_DIR`."
-source = ["crates/strand/src/entry.rs:71", "crates/strand-core/src/persist.rs:117"]
+source = ['''crates/strand/src/entry.rs "the shell's socket (default $XDG_RUNTIME_DIR/strand-<display>.sock)"''', 'crates/strand-core/src/persist.rs "pub const STATE_DIR_VAR: &str = "STRAND_STATE_DIR";"']
 proof  = "read"
 
 [[claim]]
@@ -1018,187 +1024,187 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "`strand run` prints why it stopped and exits with an error status."
-source = ["crates/strand/src/entry.rs:312"]
+source = ['crates/strand/src/entry.rs "eprintln!("strand run: no config directory (set XDG_CONFIG_HOME or HOME)"); return ExitCode::FAILURE;"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): exit 1"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "- **\"cannot connect to the Wayland compositor\".** Strand connects to"
-source = ["crates/strand-surface/src/manager/mod.rs:392"]
+source = ['crates/strand-surface/src/manager/mod.rs "Self::Connect(e) => write!(f, "cannot connect to the Wayland compositor: {e}"),"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "- **\"… does not exist\".** The config directory is not there. The message names the `strand new` command that makes it, with a starter bar;"
-source = ["crates/strand/src/run/mod.rs:593", "crates/strand/src/new.rs:94"]
+source = ['crates/strand/src/run/mod.rs "format!("{shown} does not exist; `strand new {shown}` writes a starter shell there")"']
 proof  = "crates/strand/tests/m5/cli.rs::run_names_a_missing_config_dir_plainly"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "A path that is a file is \"… is not a directory\"."
-source = ["crates/strand/src/run/mod.rs:593"]
+source = ['crates/strand/src/run/mod.rs "format!("{shown} is not a directory")"']
 proof  = "crates/strand/tests/m5/cli.rs::run_names_a_missing_config_dir_plainly"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "- **\"no config directory (set XDG\\_CONFIG\\_HOME or HOME)\".** Neither"
-source = ["crates/strand/src/entry.rs:311"]
+source = ['crates/strand/src/entry.rs ""strand run: no config directory (set XDG_CONFIG_HOME or HOME)""']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "its last good version keeps running, `strand watch` lists it under"
-source = ["crates/strand/src/ipc/describe.rs:36"]
+source = ['crates/strand/src/ipc/describe.rs "out.push_str(&format!("  held back: {}\n", held.join(", ")));"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "When a save leaves problems that stand for a quarter of a second, an"
-source = ["crates/strand/src/overlay.rs:23", "crates/strand/src/overlay.rs:484"]
+source = ['crates/strand/src/overlay.rs "pub const QUIET: Duration = Duration::from_millis(250);"', 'crates/strand/src/overlay.rs "/// Everything listed: the errors, then the notices."']
 proof  = "crates/strand/src/overlay.rs::tests::the_quiet_period_and_dismissal"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "save that is fixed within that quarter second, as format-on-save does,"
-source = ["crates/strand/src/overlay.rs:1"]
+source = ['crates/strand/src/overlay.rs "//! `$EDITOR` at that file and line. A save that is fixed within the"']
 proof  = "crates/strand/src/overlay.rs::tests::the_quiet_period_and_dismissal"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "`$STRAND_EDITOR` when it is set, as a template with `{file}`, `{line}`"
-source = ["crates/strand/src/overlay.rs:701"]
+source = ['crates/strand/src/overlay.rs "/// The command that opens `file` at `line`: `$STRAND_EDITOR` as a"']
 proof  = "crates/strand/src/overlay.rs::tests::the_editor_command"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "  `ne`, `joe`, `mg`) runs inside `xdg-terminal-exec` when it is"
-source = ["crates/strand/src/overlay.rs:689", "crates/strand/src/overlay.rs:755"]
+source = ['crates/strand/src/overlay.rs ""vi", "vim", "nvim", "nano", "micro", "kak", "hx", "helix", "ne", "joe", "mg","', 'crates/strand/src/overlay.rs "/// The terminal a terminal editor runs in: `xdg-terminal-exec` when it"']
 proof  = "read"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "editor set, the click runs `xdg-open` on the file."
-source = ["crates/strand/src/overlay.rs:701"]
+source = ['crates/strand/src/overlay.rs "`xdg-open <file>` (a terminal editor with no terminal to run in"']
 proof  = "read"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "- **The close button** dismisses the overlay and clears its notices."
-source = ["crates/strand/src/overlay.rs:533"]
+source = ['crates/strand/src/overlay.rs "if node == shown.close { self.hide(inst); self.notes.clear();"']
 proof  = "crates/strand/src/overlay.rs::tests::the_quiet_period_and_dismissal"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "component it happened in, and outlines that component in red. An error"
-source = ["crates/strand-compiler/src/instantiate/mod.rs:2200"]
+source = ['crates/strand-compiler/src/instantiate/mod.rs "(design.md: "a runtime fault freezes one component outlined red"):"', 'crates/strand-compiler/src/instantiate/mod.rs "/// The red outline of a faulty component."']
 proof  = "crates/strand-compiler/tests/reload.rs::a_fault_outlines_its_component_until_the_fixing_reload"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "outside any component freezes nothing. The rest of the shell keeps"
-source = ["crates/strand-compiler/src/instantiate/mod.rs:2200"]
+source = ['crates/strand-compiler/src/instantiate/mod.rs "/// Freeze the component instance a runtime error happened in"']
 proof  = "crates/strand-compiler/tests/instantiate.rs::a_top_level_fault_freezes_nothing"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "running. `strand watch` prints the error as a `fault:` line with where"
-source = ["crates/strand/src/ipc/describe.rs:70"]
+source = ['crates/strand/src/ipc/describe.rs "out.push_str(&format!("fault: {}\n", s(&ev["message"])));"']
 proof  = "read"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "A missing `xdg_wm_base` is logged as a warning for windows; for"
-source = ["crates/strand-surface/src/manager/window.rs:146", "crates/strand-surface/src/manager/popup.rs:270"]
+source = ['crates/strand-surface/src/manager/window.rs "log::warn!( "{}: no xdg_wm_base, windows are not shown","', 'crates/strand-surface/src/manager/popup.rs "log::debug!("{}: no xdg_wm_base, popups are not shown", spec.namespace());"']
 proof  = "read"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "For a config with a `lock`, `strand run` says so at start, or when a reload adds the `lock`, and `strand check` reports an error,"
-source = ["crates/strand/src/run/lock.rs:986", "crates/strand/src/run/shell.rs:410", "crates/strand/src/check.rs:317"]
+source = ['''crates/strand/src/run/lock.rs "lock: no `strand-auth` helper is installed: this config's `lock` would lock the"''', 'crates/strand/src/run/lock.rs "`lock` hears nothing (strand-fixes); one that a reload gives a lock"', 'crates/strand/src/run/shell.rs "pub(super) fn tell_lock_helper(&mut self)"', 'crates/strand/src/check.rs "no `strand-auth` helper is installed: this `lock` would lock the session"']
 proof  = "crates/strand/src/run/lock.rs::tests::no_helper_is_said_only_for_a_config_with_a_lock; crates/strand/src/check.rs::tests::a_lock_without_the_helper_is_an_error"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "Both name the directory to put the helper in, beside `strand`."
-source = ["crates/strand/src/check.rs:352"]
+source = ['crates/strand/src/check.rs "pub(crate) fn helper_install_hint(exe: Option<&Path>) -> String"', 'crates/strand/src/check.rs "--root {}` puts it in {}, beside this strand"']
 proof  = "crates/strand/src/check.rs::tests::the_helper_hint_names_the_directory_beside_strand"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "- **\"the compositor does not offer ext-session-lock\".** A `lock` cannot"
-source = ["crates/strand/src/run/lock.rs:971"]
+source = ['crates/strand/src/run/lock.rs "lock: the compositor does not offer ext-session-lock: a `lock` cannot lock"']
 proof  = "read"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "and Strand says why once per run, in the log and to `strand watch`,"
-source = ["crates/strand/src/demo/host.rs:481"]
-proof  = "read: BlurFallback::said is set once"
+source = ['crates/strand/src/demo/host.rs "if let Some(text) = self.blur_fallback.frame(&ns) {"', 'crates/strand/src/demo/host.rs "self.said = true;"', 'crates/strand/src/run/shell.rs ""event": "notices","']
+proof  = "crates/strand/src/demo/host.rs::tests::the_blur_fallback_is_said_once_with_its_reason"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "naming the first surface that asked for blur. `blur_fallback: none`"
-source = ["crates/strand-surface/src/caps.rs:82", "docs/reference/types.md"]
-proof  = "read"
+source = ['crates/strand/src/demo/host.rs "Some(format!("no blur behind {ns}: {reason}"))"', 'crates/strand-surface/src/caps.rs "`blur_fallback: none` turns it off"', 'docs/reference/types.md "| `BlurFallback` | `tint`, `none` |"']
+proof  = "crates/strand/src/demo/host.rs::tests::the_blur_fallback_is_said_once_with_its_reason"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "Strand draws on the CPU by default and moves a surface to the GPU once"
-source = ["crates/strand-render/src/promote.rs:1"]
+source = ['crates/strand-render/src/promote.rs "exist, whatever animates a large area draws on the GPU."']
 proof  = "crates/strand-render/src/promote.rs::tests::a_spring_driven_morph_is_promoted_at_its_first_large_frame, ::a_promoted_surface_stays_on_the_gpu"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "it animates a large area. It asks for a GPU device only where a DRM"
-source = ["crates/strand-gpu/src/lib.rs:84"]
+source = ['crates/strand-gpu/src/lib.rs "opts.software || render_node_in(std::path::Path::new("/dev/dri"))"', 'crates/strand-gpu/src/lib.rs "/// Whether `dir` holds a DRM render node (`renderD*`)."']
 proof  = "crates/strand-gpu/src/lib.rs::tests::a_device_is_possible_with_a_render_node_or_software"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "for it; a software driver such as lavapipe counts as none. With no"
-source = ["crates/strand-gpu/src/lib.rs:26"]
+source = ['crates/strand-gpu/src/lib.rs "//! A software adapter (lavapipe) counts as no device unless"']
 proof  = "read"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "device, everything still draws on the CPU, but a `shader` node draws"
-source = ["crates/strand/src/run/request/inspect.rs:83"]
+source = ['crates/strand/src/run/request/inspect.rs ""draws nothing: no GPU ({reason}); the CPU draws everything else""']
 proof  = "crates/strand-dev/src/inspect/pane.rs::tests::a_shader_that_draws_nothing_says_why"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "`strand report` shows the GPU on its `gpu:` line: `unused`,"
-source = ["crates/strand/src/report/mod.rs:90"]
+source = ['crates/strand/src/report/mod.rs "write!(out, "\ngpu: {}", s(&g["status"]));"', 'crates/strand/src/report/mod.rs "GpuStatus::Unused => ("unused", None, None),"', 'crates/strand/src/report/mod.rs "GpuStatus::Unavailable { reason } => ("unavailable", Some(reason), None),"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): `gpu: up (llvmpipe …)` with STRAND_GPU_SOFTWARE=1"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "and how many devices were lost. After three lost devices in one run"
-source = ["crates/strand-render/src/promote.rs:61", "crates/strand-render/src/promote.rs:65"]
+source = ['crates/strand/src/report/mod.rs ""lost_devices": r.gpu_lost_devices(),"', 'crates/strand-render/src/promote.rs "pub const LOST_CAP: u32 = 3;"', 'crates/strand-render/src/promote.rs "the GPU was turned off after 3 lost devices; restarting strand brings it back"']
 proof  = "crates/strand-render/src/promote.rs::tests::the_third_lost_device_turns_the_gpu_off"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "A build without the GPU backend gives \"built without the GPU backend\"."
-source = ["crates/strand-render/src/renderer/mod.rs:1088", "crates/strand-scene/src/backend.rs:76"]
+source = ['crates/strand-render/src/renderer/mod.rs "reason: strand_scene::GpuStatus::NOT_BUILT.into(),"', '''crates/strand-scene/src/backend.rs "pub const NOT_BUILT: &'static str = "built without the GPU backend";"''']
 proof  = "read"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "`$XDG_RUNTIME_DIR/strand-<display>.sock`. \"no running strand on …;"
-source = ["crates/strand/src/ipc/cli.rs:13"]
+source = ['crates/strand/src/ipc/cli.rs ""no running strand on {} ({e}); start one with `strand run`","']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): `strand watch` with no shell"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "A second `strand run` on the same display runs without a socket and"
-source = ["crates/strand/src/run/logic.rs:124", "crates/strand/src/ipc/server.rs:91"]
+source = ['crates/strand/src/run/logic.rs ""no IPC socket (strand reload, strand watch): {}: {e}","', 'crates/strand/src/ipc/server.rs "format!("another strand answers on {}", path.display()),"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "it back, `strand reload --hard` drops every state that is not `persist`"
-source = ["crates/strand-compiler/src/instantiate/mod.rs:1448"]
+source = ['crates/strand-compiler/src/instantiate/mod.rs "`strand reload --hard`: drop every non-persisted state and"', 'docs/spec.md "**`strand reload --hard`** drops non-persisted state and recreates"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 # --- concepts-howto ---
@@ -1208,43 +1214,43 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 [[claim]]
 page   = "site/index.md"
 text   = "save the file and the running shell follows"
-source = ["docs/spec.md:1886"]
+source = ['docs/spec.md "| Prop or binding | Patched in place; animates from its current value | Yes |"']
 proof  = "crates/strand-compiler/tests/reload.rs::a_prop_edit_patches_in_place_and_keeps_state"
 
 [[claim]]
 page   = "site/index.md"
 text   = "what you changed animates to its new value,"
-source = ["docs/spec.md:1891"]
-proof  = "crates/strand-compiler/tests/reload.rs::a_prop_edit_patches_in_place_and_keeps_state"
+source = ['docs/spec.md "| Prop or binding | Patched in place; animates from its current value | Yes |"']
+proof  = "crates/strand-compiler/tests/reload.rs::a_prop_edit_patches_in_place_and_keeps_state (the edit is one SetProp, nothing rebuilt); crates/strand-render/tests/motion.rs::retargeting_mid_flight_keeps_velocity (a prop set moves on a spring from where it is)"
 
 [[claim]]
 page   = "site/index.md"
 text   = "A save that does not check leaves the last good"
-source = ["docs/spec.md:1973", "crates/strand/src/overlay.rs:23"]
-proof  = "crates/strand-compiler/tests/reload.rs::random_edits_land_on_a_cold_boot (held-back sets); overlay QUIET 250 ms"
+source = ['docs/spec.md "**Keep the last good tree.** On error the running shell stays as it was."', 'crates/strand/src/overlay.rs "pub const QUIET: Duration = Duration::from_millis(250);"']
+proof  = "crates/strand/src/run/tests.rs::saves_reload_live_with_state_kept; crates/strand-compiler/tests/reload.rs::random_edits_land_on_a_cold_boot (held-back sets)"
 
 [[claim]]
 page   = "site/index.md"
 text   = "Spring curves are theme tokens"
-source = ["crates/strand-theme/src/defaults.rs:86", "docs/spec.md:1121"]
+source = ['crates/strand-theme/src/defaults.rs "t.insert("motion.spatial", spring(3000.0, 0.75));"', 'docs/spec.md "Movement and size use `$motion.spatial`; colour and"']
 proof  = "crates/strand-render/tests/motion.rs::per_prop_transitions_override_the_default_spring"
 
 [[claim]]
 page   = "site/index.md"
 text   = "Every name, field and type is known before the shell starts."
-source = ["docs/spec.md:55"]
+source = ['docs/spec.md "A **load error** stops a program, or the changed set of files in a reload, from being committed."', 'crates/strand-compiler/src/check/expr.rs ""check::unknown_field","']
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: an unknown field gives check::unknown_field before run"
 
 [[claim]]
 page   = "site/index.md"
 text   = "and usually how to fix it"
-source = ["crates/strand-compiler/src/check/expr.rs:1136"]
+source = ['docs/spec.md "span, a label, and a fix where one exists (a did-you-mean, the missing word)."']
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: `battery.precent` gives `did you mean `percent``"
 
 [[claim]]
 page   = "site/index.md"
 text   = "Strand runs on sway, Hyprland, niri and labwc, and every build is tested on all four."
-source = [".github/workflows/ci.yml:332"]
+source = ['''.github/workflows/ci.yml "|| 'compositors' }}" runs-on: ubuntu-24.04"''', 'scripts/compositor-matrix-ci.sh "MATRIX=${MATRIX:-sway niri hyprland labwc}"']
 proof  = "read: the compositors job (no event filter) runs sway, niri, Hyprland and labwc on each push, and nightly"
 
 [[claim]]
@@ -2753,39 +2759,39 @@ proof  = "read"
 [[claim]]
 page   = "site/playground.md"
 text   = "It is Strand's own compiler and renderer, with the mock services the docs use and the steps each example's scenario plays."
-source = ["crates/strand-web/src/shell.rs:190", "crates/strand-web/src/steps.rs", "crates/strand-web/src/live.rs:121"]
+source = ['crates/strand-web/src/shell.rs "let host = Rc::new(SchemaHost::mock(&rt, &build.program.types));"', 'crates/strand-web/src/shell.rs "let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));"', '''crates/strand-web/src/steps.rs "//! A scenario's steps on the web host"''']
 proof  = "crates/strand-web/tests/live.rs::every_docs_example_draws_every_frame_eval_drew"
 
 [[claim]]
 page   = "site/playground.md"
 text   = "a mistake shows what `strand check` would print."
-source = ["crates/strand-web/src/shell.rs:170"]
+source = ['crates/strand-web/src/shell.rs "let text = strand_compiler::diagnostic::render(&errors, &map, Style::Plain);"']
 proof  = "crates/strand-web/tests/live.rs::a_config_with_an_error_gives_its_diagnostic"
 
 [[claim]]
 page   = "site/playground.md"
 text   = "Time is a virtual clock that ticks every 1/60 s of real time,"
-source = ["site/assets/live.js:387", "crates/strand-web/src/steps.rs"]
+source = ['site/assets/live.js "virtual clock (one tick each 1/hz s, at most four a frame behind)."', 'site/assets/live.js "const period = 1000 / this.data.hz;"', 'crates/strand-web/src/live.rs "hz: v["hz"].as_u64().unwrap_or(60).clamp(1, 1000) as u32,"']
 proof  = "read: Run.frame runs the ticks due at the example's rate (60 Hz) on requestAnimationFrame, at most four behind"
 
 [[claim]]
 page   = "site/playground.md"
 text   = "Bars, panels, OSDs and popups are shown; windows and lock screens are not, nor is the GPU's work."
-source = ["crates/strand-web/src/surfaces.rs:157", "crates/strand-web/Cargo.toml"]
+source = ['crates/strand-web/src/surfaces.rs "NodeKind::Lock | NodeKind::Window => { if !self.unsupported.contains(&spec.kind) {"', 'crates/strand-web/Cargo.toml "strand-render.workspace = true"', 'Cargo.toml "strand-render = { path = "crates/strand-render", default-features = false }"']
 proof  = "crates/strand-web/tests/live.rs::a_click_opens_a_popup_below_its_bar; strand-render without `gpu`"
 
 [[claim]]
 page   = "site/playground.md"
 text   = "the icons are the few files the examples draw, and the fonts are Liberation Sans, regular and bold."
-source = ["crates/strand-web/src/live.rs:121", "scripts/wasm/build.sh:81"]
+source = ['crates/strand-web/src/live.rs "strand_icons::set_files(map);"', 'scripts/wasm/build.sh "names = json.loads((root / "icons.json").read_text())"', 'scripts/wasm/build.sh "cp crates/strand-text/assets/LiberationSans-Regular.ttf crates/strand-text/assets/LiberationSans-Bold.ttf"']
 proof  = "crates/strand-web/tests/live.rs::every_docs_example_draws_every_frame_eval_drew (icons supplied only from the files the examples draw); ::the_osd_without_its_icon_is_not_what_eval_drew"
 
 
 [[claim]]
 page   = "site/playground.md"
 text   = "Nothing is downloaded until you open this page."
-source = ["site/assets/site.js:411", "site/assets/live.js"]
-proof  = "scripts/wasm/check-browser.sh (no page with an example figure requests the WebAssembly or live.js)"
+source = ['site/assets/site.js "file) and the browser runs WebAssembly. No other page fetches it."', '''scripts/wasm/check.py "the page fetched the playground's code"''']
+proof  = "scripts/wasm/check.py, run by scripts/wasm/check-browser.sh: a page that isn't the playground and fetches the WebAssembly or live.js is a problem"
 
 [[claim]]
 page   = "site/tools/editor.md"
@@ -2802,19 +2808,19 @@ proof  = "scripts/release/test-install.sh full: strand replay finds strand-eval"
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "There is no `/etc/pam.d/strand`, so the lock uses your system's `login` setup, which works."
-source = ["crates/strand-auth/src/client.rs:293"]
+source = ['crates/strand-auth/src/client.rs "The one-time warning that the `login` service stands in for a"']
 proof  = "crates/strand-auth/tests/pam.rs::a_missing_strand_service_falls_back_to_login_with_one_warning"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "`~/.local/bin`, and says so when that directory is not on your `PATH`."
-source = ["scripts/install.sh:416"]
+source = ['scripts/install.sh "is not on your PATH: add it, or start Strand from your compositor as"']
 proof  = "scripts/release/test-install.sh full: says ~/.local/bin is not on PATH"
 
 [[claim]]
 page   = "site/start/running.md"
 text   = "`PATH`, which may not hold `~/.local/bin`, where the"
-source = ["scripts/install.sh:98"]
+source = ['scripts/install.sh "BIN=${bin_dir:-$HOME/.local/bin}"', 'scripts/install.sh "for n in $LINKED; do link_into "$BIN" "$n" "$DATA/current/$n"; done"']
 proof  = "read: the links' directory; a compositor started by a display manager reads the session's PATH, not a shell profile's"
 
 # --- island, reporting ---
@@ -2922,6 +2928,24 @@ source = ["crates/strand-theme/src/palette.rs"]
 proof  = "crates/strand-compiler/tests/theme.rs::a_palette_from_hand_written_colours_fills_the_rest"
 
 # --- keys ---
+[[claim]]
+page   = "site/start/install.md"
+text   = "which also lets it run as root"
+source = ['scripts/install.sh "(--force goes ahead)"']
+proof  = "read: `[ \"$(id -u)\" != 0 ] || [ $force = 1 ]`"
+
+[[claim]]
+page   = "site/start/install.md"
+text   = "Every release also passed the lock screen's tests in their VM."
+source = ['.github/workflows/ci.yml "schedule:* | workflow_dispatch:* | push:tag:* | *:true)"', '''.github/workflows/ci.yml "startsWith(github.ref, 'refs/tags/v')) needs: [lint, test, budgets, acceptance, timing, eval, site, wasm, compositors, lock-vm, package]"''']
+proof  = "read: a tag push always boots the VM, and the release job needs the lock-vm job"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "0.55 and later, and its only kind of config from 0.57"
+source = ['''docs/decisions.md "Lua is Hyprland's only kind of config from 0.57"''', 'scripts/container/hyprland-nested.sh "Hyprland --config "$XDG_RUNTIME_DIR/hyprland.lua""']
+proof  = "seen in the matrix image's hyprland 0.57.0-1, 2026-11-01: the binary holds no `hyprland.conf` and the package ships only `hyprland.lua`; https://wiki.hypr.land/0.56.0/Configuring/Start/ has hyprlang deprecated, not gone, in 0.56"
+
 [[claim]]
 page   = "site/how-to/keys.md"
 text   = "the typing stays in the box"

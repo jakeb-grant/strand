@@ -83,7 +83,7 @@ compositor by its full path, `~/.local/bin/strand run`
 The script will not run as root: it installs Strand for one user. It
 also will not replace a `strand` in `~/.local/bin` that it did not put
 there, such as a copy of one you built. Move that away, or pass
-`--force`.
+`--force`, which also lets it run as root.
 
 ## Update
 
@@ -113,8 +113,8 @@ There are two channels:
 
 - **Releases** are tagged `v0.1.0` and so on, on GitHub. The script
   installs the newest one unless you ask for another.
-- **Edge** is the newest build of `main`. Every push to `main` that
-  passes CI replaces it.
+- **Edge** is the newest build of `main`. A push to `main` that passes
+  CI replaces it, unless a newer push has come by then.
 
 ```sh
 curl -fsSL https://strand.jacobgrant.dev/install.sh | sh -s -- --edge
@@ -125,9 +125,11 @@ updates to the newest edge build, until `--release` switches back.
 `--version 0.1.0` installs that release and switches back too. An edge
 build names its channel: `strand 0.1.0 (edge, a764f45c0d1e)`.
 
-A build on either channel passed the whole of CI first, including the
-compositor matrix, the lock screen in its VM, and this script
-installing, updating and removing it on fresh Ubuntu and Arch systems.
+A build on either channel passed CI first, including the compositor
+matrix and this script installing, updating and removing it on fresh
+Ubuntu and Arch systems. Every release also passed the lock screen's
+tests in their VM. An edge build ran those only if its push changed the
+lock's code; they run on `main` every night as well.
 
 ## Uninstall
 

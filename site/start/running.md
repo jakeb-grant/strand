@@ -220,7 +220,7 @@ bindsym $mod+d exec strand toggle launcher.open
 ```
 
 Hyprland, in its Lua config (`~/.config/hypr/hyprland.lua`, Hyprland
-0.55 and later):
+0.55 and later, and its only kind of config from 0.57):
 
 ```lua
 hl.on("hyprland.start", function()
