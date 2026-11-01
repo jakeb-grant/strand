@@ -15033,3 +15033,12 @@ tags. No check is dropped from what reaches main. test-publish.sh goes with it, 
 6 min 11 s in that run). It is `ABOUT_VERSION` now, leaving the job with the same environment as budgets. This reads a cache
 and merges nothing: cargo's unit hash covers the compiler, flags, features and profile, and rust-cache drops the workspace's
 own crates, so a dependency is reused only where the inputs agree. A tag reads main's cache, which only main can write.
+
+(2026-11-01) The lock-vm filter named two paths that match nothing, `crates/strand/src/lock.rs` and
+`crates/strand/src/services/auth*`, left from before the code moved to `run/lock.rs` and strand-services' `auth.rs`, both
+listed; a file moved the same way would stop the VM running for it with no sign. `scripts/container/check-path-filters.sh`
+now fails lint when an entry in any `filters:` block of ci.yml matches no tracked file, globs as well as literal paths, since
+a dead glob fails as quietly, and it refuses braces and negation rather than guessing at them. Reading the lock code by
+`Role::Lock` and the session lock manager found four files missing, now added: `manager/pose.rs`, `selection.rs`, `caps.rs`
+and `lock_fallback/font.rs`, the last missed because `*lock_fallback*` stops at the directory's name. The job's own definition
+and the setup action are in too, so a ci.yml edit runs the VM, as the job's comment ("the lock code or the harness") promised.
