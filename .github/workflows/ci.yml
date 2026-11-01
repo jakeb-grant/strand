@@ -541,6 +541,7 @@ jobs:
       - name: A virtual KMS card (vkms)
         id: drm
         run: |
+          sudo apt-get update -q
           sudo apt-get install -y -q "linux-modules-extra-$(uname -r)" || echo "no linux-modules-extra-$(uname -r); trying the modules present"
           before=$(ls -d /sys/class/drm/card* 2>/dev/null || true)
           sudo modprobe vkms
