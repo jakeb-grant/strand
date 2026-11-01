@@ -162,6 +162,7 @@ step "scripts/container/test-gpu-measure.sh" 5 scripts/container/test-gpu-measur
 step "scripts/test-size-report.sh" 5 scripts/test-size-report.sh
 step "scripts/container/test-tests-ran.sh" 5 scripts/container/test-tests-ran.sh
 step "scripts/container/test-affected.sh" 5 scripts/container/test-affected.sh
+step "scripts/container/test-prune-rust-caches.sh" 5 scripts/container/test-prune-rust-caches.sh
 step "scripts/container/test-check-path-filters.sh" 5 scripts/container/test-check-path-filters.sh
 step "scripts/container/check-path-filters.sh" 1 scripts/container/check-path-filters.sh
 

@@ -116,8 +116,8 @@ jobs:
       # checks of the owner-only gpu-measure.sh (never run here),
       # size-report.sh's crate attribution, tests-ran.sh (a filtered
       # test step that runs no test fails), affected.sh's choice of
-      # crates (the laptop's inner loop, CLAUDE.md) and
-      # check-path-filters.sh, which then holds the lock-vm and package
+      # crates (the laptop's inner loop, CLAUDE.md), prune-rust-caches.sh
+      # (the nightly cache pruning) and check-path-filters.sh, which then holds the lock-vm and package
       # jobs' path filters to the tree: an entry naming a moved file would
       # silently stop that job running for it.
       - run: scripts/container/test-gate-misses.sh
@@ -127,6 +127,7 @@ jobs:
       - run: scripts/test-size-report.sh
       - run: scripts/container/test-tests-ran.sh
       - run: scripts/container/test-affected.sh
+      - run: scripts/container/test-prune-rust-caches.sh
       - run: scripts/container/test-check-path-filters.sh
       - run: scripts/container/check-path-filters.sh
 
@@ -647,10 +648,13 @@ jobs:
       # and its helper behind
       # /run/polkit/agent-helper.socket; the image build takes a minute
       # or two longer for it.
+      # The test job's dependencies, read only: with no key of its own
+      # saved, this job built them cold (decisions.md ci-speed-2).
       - uses: ./.github/actions/setup
         if: steps.run.outputs.go == 'true'
         with:
           tier: headers
+          cache-key: test
           cache-save: "false"
       - name: Build the lock VM scenarios' binaries
         if: steps.run.outputs.go == 'true'
@@ -893,3 +897,20 @@ jobs:
       - run: scripts/container/tests-ran.sh cargo test --profile timing -p strand --lib reload_latency -- --nocapture --test-threads=1
         env:
           STRAND_LATENCY_ROUNDS: "200"
+
+  # The dependency caches, kept to one generation each: every new Cargo.lock
+  # or manifest saves a new key beside the old one, which only fills the
+  # 10 GB and pushes others out (scripts/container/prune-rust-caches.sh;
+  # decisions.md ci-speed-2). The only job whose token may change caches.
+  prune-caches:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/container/prune-rust-caches.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
