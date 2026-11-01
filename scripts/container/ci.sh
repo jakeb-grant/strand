@@ -6,9 +6,10 @@
 # `scripts/container/run.sh ci`). Stops at the first failing step and
 # names it. Keep the steps in step with ci.yml.
 #
-# The wall-clock latency gates (the `timing` job: theme_swap_bench,
-# reload_latency, list_scroll_bench and anim_bench's CPU frames) are
-# advisory here: they run and
+# The wall-clock gates, all seven steps of the `timing` job
+# (theme_swap_bench, reload_latency, list_scroll_bench, motion's and
+# morph's frame times, anim_bench's CPU frames and the compiler's theme
+# swap logic), are advisory here: they run and
 # print their numbers, and a step whose only failures are wall-clock
 # gate misses (panics marked "timing gate missed", judged by
 # gate-misses.sh) prints WARN instead of failing the run (decisions.md
@@ -61,8 +62,11 @@ fail() {
   exit "$status"
 }
 
-# step NAME MINUTES CMD...: runs CMD under a timeout of MINUTES (ci.yml's
-# timeout-minutes where it sets one; else the job's 60).
+# step NAME MINUTES CMD...: runs CMD under a timeout of MINUTES, this
+# script's own bound for that step. It is not read from ci.yml, and only
+# some agree: presented_quiet and reloads share ci.yml's 10; ci.yml has
+# no step bound for the rest, which there have the job's alone (60, or
+# 50 for eval and site), while the shorter ones here catch a hang sooner.
 step() {
   local name=$1 minutes=$2
   shift 2
@@ -157,6 +161,8 @@ step "scripts/check-tree-sitter.sh" 10 scripts/check-tree-sitter.sh
 step "scripts/container/test-gate-misses.sh" 5 scripts/container/test-gate-misses.sh
 step "scripts/container/test-check-tree-sitter.sh" 5 scripts/container/test-check-tree-sitter.sh
 step "scripts/container/test-ledger.sh" 5 scripts/container/test-ledger.sh
+# Here in lint, since it needs nothing but a shell; on GitHub it runs in
+# the package job, which skips a branch push that leaves its inputs alone.
 step "scripts/release/test-publish.sh" 5 scripts/release/test-publish.sh
 step "scripts/container/test-gpu-measure.sh" 5 scripts/container/test-gpu-measure.sh
 step "scripts/test-size-report.sh" 5 scripts/test-size-report.sh
@@ -243,9 +249,9 @@ step "a glitch report replayed end to end (test-report-view.sh --e2e)" 30 bash s
 # wasm-opt, and its browser check is a container of its own. Run it on
 # the host with scripts/wasm/ci.sh.
 # GitHub's `package` job (the release archive and the installer in
-# fresh containers) has no step here but test-publish.sh above: its
-# smoke test runs containers of its own. Run it on the host with
-# scripts/release/ci.sh.
+# fresh containers) has no step here but test-publish.sh, which runs in
+# lint above: its smoke test runs containers of its own. Run it on the
+# host with scripts/release/ci.sh.
 job=site
 step "strand-site build --strand (the CLI page held to the binary)" 30 bash -c '
   cargo build -q -p strand --bin strand &&

@@ -15047,16 +15047,17 @@ and the setup action are in too, so a ci.yml edit runs the VM, as the job's comm
 `v0-rust-<name>-<env hash>-<lock hash>`. The last hash covers Cargo.lock, every manifest and `.cargo/config.toml`, so an edit to
 any Cargo.toml saves a new key beside the old one, here `b4987f66` beside `f61c49c3`. A run restores by exact key, then the
 newest under the name and env hash, so an older generation is read only by a branch still on it, and everything evicts by
-least recent use: the compositors job's own cache was gone at de671192 (`No cache found`, 6 min 00 s of building) and no
-nightly key is left at all. A new `prune-caches` job on the schedule deletes all but the newest of each name, the only job
+least recent use: at de671192 the compositors job found no earlier generation of its own cache (`No cache found`, 6 min 00 s
+of building) and no nightly key is listed at all, which the limit explains though the listing can't prove it. A new `prune-caches` job on the schedule deletes all but the newest of each name, the only job
 with `actions: write`. Names are compared within one ref, since a newer cache on a branch must not take main's, which every
-branch reads. `--dry-run` against today's cache names 7 entries, 4,647 MiB, leaving about 5.7 GB. A branch still on an older
+branch reads. `--dry-run` against today's cache names 7 entries, 4,647 MiB, leaving 5.1 GiB. A branch still on an older
 lock falls back to the newest generation and rebuilds what differs, as any new branch does.
 
 (2026-11-01) Whether keys could share a cache. lock-vm passed `cache-save: false` under its own job's key, so nothing ever wrote
-what it reads: `No cache found`, and 13.6 min of its 24 building. It now reads `test` without saving, the same debug profile
+what it reads: `No cache found`, and 13.5 min of its 24 building. It now reads `test` without saving, the same debug profile
 and environment, and the key string `v0-rust-test-...` that the test job already writes. That merges no saved cache, so the
 test job's content does not change, and cargo rebuilds a unit whose features differ. Merging the keys that save stays out:
 lint, test, timing, release, wasm, eval and site differ by profile, target or workspace, so one key would hold the sum, restore
 it into every job, and be written by whichever job finished first with only its own units. compositors could read `test`
-the same way, but its cache hit makes that a gain of nothing measured, so it stays as it is. The 10 GB limit is unchanged.
+the same way, but it saves a cache of its own, which pruning should now leave in place, so it stays as it is until a run shows
+otherwise. The 10 GB limit is unchanged.
