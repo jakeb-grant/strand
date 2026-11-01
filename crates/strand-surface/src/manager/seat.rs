@@ -24,19 +24,35 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// What a press of `event` on `keyboard` types, composed if a compose
     /// table loaded ([`KeyText`]). It takes SCTK's copy out of `event`,
     /// so that what repeats the key holds only the wiped one returned.
+    /// `None`: the press is spent ([`KeyText::press`]).
     fn press_text(
         &mut self,
         keyboard: &wl_keyboard::WlKeyboard,
         event: &mut KeyEvent,
-    ) -> Zeroizing<String> {
+    ) -> Option<Zeroizing<String>> {
         let sctk = Zeroizing::new(event.utf8.take().unwrap_or_default());
         let Some(surface) = self.grab_focus.or(self.keyboard_focus) else {
-            return sctk;
+            return Some(sctk);
         };
+        // Alt is Mod1: AltGr, which types, is not it.
+        let m = self.modifiers;
+        let chord = m.ctrl || m.alt || m.logo;
         match self.key_texts.get_mut(&keyboard.id()) {
-            Some(k) => k.press(surface, event.raw_code, event.keysym, sctk),
-            None => sctk,
+            Some(k) => k.press(surface, event.raw_code, event.keysym, chord, sctk),
+            None => Some(sctk),
         }
+    }
+
+    /// Forgets every keyboard's sequence under way.
+    pub(super) fn reset_compose(&mut self) {
+        for k in self.key_texts.values_mut() {
+            k.reset();
+        }
+    }
+
+    /// True while a keyboard is inside a sequence (tests).
+    pub fn compose_pending(&self) -> bool {
+        self.key_texts.values().any(KeyText::pending)
     }
 
     /// A key event on the surface with keyboard focus (`text`: what it
@@ -535,9 +551,7 @@ impl<H: SurfaceHost + 'static> PointerHandler for State<H> {
                     self.last_pressed = Some(surface);
                     // A press may focus another `input`, which the seat
                     // does not see: a sequence under way ends here.
-                    for k in self.key_texts.values_mut() {
-                        k.reset();
-                    }
+                    self.reset_compose();
                     InputEvent::PointerButton {
                         surface,
                         position,
@@ -750,7 +764,10 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
             });
         }
         let latin = self.latin(keyboard, &event);
-        let text = self.press_text(keyboard, &mut event);
+        let Some(text) = self.press_text(keyboard, &mut event) else {
+            self.stop_repeat();
+            return;
+        };
         self.key(&event, &text, latin, ButtonState::Pressed, false);
         self.start_repeat(keyboard, event, text);
     }
@@ -782,6 +799,13 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
             .is_some_and(|(k, raw, _)| *k == keyboard.id() && *raw == event.raw_code)
         {
             self.stop_repeat();
+        }
+        if self
+            .key_texts
+            .get_mut(&keyboard.id())
+            .is_some_and(|k| k.take_consumed_release(event.raw_code))
+        {
+            return;
         }
         let latin = self.latin(keyboard, &event);
         self.key(&event, "", latin, ButtonState::Released, false);

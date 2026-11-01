@@ -44,6 +44,8 @@ pub(super) struct KeyText {
     compose: Option<compose::State>,
     /// The surface its last press went to.
     surface: Option<SurfaceId>,
+    /// The key whose press was spent, until its release is.
+    consumed_release: Option<u32>,
 }
 
 impl KeyText {
@@ -52,6 +54,7 @@ impl KeyText {
             xkb: xkb::State::new(keymap),
             compose: None,
             surface: None,
+            consumed_release: None,
         };
         if let Some(table) = table {
             text.set_table(table);
@@ -85,30 +88,62 @@ impl KeyText {
             .update_mask(depressed, latched, locked, 0, 0, group);
     }
 
-    /// What a press of key `raw`, keysym `sym`, types on `surface`. A
-    /// sequence does not follow the keys to another surface. `sctk`: the
-    /// text SCTK gave, which stands when no compose table loaded.
+    /// True while a sequence is under way.
+    pub(super) fn pending(&self) -> bool {
+        self.compose
+            .as_ref()
+            .is_some_and(|c| c.status() == compose::Status::Composing)
+    }
+
+    /// True once if the release of `raw` belongs to a press that was
+    /// spent, so that it is not delivered either.
+    pub(super) fn take_consumed_release(&mut self, raw: u32) -> bool {
+        let consumed = self.consumed_release == Some(raw);
+        if consumed {
+            self.consumed_release = None;
+        }
+        consumed
+    }
+
+    /// What a press of key `raw`, keysym `sym`, types on `surface`, or
+    /// `None` when the press is spent: an Escape that ended a sequence,
+    /// which the host never hears of. A sequence does not follow the keys
+    /// to another surface. `chord`: Ctrl, Alt or Super is held, so the key
+    /// is a shortcut, no key of a sequence, and ends one. `sctk`: the text
+    /// SCTK gave, which stands when no compose table loaded.
     pub(super) fn press(
         &mut self,
         surface: SurfaceId,
         raw: u32,
         sym: Keysym,
+        chord: bool,
         sctk: Zeroizing<String>,
-    ) -> Zeroizing<String> {
+    ) -> Option<Zeroizing<String>> {
         if self.surface.replace(surface) != Some(surface) {
             self.reset();
         }
+        // Its release is this press's now.
+        self.take_consumed_release(raw);
+        let pending = self.pending();
         let Some(compose) = &mut self.compose else {
-            return sctk;
+            return Some(sctk);
         };
         // `wl_keyboard` sends evdev codes, xkb's are 8 more.
         let code = xkb::Keycode::new(raw.saturating_add(8));
         let key = Zeroizing::new(self.xkb.key_get_utf8(code));
+        if chord {
+            compose.reset();
+            return Some(key);
+        }
         if sym == Keysym::Escape {
             compose.reset();
-            return key;
+            if pending {
+                self.consumed_release = Some(raw);
+                return None;
+            }
+            return Some(key);
         }
-        match compose.feed(sym) {
+        Some(match compose.feed(sym) {
             // A modifier: it leaves the sequence where it was.
             compose::FeedResult::Ignored => key,
             compose::FeedResult::Accepted => match compose.status() {
@@ -118,7 +153,7 @@ impl KeyText {
                     Zeroizing::new(String::new())
                 }
             },
-        }
+        })
     }
 }
 
@@ -182,7 +217,8 @@ mod tests {
     /// The text of pressing `raw`, SCTK having said `sctk`.
     fn press_on(k: &mut KeyText, on: SurfaceId, raw: u32, sctk: &str) -> String {
         let sym = k.xkb.key_get_one_sym(xkb::Keycode::new(raw + 8));
-        k.press(on, raw, sym, Zeroizing::new(sctk.to_string()))
+        k.press(on, raw, sym, false, Zeroizing::new(sctk.to_string()))
+            .expect("delivered")
             .to_string()
     }
 
@@ -229,12 +265,33 @@ mod tests {
         assert_eq!(press(&mut k, E), "e");
     }
 
+    /// An Escape that ends a sequence is spent, its release too, and the
+    /// sequence is over; one with nothing pending is an ordinary key.
     #[test]
-    fn escape_ends_a_sequence() {
+    fn escape_ending_a_sequence_is_consumed_and_otherwise_ordinary() {
         let mut k = keys(Some(&table()));
+        let escape = |k: &mut KeyText| {
+            let sym = k.xkb.key_get_one_sym(xkb::Keycode::new(ESC + 8));
+            k.press(HERE, ESC, sym, false, Zeroizing::new(String::new()))
+                .is_some()
+        };
         assert_eq!(press(&mut k, DEAD), "");
-        press(&mut k, ESC);
-        assert_eq!(press(&mut k, E), "e");
+        assert!(!escape(&mut k), "the press is spent");
+        assert!(k.take_consumed_release(ESC), "and its release");
+        assert!(!k.take_consumed_release(ESC), "once");
+        assert_eq!(press(&mut k, E), "e", "the sequence is over");
+        assert!(escape(&mut k), "nothing pending");
+        assert!(!k.take_consumed_release(ESC));
+        // Nor is a finished or cancelled sequence pending.
+        press(&mut k, DEAD);
+        assert_eq!(press(&mut k, E), "é");
+        assert!(escape(&mut k), "after a composed key");
+        press(&mut k, DEAD);
+        assert_eq!(press(&mut k, A), "");
+        assert!(escape(&mut k), "after a cancel");
+        // With no table no key is spent.
+        let mut plain = keys(None);
+        assert!(escape(&mut plain));
     }
 
     #[test]
@@ -261,6 +318,20 @@ mod tests {
         k.set_table(&table());
         assert_eq!(press(&mut k, DEAD), "");
         assert_eq!(press(&mut k, E), "é");
+    }
+
+    /// Ctrl, Alt or Super held: no key of a sequence, and it ends one.
+    #[test]
+    fn a_chord_keeps_its_own_text_and_ends_a_sequence() {
+        let mut k = keys(Some(&table()));
+        assert_eq!(press(&mut k, DEAD), "");
+        let sym = k.xkb.key_get_one_sym(xkb::Keycode::new(E + 8));
+        let chord = k
+            .press(HERE, E, sym, true, Zeroizing::new(String::new()))
+            .expect("a chord is delivered");
+        assert_eq!(*chord, "e");
+        assert!(!k.pending());
+        assert_eq!(press(&mut k, E), "e");
     }
 
     #[test]

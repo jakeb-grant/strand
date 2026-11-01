@@ -297,6 +297,11 @@ impl<H: SurfaceHost + 'static> State<H> {
         if self.held_leave == Some(id) {
             self.held_leave = None;
         }
+        // A sequence under way ends with the surface it was typed on: the
+        // compositor may send no leave, and the next key may be long off.
+        if self.keyboard_focus == Some(id) || self.grab_focus == Some(id) {
+            self.reset_compose();
+        }
         if self.keyboard_focus == Some(id) {
             self.keyboard_focus = None;
             // A compositor may skip the leave for a destroyed surface:

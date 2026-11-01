@@ -1493,9 +1493,13 @@ monitor, the keyboard always).
   the key that ends it has the composed text; a key that cancels it has an
   empty `k.text`, as xkb's state says, and the key after it is itself again.
   `k.name` is always the real key (`dead_acute`, `Multi_key`, `e`), so claims
-  match as ever. Escape, the keyboard leaving, keys going to another surface
-  and a pointer press end a sequence; moving focus by Tab cancels one as any
-  other key does. A held key repeats what its press typed, composed or
+  match as ever. Escape, the keyboard leaving, keys going to another surface,
+  the focused surface closing and a pointer press end a sequence; moving focus
+  by Tab cancels one as any other key does. An Escape that ends a sequence is
+  spent: no handler, claim or default hears its press or release, so it doesn't
+  also close a launcher. With no sequence under way Escape is an ordinary key.
+  A press with Ctrl, Alt or Super held is no key of a sequence and ends one, with
+  its ordinary text; AltGr types, and composes. A held key repeats what its press typed, composed or
   nothing, and is no further key of a sequence. A `type: password` input
   composes as any other. An input method (`text-input-v3`) is not supported.
 - **Copy and paste.** A focused `input` copies its selection with

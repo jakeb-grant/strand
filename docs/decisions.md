@@ -14961,13 +14961,29 @@ private, so nothing could reset it, and a dead key pressed in one panel finished
 (`dead_keys_and_compose_type_the_composed_text_under_real_names` fails so with Strand's own table off). There is no way
 to turn SCTK's off, so `manager/compose.rs` keeps per keyboard its own xkb state and compose state, and SCTK's text is
 used only where no table loaded or a keymap didn't compile, which is what typing was. That costs a second keymap state
-per keyboard and a second table, the table read when a keyboard first reaches a surface, so a bar that never holds the
-keyboard pays nothing for it. A held key repeats what its press typed, not the key fed again: holding the last key of a
+per keyboard and a second table. SCTK's `init_compose` parses its table for every `wl_keyboard` it is given, focused or
+not, so a bar that never holds the keyboard still pays for SCTK's; only Strand's copy waits until a keyboard first reaches a
+surface. Parsing `en_US.UTF-8`'s table took 6.1 ms and 384 KiB of resident memory in a release build in the container, once
+each for SCTK and Strand on a focused shell (`C`'s: 3.1 ms, 148 KiB). A held key repeats what its press typed, not the key fed again: holding the last key of a
 sequence gives `ééé`, not `éee`, a held dead key is one key of its sequence, and a key whose press cancelled a sequence
 repeats nothing. A pointer press also ends a sequence, since a click can move focus to another `input` and the seat
 can't see focus inside a surface; focus moved from code within one surface doesn't end one, and the next key finishes
 it there. Passwords: the seat holds a press's text only in `Zeroizing` strings, wiped when the repeat stops. Copies it
 can't wipe are SCTK's event, the `xkbcommon` crate's stack buffer and each `KeyInput.text` past the seat, which are the
-same copies a plain typed key makes, and a composed character is a table entry and no more secret than one. A
+same copies a plain typed key makes, and a composed character is a table entry and no more secret than one. The pending
+sequence itself sits inside libxkbcommon's `xkb_compose_state` as a position in the table, which can be reset but not
+wiped. Strand's is reset whenever a sequence ends and when a focused surface is destroyed, with or without a `leave`
+(`destroy_surface`), so a lock or a `type: password` field going away needs no knowledge of what it held. SCTK's own
+state can't be reached at all: it keeps its position until the next key press moves it, whatever Strand has reset. A
 compositor's own repeats (`wl_keyboard` version 10) reach `repeat_key` with no text from SCTK, composed or not, as
 they did, which this leaves alone.
+
+(2026-11-01, piece 5, the review) A press with Ctrl, Alt or Super held is a shortcut: it isn't fed to compose, it ends a
+pending sequence, and it has its ordinary text, so Ctrl+N after a dead key doesn't compose or continue anything. AltGr is
+not one of them (it is Mod5, Alt is Mod1), since it types. This goes by the modifiers the seat last reported, as `KeyInput`
+does. An Escape that ends a pending sequence is consumed: neither its press nor its release reaches the host, so cancelling
+a mistyped dead key doesn't also close a launcher or clear a lock field, and no claim hears it. An Escape with nothing
+pending, after a finished or cancelled sequence included, is an ordinary key. This replaces "whatever xkb's state says" for
+Escape only. Swapping the depressed, latched and locked masks can't be seen in a key's text, since xkb reads their
+effective sum, so `levels_layouts_and_chords_type_as_ever_with_a_table_loaded` catches masks put in the wrong place
+against the layout (seen failing with the depressed mask and the group swapped).
