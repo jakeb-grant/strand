@@ -398,8 +398,10 @@ launcher uses: `for h in hits` and `hits.len` read the last result,
 empty before the first one. `!hits.pending` in the last line stops "No
 matches" from flashing while a search is still running.
 
-`.fuzzy` searches any list the same way: `windows.all.fuzzy(query, w =>
-w.title)` gives each match's `item`, `score` and `ranges`.
+`.fuzzy` runs the same matcher over any list you already hold. It takes
+no time to arrive, so it gives a plain list, not an `Async`:
+`windows.all.fuzzy(query, w => w.title)` gives each match's `item`,
+`score` and `ranges`.
 
 An app may offer more than starting it: `h.app.actions` lists its extra
 actions (a new window, a private one), each with a `name` to show and

@@ -376,6 +376,29 @@ fn return_on_the_surface_itself_clicks_nothing() {
     assert_eq!(sh.num("clicks"), 0.0);
 }
 
+/// A key a `slider` or `segmented` doesn't take is a press like any other
+/// node's, bound two-way or not.
+#[test]
+fn return_and_space_press_a_slider_and_a_segmented() {
+    for control in [
+        "slider { focus: true; value: <-> v; range: 0, 100; on click { clicks += 1 } }",
+        "slider { focus: true; value: v; range: 0, 100; on click { clicks += 1 } }",
+        "segmented { focus: true; options: [\"a\", \"b\"]; value: <-> pick; on click { clicks += 1 } }",
+        "segmented { focus: true; options: [\"a\", \"b\"]; value: pick; on click { clicks += 1 } }",
+    ] {
+        let mut sh = entered(&format!(
+            "state clicks = 0\nstate v = 50.0\nstate pick = \"a\"\n\
+             panel P {{ anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+               {control}\n\
+             }}\n"
+        ));
+        tap(&mut sh, "Return");
+        assert_eq!(sh.num("clicks"), 1.0, "Return on {control}");
+        tap(&mut sh, "space");
+        assert_eq!(sh.num("clicks"), 2.0, "space on {control}");
+    }
+}
+
 // A slider's and a segmented's keys.
 
 fn slider_shell(props: &str) -> Shell {

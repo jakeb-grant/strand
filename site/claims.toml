@@ -2846,9 +2846,15 @@ proof  = "crates/strand-render/tests/growth.rs::the_margin_a_growth_has_not_reac
 
 [[claim]]
 page   = "site/concepts/surfaces.md"
-text   = "A panel centred on both axes keeps its content's size."
-source = ['''docs/decisions.md "A surface centred on both axes keeps its content's size"''']
-proof  = "read"
+text   = "A panel centred on both axes does not span, since it would then take the whole monitor both ways."
+source = ['crates/strand-render/src/renderer/specs.rs "Not one centred on both axes"']
+proof  = "read: `centred_span` gives a span only with one axis not centred"
+
+[[claim]]
+page   = "site/concepts/surfaces.md"
+text   = "across restarts, wherever it is anchored"
+source = ['crates/strand-render/src/renderer/specs.rs "let keeps = spec.open"']
+proof  = "read: `keeps` tests no anchor"
 
 [[claim]]
 page   = "site/concepts/surfaces.md"
@@ -3036,13 +3042,19 @@ proof  = "crates/strand-compiler/tests/focus.rs::return_on_a_button_in_a_row_act
 
 [[claim]]
 page   = "site/how-to/keys.md"
+text   = "| `button`, `slider`, `segmented` or anything not below | Return, space |"
+source = ['docs/spec.md "An `input` and a `list` have their own Return"']
+proof  = "crates/strand-compiler/tests/focus.rs::return_and_space_press_a_slider_and_a_segmented"
+
+[[claim]]
+page   = "site/how-to/keys.md"
 text   = "Space on a `scroll` or `list` only pages, so it never clicks what is around it."
 source = ['docs/spec.md "Space and Shift+space page a focused `scroll` or `list` forward and back, as the Page keys do, repeating, and go to no click."']
 proof  = "crates/strand-compiler/tests/focus.rs::space_pages_a_focused_scroll; crates/strand-compiler/tests/focus.rs::space_pages_a_focused_list"
 
 [[claim]]
 page   = "site/how-to/keys.md"
-text   = "A `slider` or `segmented` without `<->` shows its value and leaves these keys alone."
+text   = "A `slider` or `segmented` without `<->` shows its value and leaves its arrow, Page, Home and End keys alone."
 source = ['docs/spec.md "A `slider` bound two-way: Left and Down step down"', 'docs/spec.md "A `segmented` bound two-way: Left and Right choose the option"']
 proof  = "crates/strand-compiler/tests/focus.rs::a_display_slider_ignores_its_keys"
 
@@ -3102,7 +3114,7 @@ proof  = "crates/strand-render/tests/layout.rs::a_panel_centred_on_one_axis_neve
 
 [[claim]]
 page   = "site/concepts/surfaces.md"
-text   = "it also keeps the largest size it has had, on the axes its content sizes, across restarts"
+text   = "it keeps the largest size it has had, on the axes its content sizes, across restarts"
 source = ['docs/design.md "One sized by its content with a `~` on its size also keeps, on the axes its content sizes, the largest size it has had, across sessions under the same config"']
 proof  = "crates/strand/tests/kept_sizes.rs::a_panel_maps_next_session_at_the_size_it_kept"
 

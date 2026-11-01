@@ -1,9 +1,10 @@
 #!/bin/sh
 # Strand's installer (site/start/install.md). Installs Strand for this
 # user, or updates it, from the releases on GitHub: strand, strand-auth,
-# strand-dev and strand-eval go into ~/.local/share/strand/<version>/,
-# and ~/.local/bin gets `strand` and `strand-dev` linked to them. It
-# needs no root and writes nowhere else.
+# strand-dev and strand-eval go into
+# ~/.local/share/strand/versions/<version>/, and ~/.local/bin gets
+# `strand` and `strand-dev` linked to them. It needs no root and writes
+# nowhere else.
 #
 #   curl -fsSL https://strand.jacobgrant.dev/install.sh | sh
 #   curl -fsSL https://strand.jacobgrant.dev/install.sh | sh -s -- --edge
@@ -44,7 +45,8 @@ strand-dev and strand-eval into ~/.local/share/strand/versions/<version>/, with
   --from FILE     a release archive already downloaded, with FILE.sha256
   --bin-dir DIR   where the links go (default ~/.local/bin)
   --force         replace a strand or strand-dev in the bin directory that
-                  this script did not put there; uninstall while strand runs
+                  this script did not put there; uninstall while strand runs;
+                  run as root
   --uninstall     remove what this script installed (never your config)
 
 Run it again to update, on the channel chosen last.

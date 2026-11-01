@@ -114,10 +114,11 @@ resizing in two ways:
 - **It spans.** Anchored to one edge and sized by its content along that edge
   (`anchor: top` with no `width`), it takes the whole monitor that way from its first
   frame and never resizes there. Only its box takes the pointer. A panel centred on
-  both axes keeps its content's size.
-- **It keeps.** With a `~` on its size (`size: auto ~ $motion.spatial`), it also keeps the
-  largest size it has had, on the axes its content sizes, across restarts. Only the
-  first open under a config resizes, and a save that changes the config starts again.
+  both axes does not span, since it would then take the whole monitor both ways.
+- **It keeps.** With a `~` on its size (`size: auto ~ $motion.spatial`), it keeps the
+  largest size it has had, on the axes its content sizes, across restarts, wherever it
+  is anchored. Only the first open under a config resizes, and a save that changes the
+  config starts again.
 
 `exclusive: true` and `~ instant` do not keep, and a size you write out with a `~`
 (`height: open ? 200 : 28 ~ 100ms`) resizes at each change. For a panel that must not
