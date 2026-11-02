@@ -1822,6 +1822,17 @@ fn sleep_past(until: Instant) {
     std::thread::sleep(until.saturating_duration_since(Instant::now()) + Duration::from_millis(2));
 }
 
+/// Runs a test of the 8 ms [`strand_render::GPU_WAIT`] until an attempt isn't
+/// descheduled for all of it before it can look at the hold, which failed the
+/// `test` job of GitHub run 41447012757 (decisions.md robustness). An attempt says so only when the wait really had passed, so a hold missing inside
+/// it still fails.
+fn until_the_clock_keeps_up(attempt: fn() -> bool) {
+    assert!(
+        (0..20).any(|_| attempt()),
+        "descheduled past GPU_WAIT in 20 attempts running"
+    );
+}
+
 /// (m4-audit) Why a GPU stall cannot freeze a lock (features.md, the
 /// lock exit): a lock surface is never handed to the GPU thread, so a
 /// promoted one is read back, and a readback frame the GPU never answers
@@ -1830,6 +1841,10 @@ fn sleep_past(until: Instant) {
 /// at all. Needs no device: the GPU is "up" and never replies.
 #[test]
 fn a_readback_frame_the_gpu_never_answers_holds_at_most_gpu_wait() {
+    until_the_clock_keeps_up(readback_frame_hold);
+}
+
+fn readback_frame_hold() -> bool {
     let mut b = Builder::default();
     let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#ff0000"))]);
     let mut r = renderer();
@@ -1846,6 +1861,7 @@ fn a_readback_frame_the_gpu_never_answers_holds_at_most_gpu_wait() {
     let _ = r.take_backend_changes();
     // The first frame: no pixels yet, so the CPU draws it, and the GPU is
     // sent the frame. It never answers.
+    let asked = Instant::now();
     buf.paint(&mut r, S, 0);
     let sent = Instant::now();
     assert!(
@@ -1861,13 +1877,18 @@ fn a_readback_frame_the_gpu_never_answers_holds_at_most_gpu_wait() {
     d.set(root, Prop::Bg, color("#0000ff"));
     assert!(r.apply(d).is_empty());
     r.update();
-    let until = r.frame_deadline(S).expect("held for the GPU's frame");
+    let held = r.frame_deadline(S);
+    let wants = r.wants_frame(S);
+    if asked.elapsed() >= strand_render::GPU_WAIT {
+        return false;
+    }
+    let until = held.expect("held for the GPU's frame");
     assert!(
         until <= sent + strand_render::GPU_WAIT,
         "held {:?} past the request, more than GPU_WAIT",
         until.saturating_duration_since(sent)
     );
-    assert!(!r.wants_frame(S), "held while the GPU may still answer");
+    assert!(!wants, "held while the GPU may still answer");
     sleep_past(until);
     r.update();
     assert_eq!(r.frame_deadline(S), None, "the hold ends at GPU_WAIT");
@@ -1891,6 +1912,7 @@ fn a_readback_frame_the_gpu_never_answers_holds_at_most_gpu_wait() {
     buf.paint(&mut r, S, 1);
     assert_eq!(buf.px(100, 20), [0, 255, 0, 255], "green, at once");
     assert_eq!(r.backend(S), Backend::GpuReadback, "still promoted");
+    true
 }
 
 /// (m4-audit) The same bound for a `shader` node's pass on a CPU
@@ -1900,6 +1922,10 @@ fn a_readback_frame_the_gpu_never_answers_holds_at_most_gpu_wait() {
 /// wait for it. Needs no device.
 #[test]
 fn a_pass_the_gpu_never_answers_holds_at_most_gpu_wait() {
+    until_the_clock_keeps_up(pass_hold);
+}
+
+fn pass_hold() -> bool {
     let mut r = renderer();
     let (diff, node) = shader_scene("#ff0000");
     assert!(r.apply(diff).is_empty());
@@ -1943,6 +1969,7 @@ fn a_pass_the_gpu_never_answers_holds_at_most_gpu_wait() {
     d.set(root, Prop::Bg, color("#45475a"));
     assert!(r.apply(d).is_empty());
     let old_bg = buf.px(100, 20);
+    let asked = Instant::now();
     r.update();
     let sent = Instant::now();
     assert!(
@@ -1951,13 +1978,18 @@ fn a_pass_the_gpu_never_answers_holds_at_most_gpu_wait() {
             .any(|q| matches!(q, GpuRequest::Pass(_))),
         "a new pass is asked for"
     );
-    let until = r.frame_deadline(S).expect("held for the pass");
+    let held = r.frame_deadline(S);
+    let wants = r.wants_frame(S);
+    if asked.elapsed() >= strand_render::GPU_WAIT {
+        return false;
+    }
+    let until = held.expect("held for the pass");
     assert!(
         until <= sent + strand_render::GPU_WAIT,
         "held {:?} past the request, more than GPU_WAIT",
         until.saturating_duration_since(sent)
     );
-    assert!(!r.wants_frame(S));
+    assert!(!wants);
     sleep_past(until);
     r.update();
     assert_eq!(r.frame_deadline(S), None, "the hold ends at GPU_WAIT");
@@ -1982,6 +2014,7 @@ fn a_pass_the_gpu_never_answers_holds_at_most_gpu_wait() {
         r.take_gpu_requests().is_empty(),
         "the pass is not asked again"
     );
+    true
 }
 
 /// (m4-audit) A frame of a promoted surface that hangs (or panics) is

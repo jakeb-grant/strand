@@ -1102,8 +1102,6 @@ async fn sways_mode_window_rects_and_moves() {
             .is_some_and(|w| w.rect.is_some_and(|r| r.width > 0))
     })
     .await;
-    let w = c.mirror.window_by_app("strand-rect").unwrap().clone();
-    let tree: serde_json::Value = serde_json::from_str(&sway.msg(&["-t", "get_tree"])).unwrap();
     fn rect(n: &serde_json::Value) -> Option<serde_json::Value> {
         if n["app_id"] == "strand-rect" {
             return Some(n["rect"].clone());
@@ -1114,17 +1112,26 @@ async fn sways_mode_window_rects_and_moves() {
             .flatten()
             .find_map(rect)
     }
-    let r = rect(&tree).unwrap();
-    let got = w.rect.unwrap();
-    assert_eq!(
-        (got.x, got.y, got.width, got.height),
-        (
-            r["x"].as_i64().unwrap(),
-            r["y"].as_i64().unwrap(),
-            r["width"].as_i64().unwrap(),
-            r["height"].as_i64().unwrap()
-        )
-    );
+    // Waited for, sway's tree re-read each time: a window maps before sway gives
+    // it its title bar, so what the window event read may be 25 px off for a
+    // moment (y 0 and height 720 against 25 and 695, 2 runs in 20 under load).
+    c.until("the place sway's tree says", |m| {
+        let tree: serde_json::Value = serde_json::from_str(&sway.msg(&["-t", "get_tree"])).unwrap();
+        let r = rect(&tree).unwrap();
+        m.window_by_app("strand-rect")
+            .and_then(|w| w.rect)
+            .is_some_and(|got| {
+                (got.x, got.y, got.width, got.height)
+                    == (
+                        r["x"].as_i64().unwrap(),
+                        r["y"].as_i64().unwrap(),
+                        r["width"].as_i64().unwrap(),
+                        r["height"].as_i64().unwrap(),
+                    )
+            })
+    })
+    .await;
+    let w = c.mirror.window_by_app("strand-rect").unwrap().clone();
 
     // Another workspace (empty, focused), then the window moved to it.
     let from = w.workspace;

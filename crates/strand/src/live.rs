@@ -473,6 +473,13 @@ fn run(
                             }
                         }
                     }
+                    // Watch, then list: the apps service read the desktop entries
+                    // when it started, and an app installed between that and
+                    // these watches was heard by neither (a first frame can
+                    // beat this job on a loaded machine; decisions.md
+                    // robustness). One more read costs a scan off the frame
+                    // and changes nothing when nothing did.
+                    strand_services::apps::changed();
                     caches = Some(changed);
                 }
                 Job::Assets(sink) => assets = Some(sink),

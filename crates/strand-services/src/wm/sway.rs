@@ -11,7 +11,8 @@
 //! `default` is none. A window's place (`rect`) is its container's, less
 //! its output's.
 //! A window's title change is patched from the event; every other event
-//! re-reads the workspaces and the tree, once per burst. sway's `reload`
+//! re-reads the workspaces and the tree, once per burst, and again [`SETTLE`]
+//! later until that changes nothing. sway's `reload`
 //! (a `workspace` event with `change: reload`) is `wm.config_reloaded`.
 //!
 //! The framing is ours (swayipc-async keeps its raw API private, and its
@@ -727,6 +728,13 @@ pub(crate) async fn run(
     }
 }
 
+/// How long after a read prompted by an event the tree is read again. A window's
+/// event comes before sway has laid it out: its transaction waits for the client,
+/// up to `txn_timeout` (200 ms), and no event says when that is done, so what the
+/// first read gets (a new window with no title bar yet, 25 px out) could stay
+/// until the next event (decisions.md robustness).
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
+
 /// What one event asks for.
 enum Effect {
     None,
@@ -858,8 +866,22 @@ async fn session(
     }
     let mut cmds_open = true;
     let mut strikes = Strikes::default();
+    // A second read of the tree after a burst's, until it stops changing.
+    let mut settle: Option<tokio::time::Instant> = None;
     loop {
         tokio::select! {
+            () = tokio::time::sleep_until(settle.unwrap_or_else(tokio::time::Instant::now)), if settle.is_some() => {
+                let before = state.snapshot();
+                query(&mut conn, &mut state).await?;
+                let now = state.snapshot();
+                settle = None;
+                if now != before {
+                    settle = Some(tokio::time::Instant::now() + SETTLE);
+                    if up && tx.send(AdapterMsg::State(Box::new(now))).is_err() {
+                        return Ok(());
+                    }
+                }
+            }
             event = events.frame() => {
                 let mut changed = false;
                 let mut requery = false;
@@ -914,6 +936,7 @@ async fn session(
                 }
                 if requery {
                     query(&mut conn, &mut state).await?;
+                    settle = Some(tokio::time::Instant::now() + SETTLE);
                 }
                 if !up {
                     if !strikes.seen_event() {

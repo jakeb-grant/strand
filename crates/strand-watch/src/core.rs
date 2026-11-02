@@ -535,6 +535,10 @@ impl<B> std::fmt::Debug for Core<B> {
     }
 }
 
+/// How many more times a listing is taken while it leaves out a module that is
+/// still on disk (`rescan_config`).
+const RELISTS: usize = 3;
+
 fn is_missing(e: &io::Error) -> bool {
     matches!(
         e.kind(),
@@ -1598,13 +1602,35 @@ impl<B: Backend> Core<B> {
             return;
         };
         self.config_root = Some(paths::resolve(&cfg.root));
-        let set = match (cfg.rescan)() {
+        let mut set = match (cfg.rescan)() {
             Ok(set) => set,
             Err(e) => {
                 notices.push(Notice::RescanFailed(e.to_string()));
                 return;
             }
         };
+        // A listing can miss a file being saved: on btrfs a rename over it
+        // moves its directory entry, and a `readdir` passing then sees neither
+        // place (`os.listdir` beside a save every 5 ms: 504 misses in 4.5
+        // million lists, decisions.md robustness). A module listed as gone that
+        // is still there is listed again; one that really left the set (a
+        // directory now too deep) stays out of every listing.
+        for _ in 0..RELISTS {
+            let listed: BTreeSet<PathBuf> = set.files.iter().map(|f| paths::absolute(f)).collect();
+            let missed = self.files.iter().any(|(path, e)| {
+                e.module && !listed.contains(path) && std::fs::symlink_metadata(path).is_ok()
+            });
+            if !missed {
+                break;
+            }
+            set = match (cfg.rescan)() {
+                Ok(set) => set,
+                Err(e) => {
+                    notices.push(Notice::RescanFailed(e.to_string()));
+                    return;
+                }
+            };
+        }
         cfg.modules.dirs = canonical_dirs(&set.dirs);
         if set.errors != cfg.modules.errors || set.too_deep != cfg.modules.too_deep {
             // The loader shows these (a dangling `*.strand` link, an

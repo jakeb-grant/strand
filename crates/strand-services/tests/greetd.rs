@@ -434,6 +434,8 @@ fn answers_typed_early_logins_replaced_and_cancelled() {
     w.until("cancelled", |_| {
         g.types().last().map(String::as_str) == Some("cancel_session")
     });
+    // greetd has it before the store has cleared: under load the login still shows.
+    w.until("the login gone", |w| w.state().user.is_empty());
     let s = w.state();
     assert_eq!(
         s,

@@ -1171,6 +1171,68 @@ fn a_file_written_while_a_new_directory_is_being_watched() {
     assert_eq!(c.hash, Some(hash_bytes(b"osd {}\n")));
 }
 
+/// A listing that misses a module being saved (`readdir` passing as a rename
+/// moves its entry, on btrfs) is no removal: the loader would drop a module that
+/// never left. `a_module_renamed_over_every_5_ms_is_reported` met this under load.
+#[test]
+fn a_listing_that_misses_a_module_still_there_removes_nothing() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = fs::canonicalize(tmp.path()).unwrap().join("cfg");
+    fs::create_dir(&cfg).unwrap();
+    let bar = cfg.join("bar.strand");
+    fs::write(&bar, "bar {}\n").unwrap();
+    let lists = Arc::new(AtomicUsize::new(0));
+    let (r, b, n) = (cfg.clone(), bar.clone(), lists.clone());
+    let config = ConfigWatch {
+        root: cfg.clone(),
+        modules: modules(&cfg).unwrap(),
+        rescan: Box::new(move || {
+            let mut set = modules(&r)?;
+            if n.fetch_add(1, Ordering::SeqCst) == 0 {
+                set.files.retain(|f| f != &b);
+            }
+            Ok(set)
+        }),
+    };
+    let (sink, rx) = channel();
+    let _w = Watcher::spawn(Some(config), Options::default(), sink).unwrap();
+    let new = cfg.join("new.strand");
+    fs::write(&new, "new {}\n").unwrap();
+    let b = until(&rx, "the new module", |b| has(b, &new, ChangeKind::Created));
+    assert!(lists.load(Ordering::SeqCst) >= 2, "listed again");
+    assert!(!b.changes.iter().any(|c| c.path == bar), "{b:#?}");
+    assert!(next_files(&rx, SETTLE).is_none_or(|b| !b.changes.iter().any(|c| c.path == bar)));
+}
+
+/// A module that really left the set while still on disk is removed, however
+/// many times it is listed again.
+#[test]
+fn a_module_out_of_every_listing_is_removed_though_still_on_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = fs::canonicalize(tmp.path()).unwrap().join("cfg");
+    fs::create_dir(&cfg).unwrap();
+    let bar = cfg.join("bar.strand");
+    fs::write(&bar, "bar {}\n").unwrap();
+    let (r, b) = (cfg.clone(), bar.clone());
+    let config = ConfigWatch {
+        root: cfg.clone(),
+        modules: modules(&cfg).unwrap(),
+        rescan: Box::new(move || {
+            let mut set = modules(&r)?;
+            set.files.retain(|f| f != &b);
+            Ok(set)
+        }),
+    };
+    let (sink, rx) = channel();
+    let _w = Watcher::spawn(Some(config), Options::default(), sink).unwrap();
+    fs::write(cfg.join("new.strand"), "new {}\n").unwrap();
+    until(&rx, "the module gone", |b| {
+        has(b, &bar, ChangeKind::Removed)
+    });
+}
+
 // --- Registration races -------------------------------------------------------
 
 /// Watch, then list, at boot too: a module (and a directory of modules)
