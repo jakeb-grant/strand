@@ -197,7 +197,7 @@ fn a_hanging_module_times_out_and_its_processes_are_killed() {
     // timeouts, m6-lock) ends the wait, not the timeout.
     assert!(
         start.elapsed() < Duration::from_secs(10),
-        "{:?}",
+        "the limit of three timeouts never ended the wait on the hanging module: {:?}",
         start.elapsed()
     );
     // The helper and the module's process both went (the helper's

@@ -28,6 +28,7 @@ libc = "0.2.190"
 zeroize = "1.9.1"
 
 [dev-dependencies]
+strand-test-support.workspace = true
 tempfile = "3.27.0"
 
 # The tests that need the hooks name the feature, and run only with

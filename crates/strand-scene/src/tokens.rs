@@ -2087,9 +2087,12 @@ mod tests {
             );
         }
         eprintln!("worst swap frame: {worst:?}");
-        if !cfg!(debug_assertions) {
-            assert!(worst < std::time::Duration::from_millis(5), "{worst:?}");
-        }
+        let mut gates = strand_test_support::gate::Gates::default();
+        gates.check(
+            cfg!(debug_assertions) || worst < std::time::Duration::from_millis(5),
+            || format!("the worst swap frame: {worst:?}"),
+        );
+        gates.hold();
     }
 
     #[test]

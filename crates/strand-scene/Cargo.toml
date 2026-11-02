@@ -22,6 +22,7 @@ rustix = { version = "1.1.5", features = ["time"] }
 web-time = "1.1.0"
 
 [dev-dependencies]
+strand-test-support.workspace = true
 proptest = "1.11"
 
 [lints]
