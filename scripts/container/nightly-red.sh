@@ -8,8 +8,9 @@
 # and eval-matrix.yml, the only jobs whose token may write issues.
 #
 # Usage: nightly-red.sh "JOB: RESULT"...
-# Env:   GH_TOKEN, GH_REPO, RUN_URL; SUMMARIES, a directory of the jobs' summary
-#        files to quote, one artifact's directory each, if there is one.
+# Env:   GH_TOKEN, GH_REPO, RUN_URL; SUMMARIES, where download-artifact put the
+#        jobs' summary files to quote, if anywhere: a directory per artifact, or
+#        the files themselves when the pattern found one artifact.
 # Self-test: scripts/container/test-nightly-red.sh
 
 set -euo pipefail
@@ -25,7 +26,7 @@ trap 'rm -f "$body"' EXIT
     case "$line" in *": failure" | *": cancelled") echo "- \`$line\`" ;; esac
   done
   if [ -n "${SUMMARIES:-}" ] && [ -d "$SUMMARIES" ]; then
-    for file in "$SUMMARIES"/*/*.md; do
+    for file in "$SUMMARIES"/*.md "$SUMMARIES"/*/*.md; do
       [ -f "$file" ] || continue
       echo
       # An issue's comment holds 65,536 characters: four of these and the rest.
