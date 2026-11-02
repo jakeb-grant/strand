@@ -2016,9 +2016,13 @@ fn surface_poses_play_under_the_host_loop() {
 /// paints the frame that ends its exit, and it unmounts. Removed as its
 /// surface closes, the surface (kept open while it leaves) then closes
 /// too, with no other input.
+///
+/// (robustness) A card that takes no pointer too: its hit box leaving keeps
+/// the surface dirty anyway (decisions.md hit-through), so with one this test
+/// says nothing of the preview that finds the exit due.
 #[test]
 fn an_exit_that_moves_nothing_still_ends_under_the_host_loop() {
-    for close in [false, true] {
+    for (close, inert) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut b = Builder::default();
         let root = b.node(
             NodeKind::Panel,
@@ -2039,6 +2043,10 @@ fn an_exit_that_moves_nothing_still_ends_under_the_host_loop() {
                 (Prop::Enter, pose(vec![(Prop::Opacity, num(1.0))])),
             ],
         );
+        if inert {
+            b.diff
+                .set(card, Prop::Hit, PropValue::Keyword("none".into()));
+        }
         let mut h = Host::new(b.diff, root);
         h.run();
         assert_eq!(h.px(10, 10).map(|p| p[3]), Some(255), "shown");
@@ -2053,8 +2061,15 @@ fn an_exit_that_moves_nothing_still_ends_under_the_host_loop() {
         h.apply(d);
         assert!(h.r.tree().is_ghost(card), "it plays its exit");
         let n = h.run();
-        assert!(n >= 1, "a frame ends the exit (close: {close})");
-        assert_eq!(h.r.tree().ghost_count(), 0, "unmounted (close: {close})");
+        assert!(
+            n >= 1,
+            "a frame ends the exit (close: {close}, inert: {inert})"
+        );
+        assert_eq!(
+            h.r.tree().ghost_count(),
+            0,
+            "unmounted (close: {close}, inert: {inert})"
+        );
         if close {
             assert!(h.surface.is_none(), "the surface closed with it");
             assert!(!h.r.surface_spec(root).unwrap().open);

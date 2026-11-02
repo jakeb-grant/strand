@@ -8,7 +8,10 @@ previews matched the last one and nothing painted the frame that ends the exit:
 the popup was drawn once, stayed mapped and the run reported itself at rest with
 the card shown three seconds later. Now that preview leaves the surface wanting
 that frame: the card unmounts, the popup closes, and `twin` and `expect hidden
-#card` pass (eval/mutants/popup-still-pose.patch reverts the fix)."""
+#card` pass (eval/mutants/popup-still-pose.patch reverts the fix). The card is
+`hit: none`: a hit box leaving keeps a surface dirty by itself (decisions.md
+hit-through), which would paint that frame with the fix reverted too
+(decisions.md robustness)."""
 screen = { width = 300, scale = 1.0 }
 hz     = 60
 
@@ -19,7 +22,7 @@ bar Top {
     box { id: before; width: 30; height: 20; bg: #00ff00 }
     box { id: item; width: 40; height: 30; bg: #303030
       popup { id: pop; trigger: hover; delay: 200ms; width: 120; height: 40
-        box { id: card; width: 120; height: 40; bg: #ff0000; enter { opacity: 1 } }
+        box { id: card; width: 120; height: 40; bg: #ff0000; hit: none; enter { opacity: 1 } }
       }
     }
     box { id: after; width: 30; height: 20; bg: #0000ff }

@@ -1891,7 +1891,9 @@ for the build.
 patch reverts a fix in the product's crates, for example bug 24's flip-open
 and bug 25's hidden-text in crates/strand-render, and bug 23's gpu-regions
 in crates/strand-surface and crates/strand (see Surface leg), popup-still-pose's
-exit-due fix in crates/strand-render (decisions.md eval-r3), and round 4's
+exit-due fix in crates/strand-render (decisions.md eval-r3; its card is `hit:
+none`, since a hit box leaving keeps a surface dirty without the fix,
+decisions.md robustness), and round 4's
 fade-layer-redraw (`redraw`), gradient-far-hue (`cpu-gpu`) and roll-rate
 (`settle`, in crates/strand-scene) fixes (decisions.md shadow-redraw,
 gradient-cpu-gpu and roll-rate), and round 5's border-fade-snap

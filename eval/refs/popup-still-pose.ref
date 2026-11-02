@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "popup-still-pose"
 verdict good
-note "roll-rate at integration-r4: springs rest once their amplitude is within tolerance; this is roll-rate's approved recording but for the surface origin eval-fa and eval-coverage-2 already changed here"
-date 2026-10-18
-rev "55dc894b+changes"
+note "popup-still-pose regains its power (robustness): #card is hit: none, so a hit box leaving no longer keeps the surface dirty; only the popup's input region differs"
+date 2026-11-02
+rev "3962a07b+changes"
 approver "claude"
-scenario 168921f0de9dcc52
-seal 99957e2d163a9cd8
+scenario 75098d04fedfdd71
+seal bb44f04ab8e5ca0f
 S1 0 - "bar Top"
 S2 21 44 "popup#pop"
 N0 "after|shell.strand:10:5|[Mock | DP-1]#2" "box#after"
@@ -26,7 +26,7 @@ n3 x=36 y=0 w=40 h=30 ord=3 bg=303030ff
 n4 x=0 y=0 w=300 h=30 ord=1
 n5 x=0 y=0 w=300 h=30 bg=faf9ffff
 k21 p1,2
-s2 z=120,40 o=0,36 i=0,0,120,40
+s2 z=120,40 o=0,36 i=none
 n2 w=17
 n6 srf=2 x=0 y=0 w=120 h=40 ord=1 bg=ff0000ff
 n7 srf=2 x=0 y=0 w=120 h=40
