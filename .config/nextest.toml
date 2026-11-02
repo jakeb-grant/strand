@@ -20,7 +20,7 @@ budgets = { max-threads = 1 }
 
 [profile.default]
 fail-fast = false
-status-level = "fail"
+status-level = "leak"
 final-status-level = "flaky"
 failure-output = "immediate"
 # 60 s marks a test slow; 40 of them end it with a TIMEOUT that names it. A test
