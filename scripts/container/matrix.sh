@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The CI `compositors` job (.github/workflows/ci.yml) on this machine:
 # builds the compositor_matrix test in the CI image (run.sh), then runs
-# scripts/compositor-matrix-ci.sh in archlinux:latest (a derived image,
-# Dockerfile.matrix, with its packages cached) against sway, niri and
-# labwc (the compositor without an IPC adapter).
+# scripts/compositor-matrix-ci.sh in Dockerfile.matrix's pinned Arch image
+# (published as the CI image is; image.sh) against sway, niri and labwc (the
+# compositor without an IPC adapter).
 #
 # Hyprland: CI loads vkms (a virtual KMS card); that needs modprobe, not
 # done here. Only the render node /dev/dri/renderD128 is passed in (never
@@ -12,8 +12,7 @@
 #
 # Usage: scripts/container/matrix.sh [sway] [niri] [hyprland] [labwc]
 #        (default: all four). Logs and shots: target/matrix/<compositor>.
-# Env:   MATRIX_REBUILD=1 rebuilds the Arch image (pulls archlinux:latest).
-#        MATRIX_OUTPUTS (default 2): outputs for sway and Hyprland (niri: 1).
+# Env:   MATRIX_OUTPUTS (default 2): outputs for sway and Hyprland (niri: 1).
 #        MATRIX_FILTER, MATRIX_LOOP, MATRIX_WAYLAND_DEBUG: one test, many
 #        runs, Wayland protocol logs (scripts/compositor-matrix.sh), e.g.
 #        MATRIX_FILTER=window_state_actions_follow_the_compositor MATRIX_LOOP=100 \
@@ -27,12 +26,7 @@ KINDS=("$@")
 [ "${#KINDS[@]}" -gt 0 ] || KINDS=(sway niri hyprland labwc)
 RENDER=/dev/dri/renderD128
 
-hash=$(sha256sum "$HERE/Dockerfile.matrix" | cut -c1-12)
-ARCH_IMAGE=strand-matrix:$hash
-if [ "${MATRIX_REBUILD:-}" = 1 ] || ! docker image inspect "$ARCH_IMAGE" >/dev/null 2>&1; then
-  echo "building $ARCH_IMAGE" >&2
-  docker build --pull -t "$ARCH_IMAGE" -f "$HERE/Dockerfile.matrix" "$HERE" >&2 || exit 1
-fi
+ARCH_IMAGE=$(STRAND_IMAGE_FILE=Dockerfile.matrix "$HERE/image.sh") || exit 1
 
 # The test, as CI builds it (its path from cargo's JSON messages).
 echo "=== building the compositor_matrix test"

@@ -275,8 +275,9 @@ every change.
 ### Compositors CI runs on
 
 CI's `compositors` job runs the compositor matrix test on **sway**,
-**niri**, **Hyprland** and **labwc**, installed from `archlinux:latest`,
-on every push and every night. It checks what the `workspaces` and
+**niri**, **Hyprland** and **labwc**: on every push from a dated snapshot of
+Arch Linux, so a compositor's release can't fail an unrelated change, and
+every night from that day's packages, so it shows up there first. It checks what the `workspaces` and
 `windows` services report on each of them, and on sway, niri and
 Hyprland it runs the design document's bar in `strand run`. The rest
 of the test suite runs on a headless sway 1.9 on Ubuntu 24.04.

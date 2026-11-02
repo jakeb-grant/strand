@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# The CI job `compositors` (.github/workflows/ci.yml), inside an
-# archlinux:latest container (Hyprland and niri are packaged there, not
-# on the Ubuntu runner): installs sway, niri, Hyprland, labwc, grim, seatd and
-# Mesa, then runs scripts/compositor-matrix.sh for each compositor as an
+# The CI job `compositors` (.github/workflows/ci.yml), inside an Arch Linux
+# container (Hyprland and niri are packaged there, not on the Ubuntu runner):
+# Dockerfile.matrix's pinned image (MATRIX_PINNED set, pushes and
+# scripts/container/matrix.sh), or at night archlinux:latest, where this installs
+# today's sway, niri, Hyprland, labwc, grim, seatd and Mesa;
+# then runs scripts/compositor-matrix.sh for each compositor as an
 # unprivileged user (Hyprland refuses root) with the test binary built in
 # the CI image (the same path: the repository is mounted where the runner
 # checked it out).
@@ -27,16 +29,22 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TEST=${1:?the compositor_matrix test binary}
 MATRIX=${MATRIX:-sway niri hyprland labwc}
 
-# pacman's free-space check cannot read an overlayfs root's mount points
-# in a container ("could not determine filesystem mount points"): off.
-sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf
-# The image's keyring, should it ship uninitialised.
-pacman-key --init >/dev/null 2>&1 || true
-pacman-key --populate archlinux >/dev/null 2>&1 || true
-pacman -Syu --noconfirm --needed \
-  sway niri hyprland labwc grim seatd mesa dbus ttf-dejavu adwaita-icon-theme \
-  fontconfig libxkbcommon wayland pipewire libcap >/tmp/pacman.log 2>&1 ||
-  { tail -40 /tmp/pacman.log; exit 1; }
+if [ -n "${MATRIX_PINNED:-}" ]; then
+  # The image's packages, as they are: no network, nothing to move.
+  packages="Arch packages of $MATRIX_PINNED"
+else
+  packages=archlinux:latest
+  # pacman's free-space check cannot read an overlayfs root's mount points
+  # in a container ("could not determine filesystem mount points"): off.
+  sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf
+  # The image's keyring, should it ship uninitialised.
+  pacman-key --init >/dev/null 2>&1 || true
+  pacman-key --populate archlinux >/dev/null 2>&1 || true
+  pacman -Syu --noconfirm --needed \
+    sway niri hyprland labwc grim seatd mesa dbus ttf-dejavu adwaita-icon-theme \
+    fontconfig libxkbcommon wayland pipewire libcap >/tmp/pacman.log 2>&1 ||
+    { tail -40 /tmp/pacman.log; exit 1; }
+fi
 pacman -Q sway niri hyprland labwc grim seatd mesa
 # The package version of a compositor of the matrix, for its result line.
 version_of() { pacman -Q "$1" 2>/dev/null | cut -d' ' -f2; }
@@ -77,7 +85,7 @@ fi
 failed=()
 summary="$ROOT/target/matrix/summary.md"
 {
-  echo "### Compositor matrix (archlinux:latest)"
+  echo "### Compositor matrix ($packages)"
   echo
   echo "| compositor | package version | result |"
   echo "|---|---|---|"
@@ -97,7 +105,7 @@ for kind in $MATRIX; do
   status=$?
   echo "::endgroup::"
   if [ "$status" != 0 ]; then
-    echo "::error title=compositors: $kind $version::the compositor matrix failed on $kind $version (archlinux:latest, exit $status)"
+    echo "::error title=compositors: $kind $version::the compositor matrix failed on $kind $version ($packages, exit $status)"
     for log in "$ROOT/target/matrix/$kind"/*.log; do
       [ -f "$log" ] || continue
       case "$log" in

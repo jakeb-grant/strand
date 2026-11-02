@@ -56,6 +56,10 @@ reset() {
 called() { grep -q "$1" "$DIR/calls"; }
 
 [ "$("$HERE/image.sh" --ref)" = "$REF" ] && ok "--ref names the hash tag" || no "--ref"
+matrix_hash=$(sha256sum "$HERE/Dockerfile.matrix" | cut -c1-12)
+MATRIX_REF=ghcr.io/jakeb-grant/strand-matrix:$matrix_hash
+[ "$(STRAND_IMAGE_FILE=Dockerfile.matrix "$HERE/image.sh" --ref)" = "$MATRIX_REF" ] && ok "the matrix's image has its own name and hash" || no "matrix --ref"
+STRAND_IMAGE_FILE=Dockerfile.other "$HERE/image.sh" --ref >/dev/null 2>&1 && no "an unknown file named an image" || ok "an unknown file names no image"
 
 reset
 echo "$REF" >>"$DIR/registry"
@@ -140,6 +144,12 @@ printf 'x\n' >"$DIR/flaky"
   ok "laptop: any failed pull builds, at once, as with no network" || no "laptop no network"
 
 # publish-image.sh
+reset
+STRAND_IMAGE_FILE=Dockerfile.matrix "$HERE/publish-image.sh" publish >/dev/null
+grep -q "docker build -t $MATRIX_REF .*Dockerfile.matrix" "$DIR/calls" && grep -q "docker push $MATRIX_REF" "$DIR/calls" && ok "publish builds the matrix's image from its own file" || no "matrix publish"
+reset
+out=$(STRAND_IMAGE_FILE=Dockerfile.matrix "$HERE/image.sh" 2>/dev/null)
+[ "$out" = "strand-matrix:$matrix_hash" ] && grep -q "docker build -t strand-matrix:$matrix_hash -f .*Dockerfile.matrix" "$DIR/calls" && ok "absent, the matrix's image is built from its own file" || no "matrix build"
 reset
 [ "$("$HERE/publish-image.sh" missing)" = true ] && ok "missing: absent is true" || no "missing true"
 echo "$REF" >>"$DIR/registry"

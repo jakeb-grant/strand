@@ -21,13 +21,22 @@
 # fails the job, so a registry blip can't run the gates or build release
 # archives on an image nobody published; and a build from an earlier step
 # stays, so one job's steps all run on one image.
+#
+# STRAND_IMAGE_FILE=Dockerfile.matrix is the same for the compositor matrix's
+# image, ghcr.io/jakeb-grant/strand-matrix.
 
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-hash=$(sha256sum "$HERE/Dockerfile" | cut -c1-12)
-LOCAL=strand-ci:$hash
-PUBLISHED=ghcr.io/jakeb-grant/strand-ci:$hash
+FILE=${STRAND_IMAGE_FILE:-Dockerfile}
+case "$FILE" in
+  Dockerfile) NAME=strand-ci ;;
+  Dockerfile.matrix) NAME=strand-matrix ;;
+  *) echo "image.sh: no image for $FILE" >&2; exit 2 ;;
+esac
+hash=$(sha256sum "$HERE/$FILE" | cut -c1-12)
+LOCAL=$NAME:$hash
+PUBLISHED=ghcr.io/jakeb-grant/$NAME:$hash
 
 if [ "${1:-}" = --ref ]; then
   echo "$PUBLISHED"
@@ -73,7 +82,7 @@ else
     echo "image.sh: $PUBLISHED is not to be had: using $LOCAL, built on this machine" >&2
   else
     echo "image.sh: $PUBLISHED is not to be had: building $LOCAL on this machine" >&2
-    docker build -t "$LOCAL" -f "$HERE/Dockerfile" "$HERE" >&2
+    docker build -t "$LOCAL" -f "$HERE/$FILE" "$HERE" >&2
   fi
 fi
 echo "$LOCAL"

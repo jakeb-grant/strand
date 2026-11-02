@@ -276,8 +276,12 @@ services` (the real services idle) and `cargo test --release -p strand
 --test budgets` (memory and idle wakeups of design.md's bar and the full
 shell on the real services). The `compositors` job runs
 `crates/strand/tests/compositor_matrix.rs` on sway, niri, Hyprland and
-labwc in an Arch Linux container (`scripts/compositor-matrix-ci.sh`), on
-every push and nightly against `archlinux:latest`;
+labwc in an Arch Linux container (`scripts/compositor-matrix-ci.sh`): on
+every push in the image of `scripts/container/Dockerfile.matrix`, pinned by
+digest to a dated archive snapshot, and nightly against `archlinux:latest`, so
+a new compositor release turns the night red and no push. The same night fails
+once the pin is over 30 days old; `scripts/container/matrix-pin.sh refresh`
+moves it, after which `matrix.sh` and a push prove it.
 `scripts/container/matrix.sh` runs it locally (Hyprland only where it
 gets a KMS card), and `scripts/container/hyprland-nested.sh <command>` runs
 a command against a real Hyprland nested in a headless labwc, with only the

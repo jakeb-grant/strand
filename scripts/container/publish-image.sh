@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # CI's image and image-publish jobs (.github/workflows/ci.yml): publishes
-# scripts/container/Dockerfile under its hash tag (image.sh --ref), once.
+# scripts/container/Dockerfile under its hash tag (image.sh --ref), once, and
+# with STRAND_IMAGE_FILE=Dockerfile.matrix the compositor matrix's image alike.
 # Nothing here pushes unless the registry has just said the tag is absent,
 # asked before the build and again after it, since a run on another ref may
 # have published meanwhile. The second answer and the push aren't atomic, so
@@ -51,7 +52,7 @@ case "${1:-}" in
     echo "publish-image: building and pushing $REF"
     docker build -t "$REF" \
       --label "org.opencontainers.image.source=https://github.com/jakeb-grant/strand" \
-      -f "$HERE/Dockerfile" "$HERE"
+      -f "$HERE/${STRAND_IMAGE_FILE:-Dockerfile}" "$HERE"
     leave_if_published
     docker push "$REF"
     ;;

@@ -74,7 +74,8 @@ jobs:
   # The CI image, one for these jobs and the laptop: scripts/container/
   # Dockerfile at ghcr.io/jakeb-grant/strand-ci:<its hash>, published the
   # first time a run needs it (decisions.md ci-speed-2; publish-image.sh says
-  # what can write a tag twice).
+  # what can write a tag twice). The compositor matrix's Dockerfile.matrix the
+  # same, at strand-matrix.
   # `image` looks, with no registry login; `image-publish` is the only job
   # that may write to packages, and always runs, so the jobs after it need no
   # special `if`. A branch's runs that will publish share a group, by branch: a
@@ -107,8 +108,9 @@ jobs:
           MAY_WRITE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           missing=$(scripts/container/publish-image.sh missing)
+          matrix=$(STRAND_IMAGE_FILE=Dockerfile.matrix scripts/container/publish-image.sh missing)
           publish=false
-          if [ "$missing" = true ] && [ "$MAY_WRITE" = true ]; then publish=true; fi
+          if { [ "$missing" = true ] || [ "$matrix" = true ]; } && [ "$MAY_WRITE" = true ]; then publish=true; fi
           echo "publish=$publish" >>"$GITHUB_OUTPUT"
 
   image-publish:
@@ -133,6 +135,7 @@ jobs:
         run: |
           echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           scripts/container/publish-image.sh publish
+          STRAND_IMAGE_FILE=Dockerfile.matrix scripts/container/publish-image.sh publish
 
   # The checks of every push, split into jobs that run side by side (the
   # single `check` job took about 23 min; docs/decisions.md, laptop-ci).
@@ -180,7 +183,7 @@ jobs:
       # git's index alone (its write made the next step rebuild the
       # binary), the job summary of the nextest run and the static half of
       # its filters' check, the stress and validation runs' summaries, the
-      # nightly-red issue,
+      # nightly-red issue, the Arch pin's date,
       # affected.sh's choice of
       # crates (the laptop's inner loop, CLAUDE.md), prune-rust-caches.sh
       # (the nightly cache pruning) and check-path-filters.sh, which then holds the lock-vm and package
@@ -200,6 +203,7 @@ jobs:
       - run: scripts/container/run.sh scripts/container/test-stress-summary.sh
       - run: scripts/container/run.sh scripts/container/test-nightly-red.sh
       - run: scripts/container/run.sh scripts/container/test-validation-summary.sh
+      - run: scripts/container/run.sh scripts/container/test-matrix-pin.sh
       - run: scripts/container/run.sh scripts/container/test-affected.sh
       - run: scripts/container/run.sh scripts/container/test-prune-rust-caches.sh
       - run: scripts/container/run.sh scripts/container/test-check-path-filters.sh
@@ -550,13 +554,15 @@ jobs:
   # its own CLI reports (crates/strand/tests/compositor_matrix.rs, run by
   # scripts/compositor-matrix.sh). Hyprland and niri are packaged on Arch,
   # not on the Ubuntu runner: the test is built in the CI image and run in
-  # an archlinux:latest container, as scripts/container/matrix.sh does. Hyprland's aquamarine allocates on a DRM
+  # the pinned Arch image of Dockerfile.matrix, as scripts/container/matrix.sh
+  # does, so a compositor's release can't break an unrelated push. Hyprland's aquamarine allocates on a DRM
   # node even for headless outputs, so the runner loads vkms (a virtual
   # KMS card, rendered by Mesa's llvmpipe) and passes it in; niri runs
   # nested (winit) in a headless sway; sway runs headless.
-  # It runs nightly too: archlinux:latest installs the current Hyprland,
-  # niri, sway and labwc, so an upstream release that breaks an adapter
-  # fails here within a day without a push. A failure names the
+  # At night and on a dispatch it runs archlinux:latest instead, which installs
+  # the current Hyprland, niri, sway and labwc, so an upstream release that
+  # breaks an adapter fails here within a day without a push, and holds the
+  # pin to its age (scripts/container/matrix-pin.sh). A failure names the
   # compositor and its package version (an annotation and the job
   # summary; decisions.md laptop-resilience).
   compositors:
@@ -600,11 +606,20 @@ jobs:
           [ -n "$card" ] || { echo "::error::no card appeared for vkms"; exit 1; }
           echo "vkms card: $card"
           echo "card=$card" >>"$GITHUB_OUTPUT"
-      - name: sway, niri, Hyprland and labwc (archlinux:latest)
+      - name: sway, niri, Hyprland and labwc (pinned; at night, today's packages)
+        env:
+          EVENT: ${{ github.event_name }}
         run: |
+          case "$EVENT" in
+            schedule | workflow_dispatch) image=archlinux:latest ;;
+            *) image=$(STRAND_IMAGE_FILE=Dockerfile.matrix scripts/container/image.sh) ;;
+          esac
           docker run --rm --device /dev/dri -v "$PWD:$PWD" -w "$PWD" \
             -e STRAND_DRM_CARD=${{ steps.drm.outputs.card }} \
-            archlinux:latest bash scripts/compositor-matrix-ci.sh "${{ steps.build.outputs.test }}"
+            "$image" bash scripts/compositor-matrix-ci.sh "${{ steps.build.outputs.test }}"
+      - name: The pin's age
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        run: scripts/container/matrix-pin.sh check
       # Each compositor's package version and result, on the run's page.
       - name: Compositor versions and results
         if: always()

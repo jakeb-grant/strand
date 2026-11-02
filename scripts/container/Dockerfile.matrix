@@ -1,12 +1,21 @@
-# archlinux:latest with the compositor matrix's packages preinstalled
-# (the pacman step of scripts/compositor-matrix-ci.sh), so reruns of
-# scripts/container/matrix.sh start in seconds. compositor-matrix-ci.sh
-# still runs `pacman -Syu --needed` itself, as in CI.
-FROM archlinux:latest
+# The compositor matrix's Arch Linux with its packages (the pacman step of
+# scripts/compositor-matrix-ci.sh) on pushes and scripts/container/matrix.sh,
+# pinned so a compositor's release can't break an unrelated push: a base image by
+# digest and one dated snapshot of Arch's repositories. Nightly installs today's
+# packages on archlinux:latest instead, so a new release shows up there first,
+# and the same job fails once this pin is too old: scripts/container/matrix-pin.sh
+# (`check`, `refresh`) has the limits and rewrites both lines below.
+# Published once per hash of this file at ghcr.io/jakeb-grant/strand-matrix
+# (ci.yml's image-publish), so a push doesn't depend on the archive either.
+FROM archlinux@sha256:e82623936fa1a69700b48e98b058df6eaab18b737c27473a7234a40fdecb9413
+ARG ARCH_DATE=2026-11-01
+# compositor-matrix-ci.sh leaves the packages alone in this image and says this date.
+ENV MATRIX_PINNED=$ARCH_DATE
 RUN sed -i 's/^CheckSpace/#CheckSpace/' /etc/pacman.conf \
+ && echo "Server = https://archive.archlinux.org/repos/$(echo "$ARCH_DATE" | tr - /)/\$repo/os/\$arch" >/etc/pacman.d/mirrorlist \
  && (pacman-key --init >/dev/null 2>&1 || true) \
  && (pacman-key --populate archlinux >/dev/null 2>&1 || true) \
- && pacman -Syu --noconfirm --needed \
+ && pacman -Syyuu --noconfirm --needed \
       sway niri hyprland labwc grim seatd mesa dbus ttf-dejavu adwaita-icon-theme \
       fontconfig libxkbcommon wayland pipewire libcap \
  && pacman -Scc --noconfirm >/dev/null \
