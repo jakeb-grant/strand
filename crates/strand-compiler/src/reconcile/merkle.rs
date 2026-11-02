@@ -28,9 +28,18 @@ pub struct Hashes {
     locks: Vec<u64>,
     /// Custom service declarations, by name.
     services: HashMap<String, u64>,
+    /// How many declarations' text was scanned.
+    scans: usize,
 }
 
 impl Hashes {
+    /// How many declarations' text was scanned to make these: once each, with
+    /// and without components, however they name each other. What keeps a
+    /// reload's hashing linear, as a count a loaded machine can't change.
+    pub fn scans(&self) -> usize {
+        self.scans
+    }
+
     /// The hash of the handler or timer written at `span` in `file`.
     pub fn get(&self, file: FileId, span: Span) -> Option<u64> {
         self.map.get(&(file, span.start, span.end)).copied()
@@ -360,6 +369,7 @@ impl Merkle<'_> {
                 self.hash_component(members, &t.scans);
             }
         }
+        self.out.scans += t.scans.len();
         self.defs.get(&root).copied().unwrap_or(0)
     }
 

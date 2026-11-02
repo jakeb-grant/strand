@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use strand_compiler::diagnostic::{Style, render};
 use strand_compiler::syntax::{dump, lexer, parse};
 use strand_compiler::{FileId, SourceMap};
+use strand_test_support::gate::Gates;
 
 /// splitmix64: small, deterministic, good enough to drive edits.
 struct Rng(u64);
@@ -299,14 +300,14 @@ fn ten_thousand_random_edits() {
     eprintln!("{iters} edits: total {total:?}, worst parse {worst:?}");
     // Generous bounds for unoptimised builds on a shared machine; a stuck
     // or quadratic parser blows through them by orders of magnitude.
-    assert!(
-        worst < Duration::from_secs(1),
-        "slowest parse took {worst:?}"
-    );
-    assert!(
-        total < Duration::from_secs(120),
-        "10k parses took {total:?}"
-    );
+    let mut gates = Gates::default();
+    gates.check(worst < Duration::from_secs(1), || {
+        format!("slowest parse took {worst:?}")
+    });
+    gates.check(total < Duration::from_secs(120), || {
+        format!("10k parses took {total:?}")
+    });
+    gates.hold();
 }
 
 #[test]
@@ -324,6 +325,7 @@ fn random_bytes() {
 #[test]
 fn pathological_nesting_reports_instead_of_overflowing() {
     let n = 100_000;
+    let mut gates = Gates::default();
     // Unclosed brackets that cannot start an item are skipped as junk,
     // not nested into, so they report something other than `too_deep`.
     for src in [
@@ -333,7 +335,9 @@ fn pathological_nesting_reports_instead_of_overflowing() {
     ] {
         let (elapsed, codes) = check(&src, true);
         assert!(!codes.is_empty(), "nothing reported for {}", &src[..20]);
-        assert!(elapsed < Duration::from_secs(5));
+        gates.check(elapsed < Duration::from_secs(5), || {
+            format!("{elapsed:?} on {}", &src[..20])
+        });
     }
     let cases = [
         format!("component X {{ {} }}", "box {".repeat(n)),
@@ -376,12 +380,11 @@ fn pathological_nesting_reports_instead_of_overflowing() {
             &src[..60]
         );
         assert!(codes.len() <= 2, "{codes:?} on {}", &src[..60]);
-        assert!(
-            elapsed < Duration::from_secs(5),
-            "{elapsed:?} on {}",
-            &src[..60]
-        );
+        gates.check(elapsed < Duration::from_secs(5), || {
+            format!("{elapsed:?} on {}", &src[..60])
+        });
     }
+    gates.hold();
 }
 
 /// miette panics drawing a column past 65,535; such lines (minified or
@@ -413,6 +416,16 @@ fn errors_far_along_a_long_line_render() {
     }
 }
 
+/// The gate of a test with one, at its end. These watch the whole compile
+/// and no count could: the regression of de671192 added 12% to the allocations
+/// of its chain and 15 times to the time (decisions.md robustness).
+#[track_caller]
+fn gate(took: Duration, limit: Duration, what: &str) {
+    let mut gates = Gates::default();
+    gates.check(took < limit, || format!("{what}: {took:?} of {limit:?}"));
+    gates.hold();
+}
+
 /// A large paste of broken code stays cheap: each unknown name's
 /// did-you-mean once scanned every name in scope with a full edit
 /// distance (6,000 lets and 3,000 unknowns took 31 s in a debug build).
@@ -436,7 +449,11 @@ fn many_unknown_names_stay_cheap() {
     // no `missing_name_i` is close to anything.
     let with_help = out.diagnostics.iter().filter(|d| d.help.is_some()).count();
     assert_eq!(with_help, 100);
-    assert!(elapsed < Duration::from_secs(15), "{elapsed:?}");
+    gate(
+        elapsed,
+        Duration::from_secs(15),
+        "6,000 lets and 3,000 unknowns",
+    );
 }
 
 /// Overloaded calls nested deep check in linear time: the overload is
@@ -461,7 +478,7 @@ fn nested_overloaded_calls_stay_cheap() {
     let elapsed = started.elapsed();
     // `image:` takes a path, not a palette, at every level but the last.
     assert!(out.errors() > 0);
-    assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
+    gate(elapsed, Duration::from_secs(2), "nested overloaded calls");
 }
 
 /// Components whose parameters are inferred from callers are ordered in
@@ -484,7 +501,11 @@ fn long_inferred_component_chains_stay_cheap() {
     let out = strand_compiler::compile(&map);
     let elapsed = started.elapsed();
     assert_eq!(out.errors(), 0, "{:?}", out.diagnostics.first());
-    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    gate(
+        elapsed,
+        Duration::from_secs(5),
+        "a chain of 3,000 components",
+    );
 }
 
 /// A long `extends` chain of token sets is checked without rebuilding
@@ -504,7 +525,11 @@ fn long_token_extends_chains_stay_cheap() {
     let out = strand_compiler::compile(&map);
     let elapsed = started.elapsed();
     assert_eq!(out.errors(), 0, "{:?}", out.diagnostics.first());
-    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    gate(
+        elapsed,
+        Duration::from_secs(5),
+        "a chain of 4,000 token sets",
+    );
 }
 
 /// Whole-number states handed on through list literals (`a1 = [a0][0]`)
@@ -514,6 +539,7 @@ fn long_token_extends_chains_stay_cheap() {
 #[test]
 fn long_whole_number_hand_off_chains_stay_cheap() {
     let n = 800;
+    let mut gates = Gates::default();
     for link in ["[{prev}][0]", "[{prev}].first ?? 0"] {
         let mut src = String::new();
         for i in 0..n {
@@ -530,8 +556,11 @@ fn long_whole_number_hand_off_chains_stay_cheap() {
         let out = strand_compiler::compile(&map);
         let elapsed = started.elapsed();
         assert_eq!(out.errors(), 0, "{link}: {:?}", out.diagnostics.first());
-        assert!(elapsed < Duration::from_secs(3), "{link}: {elapsed:?}");
+        gates.check(elapsed < Duration::from_secs(3), || {
+            format!("{link}: {elapsed:?}")
+        });
     }
+    gates.hold();
 }
 
 /// A rolled-back overload attempt spends none of the did-you-mean budget:

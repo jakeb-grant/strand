@@ -86,6 +86,9 @@ pub struct Program {
     /// Each chunk's assignment targets, by chunk id: what a handler
     /// running it declares with `rt.writes_to`.
     pub writes: Vec<Vec<WriteTarget>>,
+    /// How many read sets [`reads::compute`] took into another: one for each
+    /// call in the program, never one per chunk per chunk below it.
+    pub read_unions: usize,
     /// (M6) Per conditional id (its alias index), the laid-out facts read
     /// through it, as node watch bits ([`reads::alias_watch`]): the
     /// elements it may name are measured only for those.

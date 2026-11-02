@@ -188,12 +188,13 @@ pub(crate) fn compute(prog: &mut Program) {
     let all: Vec<Vec<ChunkId>> = (0..n)
         .map(|i| deps[i].iter().chain(&lambdas[i]).copied().collect())
         .collect();
-    let mut outer = closure(&all, |i| {
+    let mut unions = 0;
+    let mut outer = closure(&all, &mut unions, |i| {
         let mut r = direct_reads[i].clone();
         r.locals.clear();
         r
     });
-    let locals = closure(&lambdas, |i| Reads {
+    let locals = closure(&lambdas, &mut unions, |i| Reads {
         locals: direct_reads[i].locals.clone(),
         ..Reads::default()
     });
@@ -203,21 +204,24 @@ pub(crate) fn compute(prog: &mut Program) {
     let reads = outer;
     prog.reads = reads;
     prog.writes = writes;
+    prog.read_unions = unions;
 }
 
 /// Each node's `own` reads together with those of every node it
-/// reaches in `deps`.
-fn closure(deps: &[Vec<ChunkId>], own: impl Fn(usize) -> Reads) -> Vec<Reads> {
+/// reaches in `deps`. `unions` counts the read sets taken in.
+fn closure(deps: &[Vec<ChunkId>], unions: &mut usize, own: impl Fn(usize) -> Reads) -> Vec<Reads> {
     let (comp, order) = components(deps);
     let mut per: Vec<Reads> = Vec::with_capacity(order.len());
     for (c, members) in order.iter().enumerate() {
         let mut all = Reads::default();
         for &m in members {
             all.extend(&own(m));
+            *unions += 1;
             for &d in &deps[m] {
                 let dc = comp[d as usize];
                 if dc != c {
                     all.extend(&per[dc]);
+                    *unions += 1;
                 }
             }
         }

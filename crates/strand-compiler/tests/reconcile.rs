@@ -192,7 +192,7 @@ fn handler_hashes_cover_a_whole_cycle() {
 
 /// Densely mutually recursive `fn`s hash in linear time (one strongly
 /// connected component, hashed once): 30 of them, each calling all the
-/// others, compile in well under a second; an edit to any member still
+/// others, are scanned once each; an edit to any member still
 /// changes the handler that names only the first.
 #[test]
 fn a_dense_cycle_of_fns_hashes_quickly() {
@@ -212,20 +212,8 @@ fn a_dense_cycle_of_fns_hashes_quickly() {
         );
         s
     };
-    let compile = |prev: Option<&Build>, k: usize| {
-        let t = std::time::Instant::now();
-        let b = build(prev, &[("bar.strand", &src(k))]);
-        (b, t.elapsed())
-    };
-    let (a, ta) = compile(None, 0);
-    let (b, tb) = compile(Some(&a), 1);
-    let check = std::time::Instant::now();
-    let _ = strand_compiler::compile(&{
-        let mut m = SourceMap::new();
-        m.add("bar.strand", src(1));
-        m
-    });
-    let tc = check.elapsed();
+    let a = build(None, &[("bar.strand", &src(0))]);
+    let b = build(Some(&a), &[("bar.strand", &src(1))]);
     let hash = |b: &Build| -> u64 {
         b.identity
             .entries()
@@ -234,14 +222,17 @@ fn a_dense_cycle_of_fns_hashes_quickly() {
             .unwrap()
     };
     assert_ne!(hash(&a), hash(&b), "an edit to the last member");
-    // The whole build (check, lower, identity, hashes) against the check
-    // alone: the hashes add little (they were factorial in the cycle).
-    let budget = tc * 3 + std::time::Duration::from_millis(100);
-    assert!(ta < budget && tb < budget, "{ta:?} {tb:?} (check {tc:?})");
+    // Each declaration is scanned once, with or without components, however
+    // often it is named: `n` `fn`s and `v`, twice at most. The walk was
+    // factorial in the cycle.
+    for b in [&a, &b] {
+        let scans = b.hashes.scans();
+        assert!(scans <= 2 * (n + 1), "{scans} scans of {n} fns and a state");
+    }
 }
 
 /// A long chain of `fn`s (each calling the next, the last reading a
-/// state) lowers in time linear in its length: the read sets are one
+/// state) lowers with work linear in its length: the read sets are one
 /// union per strongly connected component, not a walk per chunk (which
 /// took 3.4 s at 2000), and the handler at the top still reads the state
 /// at the bottom.
@@ -257,16 +248,7 @@ fn a_long_chain_of_fns_lowers_quickly() {
         }
     }
     s.push_str("bar Top {\n  text join(\"\", v, f0(0))\n}\n");
-    let check = std::time::Instant::now();
-    let _ = strand_compiler::compile(&{
-        let mut m = SourceMap::new();
-        m.add("bar.strand", s.clone());
-        m
-    });
-    let tc = check.elapsed();
-    let t = std::time::Instant::now();
     let b = build(None, &[("bar.strand", &s)]);
-    let tb = t.elapsed();
     let prog = &b.program;
     let deep = (0..prog.defs.len())
         .find(|&i| prog.defs[i].name == "deep")
@@ -278,6 +260,9 @@ fn a_long_chain_of_fns_lowers_quickly() {
         .count();
     // f{n-1}, every fn above it, and the text binding.
     assert!(text > n, "{text} chunks read `deep`");
-    let budget = tc * 3 + std::time::Duration::from_millis(100);
-    assert!(tb < budget, "{tb:?} (check {tc:?})");
+    // Each chunk's own reads, twice, and those of what it calls: no chunk
+    // walks the chain below it.
+    let unions = prog.read_unions;
+    let chunks = prog.chunks.len();
+    assert!(unions <= 4 * chunks, "{unions} unions for {chunks} chunks");
 }

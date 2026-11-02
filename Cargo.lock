@@ -3039,6 +3039,7 @@ dependencies = [
  "strand-fuzzy",
  "strand-render",
  "strand-scene",
+ "strand-test-support",
  "strand-text",
  "strand-theme",
  "strsim",

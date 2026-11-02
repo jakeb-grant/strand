@@ -11,10 +11,11 @@
 # strand-render/tests/anim_bench.rs,
 # strand-render/tests/motion.rs, strand-render/tests/morph.rs,
 # strand-compiler/tests/theme.rs,
-# strand/src/bench.rs, strand/src/run/tests.rs and
-# strand/tests/m5/newcomer.rs; their tests check this file still names
-# it). Only ci.sh's timing steps consult this file: newcomer.rs runs in
-# the strict workspace step (workspace-tests.sh), where its miss fails. LOG
+# strand/src/bench.rs, strand/src/run/tests.rs,
+# strand/tests/m5/newcomer.rs and strand-test-support/src/gate.rs; their
+# tests check this file still names it). Only ci.sh's timing steps consult
+# this file: newcomer.rs and the gates of `strand_test_support::gate` run in
+# the strict workspace step (workspace-tests.sh), where a miss fails. LOG
 # passes when:
 #   - libtest reported "test result: FAILED" with N failed tests,
 #   - every panic in it ("thread '...' panicked at ...:" followed by its

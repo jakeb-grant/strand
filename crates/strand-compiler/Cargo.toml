@@ -42,6 +42,7 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 strand-scene.workspace = true
 strand-render.workspace = true
 strand-text.workspace = true
+strand-test-support.workspace = true
 
 [lints]
 workspace = true
