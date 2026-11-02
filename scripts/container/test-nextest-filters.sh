@@ -36,7 +36,7 @@ filter = 'binary_id(/^strand-services::(media)\$/)'
 retries = 1"
 expect 1 "not one whose test holds a gate"
 config "[[profile.ci.overrides]]
-filter = '(binary_id(/^strand-services::(media)\$/)) & not (test(=a_frozen_player_does_not_hold_up_the_others))'
+filter = '(binary_id(/^strand-services::(media)\$/)) & not (test(=a_frozen_player_does_not_hold_up_the_others) | test(=media_follows_the_active_player_without_polling))'
 retries = 1"
 expect 0 "unless the retry leaves that test out"
 config "[[profile.ci.overrides]]
@@ -47,6 +47,39 @@ config "[[profile.ci.overrides]]
 filter = 'binary_id(/^strand-surface::(sway)\$/)'
 retries = 1"
 expect 1 "nor one whose test holds an idle count"
+# A tree of its own for what a binary includes: a helper holding a gate, by each
+# way a test file includes one, and one that isn't there.
+fake=$tmp/crates/strand-surface/tests
+mkdir -p "$fake/common" "$fake/pipewire/deep"
+helper() {
+  printf 'pub fn helped() {\n    let _ = 1;\n}\n' >"$fake/common/mod.rs"
+  printf 'pub mod deep;\n' >"$fake/pipewire/mod.rs"
+  printf 'pub fn helped() {\n    let _ = 1;\n}\n' >"$fake/pipewire/deep.rs"
+}
+config "[[profile.ci.overrides]]
+filter = 'binary_id(/^strand-surface::(fake)\$/)'
+retries = 1"
+expect_fake() {
+  local want=$1 name=$2 got=0
+  NEXTEST_FILTERS_CRATES=$tmp/crates NEXTEST_FILTERS_CONFIG=$tmp/config.toml NEXTEST_FILTERS_WORKFLOW=$tmp/ci.yml \
+    "$HERE/nextest-filters.sh" --static >/dev/null 2>&1 || got=$?
+  if [ "$got" = "$want" ]; then echo "ok   $name"; else echo "FAIL $name: exit $got, wanted $want"; bad=1; fi
+}
+helper
+printf 'mod common;\n#[path = "pipewire/mod.rs"]\nmod pipewire;\n#[test]\nfn t() {}\n' >"$fake/fake.rs"
+expect_fake 0 "a binary whose helpers hold nothing may have a retry"
+printf 'pub fn helped() {\n    let g = Gates::default();\n}\n' >"$fake/common/mod.rs"
+expect_fake 1 "not when its \`mod\` helper holds a gate"
+helper
+printf 'pub fn helped() {\n    let g = Gates::default();\n}\n' >"$fake/pipewire/deep.rs"
+expect_fake 1 "nor a \`mod\` inside a \`#[path]\` helper"
+helper
+printf 'mod gone;\n#[test]\nfn t() {}\n' >"$fake/fake.rs"
+expect_fake 1 "a \`mod\` it can't find fails"
+config "[[profile.ci.overrides]]
+filter = 'binary_id(/^strand-services::(network)\$/)'
+retries = 1"
+expect 1 "nor one whose test counts work done while nobody reads"
 config "[[profile.ci.overrides]]
 filter = '(binary_id(/^strand-surface::(compose)\$/)) & not (test(=no_such_test))'
 retries = 1"

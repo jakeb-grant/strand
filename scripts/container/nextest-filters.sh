@@ -6,7 +6,8 @@
 #     whose source isn't there;
 #   - a test with a retry is in a binary that may never have one (a budget, a
 #     pixel reference, logic), or holds a timing gate or a wake or idle count in
-#     a binary that may, read from the binary's source (decisions.md robustness);
+#     a binary that may, read from the binary's source and the modules it
+#     includes (decisions.md robustness);
 #   - a retry's filter isn't of the one form this can read: anchored
 #     `binary_id(/^crate::name$/)` or `binary_id(/^crate::(a|b)$/)` terms joined
 #     by `|`, then at most `& not (test(=name) | ...)`;
@@ -21,6 +22,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 
 CONFIG=${NEXTEST_FILTERS_CONFIG:-.config/nextest.toml}
+export NEXTEST_FILTERS_CRATES=${NEXTEST_FILTERS_CRATES:-crates}
 WORKFLOW=${NEXTEST_FILTERS_WORKFLOW:-.github/workflows/ci.yml}
 bad=0
 no() { echo "nextest-filters: $*"; bad=1; }
@@ -39,21 +41,77 @@ FORBIDDEN = re.compile(
     r"|::(budgets|demo|acceptance|services|m5|reloads|gpu_idle|presented_quiet"
     r"|dbus_idle|audio_idle|idle|.*bench.*)$"
 )
-# What a test may not hold under a retry: a marked gate, or a wake or idle
-# count, by the words of its message.
-HOLDS = re.compile(r'Gates::default|GATE_MISS|"[^"]*\b(?:while idle|while unread|woke|wakes)\b')
+# What a test may not hold under a retry: a marked gate, or a count of wakes,
+# of work done idle or unread, or of commits, by the words of its message.
+HOLDS = re.compile(
+    r'Gates::default|GATE_MISS'
+    r'|"[^"]*\b(?:while idle|while unread|while nobody|woke|wakes|commits for|frames within)\b'
+)
 TERM = r"binary_id\(/\^([\w-]+)::(?:\(([\w|-]+)\)|([\w-]+))\$/\)"
 HEAD = re.compile(rf"{TERM}(?: \| {TERM})*")
 TAIL = re.compile(r"\(test\(=\w+\)(?: \| test\(=\w+\))*\)")
 FN = re.compile(r"^(?:pub(?:\(\w+\))? )?(?:async )?fn (\w+)")
 
 
+CRATES = os.environ["NEXTEST_FILTERS_CRATES"]
+MOD = re.compile(r"^\s*(?:pub(?:\([\w ]+\))? )?mod (\w+);")
+PATH = re.compile(r'^\s*#\[path = "([^"]+)"\]')
+
+
 def source(binary):
     crate, name = binary.split("::")
-    for path in (f"crates/{crate}/tests/{name}.rs", f"crates/{crate}/tests/{name}/main.rs"):
+    for path in (f"{CRATES}/{crate}/tests/{name}.rs", f"{CRATES}/{crate}/tests/{name}/main.rs"):
         if os.path.exists(path):
             return path
     return None
+
+
+def included(path, top=True):
+    """Every file `path` includes by `mod` or `#[path]`, as rustc finds them,
+    and the `mod`s it can't find."""
+    base = os.path.dirname(path)
+    stem = os.path.basename(path)[: -len(".rs")]
+    # A file that isn't a root or a mod.rs holds its modules in its own directory.
+    below = base if top or stem == "mod" else os.path.join(base, stem)
+    found, lost, named = [], [], None
+    for line in open(path):
+        if line.lstrip().startswith("//"):
+            continue
+        m = PATH.match(line)
+        if m:
+            named = m.group(1)
+            continue
+        m = MOD.match(line)
+        if m:
+            name = m.group(1)
+            if named:
+                # A `#[path]` reads from the file's own directory, and its
+                # file takes modules from beside it, as a root does.
+                tries = [os.path.join(base, named)]
+            else:
+                tries = [os.path.join(below, f"{name}.rs"), os.path.join(below, name, "mod.rs")]
+            hit = next((t for t in tries if os.path.exists(t)), None)
+            if hit:
+                found.append((os.path.normpath(hit), bool(named)))
+            else:
+                lost.append(f"{path}: mod {name}")
+        if line.strip() and not line.lstrip().startswith("#["):
+            named = None
+    return found, lost
+
+
+def sources(path):
+    """`path` and everything it includes, and the `mod`s nowhere to be found."""
+    seen, lost, queue = [], [], [(path, True)]
+    while queue:
+        at, top = queue.pop()
+        if at in seen:
+            continue
+        seen.append(at)
+        found, gone = included(at, top)
+        lost += gone
+        queue += found
+    return seen, lost
 
 
 def holders(path):
@@ -98,13 +156,17 @@ def retried(profile, filt):
             if path is None:
                 out.append(f"the retry filter names {binary}, which has no source")
                 continue
-            text = open(path).read()
-            heard |= kept_out & set(re.findall(r"fn (\w+)", text))
-            for fn, is_test in holders(path):
-                if not is_test:
-                    out.append(f"{binary}: {fn or 'a line'} outside a test holds a gate or a wake count, under a retry")
-                elif fn not in kept_out:
-                    out.append(f"{binary}::{fn} holds a gate or a wake count, and has a retry")
+            files, lost = sources(path)
+            for gone in lost:
+                out.append(f"{binary}: can't find {gone}, so can't read it for what a retry may not reach")
+            for file in files:
+                text = open(file).read()
+                heard |= kept_out & set(re.findall(r"fn (\w+)", text))
+                for fn, is_test in holders(file):
+                    if not is_test:
+                        out.append(f"{binary}: {fn or 'a line'} in {file}, outside a test, holds a gate or a wake count, under a retry")
+                    elif fn not in kept_out:
+                        out.append(f"{binary}::{fn} holds a gate or a wake count, and has a retry")
     for name in sorted(kept_out - heard):
         out.append(f"the retry leaves out {name}, in none of its binaries")
     return out

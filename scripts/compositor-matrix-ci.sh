@@ -43,7 +43,19 @@ else
   pacman -Syu --noconfirm --needed \
     sway niri hyprland labwc grim seatd mesa dbus ttf-dejavu adwaita-icon-theme \
     fontconfig libxkbcommon wayland pipewire libcap >/tmp/pacman.log 2>&1 ||
-    { tail -40 /tmp/pacman.log; exit 1; }
+    {
+      tail -40 /tmp/pacman.log
+      # What a red night's issue quotes: this exit comes before the table below.
+      mkdir -p "$ROOT/target/matrix"
+      {
+        echo "### Compositor matrix: pacman failed on archlinux:latest"
+        echo
+        echo '```'
+        tail -40 /tmp/pacman.log
+        echo '```'
+      } >"$ROOT/target/matrix/summary.md"
+      exit 1
+    }
 fi
 pacman -Q sway niri hyprland labwc grim seatd mesa
 # The package version of a compositor of the matrix, for its result line.

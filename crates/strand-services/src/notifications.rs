@@ -915,16 +915,7 @@ impl Notifications {
                             let shown = (replaces && cx.state().popups.iter().any(|m| m.id == n.id))
                                 || !cx.state().dnd
                                 || n.urgency == Urgency::Critical;
-                            let sent = cx.update(|s| {
-                                arrive(&mut s.all, n.clone());
-                                if shown {
-                                    arrive(&mut s.popups, n.clone());
-                                }
-                                s.count = s.all.len() as i64;
-                            });
-                            // Before anything can end the run: `SaveOnStop`
-                            // saves only what was handed to it.
-                            history.changed(cx.state(), &kept);
+                            let sent = received(&mut cx, &mut history, &kept, &n, shown);
                             if !sent || !cx.emit(NotificationsEvent::Received(n)) {
                                 return Ok(());
                             }
@@ -934,13 +925,13 @@ impl Notifications {
                                 all.iter().take(all.len().saturating_sub(KEPT)).map(|n| n.id).collect()
                             };
                             for id in over {
-                                if !close(&mut cx, &conn, &ids, &mut kept, id, Closed::Expired).await {
+                                if !close(&mut cx, &conn, &ids, &mut kept, &mut history, id, Closed::Expired).await {
                                     return Ok(());
                                 }
                             }
                         }
                         FromBus::Close(id) => {
-                            if !close(&mut cx, &conn, &ids, &mut kept, i64::from(id), Closed::Closed).await {
+                            if !close(&mut cx, &conn, &ids, &mut kept, &mut history, i64::from(id), Closed::Closed).await {
                                 return Ok(());
                             }
                         }
@@ -969,7 +960,7 @@ impl Notifications {
                                 let all: Vec<i64> = cx.state().all.iter().map(|n| n.id).collect();
                                 let mut alive = true;
                                 for id in all {
-                                    alive &= close(&mut cx, &conn, &ids, &mut kept, id, Closed::Dismissed).await;
+                                    alive &= close(&mut cx, &conn, &ids, &mut kept, &mut history, id, Closed::Dismissed).await;
                                 }
                                 alive
                             }
@@ -979,7 +970,7 @@ impl Notifications {
                                 cx.update(|s| s.popups.retain(|n| n.id != item.id))
                             }
                             NotificationsAction::Dismiss { item } => {
-                                close(&mut cx, &conn, &ids, &mut kept, item.id, Closed::Dismissed).await
+                                close(&mut cx, &conn, &ids, &mut kept, &mut history, item.id, Closed::Dismissed).await
                             }
                             NotificationsAction::Activate { item } => {
                                 if kept.default.contains(&item.id)
@@ -988,7 +979,7 @@ impl Notifications {
                                     invoked(&conn, &to, item.id, "default", token.as_deref()).await;
                                 }
                                 kept.resident.contains(&item.id)
-                                    || close(&mut cx, &conn, &ids, &mut kept, item.id, Closed::Dismissed).await
+                                    || close(&mut cx, &conn, &ids, &mut kept, &mut history, item.id, Closed::Dismissed).await
                             }
                             NotificationsAction::Reply { item, text } => {
                                 // A restored one, or one with no reply,
@@ -1000,7 +991,7 @@ impl Notifications {
                                 if let Some(to) = to {
                                     replied(&conn, &to, item.id, &text).await;
                                     kept.resident.contains(&item.id)
-                                        || close(&mut cx, &conn, &ids, &mut kept, item.id, Closed::Dismissed).await
+                                        || close(&mut cx, &conn, &ids, &mut kept, &mut history, item.id, Closed::Dismissed).await
                                 } else {
                                     log::warn!("notifications: {} takes no reply", item.id);
                                     true
@@ -1015,7 +1006,7 @@ impl Notifications {
                                     invoked(&conn, &to, item.notification, &item.id, token.as_deref()).await;
                                 }
                                 kept.resident.contains(&item.notification)
-                                    || close(&mut cx, &conn, &ids, &mut kept, item.notification, Closed::Dismissed).await
+                                    || close(&mut cx, &conn, &ids, &mut kept, &mut history, item.notification, Closed::Dismissed).await
                             }
                         };
                         if !alive {
@@ -1126,11 +1117,11 @@ fn write_remember(
 ) -> bool {
     let on: bool = w.value().unwrap_or(cx.state().remember);
     let on = on && history.shared.dir.is_some();
-    if !cx.report(w, |s| s.remember = on) {
-        return false;
-    }
+    let alive = cx.report(w, |s| s.remember = on);
+    // Whether or not anyone hears the answer: a stop landing on `false` still
+    // erases what was asked to be forgotten.
     history.remember(on, cx.state(), kept);
-    true
+    alive
 }
 
 /// One remembered notification, as the history file holds it.
@@ -1524,6 +1515,26 @@ fn arrive(list: &mut Vec<Notification>, n: Notification) {
     }
 }
 
+/// Notification `n` arrived: published, and handed to [`SaveOnStop`], which
+/// saves only what it was given. `false` once the service was stopped.
+fn received(
+    cx: &mut Cx<Notifications>,
+    history: &mut History,
+    kept: &Kept,
+    n: &Notification,
+    shown: bool,
+) -> bool {
+    let sent = cx.update(|s| {
+        arrive(&mut s.all, n.clone());
+        if shown {
+            arrive(&mut s.popups, n.clone());
+        }
+        s.count = s.all.len() as i64;
+    });
+    history.changed(cx.state(), kept);
+    sent
+}
+
 /// Close notification `id` (gone from `popups` and `all`) and tell the
 /// sender why. `false` once the service was stopped.
 async fn close(
@@ -1531,9 +1542,28 @@ async fn close(
     conn: &zbus::Connection,
     ids: &Arc<Mutex<Ids>>,
     kept: &mut Kept,
+    history: &mut History,
     id: i64,
     why: Closed,
 ) -> bool {
+    let (alive, to) = forget(cx, ids, kept, history, id);
+    if let Some(to) = to {
+        signal_closed(conn, &to, id, why).await;
+    }
+    alive
+}
+
+/// What [`close`] does before its one wait, on which a stop can drop the body:
+/// the state and the history change first, so what was closed stays closed at
+/// the next boot whichever the stop lands on. Returns whether the service still
+/// runs, and who to tell.
+fn forget(
+    cx: &mut Cx<Notifications>,
+    ids: &Arc<Mutex<Ids>>,
+    kept: &mut Kept,
+    history: &mut History,
+    id: i64,
+) -> (bool, Option<String>) {
     let known = cx.state().all.iter().any(|n| n.id == id);
     let to = ids.lock().ok().and_then(|mut ids| {
         ids.live.remove(&(id as u32));
@@ -1546,19 +1576,17 @@ async fn close(
     // The file goes once the state no longer names it.
     let image = kept.images.remove(&id);
     if !known {
-        return !cx.stopped();
-    }
-    // A restored one's sender is not told: it never knew this id.
-    if !restored && let Some(to) = to {
-        signal_closed(conn, &to, id, why).await;
+        return (!cx.stopped(), None);
     }
     let alive = cx.update(|s| {
         s.popups.retain(|n| n.id != id);
         s.all.retain(|n| n.id != id);
         s.count = s.all.len() as i64;
     });
+    history.changed(cx.state(), kept);
     drop(image);
-    alive
+    // A restored one's sender is not told: it never knew this id.
+    (alive, to.filter(|_| !restored))
 }
 
 /// The sender of live notification `id`, the one peer its signals go to
@@ -1925,6 +1953,108 @@ mod tests {
         history.changed(&state, &kept);
         (&mut history.due).await;
         assert_eq!(at.elapsed(), SAVE_AFTER);
+    }
+
+    /// A body whose run has stopped: nothing reads what it sends.
+    fn stopped() -> Cx<Notifications> {
+        let (tx, _) = std::sync::mpsc::channel();
+        let (_, msgs) = mpsc::unbounded_channel();
+        Cx::new(
+            Notifications {
+                remember: true,
+                ..Notifications::default()
+            },
+            crate::cx::Out {
+                tx,
+                wake: Arc::new(crate::cx::Wake::new(|| {})),
+            },
+            msgs,
+            crate::Buses::none(),
+            Arc::default(),
+            Vec::new(),
+            Arc::default(),
+        )
+    }
+
+    /// The titles the next save holds.
+    fn to_save(history: &History) -> Vec<String> {
+        let pending = history.shared.pending.lock().unwrap();
+        let all = pending.as_ref().and_then(|p| p.all.as_ref());
+        all.expect("a save for `SaveOnStop`")
+            .all
+            .iter()
+            .map(|n| n.summary.clone())
+            .collect()
+    }
+
+    /// A notification arriving and one closing as the service stops are in
+    /// what `SaveOnStop` saves, each as its update changed the state, though
+    /// that update found nobody to hear it (the stress job's
+    /// `forgetting_erases_the_history_and_stays_off`, for the arrival; a closed
+    /// one came back at the next boot). Telling a sender is the one wait, and
+    /// comes after.
+    #[test]
+    fn what_arrives_or_closes_as_the_service_stops_is_saved_so() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let _in_it = runtime.enter();
+        let dir = tempfile::tempdir().unwrap();
+        let mut history = History::new(Some(dir.path().to_path_buf()));
+        let mut kept = Kept::default();
+        let ids = Arc::new(Mutex::new(Ids::default()));
+        let mut cx = stopped();
+        for (id, title) in [(1, "kept"), (2, "dismissed"), (3, "cleared")] {
+            let n = sent(id, title, None);
+            assert!(!received(&mut cx, &mut history, &kept, &n, true), "stopped");
+        }
+        assert_eq!(to_save(&history), ["kept", "dismissed", "cleared"]);
+
+        let (alive, to) = forget(&mut cx, &ids, &mut kept, &mut history, 2);
+        assert_eq!((alive, to), (false, None));
+        assert_eq!(to_save(&history), ["kept", "cleared"]);
+
+        ids.lock().unwrap().senders.insert(3, ":1.1".to_string());
+        let (alive, to) = forget(&mut cx, &ids, &mut kept, &mut history, 3);
+        assert_eq!((alive, to.as_deref()), (false, Some(":1.1")));
+        assert_eq!(
+            to_save(&history),
+            ["kept"],
+            "noted before the sender is told"
+        );
+    }
+
+    /// `remember = false` landing as the service stops still erases the file,
+    /// though its answer has nobody to hear it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn forgetting_as_the_service_stops_still_erases() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = strand_core::PersistStore::new(dir.path());
+        store.save(HISTORY_PATH, b"", b"secret").unwrap();
+        let file = store.file_of(HISTORY_PATH).unwrap();
+        let mut history = History::new(Some(dir.path().to_path_buf()));
+        let mut cx = stopped();
+        let write = crate::Write {
+            field: "remember",
+            key: None,
+            path: Vec::new(),
+            value: crate::Data::Bool(false),
+            field_value: crate::Data::Bool(false),
+            held: None,
+            generation: strand_core::Generation(1),
+        };
+        assert!(!write_remember(
+            &mut cx,
+            &write,
+            &mut history,
+            &Kept::default()
+        ));
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while file.exists() {
+            assert!(std::time::Instant::now() < deadline, "never erased");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 
     /// (gap 35, review round 2) A history file that does not read is not

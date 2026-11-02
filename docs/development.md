@@ -215,7 +215,8 @@ a test group in `.config/nextest.toml`. A test that asserts a quiet window keeps
 its shell's config in `strand_test_support::dir::own_dir`, because the watcher
 watches each of its ancestors for children going. `scripts/container/nextest-filters.sh`
 fails on a filter that matches no test, and on a retry that reaches a budget, a
-pixel reference, or a test whose source holds a timing gate or a wake count. A
+pixel reference, or a test whose source, with the modules it includes, holds a
+timing gate or a count of wakes or of work done unread. A
 test that passes only on its retry is named FLAKY in the log and in the job's
 summary. A test over 60 s is named SLOW as it runs, and one over 40 min ends in a
 TIMEOUT that names it, 15 min for the tests with a retry. CI runs six at a time

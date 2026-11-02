@@ -13,7 +13,7 @@
 #
 # Usage: scripts/container/hyprland-nested.sh <command> [args...], e.g.
 #   scripts/container/hyprland-nested.sh target/container/debug/strand run examples/bar
-# Env:   HYPR_OUTPUTS (default 2). MATRIX_REBUILD=1 refreshes the image.
+# Env:   HYPR_OUTPUTS (default 2). MATRIX_REBUILD=1 rebuilds what this adds.
 #        Logs: target/hyprland-nested/{labwc,hyprland}.log.
 
 set -euo pipefail
@@ -23,11 +23,10 @@ ROOT=$(cd "$HERE/../.." && pwd)
 RENDER=/dev/dri/renderD128
 [ "$#" -gt 0 ] || { sed -n '15,17p' "$0" >&2; exit 2; }
 
-base=strand-matrix:$(sha256sum "$HERE/Dockerfile.matrix" | cut -c1-12)
 image=strand-hyprland-nested:$(sha256sum "$HERE/Dockerfile.matrix" "$0" | sha256sum | cut -c1-12)
 if [ "${MATRIX_REBUILD:-}" = 1 ] || ! docker image inspect "$image" >/dev/null 2>&1; then
-  docker image inspect "$base" >/dev/null 2>&1 || MATRIX_REBUILD=1
-  [ "${MATRIX_REBUILD:-}" != 1 ] || docker build --pull -t "$base" -f "$HERE/Dockerfile.matrix" "$HERE"
+  # The pinned image, as matrix.sh gets it: published, or built here if it isn't.
+  base=$(STRAND_IMAGE_FILE=Dockerfile.matrix "$HERE/image.sh")
   # setcap -r: Docker's bounding set lacks the file capabilities they carry,
   # so exec(2) of them fails (compositor-matrix-ci.sh does the same).
   docker build -t "$image" - <<EOF

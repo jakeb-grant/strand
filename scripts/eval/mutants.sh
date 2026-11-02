@@ -87,11 +87,19 @@ expected() {
 }
 
 mkdir -p "$BASE"
+# What a red night's issue quotes (eval-matrix.yml): written only on a failure.
+rm -f "$BASE/summary.md"
 remove_tree
 trap remove_tree EXIT
 git worktree add -q --detach "$TREE" HEAD || { echo "mutants: no worktree at $TREE"; exit 2; }
 
 failed=0
+fails=()
+# fail WHAT: the run fails, and summary.md names WHAT.
+fail() {
+  fails+=("$1")
+  failed=1
+}
 ran=0
 declare -A control
 declare -A control_out
@@ -123,18 +131,18 @@ while read -r patch scenario specs; do
       control_out[$scenario]=$kept
       echo "FAIL: $scenario does not pass on HEAD (exit $rc): kept in $kept"
       sed -n '1,40p' "$kept/check.log"
-      failed=1
+      fail "$scenario does not pass on HEAD (exit $rc): kept in $kept"
       continue
     fi
     echo "  HEAD: pass"
   elif [ "${control[$scenario]}" != 0 ]; then
     echo "FAIL: $scenario did not pass on HEAD (above): $name not run"
-    failed=1
+    fail "$name not run: $scenario did not pass on HEAD"
     continue
   fi
   if ! git -C "$TREE" apply --check "$ROOT/eval/mutants/$patch" 2>/dev/null; then
     echo "STALE: $patch no longer applies to HEAD: regenerate it (docs/eval.md, Mutants)"
-    failed=1
+    fail "$name is stale: $patch no longer applies to HEAD"
     continue
   fi
   git -C "$TREE" apply "$ROOT/eval/mutants/$patch"
@@ -152,14 +160,14 @@ while read -r patch scenario specs; do
   case "$rc" in
     0)
       echo "SURVIVED: $scenario passes with $patch applied"
-      failed=1
+      fail "$name survived: $scenario passes with $patch applied"
       continue
       ;;
     1) ;;
     *)
       echo "ERROR: $scenario did not run with $patch applied (exit $rc): $out.log"
       sed -n '1,40p' "$out.log"
-      failed=1
+      fail "$name: $scenario did not run with $patch applied (exit $rc)"
       continue
       ;;
   esac
@@ -170,7 +178,7 @@ while read -r patch scenario specs; do
   grep -E "^$id [a-z-]+: FAIL|^  " "$out/summary.txt" | sed 's/^/  /'
   if [ "${#missing[@]}" -gt 0 ]; then
     echo "WEAK: $name fails, but not with ${missing[*]}"
-    failed=1
+    fail "$name is weak: $scenario fails, but not with ${missing[*]}"
   else
     echo "  caught: $specs"
   fi
@@ -181,6 +189,11 @@ if [ "$ran" = 0 ]; then
   exit 2
 fi
 if [ "$failed" != 0 ]; then
+  {
+    echo "### Mutants: ${#fails[@]} of $ran failed"
+    echo
+    printf -- '- %s\n' "${fails[@]}"
+  } >"$BASE/summary.md"
   echo "=== mutants: FAILED"
   exit 1
 fi

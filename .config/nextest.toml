@@ -48,11 +48,12 @@ retries = 0
 # either on a socket, whose failures under a loaded runner come from the daemons'
 # timing. A test that passes only on the second try is reported as flaky: in the
 # run's summary lines and the job summary. Never a budget, a timing gate, a wake
-# or idle count, a pixel reference or logic: the binaries are named one by one, so
-# a new one starts with none, and the retry is per test, so what a named binary
-# holds of those is named below it. nextest-filters.sh reads each retried binary's
-# source and fails on a `Gates` or a wake count left in. The nightly job doesn't
-# use nextest at all.
+# or idle count, a count of work done unread, a pixel reference or logic: the
+# binaries are named one by one, so a new one starts with none, and the retry is
+# per test, so what a named binary holds of those is named below it.
+# nextest-filters.sh reads each retried binary's source, with the modules it
+# includes, and fails on a `Gates` or a count of that kind left in, by the words
+# of its message. The nightly job doesn't use nextest at all.
 #
 # 15 minutes, not the 40 above: twice that still ends inside the job's 60, so
 # what hangs is named before the job is killed and its summary lost.
@@ -80,7 +81,19 @@ filter = '''
   | test(=cpu_and_memory_sample_only_while_a_reader_is_visible)
   | test(=disk_reads_the_root_filesystem_only_while_visible)
   | test(=network_rates_count_the_hardware_only_while_read)
-  | test(=without_a_compositor_outputs_is_unavailable_and_fails_as_events))'''
+  | test(=without_a_compositor_outputs_is_unavailable_and_fails_as_events)
+  | test(=a_question_that_times_out_does_not_wait_for_another_callers_connect)
+  | test(=commits_lock_to_the_refresh_rate)
+  | test(=media_follows_the_active_player_without_polling)
+  | test(=network_follows_iwd_where_networkmanager_is_absent)
+  | test(=network_follows_networkmanager_and_scans_only_while_watched)
+  | test(=saved_connections_are_listed_while_read_and_switched)
+  | test(=the_buses_are_an_error_without_a_tokio_runtime)
+  | test(=without_a_bus_history_says_why)
+  | test(=without_a_bus_up_fails_naming_the_connection)
+  | test(=without_bluez_pair_and_forget_fail_as_events)
+  | test(=an_unreachable_network_is_unavailable_and_fails_as_values)
+  | test(=an_unreachable_bus_sends_an_empty_boot_batch))'''
 retries = 1
 slow-timeout = { period = "60s", terminate-after = 15, grace-period = "30s" }
 

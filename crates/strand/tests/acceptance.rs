@@ -71,6 +71,8 @@ const LAYOUT: (u32, u32) = (2560 + 1536, 1440);
 /// A headless sway with two outputs and `strand run` on the five files.
 struct Desk {
     strand: Option<Proc>,
+    /// Says, by closing, that strand's stderr has reached its logs.
+    drained: Option<std::sync::mpsc::Receiver<()>>,
     /// A virtual keyboard on the seat from before strand starts (see
     /// [`Desk::keys`]).
     keys: Option<keyboard::Keyboard>,
@@ -90,6 +92,12 @@ impl Drop for Desk {
     fn drop(&mut self) {
         self.strand.take();
         if std::thread::panicking() {
+            // strand's last lines, still in the pipe as it was killed, are what
+            // a failure is read by. Bounded: a child of strand can hold the
+            // pipe open past it.
+            if let Some(drained) = self.drained.take() {
+                let _ = drained.recv_timeout(Duration::from_secs(2));
+            }
             self.keep_logs();
         }
         let _ = std::fs::remove_dir_all(&self.dir);
@@ -217,6 +225,7 @@ impl Desk {
             .unwrap();
         let mut desk = Desk {
             strand: None,
+            drained: None,
             keys: None,
             _sway: Proc(child),
             dir: dir.clone(),
@@ -299,7 +308,10 @@ impl Desk {
         let stderr = child.stderr.take().unwrap();
         let mut log = std::fs::File::create(&self.log).unwrap();
         let timed = self.timed.clone();
+        let (done, drained) = std::sync::mpsc::channel::<()>();
+        self.drained = Some(drained);
         std::thread::spawn(move || {
+            let _done = done;
             let mut stderr = BufReader::new(stderr);
             let mut line = Vec::new();
             while stderr.read_until(b'\n', &mut line).is_ok_and(|n| n > 0) {

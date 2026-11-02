@@ -299,6 +299,12 @@ fn a_question_that_times_out_does_not_wait_for_another_callers_connect() {
     // A question nobody answers: it times out at TIMEOUT and drops the
     // kept connection...
     let start = Instant::now();
+    // TIMEOUT on a clock of its own, from the same start, for the bound at the
+    // test's end: what load does to the question it does to this.
+    let timer = std::thread::spawn(|| {
+        std::thread::sleep(strand_introspect::TIMEOUT);
+        Instant::now()
+    });
     let silent = {
         let target = target.clone();
         std::thread::spawn(move || {
@@ -347,4 +353,16 @@ fn a_question_that_times_out_does_not_wait_for_another_callers_connect() {
             .any(|l| *l == format!("WARN strand_introspect: gave up connecting to the bus {late}")),
         "the connect given up on is not logged: {lines:?}"
     );
+    // The question's own deadline, which the order above doesn't bound: nothing
+    // else says the question ended about when TIMEOUT did.
+    let due = timer.join().unwrap();
+    let mut gates = strand_test_support::gate::Gates::default();
+    gates.check(answered <= due + Duration::from_millis(400), || {
+        format!(
+            "the timed-out question ended {:?} after the start, past {:?} and 400 ms",
+            answered - start,
+            due - start,
+        )
+    });
+    gates.hold();
 }

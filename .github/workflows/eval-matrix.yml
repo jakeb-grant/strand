@@ -65,7 +65,8 @@ jobs:
           cache-key: eval
           cache-save: "false"
       # Appends its summary.md (the failing and stale cells) to the job's.
-      - run: scripts/container/run.sh env HZ="$HZ" EFFECTS="$EFFECTS" OUT="$OUT" bash scripts/eval/matrix.sh
+      - id: matrix
+        run: scripts/container/run.sh env HZ="$HZ" EFFECTS="$EFFECTS" OUT="$OUT" bash scripts/eval/matrix.sh
         if: (inputs.repeat || '1') == '1'
         env:
           HZ: ${{ inputs.hz || '60,144' }}
@@ -74,21 +75,24 @@ jobs:
       # The stability run (docs/eval.md, "Stability"): the gate and the
       # matrix `repeat` times, each held to its references, and every
       # run's trace digests the first run's.
-      - run: scripts/container/run.sh env HZ="$HZ" EFFECTS="$EFFECTS" OUT="$OUT" bash scripts/eval/repeat.sh "$REPEAT"
+      - id: repeat
+        run: scripts/container/run.sh env HZ="$HZ" EFFECTS="$EFFECTS" OUT="$OUT" bash scripts/eval/repeat.sh "$REPEAT"
         if: (inputs.repeat || '1') != '1'
         env:
           REPEAT: ${{ inputs.repeat }}
           HZ: ${{ inputs.hz || '60,144' }}
           EFFECTS: ${{ inputs.effects }}
           OUT: target/eval/repeat
-      - run: scripts/container/run.sh bash scripts/eval/mutants.sh
+      - id: mutants
+        run: scripts/container/run.sh bash scripts/eval/mutants.sh
         if: always() && (inputs.mutants || 'true') == 'true'
       # The viewer in a real browser (docs/eval.md, "The viewer in a
       # browser"): headless Chromium in a pinned Playwright image, no
       # network, every mode of the pages the two steps above wrote (a
       # passing and a failing run, their A/B page, the grid: the nightly
       # matrix's, or the first repeated run's); any console error fails it. Its screenshots go up with the reports.
-      - run: >-
+      - id: viewer
+        run: >-
           scripts/eval/viewer-check.sh --expect pass,fail,ab,matrix
           target/eval/mutants/bug25-hidden-text-head
           target/eval/mutants/bug25-hidden-text
@@ -106,12 +110,35 @@ jobs:
             !target/eval/mutants/tree/
             target/eval/viewer-shots/
           if-no-files-found: ignore
-      # The failing and stale cells, for what a red night's issue quotes.
+      # What a red night's issue quotes: each step's outcome, the failing and stale
+      # cells and the mutants not caught, an artifact each so that each is quoted.
+      - if: always()
+        env:
+          MATRIX: ${{ steps.matrix.outcome }}
+          REPEAT: ${{ steps.repeat.outcome }}
+          MUTANTS: ${{ steps.mutants.outcome }}
+          VIEWER: ${{ steps.viewer.outcome }}
+        run: |
+          mkdir -p target/eval
+          printf '### Eval matrix steps\n\n| Step | Outcome |\n|---|---|\n| matrix | %s |\n| repeat | %s |\n| mutants | %s |\n| viewer | %s |\n' \
+            "$MATRIX" "$REPEAT" "$MUTANTS" "$VIEWER" >target/eval/steps.md
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nightly-summary-eval-steps
+          path: target/eval/steps.md
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: nightly-summary-eval
           path: target/eval/matrix-nightly/summary.md
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nightly-summary-mutants
+          path: target/eval/mutants/summary.md
           if-no-files-found: ignore
 
   # A red night, seen, as in ci.yml: the mutants and the matrix run only here, so
