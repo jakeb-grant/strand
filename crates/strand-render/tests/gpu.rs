@@ -1673,19 +1673,19 @@ fn presenting() -> (Renderer, Buffer) {
 /// (M5, m5-tools review rounds 2 and 3) A presented frame's time leaves
 /// out the GPU thread's `waited` (its queue behind other surfaces' work
 /// and its block on the swapchain, the compositor's FIFO pacing), and
-/// only that: of a 60 ms span with 30 ms waited, about 30 ms is left,
-/// neither zero nor the span. Needs no device: the span is a sleep.
+/// only that: of a 60 s span with 30 s waited, about 30 s is left,
+/// neither zero nor the span. Needs no device: the span is the `at` a reply
+/// says, far enough off that nothing the machine does can come close.
 #[test]
 fn a_presented_frames_time_leaves_out_the_swapchain_wait() {
-    let span = Duration::from_millis(60);
-    let waited = Duration::from_millis(30);
+    let span = Duration::from_secs(60);
+    let waited = Duration::from_secs(30);
     let (mut r, _buf) = presenting();
     let id = r.paint_gpu(S, Duration::from_secs(1)).unwrap().id;
-    std::thread::sleep(span);
     r.deliver_gpu(GpuReply::Presented {
         surface: S,
         frame: id,
-        at: Instant::now(),
+        at: Instant::now() + span,
         waited,
         ran: vec![(id, Duration::ZERO)],
     });
@@ -1723,7 +1723,7 @@ fn a_presented_frame_counts_when_its_gpu_run_comes() {
     let _first = present(&mut r, vec![]);
     assert_eq!(r.frame_summary(S).unwrap().drawn, 1, "no run yet");
     let second = present(&mut r, vec![]);
-    let run = Duration::from_millis(500);
+    let run = Duration::from_secs(60);
     let _third = present(&mut r, vec![(second, run)]);
     let f = r.frame_summary(S).unwrap();
     assert_eq!(f.drawn, 2, "the second, and not the first");
