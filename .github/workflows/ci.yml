@@ -395,9 +395,11 @@ jobs:
         with:
           cache-key: eval
       - run: scripts/container/run.sh scripts/eval/ci.sh
-      # The report: every scenario's trace, checks, frames and viewer, and
-      # the matrix's grid and summary (a changed cell is approved from a
-      # local run, scripts/container/run.sh eval matrix-all).
+      # The report: every scenario's trace, checks, frames and viewer, the
+      # matrix's grid and summary (a changed cell is approved from a local
+      # run, scripts/container/run.sh eval matrix-all), and under
+      # target/eval/ci/report-view-failed/ the live and replayed frames of a
+      # glitch report session that failed (test-report-view.sh --e2e).
       - uses: actions/upload-artifact@v7
         if: always()
         with:

@@ -7,9 +7,9 @@
 //!
 //! A live surface is the replay's whose root is the same node (origin,
 //! `id:` and `for` row key), each replay surface taken once, in order.
-//! Its frame is the replay's last that painted it at or before the tick
-//! nearest the time the live frame was drawn (`drawn_ns`), never one
-//! after the report. A node is matched by its origin, its `id:` and its
+//! Its frame is the replay's last that painted it at or before the first
+//! tick at or after the time the live frame was drawn (`drawn_ns`), never
+//! one after the report. A node is matched by its origin, its `id:` and its
 //! `for` row key, the n-th live one of those to the n-th the replay
 //! drew, in paint order. Its box is the drawn one through every
 //! transform, axis aligned, in surface logical px; its opacity its own.
@@ -39,10 +39,11 @@ pub const PX: f64 = 1.0;
 /// How far apart an opacity may be.
 pub const OPACITY: f64 = 0.02;
 /// How many frames of its travel a node moving at the report may be
-/// off besides: half a frame for the replay's tick nearest the live
-/// frame's time, half for a motion's start quantised to the replay's
-/// ticks, and up to one for the live frame's presentation lead (its
-/// springs are sampled at the time it is shown, not drawn).
+/// off besides: under a frame for the replay's first tick at or after the
+/// live frame's time, which its presentation lead (up to one: its springs
+/// are sampled at the time it is shown, not drawn) mostly cancels, half for
+/// a motion's start quantised to the replay's ticks, and the rest for that
+/// lead when the two don't.
 pub const STEP_FRAMES: f64 = 2.0;
 /// Below this a node is at rest: a 64th of a px, an 8-bit step of
 /// opacity.
@@ -496,8 +497,9 @@ fn shown_at(t: &crate::trace::SurfaceInfo, report: u32) -> bool {
 }
 
 /// The replay's frame a live surface's frame is held to: the last one
-/// that painted `sid` at or before the tick nearest `drawn_ns` (when the
-/// live frame was drawn, ns since the rings' epoch; `None`: the report),
+/// that painted `sid` at or before the first tick at or after `drawn_ns`
+/// (when the live frame was drawn, ns since the rings' epoch; `None`: the
+/// report),
 /// never one at or after the report's tick; the first traced one when
 /// none was painted by then (the warm-up's last paint is it).
 ///
@@ -510,6 +512,13 @@ fn shown_at(t: &crate::trace::SurfaceInfo, report: u32) -> bool {
 /// start (quantised to the ticks, behind the live frame's presentation
 /// lead), so the nearest tick may hold the replay a frame or two short
 /// of rest: a spring's last step of colour, which no box shows.
+///
+/// (robustness) A live frame within that of the report is held to the first
+/// tick at or after it, not the nearest. What it shows is of its time or
+/// later: a tick is reached half a frame early, and presentation leads. A
+/// nearest tick before it can be short of that (the graph's column reached
+/// 6.8 ms before its boundary, at 263.22 ticks: the replay reached it at tick
+/// 264, and tick 263 was compared, 2 px off).
 pub fn frame_for<'a>(
     run: &'a RunOutput,
     plan: &Plan,
@@ -523,9 +532,14 @@ pub fn frame_for<'a>(
     let target = drawn_ns
         .filter(|t| *t >= plan.start)
         .map(|t| {
-            let nearest = (t - plan.start + period / 2) / period;
+            let drawn = t - plan.start;
             let at_rest = plan.end.saturating_sub(t) > steps * period;
-            (nearest + if at_rest { steps } else { 0 }).min(u64::from(cap)) as u32
+            let tick = if at_rest {
+                (drawn + period / 2) / period + steps
+            } else {
+                drawn.div_ceil(period)
+            };
+            tick.min(u64::from(cap)) as u32
         })
         .unwrap_or(cap);
     let paints = |fr: &&Frame| fr.painted.contains(&sid) && fr.k < report;

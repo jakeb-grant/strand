@@ -221,7 +221,8 @@ timing_step "cargo test --profile timing -p strand-compiler --test theme (theme 
 # The animation evaluation sandbox (eval/, docs/eval.md): its own
 # workspace, so its steps are scripts/eval/ci.sh's 1 to 7 (fmt, clippy,
 # lock and isolation, tests, the scenario gate, the matrix, a glitch
-# report replayed end to end), as GitHub's eval job runs them.
+# report replayed end to end), as GitHub's eval job runs them. A report
+# session that fails leaves its frames in target/eval/ci/report-view-failed/.
 job=eval
 step "cargo fmt --check (strand-eval)" 10 bash scripts/eval/ci.sh 1
 step "cargo clippy (eval/, -D warnings)" 60 bash scripts/eval/ci.sh 2

@@ -2051,6 +2051,51 @@ fn a_pointer_handed_to_a_surface_that_maps_under_it_is_not_left_first() {
     assert_eq!(on, Some(482), "{text}");
 }
 
+/// (robustness) A live frame drawn within two periods of the report is held
+/// to the replay's first tick at or after it. What it shows is of its time or
+/// later, so the nearest tick before it could be short of it (a graph's new
+/// column, 2 px, in a report that landed just past the column's boundary).
+#[test]
+fn a_live_frame_near_the_report_is_held_to_the_tick_after_it() {
+    let f = spinning();
+    let dir = f.write("after-probe");
+    let (_, p, _) = plan_of(&dir, &defaults());
+    let (r, out) = replay_of(&dir, &defaults());
+    let trace = trace_of(&r, &out);
+    let mark = trace
+        .events
+        .iter()
+        .find(|e| e.text == "mark report")
+        .unwrap()
+        .k;
+    let o = origins();
+    let (_, bar) = r
+        .verdict
+        .replayed
+        .iter()
+        .find(|(s, _)| replay::fidelity::same_origin(s, &o.bar))
+        .unwrap();
+    let nodes: Vec<Json> = bar
+        .iter()
+        .map(|n| {
+            json!({
+                "ref": "0.0", "origin": format!("{LIVE}/{}", n.origin), "id": n.id,
+                "key": n.key, "box": n.rect, "opacity": n.opacity, "travel": n.travel, "fade": n.fade,
+            })
+        })
+        .collect();
+    // A quarter of a period past a tick: the nearest is that tick, the first
+    // at or after it the next, the last before the report's.
+    let at = u64::from(mark - 2) * p.period + p.period / 4;
+    let drawn = json!({"format": 2, "surfaces": [{
+        "slot": 1, "root": "3.1", "drawn_ns": p.start + at,
+        "period_ns": p.period, "nodes": nodes,
+    }]});
+    std::fs::write(dir.join("drawn.json"), serde_json::to_vec(&drawn).unwrap()).unwrap();
+    let (r, _) = replay_of(&dir, &defaults());
+    assert_eq!(r.verdict.ticks[0].k, mark - 1, "{:?}", r.verdict.ticks);
+}
+
 /// (replayfix) A live frame drawn well before the report is its surface
 /// at rest: a colour's spring the live shell drew to its end. The
 /// replay's spring ends up to two ticks later on its own clock (its

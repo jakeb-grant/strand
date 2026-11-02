@@ -24,7 +24,9 @@
 #      cell whose recording changed fails until it is approved)
 #   7  test-report-view.sh --e2e: a session on a headless sway reported
 #      with `strand report`, replayed, and held to the live shell
-#      (docs/eval.md, "Replaying a glitch report")
+#      (docs/eval.md, "Replaying a glitch report"); a session that fails
+#      leaves its live and replayed frames in
+#      target/eval/ci/report-view-failed/, in the eval-report artifact
 #
 # Usage: scripts/eval/ci.sh [STEP...]   (default: all, as affected.sh runs it)
 # Stops at the first failing step and names it.

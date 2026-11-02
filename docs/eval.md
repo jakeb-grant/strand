@@ -2733,19 +2733,25 @@ aligned, to 1/64), its own opacity, and how far it moves over the next
 frame period: `travel`, the largest move of an edge in px, and `fade`,
 of its opacity (0 at rest; docs/architecture.md "Glitch reports").
 
+In CI and `test-report-view.sh --e2e`, a session that fails leaves its
+bundle (the live frames) and its replay (the replay's frames) in
+`target/eval/ci/report-view-failed/<session>/`, which GitHub's `eval-report`
+artifact holds.
+
 The replay holds each live surface to the one replay surface whose
 root is the same node (`nodes.json`'s origin, `id:` and row key: two
 popups from one `for` are told apart by their keys), each replay
 surface taken once. Of that surface it takes the last frame painted
-before the report: the replay's tick nearest `drawn_ns`, never past the
-report's own tick (`mark report`; the tick after it is drawn after the
-live shell's last frame), else the surface's last painted frame before
-the report. (replayfix) A live frame drawn more than two frame periods
+before the report: (robustness) the replay's first tick at or after
+`drawn_ns`, since what a live frame shows is of its time or later, never
+past the report's own tick (`mark report`; the tick after it is drawn
+after the live shell's last frame), else the surface's last painted frame
+before the report. (replayfix) A live frame drawn more than two frame periods
 before the report shows its surface at rest (a surface paints every
 frame while anything on it is in flight, a colour's spring too), and
 a motion's end is as uncertain on the replay's clock as its start, so
-it is held to the replay's last paint up to two ticks past that
-nearest tick: the replay at rest too, not a frame short of it with a
+it is held to the replay's last paint up to two ticks past the tick
+nearest `drawn_ns`: the replay at rest too, not a frame short of it with a
 spring's last step of colour, which no box shows (the busy session's
 focused chip, 9 levels of blue off on 2,976 px). A replay paint that
 damaged nothing keeps no image; its pixels are the image kept before
@@ -2757,9 +2763,11 @@ over the next tick), and pairs the nodes in paint order by origin,
 - **VERIFIED**: every live node has its replayed one and the other way
   round, each edge within 1 logical px and the opacity within 0.02;
   a node moving at the report (a spinner, a spring in flight) within
-  that plus two frames of its travel and fade (half a frame for the
-  tick nearest the live frame, half for a motion's start quantised to
-  ticks, one for the live frame's presentation lead), counted as
+  that plus two frames of its travel and fade (under a frame for the
+  first tick at or after the live frame, which the live frame's
+  presentation lead of up to one mostly cancels, half for a motion's
+  start quantised to ticks, and the rest for that lead when they don't),
+  counted as
   moving at the report; every surface the replay shows at the report
   is a live one; and the surface's pixels, where the bundle has a PNG
   of it, within `cpu-gpu`'s tolerance of the replay's image of that

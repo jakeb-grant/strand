@@ -62,7 +62,18 @@ scenario_name() { basename "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._
 bad=0
 
 ok() { echo "ok   $1"; }
-no() { echo "FAIL $1"; bad=1; }
+no() { echo "FAIL $1"; bad=1; fails=$((fails + 1)); }
+fails=0
+# (robustness) A session that failed leaves its bundle (the live frames) and
+# its replay (the replay's frames) where CI's eval-report artifact and a
+# local run find them: DIR above is a mktemp and goes with this script.
+kept=target/eval/ci/report-view-failed
+rm -rf "$kept"
+# keep_failed NAME BUNDLE FAILS_BEFORE: BUNDLE kept when a check failed since.
+keep_failed() {
+  [ "$fails" -gt "$3" ] || return 0
+  mkdir -p "$kept/$1" && cp -r "$2" "$kept/$1/" && echo "kept the failed session's frames in $kept/$1/"
+}
 need() { # NAME FILE
   [ -f "$2" ] && ok "$1" || no "$1: no $2"
 }
@@ -198,6 +209,7 @@ case " ${mounts[*]} " in *"$ROOT/inside"*) no "a path in the checkout was mounte
 grep -q "read-only at" "$DIR/err" && ok "it says what it mounted" || no "it printed nothing: $(cat "$DIR/err")"
 
 if [ "$e2e" = 1 ]; then
+  seen=$fails
   keep=$DIR/keep
   if STRAND_REPORT_KEEP=$keep cargo test -q --locked -p strand --test report \
     a_scripted_session_is_kept_for_its_replay -- --exact >"$DIR/e2e.log" 2>&1 && [ -f "$keep/bundle" ]; then
@@ -284,6 +296,7 @@ PY
       cat "$DIR/e2e-view"
       no "the session's bundle could not be replayed"
     fi
+    keep_failed session "$bundle" "$seen"
     rm -rf "$run_dir"
   else
     tail -40 "$DIR/e2e.log"
@@ -293,6 +306,7 @@ PY
   # (replayfix) A hover popup opened in the window, over its own
   # trigger, with state kept per screen: the replay shows it when the
   # live shell did and takes the pointer steps on it.
+  seen=$fails
   keep=$DIR/keep-popup
   if STRAND_REPORT_KEEP=$keep cargo test -q --locked -p strand --test report \
     a_popup_session_is_kept_for_its_replay -- --exact >"$DIR/e2e-popup.log" 2>&1 && [ -f "$keep/bundle" ]; then
@@ -335,6 +349,7 @@ PY
       cat "$DIR/e2e-popup-view"
       no "the popup session's bundle could not be replayed"
     fi
+    keep_failed popup "$bundle" "$seen"
     rm -rf "$run_dir"
   else
     tail -40 "$DIR/e2e-popup.log"
@@ -345,6 +360,7 @@ PY
   # its input taken there, every surface held to its own. (step-time)
   # A click near a graph column boundary lands in the live column: the
   # replay's `at` step times its change as the live shell kept it.
+  seen=$fails
   keep=$DIR/keep-four
   if STRAND_REPORT_KEEP=$keep cargo test -q --locked -p strand --test report \
     a_four_output_session_is_kept_for_its_replay -- --exact >"$DIR/e2e-four.log" 2>&1 && [ -f "$keep/bundle" ]; then
@@ -409,6 +425,7 @@ PY
       cat "$DIR/e2e-four-view"
       no "the four-output session's bundle could not be replayed"
     fi
+    keep_failed four "$bundle" "$seen"
     rm -rf "$run_dir"
   else
     tail -40 "$DIR/e2e-four.log"
@@ -419,6 +436,7 @@ PY
   # windows that change, a clock, a player and notifications. The
   # changes ring keeps every value, so each press is replayed on the
   # chip it hit live, and no value was lost or dropped.
+  seen=$fails
   keep=$DIR/keep-busy
   if STRAND_REPORT_KEEP=$keep cargo test -q --locked -p strand --test report \
     a_busy_session_is_kept_for_its_whole_window -- --exact >"$DIR/e2e-busy.log" 2>&1 && [ -f "$keep/bundle" ]; then
@@ -457,6 +475,7 @@ PY
       cat "$DIR/e2e-busy-view"
       no "the busy session's bundle could not be replayed"
     fi
+    keep_failed busy "$bundle" "$seen"
     rm -rf "$run_dir"
   else
     tail -40 "$DIR/e2e-busy.log"
@@ -470,6 +489,7 @@ PY
   # in the changes ring as the change it made, so the replay starts
   # every field where it was and plays each answer on what the write
   # left.
+  seen=$fails
   keep=$DIR/keep-writes
   if STRAND_REPORT_KEEP=$keep cargo test -q --locked -p strand --test report \
     a_service_write_session_is_kept_for_its_replay -- --exact >"$DIR/e2e-writes.log" 2>&1 && [ -f "$keep/bundle" ]; then
@@ -514,6 +534,7 @@ PY
       cat "$DIR/e2e-writes-view"
       no "the writes session's bundle could not be replayed"
     fi
+    keep_failed writes "$bundle" "$seen"
     rm -rf "$run_dir"
   else
     tail -40 "$DIR/e2e-writes.log"
