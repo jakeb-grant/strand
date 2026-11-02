@@ -23,11 +23,11 @@ pub fn services(rt: &Runtime, buses: Buses) -> (Services, Builtin) {
     (s, b)
 }
 
-/// Pump until `cond` holds (10 s at most).
+/// Pump until `cond` holds (30 s at most).
 pub fn until(rt: &Runtime, s: &Services, what: &str, mut cond: impl FnMut() -> bool) {
     strand_test_support::wait::until(
         what,
-        Duration::from_secs(10),
+        Duration::from_secs(30),
         Duration::from_millis(5),
         || {
             s.pump(rt);

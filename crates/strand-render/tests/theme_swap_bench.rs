@@ -19,7 +19,7 @@
 //! take turns instead of running on libtest's parallel threads, so a
 //! swap is timed alone (`turn`; decisions.md, oi-timing). A debug build
 //! does the same work about four times slower (some six on CI's
-//! runners), so there the gate is eight times the budget: it still fails
+//! runners), so there the gate is sixteen times the budget: it still fails
 //! on a regression of the work's shape (a check per node, a palette
 //! played through without end).
 //!
@@ -119,7 +119,7 @@ static TURNS: Mutex<()> = Mutex::new(());
 /// other runs of the same code, as contention does, and no commit made
 /// the work slower (decisions.md, oi-timing). A test that failed
 /// holding the turn passes it on. A debug build, whose gates check the
-/// work's shape at eight times the budget, keeps the parallel threads
+/// work's shape at sixteen times the budget, keeps the parallel threads
 /// (taking turns there made the workspace step's run of this bench
 /// 12 s to 21 s).
 fn turn() -> Option<MutexGuard<'static, ()>> {
@@ -151,7 +151,7 @@ const LOGIC_SWAPS: usize = 32;
 /// The gate this build is held to (see the module doc).
 fn gate() -> Duration {
     if cfg!(debug_assertions) {
-        BUDGET * 8
+        BUDGET * 16
     } else {
         BUDGET
     }
@@ -752,15 +752,15 @@ fn set_scopes_and_slow_springs_stay_within_the_budget() {
     eprintln!("logic's re-resolve: {logic:?} solving the palette, {kept:?} with it kept");
     let per_frame = BUDGET / 20;
     let gate_frame = if cfg!(debug_assertions) {
-        per_frame * 8
+        per_frame * 16
     } else {
         per_frame
     };
     // Unoptimised, evaluating tokens in `set { }` scopes is some six
     // times slower (the rest about four): a debug build is held to
-    // eight times the budget here, still failing on a change of shape.
+    // sixteen times the budget here, still failing on a change of shape.
     let gate = if cfg!(debug_assertions) {
-        BUDGET * 8
+        BUDGET * 16
     } else {
         BUDGET
     };

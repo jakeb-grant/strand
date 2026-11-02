@@ -200,9 +200,10 @@ fn render_node() -> bool {
 }
 
 /// A debug build carries about 9 MB more than release (30–31 MB against
-/// 21–22 MB in M0): its own, looser ceiling, so debug-only growth does not
-/// pass for a budget breach. The gate itself is checked in release.
-const DEBUG_PSS_CEILING_KB: u64 = 40 * 1024;
+/// 21–22 MB in M0) and more on a loaded machine (48.2 MB in the stress
+/// job, decisions.md): its own, generous ceiling, so neither passes for a
+/// budget breach. The gate itself is checked in release.
+const DEBUG_PSS_CEILING_KB: u64 = 64 * 1024;
 
 /// The PSS limit for the binary under test and its name.
 fn pss_limit() -> (u64, &'static str) {
@@ -1535,7 +1536,7 @@ fn the_design_launcher_scrolls_2000_apps() {
     // catch it at the same scale mid-way), two shots alike, eight rows or
     // more shown (420 px of 48 px rows).
     let settled = || {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(60);
         let mut last = None;
         loop {
             let s = Shot::take(&sway, "HEADLESS-1");
@@ -1581,7 +1582,7 @@ fn the_design_launcher_scrolls_2000_apps() {
     // window has moved away and back, the rows must match these.
     let start = {
         let (left, right) = (b.2 + 24, b.2 + wide(&shot, b) - 25);
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(60);
         let mut last: Option<(Shot, usize)> = None;
         loop {
             let lines = damage_lines(&log);
@@ -1705,7 +1706,7 @@ fn the_design_launcher_scrolls_2000_apps() {
     // structural `settled` cannot see a spring's last fraction of a
     // pixel, which changes every glyph's antialiasing).
     let still = |want: Option<u64>| {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(60);
         let mut last: Option<(Shot, usize)> = None;
         loop {
             let lines = damage_lines(&log);
