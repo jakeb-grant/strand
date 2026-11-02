@@ -1615,7 +1615,7 @@ mod tests {
     }
 
     /// (m5-tools review round 3) `draw_frame`'s present path, on a
-    /// swapchain that blocks 30 ms to acquire and 100 ms to present, for
+    /// swapchain that blocks 30 ms to acquire and a second to present, for
     /// a frame that sat 50 ms in the queue: it presents while the GPU
     /// still runs the frame (the thread never waits on a presented
     /// frame's work, so another surface's frame starts at once), `at` is
@@ -1625,6 +1625,7 @@ mod tests {
     /// thread: 32 clears of a 4096² texture still run at `present`.
     #[test]
     fn a_presented_frame_is_answered_before_the_gpu_ran_it() {
+        const PRESENT: Duration = Duration::from_secs(1);
         let dev = match Device::open(&GpuOptions::from_env()) {
             Ok(d) => d,
             Err(e) => {
@@ -1671,7 +1672,7 @@ mod tests {
         let mut chain = Paced {
             image: texture(&dev, 64, wgpu::TextureUsages::RENDER_ATTACHMENT),
             acquire: Duration::from_millis(30),
-            present: Duration::from_millis(100),
+            present: PRESENT,
             presented: None,
         };
         let queued = Duration::from_millis(50);
@@ -1702,8 +1703,10 @@ mod tests {
         assert!(!idle, "the thread waited for the GPU before `present`");
         assert!(at <= presented, "`at` taken after `present`");
         let paced = queued + chain.acquire;
+        // With `present`'s block in it, `waited` would be a whole second more:
+        // half of that is room for a loaded machine, and tells them apart.
         assert!(
-            waited >= paced && waited < paced + Duration::from_millis(50),
+            waited >= paced && waited < paced + PRESENT / 2,
             "`waited` is the queue and the acquire: {waited:?}"
         );
         dev.device
