@@ -79,3 +79,16 @@ RUN curl --proto '=https' --tlsv1.2 -sSfL -o /tmp/sccache.tar.gz \
  && rm -rf /tmp/sccache.tar.gz "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl" \
  && mkdir -p /opt/sccache && chmod 0777 /opt/sccache \
  && sccache --version
+
+# cargo-nextest, the runner of the debug workspace tests (test job and
+# ci.sh, .config/nextest.toml; decisions.md robustness). A pinned prebuilt
+# release checked by its sha256, published 2026-10-08.
+ARG NEXTEST_VERSION=0.9.148
+ARG NEXTEST_SHA256=223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc
+RUN curl --proto '=https' --tlsv1.2 -sSfL -o /tmp/nextest.tar.gz \
+      "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${NEXTEST_VERSION}/cargo-nextest-${NEXTEST_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+ && echo "${NEXTEST_SHA256}  /tmp/nextest.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/nextest.tar.gz -C /opt/cargo/bin cargo-nextest \
+ && chmod 0755 /opt/cargo/bin/cargo-nextest \
+ && rm /tmp/nextest.tar.gz \
+ && cargo nextest --version
