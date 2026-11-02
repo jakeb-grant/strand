@@ -35,7 +35,8 @@
 # the fuzzer and the 100 reloads skipped as in ci's workspace step, then
 # their doc-tests. Test args after `--` go to the test binaries instead,
 # through `cargo test`, the fuzzer and the reloads included unless they
-# say otherwise.
+# say otherwise. A crate without a test passes (`--no-tests warn`): a branch
+# changing only that crate has its doc-tests to run, and nothing is wrong.
 
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -157,6 +158,6 @@ for c in $crates; do args+=(-p "$c"); done
 if [ "${#test_args[@]}" -gt 0 ]; then
   exec cargo test "${args[@]}" -- "${test_args[@]}"
 fi
-cargo nextest run "${args[@]}" \
+cargo nextest run "${args[@]}" --no-tests warn \
   -E 'not (test(random_edits_through_five_save_styles) or test(a_hundred_reloads_reconnect_and_restart_nothing))'
 exec cargo test --doc "${args[@]}"

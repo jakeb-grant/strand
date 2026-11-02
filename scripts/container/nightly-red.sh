@@ -4,12 +4,12 @@
 # triaged. GitHub's own mail for a scheduled run goes only to whoever last edited
 # the cron line, and only if their settings ask for it; an issue reaches every
 # watcher, and `gh issue list --label nightly-red` shows it from the laptop
-# (docs/development.md). Runs on the runner, in ci.yml's `nightly-red` job, the
-# only job whose token may write issues.
+# (docs/development.md). Runs on the runner, in the `nightly-red` jobs of ci.yml
+# and eval-matrix.yml, the only jobs whose token may write issues.
 #
 # Usage: nightly-red.sh "JOB: RESULT"...
 # Env:   GH_TOKEN, GH_REPO, RUN_URL; SUMMARIES, a directory of the jobs' summary
-#        files to quote, if there is one.
+#        files to quote, one artifact's directory each, if there is one.
 # Self-test: scripts/container/test-nightly-red.sh
 
 set -euo pipefail
@@ -25,11 +25,11 @@ trap 'rm -f "$body"' EXIT
     case "$line" in *": failure" | *": cancelled") echo "- \`$line\`" ;; esac
   done
   if [ -n "${SUMMARIES:-}" ] && [ -d "$SUMMARIES" ]; then
-    for file in "$SUMMARIES"/*.md; do
+    for file in "$SUMMARIES"/*/*.md; do
       [ -f "$file" ] || continue
       echo
-      # An issue's comment holds 65,536 characters.
-      head -c 20000 "$file"
+      # An issue's comment holds 65,536 characters: four of these and the rest.
+      head -c 15000 "$file"
     done
   fi
 } >"$body"

@@ -567,7 +567,7 @@ jobs:
   # summary; decisions.md laptop-resilience).
   compositors:
     needs: image-publish
-    name: "${{ github.event_name == 'schedule' && 'compositors (nightly: archlinux:latest Hyprland, niri, sway, labwc)' || 'compositors' }}"
+    name: "${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'compositors (nightly: archlinux:latest Hyprland, niri, sway, labwc)' || 'compositors' }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -619,6 +619,8 @@ jobs:
             "$image" bash scripts/compositor-matrix-ci.sh "${{ steps.build.outputs.test }}"
       - name: The pin's age
         if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          MATRIX_PIN_NOTE: target/pin-age.md
         run: scripts/container/matrix-pin.sh check
       # Each compositor's package version and result, on the run's page.
       - name: Compositor versions and results
@@ -629,6 +631,19 @@ jobs:
         with:
           name: compositor-matrix
           path: target/matrix/
+          if-no-files-found: ignore
+      # What a red night's issue quotes: which compositor and package, the pin's age.
+      - uses: actions/upload-artifact@v7
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        with:
+          name: nightly-summary-compositors
+          path: target/matrix/summary.md
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        with:
+          name: nightly-summary-pin
+          path: target/pin-age.md
           if-no-files-found: ignore
 
   # The lock screen's VM tier (design.md, "Testing": a real PAM stack in
@@ -1086,10 +1101,14 @@ jobs:
   # A red night, seen: one open issue labelled `nightly-red`, a comment on it per
   # red night (scripts/container/nightly-red.sh says why not GitHub's mail). What
   # runs only at night has no push to go red on. Runs on schedule, and on a
-  # dispatch that asks. The only job whose token may write issues.
+  # dispatch that asks. `image` and `image-publish` are watched too, since all the
+  # others skip when they fail, and a job at its own timeout ends `cancelled`;
+  # `!cancelled()` is false only for a whole run cancelled by hand, which files
+  # nothing. eval-matrix.yml has the same job for its own night. The only jobs
+  # whose token may write issues.
   nightly-red:
-    needs: [compositors, lock-vm, nightly, stress, validation]
-    if: always() && contains(needs.*.result, 'failure') && (github.event_name == 'schedule' || inputs.report_red == 'true')
+    needs: [image, image-publish, compositors, lock-vm, nightly, stress, validation, prune-caches]
+    if: "!cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) && (github.event_name == 'schedule' || inputs.report_red == 'true')"
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -1101,7 +1120,6 @@ jobs:
         continue-on-error: true
         with:
           pattern: nightly-summary-*
-          merge-multiple: true
           path: ${{ runner.temp }}/summaries
       - env:
           GH_TOKEN: ${{ github.token }}
@@ -1110,11 +1128,14 @@ jobs:
           SUMMARIES: ${{ runner.temp }}/summaries
         run: >-
           scripts/container/nightly-red.sh
+          "image: ${{ needs.image.result }}"
+          "image-publish: ${{ needs.image-publish.result }}"
           "compositors: ${{ needs.compositors.result }}"
           "lock-vm: ${{ needs.lock-vm.result }}"
           "nightly: ${{ needs.nightly.result }}"
           "stress: ${{ needs.stress.result }}"
           "validation: ${{ needs.validation.result }}"
+          "prune-caches: ${{ needs.prune-caches.result }}"
 
   # The dependency caches, kept to one generation each: every new Cargo.lock
   # or manifest saves a new key beside the old one, which only fills the

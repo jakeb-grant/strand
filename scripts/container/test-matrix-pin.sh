@@ -43,6 +43,8 @@ grep -q '3 days ago' "$DIR/out" && ok "and says its age" || no "no age"
 file "$(date -u -d '31 days ago' +%F)"
 "$PIN" check >"$DIR/out" 2>&1 && no "an old pin passed" || ok "one past the limit fails"
 grep -q 'matrix-pin.sh refresh' "$DIR/out" && ok "and names the refresh" || no "no refresh named"
+MATRIX_PIN_NOTE=$DIR/note/pin.md "$PIN" check >/dev/null 2>&1
+grep -q 'days ago' "$DIR/note/pin.md" && ok "the note for the issue says its age" || no "no note for the issue"
 GITHUB_STEP_SUMMARY=$DIR/summary "$PIN" check >/dev/null 2>&1
 grep -q '31 days ago' "$DIR/summary" && ok "the job summary gets it" || no "no job summary"
 

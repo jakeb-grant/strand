@@ -1631,6 +1631,40 @@ fn a_held_return_activates_an_input_and_a_list_once() {
     }
 }
 
+/// A press whose `on activate` moves focus: the repeats of that press land on
+/// the next `input` or `list` and activate nothing there, and a new press does.
+#[test]
+fn a_held_return_does_not_activate_what_its_press_focused() {
+    for next in [
+        "input { id: next; on activate { later += 1 } }",
+        "list { id: next; height: 40; on activate { later += 1 }\n box { height: 20 }\n}",
+    ] {
+        let mut sh = entered(&format!(
+            "state first = 0\nstate later = 0\n\
+             panel P {{ anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+               input {{ focus: true; on activate {{ first += 1; next.focus() }} }}\n\
+               {next}\n\
+             }}\n"
+        ));
+        tap(&mut sh, "Return");
+        assert_eq!(sh.num("first"), 1.0, "{next}: the press");
+        for _ in 0..3 {
+            let e = key_with(&sh, "Return", "", true, false);
+            sh.send(e);
+            sh.settle();
+        }
+        assert_eq!(sh.num("first"), 1.0, "{next}: held, first");
+        assert_eq!(sh.num("later"), 0.0, "{next}: held, what it focused");
+        tap(&mut sh, "Return");
+        assert_eq!(sh.num("first"), 1.0, "{next}: pressed again, first");
+        assert_eq!(
+            sh.num("later"),
+            1.0,
+            "{next}: pressed again, what it focused"
+        );
+    }
+}
+
 /// A repeat of Return is spent, not passed on to the field: its text stays.
 #[test]
 fn a_held_return_types_nothing_into_an_input() {

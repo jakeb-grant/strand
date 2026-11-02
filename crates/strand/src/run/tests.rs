@@ -3646,17 +3646,20 @@ fn an_actions_error_clears_at_a_new_call() {
     let src = format!(
         "{QUEUED_ACTION}state n = 0\nbar Top {{\n  on click {{\n    n += 1\n    \
          if n == 1 {{ rec(\"3\", \"\") }}\n    if n == 2 {{ rec(\"0\", \"{}\") }}\n  }}\n  \
-         text rec.error ?? \"none\"\n}}\n",
+         text rec.error ?? \"none\"\n  text rec.running ? \"running\" : \"ended\"\n}}\n",
         gate.display()
     );
     with_action_shell(&dir, &src, |m, click| {
         click();
-        m.until("its failure", |s| s.texts() == [SH_FAILED]);
+        m.until("its failure", |s| s.texts() == [SH_FAILED, "ended"]);
         click();
         m.until("the call clears it, its command still blocked", |s| {
-            s.texts() == ["none"]
+            s.texts() == ["none", "running"]
         });
         std::fs::write(&gate, "").unwrap();
+        // Its command polls for the gate, so it has to see it before the
+        // directory goes, or it polls on as an orphan: no one kills an action.
+        m.until("its command ended", |s| s.texts() == ["none", "ended"]);
     });
     let _ = std::fs::remove_dir_all(dir);
 }

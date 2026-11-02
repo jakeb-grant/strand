@@ -74,8 +74,11 @@ fn trickle(path: &Path, writes: usize) {
 
 #[test]
 fn writers_next_to_watched_files_do_not_wake_the_watcher() {
-    let tmp = tempfile::tempdir().unwrap();
-    let home = fs::canonicalize(tmp.path()).unwrap();
+    // A directory of its own, not in `/tmp`: the watcher watches each ancestor
+    // for children going, and other binaries' directories come and go there,
+    // which would count here.
+    let home = strand_test_support::dir::own_dir(env!("CARGO_TARGET_TMPDIR"), "next-to-watched");
+    let home = fs::canonicalize(home).unwrap();
     let cfg = home.join("cfg");
     let pics = home.join("pics");
     let fonts = home.join("fonts");
@@ -141,6 +144,7 @@ fn writers_next_to_watched_files_do_not_wake_the_watcher() {
     // would be thousands.
     assert!(woken < 60, "{woken} wakeups for {} writes", 3 * writes);
     drop(watcher);
+    let _ = fs::remove_dir_all(&home);
     let mut gates = strand_test_support::gate::Gates::default();
     gates.check(span < Duration::from_millis(50), || {
         format!("the config save's events {span:?} apart: {batch:#?}")

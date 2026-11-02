@@ -1624,9 +1624,11 @@ fn the_design_launcher_scrolls_2000_apps() {
     let before = lines.len();
     let stalls_before = lines.last().map_or(0, |l| field(l, "stalls"));
     assert_eq!(lines.last().map(|l| field(l, "top")), Some(0));
-    // Sixty notches, and on until the frames came: a loaded runner draws fewer
-    // of them a second (17 in the 60's 1.5 s, 7 runs in 16 in the nightly stress
-    // job, decisions.md robustness), which says nothing of the scroll.
+    // Sixty notches, and on until the frames came, so the rest of the test
+    // goes on: a loaded runner draws fewer of them a second (17 in the 60's
+    // 1.5 s, 7 runs in 16 in the nightly stress job, decisions.md robustness).
+    // How many it took is a gate, held at the end: 60 in an optimised build, on
+    // the budgets job's quiet machine, and twice that in a debug one.
     let mut notches = 0;
     while notches < 240 {
         pointer.wheel(10, over.0, over.1, w, h);
@@ -1852,6 +1854,12 @@ fn the_design_launcher_scrolls_2000_apps() {
     assert!((1988..2000).contains(&top), "top row {top}");
     drop(keyboard);
     drop(strand);
+    let limit = if cfg!(debug_assertions) { 120 } else { 60 };
+    let mut gates = strand_test_support::gate::Gates::default();
+    gates.check(notches <= limit, || {
+        format!("20 frames while scrolling took {notches} wheel notches, over {limit}")
+    });
+    gates.hold();
 }
 
 /// The four design shells with their widgets (M2): the bar's icons, the

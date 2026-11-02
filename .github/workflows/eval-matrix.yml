@@ -29,9 +29,12 @@ on:
           and fail on any run that fails or differs from the first
           (scripts/eval/repeat.sh; 1 runs the matrix once, as nightly)
         default: "1"
+      report_red:
+        description: A red run files the nightly-red issue, as a scheduled one does ("true" or "false")
+        default: "false"
 
 # As ci.yml, whatever the repository's default token setting becomes: all
-# this workflow uses is the checkout.
+# the matrix uses is the checkout; `nightly-red` alone also writes issues.
 permissions:
   contents: read
 
@@ -103,3 +106,36 @@ jobs:
             !target/eval/mutants/tree/
             target/eval/viewer-shots/
           if-no-files-found: ignore
+      # The failing and stale cells, for what a red night's issue quotes.
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nightly-summary-eval
+          path: target/eval/matrix-nightly/summary.md
+          if-no-files-found: ignore
+
+  # A red night, seen, as in ci.yml: the mutants and the matrix run only here, so
+  # they have no push to go red on. The same open issue takes the comment.
+  nightly-red:
+    needs: matrix
+    if: "!cancelled() && (needs.matrix.result == 'failure' || needs.matrix.result == 'cancelled') && (github.event_name == 'schedule' || inputs.report_red == 'true')"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: nightly-summary-*
+          path: ${{ runner.temp }}/summaries
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SUMMARIES: ${{ runner.temp }}/summaries
+        run: >-
+          scripts/container/nightly-red.sh
+          "eval matrix and mutants: ${{ needs.matrix.result }}"

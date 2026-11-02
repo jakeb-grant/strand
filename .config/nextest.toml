@@ -44,15 +44,45 @@ threads-required = 2
 junit = { path = "junit.xml", store-success-output = false, store-failure-output = true }
 retries = 0
 
-# One more try for what talks to a real sway or a private bus, whose failures
-# under a loaded runner come from the daemons' timing. A test that passes only
-# on the second try is reported as flaky: in the run's summary lines and the
-# job summary. Never a budget, a timing gate, a pixel reference or logic: the
-# binaries are named one by one, so a new one starts with none. The nightly job
-# doesn't use nextest at all.
+# One more try for what talks to a real sway, a private bus or a stand-in for
+# either on a socket, whose failures under a loaded runner come from the daemons'
+# timing. A test that passes only on the second try is reported as flaky: in the
+# run's summary lines and the job summary. Never a budget, a timing gate, a wake
+# or idle count, a pixel reference or logic: the binaries are named one by one, so
+# a new one starts with none, and the retry is per test, so what a named binary
+# holds of those is named below it. nextest-filters.sh reads each retried binary's
+# source and fails on a `Gates` or a wake count left in. The nightly job doesn't
+# use nextest at all.
+#
+# 15 minutes, not the 40 above: twice that still ends inside the job's 60, so
+# what hangs is named before the job is killed and its summary lost.
 [[profile.ci.overrides]]
-filter = '''binary_id(/^strand-services::(battery|bluetooth|brightness|builtin|clipboard|custom|media|network|network_iwd|notifications|outputs|polkit|screen|session|sway|tray|wm_services)$/) | binary_id(/^strand-introspect::connection$/) | binary_id(/^strand-watch::portal$/) | binary_id(/^strand-surface::(clipboard|compose|dnd|sway|window)$/) | binary_id(/^strand::(clipboard|dbus_shells|kept_sizes|screens_focus|tray_menu|wm_audio_shells)$/)'''
+filter = '''
+(binary_id(/^strand-services::(battery|bluetooth|brightness|builtin|clipboard|custom|media|network|network_iwd|notifications|outputs|polkit|screen|session|sway|tray|wm_services)$/)
+ | binary_id(/^strand-introspect::connection$/)
+ | binary_id(/^strand-watch::portal$/)
+ | binary_id(/^strand-surface::(clipboard|compose|dnd|sway|window)$/)
+ | binary_id(/^strand::(clipboard|dbus_shells|kept_sizes|screens_focus|tray_menu|wm_audio_shells)$/))
+ & not (test(=a_frozen_player_does_not_hold_up_the_others)
+  | test(=another_notification_server_fails_clearly)
+  | test(=a_frozen_app_does_not_hold_up_the_tray)
+  | test(=a_hanging_read_does_not_hold_the_boot_batch)
+  | test(=idle_requests_no_frames_and_commits_nothing)
+  | test(=the_compositor_stores_follow_sway_through_one_hub)
+  | test(=a_fast_listen_command_wakes_the_logic_thread_once_a_frame)
+  | test(=system_reads_the_kernel_and_counts_uptime_by_the_minute)
+  | test(=a_heard_listen_command_sends_every_line)
+  | test(=a_dir_is_listed_and_followed)
+  | test(=a_file_rewritten_in_place_never_shows_it_empty)
+  | test(=a_huge_dir_lists_its_first_files_by_name)
+  | test(=a_busy_dir_is_listed_at_most_every_relist)
+  | test(=without_a_bus_system_keeps_its_seeded_values)
+  | test(=cpu_and_memory_sample_only_while_a_reader_is_visible)
+  | test(=disk_reads_the_root_filesystem_only_while_visible)
+  | test(=network_rates_count_the_hardware_only_while_read)
+  | test(=without_a_compositor_outputs_is_unavailable_and_fails_as_events))'''
 retries = 1
+slow-timeout = { period = "60s", terminate-after = 15, grace-period = "30s" }
 
 # The nightly stress job (scripts/container/stress.sh; decisions.md robustness):
 # no retry, so every failure counts towards a rate, and a junit file for each

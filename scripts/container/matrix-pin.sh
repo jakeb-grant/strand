@@ -7,7 +7,9 @@
 #                                       fails past MAX_DAYS. ci.yml's compositors
 #                                       job runs it nightly, so past that the night
 #                                       goes red and files the nightly-red issue;
-#                                       no push waits on it.
+#                                       no push waits on it. MATRIX_PIN_NOTE names
+#                                       a file for the same words, which the
+#                                       issue quotes.
 #        matrix-pin.sh refresh [DATE]   rewrites the date (default yesterday, UTC,
 #                                       the newest the archive surely has) and the
 #                                       digest of today's archlinux:latest. Then run
@@ -33,6 +35,7 @@ case "${1:-}" in
     line="Pushes test the Arch packages of $date, $days days ago (at most $MAX_DAYS)."
     echo "$line"
     [ -z "${GITHUB_STEP_SUMMARY:-}" ] || { echo; echo "$line"; } >>"$GITHUB_STEP_SUMMARY"
+    [ -z "${MATRIX_PIN_NOTE:-}" ] || { mkdir -p "$(dirname "$MATRIX_PIN_NOTE")"; echo "$line" >"$MATRIX_PIN_NOTE"; }
     if [ "$days" -gt "$MAX_DAYS" ]; then
       echo "::error title=compositor pin::the Arch pin is $days days old: run scripts/container/matrix-pin.sh refresh"
       exit 1

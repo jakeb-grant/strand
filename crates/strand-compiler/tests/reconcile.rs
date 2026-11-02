@@ -2,6 +2,7 @@
 
 use strand_compiler::SourceMap;
 use strand_compiler::reconcile::{Build, Sid};
+use strand_test_support::gate::Gates;
 
 fn build(prev: Option<&Build>, files: &[(&str, &str)]) -> Build {
     let mut map = SourceMap::new();
@@ -192,8 +193,9 @@ fn handler_hashes_cover_a_whole_cycle() {
 
 /// Densely mutually recursive `fn`s hash in linear time (one strongly
 /// connected component, hashed once): 30 of them, each calling all the
-/// others, are scanned once each; an edit to any member still
-/// changes the handler that names only the first.
+/// others, are scanned once each, and the whole build stays near the check
+/// alone; an edit to any member still changes the handler that names only the
+/// first.
 #[test]
 fn a_dense_cycle_of_fns_hashes_quickly() {
     let n = 30;
@@ -212,8 +214,8 @@ fn a_dense_cycle_of_fns_hashes_quickly() {
         );
         s
     };
-    let a = build(None, &[("bar.strand", &src(0))]);
-    let b = build(Some(&a), &[("bar.strand", &src(1))]);
+    let (a, ta) = best_build(None, &src(0));
+    let (b, tb) = best_build(Some(&a), &src(1));
     let hash = |b: &Build| -> u64 {
         b.identity
             .entries()
@@ -229,13 +231,19 @@ fn a_dense_cycle_of_fns_hashes_quickly() {
         let scans = b.hashes.scans();
         assert!(scans <= 2 * (n + 1), "{scans} scans of {n} fns and a state");
     }
+    let mut gates = Gates::default();
+    let budget = post_check_budget(&src(1));
+    gates.check(ta < budget && tb < budget, || {
+        format!("{ta:?} {tb:?} past {budget:?}")
+    });
+    gates.hold();
 }
 
 /// A long chain of `fn`s (each calling the next, the last reading a
 /// state) lowers with work linear in its length: the read sets are one
 /// union per strongly connected component, not a walk per chunk (which
-/// took 3.4 s at 2000), and the handler at the top still reads the state
-/// at the bottom.
+/// took 3.4 s at 2000), the whole build stays near the check alone, and the
+/// handler at the top still reads the state at the bottom.
 #[test]
 fn a_long_chain_of_fns_lowers_quickly() {
     let n = 2000;
@@ -248,7 +256,7 @@ fn a_long_chain_of_fns_lowers_quickly() {
         }
     }
     s.push_str("bar Top {\n  text join(\"\", v, f0(0))\n}\n");
-    let b = build(None, &[("bar.strand", &s)]);
+    let (b, tb) = best_build(None, &s);
     let prog = &b.program;
     let deep = (0..prog.defs.len())
         .find(|&i| prog.defs[i].name == "deep")
@@ -265,4 +273,40 @@ fn a_long_chain_of_fns_lowers_quickly() {
     let unions = prog.read_unions;
     let chunks = prog.chunks.len();
     assert!(unions <= 4 * chunks, "{unions} unions for {chunks} chunks");
+    let mut gates = Gates::default();
+    let budget = post_check_budget(&s);
+    gates.check(tb < budget, || format!("{tb:?} past {budget:?}"));
+    gates.hold();
+}
+
+/// The fastest of three builds of `src`, and that build. A stall on the
+/// machine hits one of them, and a slow pass every one.
+fn best_build(prev: Option<&Build>, src: &str) -> (Build, std::time::Duration) {
+    let mut best = None;
+    for _ in 0..3 {
+        let t = std::time::Instant::now();
+        let b = build(prev, &[("bar.strand", src)]);
+        let took = t.elapsed();
+        if best.as_ref().is_none_or(|(_, d)| took < *d) {
+            best = Some((b, took));
+        }
+    }
+    best.expect("three builds")
+}
+
+/// What the whole build (check, lower, identity, hashes) may take: three times
+/// the check alone, the fastest of three, and 100 ms. The counts above see one
+/// pass each, this every pass after the check.
+fn post_check_budget(src: &str) -> std::time::Duration {
+    let check = (0..3)
+        .map(|_| {
+            let mut m = SourceMap::new();
+            m.add("bar.strand", src.to_string());
+            let t = std::time::Instant::now();
+            let _ = strand_compiler::compile(&m);
+            t.elapsed()
+        })
+        .min()
+        .expect("three checks");
+    check * 3 + std::time::Duration::from_millis(100)
 }

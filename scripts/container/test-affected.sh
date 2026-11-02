@@ -5,7 +5,8 @@
 # and the eval sandbox, eval/ and scripts/eval/ pick the sandbox alone, a
 # strand-render change picks strand-render, checks its eval-hooks build
 # and names the sandbox's command, a file the claims ledger quotes adds
-# strand-site's build test, and other scripts alone pick none.
+# strand-site's build test, and other scripts alone pick none. A crate with no
+# test passes and still reaches its doc-tests.
 # Run: scripts/container/run.sh scripts/container/test-affected.sh
 
 set -uo pipefail
@@ -109,5 +110,26 @@ esac
 [ "$(AFFECTED_FILES=crates/strand-core/src/lib.rs "$HERE/affected.sh" --list 2>&1 | sed -n 's/^affected since [^:]*: //p')" = strand-core ] &&
   echo "ok   without --deep only the crate itself" ||
   { echo "FAIL without --deep"; bad=1; }
+
+# The run itself, on a stand-in cargo whose nextest exits 4 as the real one does
+# when nothing matches, unless told not to fail on that.
+real_cargo=$(command -v cargo)
+mkdir "$tmp/bin"
+cat >"$tmp/bin/cargo" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+  nextest) echo "cargo \$*" >>"$tmp/ran"; case " \$* " in *" --no-tests warn "*) exit 0 ;; *) exit 4 ;; esac ;;
+  test) echo "cargo \$*" >>"$tmp/ran"; exit 0 ;;
+  *) exec "$real_cargo" "\$@" ;;
+esac
+STUB
+chmod +x "$tmp/bin/cargo"
+if PATH="$tmp/bin:$PATH" AFFECTED_FILES=crates/strand-services-schema/src/lib.rs "$HERE/affected.sh" >/dev/null 2>&1 &&
+  grep -q '^cargo test --doc -p strand-services-schema' "$tmp/ran"; then
+  echo "ok   a crate with no test passes and reaches its doc-tests"
+else
+  echo "FAIL a crate with no test: $(cat "$tmp/ran" 2>/dev/null)"
+  bad=1
+fi
 
 exit "$bad"

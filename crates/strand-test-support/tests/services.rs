@@ -2,8 +2,9 @@
 //! Skipped without them unless CI's `STRAND_REQUIRE_*` says they must run.
 
 use std::fs::File;
+use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use strand_test_support::bus::SessionDaemon;
 use strand_test_support::dir::ShortDir;
@@ -23,15 +24,41 @@ fn a_headless_sway_starts_and_dies_with_its_owner() {
     let cfg = dir.path().join("sway.cfg");
     std::fs::write(&cfg, "xwayland disable\n").unwrap();
     let log = File::create(dir.path().join("sway.log")).unwrap();
-    let mut child = sway::command(&dir, &cfg, log).spawn().unwrap();
-    let display = sway::wait_display(dir.path(), Duration::from_secs(10));
-    let sockets = sway::sockets_in(dir.path());
-    let _ = child.kill();
-    let _ = child.wait();
+    // The owner is the thread that spawns it, which ends here with it running.
+    let (mut child, display, sockets) = std::thread::scope(|s| {
+        s.spawn(|| {
+            let child = sway::command(&dir, &cfg, log).spawn().unwrap();
+            let display = sway::wait_display(dir.path(), Duration::from_secs(10));
+            (child, display, sway::sockets_in(dir.path()))
+        })
+        .join()
+        .unwrap()
+    });
+    // Nothing else stops it: it dies of the death signal, or the wait runs out.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
     let log = std::fs::read_to_string(dir.path().join("sway.log")).unwrap();
     let display = display.unwrap_or_else(|| panic!("no socket; its log:\n{log}"));
     assert!(display.starts_with("wayland-"), "{display}");
     assert!(sockets.is_some_and(|(d, i)| d == display && i.starts_with("sway-ipc.")));
+    let status = status.expect("sway outlived the thread that spawned it");
+    assert_eq!(
+        status.signal(),
+        Some(9),
+        "sway ended on its own: {status:?}"
+    );
 }
 
 #[test]

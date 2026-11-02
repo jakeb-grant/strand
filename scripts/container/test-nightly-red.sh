@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests nightly-red.sh against a stand-in `gh`: the first red night opens the
-# issue, the next comments on it, only the jobs that went red are named, a
-# summary is quoted, and a failed call fails the script.
+# issue, the next comments on it, only the jobs that went red are named, every
+# artifact's summary is quoted though they share a file name, and a failed call
+# fails the script.
 # Run: scripts/container/run.sh scripts/container/test-nightly-red.sh
 
 set -uo pipefail
@@ -13,7 +14,7 @@ bad=0
 ok() { echo "ok   $1"; }
 no() { echo "FAIL $1"; sed 's/^/     /' "$DIR/calls"; bad=1; }
 
-mkdir "$DIR/bin" "$DIR/summaries"
+mkdir -p "$DIR/bin" "$DIR/summaries/nightly-summary-stress" "$DIR/summaries/nightly-summary-validation"
 cat >"$DIR/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 echo "gh $*" >>"$DIR/calls"
@@ -38,11 +39,18 @@ grep -q 'compositors' "$DIR/body" && no "a green job is named" || ok "it leaves 
 grep -q 'example.invalid/run/1' "$DIR/body" && ok "it links the run" || no "no link"
 
 echo 7 >"$DIR/open"
-echo "| \`strand::demo x\` | 2/40 (5.0%) |" >"$DIR/summaries/stress.md"
+echo "| \`strand::demo x\` | 2/40 (5.0%) |" >"$DIR/summaries/nightly-summary-stress/summary.md"
+echo "the layer said nothing new" >"$DIR/summaries/nightly-summary-validation/summary.md"
 SUMMARIES=$DIR/summaries run "compositors: failure"
 grep -q 'issue comment 7' "$DIR/calls" && ok "the next comments on the open one" || no "no comment"
 grep -q 'issue create' "$DIR/calls" && no "a second issue" || ok "and opens no second"
 grep -q '2/40 (5.0%)' "$DIR/body" && ok "a summary is quoted" || no "no summary"
+grep -q 'the layer said' "$DIR/body" && ok "and the other job's, of the same name" || no "one summary lost"
+run "image-publish: failure" "stress: skipped"
+grep -q 'image-publish: failure' "$DIR/body" && ok "a publish that failed is named" || no "image-publish not named"
+grep -q 'stress: skipped' "$DIR/body" && no "a skipped job is named" || ok "and what it skipped isn't"
+run "lock-vm: cancelled"
+grep -q 'lock-vm: cancelled' "$DIR/body" && ok "a job at its timeout is named" || no "a cancelled job not named"
 
 GH_FAIL=1 run "stress: failure" && no "a failed call passed" || ok "a failed call fails it"
 run && no "no argument passed" || ok "no job named is a usage error"

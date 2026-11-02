@@ -215,9 +215,10 @@ a test group in `.config/nextest.toml`. A test that asserts a quiet window keeps
 its shell's config in `strand_test_support::dir::own_dir`, because the watcher
 watches each of its ancestors for children going. `scripts/container/nextest-filters.sh`
 fails on a filter that matches no test, and on a retry that reaches a budget, a
-timing gate or a pixel reference. A test that passes only on its retry is named
-FLAKY in the log and in the job's summary. A test over 60 s is named SLOW as it
-runs, and one over 40 min ends in a TIMEOUT that names it. CI runs six at a time
+pixel reference, or a test whose source holds a timing gate or a wake count. A
+test that passes only on its retry is named FLAKY in the log and in the job's
+summary. A test over 60 s is named SLOW as it runs, and one over 40 min ends in a
+TIMEOUT that names it, 15 min for the tests with a retry. CI runs six at a time
 on its four vCPUs (`-j 6`, measured in decisions.md robustness), the laptop one
 per core.
 
@@ -301,8 +302,9 @@ here as `scripts/container/run.sh scripts/container/stress.sh`
 (`STRAND_STRESS_MINUTES`, 30 by default; `STRAND_STRESS_TIER=record` for one
 tier; `STRAND_STRESS_SEED` replays a night's choices). It holds up no push. A
 job that runs only at night (`stress`, `nightly`, `lock-vm`, the compositors on
-today's packages, `validation`) has nothing else to go red on, so a red night opens or
-comments on one issue: `gh issue list --label nightly-red`, closed by hand once
+today's packages, `validation`, and `eval-matrix.yml`'s matrix and mutants) has
+nothing else to go red on, so a red night, or one whose image never published,
+opens or comments on one issue: `gh issue list --label nightly-red`, closed by hand once
 triaged.
 
 The nightly `validation` job runs the GPU tests under Khronos's validation

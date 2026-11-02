@@ -518,7 +518,9 @@ fn shown_at(t: &crate::trace::SurfaceInfo, report: u32) -> bool {
 /// later: a tick is reached half a frame early, and presentation leads. A
 /// nearest tick before it can be short of that (the graph's column reached
 /// 6.8 ms before its boundary, at 263.22 ticks: the replay reached it at tick
-/// 264, and tick 263 was compared, 2 px off).
+/// 264, and tick 263 was compared, 2 px off). It stays capped at the tick before
+/// the report's, so a live frame within a tick of the report can still be held
+/// short of its time: that edge isn't closed.
 pub fn frame_for<'a>(
     run: &'a RunOutput,
     plan: &Plan,
