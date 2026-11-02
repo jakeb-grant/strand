@@ -288,6 +288,19 @@ scripts/lockvm/scenarios/all.sh` after `scripts/container/run.sh bash
 scripts/lockvm/scenarios/build.sh` (CI's `lock-vm` job where KVM is
 available).
 
+The nightly `stress` job runs the tests over and over with no retry and the
+CPU deliberately short, for three hours, through nextest's stress mode:
+mostly the tests that talk to a compositor or a bus and the ones
+`decisions.md` records failing under load, and the whole workspace one block
+in four. Its job summary names each test that failed, with its rate. It runs
+here as `scripts/container/run.sh scripts/container/stress.sh`
+(`STRAND_STRESS_MINUTES`, 30 by default; `STRAND_STRESS_TIER=record` for one
+tier; `STRAND_STRESS_SEED` replays a night's choices). It holds up no push. A
+job that runs only at night (`stress`, `nightly`, `lock-vm`, the compositors on
+today's packages) has nothing else to go red on, so a red night opens or
+comments on one issue: `gh issue list --label nightly-red`, closed by hand once
+triaged.
+
 Animation changes are checked by the evaluation sandbox (docs/eval.md):
 `scripts/container/run.sh eval check eval/scenarios/curated` runs the
 curated scenarios, and `scripts/container/run.sh eval selftest` runs its

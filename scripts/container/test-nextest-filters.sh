@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests nextest-filters.sh --static: the real config passes, a retry on a
-# budget, on a logic crate, more than once or outside `ci` fails, and a nightly
-# job naming nextest fails.
+# budget, on a logic crate, more than once or outside `ci` fails, a stress
+# profile with retries of its own fails, and a nightly job naming nextest fails.
 # Run: scripts/container/run.sh scripts/container/test-nextest-filters.sh
 
 set -uo pipefail
@@ -49,6 +49,14 @@ config "[[profile.default.overrides]]
 filter = 'binary_id(/^strand-surface::(sway)\$/)'
 retries = 1"
 expect 1 "nor one outside the ci profile"
+config "[profile.ci]
+retries = 0
+[[profile.ci.overrides]]
+filter = 'binary_id(/^strand-surface::(sway)\$/)'
+retries = 1
+[profile.stress]
+retries = 1"
+expect 1 "nor may the stress profile have one of its own"
 cp "$ROOT/.config/nextest.toml" "$tmp/config.toml"
 printf 'jobs:\n  nightly:\n    steps:\n      - run: cargo nextest run\n' >"$tmp/ci.yml"
 expect 1 "a nightly job naming nextest fails"

@@ -5,7 +5,9 @@
 #   - any override's filter matches no test;
 #   - a test with a retry is in a binary or a test that may never have one: a
 #     budget, a timing gate, a pixel reference (decisions.md robustness);
-#   - the job that stresses nightly names nextest.
+#   - a profile but `ci` has retries of its own, the stress job's above all,
+#     whose every failure counts towards a rate;
+#   - the `nightly` job names nextest.
 # Runs after the build in CI's `test` job and ci.sh. Needs cargo-nextest, so the
 # test binaries; static checks only with --static.
 # Self-test: scripts/container/test-nextest-filters.sh
@@ -24,6 +26,8 @@ import sys, tomllib
 with open(sys.argv[1], "rb") as f:
     config = tomllib.load(f)
 for profile, body in config["profile"].items():
+    if profile != "ci" and body.get("retries", 0) != 0:
+        print(f"{profile}\t{body['retries']}\t")
     for o in body.get("overrides", []):
         print(f"{profile}\t{o.get('retries', 0)}\t{o['filter']}")
 PY
@@ -53,6 +57,7 @@ while IFS=$'\t' read -r profile retries filter; do
       esac
     done)
   fi
+  [ -n "$filter" ] || continue
   [ "${1:-}" = --static ] && continue
   count=$(cargo nextest list --workspace --profile "$profile" -E "$filter" --message-format json --cargo-quiet 2>/dev/null |
     jq -r '[."rust-suites"[].testcases[] | select(."filter-match".status == "matches")] | length')
@@ -63,8 +68,8 @@ while IFS=$'\t' read -r profile retries filter; do
   fi
 done <<<"$overrides"
 
-# Nightly's stress job, whose failures are what it's for, has no retries: it
-# doesn't use nextest.
+# The `nightly` job, whose failures are what it's for, has no retries: it doesn't
+# use nextest. (`stress` does, under the `stress` profile checked above.)
 if awk '/^  nightly:$/ { on = 1; next } /^  [a-z_-]+:$/ { on = 0 } on' "$WORKFLOW" | grep -q nextest; then
   no "the nightly job names nextest: it gets no retries"
 fi

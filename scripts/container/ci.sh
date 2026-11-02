@@ -155,6 +155,8 @@ step "scripts/container/test-tests-ran.sh" 5 scripts/container/test-tests-ran.sh
 step "scripts/container/test-build-script-index.sh" 5 scripts/container/test-build-script-index.sh
 step "scripts/container/test-nextest-summary.sh" 5 scripts/container/test-nextest-summary.sh
 step "scripts/container/test-nextest-filters.sh" 5 scripts/container/test-nextest-filters.sh
+step "scripts/container/test-stress-summary.sh" 5 scripts/container/test-stress-summary.sh
+step "scripts/container/test-nightly-red.sh" 5 scripts/container/test-nightly-red.sh
 step "scripts/container/test-affected.sh" 5 scripts/container/test-affected.sh
 step "scripts/container/test-prune-rust-caches.sh" 5 scripts/container/test-prune-rust-caches.sh
 step "scripts/container/test-check-path-filters.sh" 5 scripts/container/test-check-path-filters.sh

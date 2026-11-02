@@ -8,6 +8,13 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      stress_minutes:
+        description: The stress job's time for its blocks (scripts/container/stress.sh)
+        default: "180"
+      report_red:
+        description: A red run files the nightly-red issue, as a scheduled one does ("true" or "false")
+        default: "false"
 
 # A newer push to a branch or pull request cancels the run it supersedes.
 # No run is cancelled for any other reason, or made to wait, here: main, tags,
@@ -24,8 +31,9 @@ concurrency:
 
 # All the check jobs use: the checkout, and paths-filter's list of a pull
 # request's files. Written here so that changing the repository's default can't
-# hand every job, test code included, a token that writes. The three jobs that
-# write name their own scopes: image-publish, release and prune-caches.
+# hand every job, test code included, a token that writes. The four jobs that
+# write name their own scopes: image-publish, release, nightly-red and
+# prune-caches.
 permissions:
   contents: read
   pull-requests: read
@@ -171,7 +179,8 @@ jobs:
       # test step that runs no test fails), strand's build script leaving
       # git's index alone (its write made the next step rebuild the
       # binary), the job summary of the nextest run and the static half of
-      # its filters' check, affected.sh's choice of
+      # its filters' check, the stress run's summary, the nightly-red issue,
+      # affected.sh's choice of
       # crates (the laptop's inner loop, CLAUDE.md), prune-rust-caches.sh
       # (the nightly cache pruning) and check-path-filters.sh, which then holds the lock-vm and package
       # jobs' path filters to the tree: an entry naming a moved file would
@@ -187,6 +196,8 @@ jobs:
       - run: scripts/container/run.sh scripts/container/test-build-script-index.sh
       - run: scripts/container/run.sh scripts/container/test-nextest-summary.sh
       - run: scripts/container/run.sh scripts/container/test-nextest-filters.sh
+      - run: scripts/container/run.sh scripts/container/test-stress-summary.sh
+      - run: scripts/container/run.sh scripts/container/test-nightly-red.sh
       - run: scripts/container/run.sh scripts/container/test-affected.sh
       - run: scripts/container/run.sh scripts/container/test-prune-rust-caches.sh
       - run: scripts/container/run.sh scripts/container/test-check-path-filters.sh
@@ -983,6 +994,79 @@ jobs:
       - run: scripts/container/run.sh scripts/container/tests-ran.sh cargo test --profile timing -p strand --lib reload_latency -- --nocapture --test-threads=1
         env:
           STRAND_LATENCY_ROUNDS: "200"
+
+  # The tests over and over with no retry and the CPU deliberately short, to
+  # learn which fail and how often before a push does (scripts/container/stress.sh;
+  # decisions.md robustness): the tests the record says fail under load, and the
+  # whole workspace one block in four, for the time in `stress_minutes`, which the
+  # 270 minutes hold with the build and a block running over. The job summary
+  # names each failure with its rate, and the logs go up as `stress-logs`. No push
+  # waits on it: deploy and release name their jobs, and a push doesn't run this.
+  # A red night files the issue below.
+  stress:
+    needs: image-publish
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 270
+    steps:
+      - uses: actions/checkout@v7
+      # The test job's dependencies, read only, as lock-vm.
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: test
+          cache-save: "false"
+      - run: scripts/container/run.sh scripts/container/stress.sh
+        timeout-minutes: 260
+        env:
+          STRAND_STRESS_MINUTES: ${{ inputs.stress_minutes || '180' }}
+          # A new order each night; the job prints it, to replay.
+          STRAND_STRESS_SEED: ${{ github.run_id }}
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: stress-logs
+          path: |
+            target/stress/
+            target/acceptance/logs/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nightly-summary-stress
+          path: target/stress/summary.md
+          if-no-files-found: ignore
+
+  # A red night, seen: one open issue labelled `nightly-red`, a comment on it per
+  # red night (scripts/container/nightly-red.sh says why not GitHub's mail). What
+  # runs only at night has no push to go red on. Runs on schedule, and on a
+  # dispatch that asks. The only job whose token may write issues.
+  nightly-red:
+    needs: [compositors, lock-vm, nightly, stress]
+    if: always() && contains(needs.*.result, 'failure') && (github.event_name == 'schedule' || inputs.report_red == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: nightly-summary-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/summaries
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SUMMARIES: ${{ runner.temp }}/summaries
+        run: >-
+          scripts/container/nightly-red.sh
+          "compositors: ${{ needs.compositors.result }}"
+          "lock-vm: ${{ needs.lock-vm.result }}"
+          "nightly: ${{ needs.nightly.result }}"
+          "stress: ${{ needs.stress.result }}"
 
   # The dependency caches, kept to one generation each: every new Cargo.lock
   # or manifest saves a new key beside the old one, which only fills the
