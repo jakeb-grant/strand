@@ -83,7 +83,7 @@ compositor by its full path, `~/.local/bin/strand run`
 The script will not run as root: it installs Strand for one user. It
 also will not replace a `strand` in `~/.local/bin` that it did not put
 there, such as a copy of one you built. Move that away, or pass
-`--force`.
+`--force`, which also lets it run as root.
 
 ## Update
 
@@ -113,8 +113,8 @@ There are two channels:
 
 - **Releases** are tagged `v0.1.0` and so on, on GitHub. The script
   installs the newest one unless you ask for another.
-- **Edge** is the newest build of `main`. Every push to `main` that
-  passes CI replaces it.
+- **Edge** is the newest build of `main`. A push to `main` that passes
+  CI replaces it, unless a newer push has come by then.
 
 ```sh
 curl -fsSL https://strand.jacobgrant.dev/install.sh | sh -s -- --edge
@@ -125,9 +125,11 @@ updates to the newest edge build, until `--release` switches back.
 `--version 0.1.0` installs that release and switches back too. An edge
 build names its channel: `strand 0.1.0 (edge, a764f45c0d1e)`.
 
-A build on either channel passed the whole of CI first, including the
-compositor matrix, the lock screen in its VM, and this script
-installing, updating and removing it on fresh Ubuntu and Arch systems.
+A build on either channel passed CI first, including the compositor
+matrix and this script installing, updating and removing it on fresh
+Ubuntu and Arch systems. Every release also passed the lock screen's
+tests in their VM. An edge build ran those only if its push changed the
+lock's code; they run on `main` every night as well.
 
 ## Uninstall
 
@@ -248,7 +250,8 @@ Hyprland blurs layer surfaces through its own layer rules instead:
 `strand compositor-rules` prints the rules for your config, to paste
 into your Hyprland config. Strand never applies them itself. They are
 Lua (`hl.layer_rule`) by default, and `--classic` prints hyprlang
-`layerrule` lines for an older config.
+`layerrule` lines for a hyprlang config, which Hyprland reads no more
+from 0.57.
 
 Strand also uses these when the compositor offers them:
 `wp_viewporter`, `wp_fractional_scale_manager_v1`, `wp_presentation`,
@@ -280,7 +283,7 @@ of the test suite runs on a headless sway 1.9 on Ubuntu 24.04.
 
 ### How a release is made
 
-CI's `package` job builds the archive the script installs on every push
+CI's `package` job builds the archive the script installs
 (`scripts/release/package.sh`) and tests the script against it in fresh
 containers (`scripts/release/smoke.sh`). The `release` job publishes it
 once every other job has passed: a push to `main` as the `edge`

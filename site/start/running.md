@@ -199,6 +199,15 @@ mapped, each reload and each service starting or stopping. The topic `damage`
 (`STRAND_LOG=damage`, or `STRAND_LOG=info,damage` with a level) prints
 one line per painted frame with the rectangles it repainted.
 
+## Icons
+
+An `icon` looks for its name in the `icons/` folder beside your config
+(`icons/wifi.svg` or `.png`), then in your desktop's icon theme: the one
+the settings portal names, else GTK's `gtk-icon-theme-name`, else
+Adwaita. To use another theme without changing the desktop's, set
+`STRAND_ICON_THEME` in the environment `strand run` starts in. A file in
+`icons/` still wins over it.
+
 ## Start it and bind keys
 
 Start `strand run` from your compositor's startup commands, so it runs
@@ -220,7 +229,7 @@ bindsym $mod+d exec strand toggle launcher.open
 ```
 
 Hyprland, in its Lua config (`~/.config/hypr/hyprland.lua`, Hyprland
-0.55 and later):
+0.55 and later, and its only kind of config from 0.57):
 
 ```lua
 hl.on("hyprland.start", function()

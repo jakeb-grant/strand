@@ -15,7 +15,7 @@ use strand_compiler::diagnostic::Style;
 const COMMANDS: &[(&str, &str)] = &[
     (
         "run",
-        "run the config [dir] (default $XDG_CONFIG_HOME/strand; --demo: the M0 hello bar)",
+        "run the config [dir] (default $XDG_CONFIG_HOME/strand; --demo: a built-in hello bar)",
     ),
     ("check", "check the config without running it [dir | file]"),
     ("fmt", "format .strand files in place [--check] [paths]"),
@@ -141,7 +141,7 @@ fn help_asked(args: &[std::ffi::OsString]) -> Option<String> {
 /// built from (build.rs's `STRAND_COMMIT`, cut to 12 hex digits and
 /// keeping `-dirty`; left out when `unknown`), after the channel CI
 /// publishes it on when that is not a tagged release
-/// (`STRAND_CHANNEL`, scripts/release/build.sh): `strand 0.1.0 (edge,
+/// (`STRAND_CHANNEL`, scripts/release/package.sh): `strand 0.1.0 (edge,
 /// a764f45c0d1e)`, `strand 0.1.0 (a764f45c0d1e)`.
 fn version(channel: Option<&str>, commit: &str) -> String {
     let v = env!("CARGO_PKG_VERSION");

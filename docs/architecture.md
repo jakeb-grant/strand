@@ -234,53 +234,84 @@ source on the logic loop; one more than 1 MiB behind is dropped.
 
 ## Crate graph
 
+Each line is a crate's normal dependencies on other Strand crates, read from
+its `Cargo.toml`; a dependency flows only down this list, and `?` marks an
+optional one.
+
 ```
-strand-scene      shared vocabulary: ids, geometry, colour, scene protocol, Painter
-  ^   ^   ^
-  |   |   strand-surface   (layer-shell, xdg toplevels, shm, damage submit, input, frame timing)
-  |   strand-render ── strand-text
-  |   |   └── strand-icons (the icon theme lookup; no dependencies)
-  |   strand-theme     (palette schema, material(), importers; colour maths in strand-scene)
-  |     ^
-  strand-core ── strand-compiler ── strand-dev (LSP, inspector; links
-     ^        |                       strand-services-schema and strand-introspect,
-     |        └── strand-fuzzy        not the runtime)
-     |            (nucleo's matcher wrapped; no Strand crate)
-     strand-services ──> strand-watch (EventSink, CompositorEvent; portal follow;
-          |                            strand-watch depends on no Strand crate)
-          ├── strand-fuzzy (`apps.search`, the matcher `xs.fuzzy` uses)
-          ├── strand-services-macros (#[service], #[derive(Store, Data, Call)])
-          ├── strand-services-schema (the builtin services' schema texts)
-          ├── strand-icons (apps' icons, the renderer's lookup)
-          └── strand-introspect (D-Bus introspection; zbus, tokio and log only)
-strand (binary) wires everything; its ServiceHost adapters join
-strand-services' stores to strand-compiler's VM. strand-core's `ipc`
-(serde_json) is shared by strand, strand-services and strand-dev;
-strand has a [lib] target for plugin binaries.
+No Strand dependency:
+  strand-scene            shared vocabulary: ids, geometry, colour, scene protocol, Painter
+  strand-core             the reactive graph; its `ipc` (serde_json) is shared by
+                          strand, strand-services and strand-dev
+  strand-watch            EventSink, CompositorEvent; portal follow
+  strand-fuzzy            nucleo's matcher wrapped
+  strand-icons            the icon theme lookup
+  strand-introspect       D-Bus introspection; zbus, tokio and log only
+  strand-services-macros  #[service], #[derive(Store, Data, Call)]
+  strand-services-schema  the builtin services' schema texts
+  strand-auth             lib: wire protocol, Client, UnlockToken (libc, zeroize)
+                          bin: the PAM helper, the only code that links libpam
+  strand-fake-wayland     (tests only; publish = false) a fake compositor
+  tree-sitter-strand      the grammar
 
-strand-auth  lib: wire protocol, Client, UnlockToken (libc, zeroize)
-             bin: the PAM helper, the only code that links libpam
-  ^-- strand-services (`auth`), strand-surface (the unlock gate),
-      strand (`strand-lock-auth`); `Client` owners pass
-      `child::restore_in_child` as `pre_exec`
+Rendering and surfaces:
+  strand-text     -> strand-scene
+  strand-theme    -> strand-scene   (palette schema, material(), importers;
+                                     colour maths in strand-scene)
+  strand-gpu      -> strand-scene
+  strand-render   -> strand-scene, strand-text, strand-icons, strand-gpu?
+  strand-surface  -> strand-scene, strand-auth   (layer-shell, xdg toplevels,
+                     shm, damage submit, input, frame timing; the unlock gate)
 
-strand-fake-wayland  (tests only; publish = false) a fake compositor;
-                     no Strand crate
-  ^-- dev-dependency of strand-services and strand-surface; eval/
+Language and services:
+  strand-compiler -> strand-core, strand-scene, strand-theme, strand-fuzzy
+  strand-services -> strand-core, strand-watch, strand-auth (`auth`),
+                     strand-fuzzy (`apps.search`, the matcher `xs.fuzzy` uses),
+                     strand-icons (apps' icons, the renderer's lookup),
+                     strand-introspect, strand-services-macros, strand-services-schema
 
-eval/ (strand-eval)  the animation evaluation sandbox, its own workspace
-  ^-- nothing under crates/
+Binaries:
+  strand          -> strand-scene, strand-core, strand-watch, strand-icons,
+                     strand-introspect, strand-auth (`strand-lock-auth`),
+                     strand-text, strand-theme, strand-gpu?, strand-render,
+                     strand-surface, strand-compiler, strand-services
+                     It wires them; its ServiceHost adapters join strand-services'
+                     stores to strand-compiler's VM. It has a [lib] target for
+                     plugin binaries. strand-auth's `Client` owners pass
+                     `child::restore_in_child` as `pre_exec`.
+  strand-dev      -> strand-compiler, strand-core, strand-services-schema,
+                     strand-introspect   (LSP, inspector; `strand` never links it)
 
-strand-site  the docs site generator; a developer tool, never shipped
-  ^-- nothing
+The site:
+  strand-site     -> strand-compiler, strand-dev, strand-scene, strand-theme,
+                     tree-sitter-strand   (the generator; a developer tool, never
+                     shipped)
+  strand-web      -> strand-compiler, strand-core, strand-icons, strand-render,
+                     strand-scene, strand-services-schema, strand-text
+                     (the render path in a browser, cdylib + rlib; never on
+                     strand-surface; no `gpu`, `shaders` or `eval-hooks`)
 
-strand-web   the render path in a browser (cdylib + rlib), never on
-             strand-surface; no `gpu`, `shaders` or `eval-hooks`
-  ^-- nothing
+Dev-dependencies, tests only:
+  strand-compiler ~> strand-render, strand-scene, strand-text
+  strand-render   ~> strand-compiler, strand-core, strand-theme
+  strand-surface  ~> strand-fake-wayland, strand-render, strand-text
+  strand-services ~> strand-fake-wayland, strand-icons
+  strand-watch    ~> strand-compiler
+  strand-dev      ~> strand-render, strand-scene, strand-services, strand-text,
+                     tree-sitter-strand
+  strand-web      ~> strand-site
+
+eval/ (strand-eval)  the animation evaluation sandbox, its own workspace; it
+                     uses strand-compiler, strand-core, strand-fake-wayland,
+                     strand-gpu, strand-icons, strand-render, strand-scene,
+                     strand-services-schema, strand-surface and strand-text,
+                     strand-theme in its tests, and nothing under crates/
+                     depends on it
 ```
 
-`strand-scene` has no heavy dependencies: render and surface build and
-test without the language, and the language without pixels.
+`strand-scene` has no heavy dependencies: render and surface build
+without the language, and the language without pixels; only their tests
+meet (the dev-dependencies above).
 `strand_scene::placement` is the pure half of the compositor side
 (`LayerConfig`, `WindowConfig`, `PopupConfig`, `popup_shift`; no
 Wayland), re-exported as `strand_surface::placement`.
@@ -302,7 +333,11 @@ index and llms.txt markdown copies (`llms.rs`), and fails, writing
 nothing, on a dead link, an example that does not check clean or is not
 formatted, a text colour under 4.5:1, a `site/claims.toml` claim its
 page or source does not bear out, a stale CLI capture, or example media
-not tied to their scenario, dark twin and approved recording. Figures
+not tied to their scenario, dark twin and approved recording. A claim's
+source is `path "snippet"`, a quote of at least 8 characters that must
+occur in the file with whitespace runs as one space, `path.md#heading`,
+or a bare `path`; `path:line` fails, naming the claim, since it only says
+a line is in range. Figures
 are eval scenarios (`eval/scenarios/docs/`) rendered by
 `scripts/site/media.sh`; the generator never runs the renderer. CI's
 `deploy` job uploads the site to Railway (deploy/railway/README.md).
@@ -2454,10 +2489,13 @@ watch`, and keeps it for `strand report` and the inspector.
 
 ### `strand-dev`
 
-The developer tooling binary; the runtime never links it. It depends on
+The developer tooling binary; `strand` never links it. It depends on
 `strand-compiler` (with `shaders`), `strand-services-schema` (the
 services' schema texts, not their runtime), `strand-introspect` and
-`strand-core` (the inspector's socket protocol).
+`strand-core` (the inspector's socket protocol). So it shares the language
+and the reactive core with `strand`, and links none of `strand`,
+`strand-services`, `strand-render` or `strand-surface`, though its tests use
+`strand-services` and `strand-render`.
 
 The language server, `strand-dev lsp` (stdio, `lsp-server` and
 `lsp-types`): `strand_dev::serve(&Connection)` runs the protocol against

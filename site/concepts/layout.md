@@ -14,7 +14,7 @@ are props. If you know CSS flexbox, most of this is familiar.
 | `grid` | In a grid of `columns:` columns |
 | `split` | In three parts, `start`, `center` and `end`, with `center` centred on the whole whatever the others hold |
 | `scroll` | In a view that scrolls along its `axis:` |
-| `list` | In a column that scrolls, laying out and mounting only its visible rows |
+| `list` | In a column that scrolls, or a line with `axis: horizontal`, or a grid with `columns:`, laying out and mounting only its visible rows |
 
 `spacer` takes the space left in its row or column, and `box` is a
 plain box to style. A surface, a `box` and a `popup` lay their children
@@ -51,9 +51,9 @@ moves from workspace 1 to 3, then to 2:
 ## Sizes
 
 - **`width`, `height` and `size`** take logical pixels (`36` is
-  `36px`), a percentage of the parent (`40%`) or `ch`, the width of a
-  character in the node's font (`4ch`). Unset, or `auto`, a node is
-  the size of what it holds.
+  `36px`), a percentage of the parent (`40%`) or `ch`, 0.6 of the node's
+  font size, about one digit's width (`4ch`). Unset, or `auto`, a node
+  is the size of what it holds.
 - **`min_width`, `max_width`, `min_height` and `max_height`** bound
   it: `max_height: 420` on a list makes it scroll past 420 px.
 - **`pad`** is space inside a node's edge and **`margin`** space

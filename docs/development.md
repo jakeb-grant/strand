@@ -42,6 +42,8 @@ Each crate is one box in the runtime architecture:
 | `strand-fake-wayland` | A fake Wayland compositor for tests (toplevels, workspaces, layer surfaces) | M4 |
 | `strand` | The runtime binary and CLI | all |
 | `strand-dev` | LSP and inspector, kept out of the runtime binary | M1, M5 |
+| `strand-site` | The docs site's generator (`site/` to `target/site`); a developer tool, never shipped | — |
+| `strand-web` | The site's live examples: the render path in a browser, on a virtual clock with mock services | — |
 
 Beside the workspace, `eval/` is the animation evaluation sandbox: a Cargo
 workspace of its own, never part of the shipped binary, that runs a config
@@ -156,8 +158,9 @@ releases, both made by CI from the same archive
 strand-eval built with the release profile, the licenses and every
 dependency's license in `THIRD-PARTY-LICENSES.txt`):
 
-- **edge**: every push to `main` whose every CI job passed replaces the
-  build on the `edge` pre-release (`scripts/release/publish.sh`). Its
+- **edge**: a push to `main` whose every CI job passed replaces the
+  build on the `edge` pre-release, unless a newer push has come by then,
+  whose own run publishes it (`scripts/release/publish.sh`). Its
   archive is `strand-edge-<12 hex digits of the commit>-x86_64-linux.tar.gz`.
   The `edge` tag stays at the commit the pre-release was first made
   from, since moving a tag breaks `git fetch` for anyone who has it.
@@ -197,13 +200,18 @@ cargo test --workspace
 CI runs these on every push, with headless sway, grim and DejaVu fonts
 installed so the Wayland integration tests and the M0 demo run (set
 `STRAND_REQUIRE_SWAY=1` to make a missing sway fail instead of skip), in
-five jobs side by side: `lint` (fmt and clippy), `test` (the debug
+check jobs side by side: `lint` (fmt and clippy), `test` (the debug
 workspace tests, the 100 reloads and the short fuzzer run), `budgets`
-(demo, services and budgets on the release profile), `acceptance` and
+(demo, services and budgets on the release profile), `acceptance`,
 `timing` (the theme swap and latency benches on the `timing` profile:
-release's opt-levels without link-time optimisation).
-`scripts/container/run.sh ci` runs every step in order in an image that
-matches CI (`CI_JOB=NAME` for one job). The steps:
+release's opt-levels without link-time optimisation), `eval` (the sandbox's
+gate), `site` (the site built and its media checked), `wasm` (the live
+examples in a browser), `compositors`, `lock-vm` and `package` (the release
+archive built, installed and started). On `main`, `deploy` and `release`
+wait for all of them, and `nightly` runs on the schedule.
+`scripts/container/run.sh ci` runs the steps of the first seven in order in
+an image that matches CI (`CI_JOB=NAME` for one of them); `compositors` and
+`lock-vm` have `matrix.sh` and `lockvm.sh`, below. The steps:
 
 - fmt and clippy as above;
 - `cargo test --workspace -- --skip random_edits_through_five_save_styles`
@@ -257,8 +265,8 @@ available).
 Animation changes are checked by the evaluation sandbox (docs/eval.md):
 `scripts/container/run.sh eval check eval/scenarios/curated` runs the
 curated scenarios, and `scripts/container/run.sh eval selftest` runs its
-whole gate, which CI's `eval` job runs on every push (`CI_JOB=eval` for
-`run.sh ci`'s steps 35 to 39). The effect matrix at 60 and 144 Hz and the
+whole gate, which CI's `eval` job runs on every push (`CI_JOB=eval` runs
+only that job's steps in `run.sh ci`, which prints each step's number). The effect matrix at 60 and 144 Hz and the
 mutants run nightly (`.github/workflows/eval-matrix.yml`); a report's
 `index.html` scrubs every frame.
 
@@ -267,3 +275,46 @@ and damage gates over whole minutes on a release build (the M0 demo and
 design.md's bar, and the full shell with the launcher open).
 `scripts/m3-shots.sh` takes screenshots of the full shell on the real
 services.
+
+## Environment variables
+
+These change what a shipped binary or a script does. The first group is
+for users, and the site documents all but `STRAND_NO_CACHE`, which only gives
+up the last-good fallback.
+
+| Variable | Read by | What it does |
+| --- | --- | --- |
+| `STRAND_LOG` | `strand` | A level and topics, comma-separated; default `warn` |
+| `STRAND_SOCKET` | `strand`, `strand-dev` | The shell's socket, absolute; no program the shell starts inherits it |
+| `STRAND_STATE_DIR` | `strand` | The shell's state directory, absolute; no program the shell starts inherits it |
+| `STRAND_EDITOR` | `strand`'s overlay | The command that opens a file at an error, a template with `{file}`, `{line}` and `{col}` |
+| `STRAND_ICON_THEME` | `strand` | The icon theme, over the settings portal and GTK's settings |
+| `STRAND_NO_CACHE` | `strand run` | Any value: no last-good cache, so a config broken at start shows only the overlay |
+
+The rest are for tests and development. All but the last four are read at
+run time, also by a release build:
+
+| Variable | Read by | What it does |
+| --- | --- | --- |
+| `STRAND_MOCK` | `strand run` | `desktop` or `acceptance`: a mock desktop in place of the real services |
+| `STRAND_MOCK_SCREEN` | `strand run` | With a mock, the output its first four workspaces are on; default `HEADLESS-1` |
+| `STRAND_MOCK_APPS` | `strand run` | With a mock, how many apps are installed, at most 100,000; default three |
+| `STRAND_BACKLIGHT_DIR` | the `brightness` service | A directory read in place of `/sys/class/backlight` |
+| `STRAND_GPU_SOFTWARE` | `strand` | `1` accepts a software adapter (lavapipe) as a device |
+| `STRAND_GPU_FIFO` | `strand` | `1` keeps a presented surface on `Fifo` where it would use `Mailbox` |
+| `STRAND_EVAL_APPROVER`, `STRAND_EVAL_FONTS`, `STRAND_EVAL_RULE_STATS` | `strand-eval` | See `docs/eval.md` |
+| `STRAND_INSTALL_API` | `scripts/install.sh` | The release API's base URL, in place of GitHub's; only with it set may that be `file://` |
+| `STRAND_REPORTS` | `scripts/report-view.sh` | Where the newest report is looked for |
+| `STRAND_CHANNEL` | the build | `edge` or `release`, exported by `scripts/release/package.sh`; `strand --version` shows `edge` |
+| `STRAND_COMMIT` | the build | Set by `crates/strand/build.rs`, for `strand --version` and reports; not an input |
+
+Every other `STRAND_*` is one of two things. A test or script reads it, and
+its name is explained where it is read (`STRAND_REQUIRE_*`,
+`STRAND_UPDATE_REFS`, `STRAND_BLESS`, `STRAND_FUZZ_*`, `STRAND_LOCK_VM*`,
+`STRAND_MATRIX*`, the benches' counts, and `STRAND_FAULT` and
+`STRAND_AUTH_PAM_CONFDIR`, compiled only with `strand-auth`'s `faults`
+feature). Or it is not a variable at all: `STRAND_MIME`,
+`STRAND_SELECTION_MIME` and `STRAND_REFUSED` are constants,
+`STRAND_GLOBAL`, `STRAND_NO_THP` and `STRAND_GPU_ENV` are statics in
+`process_setup!`'s expansion, and `STRAND_SEARCH` and `STRAND_WASM` are
+the site's `window` globals.

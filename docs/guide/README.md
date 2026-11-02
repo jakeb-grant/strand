@@ -95,8 +95,10 @@ are not steps.
   [install script](../../site/start/install.md) puts it there:
   `curl -fsSL https://strand.jacobgrant.dev/install.sh | sh`. Or build it
   from a checkout of the repository with
-  `cargo build --release -p strand` (it lands in
-  `target/release/strand`). `strand --version` tells you it is found.
+  `cargo build --release -p strand -p strand-auth`, which puts both in
+  `target/release`. Keep `strand-auth` beside `strand`: level 4's lock
+  screen checks passwords with it, and without it `strand check` refuses
+  the lock. `strand --version` tells you `strand` is found.
 
 Then start at [level 1](level-1.md).
 

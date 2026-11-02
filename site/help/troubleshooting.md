@@ -122,6 +122,15 @@ Hyprland, `strand compositor-rules` prints layer rules for your config;
 paste them into your Hyprland config, and Hyprland blurs Strand's
 surfaces itself.
 
+## An input method does not type in a field
+
+Strand does not support input methods (`text-input-v3`), so Fcitx and IBus
+cannot type into an `input`, and Chinese, Japanese or Korean text that needs
+one cannot be typed there. Pasting works, with Ctrl+V. Dead keys and Compose
+need no input method:
+[Keyboard shortcuts](../how-to/keys.md#dead-keys-compose-and-input-methods)
+says how they behave.
+
 ## The GPU is not used
 
 Strand draws on the CPU by default and moves a surface to the GPU once

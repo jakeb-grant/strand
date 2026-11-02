@@ -77,12 +77,12 @@ with tests such as `a_panel_opening_is_promoted_at_its_first_frame`,
 `strand report` shows each
 surface's backend and why.
 
+<!-- repo-only -->
 Strand's own build is held to memory and speed budgets, set in
 [design.md](../../docs/design.md#rendering-performance-and-memory-budget).
 They catch a change that makes Strand slower or bigger, and are never
 a limit on what your shell may do.
 
-<!-- repo-only -->
 ## What CI holds
 
 The memory figures are PSS, a process's memory with shared pages split

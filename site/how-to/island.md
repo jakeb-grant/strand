@@ -64,7 +64,9 @@ to fit the card, and back when the card goes.
 
 ## Why the surface stays still
 
-A panel anchored to one edge, like this one, takes the whole width of the monitor from its first frame, and only the box takes the pointer, so the rest of that width lets clicks through to what is below. It also keeps the tallest height it has needed, across restarts, so after the first open under a config the box moves inside a surface that does not resize, and a compositor that animates resizes has nothing to animate.
+Anchored to one edge and sized by its content along it, this panel takes the whole width of the monitor from its first frame, and only the box takes the pointer, so the rest of that width lets clicks through to what is below. The `~` on `size: auto` does the rest: it keeps the tallest height it has needed, across restarts, so after the first open under a config the box moves inside a surface that does not resize, and a compositor that animates resizes has nothing to animate.
+
+A panel anchored to an edge does not get this by itself. A written `width` or `height` has no span on that axis and keeps nothing, and `exclusive: true` and `~ instant` do not keep. [Surfaces and monitors](../concepts/surfaces.md#a-panel-the-size-of-what-it-holds) says when each holds.
 
 ## Variations
 

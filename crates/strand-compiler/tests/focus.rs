@@ -327,6 +327,24 @@ fn return_prefers_activate_over_click() {
     assert_eq!((sh.num("acts"), sh.num("clicks")), (1.0, 1.0));
 }
 
+/// The keyboard's `on activate` is not the mouse's: off a list's row a
+/// pointer's click runs `on click` and nothing else.
+#[test]
+fn a_pointers_click_runs_no_activate_off_a_list_row() {
+    let mut sh = entered(
+        "state clicks = 0\nstate acts = 0\n\
+         panel P { anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+           button \"b\" { width: 100; height: 40\n\
+             on click { clicks += 1 }\n\
+             on activate { acts += 1 }\n\
+           }\n\
+         }\n",
+    );
+    sh.click(10.0, 10.0);
+    sh.settle();
+    assert_eq!((sh.num("acts"), sh.num("clicks")), (0.0, 1.0));
+}
+
 /// A button in a list's row: its click, and the row chosen, as a pointer's.
 #[test]
 fn return_on_a_button_in_a_row_activates_the_row() {
@@ -356,6 +374,29 @@ fn return_on_the_surface_itself_clicks_nothing() {
     );
     tap(&mut sh, "Return");
     assert_eq!(sh.num("clicks"), 0.0);
+}
+
+/// A key a `slider` or `segmented` doesn't take is a press like any other
+/// node's, bound two-way or not.
+#[test]
+fn return_and_space_press_a_slider_and_a_segmented() {
+    for control in [
+        "slider { focus: true; value: <-> v; range: 0, 100; on click { clicks += 1 } }",
+        "slider { focus: true; value: v; range: 0, 100; on click { clicks += 1 } }",
+        "segmented { focus: true; options: [\"a\", \"b\"]; value: <-> pick; on click { clicks += 1 } }",
+        "segmented { focus: true; options: [\"a\", \"b\"]; value: pick; on click { clicks += 1 } }",
+    ] {
+        let mut sh = entered(&format!(
+            "state clicks = 0\nstate v = 50.0\nstate pick = \"a\"\n\
+             panel P {{ anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+               {control}\n\
+             }}\n"
+        ));
+        tap(&mut sh, "Return");
+        assert_eq!(sh.num("clicks"), 1.0, "Return on {control}");
+        tap(&mut sh, "space");
+        assert_eq!(sh.num("clicks"), 2.0, "space on {control}");
+    }
 }
 
 // A slider's and a segmented's keys.
@@ -1555,6 +1596,29 @@ fn return_on_a_focused_row_does_what_a_click_on_it_does() {
         (2.0, 2.0),
         "the pointer"
     );
+}
+
+/// Only a press ignores a repeat: an `input`'s and a `list`'s Return is its
+/// own, so holding it activates again (site/how-to/keys.md).
+#[test]
+fn a_held_return_activates_an_input_and_a_list_again() {
+    for node in [
+        "input { focus: true; on activate { acts += 1 } }",
+        "list { focus: true; height: 40; on activate { acts += 1 }\n box { height: 20 }\n}",
+    ] {
+        let mut sh = entered(&format!(
+            "state acts = 0\n\
+             panel P {{ anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+               {node}\n\
+             }}\n"
+        ));
+        tap(&mut sh, "Return");
+        assert_eq!(sh.num("acts"), 1.0, "{node}: the press");
+        let e = key_with(&sh, "Return", "", true, false);
+        sh.send(e);
+        sh.settle();
+        assert_eq!(sh.num("acts"), 2.0, "{node}: the repeat");
+    }
 }
 
 /// A row with its own `on activate` hears it once, not as a press and again.

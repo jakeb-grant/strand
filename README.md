@@ -25,8 +25,9 @@ bar Top {
   <img src="site/media/hello-light.png" alt="The bar that file draws: the focused window's title on the left, the time in the middle, the battery on the right">
 </picture>
 
-That file is a bar on every monitor, themed and animated. It wakes once
-a minute, for its clock.
+That file is a bar on every monitor, themed and animated. It wakes only
+when something it shows changes: the minute, the focused window's title,
+the battery.
 
 - **Changes move on springs.** Change a value and its prop moves there.
   Spring curves are theme tokens you can retune.

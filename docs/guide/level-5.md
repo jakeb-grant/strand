@@ -777,8 +777,8 @@ steps.
 
 ## 7. Plugins
 
-When no `from dbus`, `from file`, `from poll` or `from listen` service
-can describe what you need, a service can be written in Rust and built
+When no `from dbus`, `from file`, `from dir`, `from poll` or `from
+listen` service can describe what you need, a service can be written in Rust and built
 into your own `strand` binary. [The plugin page](plugins.md) shows how.
 
 ## What you have

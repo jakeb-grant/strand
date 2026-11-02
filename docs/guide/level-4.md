@@ -398,6 +398,11 @@ launcher uses: `for h in hits` and `hits.len` read the last result,
 empty before the first one. `!hits.pending` in the last line stops "No
 matches" from flashing while a search is still running.
 
+`.fuzzy` runs the same matcher over any list you already hold. It takes
+no time to arrive, so it gives a plain list, not an `Async`:
+`windows.all.fuzzy(query, w => w.title)` gives each match's `item`,
+`score` and `ranges`.
+
 An app may offer more than starting it: `h.app.actions` lists its extra
 actions (a new window, a private one), each with a `name` to show and
 `a.launch()` to start it, for a menu beside the hit.
@@ -406,7 +411,10 @@ actions (a new window, a private one), each with a `name` to show and
 but it only builds the rows you can see, so a thousand apps cost no
 more than ten. It also has a selection: arrow keys move it, `selected`
 is true on the selected row, and Return fires that row's
-`on activate`.
+`on activate`. A click on a row selects it and fires it too. That is a
+list's own: anywhere else a click runs `on click`, and `on activate`
+answers only the keyboard, so a `button` the mouse should press needs
+`on click`.
 
 **`id: results` names a node, and `nav: results` points at it.** The
 input keeps the keyboard focus so you can type, and `nav:` sends the
@@ -420,6 +428,13 @@ a window switcher opened on Alt+Tab can pick on Alt's release with
 `on change keyboard.alt { if !keyboard.alt { … } }`. **`open: <-> open`**
 works as the popup's did at level 3: the toggle opens it, and Escape, a
 click away or focus moving elsewhere writes `false` back.
+
+**Keys of your own.** `on key "ctrl+n" { results.next() }` on the panel
+claims a key: that handler runs, and the key does nothing else. Tab moves
+focus between what can take it, and Return or space presses a focused
+button. [Keyboard shortcuts](../../site/how-to/keys.md) has the rest:
+every key a focused element answers, dead keys and Compose, and that
+Strand has no input method.
 
 **`on show { query = "" }`** runs each time the surface opens. Every
 surface has `on show` and `on hide`.
