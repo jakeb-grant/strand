@@ -307,7 +307,8 @@ jobs:
           cache-key: release
           cache-save: "false"
       - run: scripts/container/run.sh cargo test --release -p strand --test acceptance -- --nocapture --test-threads=1
-      # A screenshot that missed its reference, with its diff.
+      # A screenshot that missed its reference, with its diff, and a failed
+      # test's sway.log and timed.log (target/acceptance/logs/<tag>/).
       - uses: actions/upload-artifact@v7
         if: failure()
         with:

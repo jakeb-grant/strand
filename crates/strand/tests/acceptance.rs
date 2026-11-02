@@ -80,6 +80,9 @@ struct Desk {
     display: String,
     ipc: PathBuf,
     log: PathBuf,
+    /// The test's steps and strand's lines, each with its time since the
+    /// desk started (`Desk::note`, [`keep_logs`]).
+    timed: Timed,
     tag: &'static str,
     shots: std::cell::Cell<u32>,
 }
@@ -87,8 +90,74 @@ struct Desk {
 impl Drop for Desk {
     fn drop(&mut self) {
         self.strand.take();
+        if std::thread::panicking() {
+            self.keep_logs();
+        }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// `timed.log`: a line, written whole with its time since the desk started.
+#[derive(Clone)]
+struct Timed {
+    start: Instant,
+    file: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
+}
+
+impl Timed {
+    fn say(&self, line: &str) {
+        let at = self.start.elapsed().as_secs_f64();
+        if let Ok(mut f) = self.file.lock() {
+            let _ = f.write_all(format!("+{at:8.3}s {line}\n").as_bytes());
+        }
+    }
+}
+
+/// The surfaces of `log`'s damage lines, each `surface=<id> buffer=… scale=…`.
+/// A line still being written (no newline yet) is left for the next read:
+/// one cut at `strand: damage surface=` is no surface.
+fn surfaces_in(log: &str) -> Vec<String> {
+    let complete = log.rfind('\n').map_or("", |end| &log[..end]);
+    complete
+        .lines()
+        .filter(|l| l.starts_with("strand: damage"))
+        .map(|l| {
+            l.split_whitespace()
+                .filter(|w| {
+                    w.starts_with("surface=") || w.starts_with("buffer=") || w.starts_with("scale=")
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect()
+}
+
+/// How many distinct surfaces those are.
+fn count_surfaces(lines: &[String]) -> usize {
+    let mut s: Vec<&str> = lines
+        .iter()
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+    s.sort_unstable();
+    s.dedup();
+    s.len()
+}
+
+/// A read of the log in the middle of a line strand is writing saw one more
+/// surface than there were, and `surface_count() > before` then never held
+/// (run 41339225373: the launcher drawn, and the wait for it timed out).
+#[test]
+fn a_line_still_being_written_is_no_surface() {
+    let whole = "strand: damage surface=1 buffer=2560x59 scale=1 age=0\n\
+                 strand: damage surface=2 buffer=1920x74 scale=1.25 age=0\n";
+    for cut in ["", "strand: damage surface=", "strand: damage surface=3"] {
+        let lines = surfaces_in(&format!("{whole}{cut}"));
+        assert_eq!(count_surfaces(&lines), 2, "{cut:?}: {lines:?}");
+    }
+    let lines = surfaces_in(&format!(
+        "{whole}strand: damage surface=3 buffer=746x377 scale=1 age=0\n"
+    ));
+    assert_eq!(count_surfaces(&lines), 3, "{lines:?}");
 }
 
 impl Desk {
@@ -132,6 +201,12 @@ impl Desk {
             ),
         )
         .unwrap();
+        let timed = Timed {
+            start: Instant::now(),
+            file: std::sync::Arc::new(std::sync::Mutex::new(
+                std::fs::File::create(dir.join("timed.log")).unwrap(),
+            )),
+        };
         let log = std::fs::File::create(dir.join("sway.log")).unwrap();
         let mut cmd = Command::new("sway");
         // The compositor dies with the thread that started it, so a test
@@ -172,6 +247,7 @@ impl Desk {
             display: String::new(),
             ipc: PathBuf::new(),
             log: dir.join("strand.log"),
+            timed,
             tag,
             shots: std::cell::Cell::new(0),
         };
@@ -238,16 +314,62 @@ impl Desk {
             // No portal: the theme's `auto` look is the light scheme.
             .env_remove("DBUS_SESSION_BUS_ADDRESS")
             .stdin(Stdio::null())
-            .stderr(std::fs::File::create(&desk.log).unwrap())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        desk.strand = Some(Proc(child));
+        desk.tee_stderr(child);
         // A bar painted on each output.
         desk.wait("a bar on each output", 30, move |d| {
             let s = d.surfaces();
             s.iter().any(|b| bar(b)) && s.iter().any(|b| b.contains("scale=1.25"))
         });
         Some(desk)
+    }
+
+    /// strand's stderr, read off its pipe: into `strand.log` as it wrote
+    /// it, and into `timed.log` with the time each line came.
+    fn tee_stderr(&mut self, mut child: Child) {
+        let stderr = child.stderr.take().unwrap();
+        let mut log = std::fs::File::create(&self.log).unwrap();
+        let timed = self.timed.clone();
+        std::thread::spawn(move || {
+            let mut stderr = BufReader::new(stderr);
+            let mut line = Vec::new();
+            while stderr.read_until(b'\n', &mut line).is_ok_and(|n| n > 0) {
+                let _ = log.write_all(&line);
+                timed.say(String::from_utf8_lossy(&line).trim_end());
+                line.clear();
+            }
+        });
+        self.strand = Some(Proc(child));
+    }
+
+    /// A step of the test, on `timed.log`'s timeline.
+    fn note(&self, step: &str) {
+        self.timed.say(&format!("{}: {step}", self.tag));
+    }
+
+    fn timed_text(&self) -> String {
+        std::fs::read_to_string(self.dir.join("timed.log")).unwrap_or_default()
+    }
+
+    /// A failed test's `sway.log` and `timed.log`, kept where CI uploads
+    /// `target/acceptance/` from: the desk's directory goes with it.
+    fn keep_logs(&self) {
+        let out = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/acceptance/logs")
+            .join(self.tag);
+        if std::fs::create_dir_all(&out).is_err() {
+            return;
+        }
+        for name in ["sway.log", "timed.log", "strand.log"] {
+            let _ = std::fs::copy(self.dir.join(name), out.join(name));
+        }
+        eprintln!(
+            "{}: sway.log, timed.log and strand.log kept in {}",
+            self.tag,
+            out.display()
+        );
     }
 
     /// The seat's virtual keyboard, there since before strand started.
@@ -282,48 +404,59 @@ impl Desk {
     /// Each painted frame's surface and buffer, as `STRAND_LOG=damage`
     /// prints them.
     fn surfaces(&self) -> Vec<String> {
-        self.log_text()
-            .lines()
-            .filter(|l| l.starts_with("strand: damage"))
-            .map(|l| {
-                l.split_whitespace()
-                    .filter(|w| {
-                        w.starts_with("surface=")
-                            || w.starts_with("buffer=")
-                            || w.starts_with("scale=")
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .collect()
+        surfaces_in(&self.log_text())
     }
 
     /// Distinct surfaces painted so far.
     fn surface_count(&self) -> usize {
-        let mut s: Vec<String> = self
-            .surfaces()
-            .iter()
-            .filter_map(|l| l.split_whitespace().next().map(String::from))
-            .collect();
-        s.sort();
-        s.dedup();
-        s.len()
+        count_surfaces(&self.surfaces())
+    }
+
+    /// Wait up to `secs` for a surface beyond the `before` painted so far.
+    /// Its failure says both counts and when each step came.
+    fn wait_new_surface(&mut self, what: &str, secs: u64, before: usize) {
+        self.note(&format!("waiting for {what}: {before} surfaces so far"));
+        self.wait_with(
+            secs,
+            |d| d.surface_count() > before,
+            |d| {
+                let now = d.surface_count();
+                format!("{what}: {before} surfaces before, {now} now: {:?}", {
+                    let mut s = d.surfaces();
+                    s.sort();
+                    s.dedup();
+                    s
+                })
+            },
+        );
+        self.note(&format!("{what}: {} surfaces", self.surface_count()));
     }
 
     /// Wait up to `secs` for `done`, failing with the log if strand exits.
     fn wait(&mut self, what: &str, secs: u64, done: impl Fn(&Desk) -> bool) {
+        self.wait_with(secs, done, |_| what.to_string());
+    }
+
+    /// [`Desk::wait`], its failure saying what `what` makes of the desk then.
+    fn wait_with(
+        &mut self,
+        secs: u64,
+        done: impl Fn(&Desk) -> bool,
+        what: impl Fn(&Desk) -> String,
+    ) {
         let deadline = Instant::now() + Duration::from_secs(secs);
         while !done(self) {
             let exited = self
                 .strand
                 .as_mut()
                 .is_some_and(|p| p.0.try_wait().unwrap().is_some());
-            assert!(!exited, "strand exited: {}", self.log_text());
+            assert!(!exited, "strand exited: {}", self.timed_text());
             assert!(
                 Instant::now() < deadline,
-                "{}: {what}\n{}",
+                "{}: {}\n{}",
                 self.tag,
-                self.log_text()
+                what(self),
+                self.timed_text()
             );
             std::thread::sleep(Duration::from_millis(40));
         }
@@ -808,7 +941,7 @@ fn the_bar_and_its_calendar_on_two_outputs() {
     // The clock's click opens the calendar below it, centred on it.
     let surfaces = desk.surface_count();
     pointer.click(1280, 26, LAYOUT.0, LAYOUT.1);
-    desk.wait("the calendar popup", 10, |d| d.surface_count() > surfaces);
+    desk.wait_new_surface("the calendar popup", 10, surfaces);
     pointer.motion(1800, 900, LAYOUT.0, LAYOUT.1);
     let card = rect(1280 - 200, 44, 400, 320);
     let cal = desk.settled_ref("HEADLESS-1", card, "calendar_october");
@@ -953,8 +1086,9 @@ fn the_launcher_filters_selects_and_closes() {
     // exclusive` takes it when the launcher opens).
     let mut keys = desk.keys.take().expect("made in Desk::start_with");
     let surfaces = desk.surface_count();
+    desk.note("strand set launcher.open true");
     desk.cli(&["set", "launcher.open", "true"]);
-    desk.wait("the launcher", 10, |d| d.surface_count() > surfaces);
+    desk.wait_new_surface("the launcher", 10, surfaces);
     // The box: 600 wide, centred in the usable area below the bar.
     let area = rect(980 - 40, 200, 680, 1040);
     let col = 340 + 250;

@@ -1053,8 +1053,12 @@ impl Host {
             let lists = self.renderer.list_frames();
             let times = self.renderer.last_paint_times();
             let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
-            eprintln!(
-                "strand: damage surface={} buffer={}x{} scale={} age={} area={} rects={} gaps={} stalls={} top={} pending={} flatten={:.2} wait={:.2} raster={:.2}",
+            // One write for the whole line: `eprintln!` writes each piece of
+            // its format on its own, and a test reading the log between two
+            // saw `strand: damage surface=` as a surface (decisions.md
+            // robustness).
+            let line = format!(
+                "strand: damage surface={} buffer={}x{} scale={} age={} area={} rects={} gaps={} stalls={} top={} pending={} flatten={:.2} wait={:.2} raster={:.2}\n",
                 surface.0,
                 size.w,
                 size.h,
@@ -1070,6 +1074,7 @@ impl Host {
                 ms(times.text_wait),
                 ms(times.raster),
             );
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
         }
     }
 }
