@@ -300,6 +300,8 @@ Dev-dependencies, tests only:
   strand-surface  ~> strand-fake-wayland, strand-render, strand-text
   strand-services ~> strand-fake-wayland, strand-icons
   strand-watch    ~> strand-compiler
+  strand, strand-gpu, strand-introspect, strand-services, strand-surface,
+  strand-watch and eval's tests ~> strand-test-support
   strand-dev      ~> strand-render, strand-scene, strand-services, strand-text,
                      tree-sitter-strand
   strand-web      ~> strand-site

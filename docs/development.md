@@ -216,7 +216,10 @@ its shell's config in `strand_test_support::dir::own_dir`, because the watcher
 watches each of its ancestors for children going. `scripts/container/nextest-filters.sh`
 fails on a filter that matches no test, and on a retry that reaches a budget, a
 timing gate or a pixel reference. A test that passes only on its retry is named
-FLAKY in the log and in the job's summary.
+FLAKY in the log and in the job's summary. A test over 60 s is named SLOW as it
+runs, and one over 40 min ends in a TIMEOUT that names it. CI runs six at a time
+on its four vCPUs (`-j 6`, measured in decisions.md robustness), the laptop one
+per core.
 
 CI runs these on every push, with headless sway, grim and DejaVu fonts
 installed so the Wayland integration tests and the M0 demo run (set
