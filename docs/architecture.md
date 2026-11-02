@@ -252,6 +252,9 @@ No Strand dependency:
   strand-auth             lib: wire protocol, Client, UnlockToken (libc, zeroize)
                           bin: the PAM helper, the only code that links libpam
   strand-fake-wayland     (tests only; publish = false) a fake compositor
+  strand-test-support     (tests only; publish = false; std alone, no Strand
+                          crate) deadlines, short private directories, a
+                          headless sway, a private session bus
   tree-sitter-strand      the grammar
 
 Rendering and surfaces:

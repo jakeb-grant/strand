@@ -30,9 +30,12 @@
 # nothing else in the root workspace) and prints the command that runs
 # the sandbox's scenarios on it.
 #
-# --list prints the crates and runs nothing. Test args after `--` go to
-# the test binaries; by default the fuzzer and the 100 reloads are
-# skipped, as in ci's workspace step.
+# --list prints the crates and runs nothing. The crates' tests run through
+# cargo-nextest's default profile (no retries, .config/nextest.toml), with
+# the fuzzer and the 100 reloads skipped as in ci's workspace step, then
+# their doc-tests. Test args after `--` go to the test binaries instead,
+# through `cargo test`, the fuzzer and the reloads included unless they
+# say otherwise.
 
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -49,8 +52,6 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 test_args=("$@")
-[ "${#test_args[@]}" -gt 0 ] ||
-  test_args=(--skip random_edits_through_five_save_styles --skip a_hundred_reloads_reconnect_and_restart_nothing)
 
 # AFFECTED_FILES (one path a line) stands in for the diff: the tests'.
 if [ -n "${AFFECTED_FILES+set}" ]; then
@@ -153,4 +154,9 @@ fi
 [ -n "$crates" ] || exit 0
 args=()
 for c in $crates; do args+=(-p "$c"); done
-exec cargo test "${args[@]}" -- "${test_args[@]}"
+if [ "${#test_args[@]}" -gt 0 ]; then
+  exec cargo test "${args[@]}" -- "${test_args[@]}"
+fi
+cargo nextest run "${args[@]}" \
+  -E 'not (test(random_edits_through_five_save_styles) or test(a_hundred_reloads_reconnect_and_restart_nothing))'
+exec cargo test --doc "${args[@]}"

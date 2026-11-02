@@ -95,11 +95,14 @@ fn an_idle_pipewire_wakes_no_audio_thread() {
     // A meter on the default sink, which plays nothing: passive, so the
     // sink stays suspended and the meter costs no wakeups.
     audio.set_levels([LevelTarget::DefaultSink]);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !pw.has_node("strand-levels") {
-        assert!(Instant::now() < deadline, "the meter never started");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert!(
+        strand_test_support::wait::within(
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+            || pw.has_node("strand-levels")
+        ),
+        "the meter never started"
+    );
     assert_idle("a meter on a silent sink", &rx);
 
     // A real change still gets through (the thread was asleep, not dead).

@@ -2998,6 +2998,7 @@ dependencies = [
  "strand-scene",
  "strand-services",
  "strand-surface",
+ "strand-test-support",
  "strand-text",
  "strand-theme",
  "strand-watch",
@@ -3106,6 +3107,7 @@ dependencies = [
  "pollster",
  "raw-window-handle",
  "strand-scene",
+ "strand-test-support",
  "vello_common",
  "vello_gpu",
  "wgpu",
@@ -3120,6 +3122,7 @@ name = "strand-introspect"
 version = "0.1.0"
 dependencies = [
  "log",
+ "strand-test-support",
  "tokio",
  "zbus",
 ]
@@ -3184,6 +3187,7 @@ dependencies = [
  "strand-introspect",
  "strand-services-macros",
  "strand-services-schema",
+ "strand-test-support",
  "strand-watch",
  "swayipc-types",
  "tempfile",
@@ -3243,6 +3247,7 @@ dependencies = [
  "strand-fake-wayland",
  "strand-render",
  "strand-scene",
+ "strand-test-support",
  "strand-text",
  "wayland-backend",
  "wayland-client",
@@ -3253,6 +3258,10 @@ dependencies = [
  "xkbcommon",
  "zeroize",
 ]
+
+[[package]]
+name = "strand-test-support"
+version = "0.1.0"
 
 [[package]]
 name = "strand-text"
@@ -3291,6 +3300,7 @@ dependencies = [
  "futures-lite",
  "rustix",
  "strand-compiler",
+ "strand-test-support",
  "tempfile",
  "tokio",
  "zbus",

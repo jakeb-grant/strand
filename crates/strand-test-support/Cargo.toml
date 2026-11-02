@@ -1,0 +1,17 @@
+[package]
+name = "strand-test-support"
+description = "What the test files share: deadlines, short private directories, a headless sway, a private bus (tests only)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# A dev-dependency only, of std and nothing else: no Strand crate, so any
+# crate's tests can use it, and no third-party package, so it can't move a
+# feature of the release build the budgets measure (docs/architecture.md,
+# "Crate graph"; decisions.md robustness).
+[dependencies]
+
+[lints]
+workspace = true

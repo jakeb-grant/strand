@@ -112,15 +112,15 @@ fn hear(tokio: &tokio::runtime::Runtime, conn: &zbus::Connection) -> Arc<Mutex<V
 }
 
 fn wait_heard(heard: &Arc<Mutex<Vec<String>>>, line: &str) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !heard.lock().unwrap().iter().any(|l| l == line) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "never heard {line}: {:?}",
-            heard.lock().unwrap()
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    assert!(
+        strand_test_support::wait::within(
+            Duration::from_secs(10),
+            Duration::from_millis(10),
+            || heard.lock().unwrap().iter().any(|l| l == line)
+        ),
+        "never heard {line}: {:?}",
+        heard.lock().unwrap()
+    );
 }
 
 #[test]
@@ -1291,11 +1291,14 @@ fn forgetting_erases_the_history_and_stays_off() {
     );
     until(&rt, &s, "kept", || all(&b, &rt).len() == 1);
     // Saved a moment after the change.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while !file.exists() {
-        assert!(std::time::Instant::now() < deadline, "never saved");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    assert!(
+        strand_test_support::wait::within(
+            Duration::from_secs(5),
+            Duration::from_millis(20),
+            || file.exists()
+        ),
+        "never saved"
+    );
     assert!(
         std::fs::read_to_string(&file)
             .unwrap()

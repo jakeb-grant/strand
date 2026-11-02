@@ -30,11 +30,10 @@ fn count(fake: &Fake, line: &str) -> usize {
 
 /// Waits (5 s at most) for `f` to hold.
 fn wait(what: &str, f: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !f() {
-        assert!(Instant::now() < deadline, "{what}: timed out");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    assert!(
+        strand_test_support::wait::within(Duration::from_secs(5), Duration::from_millis(10), f),
+        "{what}: timed out"
+    );
 }
 
 fn next(rx: &mpsc::Receiver<CaptureFrame>, what: &str) -> CaptureFrame {

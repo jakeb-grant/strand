@@ -1,0 +1,48 @@
+# How `cargo nextest run` runs the debug workspace tests: CI's `test` job and
+# `scripts/container/run.sh ci` with `--profile ci`, `run.sh affected` and a
+# single test with the default profile (docs/development.md; decisions.md
+# robustness has the table of what each file's lock became and the
+# measurements behind these numbers). Each test runs in a process of its own,
+# so a static Mutex keeps nothing apart here: what only guards the process's
+# own state needs nothing, and what guards something outside it is a test group
+# below. scripts/container/nextest-filters.sh fails on a filter that matches no
+# test, and on a retry that reaches a test that may not have one.
+
+[store]
+# Beside target/container, so that the runner's dependency cache leaves it out.
+dir = "target/nextest"
+
+[test-groups]
+# One at a time, as `SERIAL` keeps them under `cargo test`: the memory and
+# idle windows of the shells these tests boot, measured without another of
+# them changing what the shared libraries' pages cost.
+budgets = { max-threads = 1 }
+
+[profile.default]
+fail-fast = false
+status-level = "fail"
+final-status-level = "flaky"
+failure-output = "immediate"
+# 60 s marks a test slow; 40 of them end it with a TIMEOUT that names it. A test
+# had only the job's bound (60 min, less the setup and the build before it, and
+# no name in the message) under `cargo test`; the longest takes under 4 min.
+slow-timeout = { period = "60s", terminate-after = 40, grace-period = "30s" }
+
+[[profile.default.overrides]]
+filter = "binary_id(=strand::budgets)"
+test-group = "budgets"
+
+[profile.ci]
+# The junit file scripts/container/nextest-summary.sh reads for the job summary.
+junit = { path = "junit.xml", store-success-output = false, store-failure-output = true }
+retries = 0
+
+# One more try for what talks to a real sway or a private bus, whose failures
+# under a loaded runner come from the daemons' timing. A test that passes only
+# on the second try is reported as flaky: in the run's summary lines and the
+# job summary. Never a budget, a timing gate, a pixel reference or logic: the
+# binaries are named one by one, so a new one starts with none. The nightly job
+# doesn't use nextest at all.
+[[profile.ci.overrides]]
+filter = '''binary_id(/^strand-services::(battery|bluetooth|brightness|builtin|clipboard|custom|media|network|network_iwd|notifications|outputs|polkit|screen|session|sway|tray|wm_services)$/) | binary_id(/^strand-introspect::connection$/) | binary_id(/^strand-watch::portal$/) | binary_id(/^strand-surface::(clipboard|compose|dnd|sway|window)$/) | binary_id(/^strand::(clipboard|dbus_shells|kept_sizes|screens_focus|tray_menu|wm_audio_shells)$/)'''
+retries = 1

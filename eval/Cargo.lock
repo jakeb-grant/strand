@@ -2121,6 +2121,7 @@ dependencies = [
  "strand-scene",
  "strand-services-schema",
  "strand-surface",
+ "strand-test-support",
  "strand-text",
  "strand-theme",
  "tempfile",
@@ -2216,6 +2217,10 @@ dependencies = [
  "xkbcommon",
  "zeroize",
 ]
+
+[[package]]
+name = "strand-test-support"
+version = "0.1.0"
 
 [[package]]
 name = "strand-text"

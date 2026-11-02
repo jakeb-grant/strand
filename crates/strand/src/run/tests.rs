@@ -2577,42 +2577,17 @@ impl MockPortal {
 }
 
 pub(crate) struct Bus {
-    child: std::process::Child,
+    _daemon: strand_test_support::bus::SessionDaemon,
     pub(crate) address: String,
-}
-
-impl Drop for Bus {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
 }
 
 /// A private session bus (skipped without `dbus-daemon` unless
 /// `STRAND_REQUIRE_DBUS` is set).
 pub(crate) fn private_bus(dir: &Path) -> Option<Bus> {
-    use std::io::BufRead;
-    let spawned = std::process::Command::new("dbus-daemon")
-        .args(["--session", "--nofork", "--print-address=1"])
-        .arg(format!("--address=unix:path={}/bus", dir.display()))
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    let mut child = match spawned {
-        Ok(c) => c,
-        Err(e) if std::env::var_os("STRAND_REQUIRE_DBUS").is_none() => {
-            eprintln!("skipping: dbus-daemon unavailable ({e})");
-            return None;
-        }
-        Err(e) => panic!("dbus-daemon: {e}"),
-    };
-    let mut line = String::new();
-    std::io::BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
+    let daemon = strand_test_support::bus::SessionDaemon::start(dir)?;
     Some(Bus {
-        child,
-        address: line.trim().to_string(),
+        address: daemon.address.clone(),
+        _daemon: daemon,
     })
 }
 

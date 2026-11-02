@@ -40,6 +40,7 @@ Each crate is one box in the runtime architecture:
 | `strand-surface` | Layer-shell and xdg toplevel windows, poses, blur, input, frame timing, session lock | M0, M4 |
 | `strand-auth` | The lock screen's PAM helper and the client that spawns it: the lock's security boundary | M4 |
 | `strand-fake-wayland` | A fake Wayland compositor for tests (toplevels, workspaces, layer surfaces) | M4 |
+| `strand-test-support` | What test files share: deadlines, short private directories, a headless sway, a private session bus; a dev-dependency on std alone | — |
 | `strand` | The runtime binary and CLI | all |
 | `strand-dev` | LSP and inspector, kept out of the runtime binary | M1, M5 |
 | `strand-site` | The docs site's generator (`site/` to `target/site`); a developer tool, never shipped | — |
@@ -194,8 +195,28 @@ Docker (`scripts/release/smoke.sh`).
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo nextest run --workspace --profile ci
+cargo test --doc --workspace
 ```
+
+The debug tests run through [cargo-nextest](https://nexte.st/), pinned in the
+CI image: each test in a process of its own, binaries side by side
+(`.config/nextest.toml`). One test, through the container as everything is:
+
+```sh
+scripts/container/run.sh cargo nextest run -p strand-watch --test saves a_rename_is_seen
+scripts/container/run.sh cargo test -p strand-watch --test saves a_rename_is_seen -- --nocapture
+```
+
+A static `Mutex` keeps nothing apart under nextest, since no two tests share a
+process: state of the process needs no lock there, and anything outside it (a
+fixed path, a port, a wall-clock window) wants a directory of the test's own or
+a test group in `.config/nextest.toml`. A test that asserts a quiet window keeps
+its shell's config in `strand_test_support::dir::own_dir`, because the watcher
+watches each of its ancestors for children going. `scripts/container/nextest-filters.sh`
+fails on a filter that matches no test, and on a retry that reaches a budget, a
+timing gate or a pixel reference. A test that passes only on its retry is named
+FLAKY in the log and in the job's summary.
 
 CI runs these on every push, with headless sway, grim and DejaVu fonts
 installed so the Wayland integration tests and the M0 demo run (set
@@ -214,10 +235,12 @@ an image that matches CI (`CI_JOB=NAME` for one of them); `compositors` and
 `lock-vm` have `matrix.sh` and `lockvm.sh`, below. The steps:
 
 - fmt and clippy as above;
-- `cargo test --workspace -- --skip random_edits_through_five_save_styles`
-  (the workspace tests, offline render tests included, without the
-  reload fuzzer; the acceptance tests run here in debug too, but for the
-  OSD's, whose 1.2 s window is release-only);
+- `scripts/container/workspace-tests.sh`: `cargo nextest run --workspace
+  --profile ci`, skipping `random_edits_through_five_save_styles` and
+  `a_hundred_reloads_reconnect_and_restart_nothing` (the workspace tests,
+  offline render tests included, without the reload fuzzer and the 100
+  reloads; the acceptance tests run here in debug too, but for the OSD's,
+  whose 1.2 s window is release-only), then `cargo test --doc --workspace`;
 - `cargo test --release -p strand --test demo` for the 42 MB PSS budget
   (the M0 demo and design.md's bar);
 - `cargo test --release -p strand --test acceptance -- --test-threads=1`:

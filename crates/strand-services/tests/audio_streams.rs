@@ -19,17 +19,17 @@ use strand_services::audio::{self, AudioStore, AudioStream, LevelTarget, StreamD
 use strand_services::{Builtin, Buses, Cells, Data, Services, Step, Store, ToData};
 
 /// Pump until `cond` holds (10 s at most).
-fn until(rt: &Runtime, s: &Services, what: &str, cond: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        s.pump(rt);
-        rt.flush();
-        if cond() {
-            return;
-        }
-        assert!(Instant::now() < deadline, "never: {what}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+fn until(rt: &Runtime, s: &Services, what: &str, mut cond: impl FnMut() -> bool) {
+    strand_test_support::wait::until(
+        what,
+        Duration::from_secs(10),
+        Duration::from_millis(5),
+        || {
+            s.pump(rt);
+            rt.flush();
+            cond()
+        },
+    );
 }
 
 fn state(b: &Builtin, rt: &Runtime) -> AudioStore {
@@ -80,11 +80,15 @@ fn streams_are_listed_while_read_and_written() {
         .arg(pw.dir.path().join("vis.wav"))
         .spawn()
         .expect("pw-record starts");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !(pw.has_node("pw-play") || pw.run("pw-cli", &["ls", "Node"]).contains("strand-player")) {
-        assert!(Instant::now() < deadline, "pw-play never made its stream");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    assert!(
+        strand_test_support::wait::within(
+            Duration::from_secs(10),
+            Duration::from_millis(20),
+            || pw.has_node("pw-play")
+                || pw.run("pw-cli", &["ls", "Node"]).contains("strand-player")
+        ),
+        "pw-play never made its stream"
+    );
 
     let rt = Runtime::new();
     let s = Services::new(&rt, Buses::none(), || {});

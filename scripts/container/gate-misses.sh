@@ -14,7 +14,7 @@
 # strand/src/bench.rs, strand/src/run/tests.rs and
 # strand/tests/m5/newcomer.rs; their tests check this file still names
 # it). Only ci.sh's timing steps consult this file: newcomer.rs runs in
-# the strict `cargo test --workspace` step, where its miss fails. LOG
+# the strict workspace step (workspace-tests.sh), where its miss fails. LOG
 # passes when:
 #   - libtest reported "test result: FAILED" with N failed tests,
 #   - every panic in it ("thread '...' panicked at ...:" followed by its

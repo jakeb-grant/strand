@@ -74,6 +74,7 @@ clap = { version = "4.6.7", default-features = false, features = ["std", "help",
 rquickjs = "0.14.0"
 
 [dev-dependencies]
+strand-test-support = { path = "../crates/strand-test-support" }
 # tests/live.rs: its headless sway dies with the test (prctl).
 rustix = { version = "1.1.5", features = ["process"] }
 # tests/live.rs: a virtual pointer and keyboard on that sway's seat.

@@ -332,15 +332,15 @@ fn a_lost_default_update_comes_back_on_a_read_again() {
             .is_some_and(|v| v.contains("strand-sink-b"))
             && !keys.contains_key("default.audio.source")
     };
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !wanted(&client.keys()) {
-        assert!(
-            Instant::now() < deadline,
-            "WirePlumber did not apply the set and the clear: {:?}",
-            client.keys()
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    assert!(
+        strand_test_support::wait::within(
+            Duration::from_secs(5),
+            Duration::from_millis(20),
+            || wanted(&client.keys())
+        ),
+        "WirePlumber did not apply the set and the clear: {:?}",
+        client.keys()
+    );
     // The premise: the service missed both (no client came or went, so
     // nothing made it read again).
     std::thread::sleep(Duration::from_millis(500));
@@ -1042,11 +1042,14 @@ fn peak_meters_run_only_while_asked_for() {
     assert!(!pw.has_node("strand-levels"));
 
     w.audio.set_levels([LevelTarget::DefaultSink]);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !pw.has_node("strand-levels") {
-        assert!(Instant::now() < deadline, "the meter stream never appeared");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert!(
+        strand_test_support::wait::within(
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+            || pw.has_node("strand-levels")
+        ),
+        "the meter stream never appeared"
+    );
     // Nothing plays: the passive meter keeps the sink idle and sends
     // nothing.
     std::thread::sleep(Duration::from_millis(500));
@@ -1237,11 +1240,14 @@ fn a_test_tone_lights_its_spectrum_band() {
     let wav = pw.dir.path().join("tone.wav");
     sine_wav(&wav, 30.0, 1000.0, 0.5);
     w.audio.set_levels([LevelTarget::Device(a.id)]);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !pw.has_node("strand-levels") {
-        assert!(Instant::now() < deadline, "the meter stream never appeared");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert!(
+        strand_test_support::wait::within(
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+            || pw.has_node("strand-levels")
+        ),
+        "the meter stream never appeared"
+    );
     let mut player = pw.play(&wav, "strand-sink-a");
     let band = spectrum::band_of(1000.0);
     w.until(10, "a spectrum peaking at 1 kHz", |m| {

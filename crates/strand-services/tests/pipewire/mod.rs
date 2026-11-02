@@ -497,11 +497,14 @@ impl Drop for PipeWire {
 }
 
 fn wait_for(path: &Path, what: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !path.exists() {
-        assert!(Instant::now() < deadline, "{what} did not appear");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    assert!(
+        strand_test_support::wait::within(
+            Duration::from_secs(10),
+            Duration::from_millis(10),
+            || path.exists()
+        ),
+        "{what} did not appear"
+    );
 }
 
 /// A 16-bit stereo WAV of a ±`amplitude` square wave at 48 kHz.

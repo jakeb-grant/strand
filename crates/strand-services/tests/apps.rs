@@ -22,17 +22,17 @@ fn desktop(name: &str, exec: &str, extra: &str) -> String {
     format!("[Desktop Entry]\nType=Application\nName={name}\nExec={exec}\n{extra}")
 }
 
-fn until(rt: &Runtime, s: &Services, what: &str, cond: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        s.pump(rt);
-        rt.flush();
-        if cond() {
-            return;
-        }
-        assert!(Instant::now() < deadline, "never: {what}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+fn until(rt: &Runtime, s: &Services, what: &str, mut cond: impl FnMut() -> bool) {
+    strand_test_support::wait::until(
+        what,
+        Duration::from_secs(10),
+        Duration::from_millis(5),
+        || {
+            s.pump(rt);
+            rt.flush();
+            cond()
+        },
+    );
 }
 
 fn ids(rt: &Runtime, d: &dyn DynService) -> Vec<String> {
@@ -306,11 +306,14 @@ fn a_launch_carries_the_token_and_not_an_inherited_one() {
     let launched = |ctx: strand_core::ActionCtx| -> String {
         let _ = std::fs::remove_file(&marker);
         d.action(&rt, "launch", Some(&app), &[], ctx).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !marker.exists() {
-            assert!(Instant::now() < deadline, "never launched");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        assert!(
+            strand_test_support::wait::within(
+                Duration::from_secs(10),
+                Duration::from_millis(10),
+                || marker.exists()
+            ),
+            "never launched"
+        );
         std::fs::read_to_string(&marker).unwrap().trim().to_string()
     };
     let pressed = strand_core::ActionCtx {
@@ -388,11 +391,14 @@ fn a_launch_never_inherits_the_variables_that_address_this_shell() {
         strand_core::ActionCtx::default(),
     )
     .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !marker.exists() {
-        assert!(Instant::now() < deadline, "never launched");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    assert!(
+        strand_test_support::wait::within(
+            Duration::from_secs(10),
+            Duration::from_millis(10),
+            || marker.exists()
+        ),
+        "never launched"
+    );
     let got = std::fs::read_to_string(&marker).unwrap();
     s.shutdown();
     apps::set_config(None);

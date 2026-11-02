@@ -31,6 +31,7 @@ strand-services = { path = "crates/strand-services" }
 strand-services-macros = { path = "crates/strand-services-macros" }
 strand-services-schema = { path = "crates/strand-services-schema" }
 strand-surface = { path = "crates/strand-surface", default-features = false }
+strand-test-support = { path = "crates/strand-test-support" }
 strand-text = { path = "crates/strand-text" }
 strand-theme = { path = "crates/strand-theme" }
 strand-watch = { path = "crates/strand-watch" }

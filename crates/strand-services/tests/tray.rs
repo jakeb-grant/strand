@@ -240,15 +240,15 @@ fn labels(menu: &[TrayMenuItem]) -> Vec<String> {
 }
 
 fn wait_call(state: &Arc<Mutex<State>>, call: &str) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !state.lock().unwrap().calls.iter().any(|c| c == call) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "never called {call}: {:?}",
-            state.lock().unwrap().calls
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    assert!(
+        strand_test_support::wait::within(
+            Duration::from_secs(10),
+            Duration::from_millis(10),
+            || state.lock().unwrap().calls.iter().any(|c| c == call)
+        ),
+        "never called {call}: {:?}",
+        state.lock().unwrap().calls
+    );
 }
 
 #[test]

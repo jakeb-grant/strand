@@ -9,7 +9,7 @@
 
 mod pipewire;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use ::pipewire as pw;
 use pipewire::PipeWire;
@@ -21,17 +21,17 @@ use strand_services::video::Video;
 use strand_services::{Builtin, Buses, Cells, Services};
 
 /// Pump until `cond` holds (15 s at most).
-fn until(rt: &Runtime, s: &Services, what: &str, cond: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        s.pump(rt);
-        rt.flush();
-        if cond() {
-            return;
-        }
-        assert!(Instant::now() < deadline, "never: {what}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+fn until(rt: &Runtime, s: &Services, what: &str, mut cond: impl FnMut() -> bool) {
+    strand_test_support::wait::until(
+        what,
+        Duration::from_secs(15),
+        Duration::from_millis(5),
+        || {
+            s.pump(rt);
+            rt.flush();
+            cond()
+        },
+    );
 }
 
 fn state(b: &Builtin, rt: &Runtime) -> Video {

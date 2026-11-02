@@ -72,19 +72,7 @@ impl Sway {
         )
         .unwrap();
         let log = std::fs::File::create(dir.join("sway.log")).unwrap();
-        let child = Command::new("sway")
-            .arg("-c")
-            .arg(&cfg)
-            .env("XDG_RUNTIME_DIR", &dir)
-            .env("WLR_BACKENDS", "headless")
-            .env("WLR_RENDERER", "pixman")
-            .env("WLR_LIBINPUT_NO_DEVICES", "1")
-            .env_remove("WAYLAND_DISPLAY")
-            .env_remove("SWAYSOCK")
-            .env_remove("DISPLAY")
-            .stdin(Stdio::null())
-            .stdout(log.try_clone().unwrap())
-            .stderr(log)
+        let child = strand_test_support::sway::command(&dir, &cfg, log)
             .spawn()
             .unwrap();
         let mut sway = Sway {
@@ -95,16 +83,7 @@ impl Sway {
         };
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let names: Vec<String> = std::fs::read_dir(&dir)
-                .unwrap()
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
-            let display = names
-                .iter()
-                .find(|e| e.starts_with("wayland-") && !e.ends_with(".lock"));
-            let ipc = names.iter().find(|e| e.starts_with("sway-ipc."));
-            if let (Some(d), Some(i)) = (display, ipc) {
+            if let Some((d, i)) = &strand_test_support::sway::sockets_in(&dir) {
                 sway.display = d.clone();
                 sway.ipc = dir.join(i);
                 if sway.msg(&["-t", "get_version"]).is_some() {
@@ -1336,14 +1315,14 @@ fn the_design_launcher_is_centred_and_closes_on_click_away() {
     // A click inside (its padding) keeps it open: the pointer leaves the
     // row on the way (its hover goes), and the launcher stays.
     pointer.click(pad.0, pad.1, w, h);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !near(Shot::take(&sway, "HEADLESS-1").px(row.0, row.1), calm) {
-        assert!(
-            Instant::now() < deadline,
-            "the click never reached the launcher"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert!(
+        strand_test_support::wait::within(
+            Duration::from_secs(10),
+            Duration::from_millis(50),
+            || near(Shot::take(&sway, "HEADLESS-1").px(row.0, row.1), calm)
+        ),
+        "the click never reached the launcher"
+    );
     std::thread::sleep(Duration::from_millis(500));
     assert!(
         bright_in(&Shot::take(&sway, "HEADLESS-1"), x, mid),

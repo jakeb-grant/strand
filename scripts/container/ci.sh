@@ -153,6 +153,8 @@ step "scripts/container/test-gpu-measure.sh" 5 scripts/container/test-gpu-measur
 step "scripts/test-size-report.sh" 5 scripts/test-size-report.sh
 step "scripts/container/test-tests-ran.sh" 5 scripts/container/test-tests-ran.sh
 step "scripts/container/test-build-script-index.sh" 5 scripts/container/test-build-script-index.sh
+step "scripts/container/test-nextest-summary.sh" 5 scripts/container/test-nextest-summary.sh
+step "scripts/container/test-nextest-filters.sh" 5 scripts/container/test-nextest-filters.sh
 step "scripts/container/test-affected.sh" 5 scripts/container/test-affected.sh
 step "scripts/container/test-prune-rust-caches.sh" 5 scripts/container/test-prune-rust-caches.sh
 step "scripts/container/test-check-path-filters.sh" 5 scripts/container/test-check-path-filters.sh
@@ -164,8 +166,10 @@ step "scripts/container/test-image.sh" 5 scripts/container/test-image.sh
 job=test
 step "cargo test -p strand-services --no-default-features --lib" 60 \
   cargo test -p strand-services --no-default-features --lib
-step "cargo test --workspace (skipping the fuzzer and the 100 reloads)" 60 \
-  cargo test --workspace -- --skip random_edits_through_five_save_styles --skip a_hundred_reloads_reconnect_and_restart_nothing
+step "cargo nextest run --workspace (skipping the fuzzer and the 100 reloads)" 60 \
+  scripts/container/workspace-tests.sh
+step "scripts/container/nextest-filters.sh" 5 scripts/container/nextest-filters.sh
+step "cargo test --doc --workspace" 30 cargo test --doc --workspace
 step "cargo test -p strand-auth --features faults" 30 \
   cargo test -p strand-auth --features faults
 step "cargo test -p strand --test presented_quiet" 10 \

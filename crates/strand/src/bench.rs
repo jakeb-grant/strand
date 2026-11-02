@@ -53,7 +53,7 @@ use std::cell::RefCell;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -120,19 +120,7 @@ impl Sway {
         )
         .unwrap();
         let log = std::fs::File::create(dir.join("sway.log")).unwrap();
-        let child = Command::new("sway")
-            .arg("-c")
-            .arg(&cfg)
-            .env("XDG_RUNTIME_DIR", &dir)
-            .env("WLR_BACKENDS", "headless")
-            .env("WLR_RENDERER", "pixman")
-            .env("WLR_LIBINPUT_NO_DEVICES", "1")
-            .env_remove("WAYLAND_DISPLAY")
-            .env_remove("SWAYSOCK")
-            .env_remove("DISPLAY")
-            .stdin(Stdio::null())
-            .stdout(log.try_clone().unwrap())
-            .stderr(log)
+        let child = strand_test_support::sway::command(&dir, &cfg, log)
             .spawn()
             .unwrap();
         let mut sway = Sway {
@@ -143,16 +131,7 @@ impl Sway {
         };
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let names: Vec<String> = std::fs::read_dir(&dir)
-                .unwrap()
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
-            let display = names
-                .iter()
-                .find(|e| e.starts_with("wayland-") && !e.ends_with(".lock"));
-            let ipc = names.iter().find(|e| e.starts_with("sway-ipc."));
-            if let (Some(d), Some(i)) = (display, ipc) {
+            if let Some((d, i)) = &strand_test_support::sway::sockets_in(&dir) {
                 sway.socket = dir.join(d);
                 sway.ipc = dir.join(i);
                 if sway.msg(&["-t", "get_version"]).is_some() {

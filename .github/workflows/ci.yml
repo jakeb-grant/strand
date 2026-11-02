@@ -170,7 +170,8 @@ jobs:
       # size-report.sh's crate attribution, tests-ran.sh (a filtered
       # test step that runs no test fails), strand's build script leaving
       # git's index alone (its write made the next step rebuild the
-      # binary), affected.sh's choice of
+      # binary), the job summary of the nextest run and the static half of
+      # its filters' check, affected.sh's choice of
       # crates (the laptop's inner loop, CLAUDE.md), prune-rust-caches.sh
       # (the nightly cache pruning) and check-path-filters.sh, which then holds the lock-vm and package
       # jobs' path filters to the tree: an entry naming a moved file would
@@ -184,6 +185,8 @@ jobs:
       - run: scripts/container/run.sh scripts/test-size-report.sh
       - run: scripts/container/run.sh scripts/container/test-tests-ran.sh
       - run: scripts/container/run.sh scripts/container/test-build-script-index.sh
+      - run: scripts/container/run.sh scripts/container/test-nextest-summary.sh
+      - run: scripts/container/run.sh scripts/container/test-nextest-filters.sh
       - run: scripts/container/run.sh scripts/container/test-affected.sh
       - run: scripts/container/run.sh scripts/container/test-prune-rust-caches.sh
       - run: scripts/container/run.sh scripts/container/test-check-path-filters.sh
@@ -202,9 +205,17 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: scripts/container/run.sh cargo test -p strand-services --no-default-features --lib
-      # The reload fuzzer runs on its own below (timing-sensitive saves),
-      # and the 100 reloads too.
-      - run: scripts/container/run.sh cargo test --workspace -- --skip random_edits_through_five_save_styles --skip a_hundred_reloads_reconnect_and_restart_nothing
+      # The workspace's tests through cargo-nextest, each in a process of its
+      # own and side by side across binaries (.config/nextest.toml; decisions.md
+      # robustness has the measurements behind -j). The reload fuzzer runs on
+      # its own below (timing-sensitive saves), and the 100 reloads too. The
+      # job summary gets the counts and names each flaky test.
+      - run: scripts/container/run.sh scripts/container/workspace-tests.sh -j 6
+      # A filter of .config/nextest.toml matching no test fails, and so does a
+      # retry reaching what may not have one.
+      - run: scripts/container/run.sh scripts/container/nextest-filters.sh
+      # Nextest doesn't run doc-tests.
+      - run: scripts/container/run.sh cargo test --doc --workspace
       # strand-auth's PAM tier and its no-faults check need the helper's
       # test hooks, asked for by name: no plain test build turns them on.
       - run: scripts/container/run.sh cargo test -p strand-auth --features faults

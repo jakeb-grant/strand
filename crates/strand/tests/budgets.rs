@@ -87,7 +87,6 @@ mod window;
 
 use std::collections::{BTreeMap, HashMap};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -866,43 +865,12 @@ fn sway(dir: &Path, scale: u32) -> (Proc, String, PathBuf) {
     )
     .unwrap();
     let log = std::fs::File::create(dir.join("sway.log")).unwrap();
-    let mut cmd = Command::new("sway");
-    // SAFETY: the hook runs between fork and exec and makes one
-    // async-signal-safe syscall.
-    unsafe {
-        cmd.pre_exec(|| {
-            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))
-                .map_err(std::io::Error::from)
-        });
-    }
-    let child = cmd
-        .arg("-c")
-        .arg(&cfg)
-        .env("XDG_RUNTIME_DIR", dir)
-        .env("WLR_BACKENDS", "headless")
-        .env("WLR_RENDERER", "pixman")
-        .env("WLR_LIBINPUT_NO_DEVICES", "1")
-        .env_remove("WAYLAND_DISPLAY")
-        .env_remove("SWAYSOCK")
-        .env_remove("DISPLAY")
-        .stdin(Stdio::null())
-        .stdout(log.try_clone().unwrap())
-        .stderr(log)
-        .spawn()
-        .unwrap();
+    let mut cmd = strand_test_support::sway::command(dir, &cfg, log);
+    let child = cmd.spawn().unwrap();
     let sway = Proc(child);
     let deadline = Instant::now() + Duration::from_secs(10);
     let (display, ipc) = loop {
-        let names: Vec<String> = std::fs::read_dir(dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
-        let display = names
-            .iter()
-            .find(|e| e.starts_with("wayland-") && !e.ends_with(".lock"));
-        let ipc = names.iter().find(|e| e.starts_with("sway-ipc."));
-        if let (Some(d), Some(i)) = (display, ipc) {
+        if let Some((d, i)) = &strand_test_support::sway::sockets_in(dir) {
             let ok = bounded(
                 Command::new("swaymsg")
                     .args(["-t", "get_version"])
@@ -2279,7 +2247,7 @@ fn full_shell(name: &str, apps: Apps, shots: Option<&Path>, gpu: Gpu) {
 /// rests on the workspace's release profile"; m5-speed-profile moved
 /// every crate a person waits on back to opt 3 and kept these, on code
 /// no one waits on). Checked in every build, debug too, so a cleanup of
-/// `Cargo.toml` fails `cargo test --workspace` locally rather than only
+/// `Cargo.toml` fails the workspace step locally rather than only
 /// the release budget in CI.
 const RELEASE_OPT_LEVELS: &[(&str, &str)] = &[
     ("strand-services", "z"),
@@ -2771,6 +2739,7 @@ struct Bare {
     socket: PathBuf,
     log: PathBuf,
     _tmp: TmpDir,
+    _run: strand_test_support::dir::ShortDir,
 }
 
 impl Bare {
@@ -2787,11 +2756,16 @@ impl Bare {
             }
         }
         let bus = PrivateBus::start()?;
-        let tmp =
-            TmpDir::new(std::env::temp_dir().join(format!("strand-{tag}-{}", std::process::id())));
-        let dir = tmp.0.join("run");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // The sockets where they fit; the config and the rest out of the way
+        // of other tests: its ancestors are watched for children going, and
+        // every binary's tests make and remove theirs in the system's temp
+        // dir, side by side under nextest.
+        let run = strand_test_support::dir::ShortDir::new(&format!("strand-{tag}"));
+        let tmp = TmpDir::new(strand_test_support::dir::own_dir(
+            env!("CARGO_TARGET_TMPDIR"),
+            &format!("budgets-{tag}"),
+        ));
+        let dir = run.path().to_path_buf();
         let (sway, display, _ipc) = sway(&dir, 1);
         let config = tmp.0.join("config");
         std::fs::create_dir_all(&config).unwrap();
@@ -2826,6 +2800,7 @@ impl Bare {
             socket,
             log,
             _tmp: tmp,
+            _run: run,
         })
     }
 
@@ -2848,11 +2823,15 @@ impl Bare {
 
     /// Waits up to a minute for `ok`.
     fn wait(&self, what: &str, ok: &dyn Fn() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while !ok() {
-            assert!(Instant::now() < deadline, "{what}\n{}", self.log_text());
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        assert!(
+            strand_test_support::wait::within(
+                Duration::from_secs(60),
+                Duration::from_millis(50),
+                ok
+            ),
+            "{what}\n{}",
+            self.log_text()
+        );
     }
 
     /// Waits up to 30 s for a whole second without a context switch in

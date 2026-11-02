@@ -40,7 +40,6 @@
 
 #![cfg(feature = "gpu")]
 
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -245,35 +244,14 @@ fn sway(dir: &Path) -> (Proc, String) {
     )
     .unwrap();
     let log = std::fs::File::create(dir.join("sway.log")).unwrap();
-    let mut cmd = Command::new("sway");
-    // SAFETY: the hook runs between fork and exec and makes one
-    // async-signal-safe syscall.
-    unsafe {
-        cmd.pre_exec(|| {
-            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))
-                .map_err(std::io::Error::from)
-        });
-    }
+    let mut cmd = strand_test_support::sway::command(dir, &cfg, log);
     match sway_renderer() {
         Some(renderer) => cmd
             .env("WLR_RENDERER", renderer)
             .env("WLR_RENDER_DRM_DEVICE", "/dev/dri/renderD128"),
         None => cmd.env("WLR_RENDERER", "pixman"),
     };
-    let child = cmd
-        .arg("-c")
-        .arg(&cfg)
-        .env("XDG_RUNTIME_DIR", dir)
-        .env("WLR_BACKENDS", "headless")
-        .env("WLR_LIBINPUT_NO_DEVICES", "1")
-        .env_remove("WAYLAND_DISPLAY")
-        .env_remove("SWAYSOCK")
-        .env_remove("DISPLAY")
-        .stdin(Stdio::null())
-        .stdout(log.try_clone().unwrap())
-        .stderr(log)
-        .spawn()
-        .unwrap();
+    let child = cmd.spawn().unwrap();
     let sway = Proc(child);
     let end = Instant::now() + Duration::from_secs(10);
     let display = loop {

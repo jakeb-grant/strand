@@ -6,8 +6,8 @@
 //! fade, so the panel stays presented and goes idle; what the test changes
 //! next draws nothing, or nothing at first.
 //!
-//! An `eval-hooks` build draws every frame, and `cargo test --workspace`
-//! builds strand with that feature on through the `eval` crate, so there these
+//! An `eval-hooks` build draws every frame, and the workspace step's build
+//! has strand with that feature on through the `eval` crate, so there these
 //! tests prove only that the behaviour holds. CI's own step
 //! (`cargo test -p strand --test presented_quiet`) is the proof: [`Desk::proved`]
 //! asserts it ran the path where a paint sent nothing.
@@ -23,7 +23,6 @@
 mod support;
 
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -113,48 +112,18 @@ fn sway(dir: &Path) -> (Proc, String, PathBuf) {
     )
     .unwrap();
     let log = std::fs::File::create(dir.join("sway.log")).unwrap();
-    let mut cmd = Command::new("sway");
-    // SAFETY: the hook runs between fork and exec and makes one
-    // async-signal-safe syscall.
-    unsafe {
-        cmd.pre_exec(|| {
-            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))
-                .map_err(std::io::Error::from)
-        });
-    }
+    let mut cmd = strand_test_support::sway::command(dir, &cfg, log);
     match sway_renderer() {
         Some(renderer) => cmd
             .env("WLR_RENDERER", renderer)
             .env("WLR_RENDER_DRM_DEVICE", "/dev/dri/renderD128"),
         None => cmd.env("WLR_RENDERER", "pixman"),
     };
-    let child = cmd
-        .arg("-c")
-        .arg(&cfg)
-        .env("XDG_RUNTIME_DIR", dir)
-        .env("WLR_BACKENDS", "headless")
-        .env("WLR_LIBINPUT_NO_DEVICES", "1")
-        .env_remove("WAYLAND_DISPLAY")
-        .env_remove("SWAYSOCK")
-        .env_remove("DISPLAY")
-        .stdin(Stdio::null())
-        .stdout(log.try_clone().unwrap())
-        .stderr(log)
-        .spawn()
-        .unwrap();
+    let child = cmd.spawn().unwrap();
     let sway = Proc(child);
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let names: Vec<String> = std::fs::read_dir(dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
-        let display = names
-            .iter()
-            .find(|e| e.starts_with("wayland-") && !e.ends_with(".lock"));
-        let ipc = names.iter().find(|e| e.starts_with("sway-ipc."));
-        if let (Some(d), Some(i)) = (display, ipc) {
+        if let Some((d, i)) = &strand_test_support::sway::sockets_in(dir) {
             let sock = dir.join(i);
             let up = Command::new("swaymsg")
                 .args(["-t", "get_version"])

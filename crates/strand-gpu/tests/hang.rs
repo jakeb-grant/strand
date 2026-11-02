@@ -6,7 +6,7 @@
 mod common;
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::*;
 use strand_gpu::{GpuReply, GpuRequest, PassFrame, PassGlobals};
@@ -71,9 +71,8 @@ fn main(v: StrandVertex) -> @location(0) vec4<f32> {
         other => panic!("expected Lost, got {other:?}"),
     }
     assert!(matches!(h.next(), GpuReply::Exited));
-    let deadline = Instant::now() + WAIT;
-    while !h.gpu.try_join() {
-        assert!(Instant::now() < deadline, "the GPU thread did not end");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    assert!(
+        strand_test_support::wait::within(WAIT, Duration::from_millis(5), || h.gpu.try_join()),
+        "the GPU thread did not end"
+    );
 }

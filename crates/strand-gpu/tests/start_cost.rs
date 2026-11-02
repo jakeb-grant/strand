@@ -67,11 +67,10 @@ fn a_promotion_after_the_drop_costs() {
         assert!(matches!(h.next(), GpuReply::Released(S)));
         h.gpu.send(GpuRequest::Shutdown);
         assert!(matches!(h.next(), GpuReply::Exited));
-        let deadline = Instant::now() + WAIT;
-        while !h.gpu.try_join() {
-            assert!(Instant::now() < deadline, "the GPU thread did not end");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        assert!(
+            strand_test_support::wait::within(WAIT, Duration::from_millis(5), || h.gpu.try_join()),
+            "the GPU thread did not end"
+        );
     }
     let show = |v: &[f64]| {
         v.iter()

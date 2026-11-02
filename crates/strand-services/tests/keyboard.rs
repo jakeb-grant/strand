@@ -30,17 +30,17 @@ fn services(rt: &Runtime) -> (Services, Builtin) {
 }
 
 /// Pump until `cond` holds (10 s at most).
-fn until(rt: &Runtime, s: &Services, what: &str, cond: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        s.pump(rt);
-        rt.flush();
-        if cond() {
-            return;
-        }
-        assert!(Instant::now() < deadline, "never: {what}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+fn until(rt: &Runtime, s: &Services, what: &str, mut cond: impl FnMut() -> bool) {
+    strand_test_support::wait::until(
+        what,
+        Duration::from_secs(10),
+        Duration::from_millis(5),
+        || {
+            s.pump(rt);
+            rt.flush();
+            cond()
+        },
+    );
 }
 
 /// (bead #20) A bar reading only `layout_code`, with no focused surface,

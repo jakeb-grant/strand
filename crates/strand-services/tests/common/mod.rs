@@ -9,9 +9,8 @@ pub mod window;
 
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -169,32 +168,8 @@ impl Sway {
         )
         .unwrap();
         let log = std::fs::File::create(dir.join("sway.log")).unwrap();
-        let mut cmd = Command::new("sway");
-        // SAFETY: one async-signal-safe syscall between fork and exec, so
-        // a killed test binary never leaks the compositor.
-        unsafe {
-            cmd.pre_exec(|| {
-                rustix::process::set_parent_process_death_signal(Some(
-                    rustix::process::Signal::KILL,
-                ))
-                .map_err(std::io::Error::from)
-            });
-        }
-        let child = cmd
-            .arg("-c")
-            .arg(&cfg)
-            .env("XDG_RUNTIME_DIR", &dir)
-            .env("WLR_BACKENDS", "headless")
-            .env("WLR_RENDERER", "pixman")
-            .env("WLR_LIBINPUT_NO_DEVICES", "1")
-            .env_remove("WAYLAND_DISPLAY")
-            .env_remove("SWAYSOCK")
-            .env_remove("DISPLAY")
-            .stdin(Stdio::null())
-            .stdout(log.try_clone().unwrap())
-            .stderr(log)
-            .spawn()
-            .unwrap();
+        let mut cmd = strand_test_support::sway::command(&dir, &cfg, log);
+        let child = cmd.spawn().unwrap();
         let mut sway = Sway {
             child,
             dir: dir.clone(),
@@ -203,16 +178,7 @@ impl Sway {
         };
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let entries: Vec<String> = std::fs::read_dir(&dir)
-                .unwrap()
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
-            let display = entries
-                .iter()
-                .find(|e| e.starts_with("wayland-") && !e.ends_with(".lock"));
-            let ipc = entries.iter().find(|e| e.starts_with("sway-ipc."));
-            if let (Some(d), Some(i)) = (display, ipc) {
+            if let Some((d, i)) = &strand_test_support::sway::sockets_in(&dir) {
                 sway.display = d.clone();
                 sway.ipc = dir.join(i);
                 if sway.try_msg(&["-t", "get_version"]).is_some() {
@@ -256,6 +222,9 @@ impl Sway {
 
 impl Drop for Sway {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            strand_test_support::dir::print_logs(&self.dir);
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.dir);

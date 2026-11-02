@@ -392,7 +392,7 @@ mod tests {
         ];
         // Tools beside the shell: they start programs from a terminal and
         // hold no signal state of their own to pass on.
-        let not_a_shell_crate = ["strand-site", "strand-dev"];
+        let not_a_shell_crate = ["strand-site", "strand-dev", "strand-test-support"];
         let mut files = Vec::new();
         let mut dirs = vec![crates.clone()];
         while let Some(d) = dirs.pop() {

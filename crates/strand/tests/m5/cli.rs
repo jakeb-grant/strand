@@ -19,7 +19,6 @@
 use std::collections::HashMap;
 use std::io::BufRead as _;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
@@ -104,33 +103,8 @@ impl Desk {
         )
         .unwrap();
         let log = std::fs::File::create(dir.join("sway.log")).unwrap();
-        let mut cmd = Command::new("sway");
-        // SAFETY: the hook runs between fork and exec and makes one
-        // async-signal-safe syscall.
-        unsafe {
-            cmd.pre_exec(|| {
-                rustix::process::set_parent_process_death_signal(Some(
-                    rustix::process::Signal::KILL,
-                ))
-                .map_err(std::io::Error::from)
-            });
-        }
-        let sway = Proc(
-            cmd.arg("-c")
-                .arg(&cfg)
-                .env("XDG_RUNTIME_DIR", &dir)
-                .env("WLR_BACKENDS", "headless")
-                .env("WLR_RENDERER", "pixman")
-                .env("WLR_LIBINPUT_NO_DEVICES", "1")
-                .env_remove("WAYLAND_DISPLAY")
-                .env_remove("SWAYSOCK")
-                .env_remove("DISPLAY")
-                .stdin(Stdio::null())
-                .stdout(log.try_clone().unwrap())
-                .stderr(log)
-                .spawn()
-                .unwrap(),
-        );
+        let mut cmd = strand_test_support::sway::command(&dir, &cfg, log);
+        let sway = Proc(cmd.spawn().unwrap());
         let deadline = Instant::now() + Duration::from_secs(10);
         let (display, ipc) = loop {
             let names: Vec<String> = std::fs::read_dir(&dir)
@@ -405,11 +379,16 @@ fn get_toggle_and_a_token_overlay_over_the_socket() {
     let why = d.refused(&["set", "$probe.cc", "#000000"]);
     assert!(why.contains("did you mean `$probe.c`?"), "{why}");
     let file = d.state().join("strand").join("tokens.toml");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !std::fs::read_to_string(&file).is_ok_and(|t| t.contains("\"probe.c\" = \"#ff8800\"")) {
-        assert!(Instant::now() < deadline, "{} not written", file.display());
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    assert!(
+        strand_test_support::wait::within(
+            Duration::from_secs(10),
+            Duration::from_millis(20),
+            || std::fs::read_to_string(&file)
+                .is_ok_and(|t| t.contains("\"probe.c\" = \"#ff8800\""))
+        ),
+        "{} not written",
+        file.display()
+    );
 
     // A save that changes the token: the overlay wins, and says so.
     let (_watch, events) = d.watch();

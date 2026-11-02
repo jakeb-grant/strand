@@ -2,11 +2,10 @@
 //! `dbus-daemon` (design.md, "Testing": small zbus mocks for the portal).
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
+use strand_test_support::bus::SessionDaemon;
 use strand_watch::{
     Bus, ChangeEvent, ColorScheme, Contrast, PortalSettings, SystemBatch, SystemSetting, channel,
 };
@@ -17,16 +16,8 @@ const IFACE: &str = "org.freedesktop.portal.Settings";
 const NAME: &str = "org.freedesktop.portal.Desktop";
 
 struct Daemon {
-    child: Child,
-    address: String,
+    daemon: SessionDaemon,
     _dir: tempfile::TempDir,
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
 }
 
 /// A private session bus. Skips (returns `None`) when `dbus-daemon` is not
@@ -34,29 +25,9 @@ impl Drop for Daemon {
 /// must run, not pass silently. (CI setting it, and installing `dbus`, is
 /// an integration change outside this crate; see docs/decisions.md.)
 fn daemon() -> Option<Daemon> {
-    let required = std::env::var_os("STRAND_REQUIRE_DBUS").is_some();
     let dir = tempfile::tempdir().unwrap();
-    let spawned = Command::new("dbus-daemon")
-        .args(["--session", "--nofork", "--print-address=1"])
-        .arg(format!("--address=unix:path={}/bus", dir.path().display()))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn();
-    let mut child = match spawned {
-        Ok(c) => c,
-        Err(e) if !required => {
-            eprintln!("skipping: dbus-daemon unavailable ({e})");
-            return None;
-        }
-        Err(e) => panic!("dbus-daemon: {e}"),
-    };
-    let mut line = String::new();
-    BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
     Some(Daemon {
-        child,
-        address: line.trim().to_string(),
+        daemon: SessionDaemon::start(dir.path())?,
         _dir: dir,
     })
 }
@@ -189,9 +160,9 @@ const DARK: SystemSetting = SystemSetting::Dark {
 fn boot_read_then_changes() {
     let Some(d) = daemon() else { return };
     let rt = runtime();
-    let conn = serve(&rt, &d.address, mock(appearance()));
+    let conn = serve(&rt, &d.daemon.address, mock(appearance()));
     let (sink, rx) = channel();
-    let portal = PortalSettings::spawn(Bus::Address(d.address.clone()), sink).unwrap();
+    let portal = PortalSettings::spawn(Bus::Address(d.daemon.address.clone()), sink).unwrap();
     assert_eq!(next(&rx), (initial(), true));
 
     emit(
@@ -281,14 +252,14 @@ fn version_one_portal_uses_read() {
     let rt = runtime();
     let _conn = serve(
         &rt,
-        &d.address,
+        &d.daemon.address,
         Mock {
             v1: true,
             ..mock(appearance())
         },
     );
     let (sink, rx) = channel();
-    let _portal = PortalSettings::spawn(Bus::Address(d.address.clone()), sink).unwrap();
+    let _portal = PortalSettings::spawn(Bus::Address(d.daemon.address.clone()), sink).unwrap();
     let b = next_system(&rx);
     assert!(b.at_boot);
     assert_eq!(b.settings[0], DARK);
@@ -302,10 +273,10 @@ fn version_one_portal_uses_read() {
 fn a_late_portal_is_read_and_followed() {
     let Some(d) = daemon() else { return };
     let (sink, rx) = channel();
-    let _portal = PortalSettings::spawn(Bus::Address(d.address.clone()), sink).unwrap();
+    let _portal = PortalSettings::spawn(Bus::Address(d.daemon.address.clone()), sink).unwrap();
     assert_eq!(next(&rx), (vec![], true));
     let rt = runtime();
-    let conn = serve(&rt, &d.address, mock(appearance()));
+    let conn = serve(&rt, &d.daemon.address, mock(appearance()));
     assert_eq!(next(&rx), (initial(), false));
 
     emit(
@@ -324,7 +295,7 @@ fn a_late_portal_is_read_and_followed() {
     rt.block_on(conn.close()).unwrap();
     let mut values = appearance();
     values.insert("color-scheme".into(), owned(Value::from(2u32)));
-    let _conn = serve(&rt, &d.address, mock(values));
+    let _conn = serve(&rt, &d.daemon.address, mock(values));
     let (settings, at_boot) = next(&rx);
     assert!(!at_boot);
     assert_eq!(
@@ -356,14 +327,14 @@ fn a_late_portal_is_read_and_followed() {
 fn a_change_during_a_re_read_is_not_reverted() {
     let Some(d) = daemon() else { return };
     let (sink, rx) = channel();
-    let _portal = PortalSettings::spawn(Bus::Address(d.address.clone()), sink).unwrap();
+    let _portal = PortalSettings::spawn(Bus::Address(d.daemon.address.clone()), sink).unwrap();
     assert_eq!(next(&rx), (vec![], true));
     let rt = runtime();
     // The portal appears; its `contrast` read hangs, still answering
     // "normal" after the user switched to high contrast.
     let conn = serve(
         &rt,
-        &d.address,
+        &d.daemon.address,
         Mock {
             slow: Some(("contrast", Duration::from_millis(800))),
             ..mock(appearance())
@@ -394,7 +365,7 @@ fn a_hanging_read_does_not_hold_the_boot_batch() {
     let rt = runtime();
     let _conn = serve(
         &rt,
-        &d.address,
+        &d.daemon.address,
         Mock {
             slow: Some(("contrast", Duration::from_millis(1500))),
             ..mock(appearance())
@@ -402,7 +373,7 @@ fn a_hanging_read_does_not_hold_the_boot_batch() {
     );
     let (sink, rx) = channel();
     let start = Instant::now();
-    let portal = PortalSettings::spawn(Bus::Address(d.address.clone()), sink).unwrap();
+    let portal = PortalSettings::spawn(Bus::Address(d.daemon.address.clone()), sink).unwrap();
     assert_eq!(next(&rx), (initial()[..2].to_vec(), true));
     assert!(
         start.elapsed() < Duration::from_millis(1400),
@@ -416,7 +387,7 @@ fn a_hanging_read_does_not_hold_the_boot_batch() {
 
     // Stopping while a read is outstanding does not wait for it.
     let (sink, _rx2) = channel();
-    let slow = PortalSettings::spawn(Bus::Address(d.address.clone()), sink).unwrap();
+    let slow = PortalSettings::spawn(Bus::Address(d.daemon.address.clone()), sink).unwrap();
     std::thread::sleep(Duration::from_millis(700));
     let stop = Instant::now();
     drop(slow);
@@ -449,10 +420,10 @@ fn other_namespaces_are_dropped_by_the_bus() {
     use futures_lite::StreamExt;
     let Some(d) = daemon() else { return };
     let rt = runtime();
-    let conn = serve(&rt, &d.address, mock(appearance()));
+    let conn = serve(&rt, &d.daemon.address, mock(appearance()));
     let (sink, rx) = channel();
     let client = rt.block_on(async {
-        zbus::connection::Builder::address(d.address.as_str())
+        zbus::connection::Builder::address(d.daemon.address.as_str())
             .unwrap()
             .build()
             .await

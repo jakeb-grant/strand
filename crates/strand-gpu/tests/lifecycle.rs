@@ -46,11 +46,10 @@ fn the_thread_and_driver_start_at_spawn_and_end_at_shutdown() {
     assert!(matches!(h.next(), GpuReply::Released(S)));
     h.gpu.send(GpuRequest::Shutdown);
     assert!(matches!(h.next(), GpuReply::Exited));
-    let deadline = Instant::now() + WAIT;
-    while !h.gpu.try_join() {
-        assert!(Instant::now() < deadline, "the GPU thread did not end");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    assert!(
+        strand_test_support::wait::within(WAIT, Duration::from_millis(5), || h.gpu.try_join()),
+        "the GPU thread did not end"
+    );
     // The driver's threads end with the device too (lavapipe's within a
     // moment of the drop).
     let deadline = Instant::now() + Duration::from_secs(5);

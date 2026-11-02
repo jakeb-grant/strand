@@ -391,12 +391,15 @@ fn the_running_shell_answers_and_agrees_with_offline() {
 }
 
 /// Waits (bounded) for `f` to hold.
-fn until(what: &str, mut f: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while !f() {
-        assert!(std::time::Instant::now() < deadline, "{what}");
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
+fn until(what: &str, f: impl FnMut() -> bool) {
+    assert!(
+        strand_test_support::wait::within(
+            std::time::Duration::from_secs(15),
+            std::time::Duration::from_millis(25),
+            f
+        ),
+        "{what}"
+    );
 }
 
 fn lines(p: &Path) -> usize {

@@ -365,31 +365,8 @@ impl Sway {
         )
         .unwrap();
         let log = std::fs::File::create(run.join("sway.log")).unwrap();
-        let mut cmd = Command::new("sway");
-        // SAFETY: one async-signal-safe syscall between fork and exec.
-        unsafe {
-            cmd.pre_exec(|| {
-                rustix::process::set_parent_process_death_signal(Some(
-                    rustix::process::Signal::KILL,
-                ))
-                .map_err(std::io::Error::from)
-            });
-        }
-        let child = cmd
-            .arg("-c")
-            .arg(&cfg)
-            .env("XDG_RUNTIME_DIR", &run)
-            .env("WLR_BACKENDS", "headless")
-            .env("WLR_RENDERER", "pixman")
-            .env("WLR_LIBINPUT_NO_DEVICES", "1")
-            .env_remove("WAYLAND_DISPLAY")
-            .env_remove("SWAYSOCK")
-            .env_remove("DISPLAY")
-            .stdin(Stdio::null())
-            .stdout(log.try_clone().unwrap())
-            .stderr(log)
-            .spawn()
-            .unwrap();
+        let mut cmd = strand_test_support::sway::command(&run, &cfg, log);
+        let child = cmd.spawn().unwrap();
         let mut sway = Sway {
             child,
             dir: run.clone(),
@@ -398,16 +375,7 @@ impl Sway {
         };
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let names: Vec<String> = std::fs::read_dir(&run)
-                .unwrap()
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
-            let display = names
-                .iter()
-                .find(|e| e.starts_with("wayland-") && !e.ends_with(".lock"));
-            let ipc = names.iter().find(|e| e.starts_with("sway-ipc."));
-            if let (Some(d), Some(i)) = (display, ipc) {
+            if let Some((d, i)) = &strand_test_support::sway::sockets_in(&run) {
                 sway.display = d.clone();
                 sway.ipc = run.join(i);
                 if sway.msg(&["-t", "get_version"]).is_some() {

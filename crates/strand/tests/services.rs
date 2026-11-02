@@ -20,7 +20,6 @@
 mod support;
 
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -120,8 +119,8 @@ const GREEN: [u8; 3] = [0, 255, 0];
 /// A directory of test `name`'s own: beside the target's `tmp`
 /// (`CARGO_TARGET_TMPDIR`), not in it, under a parent no other test
 /// uses. Every test binary of the workspace makes and removes
-/// directories in `tmp`, and this binary's tests run in parallel too
-/// under `cargo test --workspace`, while the watcher watches each
+/// directories in `tmp`, and every test runs beside the others in the
+/// workspace step (`workspace-tests.sh`), while the watcher watches each
 /// ancestor of a shell's config (and the apps service its data dirs)
 /// for children moved or deleted: a sibling's cleanup would wake an
 /// idle window (as `budgets.rs`'s home).
@@ -160,44 +159,12 @@ fn sway(dir: &Path) -> (Proc, String) {
     )
     .unwrap();
     let log = std::fs::File::create(dir.join("sway.log")).unwrap();
-    let mut cmd = Command::new("sway");
-    // The compositor dies with the thread that started it. SAFETY: the
-    // hook runs between fork and exec and makes one async-signal-safe
-    // syscall.
-    unsafe {
-        cmd.pre_exec(|| {
-            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))
-                .map_err(std::io::Error::from)
-        });
-    }
-    let child = cmd
-        .arg("-c")
-        .arg(&cfg)
-        .env("XDG_RUNTIME_DIR", dir)
-        .env("WLR_BACKENDS", "headless")
-        .env("WLR_RENDERER", "pixman")
-        .env("WLR_LIBINPUT_NO_DEVICES", "1")
-        .env_remove("WAYLAND_DISPLAY")
-        .env_remove("SWAYSOCK")
-        .env_remove("DISPLAY")
-        .stdin(Stdio::null())
-        .stdout(log.try_clone().unwrap())
-        .stderr(log)
-        .spawn()
-        .unwrap();
+    let mut cmd = strand_test_support::sway::command(dir, &cfg, log);
+    let child = cmd.spawn().unwrap();
     let sway = Proc(child);
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let names: Vec<String> = std::fs::read_dir(dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
-        let display = names
-            .iter()
-            .find(|e| e.starts_with("wayland-") && !e.ends_with(".lock"));
-        let ipc = names.iter().find(|e| e.starts_with("sway-ipc."));
-        if let (Some(d), Some(i)) = (display, ipc) {
+        if let Some((d, i)) = &strand_test_support::sway::sockets_in(dir) {
             let ok = Command::new("swaymsg")
                 .args(["-t", "get_version"])
                 .env("SWAYSOCK", dir.join(i))
@@ -773,11 +740,14 @@ bar Top {{
     assert!(!runs.exists(), "the closed popup's poll ran");
     // Open: the poll runs.
     setup.cli(&["set", "bar.open", "true"]);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !runs.exists() {
-        assert!(Instant::now() < deadline, "the open popup's poll never ran");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert!(
+        strand_test_support::wait::within(
+            Duration::from_secs(10),
+            Duration::from_millis(50),
+            || runs.exists()
+        ),
+        "the open popup's poll never ran"
+    );
     drop(setup);
     let _ = std::fs::remove_dir_all(&data);
 }

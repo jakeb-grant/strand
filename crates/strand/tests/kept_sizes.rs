@@ -7,7 +7,6 @@
 //! Skipped, loudly, without sway (CI sets `STRAND_REQUIRE_SWAY`).
 
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -56,30 +55,8 @@ fn sway(dir: &Path) -> (Proc, String) {
     )
     .unwrap();
     let log = std::fs::File::create(dir.join("sway.log")).unwrap();
-    let mut cmd = Command::new("sway");
-    // SAFETY: the hook runs between fork and exec and makes one
-    // async-signal-safe syscall.
-    unsafe {
-        cmd.pre_exec(|| {
-            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))
-                .map_err(std::io::Error::from)
-        });
-    }
-    let child = cmd
-        .arg("-c")
-        .arg(&cfg)
-        .env("XDG_RUNTIME_DIR", dir)
-        .env("WLR_BACKENDS", "headless")
-        .env("WLR_RENDERER", "pixman")
-        .env("WLR_LIBINPUT_NO_DEVICES", "1")
-        .env_remove("WAYLAND_DISPLAY")
-        .env_remove("SWAYSOCK")
-        .env_remove("DISPLAY")
-        .stdin(Stdio::null())
-        .stdout(log.try_clone().unwrap())
-        .stderr(log)
-        .spawn()
-        .unwrap();
+    let mut cmd = strand_test_support::sway::command(dir, &cfg, log);
+    let child = cmd.spawn().unwrap();
     let sway = Proc(child);
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -215,23 +192,19 @@ impl Desk {
     }
 
     fn until(&self, what: &str, ok: impl Fn(&Self) -> bool) {
-        let deadline = Instant::now() + PATIENCE;
-        while !ok(self) {
-            assert!(
-                Instant::now() < deadline,
-                "never: {what}; heights {:?}; {}; log tail: {}",
-                self.heights(),
-                self.saved(),
-                self.log()
-                    .lines()
-                    .filter(|l| !l.contains('@'))
-                    .rev()
-                    .take(10)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        assert!(
+            strand_test_support::wait::within(PATIENCE, Duration::from_millis(20), || ok(self)),
+            "never: {what}; heights {:?}; {}; log tail: {}",
+            self.heights(),
+            self.saved(),
+            self.log()
+                .lines()
+                .filter(|l| !l.contains('@'))
+                .rev()
+                .take(10)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
     }
 
     /// The height asked for last is `h`.
