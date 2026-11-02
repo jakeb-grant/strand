@@ -960,9 +960,22 @@ fn walk(sh: &mut Shell) {
         let (icx, icy) = centre(here, x, scale);
         let steps: i64 = 12;
         let lerp = |a: u32, b: u32, k: i64| (a as i64 + (b as i64 - a as i64) * k / steps) as u32;
-        for k in 1..=steps {
-            pointer.motion(lerp(cx, icx, k), lerp(cy, icy, k), LW, LH);
-            std::thread::sleep(Duration::from_millis(15));
+        // A crossing the machine stretched past the 200 ms grace says nothing of
+        // it (1 run in 6 in the nightly stress job, 1 in 10 here): from the item
+        // again, ten times at most, so a grace that is gone still fails.
+        for _ in 0..10 {
+            let crossing = std::time::Instant::now();
+            for k in 1..=steps {
+                pointer.motion(lerp(cx, icx, k), lerp(cy, icy, k), LW, LH);
+                std::thread::sleep(Duration::from_millis(15));
+            }
+            if crossing.elapsed() < Duration::from_millis(200) {
+                break;
+            }
+            pointer.motion(cx, cy, LW, LH);
+            sh.wait(what, |one, two| {
+                (if second { two } else { one }).region(island, 2000)
+            });
         }
         assert!(
             sh.shot(if second { "HEADLESS-2" } else { "HEADLESS-1" })
