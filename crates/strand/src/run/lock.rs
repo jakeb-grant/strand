@@ -1000,6 +1000,26 @@ pub(super) fn helper_notice(
     ))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// (robustness) Whether a logic thread under test sees the helper as
+    /// installed. The real lookup finds a file beside the test binary, there
+    /// only if something else built `strand-auth` into this target, so a
+    /// live-pipeline test's watch events would rest on what else was built.
+    pub static HELPER_ON_THIS_THREAD: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Whether the `strand-auth` helper is installed
+/// ([`strand_auth::default_helper`]; a test's thread may say otherwise).
+pub(super) fn helper_installed() -> bool {
+    #[cfg(test)]
+    if let Some(h) = HELPER_ON_THIS_THREAD.with(std::cell::Cell::get) {
+        return h;
+    }
+    strand_auth::default_helper().is_some()
+}
+
 /// Whether `program` has a `lock` (one is declared at the top of a file).
 pub(super) fn has_lock(program: &strand_compiler::lower::Program) -> bool {
     program.files.iter().any(|f| {

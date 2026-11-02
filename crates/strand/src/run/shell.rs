@@ -433,7 +433,7 @@ impl Shell {
         if !lock || before {
             return;
         }
-        let helper = strand_auth::default_helper().is_some();
+        let helper = super::lock::helper_installed();
         let mocked = crate::mock::requested().is_some();
         let exe = std::env::current_exe().ok();
         if let Some(text) = super::lock::helper_notice(lock, before, helper, mocked, exe.as_deref())

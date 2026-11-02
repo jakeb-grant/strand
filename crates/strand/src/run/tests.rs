@@ -1340,6 +1340,20 @@ fn spawn_live_with(
     spawn_live_quiet(dir, socket, buses, storage, None)
 }
 
+/// [`spawn_live`] on a machine with the `strand-auth` helper or without.
+fn spawn_live_helper(
+    dir: &Path,
+    socket: Option<PathBuf>,
+    helper: bool,
+) -> (
+    Worker,
+    calloop::channel::Sender<ToLogic>,
+    std::thread::JoinHandle<Result<(), String>>,
+    Mirror,
+) {
+    spawn_live_on(dir, socket, None, Storage::none(), None, helper)
+}
+
 /// [`spawn_live_with`] whose logic thread's overlay waits `quiet`
 /// instead of `overlay::QUIET` (`None`: the real one).
 fn spawn_live_quiet(
@@ -1348,6 +1362,26 @@ fn spawn_live_quiet(
     buses: Option<strand_services::Buses>,
     storage: Storage,
     quiet: Option<Duration>,
+) -> (
+    Worker,
+    calloop::channel::Sender<ToLogic>,
+    std::thread::JoinHandle<Result<(), String>>,
+    Mirror,
+) {
+    // (robustness) What these tests assert is the pipeline's own, on any
+    // target: a helper is taken as installed, built here or not.
+    spawn_live_on(dir, socket, buses, storage, quiet, true)
+}
+
+/// [`spawn_live_quiet`] with the logic thread told whether the `strand-auth`
+/// helper is installed, whatever this target holds.
+fn spawn_live_on(
+    dir: &Path,
+    socket: Option<PathBuf>,
+    buses: Option<strand_services::Buses>,
+    storage: Storage,
+    quiet: Option<Duration>,
+    helper: bool,
 ) -> (
     Worker,
     calloop::channel::Sender<ToLogic>,
@@ -1376,6 +1410,7 @@ fn spawn_live_quiet(
         .unwrap();
     let t = std::thread::spawn(move || {
         crate::overlay::QUIET_ON_THIS_THREAD.with(|q| q.set(quiet));
+        super::lock::HELPER_ON_THIS_THREAD.with(|h| h.set(Some(helper)));
         logic(boot, storage, from_main, tx, live)
     });
     (compiler, to_logic, t, Mirror::new(rx))
@@ -1655,6 +1690,48 @@ fn watch(socket: &Path) -> impl FnMut() -> Json {
         let mut line = String::new();
         std::io::BufRead::read_line(&mut events, &mut line).unwrap();
         serde_json::from_str::<Json>(&line).unwrap()
+    }
+}
+
+/// (robustness) A config with a `lock` and no helper: a watcher hears the
+/// notice first, from the kept ones, and with the helper it hears none. The
+/// lock tests above take the second, so a target with no `strand-auth` built
+/// doesn't change what their watch events are.
+#[test]
+fn a_watcher_hears_of_a_missing_helper_only_without_one() {
+    for helper in [false, true] {
+        let dir = temp_dir(if helper { "helper-on" } else { "helper-off" });
+        std::fs::write(
+            dir.join("shell.strand"),
+            "state locked = true\nlock L {\n  open: locked\n  on key(k) { auth.submit(k.name) }\n  text \"lock\"\n}\n",
+        )
+        .unwrap();
+        let socket = dir.join("ipc.sock");
+        let (compiler, to_logic, t, mut m) = spawn_live_helper(&dir, Some(socket.clone()), helper);
+        m.until("the lock", |s| s.texts() == ["lock"]);
+        let mut next_event = watch(&socket);
+        if !helper {
+            let ev = next_event();
+            assert_eq!(ev["event"], "notices", "{ev}");
+            assert!(
+                ev["notices"][0]
+                    .as_str()
+                    .is_some_and(|n| n.contains("no `strand-auth` helper is installed")),
+                "{ev}"
+            );
+        }
+        // The next event is the save's, nothing kept before it.
+        std::fs::write(
+            dir.join("shell.strand"),
+            "state locked = true\nlock L {\n  open: locked\n  on key(k) { auth.submit(k.name) }\n  text \"edit\"\n}\n",
+        )
+        .unwrap();
+        let ev = next_event();
+        assert_eq!(ev["deferred"], true, "{ev}");
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+        drop(compiler);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
