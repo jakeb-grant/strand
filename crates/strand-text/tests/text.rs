@@ -475,22 +475,27 @@ fn layouts_report_missing_glyphs_and_live_pages() {
 #[test]
 fn dropping_the_worker_discards_its_queue() {
     let big = "lorem ipsum ".repeat(MAX_TEXT_BYTES / 12);
-    // How long one big request takes here (debug builds are slow).
-    let mut e = TextEngine::new(config());
-    let t = std::time::Instant::now();
-    e.layout(&request(0, &big, 13.0, Scale::ONE));
-    let one = t.elapsed();
-    let w = TextWorker::spawn(config()).unwrap();
-    for k in 1..=40 {
+    // The worker wakes its owner once per answer.
+    let answers = Arc::new(AtomicUsize::new(0));
+    let woken = answers.clone();
+    let waker: Waker = Box::new(move || {
+        woken.fetch_add(1, Ordering::SeqCst);
+    });
+    let w = TextWorker::spawn_with_waker(config(), Some(waker)).unwrap();
+    let total = 40;
+    for k in 1..=total {
         w.request(request(k, &big, 13.0, Scale::ONE)).unwrap();
     }
-    let t = std::time::Instant::now();
+    let before = answers.load(Ordering::SeqCst);
+    assert!(before + 4 < total as usize, "{before} already answered");
     drop(w);
-    // At most the request in progress (plus font loading) finishes.
+    // At most the request in progress finishes (and any it took up in the
+    // moment before the handle was gone).
+    let after = answers.load(Ordering::SeqCst);
     assert!(
-        t.elapsed() < one * 4 + Duration::from_millis(200),
-        "{:?} with one request taking {one:?}",
-        t.elapsed()
+        after - before < 4,
+        "{} more of {total} shaped after the drop",
+        after - before
     );
 }
 

@@ -104,17 +104,36 @@ fn the_idle_hook_runs_once_per_drained_burst_on_the_worker() {
     assert_eq!(RAN.load(Ordering::SeqCst), 2, "ran again while idle");
     // A second stream within five seconds of that wake owes no second
     // wake: what it freed waits for the next drain allowed.
-    worker.request(request(10, "13:02")).unwrap();
-    worker
-        .recv_timeout(Duration::from_secs(10))
-        .unwrap()
-        .unwrap();
-    std::thread::sleep(Duration::from_millis(800));
-    assert!(
-        first.elapsed() < Duration::from_secs(5),
-        "the test was slow"
-    );
-    assert_eq!(RAN.load(Ordering::SeqCst), 2, "woke twice within 5 s");
+    // A machine so loaded that those five seconds passed says nothing: it
+    // tries again from the wake that allowed, as many times as it takes to
+    // get 800 ms inside the five seconds.
+    let mut since = first;
+    let mut ran = 2;
+    let mut key = 10;
+    for attempt in 0.. {
+        assert!(attempt < 5, "five attempts, none inside the five seconds");
+        let shape = |key| {
+            worker.request(request(key, "13:02")).unwrap();
+            worker
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .unwrap();
+        };
+        shape(key);
+        key += 1;
+        std::thread::sleep(Duration::from_millis(800));
+        if since.elapsed() < Duration::from_secs(5) {
+            assert_eq!(RAN.load(Ordering::SeqCst), ran, "woke twice within 5 s");
+            break;
+        }
+        // Taken before the wake it waits for, so inside the five seconds by
+        // this clock is inside them by the worker's.
+        since = Instant::now();
+        ran = RAN.load(Ordering::SeqCst) + 1;
+        shape(key);
+        key += 1;
+        wait_for(ran);
+    }
     let on = ON.lock().unwrap().clone();
     let me = std::thread::current().id();
     assert!(
