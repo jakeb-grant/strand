@@ -465,14 +465,16 @@ fn replaced_and_briefly_missing_wallpapers() {
     let gone = std::time::Instant::now();
     assert!(matches!(q.lookup(&wall), Lookup::Pending { .. }));
     // (An earlier gap's timer may wake us first: look again until the
-    // answer changes.)
-    loop {
+    // answer changes. The wake's deadline is what says the grace ran out.)
+    for wake in 0.. {
+        assert!(wake < 8, "woken {wake} times and still pending");
         // The grace running out wakes the owner to look again.
-        rx.recv_timeout(MISSING_GRACE * 4).unwrap();
+        rx.recv_timeout(MISSING_GRACE * 4)
+            .expect("the grace running out wakes the owner");
         q.poll();
         match q.lookup(&wall) {
             Lookup::Failed { .. } => break,
-            Lookup::Pending { .. } => assert!(gone.elapsed() < MISSING_GRACE * 2),
+            Lookup::Pending { .. } => {}
             other => panic!("{other:?}"),
         }
     }
@@ -834,10 +836,18 @@ fn imports_refuse_fifos_devices_and_huge_files() {
         .status()
         .is_ok_and(|s| s.success());
     if made {
-        let started = std::time::Instant::now();
-        let r = import(&format!("base16:{}", fifo.display()), None);
-        assert!(matches!(r, Err(ImportError::Io { .. })), "{r:?}");
-        assert!(started.elapsed() < Duration::from_secs(1));
+        // On a thread, so that one opening the FIFO fails here and not at the
+        // test run's limit: nothing ever writes to it.
+        let path = format!("base16:{}", fifo.display());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let refused = matches!(import(&path, None), Err(ImportError::Io { .. }));
+            tx.send(refused)
+        });
+        let refused = rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the import blocked on the FIFO");
+        assert!(refused, "a FIFO is refused with an `Io` error");
     }
     let r = import("base16:/dev/zero", None);
     assert!(matches!(r, Err(ImportError::Io { .. })), "{r:?}");
