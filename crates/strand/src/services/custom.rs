@@ -1296,12 +1296,23 @@ mod tests {
         std::fs::write(&file, format!("{hung}bar B {{ text \"x\" }}\n")).unwrap();
         let asked = Arc::new(AtomicUsize::new(0));
         let n = asked.clone();
+        // The boot's question hangs for 1.5 s, and every later one until the
+        // test is over, so a reload that waits for one sees `answers` move.
+        let answers = Arc::new(AtomicUsize::new(0));
+        let answered = answers.clone();
+        let (end, ended) = std::sync::mpsc::channel::<()>();
+        let ended = std::sync::Mutex::new(ended);
         let cache = Arc::new(strand_introspect::Cache::with_fetch(
             Duration::from_millis(50),
             move |_, name, _| {
-                n.fetch_add(1, Ordering::SeqCst);
+                let nth = n.fetch_add(1, Ordering::SeqCst);
                 if name == "org.example.Hung" {
-                    std::thread::sleep(Duration::from_millis(1500));
+                    if nth == 0 {
+                        std::thread::sleep(Duration::from_millis(1500));
+                    } else if let Ok(ended) = ended.lock() {
+                        let _ = ended.recv_timeout(Duration::from_secs(60));
+                    }
+                    answered.fetch_add(1, Ordering::SeqCst);
                     return Err("no answer".into());
                 }
                 std::thread::sleep(Duration::from_millis(200));
@@ -1331,12 +1342,11 @@ mod tests {
         // Past the remembered answer's ttl: a markup save does not wait.
         std::thread::sleep(Duration::from_millis(100));
         std::fs::write(&file, format!("{hung}bar B {{ text \"y\" }}\n")).unwrap();
-        let t = std::time::Instant::now();
         let out = loader.changed([(file.clone(), true)]);
-        assert!(
-            t.elapsed() < Duration::from_millis(700),
-            "the reload waited on the bus: {:?}",
-            t.elapsed()
+        assert_eq!(
+            answers.load(Ordering::SeqCst),
+            1,
+            "the reload waited on the bus"
         );
         assert!(out.build.is_some(), "{:?}", out.diagnostics);
         // A service added by a reload: not checked yet, committed; its
@@ -1344,12 +1354,11 @@ mod tests {
         let late =
             "service late from dbus session \"org.example.Late\" { level: float rw = Level }\n";
         std::fs::write(&file, format!("{hung}{late}bar B {{ text \"y\" }}\n")).unwrap();
-        let t = std::time::Instant::now();
         let out = loader.changed([(file.clone(), true)]);
-        assert!(
-            t.elapsed() < Duration::from_millis(700),
-            "{:?}",
-            t.elapsed()
+        assert_eq!(
+            answers.load(Ordering::SeqCst),
+            1,
+            "the reload waited on the bus"
         );
         assert!(out.build.is_some(), "{:?}", out.diagnostics);
         rx.recv_timeout(Duration::from_secs(5))
@@ -1363,6 +1372,7 @@ mod tests {
             "{:?}",
             out.diagnostics
         );
+        drop(end);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

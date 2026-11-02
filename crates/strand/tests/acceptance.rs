@@ -1258,20 +1258,21 @@ fn toasts_arrive_stack_slide_and_leave() {
     // showing, one shows it off its place (still entering, or past it
     // by the spring's overshoot), and from 400 ms on it is at rest.
     let release = !cfg!(debug_assertions);
+    let mut gates = strand_test_support::gate::Gates::default();
     if release {
         let first = shots.first().expect("the toast never showed").0;
         let at = |t: &Instant| t.duration_since(first);
-        assert!(
+        gates.check(
             shots
                 .iter()
                 .any(|(t, x)| at(t) < Duration::from_millis(200) && x.abs_diff(rest) > 2),
-            "no frames of the slide caught: {lefts:?}"
+            || format!("no frames of the slide caught: {lefts:?}"),
         );
-        assert!(
+        gates.check(
             shots
                 .iter()
                 .all(|(t, x)| at(t) < Duration::from_millis(400) || *x == rest),
-            "not at rest 400 ms in: {lefts:?}"
+            || format!("not at rest 400 ms in: {lefts:?}"),
         );
     }
     // `$motion.spatial` is `spring(3000, 0.75)`: it passes its place by
@@ -1368,17 +1369,17 @@ fn toasts_arrive_stack_slide_and_leave() {
     // within 400 ms of the click one shows it between the two places,
     // and from 600 ms on it is in its new one.
     if release {
-        assert!(
-            shots.iter().any(|(at, t)| *at < Duration::from_millis(400)
-                && *t > bands[0].0 + 4
-                && *t + 4 < below),
-            "no frames of the slide up caught: {tops:?}"
+        gates.check(
+            shots.iter().any(|(at, t)| {
+                *at < Duration::from_millis(400) && *t > bands[0].0 + 4 && *t + 4 < below
+            }),
+            || format!("no frames of the slide up caught: {tops:?}"),
         );
-        assert!(
+        gates.check(
             shots
                 .iter()
                 .all(|(at, t)| *at < Duration::from_millis(600) || *t == bands2[0].0),
-            "not in its place 600 ms in: {tops:?}"
+            || format!("not in its place 600 ms in: {tops:?}"),
         );
     }
 
@@ -1458,6 +1459,7 @@ fn toasts_arrive_stack_slide_and_leave() {
         lit(&d.region("HEADLESS-1", TOASTS), col).is_empty()
     });
     assert!(desk.errors().is_empty(), "{:?}", desk.errors());
+    gates.hold();
 }
 
 /// The OSD's pill on `HEADLESS-1`: 260 wide, bottom-centred, 96 above
@@ -1544,10 +1546,7 @@ fn the_osd_follows_volume_and_brightness() {
     // Hidden 1.2 s after the change (and not before 1 s).
     desk.wait("the OSD to hide", 10, |d| !shown(d));
     let gone = at.elapsed();
-    assert!(
-        gone >= Duration::from_millis(1000) && gone < Duration::from_millis(2600),
-        "hid after {gone:?}"
-    );
+    assert!(gone >= Duration::from_millis(1000), "hid after {gone:?}");
 
     // Two wheel notches down on the bar's volume row: 0.3 - 2 × 0.05.
     let mut pointer = desk.pointer();
@@ -1601,6 +1600,11 @@ fn the_osd_follows_volume_and_brightness() {
     assert!(!shown(&desk), "the OSD also showed on HEADLESS-1");
     desk.reaches_ref("HEADLESS-2", osd2, "osd_headless2");
     assert!(desk.errors().is_empty(), "{:?}", desk.errors());
+    let mut gates = strand_test_support::gate::Gates::default();
+    gates.check(gone < Duration::from_millis(2600), || {
+        format!("hid after {gone:?}")
+    });
+    gates.hold();
 }
 
 /// The comparison fails on one glyph's worth of change in the clock

@@ -1112,11 +1112,7 @@ mod tests {
             answered.extend(execs.answered(&read));
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(
-            start.elapsed() < Duration::from_secs(5),
-            "{:?}",
-            start.elapsed()
-        );
+        let took = start.elapsed();
         for r in &replies {
             assert_eq!(
                 r.peek(),
@@ -1137,6 +1133,11 @@ mod tests {
         }
         drop(waits);
         let _ = std::fs::remove_dir_all(&dir);
+        let mut gates = strand_test_support::gate::Gates::default();
+        gates.check(took < Duration::from_secs(5), || {
+            format!("both timed out after {took:?}")
+        });
+        gates.hold();
     }
 
     /// [`run`] to its end.
@@ -1287,7 +1288,7 @@ mod tests {
                 .unwrap();
             ended.extend(execs.ended());
         }
-        assert!(asked.elapsed() < Duration::from_secs(5));
+        let interrupted = asked.elapsed();
         assert_eq!(ended[0].exit, 128 + libc::SIGINT);
         assert!(ended[0].stopped && ended[0].failed.is_none());
         // A stop with nothing running does nothing.
@@ -1299,6 +1300,11 @@ mod tests {
         });
         assert_eq!(execs.busy(), (0, 0));
         let _ = std::fs::remove_dir_all(&dir);
+        let mut gates = strand_test_support::gate::Gates::default();
+        gates.check(interrupted < Duration::from_secs(5), || {
+            format!("one that heeds SIGINT ended after {interrupted:?}")
+        });
+        gates.hold();
     }
 
     /// (bead #17) Strand blocks SIGINT and SIGTERM on every thread for its
@@ -1421,7 +1427,7 @@ mod tests {
                 .unwrap();
             answered.extend(execs.answered(&read));
         }
-        assert!(asked.elapsed() < Duration::from_secs(5));
+        let stopped = asked.elapsed();
         for r in &replies {
             assert_eq!(r.peek(), Some(Err("`sh` was stopped".to_string())));
         }
@@ -1438,6 +1444,11 @@ mod tests {
             }]
         );
         drop(waits);
+        let mut gates = strand_test_support::gate::Gates::default();
+        gates.check(stopped < Duration::from_secs(5), || {
+            format!("a stopped call answered after {stopped:?}")
+        });
+        gates.hold();
     }
 
     /// (M6, the review of the owner's ruling) An action runs at most

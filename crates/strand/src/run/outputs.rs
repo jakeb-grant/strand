@@ -1086,11 +1086,12 @@ mod tests {
     fn a_run_that_backgrounds_a_process_ends_with_it() {
         let sh = |c: &str| vec!["sh".to_string(), "-c".into(), c.into()];
         let started = Instant::now();
-        assert_eq!(run_once(&sh("sleep 5 & exit 0"), RUN_TIMEOUT), None);
-        let why = run_once(&sh("sleep 5 & echo boom >&2; exit 3"), RUN_TIMEOUT).unwrap();
+        // A minute each, so 30 s tells a wait from none on any machine.
+        assert_eq!(run_once(&sh("sleep 60 & exit 0"), RUN_TIMEOUT), None);
+        let why = run_once(&sh("sleep 60 & echo boom >&2; exit 3"), RUN_TIMEOUT).unwrap();
         assert!(why.contains("boom"), "{why}");
         assert!(
-            started.elapsed() < Duration::from_secs(3),
+            started.elapsed() < Duration::from_secs(30),
             "waited for the background process: {:?}",
             started.elapsed()
         );
@@ -1114,7 +1115,11 @@ mod tests {
         )
         .unwrap();
         assert!(why.contains("was killed"), "{why}");
-        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "the run outlived its 300 ms timeout: {:?}",
+            started.elapsed()
+        );
         let pid = std::fs::read_to_string(&pid_file).unwrap();
         let stat = format!("/proc/{}/stat", pid.trim());
         let gone = || {
@@ -1133,11 +1138,16 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         let started = Instant::now();
-        let why = run_once(&sh("setsid sleep 5 & sleep 30"), Duration::from_millis(300)).unwrap();
+        // A minute, so 30 s tells a wait for what holds stderr from none.
+        let why = run_once(
+            &sh("setsid sleep 60 & sleep 120"),
+            Duration::from_millis(300),
+        )
+        .unwrap();
         assert!(why.contains("was killed"), "{why}");
         assert!(
-            started.elapsed() < Duration::from_secs(3),
-            "{:?}",
+            started.elapsed() < Duration::from_secs(30),
+            "waited for the process that left the group: {:?}",
             started.elapsed()
         );
     }
