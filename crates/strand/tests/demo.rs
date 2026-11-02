@@ -199,10 +199,12 @@ fn render_node() -> bool {
     })
 }
 
-/// A debug build carries about 9 MB more than release (30–31 MB against
-/// 21–22 MB in M0) and more on a loaded machine (48.2 MB in the stress
-/// job, decisions.md): its own, generous ceiling, so neither passes for a
-/// budget breach. The gate itself is checked in release.
+/// A debug build carries more than release, nearly all of it file-backed
+/// pages of its 158 MB binary, and how many are mapped moves with the page
+/// cache (43–46 MB here, 48.6 MB at most in the stress job, 6.4 MB of it
+/// anonymous; decisions.md): its own ceiling, about 30% over the most seen,
+/// so neither passes for a budget breach. The gate itself is checked in
+/// release.
 const DEBUG_PSS_CEILING_KB: u64 = 64 * 1024;
 
 /// The PSS limit for the binary under test and its name.
