@@ -57,7 +57,8 @@ lock_and_isolation() {
     bash scripts/eval/test-check-isolation.sh &&
     bash scripts/eval/test-worktree.sh &&
     bash scripts/eval/test-local-mounts.sh &&
-    bash scripts/eval/test-repeat.sh
+    bash scripts/eval/test-repeat.sh &&
+    bash scripts/eval/test-mutants-summary.sh
 }
 
 # The merge base with main, which refs-check holds changed references

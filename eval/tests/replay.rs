@@ -986,6 +986,56 @@ fn a_step_on_a_surface_waits_for_the_tick_it_shows() {
     );
 }
 
+/// A click's handler runs on its release, but the ring can time the release
+/// after the handler's write and the service's answer (eval step 7 on GitHub,
+/// 41483730755). The answer played first, `muted = !muted` wrote the opposite
+/// of what it wrote live. The release goes before them, and only then.
+#[test]
+fn a_release_timed_after_its_clicks_write_comes_before_the_answer() {
+    let order = |tag: &str, write: bool, released: u64| {
+        let mut f = Fx::session();
+        let t = 20 * S;
+        let button = |t: u64, pressed: u8| {
+            Rec::new(t, kind::BUTTON, 1)
+                .f32_at(0, 10.0)
+                .f32_at(4, 10.0)
+                .u16_at(8, 0)
+                .u8_at(10, pressed)
+        };
+        f.input.push(button(t, 1));
+        if write {
+            f.change(t + MS, kind::WRITE, "mood.level", &[], "7");
+        }
+        f.field(t + 2 * MS, "mood.level", "[5,7]");
+        f.input.push(button(t + released, 0));
+        let (_, _, text) = plan_of(&f.write(tag), &defaults());
+        let at = |what: &str| {
+            steps(&text)
+                .iter()
+                .rposition(|l| l.starts_with(what))
+                .unwrap_or_else(|| panic!("no `{what}` in\n{text}"))
+        };
+        (at("press left"), at("release left"), at("set mood.level"))
+    };
+    let (press, release, answer) = order("release-first", true, 3 * MS);
+    assert!(
+        press < release && release < answer,
+        "{press} {release} {answer}"
+    );
+    // No write between them: nothing says the handler had run.
+    let (press, release, answer) = order("release-no-write", false, 3 * MS);
+    assert!(
+        press < answer && answer < release,
+        "{press} {answer} {release}"
+    );
+    // A press held longer than a tick: what it wrote is the press's own.
+    let (press, release, answer) = order("release-held", true, 100 * MS);
+    assert!(
+        press < answer && answer < release,
+        "{press} {answer} {release}"
+    );
+}
+
 /// (replay-owner) `drawn.json` as the live shell writes it, from boxes:
 /// the bar (slot 1, root `3.1`) and its nodes.
 /// (replay-owner) The verdict: a bundle with no `drawn.json` is not

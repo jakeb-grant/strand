@@ -464,6 +464,10 @@ fn replaced_and_briefly_missing_wallpapers() {
     std::fs::remove_file(&wall).unwrap();
     let gone = std::time::Instant::now();
     assert!(matches!(q.lookup(&wall), Lookup::Pending { .. }));
+    // The grace started by the time that lookup returned, so a lookup begun
+    // later than the grace past it may not be pending, however late a loaded
+    // machine got to it.
+    let started = gone.elapsed();
     // (An earlier gap's timer may wake us first: look again until the
     // answer changes. The wake's deadline is what says the grace ran out.)
     for wake in 0.. {
@@ -472,9 +476,13 @@ fn replaced_and_briefly_missing_wallpapers() {
         rx.recv_timeout(MISSING_GRACE * 4)
             .expect("the grace running out wakes the owner");
         q.poll();
+        let asked = gone.elapsed();
         match q.lookup(&wall) {
             Lookup::Failed { .. } => break,
-            Lookup::Pending { .. } => {}
+            Lookup::Pending { .. } => assert!(
+                asked < started + MISSING_GRACE,
+                "still pending {asked:?} after the delete, its grace started by {started:?}"
+            ),
             other => panic!("{other:?}"),
         }
     }

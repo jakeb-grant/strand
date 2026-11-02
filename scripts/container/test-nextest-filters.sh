@@ -36,7 +36,7 @@ filter = 'binary_id(/^strand-services::(media)\$/)'
 retries = 1"
 expect 1 "not one whose test holds a gate"
 config "[[profile.ci.overrides]]
-filter = '(binary_id(/^strand-services::(media)\$/)) & not (test(=a_frozen_player_does_not_hold_up_the_others) | test(=media_follows_the_active_player_without_polling))'
+filter = '(binary_id(/^strand-services::(media)\$/)) & not (test(=a_frozen_player_does_not_hold_up_the_others) | test(=media_follows_the_active_player_without_polling) | test(=players_list_every_player_and_select_picks_the_one_media_follows))'
 retries = 1"
 expect 0 "unless the retry leaves that test out"
 config "[[profile.ci.overrides]]
@@ -76,6 +76,37 @@ expect_fake 1 "nor a \`mod\` inside a \`#[path]\` helper"
 helper
 printf 'mod gone;\n#[test]\nfn t() {}\n' >"$fake/fake.rs"
 expect_fake 1 "a \`mod\` it can't find fails"
+# Work done unread or idle, as the third review found it left under the retry.
+held_by() {
+  printf '#[test]\n%s\n' "$1" >"$fake/fake.rs"
+  expect_fake 1 "$2"
+}
+held_by 'fn scans_only_while_read() {}' "a test named for working only while read fails"
+held_by 'fn t() {
+    // Nobody reads it: no scan.
+}' "a test whose comment says nobody reads fails"
+held_by 'fn t() {
+    // Idle: nothing changes, nothing is sent.
+}' "one whose comment says it is idle fails"
+held_by 'fn t() {
+    assert!(!runs(), "it runs for nobody");
+}' "one whose message says for nobody fails"
+held_by 'fn t() {
+    assert_eq!(c.quiet_for(Duration::from_millis(500)).await, 0);
+}' "a quiet window asserted zero fails"
+held_by 'fn t() {
+    assert_eq!(
+        c.quiet_for(Duration::from_millis(300)).await,
+        0,
+        "the same state"
+    );
+}' "and on lines of its own"
+printf '#[test]\nfn t() {\n    c.quiet_for(Duration::from_millis(500)).await;\n    // Read again.\n}\n' >"$fake/fake.rs"
+expect_fake 0 "a quiet window only waited through doesn't"
+printf '/// Runs only while read, as a doc comment on the next.\n#[test]\nfn t() {}\n' >"$fake/fake.rs"
+expect_fake 0 "nor a doc comment's words"
+helper
+printf 'mod common;\n#[test]\nfn t() {}\n' >"$fake/fake.rs"
 config "[[profile.ci.overrides]]
 filter = 'binary_id(/^strand-services::(network)\$/)'
 retries = 1"

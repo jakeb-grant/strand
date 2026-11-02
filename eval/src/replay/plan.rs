@@ -187,6 +187,42 @@ fn push_on(timed: &mut Vec<Timed>, t: u64, text: String, ticks: u64, not_before:
     });
 }
 
+/// A click's handler runs on its release, but a recorder that timed input after
+/// routing it (before 2026-11-02, so any bundle kept from then) can time a release
+/// after what the handler went on to do: a config's write and the service's
+/// answer to it stood between a press and a release on GitHub, all within a
+/// tick. Played in that order the answer reaches the handler first, and
+/// `muted = !muted` writes the opposite of what it wrote live. So a release
+/// under a tick after its press, with a write of the config's between them, goes
+/// straight after the press. A press held longer stays as it was: its writes
+/// can be the press's own (`on change self.pressed`). `done`: when each write of
+/// the config's was made; `timed`: in order, and left in order.
+fn release_before_what_its_click_did(timed: &mut Vec<Timed>, period: u64, done: &[u64]) {
+    let mut down: HashMap<String, usize> = HashMap::new();
+    for i in 0..timed.len() {
+        if let Some(button) = timed[i].text.strip_prefix("press ") {
+            down.insert(button.to_string(), i);
+            continue;
+        }
+        let Some(button) = timed[i].text.strip_prefix("release ") else {
+            continue;
+        };
+        let Some(p) = down.remove(button) else {
+            continue;
+        };
+        let (from, to) = (timed[p].t, timed[i].t);
+        if to.saturating_sub(from) >= period
+            || !done.iter().any(|t| (from..=to).contains(t))
+            || i == p + 1
+        {
+            continue;
+        }
+        let mut release = timed.remove(i);
+        release.t = from;
+        timed.insert(p + 1, release);
+    }
+}
+
 /// A bundle's replay, planned.
 #[derive(Clone, Debug)]
 pub struct Plan {
@@ -2792,6 +2828,12 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
     // The timeline, quantised to ticks.
     // Stable: steps at the same time keep the order they were planned in.
     timed.sort_by_key(|s| s.t);
+    let done: Vec<u64> = writes
+        .iter()
+        .map(|w| w.t)
+        .chain(service_writes.iter().map(|w| w.t))
+        .collect();
+    release_before_what_its_click_did(&mut timed, period, &done);
     let mut steps = Vec::new();
     let mut tick = 0u64;
     // (fidelity) The sandbox's focused output (its first screen, as it

@@ -263,6 +263,15 @@ jobs:
       - run: scripts/container/run.sh scripts/container/tests-ran.sh cargo test -p strand --lib random_edits_through_five_save_styles -- --nocapture --test-threads=1
         env:
           STRAND_FUZZ_MAX_GAP_MS: "20"
+      # A failed acceptance test's sway.log, timed.log and strand.log
+      # (target/acceptance/logs/<tag>/): the debug run in this job is the one
+      # that fails under load, and the runner goes with them.
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: test-acceptance-logs
+          path: target/acceptance/
+          if-no-files-found: ignore
 
   # The memory gates, on the real release profile: its per-package
   # opt-levels are what the budgets rest on (crates/strand/tests/

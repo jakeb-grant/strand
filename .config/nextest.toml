@@ -52,8 +52,11 @@ retries = 0
 # binaries are named one by one, so a new one starts with none, and the retry is
 # per test, so what a named binary holds of those is named below it.
 # nextest-filters.sh reads each retried binary's source, with the modules it
-# includes, and fails on a `Gates` or a count of that kind left in, by the words
-# of its message. The nightly job doesn't use nextest at all.
+# includes, and fails on a `Gates` or a count of that kind left in, by a test's
+# name, a `quiet_for` asserted zero and the words of its comments and messages:
+# words and shapes, so a new test that uses none of them needs a reader, as
+# these did (decisions.md robustness, third review). The nightly job doesn't use
+# nextest at all.
 #
 # 15 minutes, not the 40 above: twice that still ends inside the job's 60, so
 # what hangs is named before the job is killed and its summary lost.
@@ -93,7 +96,20 @@ filter = '''
   | test(=without_a_bus_up_fails_naming_the_connection)
   | test(=without_bluez_pair_and_forget_fail_as_events)
   | test(=an_unreachable_network_is_unavailable_and_fails_as_values)
-  | test(=an_unreachable_bus_sends_an_empty_boot_batch))'''
+  | test(=an_unreachable_bus_sends_an_empty_boot_batch)
+  | test(=sway_adapter_follows_a_real_sway)
+  | test(=wlr_management_serves_sway_without_its_adapter)
+  | test(=sways_keyboard_layout_follows_its_input_events)
+  | test(=an_unknown_sway_event_is_harmless_but_a_stream_of_no_events_is_not)
+  | test(=bluetooth_finds_nearby_devices_only_while_read)
+  | test(=the_compositor_runs_for_the_focus_only_while_it_is_read)
+  | test(=history_is_recorded_only_while_read)
+  | test(=history_asks_upower_only_when_called)
+  | test(=a_request_is_answered_through_the_helper_and_asks_again_when_refused)
+  | test(=network_tells_the_joined_networks_details)
+  | test(=iwd_tells_the_joined_networks_details)
+  | test(=players_list_every_player_and_select_picks_the_one_media_follows)
+  | test(=a_shared_connection_closes_with_its_last_user))'''
 retries = 1
 slow-timeout = { period = "60s", terminate-after = 15, grace-period = "30s" }
 

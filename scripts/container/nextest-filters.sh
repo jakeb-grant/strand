@@ -5,9 +5,10 @@
 #   - any override's filter matches no test, or a retry names a binary or a test
 #     whose source isn't there;
 #   - a test with a retry is in a binary that may never have one (a budget, a
-#     pixel reference, logic), or holds a timing gate or a wake or idle count in
-#     a binary that may, read from the binary's source and the modules it
-#     includes (decisions.md robustness);
+#     pixel reference, logic), or holds a timing gate or a wake, idle or unread
+#     count in a binary that may, read from the binary's source and the modules
+#     it includes, by its name, its comments and messages and a `quiet_for`
+#     asserted zero (decisions.md robustness);
 #   - a retry's filter isn't of the one form this can read: anchored
 #     `binary_id(/^crate::name$/)` or `binary_id(/^crate::(a|b)$/)` terms joined
 #     by `|`, then at most `& not (test(=name) | ...)`;
@@ -42,11 +43,21 @@ FORBIDDEN = re.compile(
     r"|dbus_idle|audio_idle|idle|.*bench.*)$"
 )
 # What a test may not hold under a retry: a marked gate, or a count of wakes,
-# of work done idle or unread, or of commits, by the words of its message.
+# of work done idle or unread, or of commits, by the words of its message or a
+# comment in it, or a stream's quiet window asserted to be zero. Words and
+# shapes, which is all this can read: it catches what looks like those it was
+# made from, and the list itself came from reading them (decisions.md robustness).
 HOLDS = re.compile(
     r'Gates::default|GATE_MISS'
     r'|"[^"]*\b(?:while idle|while unread|while nobody|woke|wakes|commits for|frames within)\b'
+    r'|"[^"]*\b(?:[Nn]obody reads|for nobody|nothing asked before|not read)\b'
+    r'|\.quiet_for\(.*\)\.await,\s*(?:0\b.*)?$'
 )
+# The same in a test's own comment, doc comments aside: they say what a test is
+# about, and belong to the next function.
+UNREAD = re.compile(r'^\s*//(?!/).*(?:\b(?:[Nn]obody|[Nn]othing) reads\b|\bIdle: )')
+# What a test says of itself in its name.
+NAMED = re.compile(r'only_while|only_when|while_read|while_watched|while_visible|while_unread|without_polling')
 TERM = r"binary_id\(/\^([\w-]+)::(?:\(([\w|-]+)\)|([\w-]+))\$/\)"
 HEAD = re.compile(rf"{TERM}(?: \| {TERM})*")
 TAIL = re.compile(r"\(test\(=\w+\)(?: \| test\(=\w+\))*\)")
@@ -120,12 +131,16 @@ def holders(path):
     current = attrs = None
     pending = ""
     for line in lines:
+        if UNREAD.search(line):
+            yield current, bool(attrs and "test" in attrs)
         code = line.split("//")[0] if line.lstrip().startswith("//") else line
         if code.startswith("#["):
             pending += code
         m = FN.match(code)
         if m:
             current, attrs, pending = m.group(1), pending, ""
+            if "test" in attrs and NAMED.search(current):
+                yield current, True
         elif not code.startswith("#[") and code and not code[0].isspace() and code[0] != "}":
             pending = ""
         if HOLDS.search(code):

@@ -1252,11 +1252,14 @@ impl LoopHost for Host {
         if let Some(n) = hit {
             f.send(ToLogic::Hit(n));
         }
+        // Timed before it's routed: the routing wakes logic, whose handler and a
+        // service's answer to it could otherwise be timed before the input that
+        // caused them, which a replay then plays the other way round.
+        let at = recording.then(strand_core::flight::now_ns);
         f.routed(event, intents);
-        if recording {
+        if let Some(t) = at {
             let focused = f.router.focused_input(surface, self.renderer.tree());
-            self.recorder
-                .input(strand_core::flight::now_ns(), event, focused, hit);
+            self.recorder.input(t, event, focused, hit);
         }
         // (M5) Pick mode: the inspector has the pointer.
         if f.router.picking() {
