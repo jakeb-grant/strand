@@ -301,22 +301,31 @@ fn a_question_that_times_out_does_not_wait_for_another_callers_connect() {
         let target = target.clone();
         std::thread::spawn(move || {
             let r = properties(&target, "org.example.Silent", "/");
-            (r, start.elapsed())
+            (r, Instant::now())
         })
     };
     // ...while, from half way through, another caller is connecting to a
     // bus that never answers, until its own deadline (1.5 TIMEOUT).
     std::thread::sleep(strand_introspect::TIMEOUT / 2);
-    let connecting = std::thread::spawn(move || ask(&mute));
+    let connecting = std::thread::spawn(move || {
+        let r = ask(&mute);
+        (r, Instant::now())
+    });
 
-    let (r, took) = silent.join().unwrap();
+    let (r, answered) = silent.join().unwrap();
     assert!(r.is_err(), "the silent peer answered: {r:?}");
+    let (connected, gave_up) = connecting.join().unwrap();
+    assert!(connected.is_err());
+    // The connect gives up half a TIMEOUT after the question when the
+    // question doesn't wait for it, and before it when it does: half of that
+    // tells them apart, whatever the load did to both.
     assert!(
-        took < strand_introspect::TIMEOUT + Duration::from_millis(400),
-        "the timed-out question took {took:?}, past its {:?} bound",
-        strand_introspect::TIMEOUT
+        answered + strand_introspect::TIMEOUT / 4 <= gave_up,
+        "the timed-out question waited for the other caller's connect: {:?} after the start, \
+         the connect given up at {:?}",
+        answered - start,
+        gave_up - start,
     );
-    assert!(connecting.join().unwrap().is_err());
     // The hung connection was dropped: the bus is reached on a new one.
     assert!(ask(&target).is_ok());
     // Both are in the log (decisions.md m6-flakes): the dropped
