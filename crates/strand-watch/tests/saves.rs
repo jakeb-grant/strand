@@ -365,11 +365,12 @@ fn a_file_written_continuously_does_not_delay_a_save() {
     assert_eq!(b.changes.len(), 1, "{b:#?}");
     assert_modified(&b.changes[0], &fx.cfg.join("theme.strand"), NEW);
     assert!(b.notices.is_empty(), "{b:#?}");
-    assert!(
+    let mut gates = strand_test_support::gate::Gates::default();
+    gates.check(
         b.last_event - b.first_event < Duration::from_millis(50),
-        "{:?}",
-        b.last_event - b.first_event
+        || format!("a save's events {:?} apart", b.last_event - b.first_event),
     );
+    gates.hold();
 }
 
 /// A new module and a new settings file written in two halves (`curl -o`,
@@ -1425,11 +1426,15 @@ fn rewritten_every_5_ms(fx: &Fx, path: &Path, style: Style) {
         }
     }
     let first = first.expect("nothing reported while the writer ran");
-    // `max_delay` (500 ms) after the first write, with slack for a
-    // loaded machine; it used to be never while the writes went on.
-    assert!(first < Duration::from_millis(800), "{style:?}: {first:?}");
     let last = seen.iter().flat_map(|b| &b.changes).last().unwrap();
     assert_modified(last, path, &body(n));
+    // `max_delay` (500 ms) after the first write, with slack for a
+    // loaded machine; it used to be never while the writes went on.
+    let mut gates = strand_test_support::gate::Gates::default();
+    gates.check(first < Duration::from_millis(800), || {
+        format!("{style:?}: read first at {first:?}")
+    });
+    gates.hold();
 }
 
 #[test]

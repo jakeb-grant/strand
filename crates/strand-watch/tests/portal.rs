@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 
 use strand_test_support::bus::SessionDaemon;
 use strand_watch::{
-    Bus, ChangeEvent, ColorScheme, Contrast, PortalSettings, SystemBatch, SystemSetting, channel,
+    BOOT_READ_TIMEOUT, Bus, ChangeEvent, ColorScheme, Contrast, PortalSettings, SystemBatch,
+    SystemSetting, channel,
 };
 use zbus::zvariant::{OwnedValue, Value};
 
@@ -38,6 +39,8 @@ struct Mock {
     v1: bool,
     /// A key whose read hangs this long (a portal stuck on its backend).
     slow: Option<(&'static str, Duration)>,
+    /// A key whose read hangs until the test gives this a permit.
+    held: Option<(&'static str, std::sync::Arc<tokio::sync::Semaphore>)>,
 }
 
 fn mock(values: HashMap<String, OwnedValue>) -> Mock {
@@ -45,6 +48,7 @@ fn mock(values: HashMap<String, OwnedValue>) -> Mock {
         values,
         v1: false,
         slow: None,
+        held: None,
     }
 }
 
@@ -58,6 +62,14 @@ impl Mock {
             && slow == key
         {
             tokio::time::sleep(delay).await;
+        }
+        if let Some((held, gate)) = &self.held
+            && *held == key
+        {
+            let _ = gate
+                .acquire()
+                .await
+                .map(tokio::sync::SemaphorePermit::forget);
         }
         self.lookup(namespace, key)
     }
@@ -363,11 +375,14 @@ fn a_change_during_a_re_read_is_not_reverted() {
 fn a_hanging_read_does_not_hold_the_boot_batch() {
     let Some(d) = daemon() else { return };
     let rt = runtime();
+    // Nothing answers the read until the test says so: the batch can only
+    // come without it, however long anything takes.
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
     let _conn = serve(
         &rt,
         &d.daemon.address,
         Mock {
-            slow: Some(("contrast", Duration::from_millis(1500))),
+            held: Some(("contrast", gate.clone())),
             ..mock(appearance())
         },
     );
@@ -375,28 +390,32 @@ fn a_hanging_read_does_not_hold_the_boot_batch() {
     let start = Instant::now();
     let portal = PortalSettings::spawn(Bus::Address(d.daemon.address.clone()), sink).unwrap();
     assert_eq!(next(&rx), (initial()[..2].to_vec(), true));
-    assert!(
-        start.elapsed() < Duration::from_millis(1400),
-        "{:?}",
-        start.elapsed()
-    );
+    let boot = start.elapsed();
+    // The read the boot gave up on, and the one it sent again.
+    gate.add_permits(2);
     assert_eq!(
         next(&rx),
         (vec![SystemSetting::Contrast(Contrast::Normal)], false)
     );
 
-    // Stopping while a read is outstanding does not wait for it.
+    // Stopping while a read is outstanding does not wait for it: this one
+    // is never answered, so a stop that waits doesn't end.
     let (sink, _rx2) = channel();
     let slow = PortalSettings::spawn(Bus::Address(d.daemon.address.clone()), sink).unwrap();
-    std::thread::sleep(Duration::from_millis(700));
-    let stop = Instant::now();
-    drop(slow);
-    drop(portal);
-    assert!(
-        stop.elapsed() < Duration::from_millis(500),
-        "{:?}",
-        stop.elapsed()
-    );
+    std::thread::sleep(BOOT_READ_TIMEOUT);
+    let (stopped, stop) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(slow);
+        drop(portal);
+        let _ = stopped.send(());
+    });
+    stop.recv_timeout(Duration::from_secs(30))
+        .expect("stopping waited for a read nothing answers");
+    let mut gates = strand_test_support::gate::Gates::default();
+    gates.check(boot < Duration::from_millis(1400), || {
+        format!("the boot batch took {boot:?}, past its {BOOT_READ_TIMEOUT:?}")
+    });
+    gates.hold();
 }
 
 #[test]

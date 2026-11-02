@@ -129,10 +129,7 @@ fn writers_next_to_watched_files_do_not_wake_the_watcher() {
     };
     let theme_change = batch.changes.iter().find(|c| c.path == theme).unwrap();
     assert_eq!(theme_change.hash, Some(hash_bytes(new.as_bytes())));
-    assert!(
-        batch.last_event - batch.first_event < Duration::from_millis(50),
-        "{batch:#?}"
-    );
+    let span = batch.last_event - batch.first_event;
 
     for w in writers {
         w.join().unwrap();
@@ -144,4 +141,9 @@ fn writers_next_to_watched_files_do_not_wake_the_watcher() {
     // would be thousands.
     assert!(woken < 60, "{woken} wakeups for {} writes", 3 * writes);
     drop(watcher);
+    let mut gates = strand_test_support::gate::Gates::default();
+    gates.check(span < Duration::from_millis(50), || {
+        format!("the config save's events {span:?} apart: {batch:#?}")
+    });
+    gates.hold();
 }
