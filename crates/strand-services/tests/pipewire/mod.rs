@@ -342,20 +342,48 @@ impl PipeWire {
     }
 
     /// Runs a tool and returns its output; panics when it fails.
+    ///
+    /// A tool that doesn't end fails here, not at nextest's 15 minutes: now and
+    /// then a session stops answering a bind, and `pw-cli`, `wpctl` and `pw-dump`
+    /// all wait for good (decisions.md robustness).
     pub fn run(&self, program: &str, args: &[&str]) -> String {
-        let out = self
+        use std::io::Read;
+        let mut child = self
             .command(program)
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
+            .spawn()
             .unwrap_or_else(|e| panic!("{program}: {e}"));
-        assert!(
-            out.status.success(),
-            "{program} {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
+        let drain = |mut r: Box<dyn Read + Send>| {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = r.read_to_end(&mut bytes);
+                bytes
+            })
+        };
+        let out = drain(Box::new(child.stdout.take().unwrap()));
+        let err = drain(Box::new(child.stderr.take().unwrap()));
+        let ended = strand_test_support::wait::within(
+            Duration::from_secs(30),
+            Duration::from_millis(5),
+            || !matches!(child.try_wait(), Ok(None)),
         );
-        String::from_utf8_lossy(&out.stdout).into_owned()
+        if !ended {
+            let _ = child.kill();
+        }
+        let status = child.wait().unwrap_or_else(|e| panic!("{program}: {e}"));
+        let (out, err) = (out.join().unwrap(), err.join().unwrap());
+        assert!(
+            ended,
+            "{program} {args:?} never ended: the session is stuck"
+        );
+        assert!(
+            status.success(),
+            "{program} {args:?}: {}",
+            String::from_utf8_lossy(&err)
+        );
+        String::from_utf8_lossy(&out).into_owned()
     }
 
     /// `wpctl args…`.
