@@ -204,8 +204,8 @@ CI image: each test in a process of its own, binaries side by side
 (`.config/nextest.toml`). One test, through the container as everything is:
 
 ```sh
-scripts/container/run.sh cargo nextest run -p strand-watch --test saves a_rename_is_seen
-scripts/container/run.sh cargo test -p strand-watch --test saves a_rename_is_seen -- --nocapture
+scripts/container/run.sh cargo nextest run -p strand-watch --test saves save_in_place
+scripts/container/run.sh cargo test -p strand-watch --test saves save_in_place -- --nocapture
 ```
 
 A static `Mutex` keeps nothing apart under nextest, since no two tests share a

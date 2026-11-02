@@ -1735,12 +1735,18 @@ mod tests {
     #[test]
     fn a_threads_scheduling_figures_are_read() {
         let before = thread_stats().expect("/proc/thread-self");
+        // Until the core has given it 10 ms, not for a span of the wall's: on
+        // a machine with more tests running than cores, 20 ms of the wall
+        // held 8 ms on a core. A figure that doesn't grow spins to the limit.
         let spin = Instant::now();
         let mut x = 0u64;
-        while spin.elapsed() < Duration::from_millis(20) {
+        let mut after = before;
+        while after.0 < before.0 + 10_000_000 && spin.elapsed() < Duration::from_secs(30) {
             x = std::hint::black_box(x.wrapping_add(1));
+            if x.is_multiple_of(4096) {
+                after = thread_stats().expect("/proc/thread-self");
+            }
         }
-        let after = thread_stats().expect("/proc/thread-self");
         assert!(after.0 >= before.0 + 10_000_000, "{before:?} {after:?}");
         assert!(after.2 >= before.2);
         let line = "42 (a (b) c) S 1 42 42 0 -1 4194560 812 0 7 0 1 2 0 0 20 0 1 0";

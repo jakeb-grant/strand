@@ -210,7 +210,7 @@ jobs:
       # robustness has the measurements behind -j). The reload fuzzer runs on
       # its own below (timing-sensitive saves), and the 100 reloads too. The
       # job summary gets the counts and names each flaky test.
-      - run: scripts/container/run.sh scripts/container/workspace-tests.sh -j 8
+      - run: scripts/container/run.sh scripts/container/workspace-tests.sh -j 6
       # A filter of .config/nextest.toml matching no test fails, and so does a
       # retry reaching what may not have one.
       - run: scripts/container/run.sh scripts/container/nextest-filters.sh

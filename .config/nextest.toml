@@ -32,6 +32,13 @@ slow-timeout = { period = "60s", terminate-after = 40, grace-period = "30s" }
 filter = "binary_id(=strand::budgets)"
 test-group = "budgets"
 
+# A shell, its sway and grim's shots at once, each test: two slots, so what runs
+# beside one leaves it room. At -j 8 on a runner, the launcher's 1,000 wheel
+# notches back to the top stopped five rows short (decisions.md robustness).
+[[profile.default.overrides]]
+filter = "binary_id(=strand::demo)"
+threads-required = 2
+
 [profile.ci]
 # The junit file scripts/container/nextest-summary.sh reads for the job summary.
 junit = { path = "junit.xml", store-success-output = false, store-failure-output = true }
