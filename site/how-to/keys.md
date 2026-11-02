@@ -187,7 +187,9 @@ A step is the slider's `step:`, or a hundredth of its `range` without one. A cla
 beats every one of these, as it beats any default. Space on a `scroll` or `list`
 only pages, so it never clicks what is around it. Held, it goes on paging.
 Return and space press a node once, however long the key is held. Return on an
-`input` or a `list` is no press: held, it runs `on activate` again with each repeat.
+`input` or a `list` runs `on activate` once too. Arrow keys, Page keys and typing
+go on repeating, so holding Down still moves through a list. A shell that wants to
+act again while Return is held runs a timer.
 A `slider` or `segmented` without `<->` shows its value and leaves its arrow, Page,
 Home and End keys alone.
 

@@ -6,6 +6,7 @@
 mod shell;
 
 use shell::Shell;
+use strand_compiler::vm::Value;
 use strand_scene::{ButtonState, InputEvent, KeyInput, Modifiers, NodeId, NodeKind, Painter, Prop};
 
 fn entered(src: &str) -> Shell {
@@ -1598,27 +1599,110 @@ fn return_on_a_focused_row_does_what_a_click_on_it_does() {
     );
 }
 
-/// Only a press ignores a repeat: an `input`'s and a `list`'s Return is its
-/// own, so holding it activates again (site/how-to/keys.md).
+/// One press of Return is one `on activate`, on an `input`, a `list` and an
+/// `input` with a `nav:` list as on a `button`: a repeat fires nothing, and
+/// a new press fires again (spec.md 6.7, site/how-to/keys.md).
 #[test]
-fn a_held_return_activates_an_input_and_a_list_again() {
+fn a_held_return_activates_an_input_and_a_list_once() {
     for node in [
         "input { focus: true; on activate { acts += 1 } }",
         "list { focus: true; height: 40; on activate { acts += 1 }\n box { height: 20 }\n}",
+        "input { focus: true; nav: rows }\n\
+         list { id: rows; height: 40; on activate { acts += 1 }\n box { height: 20 }\n}",
+    ] {
+        for name in ["Return", "KP_Enter"] {
+            let mut sh = entered(&format!(
+                "state acts = 0\n\
+                 panel P {{ anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+                   {node}\n\
+                 }}\n"
+            ));
+            tap(&mut sh, name);
+            assert_eq!(sh.num("acts"), 1.0, "{node}: the press of {name}");
+            for _ in 0..3 {
+                let e = key_with(&sh, name, "", true, false);
+                sh.send(e);
+                sh.settle();
+            }
+            assert_eq!(sh.num("acts"), 1.0, "{node}: {name} held");
+            tap(&mut sh, name);
+            assert_eq!(sh.num("acts"), 2.0, "{node}: {name} pressed again");
+        }
+    }
+}
+
+/// A repeat of Return is spent, not passed on to the field: its text stays.
+#[test]
+fn a_held_return_types_nothing_into_an_input() {
+    let mut sh = entered(
+        "state q = \"ab\"\n\
+         panel P { anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+           input { focus: true; text: <-> q }\n\
+         }\n",
+    );
+    let e = key_with(&sh, "Return", "\r", true, false);
+    sh.send(e);
+    sh.settle();
+    assert_eq!(sh.get("q"), Value::text("ab"));
+}
+
+/// Only Return stops at the press: arrows and Page keys held go on moving a
+/// list's selection, inside an `input` with a `nav:` list too, typing held
+/// goes on typing, and a claim on Return goes on hearing repeats.
+#[test]
+fn only_return_stops_at_the_press() {
+    let rows = "for n in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] key n { box { height: 20 } }";
+    for (field, focus) in [
+        ("", "focus: true"),
+        ("input { focus: true; nav: rows }\n", ""),
     ] {
         let mut sh = entered(&format!(
-            "state acts = 0\n\
-             panel P {{ anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
-               {node}\n\
+            "panel P {{ anchor: top_left; width: 300; height: 300; keyboard: exclusive\n\
+               {field}list {{ id: rows; height: 40; {focus}\n {rows}\n }}\n\
              }}\n"
         ));
-        tap(&mut sh, "Return");
-        assert_eq!(sh.num("acts"), 1.0, "{node}: the press");
-        let e = key_with(&sh, "Return", "", true, false);
+        let list = sh.nodes("P", NodeKind::List)[0];
+        tap(&mut sh, "Down");
+        let at = sh.router.selected_index(list).unwrap();
+        let e = key_with(&sh, "Down", "", true, false);
         sh.send(e);
         sh.settle();
-        assert_eq!(sh.num("acts"), 2.0, "{node}: the repeat");
+        assert_eq!(
+            sh.router.selected_index(list),
+            Some(at + 1),
+            "Down held {field}"
+        );
+        let e = key_with(&sh, "Next", "", true, false);
+        sh.send(e);
+        sh.settle();
+        assert!(
+            sh.router.selected_index(list).unwrap() > at + 1,
+            "Page_Down held {field}"
+        );
     }
+    let mut sh = entered(
+        "state q = \"\"\n\
+         panel P { anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+           input { focus: true; text: <-> q }\n\
+         }\n",
+    );
+    for repeat in [false, true] {
+        let e = key_with(&sh, "a", "a", repeat, false);
+        sh.send(e);
+        sh.settle();
+    }
+    assert_eq!(sh.get("q"), Value::text("aa"), "typing held");
+    let mut sh = entered(
+        "state acts = 0\nstate claims = 0\n\
+         panel P { anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+           input { focus: true; on activate { acts += 1 }; on key \"return\" { claims += 1 } }\n\
+         }\n",
+    );
+    tap(&mut sh, "Return");
+    let e = key_with(&sh, "Return", "", true, false);
+    sh.send(e);
+    sh.settle();
+    assert_eq!((sh.num("claims"), sh.num("acts")), (2.0, 0.0), "a claim");
 }
 
 /// A row with its own `on activate` hears it once, not as a press and again.
@@ -1685,6 +1769,11 @@ fn space_pages_a_focused_scroll() {
     sh.key("space", true);
     sh.settle();
     assert_eq!(offset(&sh, s), 100.0);
+    // Held, it goes on paging.
+    let e = key_with(&sh, "space", " ", true, false);
+    sh.send(e);
+    sh.settle();
+    assert_eq!(offset(&sh, s), 200.0);
     assert_eq!(sh.num("clicks"), 0.0);
 }
 
@@ -1709,5 +1798,10 @@ fn space_pages_a_focused_list() {
     sh.key("space", true);
     sh.settle();
     assert_eq!(sh.router.selected_index(list), Some(at));
+    // Held, it goes on paging.
+    let e = key_with(&sh, "space", " ", true, false);
+    sh.send(e);
+    sh.settle();
+    assert_eq!(sh.router.selected_index(list), Some(paged));
     assert_eq!(sh.num("clicks"), 0.0);
 }

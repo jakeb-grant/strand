@@ -2678,6 +2678,7 @@ impl Router {
             }
             // Return or space does what a click does, once: holding it is
             // not many clicks. An `input` and a `list` have their own.
+            // (Their Return is once a press too, below; a `list`'s space pages.)
             if focus != root
                 && !key.repeat
                 && !matches!(kind, Some(NodeKind::Input | NodeKind::List))
@@ -2788,7 +2789,10 @@ impl Router {
                 "Home" | "KP_Home" if ends => Some(0),
                 "End" | "KP_End" if ends => Some(last),
                 "Return" | "KP_Enter" => {
-                    self.activate_selected(scene, list, &w);
+                    // One press, one `on activate`: holding it is not many.
+                    if !key.repeat {
+                        self.activate_selected(scene, list, &w);
+                    }
                     return;
                 }
                 _ => None,
@@ -2804,9 +2808,12 @@ impl Router {
         if kind == Some(NodeKind::Input) {
             // Return in an input with no `nav:` list activates the input
             // itself, as it activates a list's selected row: `on activate`
-            // means the same on both (the lock's password field submits).
+            // means the same on both (the lock's password field submits),
+            // once for a press on both.
             if matches!(key.name.as_str(), "Return" | "KP_Enter") {
-                self.event(focus, NodeEvent::Activate);
+                if !key.repeat {
+                    self.event(focus, NodeEvent::Activate);
+                }
                 return;
             }
             let password = scene.tree().and_then(|t| t.get(focus)).is_some_and(|n| {

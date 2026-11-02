@@ -71,7 +71,7 @@ What every element accepts. Every visual prop springs; `x`, `y`,
 | `stroke.wave` | `float, length` | A wavy stroke: its amplitude and wavelength. |
 | `stroke.cap` | `Cap` | The line caps. |
 | `stroke.dash` | `length, length` | Dash and gap lengths. |
-| `focus` | `bool` | Makes it focusable, with any value: Tab, Shift+Tab and a click reach it (`input`, `list`, `button`, `slider` and `segmented` are focusable without it). True, it takes keyboard focus when shown, and again whenever it turns true while its surface has the keyboard (`focus: mode == search`). Focused, Return or space runs its `on activate` if it has one, else `on click`; an `input` and a `list` have their own Return, space types in an `input`, and on a `scroll` or `list` it pages and clicks nothing. |
+| `focus` | `bool` | Makes it focusable, with any value: Tab, Shift+Tab and a click reach it (`input`, `list`, `button`, `slider` and `segmented` are focusable without it). True, it takes keyboard focus when shown, and again whenever it turns true while its surface has the keyboard (`focus: mode == search`). Focused, Return or space runs its `on activate` if it has one, else `on click`; an `input` and a `list` have their own Return, which runs `on activate` once a press as well, space types in an `input`, and on a `scroll` or `list` it pages and clicks nothing. |
 | `arrows` | `Arrows` | Arrow keys inside it move focus to the nearest focusable element that way, by their laid-out boxes: `arrows: focus`, and `focus_wrap` to go round from one end to the other. They stay inside the nearest one, and an element that uses an arrow itself keeps it: a focused `input`'s caret, a `list`, a `slider`, a `segmented`'s Left and Right, and a `scroll` along the way it runs. A `scroll` that holds the next element shows it. |
 | `enter` | `Pose \| PoseName` | The pose it enters from: `enter { opacity: 0 }`, `popin(0.8)`, `slide(top)`, `fade` or `slidefade`. `exit` mirrors it unless given. |
 | `exit` | `Pose \| PoseName` | The pose it leaves by; the subtree unmounts once it has played. |
@@ -87,7 +87,7 @@ What every element accepts. Every visual prop springs; `x`, `y`,
 | `on drop(value: any, at: int)` | Something was dropped on it: a `drag:` source's value or a `Drop` from another program, and the index it landed at. |
 | `on key(key: Key)` | A key press (and each repeat) while it or something in it has focus. `on key(k) { … }` only observes: the key still does its default. With patterns it claims the keys: `on key "ctrl+n", "down" { … }` runs for those, the innermost claim first, and stops their default and every other handler; `(k)` after the patterns gives the key, and `propagate()` passes it to the next claim out, with the default still stopped. Modifiers are `ctrl`, `shift`, `alt` and `super`, exact; a letter is `"a"` or `"shift+a"`; a single other character (`"?"`, `"1"`) is what the key types, written with no `shift`; named keys are a table of xkb's in any case (`Escape`, `Page_Down`, `F5`; spec.md 6.7 lists it), `esc`, `enter`, `tab`, `space`, `up`, `down`, `left`, `right`, `pgup`, `pgdn`, `backspace` and `del`, and any name starting `XF86` or `dead_`, unchecked. With Ctrl, Alt or Super a key also matches by its Latin name. |
 | `on key_release(key: Key)` | A key let go while it or something in it has focus. It only observes. |
-| `on activate` | It was chosen: a click or Return on a `list`'s row (the row's handler, or the list's if it has none), Return in an `input` with no `nav:` list, or Return or space on any other focused node, though space only types in an `input` and pages a `scroll` or `list`. A pointer's click runs it only on a `list`'s row: elsewhere it runs `on click`, so a `button` the mouse should press needs `on click`. |
+| `on activate` | It was chosen: a click or Return on a `list`'s row (the row's handler, or the list's if it has none), Return in an `input` with no `nav:` list, or Return or space on any other focused node, though space only types in an `input` and pages a `scroll` or `list`. A pointer's click runs it only on a `list`'s row: elsewhere it runs `on click`, so a `button` the mouse should press needs `on click`. One press of a key runs it once, however long the key is held. |
 
 ### `surface`
 
@@ -409,9 +409,9 @@ element list: node
 Virtualised; arrow keys move the selection, and `axis` and `columns`
 lay it out as a strip or a grid, the arrows following.
 
-Focused, arrows move its selection, Return activates the selected row, and
-Right (Down on a horizontal list) opens a popup the row holds (a menu's
-submenu).
+Focused, arrows move its selection, Return activates the selected row, once
+a press however long it is held, and Right (Down on a horizontal list) opens
+a popup the row holds (a menu's submenu).
 
 Also every prop and event of [`node`](#node).
 

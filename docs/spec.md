@@ -1303,9 +1303,11 @@ monitor, the keyboard always).
     node in a `list`'s row the row is selected and its `on activate` runs too,
     and on the row itself its `on click` and then `on activate`, the list's if
     it has none, as a pointer's click there. A repeat does nothing: holding it is not many clicks. An `input` and a
-    `list` have their own Return, and the surface itself has none. Space and
-    Shift+space page a focused `scroll` or `list` forward and back, as the Page
-    keys do, repeating, and go to no click.
+    `list` have their own Return, an `input` with a `nav:` list its list's, and
+    the surface itself has none. One press of Return is one `on activate` on
+    them too: a repeat fires nothing, and a shell wanting repeats uses a timer
+    (decisions.md robustness). Space and Shift+space page a focused `scroll` or
+    `list` forward and back, as the Page keys do, repeating, and go to no click.
   - A `slider` bound two-way: Left and Down step down, Right and Up step up,
     Page keys ten steps, Home and End go to the ends. A step is its `step:`,
     else a hundredth of its `range`. It writes as a drag does, the decimal the

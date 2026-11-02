@@ -704,7 +704,13 @@ fn a_grids_arrows_move_by_geometry() {
     assert_eq!(index(&sh), Some(3), "next() goes across lines");
     press(&mut sh, "p");
     assert_eq!(index(&sh), Some(2));
-    press(&mut sh, "Return");
+    // One press: `press` sends a repeat, which Return ignores.
+    let mut e = key_event(&sh, "Return");
+    if let InputEvent::Key { key, .. } = &mut e {
+        key.repeat = false;
+    }
+    sh.send(e);
+    sh.run(4);
     assert_eq!(sh.num("activated"), 2.0);
     press(&mut sh, "Home");
     assert_eq!(index(&sh), Some(0));
