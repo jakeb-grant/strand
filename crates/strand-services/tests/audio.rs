@@ -21,6 +21,7 @@ use strand_services::audio::{
     Audio, AudioAction, AudioChange, AudioConfig, AudioDevice, AudioError, DeviceRef, FRAME,
     LevelTarget, Levels, Mirror, REREAD, SETTLE, UNANSWERED, spectrum,
 };
+use strand_test_support::gate::Gates;
 
 /// The service and a mirror of what it sent.
 struct Watch {
@@ -722,11 +723,11 @@ fn a_daemon_restart_reconnects() {
     let back = Instant::now();
     pw.start_daemon();
     w.until(10, "reconnected", ready);
-    assert!(
-        back.elapsed() < Duration::from_secs(6),
-        "reconnected {:?} after the daemon restarted",
-        back.elapsed()
-    );
+    let mut gates = Gates::default();
+    let took = back.elapsed();
+    gates.check(took < Duration::from_secs(6), || {
+        format!("reconnected {took:?} after the daemon restarted")
+    });
     let after = w.sink("strand-sink-a");
     assert_eq!(after.description, before.description);
     // And it works.
@@ -770,6 +771,7 @@ fn a_daemon_restart_reconnects() {
         "a quick session manager restart showed gaps: {:#?}",
         w.gaps
     );
+    gates.hold();
 }
 
 #[test]
@@ -819,11 +821,7 @@ fn a_restart_shows_no_gap_while_the_session_manager_comes_back() {
     pw.create_devices();
     let back = Instant::now();
     w.until(10, "reconnected", ready);
-    assert!(
-        back.elapsed() < Duration::from_secs(3),
-        "back {:?} after its devices",
-        back.elapsed()
-    );
+    let took = back.elapsed();
     std::thread::sleep(Duration::from_millis(500));
     w.poll();
     assert!(
@@ -851,6 +849,11 @@ fn a_restart_shows_no_gap_while_the_session_manager_comes_back() {
         m.sink.as_ref().is_some_and(|d| d.muted)
     });
     assert!(pw.volume_of("@DEFAULT_AUDIO_SINK@").1);
+    let mut gates = Gates::default();
+    gates.check(took < Duration::from_secs(3), || {
+        format!("back {took:?} after its devices")
+    });
+    gates.hold();
 }
 
 #[test]
@@ -986,12 +989,14 @@ fn without_inotify_it_reconnects_on_its_timer() {
     let back = Instant::now();
     pw.start_daemon();
     w.until(20, "reconnected on the timer", ready);
-    assert!(
-        back.elapsed() < Duration::from_secs(10) + Duration::from_secs(5),
-        "reconnected {:?} after the daemon came back",
-        back.elapsed()
-    );
+    let took = back.elapsed();
     strand_services::audio::deny_inotify(&remote, false);
+    let mut gates = Gates::default();
+    gates.check(
+        took < Duration::from_secs(10) + Duration::from_secs(5),
+        || format!("reconnected {took:?} after the daemon came back"),
+    );
+    gates.hold();
 }
 
 #[test]
@@ -1010,11 +1015,12 @@ fn a_watch_that_inotify_refused_comes_back() {
     let back = Instant::now();
     pw.start_daemon();
     w.until(10, "reconnected", ready);
-    assert!(
-        back.elapsed() < Duration::from_secs(6),
-        "reconnected {:?} after the daemon came back: the watch was not made again",
-        back.elapsed()
-    );
+    let took = back.elapsed();
+    let mut gates = Gates::default();
+    gates.check(took < Duration::from_secs(6), || {
+        format!("reconnected {took:?} after the daemon came back: the watch was not made again")
+    });
+    gates.hold();
 }
 
 /// The readings of `target` after `from` (an index into `w.levels`).

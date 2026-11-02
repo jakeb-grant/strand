@@ -1219,9 +1219,10 @@ fn a_slow_join_does_not_hold_up_the_radio() {
         if on == zbus::zvariant::OwnedValue::from(false) {
             break;
         }
+        // That the radio didn't wait for the join is `added` below, still 0.
         assert!(
-            asked_at.elapsed() < Duration::from_millis(2500),
-            "the radio waited for the join"
+            asked_at.elapsed() < Duration::from_secs(30),
+            "the radio never went off"
         );
         std::thread::sleep(Duration::from_millis(20));
     }

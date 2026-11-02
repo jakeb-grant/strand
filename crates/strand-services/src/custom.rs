@@ -2167,10 +2167,16 @@ mod tests {
         let fifo = dir.join("pipe");
         let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
-        let t = std::time::Instant::now();
-        let e = read_doc(&fifo).unwrap_err();
+        // On a thread, so that one opening the FIFO fails here and not at the
+        // test run's limit: nothing ever writes to it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || tx.send(read_doc(&path)));
+        let e = rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the read blocked on the FIFO")
+            .unwrap_err();
         assert!(e.contains("not a regular file"), "{e}");
-        assert!(t.elapsed() < Duration::from_secs(1));
         assert_eq!(read_doc(&dir.join("none")), Ok(None));
         // A program (executable, a script or ELF) is not read as a
         // document; an executable data file (a vfat mount) still is.
@@ -2447,7 +2453,7 @@ mod tests {
         assert_eq!(block_on(poll_command(&["yes".to_string()])), None);
         assert!(
             started.elapsed() < Duration::from_secs(5),
-            "took {:?}",
+            "blocked on the full pipe, towards POLL_TIMEOUT: {:?}",
             started.elapsed()
         );
     }

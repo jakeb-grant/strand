@@ -617,13 +617,14 @@ fn a_frozen_app_does_not_hold_up_the_tray() {
     until(&rt, &s, "the new icon", || {
         items(&b, &rt).iter().any(|i| i.icon == "changed-icon")
     });
-    assert!(
-        started.elapsed() < strand_services::dbus::CALL_TIMEOUT,
-        "the tray waited on the frozen app: {:?}",
-        started.elapsed()
-    );
+    let took = started.elapsed();
     drop(frozen);
     s.shutdown();
+    let mut gates = strand_test_support::gate::Gates::default();
+    gates.check(took < strand_services::dbus::CALL_TIMEOUT, || {
+        format!("the tray waited on the frozen app: {took:?}")
+    });
+    gates.hold();
 }
 
 /// A watcher of the session's own (a desktop's, or another bar's).

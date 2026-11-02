@@ -715,10 +715,6 @@ fn another_notification_server_fails_clearly() {
         !d.is_empty()
     });
     let took = stopped.elapsed();
-    assert!(
-        took < Duration::from_secs(3),
-        "took the name over in {took:?}"
-    );
     assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
     assert_eq!(b.notifications.starts(), 1, "the same run");
     // It serves: a notification arrives.
@@ -729,6 +725,11 @@ fn another_notification_server_fails_clearly() {
         popups(&b, &rt).iter().any(|n| n.summary == "Taken over")
     });
     s.shutdown();
+    let mut gates = strand_test_support::gate::Gates::default();
+    gates.check(took < Duration::from_secs(3), || {
+        format!("took the name over in {took:?}")
+    });
+    gates.hold();
 }
 
 /// The server stops (nobody read `notifications` for 5 s) and starts

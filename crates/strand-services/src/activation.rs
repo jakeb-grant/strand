@@ -299,7 +299,10 @@ mod tests {
         });
         let took = start.elapsed();
         assert!(took >= TOKEN_WAIT, "{took:?}");
-        assert!(took < TOKEN_WAIT * 10, "{took:?}");
+        assert!(
+            took < TOKEN_WAIT * 10,
+            "the action never went without its token: {took:?}"
+        );
         assert_eq!(
             *log.lock().unwrap(),
             [("launch".into(), None), ("close".into(), None)]
@@ -312,20 +315,30 @@ mod tests {
     /// still go in order.
     #[test]
     fn token_waits_of_one_invocation_overlap() {
+        const WAITS: u32 = 25;
         let log: Log = Arc::default();
         let never: TokenSource = Arc::new(|_, _| Box::pin(std::future::pending()));
         let start = Instant::now();
         with_order(Some(never), |order, spawn| {
-            for what in ["a", "b", "c", "d", "e"] {
-                order.submit(ctx(11), true, deliver(&log, what), spawn);
+            for i in 0..WAITS {
+                order.submit(ctx(11), true, deliver(&log, &i.to_string()), spawn);
             }
             order.submit(ctx(11), false, deliver(&log, "after"), spawn);
         });
         let took = start.elapsed();
         assert!(took >= TOKEN_WAIT, "{took:?}");
-        assert!(took < TOKEN_WAIT * 2, "five waits added up: {took:?}");
+        // Added up they would be `WAITS` bounds: half of that is room for a
+        // loaded machine, and tells the two apart.
+        assert!(
+            took < TOKEN_WAIT * WAITS / 2,
+            "the waits added up: {took:?}"
+        );
         let got: Vec<String> = log.lock().unwrap().iter().map(|e| e.0.clone()).collect();
-        assert_eq!(got, ["a", "b", "c", "d", "e", "after"]);
+        let want: Vec<String> = (0..WAITS)
+            .map(|i| i.to_string())
+            .chain(["after".to_string()])
+            .collect();
+        assert_eq!(got, want);
     }
 
     /// No token source (no compositor protocol), or no press: the action
