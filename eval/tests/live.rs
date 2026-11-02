@@ -336,11 +336,12 @@ impl Drop for Sway {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
 impl Sway {
-    fn start(dir: &Path) -> Option<Sway> {
+    fn start() -> Option<Sway> {
         if Command::new("sway").arg("--version").output().is_err() {
             assert!(
                 std::env::var_os("STRAND_REQUIRE_SWAY").is_none(),
@@ -349,7 +350,10 @@ impl Sway {
             eprintln!("skipping: sway is not installed");
             return None;
         }
-        let run = dir.join("run");
+        // The system temp dir, as the other sway tests have it: under a
+        // worktree's target/ the IPC socket's path overflows `sun_path`.
+        let run = std::env::temp_dir().join(format!("strand-live-sway-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&run);
         std::fs::create_dir_all(&run).unwrap();
         std::fs::set_permissions(&run, std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .unwrap();
@@ -711,7 +715,7 @@ fn near(a: [u8; 3], b: [u8; 3]) -> bool {
 #[test]
 fn the_window_runs_on_a_headless_sway() {
     let dir = scratch("window");
-    let Some(sway) = Sway::start(&dir) else {
+    let Some(sway) = Sway::start() else {
         return;
     };
     let cfg = config(&dir);

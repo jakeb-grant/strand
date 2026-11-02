@@ -1255,17 +1255,17 @@ fn the_replay_command_runs_as_a_plain_process_beside_a_display() {
         "the replay is as private as the report"
     );
     assert!(!opened.exists(), "--no-open opened the viewer");
-    // Opened: the stub is given the page.
+    // Opened: the stub is given the page. Nothing waits for it, and its
+    // shell creates the file before writing to it, so this waits for the
+    // whole line and not for the file.
     let out = run(true);
     assert!(out.status.success());
+    let line = || std::fs::read_to_string(&opened).unwrap_or_default();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !opened.exists() && std::time::Instant::now() < deadline {
+    while !line().ends_with('\n') && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    assert_eq!(
-        std::fs::read_to_string(&opened).unwrap().trim(),
-        rep.join("index.html").display().to_string()
-    );
+    assert_eq!(line().trim(), rep.join("index.html").display().to_string());
     // No client came to the display.
     match listener.accept() {
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
