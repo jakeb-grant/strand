@@ -62,3 +62,10 @@ retries = 1
 junit = { path = "junit.xml", store-success-output = false, store-failure-output = true }
 retries = 0
 slow-timeout = { period = "60s", terminate-after = 15, grace-period = "30s" }
+
+# The nightly validation job (scripts/container/validation.sh): every test's
+# output in the junit file, where validation-summary.py reads what the layer said.
+[profile.validation]
+junit = { path = "junit.xml", store-success-output = true, store-failure-output = true }
+retries = 0
+slow-timeout = { period = "60s", terminate-after = 15, grace-period = "30s" }

@@ -179,7 +179,8 @@ jobs:
       # test step that runs no test fails), strand's build script leaving
       # git's index alone (its write made the next step rebuild the
       # binary), the job summary of the nextest run and the static half of
-      # its filters' check, the stress run's summary, the nightly-red issue,
+      # its filters' check, the stress and validation runs' summaries, the
+      # nightly-red issue,
       # affected.sh's choice of
       # crates (the laptop's inner loop, CLAUDE.md), prune-rust-caches.sh
       # (the nightly cache pruning) and check-path-filters.sh, which then holds the lock-vm and package
@@ -198,6 +199,7 @@ jobs:
       - run: scripts/container/run.sh scripts/container/test-nextest-filters.sh
       - run: scripts/container/run.sh scripts/container/test-stress-summary.sh
       - run: scripts/container/run.sh scripts/container/test-nightly-red.sh
+      - run: scripts/container/run.sh scripts/container/test-validation-summary.sh
       - run: scripts/container/run.sh scripts/container/test-affected.sh
       - run: scripts/container/run.sh scripts/container/test-prune-rust-caches.sh
       - run: scripts/container/run.sh scripts/container/test-check-path-filters.sh
@@ -1036,12 +1038,42 @@ jobs:
           path: target/stress/summary.md
           if-no-files-found: ignore
 
+  # The GPU tests with Khronos's validation layer on lavapipe, a validation error
+  # failing the run, after proving that one does (scripts/container/validation.sh;
+  # decisions.md robustness). Memory and wall-clock gates aren't among them, and a
+  # pixel comparison doesn't hold in a process with the layer. The job summary has
+  # the numbers, the logs go up as `validation-logs`.
+  validation:
+    needs: image-publish
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: test
+          cache-save: "false"
+      - run: scripts/container/run.sh scripts/container/validation.sh
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: validation-logs
+          path: target/validation/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nightly-summary-validation
+          path: target/validation/summary.md
+          if-no-files-found: ignore
+
   # A red night, seen: one open issue labelled `nightly-red`, a comment on it per
   # red night (scripts/container/nightly-red.sh says why not GitHub's mail). What
   # runs only at night has no push to go red on. Runs on schedule, and on a
   # dispatch that asks. The only job whose token may write issues.
   nightly-red:
-    needs: [compositors, lock-vm, nightly, stress]
+    needs: [compositors, lock-vm, nightly, stress, validation]
     if: always() && contains(needs.*.result, 'failure') && (github.event_name == 'schedule' || inputs.report_red == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -1067,6 +1099,7 @@ jobs:
           "lock-vm: ${{ needs.lock-vm.result }}"
           "nightly: ${{ needs.nightly.result }}"
           "stress: ${{ needs.stress.result }}"
+          "validation: ${{ needs.validation.result }}"
 
   # The dependency caches, kept to one generation each: every new Cargo.lock
   # or manifest saves a new key beside the old one, which only fills the

@@ -3106,6 +3106,7 @@ dependencies = [
 name = "strand-gpu"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "log",
  "pollster",
  "raw-window-handle",

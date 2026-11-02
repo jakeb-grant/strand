@@ -297,9 +297,19 @@ here as `scripts/container/run.sh scripts/container/stress.sh`
 (`STRAND_STRESS_MINUTES`, 30 by default; `STRAND_STRESS_TIER=record` for one
 tier; `STRAND_STRESS_SEED` replays a night's choices). It holds up no push. A
 job that runs only at night (`stress`, `nightly`, `lock-vm`, the compositors on
-today's packages) has nothing else to go red on, so a red night opens or
+today's packages, `validation`) has nothing else to go red on, so a red night opens or
 comments on one issue: `gh issue list --label nightly-red`, closed by hand once
 triaged.
+
+The nightly `validation` job runs the GPU tests under Khronos's validation
+layer on lavapipe, and a validation error fails the run:
+`scripts/container/run.sh scripts/container/validation.sh`, a couple of minutes.
+It proves first that a bad call fails it. The layer is in the image but off the
+loader's search path, so no other test loads it; `strand-gpu::validation` fails if
+one does. Memory and wall-clock gates don't run in it, and a pixel comparison
+doesn't hold in a process that has the layer. To suppress something, add the exact
+message to `validation-summary.py`'s `ALLOWED` with its reason and a line in
+`decisions.md`.
 
 Animation changes are checked by the evaluation sandbox (docs/eval.md):
 `scripts/container/run.sh eval check eval/scenarios/curated` runs the

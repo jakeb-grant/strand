@@ -440,6 +440,9 @@ fn rich(r: &mut Renderer) {
 
 /// Pixels past the tolerance, and the worst channel difference.
 fn compare(a: &Buffer, b: &Buffer) -> (usize, u8) {
+    if !pixel_gates_held() {
+        return (0, 0);
+    }
     let mut bad = 0;
     let mut worst = 0;
     for (x, y) in a.pixels.chunks_exact(4).zip(b.pixels.chunks_exact(4)) {
@@ -1002,6 +1005,15 @@ fn draw(gpu: &mut Gpu, pings: &mpsc::Receiver<()>, frame: strand_gpu::Frame) -> 
 
 /// Pixels past the tolerance, and the worst channel difference.
 fn compare_bytes(a: &[u8], b: &[u8]) -> (usize, u8) {
+    if !pixel_gates_held() {
+        return (0, 0);
+    }
+    differ(a, b)
+}
+
+/// [`compare_bytes`] for a frame that must have changed, which holds whatever
+/// else is loaded.
+fn differ(a: &[u8], b: &[u8]) -> (usize, u8) {
     assert_eq!(a.len(), b.len());
     let mut bad = 0;
     let mut worst = 0;
@@ -1146,8 +1158,8 @@ fn a_presented_surface_crossfades_on_the_gpu_like_the_cpu() {
                 i + 1
             );
         }
-        let (from_old, _) = compare_bytes(&px, &old);
-        let (from_new, _) = compare_bytes(&px, &new);
+        let (from_old, _) = differ(&px, &old);
+        let (from_new, _) = differ(&px, &new);
         if fading && from_old > 0 && from_new > 0 {
             blended += 1;
         }
@@ -3075,7 +3087,7 @@ fn a_backdrops_pixels_follow_a_fade_or_a_move_behind_it() {
                 bad as f64 / f64::from(size.0 * size.1) <= EDGE_SHARE,
                 "{name} {at:?}: {bad} pixels past {GPU_TOLERANCE} of a fresh draw (worst {worst})"
             );
-            let (changed, _) = compare_bytes(&before, &live);
+            let (changed, _) = differ(&before, &live);
             assert!(changed > 0, "{name} {at:?}: the frame changed");
         }
     }

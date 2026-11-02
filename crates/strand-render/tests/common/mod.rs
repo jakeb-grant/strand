@@ -170,11 +170,25 @@ pub fn read_png(path: &std::path::Path) -> (u32, u32, Vec<u8>) {
     (info.width, info.height, buf)
 }
 
+/// Whether a comparison of pixels is held here: never in a process the Vulkan
+/// validation layer has loaded into, which changes what draws (the nightly
+/// validation job, scripts/container/validation.sh, runs these tests for what
+/// the layer says of their calls). It reads the process, not a variable, so
+/// nothing else can turn a gate off, and `strand-gpu::validation` fails where the
+/// layer loads with nothing asking for it.
+pub fn pixel_gates_held() -> bool {
+    !std::fs::read_to_string("/proc/self/maps")
+        .is_ok_and(|maps| maps.contains("libVkLayer_khronos_validation"))
+}
+
 /// Compares a rendered buffer with `refs/<name>.png` in premultiplied space,
 /// allowing `tolerance` per channel. With `STRAND_BLESS=1` the reference is
 /// (re)written instead. On mismatch the actual image is written next to the
 /// reference as `<name>.actual.png`.
 pub fn assert_matches_ref(name: &str, buf: &Buffer, tolerance: u8) {
+    if !pixel_gates_held() {
+        return;
+    }
     let path = refs_dir().join(format!("{name}.png"));
     let rgba = buf.to_rgba();
     if std::env::var_os("STRAND_BLESS").is_some() {

@@ -47,6 +47,17 @@ ENV VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json \
     VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
     LP_NATIVE_VECTOR_WIDTH=256
 
+# Khronos's validation layer, for the nightly validation job alone
+# (scripts/container/validation.sh, decisions.md robustness). Its manifest moves
+# out of the loader's search path: wgpu asks for the layer by name in any debug
+# build, so where the loader can find it every debug GPU test would run under it,
+# memory and pixel gates included. Only VK_ADD_LAYER_PATH finds it here.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends vulkan-validationlayers \
+ && mkdir -p /opt/vulkan-validation \
+ && mv /usr/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json /opt/vulkan-validation/ \
+ && rm -rf /var/lib/apt/lists/*
+
 # The tree-sitter CLI (M5; docs/architecture.md, "tree-sitter layout"):
 # a pinned prebuilt release checked by its sha256, for the lint job's
 # check that the committed parser.c and grammar.json match grammar.js

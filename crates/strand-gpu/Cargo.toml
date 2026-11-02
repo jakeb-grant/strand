@@ -22,6 +22,8 @@ log = "0.4"
 
 [dev-dependencies]
 strand-test-support.workspace = true
+# The raw types for the bad call of tests/validation.rs; wgpu-hal's version.
+ash = { version = "0.38.0", default-features = false }
 
 [lints]
 workspace = true
