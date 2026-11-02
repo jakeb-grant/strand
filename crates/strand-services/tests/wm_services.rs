@@ -269,6 +269,12 @@ fn the_compositor_stores_follow_sway_through_one_hub() {
         threads_named("strand-toplevel") == 1 && wm::live_runs() == runs + 1
     });
     s.shutdown();
+    // The join returned, but a joined thread's task stays in `/proc` for a moment
+    // past the futex that woke the join (1 run in 16 under load).
+    let gone = Instant::now() + Duration::from_secs(1);
+    while threads_named("strand-toplevel") != 0 && Instant::now() < gone {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert_eq!(
         threads_named("strand-toplevel"),
         0,

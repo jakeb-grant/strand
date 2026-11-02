@@ -78,7 +78,9 @@ fn spawn(dir: &Path) -> Child {
         strand_test_support::wait::within(
             Duration::from_secs(5),
             Duration::from_millis(10),
-            || dir.join("bus").exists()
+            // Connected, not only there: the socket's file comes before its
+            // `listen`, and a peer in between is refused (1 run in 16 under load).
+            || std::os::unix::net::UnixStream::connect(dir.join("bus")).is_ok()
         ),
         "the private bus never listened"
     );

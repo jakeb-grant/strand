@@ -1621,9 +1621,17 @@ fn the_design_launcher_scrolls_2000_apps() {
     let before = lines.len();
     let stalls_before = lines.last().map_or(0, |l| field(l, "stalls"));
     assert_eq!(lines.last().map(|l| field(l, "top")), Some(0));
-    for _ in 0..60 {
+    // Sixty notches, and on until the frames came: a loaded runner draws fewer
+    // of them a second (17 in the 60's 1.5 s, 7 runs in 16 in the nightly stress
+    // job, decisions.md robustness), which says nothing of the scroll.
+    let mut notches = 0;
+    while notches < 240 {
         pointer.wheel(10, over.0, over.1, w, h);
+        notches += 1;
         std::thread::sleep(Duration::from_millis(25));
+        if notches >= 60 && damage_lines(&log).len() - before >= 20 {
+            break;
+        }
     }
     let shot = settled();
     let lines = damage_lines(&log);
@@ -1773,7 +1781,7 @@ fn the_design_launcher_scrolls_2000_apps() {
     // it first shows (an index mounted with its neighbour's data) would
     // pass them; the first mount, made before any window move, is the
     // independent reference.
-    for _ in 0..100 {
+    for _ in 0..100 + 2 * (notches - 60) {
         pointer.wheel(-10, over.0, over.1, w, h);
         std::thread::sleep(Duration::from_millis(10));
     }

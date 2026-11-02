@@ -58,6 +58,25 @@ struct Sampler {
     temperature: Option<std::path::PathBuf>,
 }
 
+/// What a test reads instead of `/proc/stat` ([`read_stat_from`]).
+static STAT: std::sync::OnceLock<fn() -> String> = std::sync::OnceLock::new();
+
+fn read_stat() -> std::io::Result<String> {
+    match STAT.get() {
+        Some(read) => Ok(read()),
+        None => std::fs::read_to_string("/proc/stat"),
+    }
+}
+
+/// For this process's tests that watch the samples arrive: `read` stands in for
+/// `/proc/stat`. A machine at full load repeats `usage` 1.0 exactly, and an
+/// unchanged sample reports nothing, so with every core busy those tests saw no
+/// sample at all (decisions.md robustness).
+#[doc(hidden)]
+pub fn read_stat_from(read: fn() -> String) {
+    let _ = STAT.set(read);
+}
+
 impl Sampler {
     fn new() -> Sampler {
         Sampler {
@@ -71,7 +90,7 @@ impl Sampler {
     /// reading (since boot for the first).
     fn sample(&mut self, cpu: &mut Cpu) {
         SAMPLES.fetch_add(1, Ordering::Relaxed);
-        if let Ok(text) = std::fs::read_to_string("/proc/stat") {
+        if let Ok(text) = read_stat() {
             self.take(&text, cpu);
         }
         cpu.temperature = self
@@ -99,7 +118,7 @@ impl Sampler {
     /// pause: the load over the pause is not what anyone asked for).
     fn rebase(&mut self) {
         REBASES.fetch_add(1, Ordering::Relaxed);
-        if let Ok(text) = std::fs::read_to_string("/proc/stat") {
+        if let Ok(text) = read_stat() {
             self.base(&text);
         }
     }

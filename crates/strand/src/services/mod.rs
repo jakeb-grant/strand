@@ -1654,6 +1654,18 @@ panel Login {
         assert_eq!(memory.starts(), 2);
     }
 
+    /// `/proc/stat` with a load that differs at every reading, for a test that
+    /// watches samples arrive: a machine with every core busy repeats 1.0, and an
+    /// unchanged sample reports nothing.
+    fn a_load_that_keeps_changing() {
+        strand_services::cpu::read_stat_from(|| {
+            static READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let n = READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let (busy, idle) = (10 * n + n * (n + 1) / 2, 10 * n);
+            format!("cpu  {busy} 0 0 {idle}\ncpu0 {busy} 0 0 {idle}\n")
+        });
+    }
+
     /// (history) A `graph` in a popup on the real `cpu` service, end to
     /// end through the composite host: the config keeps `cpu` (at the
     /// 3 s hidden period of a 60 s history), so it runs and samples
@@ -1663,6 +1675,7 @@ panel Login {
     /// and it stops 5 s later as after its last reader.
     #[test]
     fn a_graph_mounted_again_shows_the_cpu_history_kept_while_closed() {
+        a_load_that_keeps_changing();
         let graph = "export state p = true\nbar B {\n  text \"x\"\n  popup { open: <-> p; graph cpu.usage { history: 60s } }\n}\n";
         let build = |prev: Option<&strand_compiler::reconcile::Build>, text: &str| {
             let mut map = SourceMap::new();
@@ -1998,6 +2011,7 @@ panel Login {
     /// only while a reader is visible), long before the service stops.
     #[test]
     fn a_hidden_surface_stops_a_visible_only_stream() {
+        a_load_that_keeps_changing();
         let mut shell =
             Shell::boot("export state o = true\npanel P { open: <-> o; text pct(cpu.usage) }\n");
         let cpu = shell.real.builtin.cpu.clone();
