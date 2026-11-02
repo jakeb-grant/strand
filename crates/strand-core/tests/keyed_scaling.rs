@@ -165,7 +165,9 @@ fn a_shuffled_keyed_diff_scales_n_log_n() {
     // Warm up allocations and caches once.
     time(small);
     let ratio = time(large).as_secs_f64() / time(small).as_secs_f64().max(1e-9);
-    assert!(ratio < 32.0, "16k / 2k rows: {ratio:.1}x");
+    let mut gates = strand_test_support::gate::Gates::default();
+    gates.check(ratio < 32.0, || format!("16k / 2k rows: {ratio:.1}x"));
+    gates.hold();
 }
 
 /// Every lookup by key in a `KeyedVec` of 2,000 or 16,000 rows does a

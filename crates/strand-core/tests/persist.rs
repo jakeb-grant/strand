@@ -420,22 +420,25 @@ fn a_slow_disk_does_not_stall_the_logic_tick() {
     let tmp = TempDir::new("slow");
     let (release, gate) = std::sync::mpsc::channel::<()>();
     let gate = std::sync::Mutex::new(gate);
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let finished = done.clone();
     let store = PersistStore::with_io_hook(tmp.0.join("persist"), move |_| {
-        // A disk that takes until the test lets it go (at most 10 s).
-        let _ = gate.lock().unwrap().recv_timeout(Duration::from_secs(10));
+        // A disk that takes until the test lets it go (at most 30 s).
+        let _ = gate.lock().unwrap().recv_timeout(Duration::from_secs(30));
+        finished.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     });
     let rt = Runtime::new();
     let p = rt.persisted_value(&store, "launcher.query", String::new());
     rt.flush();
     p.signal.set(&rt, "fire".to_string()).unwrap();
-    let start = std::time::Instant::now();
     rt.tick(Duration::from_millis(16));
     rt.tick(PERSIST_DEBOUNCE + Duration::from_millis(16));
     rt.tick(PERSIST_DEBOUNCE + Duration::from_millis(32));
-    assert!(
-        start.elapsed() < Duration::from_secs(2),
-        "the tick waited for the disk: {:?}",
-        start.elapsed()
+    // Every tick returned with the disk still held.
+    assert_eq!(
+        done.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the tick waited for the disk"
     );
     // Not on disk yet, but readable: the queue counts.
     assert_eq!(
