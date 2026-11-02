@@ -54,6 +54,8 @@ struct World {
     state: Option<String>,
     /// The network being joined (iwd names it as `ConnectedNetwork`).
     joining: Option<String>,
+    /// The station's signals naming `joining` have been sent.
+    join_announced: bool,
     /// `StationDiagnostic` is served, saying (MHz, security).
     diagnostics: Option<(u32, String)>,
     /// `Disconnect` waits while this is set (a leave in flight).
@@ -339,6 +341,7 @@ impl Net {
             let e = station.signal_emitter();
             station.get().await.state_changed(e).await?;
             station.get().await.connected_network_changed(e).await?;
+            self.w.lock().unwrap().join_announced = true;
         }
         loop {
             let (stall, abort) = {
@@ -469,7 +472,34 @@ impl Diagnostic {
 
 /// The fake's scan ends: `Scanning` falls.
 fn end_scan(tokio: &tokio::runtime::Runtime, conn: &zbus::Connection, w: &W) {
-    w.lock().unwrap().scanning = false;
+    set_scanning(tokio, conn, w, false);
+}
+
+/// The adapter has heard the station name the join that `Connect` is holding.
+/// Until it has, `connecting` is only the shell's own join and a `disconnect()`
+/// is rightly kept from iwd (`drop_joins`), which is another test. A signal is
+/// heard in the order it was sent, so `Scanning` raised after the naming, once
+/// published, was heard after it.
+fn heard_the_join(
+    tokio: &tokio::runtime::Runtime,
+    conn: &zbus::Connection,
+    rt: &Runtime,
+    s: &strand_services::Services,
+    b: &strand_services::Builtin,
+    w: &W,
+) {
+    until(rt, s, "the station naming the join", || {
+        std::mem::take(&mut w.lock().unwrap().join_announced)
+    });
+    let scanning = |on: bool| b.network.cells().scanning.get_untracked(rt) == Ok(on);
+    set_scanning(tokio, conn, w, true);
+    until(rt, s, "the signal after the naming", || scanning(true));
+    set_scanning(tokio, conn, w, false);
+    until(rt, s, "and its end", || scanning(false));
+}
+
+fn set_scanning(tokio: &tokio::runtime::Runtime, conn: &zbus::Connection, w: &W, on: bool) {
+    w.lock().unwrap().scanning = on;
     tokio.block_on(async {
         let st = conn
             .object_server()
@@ -936,7 +966,7 @@ fn iwd_says_what_it_is_joining_and_leaving_and_disconnects() {
     let tokio = tokio();
     let w = home_world("lo", Some((2412, "WPA2-Personal")));
     w.lock().unwrap().connected = None;
-    let _iwd = fake_iwd(&tokio, &bus.address, &w);
+    let iwd = fake_iwd(&tokio, &bus.address, &w);
     let rt = Runtime::new();
     let (s, b) = services(&rt, bus.buses());
     let cells = b.network.cells();
@@ -994,6 +1024,7 @@ fn iwd_says_what_it_is_joining_and_leaving_and_disconnects() {
     until(&rt, &s, "the second join in flight", || {
         calls("Connect Attic") == 2 && w.lock().unwrap().joining.is_some()
     });
+    heard_the_join(&tokio, &iwd, &rt, &s, &b, &w);
     act(&rt, &b, "disconnect");
     until(&rt, &s, "the join stopped", || {
         calls("Disconnect") == 2
@@ -1092,7 +1123,7 @@ fn a_join_a_refused_disconnect_stopped_is_still_reported() {
     let tokio = tokio();
     let w = home_world("wlan0", None);
     w.lock().unwrap().connected = None;
-    let _iwd = fake_iwd(&tokio, &bus.address, &w);
+    let iwd = fake_iwd(&tokio, &bus.address, &w);
     let rt = Runtime::new();
     let (s, b) = services(&rt, bus.buses());
     let cells = b.network.cells();
@@ -1108,6 +1139,7 @@ fn a_join_a_refused_disconnect_stopped_is_still_reported() {
         w.lock().unwrap().joining.is_some()
             && cells.connecting.get_untracked(&rt) == Ok(Some("Loft".into()))
     });
+    heard_the_join(&tokio, &iwd, &rt, &s, &b, &w);
     act(&rt, &b, "disconnect");
     until(&rt, &s, "the refusal", || {
         !failures.lock().unwrap().is_empty()
@@ -1223,7 +1255,7 @@ fn a_disconnect_while_one_is_in_flight_is_dropped_on_iwd() {
     let tokio = tokio();
     let w = home_world("wlan0", None);
     w.lock().unwrap().connected = None;
-    let _iwd = fake_iwd(&tokio, &bus.address, &w);
+    let iwd = fake_iwd(&tokio, &bus.address, &w);
     let rt = Runtime::new();
     let (s, b) = services(&rt, bus.buses());
     let cells = b.network.cells();
@@ -1246,6 +1278,7 @@ fn a_disconnect_while_one_is_in_flight_is_dropped_on_iwd() {
         w.lock().unwrap().joining.is_some()
             && cells.connecting.get_untracked(&rt) == Ok(Some("Attic".into()))
     });
+    heard_the_join(&tokio, &iwd, &rt, &s, &b, &w);
     w.lock().unwrap().stall_disconnect = true;
     act(&rt, &b, "disconnect");
     act(&rt, &b, "disconnect");

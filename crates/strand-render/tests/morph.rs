@@ -499,16 +499,16 @@ fn bars_track(r: Renderer, settle_text: bool, scale: f32) -> Vec<u32> {
     sh.settle_text = settle_text;
     run(&mut sh, NodeId::new(0, 0));
     let y = (15.0 * scale) as u32;
-    assert_eq!(
-        red_from(sh.buf(BAR), y),
-        Some(((400.0 - 12.0) * scale) as u32)
-    );
+    let start = ((400.0 - 12.0) * scale) as u32;
+    assert_eq!(red_from(sh.buf(BAR), y), Some(start));
     sh.set("big", Value::Bool(true));
     let mut seen = Vec::new();
     let mut n = 0;
     while sh.wants() {
         sh.paint();
-        seen.extend(red_from(sh.buf(BAR), y));
+        // A frame painted before the worker answered shows the bars still where
+        // they rest, which is no estimate: the track starts where they move.
+        seen.extend(red_from(sh.buf(BAR), y).filter(|x| !seen.is_empty() || *x != start));
         n += 1;
         assert!(n < 600, "never settled");
     }

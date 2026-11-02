@@ -333,14 +333,17 @@ impl Shell {
     }
 }
 
+/// Whether the app is asked `call` (bounded).
+fn call_came(calls: &Calls, call: &str) -> bool {
+    strand_test_support::wait::within(Duration::from_secs(10), Duration::from_millis(20), || {
+        calls.lock().unwrap().iter().any(|c| c == call)
+    })
+}
+
 /// Waits (bounded) until the app was asked `call`.
 fn wait_call(calls: &Calls, call: &str) {
     assert!(
-        strand_test_support::wait::within(
-            Duration::from_secs(10),
-            Duration::from_millis(20),
-            || calls.lock().unwrap().iter().any(|c| c == call)
-        ),
+        call_came(calls, call),
         "the app was never asked {call}: {:?}",
         calls.lock().unwrap()
     );
@@ -491,7 +494,11 @@ fn tray_menus_nest_walk_and_choose() {
     // the output (the bar is at the output's top-left corner).
     pointer.click(cx, cy, w, h);
     let at = format!("Activate at {},{}", icon.x0, icon.y1);
-    wait_call(&calls, &at);
+    // Its log, which says if the click came: 1 run in 10 in the stress job lost
+    // this one, undiagnosed (decisions.md robustness).
+    if !call_came(&calls, &at) {
+        panic!("the app was never asked {at}: {}", sh.log_text());
+    }
 
     // A right click opens its menu: a popup under the bar, below the
     // icon, and the app is told it opens.

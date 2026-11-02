@@ -71,6 +71,12 @@ run && no "a bad call nothing read passed" || ok "a bad call nothing read fails"
 clean
 suite "$trapped$(case_bad strands_gpu_thread_runs_under_the_layer 'exit code 101')" >"$DIR/proof-core.xml"
 run && no "no layer passed" || ok "the layer not loaded fails"
+clean
+suite "$trapped$(case_bad strands_gpu_thread_runs_under_the_layer 'process aborted with signal 11 (SIGSEGV)' 'test result: ok. 1 passed; 0 failed')" >"$DIR/proof-core.xml"
+run && ok "the layer's test crashing at exit after it passed is no failure" || no "a crash at exit failed the proof"
+clean
+suite "$trapped$(case_bad strands_gpu_thread_runs_under_the_layer 'process aborted with signal 11 (SIGSEGV)' 'running 1 test')" >"$DIR/proof-core.xml"
+run && no "a crash before the layer's test passed passed" || ok "and crashing before it did fails"
 
 clean
 find "$DIR" -name 'sync-*.xml' -delete

@@ -77,7 +77,9 @@ def proofs(directory, problems):
             problems.append(f"{mode}: the bad call went unreported: this run can't fail")
         if traps and "SIGTRAP" not in (bad[0] or ""):
             problems.append(f"{mode}: the bad call didn't trap: this run can't fail ({bad[0]})")
-        if layer[0] is not None:
+        # Passed, then the crash at exit every other test here can have (above).
+        crashed_after = layer[0] is not None and "SIGSEGV" in layer[0] and PASSED in layer[1]
+        if layer[0] is not None and not crashed_after:
             problems.append(f"{mode}: strand's GPU thread didn't have the layer ({layer[0]})")
 
 

@@ -922,6 +922,9 @@ impl Notifications {
                                 }
                                 s.count = s.all.len() as i64;
                             });
+                            // Before anything can end the run: `SaveOnStop`
+                            // saves only what was handed to it.
+                            history.changed(cx.state(), &kept);
                             if !sent || !cx.emit(NotificationsEvent::Received(n)) {
                                 return Ok(());
                             }

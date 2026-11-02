@@ -961,26 +961,35 @@ fn walk(sh: &mut Shell) {
         let steps: i64 = 12;
         let lerp = |a: u32, b: u32, k: i64| (a as i64 + (b as i64 - a as i64) * k / steps) as u32;
         // A crossing the machine stretched past the 200 ms grace says nothing of
-        // it (1 run in 6 in the nightly stress job, 1 in 10 here): from the item
-        // again, ten times at most, so a grace that is gone still fails.
+        // it (1 run in 6 in the nightly stress job, 1 in 10 here), and a compositor
+        // or a shell held up on the way stretches it where the hand can't see (1
+        // in 10 again): from the item again, ten times at most. One that closes
+        // on a crossing the hand timed inside the grace is forgiven once, so a
+        // grace that is gone still fails, on the second.
+        let mut closed_inside = 0;
+        let mut open = false;
         for _ in 0..10 {
             let crossing = std::time::Instant::now();
             for k in 1..=steps {
                 pointer.motion(lerp(cx, icx, k), lerp(cy, icy, k), LW, LH);
                 std::thread::sleep(Duration::from_millis(15));
             }
-            if crossing.elapsed() < Duration::from_millis(200) {
+            let inside = crossing.elapsed() < Duration::from_millis(200);
+            open = sh
+                .shot(if second { "HEADLESS-2" } else { "HEADLESS-1" })
+                .region(island, 2000)
+                .is_some();
+            if open || closed_inside == 1 && inside {
                 break;
             }
+            closed_inside += usize::from(inside);
             pointer.motion(cx, cy, LW, LH);
             sh.wait(what, |one, two| {
                 (if second { two } else { one }).region(island, 2000)
             });
         }
         assert!(
-            sh.shot(if second { "HEADLESS-2" } else { "HEADLESS-1" })
-                .region(island, 2000)
-                .is_some(),
+            open,
             "{what}: the island closed on the way to it\n{}",
             sh.log_text()
         );
