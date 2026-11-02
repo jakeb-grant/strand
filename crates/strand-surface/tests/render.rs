@@ -343,10 +343,6 @@ fn first_frame_waits_for_its_text() {
         Some(&false),
         "the first frame went out while its text was being shaped"
     );
-    assert!(
-        first_commit < wait,
-        "held until the deadline: {first_commit:?}"
-    );
     assert_eq!(mgr.state().stats().commits, 1, "{:?}", mgr.state().stats());
     let shot = sway.grim("HEADLESS-1");
     let lit = (20..80).any(|x| (8..30).any(|y| shot.rgb(x, y)[0] > 0xc0));
@@ -364,6 +360,11 @@ fn first_frame_waits_for_its_text() {
         t.elapsed()
     );
     assert_eq!(mgr.state().stats(), before);
+    let mut gates = strand_test_support::gate::Gates::default();
+    gates.check(first_commit < wait, || {
+        format!("held until the deadline: {first_commit:?}")
+    });
+    gates.hold();
 }
 
 /// A spring runs one frame per refresh, sampled at predicted presentation
@@ -430,10 +431,11 @@ fn springs_run_at_the_refresh_rate_then_the_surface_is_idle() {
     );
     let span = *times.last().unwrap() - times[0];
     assert!(
-        span >= Duration::from_millis(100) && span <= Duration::from_secs(3),
+        span >= Duration::from_millis(100),
         "{span:?} over {} frames",
         times.len()
     );
+    let frames = times.len();
     std::thread::sleep(Duration::from_millis(50));
     let shot = sway.grim("HEADLESS-1");
     assert_eq!(shot.rgb(1210, 18), rgb("#89b4fa"));
@@ -449,6 +451,11 @@ fn springs_run_at_the_refresh_rate_then_the_surface_is_idle() {
     assert_eq!(mgr.state().stats(), idle);
     assert_eq!(mgr.state().host().times.len(), paints);
     assert!(!mgr.state().host().renderer.wants_frame(id));
+    let mut gates = strand_test_support::gate::Gates::default();
+    gates.check(span <= Duration::from_secs(3), || {
+        format!("{span:?} over {frames} frames")
+    });
+    gates.hold();
 }
 
 const PANEL: NodeId = NodeId::new(20, 0);

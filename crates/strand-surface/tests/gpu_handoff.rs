@@ -296,7 +296,10 @@ fn a_give_up_doubles_while_presents_stay_unanswered() {
     assert!(mgr.dispatch_until(WAIT, |s| s.present_due(id)).unwrap());
     let first = asked.elapsed();
     assert!(first >= Duration::from_millis(950), "{first:?}");
-    assert!(first < Duration::from_millis(1900), "{first:?}");
+    let mut gates = strand_test_support::gate::Gates::default();
+    gates.check(first < Duration::from_millis(1900), || {
+        format!("the first give-up at {first:?}")
+    });
     // One unanswered: twice as long, and the timer wakes the loop then.
     let asked = present(&mut mgr);
     mgr.dispatch_until(Duration::from_millis(1400), |_| false)
@@ -305,7 +308,9 @@ fn a_give_up_doubles_while_presents_stay_unanswered() {
     assert!(mgr.dispatch_until(WAIT, |s| s.present_due(id)).unwrap());
     let second = asked.elapsed();
     assert!(second >= Duration::from_millis(1950), "{second:?}");
-    assert!(second < Duration::from_millis(3900), "{second:?}");
+    gates.check(second < Duration::from_millis(3900), || {
+        format!("the second give-up at {second:?}")
+    });
     // Two unanswered: not at the second's pace either.
     present(&mut mgr);
     mgr.dispatch_until(Duration::from_millis(2400), |_| false)
@@ -319,7 +324,10 @@ fn a_give_up_doubles_while_presents_stay_unanswered() {
     let asked = present(&mut mgr);
     assert!(mgr.dispatch_until(WAIT, |s| s.present_due(id)).unwrap());
     let again = asked.elapsed();
-    assert!(again < Duration::from_millis(1900), "{again:?}");
+    gates.check(again < Duration::from_millis(1900), || {
+        format!("the give-up after a drawn frame at {again:?}")
+    });
+    gates.hold();
 }
 
 fn alive(fake: &Fake) -> bool {
