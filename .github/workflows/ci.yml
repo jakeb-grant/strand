@@ -1043,7 +1043,8 @@ jobs:
   # 270 minutes hold with the build and a block running over. The job summary
   # names each failure with its rate, and the logs go up as `stress-logs`. No push
   # waits on it: deploy and release name their jobs, and a push doesn't run this.
-  # A red night files the issue below.
+  # It is red when a test fails twice or more, or once by a crash or a timeout; a
+  # test failing once is a warning with its rate. A red night files the issue below.
   stress:
     needs: image-publish
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

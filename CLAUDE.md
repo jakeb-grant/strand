@@ -39,7 +39,7 @@ scripts/container/run.sh cargo clippy --workspace --all-targets -- -D warnings
 scripts/container/run.sh affected     # the tests of the crates you changed
 ```
 
-`affected` runs `cargo test` for each workspace crate with a changed file
+`affected` runs cargo-nextest's default profile, then the doc-tests, for each workspace crate with a changed file
 since the merge base with `main` (committed or not), and for the crates
 whose tests read `docs/` when docs changed. Add `--deep` when you change
 an interface other crates use (it adds every crate depending on yours),

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Tests stress-summary.py on made-up junit files: a failure is named with its
-# rate and fails the run, a gate miss alone is listed apart and doesn't, a crash
+# Tests stress-summary.py on made-up junit files: a test failing once by its own
+# panic is named with its rate and doesn't fail the run, twice does, and so does
+# a crash or a timeout even once; a gate miss alone is listed apart and doesn't, a crash
 # carrying no gate marker isn't a miss, a block that didn't run fails, and so does
 # no test at all.
 # Run: scripts/container/run.sh scripts/container/test-stress-summary.sh
@@ -34,8 +35,27 @@ grep -q '4 test runs of 2 tests in 1 blocks' "$DIR/out" && ok "it counts the run
 panic="thread &apos;t&apos; (1) panicked at a.rs:1:1:"
 junit "<testsuite name=\"s::a@stress-0\">$(fail one "$panic
 never: the thing")$(pass two)</testsuite><testsuite name=\"s::a@stress-1\">$(pass one)$(pass two)</testsuite>"
-run && no "a failure passed" || ok "a failure fails the run"
+run && ok "one panic in the night passes" || no "one panic failed the run"
 grep -q '`s::a one` | 1/2 (50.0%) | -j 8 beside 4: 1' "$DIR/out" && ok "it names the test, its rate and the load" || no "no rate"
+GITHUB_ACTIONS=true run
+grep -q '^::warning title=stress: one::' "$DIR/out" && ok "and warns of it" || no "no warning"
+
+junit "<testsuite name=\"s::a@stress-0\">$(fail one "$panic
+never: the thing")$(fail two "$panic
+never: the other")</testsuite><testsuite name=\"s::a@stress-1\">$(pass one)$(pass two)</testsuite>"
+run && ok "two tests failing once each pass" || no "two single failures failed the run"
+
+junit "<testsuite name=\"s::a@stress-0\">$(fail one "$panic
+never: the thing")</testsuite><testsuite name=\"s::a@stress-1\">$(fail one "$panic
+never: the thing")</testsuite>"
+run && no "a test failing twice passed" || ok "a test failing twice fails the run"
+GITHUB_ACTIONS=true run
+grep -q '^::error title=stress: one::' "$DIR/out" && ok "as an error" || no "no error"
+
+junit "<testsuite name=\"s::a@stress-0\">$(fail one "$panic
+never: the thing
+test timed out after 120s")</testsuite>"
+run && no "a timeout passed" || ok "a timeout fails the run even once"
 
 junit "<testsuite name=\"s::a@stress-0\">$(fail one "$panic
 timing gate missed: 9 ms over 5 ms")</testsuite>"
@@ -46,7 +66,8 @@ junit "<testsuite name=\"s::a@stress-0\">$(fail one "$panic
 timing gate missed: 9 ms
 $panic
 never: the thing")</testsuite>"
-run && no "a gate miss beside a panic passed" || ok "a panic beside a gate miss fails"
+run
+grep -q '1 tests failed' "$DIR/out" && ok "a panic beside a gate miss is a failure, not a miss" || no "a panic beside a gate miss was a miss"
 junit "<testsuite name=\"s::a@stress-0\">$(fail one "(test aborted with signal 5: SIGTRAP)")</testsuite>"
 run && no "a crash passed" || ok "a crash is no gate miss"
 

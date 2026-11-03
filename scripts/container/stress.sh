@@ -25,8 +25,9 @@
 #      STRAND_STRESS_SEED          replays a run's choices (it prints its own)
 #      STRAND_STRESS_TIER          record or whole: only that tier
 # Out: target/stress/: summary.md, blocks.tsv, each block's log and junit files.
-# Exit: 1 when a test failed (stress-summary.py names each, with its rate) or a
-#       block didn't run.
+# Exit: 1 when a test failed twice or more, or once by a crash or a timeout, or a
+#       block didn't run; a test that panicked once is a WARN with its rate
+#       (stress-summary.py names each).
 
 set -uo pipefail
 cd "$(dirname "$0")/../.."
