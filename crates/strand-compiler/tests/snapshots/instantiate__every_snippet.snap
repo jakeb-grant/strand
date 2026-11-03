@@ -86,7 +86,7 @@ bar screens="Mock | DP-1 | Display" name="Everything"
     text text="50%" roll=true not_row=true
     box jelly=0.4 not_row=true
     box parallax=6 tilt=8deg not_row=true
-    row shadow_room=[[], [[(10 * wave(2000ms, phase: 0)), $accent.alpha(0.4)]], false] bg=$surface.alpha(0.7) radius=full corners=squircle border=template(1.5, conic(from 0deg, #000000, #000000, #000000) <- $accent, $tertiary, $accent; _, (t * 40)) blur=24 morph="media" not_row=true
+    row shadow_room=[[], [[(10 * wave(2000ms, phase: 0)), $accent.alpha(0.4)]], false, [], []] bg=$surface.alpha(0.7) radius=full corners=squircle border=template(1.5, conic(from 0deg, #000000, #000000, #000000) <- $accent, $tertiary, $accent; _, (t * 40)) blur=24 morph="media" not_row=true
       image size=28 rotate=0 shape=cookie
       spectrum width=72 color=$accent source="40" bars=24 style=mirror
     box

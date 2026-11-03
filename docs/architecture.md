@@ -1274,6 +1274,10 @@ is being saved, so the idle-wakeup windows hold.
     `when` holds, and a `Bool`, true when its `width`, `height` or
     `size` is bound or set in a `when`. Render counts those shadows
     only in `Boxes::reach`, the room a panel's or OSD's buffer reserves.
+    A panel or OSD whose `x` or `y` is bound or set in a `when` gets it
+    too, with two more `List`s, every `x` value and every `y` value
+    (empty on any other node): where its moves are painted (Hyprland),
+    its buffer reserves their room from its first frame.
   - **Layout and input props** (flex). `Prop::Wrap`, `Prop::Axis`,
     `Prop::Snap`; `Prop::Cursor` is resolved by the Router and handed to
     strand-surface (`SurfaceHost::cursor`).

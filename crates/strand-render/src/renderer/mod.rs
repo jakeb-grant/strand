@@ -498,9 +498,10 @@ pub struct Renderer {
     /// [`Renderer::hold_shadow_reach`]).
     shadow_held: BTreeSet<NodeId>,
     /// (shadow-buffer) Per panel or OSD surface node: the room its buffer
-    /// keeps past its box for shadows and fillets, before its edges cap
-    /// it; it only grows, until a reload (see [`Renderer::reserve_reach`]).
-    reserved: HashMap<NodeId, strand_scene::Insets>,
+    /// keeps past its box for shadows and fillets, and (moves painted) for
+    /// its own moves, before its edges cap it; each only grows, until a
+    /// reload (see [`Renderer::reserve_reach`]).
+    reserved: HashMap<NodeId, (strand_scene::Insets, strand_scene::Insets)>,
     /// See [`EXIT_STALL`].
     exit_stall: Duration,
     /// Content logic removed from a surface playing its closing pose (a

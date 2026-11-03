@@ -230,8 +230,11 @@ props! {
     /// whichever holds now), a `List` of every `glow:` value likewise,
     /// and a `Bool`, true when its `width`, `height` or `size` may change
     /// (bound or set in a `when`), so its box may spring whatever its
-    /// size. Set by the compiler on a node with a shadow or a
-    /// glow, never written in source.
+    /// size; then, on a panel or OSD whose `x` or `y` may change, a `List`
+    /// of every `x` value and one of every `y` value (empty otherwise),
+    /// for the room its painted moves take. Set by the compiler on a node
+    /// with a shadow or a glow, or such a panel or OSD, never written in
+    /// source.
     ShadowRoom = "shadow_room": Snap,
     // Paint.
     Bg = "bg": Effects,

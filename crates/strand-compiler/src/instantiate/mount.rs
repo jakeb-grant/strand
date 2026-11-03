@@ -65,12 +65,15 @@ enum SourceValue {
     /// (M4) A tree-level `play shake`: the keyframes once, on mount.
     Play(ChunkId),
     /// (shadow-buffer) `Prop::ShadowRoom`: every `shadow:` and `glow:`
-    /// value of the node, each evaluated whichever condition holds, and
-    /// whether its size or place may change.
+    /// value of the node, each evaluated whichever condition holds,
+    /// whether its size or place may change, and a panel's or OSD's every
+    /// `x:` and `y:` value.
     Room {
         shadows: Vec<(ChunkId, Ty)>,
         glows: Vec<(ChunkId, Ty)>,
         moves: bool,
+        xs: Vec<(ChunkId, Ty)>,
+        ys: Vec<(ChunkId, Ty)>,
     },
 }
 
@@ -2085,7 +2088,11 @@ impl Ctx {
             let mirrored = enter.clone();
             out.push((SceneProp::Exit, mirrored));
         }
-        if let Some(room) = self.shadow_room(&out) {
+        let surface = matches!(
+            e.kind,
+            ElementKind::Builtin(NodeKind::Panel | NodeKind::Osd)
+        );
+        if let Some(room) = self.shadow_room(&out, surface) {
             out.push((SceneProp::ShadowRoom, vec![room]));
         }
         out
@@ -2097,7 +2104,11 @@ impl Ctx {
     /// take (`Prop::ShadowRoom`): a panel's or OSD's buffer reserves their
     /// room from its first frame, so the first time one shows never
     /// resizes it. A node whose shadow and box are fixed sends nothing.
-    fn shadow_room(&self, out: &[(SceneProp, Vec<Source>)]) -> Option<Source> {
+    /// A `surface` (a panel or OSD) whose `x` or `y` may change sends
+    /// every value of them too: where the compositor would animate a
+    /// margin (Hyprland) its moves are painted, in room its buffer
+    /// reserves from its first frame.
+    fn shadow_room(&self, out: &[(SceneProp, Vec<Source>)], surface: bool) -> Option<Source> {
         let prog = &self.vm.prog;
         let of = |p: SceneProp| out.iter().find(|(q, _)| *q == p).map(|(_, s)| s.as_slice());
         // Set in a `when`, or read from something that may change.
@@ -2119,16 +2130,24 @@ impl Ctx {
                 })
                 .collect()
         };
-        let (shadows, glows) = (chunks(SceneProp::Shadow), chunks(SceneProp::Glow));
-        if shadows.is_empty() && glows.is_empty() {
-            return None;
-        }
+        let (mut shadows, mut glows) = (chunks(SceneProp::Shadow), chunks(SceneProp::Glow));
         // A flow node's `x`/`y` are paint offsets, whose room is never
         // taken (a hover's lift moves its shadow, not the buffer).
         let moves = [SceneProp::Width, SceneProp::Height, SceneProp::Size]
             .into_iter()
             .any(varies);
-        if !moves && !varies(SceneProp::Shadow) && !varies(SceneProp::Glow) {
+        let cast = !(shadows.is_empty() && glows.is_empty())
+            && (moves || varies(SceneProp::Shadow) || varies(SceneProp::Glow));
+        if !cast {
+            (shadows, glows) = (Vec::new(), Vec::new());
+        }
+        let placed = surface && [SceneProp::X, SceneProp::Y].into_iter().any(varies);
+        let (xs, ys) = if placed {
+            (chunks(SceneProp::X), chunks(SceneProp::Y))
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        if !cast && !placed {
             return None;
         }
         Some(Source {
@@ -2136,7 +2155,9 @@ impl Ctx {
             value: SourceValue::Room {
                 shadows,
                 glows,
-                moves,
+                moves: moves && cast,
+                xs,
+                ys,
             },
             transition: None,
         })
@@ -2287,6 +2308,8 @@ impl Ctx {
                 shadows,
                 glows,
                 moves,
+                xs,
+                ys,
             } => {
                 // A value that fails here (it reads what only its `when`
                 // makes valid) reserves nothing; the prop's own binding
@@ -2305,6 +2328,8 @@ impl Ctx {
                     PropValue::List(each(SceneProp::Shadow, shadows)),
                     PropValue::List(each(SceneProp::Glow, glows)),
                     PropValue::Bool(*moves),
+                    PropValue::List(each(SceneProp::X, xs)),
+                    PropValue::List(each(SceneProp::Y, ys)),
                 ])
             }
             SourceValue::Play(c) => match self.eval(rt, *c, env)? {
@@ -2484,8 +2509,21 @@ impl Ctx {
                 SourceValue::Uniforms(props) => chunks.extend(props.iter().map(|p| p.value)),
                 SourceValue::Shader(_) => {}
                 SourceValue::Draw(c, _) => chunks.push(*c),
-                SourceValue::Room { shadows, glows, .. } => {
-                    chunks.extend(shadows.iter().chain(glows).map(|(c, _)| *c));
+                SourceValue::Room {
+                    shadows,
+                    glows,
+                    xs,
+                    ys,
+                    ..
+                } => {
+                    chunks.extend(
+                        shadows
+                            .iter()
+                            .chain(glows)
+                            .chain(xs)
+                            .chain(ys)
+                            .map(|(c, _)| *c),
+                    );
                 }
             }
         }

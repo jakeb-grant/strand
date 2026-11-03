@@ -329,7 +329,8 @@ fn a_glow_keeps_room_for_its_peak() {
 /// every shadow a node on it may take (`Prop::ShadowRoom`: a hover's, a
 /// `when`'s), so the first time one shows asks for nothing; and (on
 /// Hyprland, moves painted) the room its own `enter` move takes is
-/// added once: diffs elsewhere leave its spec as it was.
+/// added once: diffs elsewhere leave its spec as it was. A `slide`
+/// takes its box's size, and an `x` a `when` may set its value.
 #[test]
 fn a_panel_reserves_the_shadows_it_may_take_once() {
     let mut b = Builder::default();
@@ -404,4 +405,43 @@ fn a_panel_reserves_the_shadows_it_may_take_once() {
         r.take_surface_changes().is_empty(),
         "the lift asked for nothing"
     );
+    // A top panel sliding in from below its box, and whose `x` a `when`
+    // may set to 40 (`shadow_room`'s fifth item), has the room for both
+    // from the start: its slide is its own height, 80.
+    let mut b = Builder::default();
+    let slid = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Open, PropValue::Bool(true)),
+            (Prop::Anchor, PropValue::Keyword("top".into())),
+            (Prop::Width, num(200.0)),
+            (Prop::Height, num(80.0)),
+            (
+                Prop::Enter,
+                PropValue::Call {
+                    name: "slide".into(),
+                    args: vec![PropValue::Keyword("bottom".into())],
+                },
+            ),
+            (
+                Prop::ShadowRoom,
+                PropValue::List(vec![
+                    PropValue::List(Vec::new()),
+                    PropValue::List(Vec::new()),
+                    PropValue::Bool(false),
+                    PropValue::List(vec![num(0.0), num(40.0)]),
+                    PropValue::List(Vec::new()),
+                ]),
+            ),
+        ],
+    );
+    let mut r = renderer();
+    r.set_compositor_pose_offset(false);
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(SurfaceId(3), slid);
+    r.configure_surface(SurfaceId(3), Size::new(400, 400), Scale::ONE);
+    buf.paint_at(&mut r, SurfaceId(3), 0, frame(500));
+    let o = r.surface_spec(slid).unwrap().overhang;
+    assert_eq!((o.bottom, o.right), (80.0, 40.0), "{o:?}");
 }

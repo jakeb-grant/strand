@@ -5046,15 +5046,31 @@ Under a delegated scale the point is `origin + corner × scale`
 Hyprland runs `arrangeLayersForMonitor` on every commit with layer state, and
 each `set_margin` starts its own `layers` animation of the box on top of
 Strand's spring: the island's `enter { y: -14 }` sent 20 margins in 160 ms on
-the nested probe. With `hyprland_*` globals render keeps `x`/`y` (and so the
+Hyprland 0.57 run nested (`scripts/container/hyprland-nested.sh`, the launcher opened, closed, reopened and closed, each layer request and Hyprland's layer geometry logged). With `hyprland_*` globals render keeps `x`/`y` (and so the
 scale, whose centring move needs the offset) in the frame and delegates only
 opacity (`Renderer::set_compositor_pose_offset`); a panel's or OSD's buffer
 keeps room for its own enter and exit moves (capped at its margin on an
 anchored side, so the island's -14 stays within its 6); and `clear_pose` sends
 margins only for a pose that moved, so a fade handed to the GPU sends no layer
 state. Other compositors keep delegating moves. Proof: `delegate`'s unit test
-with the offset off, and the probe's island log (no `set_margin` after its
-creation).
+with the offset off, and on nested Hyprland the island sent no `set_margin`
+after its creation requests.
+
+**2026-11-03 · m4-surface-w2: a painted move's room counts slides, percentages
+and a root's own `x`/`y`.** The room for a panel's or OSD's own moves read only
+numbers in its `enter` and `exit`, with no box for a `slide`: `enter:
+slide(bottom)` on a top panel moved by 0 and `enter { y: 100% }` by nothing, so
+on Hyprland, moves painted, the box started a box-height below the buffer's
+edge and wiped in from that clip line; a root `y` set in a `when` got no room
+either. Now `pose_room` takes the root's size at rest (its spec's), reads a
+`slide` by it and a percentage of it, adds the root's `x` and `y` and every
+value a `when` may give them, which the compiler sends a panel or OSD whose
+`x` or `y` is bound or set in a `when` in its `shadow_room` (two more lists,
+architecture.md), and keeps that room grow-only beside the shadows' (a slide's
+room follows a size that a growth spring moves every frame). design.md says
+so. Tests: `a_panel_reserves_the_shadows_it_may_take_once` (a top panel with
+`slide(bottom)` and a `when`'s `x: 40`: 80 below, 40 right from the start),
+`a_panel_whose_place_may_change_lists_its_places`.
 
 ## m4-integration-w2-w2
 
@@ -12106,14 +12122,14 @@ on a reload (`forget_kept_sizes`), so the launcher has its 34 px below from its
 first configure. A box that does not spring keeps its positional reach, so a
 panel with a shadowed button grows by nothing. Bars keep the hold and release:
 a bar's grown overhang past its window side would flip `inside_exclusive_zone`
-for good and raise it over every later popup scrim, remaking it and its zone
-(the plan's critique 5); popups and windows keep it too, their place being the
+for good and raise it over every later popup scrim, remaking it and its zone;
+popups and windows keep it too, their place being the
 positioner's. Left: a shadow first set later (a hover's lift past what any
 shadow there reached) grows the reserve once per config; a bar's hover lift
 still resizes it. Tests: `a_content_sized_panel_keeps_its_shadow_room` (renamed
 from the one above, the room now kept at rest and on a second lift),
-`a_shadow_springing_back_keeps_the_room_it_is_drawn_in` (a bar, unchanged), the
-nested Hyprland probe.
+`a_shadow_springing_back_keeps_the_room_it_is_drawn_in` (a bar, unchanged), and
+on Hyprland 0.57 run nested (`scripts/container/hyprland-nested.sh`, the launcher opened, closed, reopened and closed, each layer request and Hyprland's layer geometry logged) the launcher's 34 px below were in its creation requests.
 
 **2026-11-03 · shadow-buffer: the reserve counts every shadow a node may take.**
 Render sees a prop only as it is now, so a `when dropped { shadow: … }` on the
@@ -12146,9 +12162,10 @@ takes a lifted shadow's room past its window side while it shows and gives it
 back, its zone side and scrim layer following (the reason above). Tests:
 `a_panel_reserves_the_shadows_it_may_take_once` (reserved from the first spec,
 four diffs elsewhere and the lift asking nothing, moves painted),
-`a_node_whose_shadow_or_box_may_change_lists_its_shadows`; the nested probe
-with `lc-hover` (lc-raw plus both `when` shadows): island 115 and launcher 435
-from their creation requests, one geometry on both openings.
+`a_node_whose_shadow_or_box_may_change_lists_its_shadows`; on nested Hyprland
+(`scripts/container/hyprland-nested.sh`) with the launcher's card and the island
+each given a `when` shadow and opened twice: island 115 and launcher 435 from
+their creation requests, one geometry on both openings.
 
 ## morph-memory
 
@@ -14353,7 +14370,7 @@ applies them between two anchors, and the overhang there is kept within them
 as on an anchored side (none without a margin: a shadow past the output is off
 screen), so a panel with side margins keeps its room and its shadow as the
 span gave them (`launcher-results-144`'s card shadow reaches 11 px into its
-24 px margin); the plan's "margin 0 there" would have dropped both. A
+24 px margin); margins of 0 there would have dropped both. A
 left or right panel is now as tall as the area the compositor arranges it
 in, past the bars' zones, where the span asked for the whole output
 (`text-exit-squeeze`, 270 tall under a 30 px bar on a 300 px output, was 300).
@@ -14368,8 +14385,22 @@ is (a region-only commit of the catcher, no layer state): a click in a gap
 between hit boxes inside the box is still no click away. Test:
 `a_catchers_holes_are_where_its_surface_takes_input`. `centred_span` and its dependence on the
 output's bounds are gone. Proof: `a_panel_centred_on_one_axis_never_resizes_there`,
-`a_panel_anchored_to_one_edge_is_stretched_along_it`, and the nested Hyprland
-probe (`target/try/geom/probe.sh`).
+`a_panel_anchored_to_one_edge_is_stretched_along_it`, and on Hyprland 0.57 run nested (`scripts/container/hyprland-nested.sh`, the launcher opened, closed, reopened and closed, each layer request and Hyprland's layer geometry logged): the
+launcher sent only its creation requests and kept one geometry, 0,6 1280x382,
+on both openings.
+
+**2026-11-03 · centred-surface: a stretched axis's margins are each their
+mean.** Anchored to one edge, a panel's margins across were ignored by the
+compositor, which centred it, and the span asked for the output less both of
+them, centred too: its box's centre was the output's. Anchored at both ends,
+the compositor puts the buffer between the margins, so uneven ones (`margin: 6,
+40, 0, 0` on a top panel) moved the box half their difference off centre, 20
+px here. Placement now gives each margin on a stretched axis their mean
+(`layer_config_with`), and render caps the overhang there by it
+(`within_edges`): the box is centred on the output and its length is the
+output's less both margins, as before. design.md says so. Test:
+`a_panel_anchored_to_one_edge_is_stretched_along_it` (left 8 and right 4 give 6
+and 6).
 
 ## kept-size
 

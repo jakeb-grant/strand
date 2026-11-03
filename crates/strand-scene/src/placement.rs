@@ -496,12 +496,29 @@ pub fn layer_config_with(
     // kept like any margin (0 unless set: flush with the edge or past a
     // bar's exclusive zone; negative over it, owner-testing.md gap 26).
     // The box keeps its place: each margin moves out by the overhang.
-    let margin = [
+    let mut margin = [
         px(m.top) - ot,
         px(m.right) - or,
         px(m.bottom) - ob,
         px(m.left) - ol,
     ];
+    // (centred-surface) A stretched axis's two margins are each their
+    // mean: its box stays centred on the output, as the compositor
+    // centred it anchored to one edge (where it applies no margin
+    // across), and its length is the output's less both margins.
+    let mean = |a: f32, b: f32| {
+        let sum = px(a) + px(b);
+        let lo = sum.div_euclid(2);
+        (lo, sum - lo)
+    };
+    if sx {
+        let (l, r) = mean(m.left, m.right);
+        (margin[3], margin[1]) = (l - ol, r - or);
+    }
+    if sy {
+        let (t, b) = mean(m.top, m.bottom);
+        (margin[0], margin[2]) = (t - ot, b - ob);
+    }
     let (anchors, width, height, exclusive_zone) = if spec.kind == NodeKind::Bar {
         let edge = spec.edge.unwrap_or(Edge::Top);
         let thickness = spec
@@ -1192,9 +1209,10 @@ mod tests {
 
     /// (centred-surface) A panel or OSD anchored to one edge and stretched
     /// along it (`stretch`, render's) is anchored to both ends of that
-    /// axis with size 0, its margins there kept (moved out by the overhang
-    /// render keeps within them): the compositor's configure gives it the
-    /// length. Its zone is still
+    /// axis with size 0, its margins there each their mean (moved out by
+    /// the overhang render keeps within them), so its box stays centred on
+    /// the output: the compositor's configure gives it the length. Its
+    /// zone is still
     /// its edge's; one centred, in a corner or not stretched keeps its
     /// size and anchors.
     #[test]
@@ -1220,19 +1238,20 @@ mod tests {
         assert_eq!(top.anchors, Anchors::new(true, false, true, true));
         assert_eq!((top.width, top.height), (0, 48 + 5 + 30));
         assert_eq!(top.overhang, [5, 3, 30, 6]);
-        assert_eq!(top.margin, [6 - 5, 4 - 3, 2 - 30, 8 - 6]);
+        // Left 8 and right 4: 6 each.
+        assert_eq!(top.margin, [6 - 5, 6 - 3, 2 - 30, 6 - 6]);
         assert_eq!(top.reserved_edge(), Some(Edge::Top));
         assert_eq!(top.exclusive_zone, 40 + 5);
         // The compositor gives it the area less its margins, from the left:
-        // its box at its margin.
-        assert_eq!(top.position_in((1280 - 3, 83), (1280, 720)), (2, 1));
+        // its box 6 in from both sides, centred on the output.
+        assert_eq!(top.position_in((1280 - 3, 83), (1280, 720)), (0, 1));
         let bottom = panel(NodeKind::Osd, "bottom", x);
         assert_eq!(bottom.anchors, Anchors::new(false, true, true, true));
         assert_eq!(bottom.width, 0);
         let left = panel(NodeKind::Panel, "left", y);
         assert_eq!(left.anchors, Anchors::new(true, true, true, false));
         assert_eq!((left.width, left.height), (320 + 3 + 6, 0));
-        assert_eq!(left.margin[0], 6 - 5);
+        assert_eq!((left.margin[0], left.margin[2]), (4 - 5, 4 - 30));
         assert_eq!(left.reserved_edge(), Some(Edge::Left));
         // Not stretched, or no axis to stretch: its own size, centred.
         let fixed = panel(NodeKind::Panel, "top", (false, false));

@@ -6,8 +6,8 @@ use std::time::Duration;
 use strand_scene::time::Instant;
 
 use strand_scene::{
-    Anchor, Curve, Edge, Insets, LogicalRect, LogicalSize, NodeId, NodeKind, Prop, Scale, Size,
-    SurfaceChange, SurfaceId, SurfaceSpec, TokenScope,
+    Anchor, Curve, Edge, Insets, LogicalRect, LogicalSize, NodeId, NodeKind, Prop, PropValue,
+    Scale, Size, SurfaceChange, SurfaceId, SurfaceSpec, TokenScope,
 };
 
 use super::Renderer;
@@ -101,12 +101,18 @@ pub(super) fn within_edges(spec: &SurfaceSpec, o: Insets) -> Insets {
     // at both ends there, so its buffer reaches no further than its
     // margins (none with no margin: a shadow past the output is off
     // screen).
+    // Its margins there are both their mean (`placement`'s).
     let (sx, sy) = spec.stretch;
+    let (mx, my) = (
+        ((m.left + m.right) / 2.0).floor(),
+        ((m.top + m.bottom) / 2.0).floor(),
+    );
+    let pick = |stretched: bool, mean: f32, own: f32| if stretched { mean } else { own };
     Insets {
-        top: cap(o.top, top || sy, m.top),
-        right: cap(o.right, right || sx, m.right),
-        bottom: cap(o.bottom, bottom || sy, m.bottom),
-        left: cap(o.left, left || sx, m.left),
+        top: cap(o.top, top || sy, pick(sy, my, m.top)),
+        right: cap(o.right, right || sx, pick(sx, mx, m.right)),
+        bottom: cap(o.bottom, bottom || sy, pick(sy, my, m.bottom)),
+        left: cap(o.left, left || sx, pick(sx, mx, m.left)),
     }
 }
 
@@ -362,53 +368,90 @@ impl Renderer {
         kind: NodeKind,
         positional: Insets,
         any_edge: Insets,
+        size: LogicalSize,
     ) -> Insets {
         if !matches!(kind, NodeKind::Panel | NodeKind::Osd) {
             return self.hold_shadow_reach(root, positional);
         }
         use super::layout_pass::max_insets;
-        let had = self.reserved.get(&root).copied().unwrap_or_default();
-        // The shadows' and fillets' room alone is kept: the poses' is
-        // added to it fresh each time, never to what it added before.
-        let mut r = max_insets(had, max_insets(positional, any_edge));
-        self.reserved.insert(root, r);
-        // (m4-surface-w2) Its own enter and exit moves, painted where the
-        // compositor would animate a margin (Hyprland), take its box and
-        // shadows that far towards the side they move to.
-        if self.extras.compositor_pose_offset_off {
-            let room = self.pose_room(root);
-            r.top += room.top;
-            r.right += room.right;
-            r.bottom += room.bottom;
-            r.left += room.left;
+        let (had, moves_had) = self.reserved.get(&root).copied().unwrap_or_default();
+        let shadows = max_insets(had, max_insets(positional, any_edge));
+        // (m4-surface-w2) Its own moves, painted where the compositor
+        // would animate a margin (Hyprland), take its box and shadows that
+        // far towards the side they move to. Kept apart from the shadows'
+        // room, so it is never added to itself, and grown only as theirs
+        // is: a slide's room follows the box's size, which a growth spring
+        // moves every frame.
+        let moves = if self.extras.compositor_pose_offset_off {
+            max_insets(moves_had, self.pose_room(root, size))
+        } else {
+            Insets::default()
+        };
+        self.reserved.insert(root, (shadows, moves));
+        Insets {
+            top: shadows.top + moves.top,
+            right: shadows.right + moves.right,
+            bottom: shadows.bottom + moves.bottom,
+            left: shadows.left + moves.left,
         }
-        r
     }
 
-    /// (m4-surface-w2) How far the surface node `root`'s own `enter` and
-    /// `exit` poses move it towards each side, logical pixels.
-    fn pose_room(&self, root: NodeId) -> Insets {
+    /// (m4-surface-w2) How far the surface node `root`, its box `size`
+    /// at rest, moves itself towards each side, logical pixels: its
+    /// `enter` and `exit` poses (a `slide` by its own size, a percentage
+    /// of it), its `x` and `y` now, and every `x` and `y` it may take
+    /// (`Prop::ShadowRoom`'s, the compiler's list of its `when`s').
+    fn pose_room(&self, root: NodeId, size: LogicalSize) -> Insets {
         let mut room = Insets::default();
         let Some(node) = self.tree.get(root) else {
             return room;
         };
         let tables = scope_tables(&self.tree, root);
         let scope = TokenScope::new(&tables);
+        let rect = LogicalRect::new(0.0, 0.0, size.w, size.h);
+        let mut take = |q: Prop, v: &PropValue| {
+            let v = scope.resolve(v);
+            let reference = if q == Prop::X { size.w } else { size.h };
+            let d = match v.as_deref() {
+                Some(PropValue::Length(strand_scene::Length::Percent(p))) => reference * p / 100.0,
+                Some(v) => match v.as_number() {
+                    Some(d) => d,
+                    None => return,
+                },
+                None => return,
+            };
+            if !d.is_finite() {
+                return;
+            }
+            let d = d.clamp(-10_000.0, 10_000.0);
+            match q {
+                Prop::X if d < 0.0 => room.left = room.left.max(-d),
+                Prop::X => room.right = room.right.max(d),
+                Prop::Y if d < 0.0 => room.top = room.top.max(-d),
+                Prop::Y => room.bottom = room.bottom.max(d),
+                _ => {}
+            }
+        };
         for p in [Prop::Enter, Prop::Exit] {
             let Some(v) = node.get(p).and_then(|v| scope.resolve(v)) else {
                 continue;
             };
-            for (q, v) in crate::anim::pose_props(&v, None) {
-                let Some(d) = v.as_number().filter(|d| d.is_finite()) else {
-                    continue;
-                };
-                let d = d.clamp(-10_000.0, 10_000.0);
-                match q {
-                    Prop::X if d < 0.0 => room.left = room.left.max(-d),
-                    Prop::X => room.right = room.right.max(d),
-                    Prop::Y if d < 0.0 => room.top = room.top.max(-d),
-                    Prop::Y => room.bottom = room.bottom.max(d),
-                    _ => {}
+            for (q, v) in crate::anim::pose_props(&v, Some(rect)) {
+                take(q, &v);
+            }
+        }
+        for q in [Prop::X, Prop::Y] {
+            if let Some(v) = node.get(q) {
+                take(q, v);
+            }
+        }
+        // Items 3 and 4 of `shadow_room`: its `x` and `y` values.
+        if let Some(PropValue::List(items)) = node.get(Prop::ShadowRoom) {
+            for (q, i) in [(Prop::X, 3), (Prop::Y, 4)] {
+                if let Some(PropValue::List(values)) = items.get(i) {
+                    for v in values {
+                        take(q, v);
+                    }
                 }
             }
         }
@@ -889,7 +932,7 @@ impl Renderer {
             // its layout pass or not at all).
             let measured = asked.is_some();
             let overhang = if measured {
-                self.reserve_reach(id, spec.kind, overhang, any)
+                self.reserve_reach(id, spec.kind, overhang, any, size)
             } else {
                 overhang
             };

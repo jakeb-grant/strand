@@ -788,7 +788,11 @@ impl Renderer {
             // (shadow-buffer) A panel or OSD keeps the room its shadows
             // could need, grown only; anything else holds and releases.
             let any = crate::fillet::grow(&self.tree, &boxes, root, boxes.reach);
-            let grown = self.reserve_reach(root, spec.kind, grown, any);
+            let at_rest = strand_scene::LogicalSize::new(
+                spec.width.unwrap_or(boxes.size.w),
+                spec.height.unwrap_or(boxes.size.h),
+            );
+            let grown = self.reserve_reach(root, spec.kind, grown, any, at_rest);
             let o = crate::fillet::flush(
                 &self.tree,
                 root,

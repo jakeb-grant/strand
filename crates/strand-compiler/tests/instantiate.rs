@@ -5979,3 +5979,28 @@ fn a_node_whose_shadow_or_box_may_change_lists_its_shadows() {
     assert_eq!(room(boxes[1]), None, "fixed");
     assert_eq!(room(boxes[2]), Some((1, true)), "a hover's width");
 }
+
+/// (shadow-buffer) A panel whose `y` a `when` may set lists every `y` it
+/// may take in its `shadow_room`, for the room its painted moves need; a
+/// box's `x`/`y` are paint offsets and list nothing.
+#[test]
+fn a_panel_whose_place_may_change_lists_its_places() {
+    let src = "panel Menu {\n  anchor: top; width: 100; height: 50; y: 4\n  when hover { y: 20 }\n  box { width: 10; y: 2\n    when hover { y: 6 } }\n}\n";
+    let shell = boot(&[("s.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let panel = shell.scene.of_kind(NodeKind::Panel)[0];
+    let Some(PropValue::List(items)) = shell.scene.prop(panel, Prop::ShadowRoom) else {
+        panic!("no shadow_room on the panel");
+    };
+    assert_eq!(items[3], PropValue::List(Vec::new()), "no x");
+    let PropValue::List(ys) = &items[4] else {
+        panic!("{items:?}");
+    };
+    let ys: Vec<f32> = ys.iter().filter_map(PropValue::as_number).collect();
+    assert_eq!(ys, [4.0, 20.0]);
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    assert_eq!(shell.scene.prop(boxes[0], Prop::ShadowRoom), None);
+}
