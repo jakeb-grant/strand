@@ -210,6 +210,10 @@ pub struct SurfaceRecord {
     /// A layer surface's margins (top, right, bottom, left) as of the
     /// last commit.
     pub margin: Option<[i32; 4]>,
+    /// (centred-surface) A layer surface's layer-shell requests and
+    /// configures in order: `size W H`, `anchor BITS`, `margin T R B L`,
+    /// `zone Z` as each request came, `configure WxH` as each was sent.
+    pub layer_log: Vec<String>,
     /// Each commit that changed the viewport's destination, with what
     /// it set (`None`: unset).
     pub viewport_sets: Vec<Option<(i32, i32)>>,
@@ -651,6 +655,12 @@ impl Surfaces {
             layer.configure(live.serial, cw, ch);
             live.layer_configured = Some(r);
             configure = Some((cw, ch));
+            let index = live.index;
+            if let Ok(mut recs) = self.records.lock()
+                && let Some(rec) = recs.get_mut(index)
+            {
+                rec.layer_log.push(format!("configure {cw}x{ch}"));
+            }
         }
         if let Some(p) = live.popup.as_mut()
             && !p.configured
@@ -1164,21 +1174,36 @@ impl Dispatch<ZwlrLayerSurfaceV1, ObjectId> for Server {
         let Some(live) = state.surf.live.get_mut(surface) else {
             return;
         };
-        match request {
+        let logged = match request {
             zwlr_layer_surface_v1::Request::SetSize { width, height } => {
                 live.layer_request.size = (width, height);
+                Some(format!("size {width} {height}"))
             }
             zwlr_layer_surface_v1::Request::SetAnchor { anchor } => {
-                live.layer_request.anchor = anchor.into_result().map_or(0, |a| a.bits());
+                let bits = anchor.into_result().map_or(0, |a| a.bits());
+                live.layer_request.anchor = bits;
+                Some(format!("anchor {bits}"))
             }
             zwlr_layer_surface_v1::Request::SetMargin {
                 top,
                 right,
                 bottom,
                 left,
-            } => live.layer_request.margin = [top, right, bottom, left],
-            zwlr_layer_surface_v1::Request::Destroy => live.layer = None,
-            _ => {}
+            } => {
+                live.layer_request.margin = [top, right, bottom, left];
+                Some(format!("margin {top} {right} {bottom} {left}"))
+            }
+            zwlr_layer_surface_v1::Request::SetExclusiveZone { zone } => {
+                Some(format!("zone {zone}"))
+            }
+            zwlr_layer_surface_v1::Request::Destroy => {
+                live.layer = None;
+                None
+            }
+            _ => None,
+        };
+        if let Some(entry) = logged {
+            state.surf.record(surface, |r| r.layer_log.push(entry));
         }
     }
 }

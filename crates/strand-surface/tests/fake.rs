@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use common::{TestHost, WAIT, layer_spec};
 use strand_fake_wayland::{Cmd, Fake, SurfaceGlobals};
-use strand_scene::{CompositorCaps, NodeId, NodeKind, SurfaceChange, SurfaceId};
-use strand_surface::{Config, SurfaceManager};
+use strand_scene::{CompositorCaps, NodeId, NodeKind, Scale, Size, SurfaceChange, SurfaceId};
+use strand_surface::{Config, Monitor, SurfaceManager};
 use wayland_client::Connection;
 
 const PANEL: NodeId = NodeId::new(7, 0);
@@ -2061,4 +2061,269 @@ fn a_press_handed_to_the_compositor_ends_for_strand() {
             .count();
         assert_eq!(leaves, 1, "{ask:?} ends strand's press once");
     }
+}
+
+/// The real renderer as the surface host, set up as the binary sets it up
+/// on Hyprland: poses delegated, but scales and moves painted.
+struct Hypr {
+    renderer: strand_render::Renderer,
+}
+
+impl strand_scene::Painter for Hypr {
+    fn paint(
+        &mut self,
+        surface: SurfaceId,
+        target: &mut strand_scene::PaintTarget<'_>,
+    ) -> strand_scene::Damage {
+        self.renderer.paint(surface, target)
+    }
+
+    fn wants_frame(&self, surface: SurfaceId) -> bool {
+        self.renderer.wants_frame(surface)
+    }
+
+    fn opaque_region(&self, surface: SurfaceId) -> strand_scene::Damage {
+        self.renderer.opaque_region(surface)
+    }
+
+    fn surface_pose(&self, surface: SurfaceId) -> Option<strand_scene::SurfacePose> {
+        self.renderer.delegated_pose(surface)
+    }
+
+    fn input_region(&self, surface: SurfaceId) -> Option<Vec<strand_scene::LogicalRect>> {
+        self.renderer.input_region(surface)
+    }
+}
+
+impl strand_surface::SurfaceHost for Hypr {
+    fn surface_attached(&mut self, surface: SurfaceId, node: NodeId, _: Option<&Monitor>) {
+        self.renderer.attach_surface(surface, node);
+    }
+
+    fn surface_configured(&mut self, surface: SurfaceId, size: Size, scale: Scale) {
+        self.renderer.configure_surface(surface, size, scale);
+    }
+
+    fn surface_detached(&mut self, surface: SurfaceId) {
+        self.renderer.detach_surface(surface);
+    }
+
+    fn frame_deadline(&self, surface: SurfaceId) -> Option<Instant> {
+        self.renderer.frame_deadline(surface)
+    }
+
+    fn frame_dropped(&mut self, surface: SurfaceId) {
+        self.renderer.invalidate(surface);
+    }
+
+    fn compositor_caps(&mut self, caps: &CompositorCaps) {
+        self.renderer.set_compositor_poses(caps.delegates_poses());
+        self.renderer.set_compositor_pose_scale(false);
+        self.renderer.set_compositor_pose_offset(false);
+    }
+}
+
+/// Hands the renderer's surface changes to the manager, as the binary's
+/// loop does, until `done` or `timeout`.
+fn run_hypr(
+    mgr: &mut SurfaceManager<Hypr>,
+    timeout: Duration,
+    mut done: impl FnMut(&strand_surface::State<Hypr>) -> bool,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let state = mgr.state_mut();
+        state.host_mut().renderer.update();
+        if state.host().renderer.has_surface_changes() {
+            for (node, change) in state.host_mut().renderer.take_surface_changes() {
+                state.apply_surface_change(node, change);
+            }
+            state.poll();
+        }
+        if done(mgr.state()) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        mgr.dispatch(Some(Duration::from_millis(5))).unwrap();
+    }
+}
+
+/// (centred-surface, shadow-buffer, m4-surface-w2) Hyprland animates the
+/// box of a mapped layer surface on every `set_size`, `set_margin`,
+/// `set_anchor` or `set_exclusive_zone` and draws the current buffer
+/// there, so once configured a surface asks for nothing again: an island
+/// with an exclusive zone and an entering slide, and a two-way launcher
+/// (so with a click-away catcher) whose shadowed card springs its width,
+/// then its height past its row's top, opened, closed and opened again,
+/// on an output the manager never learns (no `xdg_output`, no
+/// `wl_surface.enter`). Both openings ask for the same, stretched along
+/// the top edge, and the first configure carries the output's width.
+#[test]
+fn a_mapped_layer_surface_sends_no_layer_state_after_its_first_configure() {
+    use strand_scene::{Insets, Painter, Prop, PropValue, SceneDiff, SceneOp, Shadow, Transition};
+    const ISLAND: NodeId = NodeId::new(40, 0);
+    const PILL: NodeId = NodeId::new(41, 0);
+    const LAUNCHER: NodeId = NodeId::new(42, 0);
+    const ROW: NodeId = NodeId::new(43, 0);
+    const CARD: NodeId = NodeId::new(44, 0);
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let conn = Connection::from_socket(fake.connect()).expect("a connection to the fake");
+    let font = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(font),
+    ]));
+    let host = Hypr {
+        renderer: strand_render::Renderer::new(strand_render::TextBackend::Inline(Box::new(
+            engine,
+        ))),
+    };
+    let mut mgr = SurfaceManager::with_connection(conn, host, Config::default()).unwrap();
+    let shadow = PropValue::Shadow(vec![Shadow {
+        x: 0.0,
+        y: 6.0,
+        blur: 18.0,
+        spread: 0.0,
+        color: strand_scene::Color::from_hex("#00000048").unwrap(),
+    }]);
+    let bg = PropValue::Color(strand_scene::Color::from_hex("#1e1e2e").unwrap());
+    let top = |t: f32| {
+        PropValue::Insets(Insets {
+            top: t,
+            ..Insets::default()
+        })
+    };
+    let kw = |k: &str| PropValue::Keyword(k.into());
+    let mut d = SceneDiff::default();
+    d.create(ISLAND, NodeKind::Panel, None, 0)
+        .set(ISLAND, Prop::Name, PropValue::Text("Island".into()))
+        .set(ISLAND, Prop::Anchor, kw("top"))
+        .set(ISLAND, Prop::Margin, top(6.0))
+        .set(ISLAND, Prop::Exclusive, PropValue::Number(34.0))
+        .set(
+            ISLAND,
+            Prop::Enter,
+            PropValue::Pose(vec![
+                (Prop::Y, PropValue::Number(-14.0)),
+                (Prop::Opacity, PropValue::Number(0.0)),
+            ]),
+        );
+    d.create(PILL, NodeKind::Box, Some(ISLAND), 0)
+        .set(PILL, Prop::Width, PropValue::Number(508.0))
+        .set(PILL, Prop::Height, PropValue::Number(32.0))
+        .set(PILL, Prop::Bg, bg.clone())
+        .set(PILL, Prop::Shadow, shadow.clone());
+    d.create(LAUNCHER, NodeKind::Panel, None, 1)
+        .set(LAUNCHER, Prop::Name, PropValue::Text("Launcher".into()))
+        .set(LAUNCHER, Prop::Layer, kw("overlay"))
+        .set(LAUNCHER, Prop::Anchor, kw("top"))
+        .set(LAUNCHER, Prop::Margin, top(-34.0))
+        .set(LAUNCHER, Prop::Keyboard, kw("exclusive"))
+        .set(LAUNCHER, Prop::Open, PropValue::Bool(false))
+        .set(LAUNCHER, Prop::TwoWay, PropValue::List(vec![kw("open")]))
+        .set(
+            LAUNCHER,
+            Prop::Exit,
+            PropValue::Pose(vec![(Prop::Opacity, PropValue::Number(0.0))]),
+        );
+    d.create(ROW, NodeKind::Row, Some(LAUNCHER), 0)
+        .set(ROW, Prop::Width, PropValue::Number(640.0))
+        .set(ROW, Prop::Height, PropValue::Number(348.0))
+        .set(ROW, Prop::Justify, kw("center"))
+        .set(ROW, Prop::Align, kw("start"));
+    d.create(CARD, NodeKind::Col, Some(ROW), 0)
+        .set(CARD, Prop::Bg, bg)
+        .set(CARD, Prop::Shadow, shadow);
+    let spring = |d: &mut SceneDiff, prop: Prop, v: f32| {
+        d.push(SceneOp::SetProp {
+            id: CARD,
+            prop,
+            value: PropValue::Number(v),
+            transition: Transition::Spring {
+                stiffness: 1600.0,
+                damping: 1.0,
+            },
+        });
+    };
+    spring(&mut d, Prop::Width, 508.0);
+    spring(&mut d, Prop::Height, 32.0);
+    let errors = mgr.state_mut().host_mut().renderer.apply(d);
+    assert!(errors.is_empty(), "{errors:?}");
+    mgr.state_mut().poll();
+    let still = |s: &strand_surface::State<Hypr>, node: NodeId| {
+        let ids = s.surfaces_of(node);
+        !ids.is_empty()
+            && ids.iter().all(|id| {
+                s.surfaces()
+                    .iter()
+                    .any(|i| i.id == *id && i.stats.commits > 0)
+                    && !s.host().renderer.wants_frame(*id)
+            })
+    };
+    assert!(
+        run_hypr(&mut mgr, WAIT, |s| still(s, ISLAND)),
+        "the island never settled"
+    );
+    let step = |mgr: &mut SurfaceManager<Hypr>, f: &dyn Fn(&mut SceneDiff)| {
+        let mut d = SceneDiff::default();
+        f(&mut d);
+        let errors = mgr.state_mut().host_mut().renderer.apply(d);
+        assert!(errors.is_empty(), "{errors:?}");
+        mgr.state_mut().poll();
+        run_hypr(mgr, Duration::from_millis(120), |_| false);
+    };
+    for round in 0..2 {
+        step(&mut mgr, &|d| {
+            d.set(LAUNCHER, Prop::Open, PropValue::Bool(true));
+            spring(d, Prop::Width, 640.0);
+        });
+        step(&mut mgr, &|d| spring(d, Prop::Height, 348.0));
+        assert!(
+            run_hypr(&mut mgr, WAIT, |s| still(s, LAUNCHER)),
+            "round {round}: the launcher never settled open: {:?} {:?} {:?}",
+            mgr.state().surfaces_of(LAUNCHER),
+            mgr.state()
+                .surfaces_of(LAUNCHER)
+                .iter()
+                .map(|id| mgr.state().host().renderer.wants_frame(*id))
+                .collect::<Vec<_>>(),
+            mgr.state().surfaces()
+        );
+        step(&mut mgr, &|d| spring(d, Prop::Height, 32.0));
+        step(&mut mgr, &|d| spring(d, Prop::Width, 508.0));
+        step(&mut mgr, &|d| {
+            d.set(LAUNCHER, Prop::Open, PropValue::Bool(false));
+        });
+        assert!(
+            run_hypr(&mut mgr, WAIT, |s| s.surfaces_of(LAUNCHER).is_empty()),
+            "round {round}: the launcher never went"
+        );
+    }
+    let records = fake.surfaces();
+    let logs = |ns: &str| -> Vec<Vec<String>> {
+        records
+            .iter()
+            .filter(|r| r.namespace.as_deref() == Some(ns))
+            .map(|r| r.layer_log.clone())
+            .collect()
+    };
+    for ns in ["strand-Island", "strand-Launcher"] {
+        for log in logs(ns) {
+            let first = log.iter().position(|e| e.starts_with("configure"));
+            let after = first.map_or(&[][..], |i| &log[i..]);
+            assert!(
+                after.iter().all(|e| e.starts_with("configure")),
+                "{ns} asked for layer state after its first configure: {log:?}"
+            );
+        }
+    }
+    let launcher = logs("strand-Launcher");
+    assert_eq!(launcher.len(), 2, "one surface per opening: {launcher:?}");
+    assert_eq!(launcher[0], launcher[1], "both openings ask the same");
+    let configure = launcher[0].iter().find(|e| e.starts_with("configure"));
+    assert!(
+        configure.is_some_and(|c| c.starts_with("configure 1920x")),
+        "stretched to the output from its first configure: {launcher:?}"
+    );
 }
