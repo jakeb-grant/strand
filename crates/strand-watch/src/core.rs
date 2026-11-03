@@ -520,6 +520,15 @@ pub(crate) struct Core<B> {
     held: BTreeMap<PathBuf, Held>,
     /// Watched files whose read was put off, until one is taken.
     deferred: HashMap<PathBuf, Deferred>,
+    /// Directories outside the config directories watched with `MODIFY`
+    /// for now, each with when one of its watched files was last touched:
+    /// a watched file there was put off twice running, so something
+    /// rewrites it faster than a quiet period. Without `MODIFY` a read
+    /// forced at `max_delay` can land between an in-place writer's
+    /// truncation and its bytes, which no event shows, and report bytes
+    /// nobody wrote. Back to completed writes at the first flush
+    /// `CHURN_QUIET` after the last touch.
+    churning: HashMap<PathBuf, Instant>,
     pending: Pending,
     /// How many times the watches were brought up to date.
     #[cfg(test)]
@@ -534,6 +543,10 @@ impl<B> std::fmt::Debug for Core<B> {
             .finish_non_exhaustive()
     }
 }
+
+/// How long a directory keeps `MODIFY` after its churning file was last
+/// touched (`Core::churning`).
+const CHURN_QUIET: Duration = Duration::from_secs(2);
 
 /// How many more times a listing is taken while it leaves out a module that is
 /// still on disk (`rescan_config`).
@@ -747,6 +760,7 @@ impl<B: Backend> Core<B> {
             writing: HashMap::new(),
             held: BTreeMap::new(),
             deferred: HashMap::new(),
+            churning: HashMap::new(),
             pending: Pending::default(),
             #[cfg(test)]
             syncs: 0,
@@ -992,8 +1006,9 @@ impl<B: Backend> Core<B> {
             .or_insert(Deferred { since, retry });
     }
 
-    /// When the open batch should be cut, if one is open, or when a file
-    /// held back because it was being written is due to be read anyway.
+    /// When the open batch should be cut, if one is open, when a file held
+    /// back because it was being written is due to be read anyway, or when
+    /// a churning directory goes quiet.
     pub(crate) fn deadline(&self) -> Option<Instant> {
         let batch = match (self.pending.first, self.pending.last) {
             (Some(first), Some(last)) => {
@@ -1029,10 +1044,10 @@ impl<B: Backend> Core<B> {
                 None => Some(h.at),
             })
             .min();
-        match (batch, held) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        // A churning directory goes back to completed writes when quiet,
+        // even if nothing else wakes the watcher.
+        let churn = self.churning.values().min().map(|t| *t + CHURN_QUIET);
+        [batch, held, churn].into_iter().flatten().min()
     }
 
     /// When the latest write to the file `f` resolves to was seen, if a
@@ -1433,7 +1448,19 @@ impl<B: Backend> Core<B> {
         // that reaches the same file (a symlink alias, a `..` spelling).
         let mut own_seen = HashSet::new();
         let mut reads = Vec::new();
+        // A directory quiet for `CHURN_QUIET` goes back to completed writes
+        // before this batch's touches count, so one save long after is no
+        // churn.
+        let churning = self.churning.len();
+        self.churning
+            .retain(|_, t| now.saturating_duration_since(*t) < CHURN_QUIET);
+        let mut churned = self.churning.len() != churning;
         for path in &touched {
+            if let Some(d) = self.files.get(path).and_then(|e| e.resolved.path.parent())
+                && let Some(t) = self.churning.get_mut(d)
+            {
+                *t = now;
+            }
             let mut stalled = false;
             if let Some(since) = self.busy_since(path) {
                 let quiet = now.saturating_duration_since(since) >= self.opts.stalled_write;
@@ -1492,7 +1519,22 @@ impl<B: Backend> Core<B> {
                     self.note_deferred(&path, events.0, now);
                     self.held.insert(path, Held { at: now, mtime: m });
                 } else {
-                    self.defer(path, events, now);
+                    let again = self.deferred.contains_key(&path);
+                    let dir = (again && !self.tracked(&path) && !self.polled(&path))
+                        .then(|| self.files.get(&path).and_then(|e| e.resolved.path.parent()))
+                        .flatten()
+                        .map(Path::to_path_buf);
+                    self.defer(path.clone(), events, now);
+                    if let Some(d) = dir
+                        && self.churning.insert(d, now).is_none()
+                    {
+                        churned = true;
+                        // Not forced until `max_delay` after `MODIFY`
+                        // began: a truncation before it shows no event.
+                        if let Some(d) = self.deferred.get_mut(&path) {
+                            d.since = now;
+                        }
+                    }
                 }
                 continue;
             }
@@ -1505,6 +1547,10 @@ impl<B: Backend> Core<B> {
                 notices.push(Notice::StalledWrite(path.clone()));
             }
             self.check(&path, read, &mut changes, &mut own_seen);
+        }
+        if churned {
+            let added = self.sync_watches(false);
+            self.relist(&added, now);
         }
         let files = &self.files;
         self.deferred.retain(|f, _| files.contains_key(f));
@@ -1871,6 +1917,9 @@ impl<B: Backend> Core<B> {
             for d in e.resolved.watch_dirs() {
                 want(d, WatchKind::Completed);
             }
+        }
+        for d in self.churning.keys() {
+            want(d, WatchKind::Full);
         }
         for t in &self.trees {
             // Cache entries are never read: a completed write is enough.
@@ -2944,6 +2993,71 @@ mod tests {
         );
         assert_eq!(Some(b.first_event), first);
         assert!(!core.deferred.contains_key(&theme));
+    }
+
+    /// Outside the config directories an in-place write makes no event
+    /// until it closes, so a read forced at `max_delay` could land between
+    /// a writer's truncation and its bytes and report bytes nobody wrote
+    /// (the stress night on 1947934e failed
+    /// `a_watched_file_rewritten_in_place_every_5_ms_is_reported` so, 4 of
+    /// 28). A file put off twice running gives its directory `MODIFY`, so a
+    /// truncation holds it as in a config directory; the read is not forced
+    /// until `max_delay` after that; and the directory goes back to
+    /// completed writes `CHURN_QUIET` after the last touch. One save put
+    /// off once is no churn.
+    #[test]
+    fn a_directory_whose_file_is_rewritten_without_pause_hears_its_writes() {
+        const AHEAD: Duration = Duration::from_millis(900);
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let status = root.join("status.toml");
+        std::fs::write(&status, "v = 0\n").unwrap();
+        let opts = Options::default();
+        let mut core = Core::new(Silent::default(), opts.clone(), None);
+        core.add_file(&status, Role::Other, None);
+        assert_eq!(core.kinds.get(&root), Some(&WatchKind::Completed));
+        // Stamped ahead, so the file stays too fresh to read unforced
+        // however long this thread is kept off the CPU.
+        let write = |body: &str| {
+            let f = std::fs::File::create(&status).unwrap();
+            std::io::Write::write_all(&mut &f, body.as_bytes()).unwrap();
+            f.set_modified(std::time::SystemTime::now() + AHEAD)
+                .unwrap();
+        };
+        let t0 = Instant::now();
+        write("v = 1\n");
+        core.on_raw(Raw::Written(status.clone()), t0);
+        assert!(core.flush(t0).is_none(), "read too fresh");
+        assert!(!core.tracked(&status), "one put-off is a save, not churn");
+        let t1 = t0 + opts.coalesce;
+        write("v = 2\n");
+        core.on_raw(Raw::Written(status.clone()), t1);
+        assert!(core.flush(t1).is_none(), "read too fresh");
+        assert_eq!(core.kinds.get(&root), Some(&WatchKind::Full));
+        assert!(core.tracked(&status), "put off twice: it hears MODIFY");
+        // Forced from the first put-off, it would be read now.
+        core.on_raw(Raw::Written(status.clone()), t0 + opts.max_delay);
+        assert!(
+            core.flush(t0 + opts.max_delay).is_none(),
+            "forced before MODIFY had max_delay"
+        );
+        // The writer truncates: its MODIFY holds the file past the force.
+        let t2 = t1 + opts.max_delay;
+        write("");
+        core.on_raw(Raw::Busy(status.clone()), t2);
+        assert!(core.flush(t2).is_none(), "the truncated file was read");
+        assert!(core.held.contains_key(&status));
+        let t3 = t2 + opts.coalesce;
+        write("v = 3\n");
+        core.on_raw(Raw::Written(status.clone()), t3);
+        let b = core.flush(t3 + opts.coalesce).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"v = 3\n")));
+        let quiet = core.deadline().unwrap();
+        assert_eq!(quiet, t3 + opts.coalesce + CHURN_QUIET);
+        assert!(core.flush(quiet).is_none());
+        assert_eq!(core.kinds.get(&root), Some(&WatchKind::Completed));
+        assert!(core.deadline().is_none());
     }
 
     /// A rescan that finds a dangling `*.strand` link reports it as a

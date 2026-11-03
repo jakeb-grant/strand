@@ -2969,7 +2969,11 @@ writes. It depends on neither `strand-compiler` nor `strand-core`.
     500 ms of the event that made it due. In config directories no
     batch carries a torn read; elsewhere (watched without `MODIFY`) an
     in-place writer pausing over 15 ms can be read torn, and its
-    `CLOSE_WRITE` reports the whole file next batch.
+    `CLOSE_WRITE` reports the whole file next batch. A watched file put
+    off twice running (rewritten faster than the quiet period) gives its
+    directory `MODIFY` until 2 s pass without a touch, and its read isn't
+    forced until 500 ms after that, so a file rewritten without pause is
+    never read torn there either.
   - Ancestors of each watched directory get a light watch (moves and
     deletes) up to `Options::home` (default `$HOME`), or outside it up
     to its mount's root (design.md "Watch directories, not files";

@@ -42,7 +42,9 @@ enum Ctl {
 /// What a directory watch listens for. Never `IN_OPEN`, `IN_ACCESS`,
 /// `IN_CLOSE_NOWRITE` or `IN_ATTRIB`: reads cost nothing. Only the config
 /// directories get `IN_MODIFY` (one event per `write(2)`), which marks a
-/// write in progress so the file is not read before its `IN_CLOSE_WRITE`.
+/// write in progress so the file is not read before its `IN_CLOSE_WRITE`,
+/// and, while one of its watched files is rewritten without pause, the
+/// directory that file is in (`Core::churning`).
 /// Every other content directory (a wallpaper's or settings file's
 /// directory, a symlink hop such as `~`, `~/Downloads`, a font, icon or
 /// `applications` tree) hears completed writes and names only, so a
