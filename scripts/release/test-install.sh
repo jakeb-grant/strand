@@ -157,6 +157,15 @@ full)
 
   check "--from installs an archive already downloaded" run --from "$W/dl/strand-edge-bbbbbbbbbbbb-x86_64-linux.tar.gz"
   check "  current is edge-bbbb" test "$(current)" = versions/edge-bbbbbbbbbbbb
+
+  # Edge mid-replacement holds two builds, listed by name: its title names
+  # the newest, here aaaa, listed first (1966fab0 after 6827541b, which
+  # the installer took for the newest on 2026-11-03).
+  a=edge-aaaaaaaaaaaa c=edge-cccccccccccc
+  printf '{"name":"edge: %s (2026-11-03)","assets":[{"name":"strand-%s-x86_64-linux.tar.gz","browser_download_url":"file://%s/dl/strand-%s-x86_64-linux.tar.gz"},{"name":"strand-%s-x86_64-linux.tar.gz","browser_download_url":"file://%s/dl/strand-%s-x86_64-linux.tar.gz"}]}' \
+    "${a#edge-}" "$a" "$W" "$a" "$c" "$W" "$c" >"$W/api/releases/tags/edge"
+  check "edge holding two builds: the one its title names" run --edge
+  check "  current is edge-aaaa" test "$(current)" = versions/edge-aaaaaaaaaaaa
   ;;
 *)
   echo "test-install: no mode $MODE" >&2

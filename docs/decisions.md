@@ -14330,6 +14330,20 @@ tag; a nightly schedule (every push already passes the whole gate);
 static or musl builds (PipeWire, fontconfig and PAM are system
 libraries).
 
+**2026-11-03 · install: edge's newest build is the one its title names.**
+Edge keeps the build before the newest (`publish.sh`), and GitHub lists
+a release's assets by name, not age. The installer took the last
+archive listed, so after 1966fab0 it kept installing 6827541b and
+called it up to date. It now takes the archive whose commit edge's
+title names (`edge: <commit> (<date>)`), which `publish.sh` sets only
+after that build's files are up, so the title never names a build that
+isn't whole. A release with no such title (a tag, or edge before its
+first edit) still takes the one archive listed. `test-install.sh`
+serves an edge with two builds, the newest listed first. Rejected:
+sorting by `created_at`, which the installer's `tr`/`sed` reading of
+the JSON can't pair with its asset reliably; keeping only one build,
+which would break an installer that listed the old one mid-update.
+
 ## centred-surface
 
 **2026-10-30 · centred-surface: a surface centred on one axis takes the

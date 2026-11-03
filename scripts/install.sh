@@ -212,14 +212,24 @@ fetch() {
   fi
 }
 
-# The release archive's URL, from the release's JSON in $1: the one
-# asset named strand-<id>-x86_64-linux.tar.gz (edge holds the newest and
-# the one before while it is replaced; either is a whole build).
+# The release archive's URL, from the release's JSON in $1: the asset
+# named strand-<id>-x86_64-linux.tar.gz. Edge holds the newest build and
+# the one before (scripts/release/publish.sh), listed by name, not age:
+# its title, "edge: <commit> (<date>)", set once the newest is whole,
+# names the one to take; either is a whole build if that fails.
 archive_url() {
   # shellcheck disable=SC2020 # each of the three characters ends a line
-  tr ',{}' '\n\n\n' <"$1" |
+  urls=$(tr ',{}' '\n\n\n' <"$1" |
     sed -n 's/^ *"browser_download_url": *"\([^"]*\)" *$/\1/p' |
-    grep -- "/strand-[0-9A-Za-z._-]*-$ARCH-linux\.tar\.gz\$" | tail -n 1
+    grep -- "/strand-[0-9A-Za-z._-]*-$ARCH-linux\.tar\.gz\$") || return 1
+  # shellcheck disable=SC2020
+  newest=$(tr ',{}' '\n\n\n' <"$1" |
+    sed -n 's/^ *"name": *"edge: \([0-9a-f][0-9a-f]*\) .*$/\1/p' | head -n 1)
+  if [ -n "$newest" ] &&
+    printf '%s\n' "$urls" | grep -- "/strand-edge-$newest-$ARCH-linux\.tar\.gz\$"; then
+    return 0
+  fi
+  printf '%s\n' "$urls" | tail -n 1
 }
 
 # id_of NAME: the version a release archive's name holds.
