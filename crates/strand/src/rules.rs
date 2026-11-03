@@ -1,9 +1,18 @@
-//! `strand compositor-rules [dir] [--classic]`: the blur ladder's second
-//! rung (design.md, "Blur ladder"). Hyprland blurs layer surfaces through
-//! its own layer rules rather than `ext-background-effect-v1`, so this
-//! prints a rule for every surface whose tree asks for `blur`, matched by
-//! the surface's stable `strand-<Name>` namespace, for the user to paste
-//! into their Hyprland config. Strand never applies them itself.
+//! `strand compositor-rules [dir] [--classic]`: the Hyprland layer rules a
+//! config wants, for the user to paste into their Hyprland config.
+//! Strand never applies them itself.
+//!
+//! First, one rule for every surface Strand makes ([`NO_ANIM_NAMESPACE`]):
+//! no layer animation. Strand animates its own surfaces (`enter`, `exit`,
+//! `morph`), and Hyprland animates a layer surface's map, unmap and moves
+//! over them, a fade a panel's first frames are drawn through (decisions.md
+//! compositor-motion). No protocol lets a client opt out.
+//!
+//! Then the blur ladder's second rung (design.md, "Blur ladder"). Hyprland
+//! blurs layer surfaces through its own layer rules rather than
+//! `ext-background-effect-v1`, so this
+//! prints a rule for every surface whose tree asks for `blur`,
+//! matched by the surface's stable `strand-<Name>` namespace.
 //!
 //! The query ([`blur_rules`]) walks a compiled [`Build`]: a layer surface
 //! (`bar`, `panel`, `osd`) gets `blur` when a node of its own tree has
@@ -29,7 +38,27 @@ use strand_scene::{NodeKind, Prop as SceneProp};
 /// backgrounds `blur` goes with (0.72 and up in the examples) blur.
 pub const IGNORE_ALPHA: &str = "0.5";
 
-/// One layer surface's rule.
+/// The namespaces of every layer surface Strand makes (`strand-<Name>`,
+/// its scrims and click-away catchers too). Hyprland matches a rule's
+/// pattern against the whole namespace (`RE2::FullMatch`), so a prefix
+/// alone (`^strand-`) matches nothing.
+pub const NO_ANIM_NAMESPACE: &str = "^strand-.*$";
+
+/// The rule that keeps Hyprland's layer animations off Strand's surfaces,
+/// as Hyprland's Lua config.
+pub fn lua_no_anim() -> String {
+    format!(
+        "hl.layer_rule({{\n    name = \"strand-no-anim\",\n    match = {{ namespace = \"{}\" }},\n    no_anim = true,\n}})\n",
+        lua_escape(NO_ANIM_NAMESPACE)
+    )
+}
+
+/// The same as a classic hyprlang `layerrule` line.
+pub fn classic_no_anim() -> String {
+    "layerrule = noanim, ^(strand-.*)$\n".into()
+}
+
+/// One layer surface's blur rule.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rule {
     /// `strand-<Name>`, as `SurfaceSpec::namespace` names it.
@@ -275,10 +304,11 @@ pub fn load(dir: &Path) -> Result<Build, String> {
 }
 
 pub(crate) const USAGE: &str = "usage: strand compositor-rules [dir] [--classic]\n\n\
-    Prints Hyprland layer rules that blur behind the surfaces of the config \
-    at dir (default $XDG_CONFIG_HOME/strand) that ask for `blur`, matched by \
-    their strand-<Name> namespaces, for you to paste into your Hyprland \
-    config. The default is Hyprland's Lua config (hl.layer_rule, 0.55 and \
+    Prints Hyprland layer rules for the config at dir (default \
+    $XDG_CONFIG_HOME/strand), for you to paste into your Hyprland config: \
+    one keeping Hyprland's layer animations off every Strand surface, which \
+    Strand animates itself, and one blurring behind each surface that asks \
+    for `blur`, matched by its strand-<Name> namespace. The default is Hyprland's Lua config (hl.layer_rule, 0.55 and \
     later); --classic prints `layerrule =` lines for a hyprlang config, which \
     Hyprland reads no more from 0.57. \
     Nothing is applied to the running session.\n";
@@ -324,17 +354,29 @@ pub fn run(args: &[String]) -> Result<String, String> {
     let rules = blur_rules(&build);
     let comment = if classic { "#" } else { "--" };
     let mut out = format!(
-        "{comment} Strand: blur behind the surfaces of {} that ask for `blur`\n\
+        "{comment} Strand: layer rules for the surfaces of {}\n\
          {comment} (strand compositor-rules{}). Paste into your Hyprland config.\n\
-         {comment} Only for a Hyprland without ext-background-effect-v1 (Strand's log says\n\
-         {comment} when it is missing): where it is offered, Strand already blurs behind\n\
-         {comment} each `blur` box, and these rules would blur all of the surface above\n\
-         {comment} alpha {IGNORE_ALPHA} besides.\n",
+         {comment} Strand animates its own surfaces (enter, exit, morph); Hyprland's\n\
+         {comment} layer animations would play over them, a panel fading in through\n\
+         {comment} what it opens from.\n",
         dir.display(),
         if classic { " --classic" } else { "" }
     );
+    out.push_str(&if classic {
+        classic_no_anim()
+    } else {
+        lua_no_anim()
+    });
+    let _ = write!(
+        out,
+        "{comment} Blur behind the surfaces that ask for `blur`, only for a Hyprland\n\
+         {comment} without ext-background-effect-v1 (Strand's log says when it is\n\
+         {comment} missing): where it is offered, Strand already blurs behind each\n\
+         {comment} `blur` box, and these rules would blur all of the surface above\n\
+         {comment} alpha {IGNORE_ALPHA} besides.\n"
+    );
     if rules.is_empty() {
-        let _ = writeln!(out, "{comment} No surface asks for `blur`: no rules.");
+        let _ = writeln!(out, "{comment} No surface asks for `blur`: no blur rules.");
         return Ok(out);
     }
     out.push_str(&if classic {
@@ -466,17 +508,28 @@ lock Gate { on key(k) { auth.submit(k.name) }; box { blur: 4 } }
         std::fs::write(dir.join("shell.strand"), CONFIG).unwrap();
         let arg = dir.display().to_string();
         let out = run(std::slice::from_ref(&arg)).unwrap();
-        assert!(out.starts_with("-- Strand: blur behind"), "{out}");
+        assert!(out.starts_with("-- Strand: layer rules"), "{out}");
+        // Every config gets the rule keeping Hyprland's animations off,
+        // its pattern the whole namespace (Hyprland full-matches).
+        assert!(
+            out.contains("namespace = \"^strand-.*$\" },\n    no_anim = true,"),
+            "{out}"
+        );
         // Hyprland with the protocol needs no rules (decisions.md,
         // m4-interaction-finish): the header says so.
-        assert!(out.contains("-- Only for a Hyprland without ext-background-effect-v1"));
-        assert_eq!(out.matches("hl.layer_rule(").count(), 3, "{out}");
+        assert!(out.contains("only for a Hyprland\n-- without ext-background-effect-v1"));
+        assert_eq!(out.matches("hl.layer_rule(").count(), 4, "{out}");
         let out = run(&[arg.clone(), "--classic".into()]).unwrap();
         assert!(out.starts_with("# Strand"), "{out}");
         assert!(out.contains("layerrule = blur, ^(strand-Level)$"), "{out}");
+        assert!(out.contains("layerrule = noanim, ^(strand-.*)$"), "{out}");
         std::fs::write(dir.join("shell.strand"), "panel P { text \"x\" }\n").unwrap();
         let out = run(std::slice::from_ref(&arg)).unwrap();
-        assert!(out.contains("No surface asks for `blur`"), "{out}");
+        assert!(
+            out.contains("No surface asks for `blur`: no blur rules"),
+            "{out}"
+        );
+        assert_eq!(out.matches("hl.layer_rule(").count(), 1, "{out}");
         std::fs::write(dir.join("shell.strand"), "panel P { nonsense_prop: 3 }\n").unwrap();
         let err = run(&[arg]).unwrap_err();
         assert!(err.contains("strand check"), "{err}");

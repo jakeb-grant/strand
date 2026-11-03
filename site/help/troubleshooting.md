@@ -112,6 +112,25 @@ it happened. The next reload of a fixed config takes the outline away.
 - **"the compositor does not offer ext-session-lock".** A `lock` cannot
   lock the session on this compositor.
 
+## A panel fades in over what it opens from
+
+On Hyprland, a panel that should grow out of a bar shows both at once,
+the panel half transparent, as it opens: Hyprland is fading the new
+surface in over Strand's own animation. Paste what
+`strand compositor-rules` prints into your Hyprland config. If you
+wrote the rule yourself, its namespace must match the whole name,
+`"^strand-.*$"`: Hyprland ignores a rule that matches only the start
+of one. See [Strand and your compositor](../concepts/compositors.md).
+
+## A panel jumps or twitches as it settles
+
+A compositor that animates a surface's moves and resizes shows each one.
+Strand asks for none once a surface is on screen
+([Strand and your compositor](../concepts/compositors.md#what-strand-does-about-it)),
+so a jump that is still there is worth a report: `strand report` saves
+one, with the compositor and its protocols ([Reporting a
+glitch](../tools/reporting.md)).
+
 ## Blur shows a tint instead
 
 `blur` needs the compositor to blur what is behind the surface, through

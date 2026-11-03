@@ -42,6 +42,7 @@
 - [Layout](concepts/layout.md)
 - [Motion](concepts/motion.md)
 - [Surfaces and monitors](concepts/surfaces.md)
+- [Strand and your compositor](concepts/compositors.md)
 - [Services](concepts/services.md)
 - [Live reload](concepts/live-reload.md)
 - [Performance](concepts/performance.md)

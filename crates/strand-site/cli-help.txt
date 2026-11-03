@@ -15,7 +15,7 @@ commands:
   clear             drop a runtime overlay (strand clear '$accent')
   new               write a starter shell into [dir] (default $XDG_CONFIG_HOME/strand; refuses a non-empty dir)
   export            write the palette: json | base24 | --template <file> [--palette <expr>] [-o <file>]
-  compositor-rules  print blur rules for the compositor
+  compositor-rules  print Hyprland layer rules: no layer animations, blur
   report            dump compositor, protocols, scales, memory, GPU and frame stats (--json); with words (strand report the clock jumped), save a glitch report
   replay            replay a glitch report [report-dir] (default: the newest) in the evaluation sandbox and open its viewer (--no-open); needs strand-eval next to strand
 
@@ -57,7 +57,7 @@ usage: strand export json | base24 | --template <file> [--palette '<expr>'] [-o 
 $ strand compositor-rules --help
 usage: strand compositor-rules [dir] [--classic]
 
-Prints Hyprland layer rules that blur behind the surfaces of the config at dir (default $XDG_CONFIG_HOME/strand) that ask for `blur`, matched by their strand-<Name> namespaces, for you to paste into your Hyprland config. The default is Hyprland's Lua config (hl.layer_rule, 0.55 and later); --classic prints `layerrule =` lines for a hyprlang config, which Hyprland reads no more from 0.57. Nothing is applied to the running session.
+Prints Hyprland layer rules for the config at dir (default $XDG_CONFIG_HOME/strand), for you to paste into your Hyprland config: one keeping Hyprland's layer animations off every Strand surface, which Strand animates itself, and one blurring behind each surface that asks for `blur`, matched by its strand-<Name> namespace. The default is Hyprland's Lua config (hl.layer_rule, 0.55 and later); --classic prints `layerrule =` lines for a hyprlang config, which Hyprland reads no more from 0.57. Nothing is applied to the running session.
 $ strand report --help
 usage: strand report [--json] [what you saw…]
 $ strand replay --help

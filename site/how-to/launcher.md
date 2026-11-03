@@ -56,7 +56,10 @@ strand toggle launcher.open
 ```
 
 Bind it to a key such as Super+D in your compositor (how: [Start it
-and bind keys](../start/running.md#start-it-and-bind-keys)).
+and bind keys](../start/running.md#start-it-and-bind-keys)). On
+Hyprland, paste what `strand compositor-rules` prints too, or Hyprland
+fades the launcher in over its own `enter`
+([Strand and your compositor](../concepts/compositors.md)).
 
 `strand toggle` flips an exported `bool` state. `launcher.open` is the
 file's name, then the state's: `export` is what lets the command line

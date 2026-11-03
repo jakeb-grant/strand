@@ -238,6 +238,10 @@ end)
 hl.bind("SUPER + D", hl.dsp.exec_cmd("strand toggle launcher.open"))
 ```
 
+and below them what `strand compositor-rules` prints, so Hyprland
+leaves Strand's surfaces to Strand's own animations
+([Strand and your compositor](../concepts/compositors.md)).
+
 niri, in `~/.config/niri/config.kdl`:
 
 ```kdl

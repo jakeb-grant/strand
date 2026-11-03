@@ -43,7 +43,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "export",
         "write the palette: json | base24 | --template <file> [--palette <expr>] [-o <file>]",
     ),
-    ("compositor-rules", "print blur rules for the compositor"),
+    (
+        "compositor-rules",
+        "print Hyprland layer rules: no layer animations, blur",
+    ),
     (
         "report",
         "dump compositor, protocols, scales, memory, GPU and frame stats (--json); with words (strand report the clock jumped), save a glitch report",

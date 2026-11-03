@@ -253,6 +253,12 @@ Lua (`hl.layer_rule`) by default, and `--classic` prints hyprlang
 `layerrule` lines for a hyprlang config, which Hyprland reads no more
 from 0.57.
 
+On Hyprland, paste them before anything else. Hyprland fades and slides
+layer surfaces as they appear and change, over the motion Strand draws,
+and the first rule `strand compositor-rules` prints turns that off for
+Strand's surfaces. [Strand and your compositor](../concepts/compositors.md)
+says why, and what other compositors need.
+
 Strand also uses these when the compositor offers them:
 `wp_viewporter`, `wp_fractional_scale_manager_v1`, `wp_presentation`,
 `wp_alpha_modifier_v1`, `wp_single_pixel_buffer_manager_v1`,

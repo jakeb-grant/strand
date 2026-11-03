@@ -2311,8 +2311,10 @@ people can edit by hand.
 - `strand new [dir]` writes a starter shell, the guide's level-1 bar as
   `bar.strand`, into `dir` (default `$XDG_CONFIG_HOME/strand`), made if
   missing; a directory with anything in it is refused and left as it
-  was. `strand compositor-rules` prints the blur rules for the
-  compositor's config, to paste; it never changes the session.
+  was. `strand compositor-rules` prints Hyprland layer rules for the
+  compositor's config, to paste: one turning layer animations off for
+  every `strand-` surface, and the blur rules; it never changes the
+  session.
 - A running shell answers commands over a Unix socket
   (`$STRAND_SOCKET`, else `$XDG_RUNTIME_DIR/strand-<display>.sock`) and
   over D-Bus:
