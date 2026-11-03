@@ -24,6 +24,12 @@
 //!   whatever its destination, so there the scale is painted
 //!   (`Renderer::set_compositor_pose_scale`).
 //!
+//! Hyprland also arranges every margin change of a layer surface with its
+//! own animation of the box, on top of the spring that moved it, so there
+//! the offset (and with it the scale) is painted too, and only opacity is
+//! delegated (`Renderer::set_compositor_pose_offset`, decisions.md
+//! m4-surface-w2).
+//!
 //! A `popup` delegates only opacity: its place comes from the positioner,
 //! so its x, y and scale always repaint. What a surface cannot delegate is
 //! painted as before, so a pose may be half delegated (a popup's `popin`
@@ -108,12 +114,16 @@ impl PoseMask {
 /// `None` when the surface delegates nothing (a `lock`). `scale` false
 /// keeps a scale in the props, painted (a compositor that stretches a
 /// layer surface to its arranged box, see
-/// `Renderer::set_compositor_pose_scale`).
+/// `Renderer::set_compositor_pose_scale`); `offset` false keeps `x`, `y`
+/// and the scale (whose centring move needs the offset) in the props (a
+/// compositor that animates margin changes, see
+/// `Renderer::set_compositor_pose_offset`).
 pub(crate) fn delegate(
     kind: NodeKind,
     props: &mut Vec<(Prop, Cow<'_, PropValue>)>,
     frame: LogicalRect,
     scale: bool,
+    offset: bool,
 ) -> Option<SurfacePose> {
     let get = |p: Prop| props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref());
     let keyword = |p: Prop| match get(p) {
@@ -125,7 +135,9 @@ pub(crate) fn delegate(
         .unwrap_or(Anchor::Center);
     let attach = keyword(Prop::Attach).and_then(Edge::from_name);
     let mut mask = PoseMask::of(kind, anchor, attach);
-    mask.scale &= scale;
+    mask.scale &= scale && offset;
+    mask.x &= offset;
+    mask.y &= offset;
     if mask.is_empty() {
         return None;
     }
@@ -243,7 +255,7 @@ mod tests {
         ];
         // A 200 × 100 box 10 px inside its shadow.
         let frame = LogicalRect::new(10.0, 10.0, 200.0, 100.0);
-        let pose = delegate(NodeKind::Panel, &mut props, frame, true).unwrap();
+        let pose = delegate(NodeKind::Panel, &mut props, frame, true, true).unwrap();
         assert_eq!(pose.opacity, 0.5);
         assert_eq!(pose.scale, 0.8);
         // The offset plus the corner's move that keeps the centre
@@ -266,7 +278,7 @@ mod tests {
             (Prop::X, n(20.0)),
         ];
         let frame = LogicalRect::new(10.0, 10.0, 200.0, 100.0);
-        let pose = delegate(NodeKind::Panel, &mut props, frame, false).unwrap();
+        let pose = delegate(NodeKind::Panel, &mut props, frame, false, true).unwrap();
         assert_eq!(
             pose,
             SurfacePose {
@@ -277,6 +289,25 @@ mod tests {
         );
         let left: Vec<Prop> = props.iter().map(|(p, _)| *p).collect();
         assert_eq!(left, vec![Prop::Anchor, Prop::Scale]);
+        // (m4-surface-w2) Where it animates margin changes too (Hyprland),
+        // the slide is painted as well: only the fade goes.
+        let mut props = vec![
+            (Prop::Anchor, kw("top_right")),
+            (Prop::Opacity, n(0.5)),
+            (Prop::Scale, n(0.8)),
+            (Prop::X, n(20.0)),
+            (Prop::Y, n(-14.0)),
+        ];
+        let pose = delegate(NodeKind::Panel, &mut props, frame, true, false).unwrap();
+        assert_eq!(
+            pose,
+            SurfacePose {
+                opacity: 0.5,
+                ..SurfacePose::IDENTITY
+            }
+        );
+        let left: Vec<Prop> = props.iter().map(|(p, _)| *p).collect();
+        assert_eq!(left, vec![Prop::Anchor, Prop::Scale, Prop::X, Prop::Y]);
     }
 
     #[test]
@@ -290,6 +321,7 @@ mod tests {
             NodeKind::Popup,
             &mut props,
             LogicalRect::new(0.0, 0.0, 100.0, 50.0),
+            true,
             true,
         )
         .unwrap();
@@ -308,6 +340,7 @@ mod tests {
                 NodeKind::Lock,
                 &mut props,
                 LogicalRect::new(0.0, 0.0, 1.0, 1.0),
+                true,
                 true
             ),
             None
@@ -322,6 +355,7 @@ mod tests {
             NodeKind::Panel,
             &mut props,
             LogicalRect::new(0.0, 0.0, 100.0, 100.0),
+            true,
             true,
         )
         .unwrap();

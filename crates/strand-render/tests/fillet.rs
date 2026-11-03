@@ -24,9 +24,13 @@ fn render(diff: SceneDiff) -> (SurfaceSpec, Buffer) {
     assert!(r.apply(diff).is_empty());
     let root = r.tree().roots()[0];
     let spec = r.surface_spec(root).unwrap().clone();
+    // (centred-surface) An axis the compositor stretches (an attached
+    // panel's along its edge) is given an output just wide enough for the
+    // content and a fillet's 18 px on each side.
+    let room = |stretched: bool| if stretched { 36.0 } else { 0.0 };
     let size = Scale::ONE.physical_size(LogicalSize::new(
-        spec.width.unwrap() + spec.overhang.left + spec.overhang.right,
-        spec.height.unwrap() + spec.overhang.top + spec.overhang.bottom,
+        spec.width.unwrap() + spec.overhang.left + spec.overhang.right + room(spec.stretch.0),
+        spec.height.unwrap() + spec.overhang.top + spec.overhang.bottom + room(spec.stretch.1),
     ));
     r.attach_surface(SurfaceId(1), root);
     r.configure_surface(SurfaceId(1), size, Scale::ONE);
@@ -383,7 +387,9 @@ fn a_clip_above_the_card_lets_its_fillets_through() {
             ..Clipped::default()
         });
         let (spec, buf) = render(diff);
-        assert_eq!((spec.overhang.left, spec.overhang.right), (18.0, 18.0));
+        // Stretched along its edge: the fillets lie in the output's width.
+        assert_eq!(spec.stretch, (true, false));
+        assert_eq!((spec.overhang.left, spec.overhang.right), (0.0, 0.0));
         assert_eq!(spec.overhang.top, 0.0);
         assert_eq!((buf.size.w, buf.size.h), (336, 100));
         // The card spans x 18..318.

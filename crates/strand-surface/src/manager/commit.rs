@@ -183,8 +183,12 @@ impl<H: SurfaceHost + 'static> State<H> {
         // So does a new opaque region: a delegated fade that settles
         // claims its region with the bare commit that ends it.
         let opaqued = self.sync_opaque(id, scale);
-        // (M6) And where a popup that draws nothing itself takes input.
+        // (M6) And where a popup that draws nothing itself takes input,
+        // (centred-surface) which its click-away catcher holes.
         let inputs = self.sync_painted_input(id);
+        if inputs {
+            self.update_catcher(id);
+        }
         // And a blur region a scale pose moved, on a frame that drew
         // nothing.
         let blurred =

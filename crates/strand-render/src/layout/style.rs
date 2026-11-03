@@ -590,8 +590,19 @@ impl<'a> Build<'a> {
                     .unwrap_or(0.0)
             };
             let moves = placed && (get(Prop::X).is_some() || get(Prop::Y).is_some());
+            // (shadow-buffer) Its size or place springs, or a pose moves it.
+            let springs = node.props.iter().any(|e| {
+                matches!(
+                    e.prop,
+                    Prop::Width | Prop::Height | Prop::Size | Prop::X | Prop::Y
+                ) && !matches!(
+                    e.transition,
+                    strand_scene::Transition::Default | strand_scene::Transition::Instant
+                )
+            }) || node.get(Prop::Enter).is_some()
+                || node.get(Prop::Exit).is_some();
             self.shadows
-                .push((node.id, (off(Prop::X), off(Prop::Y)), moves, list));
+                .push((node.id, (off(Prop::X), off(Prop::Y)), moves, springs, list));
         }
     }
 }

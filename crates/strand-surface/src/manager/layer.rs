@@ -407,9 +407,49 @@ impl<H: SurfaceHost + 'static> LayerShellHandler for State<H> {
             return;
         };
         let (w, h) = configure.new_size;
-        // 0 means "your choice": what we asked for.
-        let w = if w == 0 { s.config.width.max(1) } else { w };
-        let h = if h == 0 { s.config.height.max(1) } else { h };
+        // 0 means "your choice": what we asked for. (centred-surface) On
+        // an axis it asked to be stretched along (size 0) a 0 breaks the
+        // protocol: its output's length less its margins when known, else
+        // its content's.
+        let output = s
+            .monitor
+            .as_ref()
+            .and_then(|m| self.monitors.get(m))
+            .and_then(|m| m.logical_size);
+        let spec = self.specs.get(&s.node);
+        let [mt, mr, mb, ml] = s.config.margin;
+        let fallback = |asked: u32, out: Option<i32>, margins: i32, content: Option<f32>| {
+            if asked > 0 {
+                return asked;
+            }
+            match (out, content) {
+                (Some(o), _) => u32::try_from(o.saturating_sub(margins)).unwrap_or(1).max(1),
+                (None, Some(c)) if c.is_finite() => (c.ceil() as u32).max(1),
+                _ => 1,
+            }
+        };
+        let w = if w == 0 {
+            let margins = ml.saturating_add(mr);
+            fallback(
+                s.config.width,
+                output.map(|o| o.0),
+                margins,
+                spec.and_then(|s| s.width),
+            )
+        } else {
+            w
+        };
+        let h = if h == 0 {
+            let margins = mt.saturating_add(mb);
+            fallback(
+                s.config.height,
+                output.map(|o| o.1),
+                margins,
+                spec.and_then(|s| s.height),
+            )
+        } else {
+            h
+        };
         self.configured(id, (w, h));
     }
 }

@@ -1710,6 +1710,11 @@ impl SurfaceHost for Host {
         // arranged, whatever its viewport: a root's scale is painted
         // there (decisions.md, m4-surface-w2). Known by its globals.
         self.renderer.set_compositor_pose_scale(!caps.hyprland);
+        // And it arranges every margin change of a layer surface with its
+        // own animation of the box, on top of the spring: a root's moves
+        // are painted there, only its fade delegated (decisions.md
+        // m4-surface-w2, 2026-11-03).
+        self.renderer.set_compositor_pose_offset(!caps.hyprland);
         self.blur_fallback.caps = Some(*caps);
         // Shown surfaces repaint with or without the tint: the main loop
         // polls them (a report is rare: once, and on a change).

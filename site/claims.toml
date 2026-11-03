@@ -2853,8 +2853,8 @@ proof  = "crates/strand-render/tests/growth.rs::the_margin_a_growth_has_not_reac
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "A panel centred on both axes does not span, since it would then take the whole monitor both ways."
-source = ['crates/strand-render/src/renderer/specs.rs "Not one centred on both axes"']
-proof  = "read: `centred_span` gives a span only with one axis not centred"
+source = ['crates/strand-scene/src/placement.rs "!a.left && !a.right && a.top != a.bottom"']
+proof  = "crates/strand-scene/src/placement.rs::a_panel_anchored_to_one_edge_is_stretched_along_it: a centred or corner panel is not stretched"
 
 [[claim]]
 page   = "site/concepts/surfaces.md"
@@ -2884,7 +2884,7 @@ proof  = "crates/strand-render/tests/boxes.rs::hit_none_takes_no_input_in_its_ow
 [[claim]]
 page   = "site/how-to/island.md"
 text   = "takes the whole width of the monitor from its first frame"
-source = ['docs/design.md "sized by its content along that edge takes its whole output there and never resizes on that axis"', '''docs/decisions.md "panel or OSD anchored to one edge now asks for its output's size along that edge from the first frame"''']
+source = ['''docs/design.md "lets the compositor size it there: its first configure gives it its output's length"''', '''docs/decisions.md "panel or OSD anchored to one edge now asks for its output's size along that edge from the first frame"''']
 proof  = "crates/strand-render/tests/layout.rs::a_panel_centred_on_one_axis_never_resizes_there; eval/scenarios/docs/island.scn's trace: the surface is 460 wide on a 460 output on every frame"
 
 [[claim]]
@@ -2920,8 +2920,8 @@ proof  = "read: specs.rs keeps a size only under a `~` other than `instant`, wit
 [[claim]]
 page   = "site/how-to/island.md"
 text   = "A written `width` or `height` has no span on that axis and keeps nothing"
-source = ['docs/design.md "A panel or OSD anchored to one edge and sized by its content along that edge takes its whole output there"', 'docs/design.md "also keeps, on the axes its content sizes, the largest size it has had"']
-proof  = "crates/strand-render/tests/layout.rs::a_panel_centred_on_one_axis_never_resizes_there holds the span; read: specs.rs keeps only when `content_sized`, and design.md's two rules are for what content sizes"
+source = ['''docs/design.md "A panel or OSD anchored to one edge and sized by its content along that edge is anchored to both ends of that edge's axis"''', 'docs/design.md "also keeps, on the axes its content sizes, the largest size it has had"']
+proof  = "crates/strand-render/tests/layout.rs::a_panel_centred_on_one_axis_never_resizes_there stretches only a content-sized axis; read: specs.rs keeps only when `content_sized`, and design.md's two rules are for what content sizes"
 
 
 [[claim]]
@@ -3127,7 +3127,7 @@ proof  = "read: spec.md's lock paragraph; run in the lock VM by crates/strand/te
 [[claim]]
 page   = "site/concepts/surfaces.md"
 text   = "it takes the whole monitor that way from its first frame and never resizes there"
-source = ['docs/design.md "sized by its content along that edge takes its whole output there and never resizes on that axis"', 'docs/decisions.md "edge from the first frame its bounds are known"']
+source = ['''docs/design.md "lets the compositor size it there: its first configure gives it its output's length"''', 'docs/decisions.md "edge from the first frame its bounds are known"']
 proof  = "crates/strand-render/tests/layout.rs::a_panel_centred_on_one_axis_never_resizes_there"
 
 [[claim]]

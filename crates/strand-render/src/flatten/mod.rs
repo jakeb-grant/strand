@@ -515,6 +515,10 @@ pub struct Extras {
     /// arranged box whatever its viewport (Hyprland): a root's scale is
     /// painted, not delegated.
     pub compositor_pose_scale_off: bool,
+    /// (m4-surface-w2) The compositor animates every margin change of a
+    /// layer surface (Hyprland): a root's offset (and so its scale) is
+    /// painted, only its opacity delegated.
+    pub compositor_pose_offset_off: bool,
     /// Hover, press, focus, carets and slider drags from the input
     /// router.
     pub widgets: crate::widgets::Widgets,

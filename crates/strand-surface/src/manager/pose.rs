@@ -136,7 +136,12 @@ impl<H: SurfaceHost + 'static> State<H> {
         if old.scale != 1.0 {
             s.send_destination();
         }
-        if let Role::Layer(layer) = &s.role {
+        // (m4-surface-w2) Margins only for a pose that moved it: an
+        // opacity-only pose sends no layer state (a compositor may arrange,
+        // and animate, on any).
+        if old.offset != SurfacePose::IDENTITY.offset
+            && let Role::Layer(layer) = &s.role
+        {
             let [t, r, b, l] = s.config.margin;
             layer.set_margin(t, r, b, l);
         }

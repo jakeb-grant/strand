@@ -54,9 +54,9 @@ pub(super) struct Catcher {
     /// Its configured size: the output's usable area, where the surface
     /// it serves is arranged too.
     pub(super) size: Option<(u32, u32)>,
-    /// The hole its input region leaves (that surface's box), as last
-    /// sent.
-    pub(super) hole: Option<(i32, i32, i32, i32)>,
+    /// The hole its input region leaves (where that surface takes input;
+    /// `Some(None)`: nothing holed), as last sent.
+    pub(super) hole: Option<Option<(i32, i32, i32, i32)>>,
 }
 
 impl Catcher {
@@ -396,9 +396,10 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.catchers.get(&id)?.iter().find(|c| c.primary)
     }
 
-    /// Sets catcher `id`'s input region: all of it but the box of the
-    /// surface it serves (one pixel wider each way, so the box's edge
-    /// never closes it), then commits.
+    /// Sets catcher `id`'s input region: all of it but where the surface
+    /// it serves takes input (its painter's region's bounding box, else
+    /// its box: `LayerConfig::hole_in`), one pixel wider each way so the
+    /// box's edge never closes it, then commits.
     pub(super) fn update_catcher(&mut self, id: SurfaceId) {
         let Some(s) = self.surfaces.get(&id) else {
             return;
@@ -418,7 +419,13 @@ impl<H: SurfaceHost + 'static> State<H> {
         let Some(area) = c.size else {
             return;
         };
-        let hole = s.config.box_in(size, area);
+        // (centred-surface) Where its painter takes input (a spanned
+        // panel's box, narrower than its buffer), else its box.
+        let painted: Option<Vec<(i32, i32, u32, u32)>> = s
+            .painted_input
+            .as_ref()
+            .map(|v| v.iter().map(|r| (r.x, r.y, r.w, r.h)).collect());
+        let hole = s.config.hole_in(size, area, painted.as_deref());
         if c.hole == Some(hole) {
             return;
         }
@@ -426,13 +433,14 @@ impl<H: SurfaceHost + 'static> State<H> {
         match Region::new(&self.compositor) {
             Ok(r) => {
                 r.add(0, 0, clamp_i32(area.0), clamp_i32(area.1));
-                let (x, y, w, h) = hole;
-                r.subtract(
-                    x.saturating_sub(1),
-                    y.saturating_sub(1),
-                    w.saturating_add(2),
-                    h.saturating_add(2),
-                );
+                if let Some((x, y, w, h)) = hole {
+                    r.subtract(
+                        x.saturating_sub(1),
+                        y.saturating_sub(1),
+                        w.saturating_add(2),
+                        h.saturating_add(2),
+                    );
+                }
                 wl.set_input_region(Some(r.wl_region()));
                 c.hole = Some(hole);
             }

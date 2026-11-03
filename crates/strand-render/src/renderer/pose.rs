@@ -41,6 +41,24 @@ impl Renderer {
         }
     }
 
+    /// (m4-surface-w2) Whether a delegated pose may move the surface by
+    /// its margins (on by default): off for a compositor that arranges
+    /// every margin change of a layer surface with its own animation
+    /// (Hyprland), where a root's `x`/`y` (and so its scale) are painted
+    /// and only its fade is delegated. The specs refresh with it: a panel
+    /// or OSD keeps room in its buffer for its own enter and exit moves
+    /// while they are painted ([`Renderer::reserve_reach`]).
+    pub fn set_compositor_pose_offset(&mut self, on: bool) {
+        if self.extras.compositor_pose_offset_off == on {
+            self.extras.compositor_pose_offset_off = !on;
+            for s in self.surfaces.values_mut() {
+                s.mark_dirty();
+            }
+            self.spec_dirty.extend(self.specs.keys().copied());
+            self.refresh_specs();
+        }
+    }
+
     /// (M4) The pose the compositor should apply to `surface` with its
     /// next commit: the one its last painted frame took out of the root
     /// ([`crate::pose::delegate`]), even when what ended that frame

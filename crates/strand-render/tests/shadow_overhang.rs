@@ -143,11 +143,13 @@ fn a_shadow_springing_back_keeps_the_room_it_is_drawn_in() {
     assert_eq!(configure(&mut r, bar, &mut buf), small);
 }
 
-/// The same on a content-sized panel, whose overhang its spec asks for:
-/// held at the lifted reach while the shadow springs back, and the
-/// smaller spec asked for once it settles, before another frame.
+/// (shadow-buffer) A content-sized panel, whose overhang its spec asks
+/// for, keeps the room a lifted shadow took: a compositor may animate
+/// every resize of a layer surface, so the room is never given back while
+/// the config stands, neither as the shadow springs back nor once it has
+/// settled, and a second lift asks for nothing.
 #[test]
-fn a_content_sized_panel_keeps_its_shadow_room_until_it_settles() {
+fn a_content_sized_panel_keeps_its_shadow_room() {
     const PANEL: SurfaceId = SurfaceId(2);
     let mut b = Builder::default();
     let panel = b.node(
@@ -197,37 +199,31 @@ fn a_content_sized_panel_keeps_its_shadow_room_until_it_settles() {
         "the lifted shadow reaches further: {small:?} then {big:?}"
     );
     r.take_surface_changes();
-    set_shadow(&mut r, card, shadow(2.0, 4.0));
-    // Held at the lifted reach frame by frame, then the resting one's,
-    // asked for right after the frame the shadow settled in.
-    let mut frames = 0;
-    let shrunk = loop {
-        let o = r.surface_spec(panel).unwrap().overhang;
-        if o != big {
+    for (round, lift) in [(0, shadow(2.0, 4.0)), (1, shadow(12.0, 24.0))] {
+        set_shadow(&mut r, card, lift);
+        let mut frames = 0;
+        while r.wants_frame(PANEL) {
             assert_eq!(
-                o, small,
-                "frame {frames}: the overhang is the lifted or the rest one"
+                r.surface_spec(panel).unwrap().overhang,
+                big,
+                "round {round}, frame {frames}: the room stays"
             );
             assert!(
-                r.has_surface_changes(),
-                "the smaller spec is asked for at once"
+                r.take_surface_changes().is_empty(),
+                "round {round}, frame {frames}: the panel's spec changed"
             );
-            break frames;
+            k += 1;
+            frames += 1;
+            buf.paint_at(&mut r, PANEL, 0, frame(k));
+            assert!(k < 600, "the spring never settled");
         }
+        assert!(frames > 5, "round {round}: it sprang over {frames} frames");
+        assert_eq!(r.surface_spec(panel).unwrap().overhang, big, "at rest");
         assert!(
-            !r.has_surface_changes(),
-            "frame {frames}: the panel's spec changed while the shadow was in flight"
+            r.take_surface_changes().is_empty(),
+            "round {round}: at rest"
         );
-        assert!(
-            r.wants_frame(PANEL),
-            "frame {frames}: it settled without shrinking"
-        );
-        k += 1;
-        frames += 1;
-        buf.paint_at(&mut r, PANEL, 0, frame(k));
-        assert!(k < 400, "the spring back never settled");
-    };
-    assert!(shrunk > 5, "it sprang back over {shrunk} frames");
+    }
 }
 
 /// The bar's overhang with one 60 × 40 box (the bar's height) glowing

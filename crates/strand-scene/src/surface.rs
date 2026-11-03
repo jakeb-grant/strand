@@ -188,8 +188,17 @@ pub struct SurfaceSpec {
     pub margin_set: bool,
     /// Requested width and height in logical pixels; `None` is auto (a
     /// bar stretches along its edge; otherwise layout decides, from M2).
+    /// On an axis in [`SurfaceSpec::stretch`] they hold the content's
+    /// size, not what is asked of the compositor.
     pub width: Option<f32>,
     pub height: Option<f32>,
+    /// (centred-surface) The axes (x, y) the compositor sizes the surface
+    /// along: anchored at both ends there with size 0, its configure
+    /// giving the length, its overhang there within its margins (none
+    /// without one). Filled in by render for a content-sized `panel`
+    /// or `osd` anchored to one edge, along that edge; `(false, false)`
+    /// otherwise.
+    pub stretch: (bool, bool),
     pub screens: Screens,
     /// (screens-focus) A [`Screens::Focused`] surface whose `screen` is
     /// the focused monitor ([`FOLLOW_FOCUS`]): the surface manager places
@@ -406,6 +415,7 @@ impl SurfaceSpec {
             margin_set,
             width: px(Prop::Width).or(size),
             height: px(Prop::Height).or(size),
+            stretch: (false, false),
             screens,
             follows_focus,
             open: !matches!(

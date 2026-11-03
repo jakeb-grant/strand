@@ -97,11 +97,16 @@ pub(super) fn within_edges(spec: &SurfaceSpec, o: Insets) -> Insets {
     let cap = |v: f32, anchored: bool, margin: f32| {
         if anchored { v.min(margin.max(0.0)) } else { v }
     };
+    // (centred-surface) Stretched by the compositor on an axis: anchored
+    // at both ends there, so its buffer reaches no further than its
+    // margins (none with no margin: a shadow past the output is off
+    // screen).
+    let (sx, sy) = spec.stretch;
     Insets {
-        top: cap(o.top, top, m.top),
-        right: cap(o.right, right, m.right),
-        bottom: cap(o.bottom, bottom, m.bottom),
-        left: cap(o.left, left, m.left),
+        top: cap(o.top, top || sy, m.top),
+        right: cap(o.right, right || sx, m.right),
+        bottom: cap(o.bottom, bottom || sy, m.bottom),
+        left: cap(o.left, left || sx, m.left),
     }
 }
 
@@ -211,45 +216,6 @@ impl Renderer {
         }
     }
 
-    /// (centred-surface) The size a content-sized layer surface takes on the
-    /// axis the compositor centres it on, for a panel or OSD anchored to
-    /// one edge, its output known: what is left of the output, so its
-    /// buffer is the output's on that axis at any overhang. A compositor
-    /// moves a centred surface when its size changes, a step apart from
-    /// the buffer of that size on some (Hyprland), and everything on the
-    /// surface, popups too, jumps with it. Not one centred on both axes:
-    /// that would be a whole output's buffer (decisions.md
-    /// centred-surface).
-    fn centred_span(
-        &self,
-        root: NodeId,
-        spec: &SurfaceSpec,
-        (cw, ch): (bool, bool),
-    ) -> (Option<f32>, Option<f32>) {
-        if !matches!(spec.kind, NodeKind::Panel | NodeKind::Osd) {
-            return (None, None);
-        }
-        let Some(b) = self
-            .surfaces
-            .iter()
-            .find(|(_, s)| s.root == root)
-            .and_then(|(i, _)| self.bounds.get(i))
-        else {
-            return (None, None);
-        };
-        let (m, o) = (spec.margin, spec.overhang);
-        let span = |room: f32, used: f32| (room - used).floor().max(1.0);
-        match resize_share(spec, None) {
-            (0.5, fy) if cw && fy != 0.5 => {
-                (Some(span(b.w, m.left + m.right + o.left + o.right)), None)
-            }
-            (fx, 0.5) if ch && fx != 0.5 => {
-                (None, Some(span(b.h, m.top + m.bottom + o.top + o.bottom)))
-            }
-            _ => (None, None),
-        }
-    }
-
     /// (window) The compositor's configure of the window on `surface`
     /// gave it a size on these axes (`(false, false)`: it left the size
     /// to the window). On such an axis the window fills what it was
@@ -313,8 +279,9 @@ impl Renderer {
             self.spanned.remove(&id);
             self.spec_dirty.insert(id);
         }
-        // (shadow-buffer) Shadows that settled: the overhang shrinks to
-        // their reach at rest, asked for now (a content-sized surface's by
+        // (shadow-buffer) Shadows that settled: the overhang of a bar, popup
+        // or window (a panel's or OSD's is reserved, `reserve_reach`)
+        // shrinks to their reach at rest, asked for now (a content-sized surface's by
         // its spec, any other's by its layout pass), so the host has the
         // new size before the next frame is drawn at it.
         let settled: Vec<NodeId> = self
@@ -377,6 +344,76 @@ impl Renderer {
         held
     }
 
+    /// (shadow-buffer) The overhang surface node `root`, a `kind`, asks
+    /// for: `positional`, its shadows' (and fillets') reach where they
+    /// rest, and `any_edge`, that reach with every box whose size or place
+    /// springs taken at any edge of the root ([`crate::layout::Boxes::reach`]).
+    /// A panel or OSD reserves, per side, the most either has ever been
+    /// since the config was loaded: a compositor may animate every
+    /// resize of a layer surface (Hyprland), so a card springing past
+    /// its row, or a shadow that lifts, never resizes it; the room is
+    /// never released at rest and is forgotten on a reload
+    /// ([`Renderer::forget_kept_sizes`]). Anything else (a bar, whose
+    /// zone and layer follow its overhang; a popup or window, placed by
+    /// the compositor) holds and releases ([`Renderer::hold_shadow_reach`]).
+    pub(super) fn reserve_reach(
+        &mut self,
+        root: NodeId,
+        kind: NodeKind,
+        positional: Insets,
+        any_edge: Insets,
+    ) -> Insets {
+        if !matches!(kind, NodeKind::Panel | NodeKind::Osd) {
+            return self.hold_shadow_reach(root, positional);
+        }
+        use super::layout_pass::max_insets;
+        let had = self.reserved.get(&root).copied().unwrap_or_default();
+        let mut want = max_insets(positional, any_edge);
+        // (m4-surface-w2) Its own enter and exit moves, painted where the
+        // compositor would animate a margin (Hyprland), take its box and
+        // shadows that far towards the side they move to.
+        if self.extras.compositor_pose_offset_off {
+            let room = self.pose_room(root);
+            want.top += room.top;
+            want.right += room.right;
+            want.bottom += room.bottom;
+            want.left += room.left;
+        }
+        let r = max_insets(had, want);
+        self.reserved.insert(root, r);
+        r
+    }
+
+    /// (m4-surface-w2) How far the surface node `root`'s own `enter` and
+    /// `exit` poses move it towards each side, logical pixels.
+    fn pose_room(&self, root: NodeId) -> Insets {
+        let mut room = Insets::default();
+        let Some(node) = self.tree.get(root) else {
+            return room;
+        };
+        let tables = scope_tables(&self.tree, root);
+        let scope = TokenScope::new(&tables);
+        for p in [Prop::Enter, Prop::Exit] {
+            let Some(v) = node.get(p).and_then(|v| scope.resolve(v)) else {
+                continue;
+            };
+            for (q, v) in crate::anim::pose_props(&v, None) {
+                let Some(d) = v.as_number().filter(|d| d.is_finite()) else {
+                    continue;
+                };
+                let d = d.clamp(-10_000.0, 10_000.0);
+                match q {
+                    Prop::X if d < 0.0 => room.left = room.left.max(-d),
+                    Prop::X => room.right = room.right.max(d),
+                    Prop::Y if d < 0.0 => room.top = room.top.max(-d),
+                    Prop::Y => room.bottom = room.bottom.max(d),
+                    _ => {}
+                }
+            }
+        }
+        room
+    }
+
     /// How long a content-sized surface whose size changed holds its
     /// frame for the compositor's configure at the new size (see
     /// [`RESIZE_WAIT`]); zero, the default, never holds (offline
@@ -396,7 +433,8 @@ impl Renderer {
             Some(b) => self.bounds.insert(surface, b),
             None => self.bounds.remove(&surface),
         };
-        // (centred-surface) What it spans follows its output.
+        // The height (width) cap of a content-sized surface follows its
+        // output (a stretched axis is the compositor's to size).
         if changed && let Some(root) = self.surfaces.get(&surface).map(|s| s.root) {
             self.spec_dirty.insert(root);
             self.refresh_specs();
@@ -416,6 +454,9 @@ impl Renderer {
     /// old content in between.
     pub fn forget_kept_sizes(&mut self) {
         self.kept.clear();
+        // (shadow-buffer) And the shadows' room: the new config's are
+        // reserved from its first layout.
+        self.reserved.clear();
         self.kept_changed = false;
         self.spec_dirty.extend(self.specs.keys().copied());
     }
@@ -453,9 +494,11 @@ impl Renderer {
         };
         let w = fit(spec.width, b.map(|b| b.w), m.left + m.right).map(|w| w + o.left + o.right);
         let h = fit(spec.height, b.map(|b| b.h), m.top + m.bottom).map(|h| h + o.top + o.bottom);
-        // (window) An axis the compositor sized asks for nothing.
+        // (window) An axis the compositor sized asks for nothing, nor
+        // (centred-surface) one it stretches.
         let (cw, ch) = self.window_sized.get(&root).copied().unwrap_or_default();
-        let (w, h) = (w.filter(|_| !cw), h.filter(|_| !ch));
+        let (sx, sy) = spec.stretch;
+        let (w, h) = (w.filter(|_| !cw && !sx), h.filter(|_| !ch && !sy));
         Some(match (spec.kind, spec.edge) {
             (NodeKind::Bar, Some(Edge::Left | Edge::Right)) => (w, None),
             (NodeKind::Bar, _) => (None, h),
@@ -709,6 +752,16 @@ impl Renderer {
                 _ => (spec.width.is_none(), spec.height.is_none()),
             };
             let content_sized = axes.0 || axes.1;
+            // (centred-surface) The axis a panel or OSD anchored to one
+            // edge is sized by its content along: the compositor stretches
+            // it there, so no change of its content ever resizes it on that
+            // axis, and what it holds is laid out and springs inside it as
+            // in any larger buffer.
+            spec.stretch = {
+                let (sx, sy) = strand_scene::placement::stretch_axes(&spec);
+                (sx && axes.0, sy && axes.1)
+            };
+            let stretch = spec.stretch;
             if content_sized {
                 self.content_sized.insert(id, axes);
             } else {
@@ -727,7 +780,7 @@ impl Renderer {
             }
             // (kept-size) What the content asks for, before a hold.
             let mut asked = None;
-            let (mut size, overhang) = match (&layouts, old) {
+            let (mut size, overhang, any) = match (&layouts, old) {
                 (Some(layouts), _) if dirty.contains(&id) && pass => {
                     let along = shown.map(|s| {
                         let l = s.scale.logical_size(s.size);
@@ -785,16 +838,20 @@ impl Renderer {
                         .filter(|s| s.painted)
                         .and_then(|s| s.boxes.as_ref()?.rects.get(&id).copied())
                         .filter(|r| {
-                            let (sw, sh) = self.centred_span(id, &spec, axes);
                             old.is_some_and(|o| {
-                                (sw.is_some() || near(o.width, r.w))
-                                    && (sh.is_some() || near(o.height, r.h))
+                                (stretch.0 || near(o.width, r.w))
+                                    && (stretch.1 || near(o.height, r.h))
                             })
                         });
                     let steps = drawn.is_some_and(|r| self.steps_down(id, &spec, r, b.size));
                     asked = Some(b.size);
                     if let Some(old) = old.filter(|_| steps || self.moving(id)) {
-                        let (w, h) = (old.width.unwrap_or(0.0), old.height.unwrap_or(0.0));
+                        // A stretched axis has the compositor's length:
+                        // nothing to hold there.
+                        let hold = |v: Option<f32>, stretched: bool| {
+                            v.filter(|_| !stretched).unwrap_or(0.0)
+                        };
+                        let (w, h) = (hold(old.width, stretch.0), hold(old.height, stretch.1));
                         held = b.size.w.ceil() < w || b.size.h.ceil() < h;
                         b.size.w = b.size.w.max(w);
                         b.size.h = b.size.h.max(h);
@@ -813,31 +870,23 @@ impl Renderer {
                         self.spec_wanted.remove(&id);
                     }
                     // `attach:` fillets reach past the box too.
-                    (b.size, crate::fillet::grow(&self.tree, &b, id, b.overhang))
+                    let grown = crate::fillet::grow(&self.tree, &b, id, b.overhang);
+                    let any = crate::fillet::grow(&self.tree, &b, id, b.reach);
+                    (b.size, grown, any)
                 }
                 (_, Some(old)) => (
                     LogicalSize::new(old.width.unwrap_or(0.0), old.height.unwrap_or(0.0)),
                     old.overhang,
+                    old.overhang,
                 ),
-                _ => (LogicalSize::default(), Insets::default()),
+                _ => (LogicalSize::default(), Insets::default(), Insets::default()),
             };
-            let overhang = self.hold_shadow_reach(id, overhang);
+            let overhang = self.reserve_reach(id, spec.kind, overhang, any);
             spec.overhang = crate::fillet::flush(
                 &self.tree,
                 id,
                 within_edges(&spec, centred_overhang(&spec, overhang)),
             );
-            // (centred-surface) The axis the compositor centres it on: the
-            // surface takes all of it, so no change of its content ever
-            // resizes it there, and what it holds is laid out and springs
-            // inside it as in any larger buffer.
-            let span = self.centred_span(id, &spec, axes);
-            if let Some(w) = span.0 {
-                size.w = w.max(size.w);
-            }
-            if let Some(h) = span.1 {
-                size.h = h.max(size.h);
-            }
             // (kept-size) And one whose size springs keeps, on any axis its
             // content sizes, the largest size its name has had, on every
             // output: a compositor may animate a layer surface's every
@@ -866,17 +915,17 @@ impl Renderer {
                 // a config's old size is not kept under the new one.
                 let (kw, kh) = self.kept.entry(spec.namespace()).or_default();
                 let (w, h) = (*kw, *kh);
-                if axes.0 && span.0.is_none() {
+                if axes.0 && !stretch.0 {
                     *kw = asked.map_or(*kw, |a| kw.max(a.w.ceil()));
                     size.w = size.w.max(*kw);
                 }
-                if axes.1 && span.1.is_none() {
+                if axes.1 && !stretch.1 {
                     *kh = asked.map_or(*kh, |a| kh.max(a.h.ceil()));
                     size.h = size.h.max(*kh);
                 }
                 self.kept_changed |= (w, h) != (*kw, *kh);
             }
-            if span != (None, None) || keeps {
+            if stretch != (false, false) || keeps {
                 self.spanned.insert(id);
             } else {
                 self.spanned.remove(&id);
@@ -914,6 +963,7 @@ impl Renderer {
         self.window_let_go.retain(|id| live.contains(id));
         self.held.retain(|id| live.contains(id));
         self.shadow_held.retain(|id| live.contains(id));
+        self.reserved.retain(|id, _| live.contains(id));
         self.held_reach.retain(|id, _| live.contains(id));
         self.opening.retain(|id| live.contains(id));
         self.closing_content.retain(|id, _| live.contains(id));

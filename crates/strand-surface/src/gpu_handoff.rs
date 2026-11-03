@@ -212,6 +212,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         let opaqued = self.sync_opaque(surface, scale);
         let inputs = self.sync_painted_input(surface);
+        if inputs {
+            self.update_catcher(surface);
+        }
         let blurred = self.blurs() && {
             let rects = self.blur_rects(surface, scale);
             self.set_blur(surface, rects)

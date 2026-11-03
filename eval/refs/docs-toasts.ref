@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "docs-toasts"
 verdict good
-note "docs examples drawn with the site's rust accent (system.accent = #a13c1c on the mock) instead of the default blue seed; only colours changed, every other check passes; frames looked at on a contact sheet, light and dark"
-date 2026-10-27
-rev "ff112c0a+changes"
+note "shadow-buffer 2026-11-03: the toasts panel reserves room for its posed toasts' shadows at any edge of it from its first frame (237 tall, was 192): only the surface's size changes, no node moves"
+date 2026-11-03
+rev "6827541b+changes"
 approver "claude"
 scenario 70bb802cf0d9535f
-seal f13570b8a8d61f08
+seal 79df58fa3155e163
 S1 1 - "panel Toasts"
 N0 "|toasts.strand:15:3|[1]#0" "col@toasts.strand:15"
 N1 "|toasts.strand:5:1|#0" "panel@toasts.strand:5"
@@ -25,7 +25,7 @@ N13 "|toasts.strand:27:9|[2]#0" "text(\"Builds · main passed\")"
 N14 "|toasts.strand:28:9|[2]#1" "text(\"All 412 tests passed.\")"
 N15 "|toasts.strand:30:7|[2]#0" "icon@toasts.strand:30"
 k1 p1
-s1 z=429,192 o=11,0
+s1 z=429,237 o=11,0
 n0 x=457 y=12 w=380 h=60 op=0 hid=opacity0 ord=2
 n1 x=37 y=12 w=380 h=180
 n2 x=37 y=12 w=380 h=180 ord=1

@@ -294,6 +294,8 @@ monitor, the keyboard always).
 - **`open:`** says whether a surface is shown. Bound two-way
   (`open: <-> open`), Escape, a click away and focus loss write `false`
   (on a `window`, only the compositor's close and `w.close()`, below).
+  A click on the surface's own buffer where it takes no input (beside a
+  panel's box on the output it is stretched across) is a click away.
 - **`popup { … }`** is an element, not a top-level surface: it is
   anchored to its parent element, shows while its `open` is true, nests
   (a popup may hold popups), and has `on dismiss` (Escape or a click
@@ -1232,7 +1234,11 @@ monitor, the keyboard always).
   repaints nothing. (decisions.md hit-through) A node at `opacity: 0` is not drawn and not hit, its
   children neither: a control that takes input unseen keeps its
   opacity and draws nothing (`color` and `track` of alpha 0, no `bg`).
-  Shadows enlarge the buffer but not the input region.
+  Shadows enlarge the buffer but not the input region. A `panel`'s or
+  `osd`'s buffer keeps, from its first frame, room on each side for the
+  farthest any shadow or fillet on it reaches (a box whose size or place
+  springs taken at any edge of it); the room only grows until a reload
+  (decisions.md shadow-buffer).
 - **`wrap: true`** on a `row` or `col` runs its children on in another
   row (column) when one is full. The lines pack at its start, `gap`
   stands between lines as between children, and `align` and `justify`

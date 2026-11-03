@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "p8-cards-hover-lift-1_5"
 verdict good
-note "shadow-buffer (integration-r8): the panel's overhang is held at 380x217 from k132, the tick the pointer leaves, while #temp's lg shadow springs back (it reaches y 210 at k132, past the 188 px the reference cut it at), and released on the frame after the shadows settle (k148, one more painted frame); read: only surface 1's size at k132..k147 and the k148 paint differ, no node moves, and frame k132 shows the shadow fading out uncut"
-date 2026-10-20
-rev "e7a38957+changes"
+note "shadow-buffer 2026-11-03: a panel keeps the room its lifted shadow took instead of releasing it once the shadow settles, so the k148 frame that redrew at the smaller size paints nothing; no node moves, nothing is cut"
+date 2026-11-03
+rev "6827541b+changes"
 approver "claude"
 scenario 63305ed76d2857a7
-seal 48ee44aa9d44a570
+seal aa936819cae0220c
 S1 0 - "panel Dash"
 N0 "board|dash.strand:14:3|#0" "grid#board"
 N1 "|dash.strand:12:1|#0" "panel@dash.strand:12"
@@ -457,5 +457,3 @@ k145
 k146
 k147
 n6 sh=00000040@105.328125,89.328125,99.328125,97.328125
-k148
-s1 z=380,188

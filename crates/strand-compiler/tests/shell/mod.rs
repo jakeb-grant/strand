@@ -591,6 +591,19 @@ fn size_for(spec: &SurfaceSpec) -> Size {
         (NodeKind::Bar, _) => (sw, spec.height.unwrap_or(32.0)),
         _ => (spec.width.unwrap_or(sw), spec.height.unwrap_or(sh)),
     };
+    // (centred-surface) An axis the compositor stretches: the screen's
+    // length less the margins there, as a compositor gives it.
+    let m = spec.margin;
+    let w = if spec.stretch.0 {
+        sw - m.left - m.right
+    } else {
+        w
+    };
+    let h = if spec.stretch.1 {
+        sh - m.top - m.bottom
+    } else {
+        h
+    };
     Size::new(w.ceil() as u32, h.ceil() as u32)
 }
 
@@ -609,11 +622,13 @@ fn origin_for(spec: &SurfaceSpec, size: Size) -> (f32, f32) {
         };
     }
     let x = match spec.anchor {
+        _ if spec.stretch.0 => m.left,
         Anchor::Left | Anchor::TopLeft | Anchor::BottomLeft => m.left,
         Anchor::Right | Anchor::TopRight | Anchor::BottomRight => sw - w - m.right,
         _ => (sw - w) / 2.0 + m.left - m.right,
     };
     let y = match spec.anchor {
+        _ if spec.stretch.1 => m.top,
         Anchor::Top | Anchor::TopLeft | Anchor::TopRight => m.top,
         Anchor::Bottom | Anchor::BottomLeft | Anchor::BottomRight => sh - h - m.bottom,
         _ => (sh - h) / 2.0 + m.top - m.bottom,

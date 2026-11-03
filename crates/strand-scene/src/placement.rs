@@ -80,22 +80,25 @@ impl LayerConfig {
     /// output's usable area, where the compositor arranges layer
     /// surfaces): its top-left corner, as wlroots compositors arrange it
     /// (centred between two opposite anchors or none, margins only on an
-    /// anchored side).
+    /// anchored side; stretched between two, size 0 asked, from the
+    /// first one's margin).
     pub fn position_in(&self, (w, h): (u32, u32), (aw, ah): (u32, u32)) -> (i32, i32) {
-        let axis = |size: u32, area: u32, lo: bool, hi: bool, mlo: i32, mhi: i32| -> i32 {
-            let (size, area) = (i64::from(size), i64::from(area));
-            let v = match (lo, hi) {
-                (true, false) => i64::from(mlo),
-                (false, true) => area - size - i64::from(mhi),
-                _ => area / 2 - size / 2,
+        let axis =
+            |size: u32, asked: u32, area: u32, lo: bool, hi: bool, mlo: i32, mhi: i32| -> i32 {
+                let (size, area) = (i64::from(size), i64::from(area));
+                let v = match (lo, hi) {
+                    (true, false) => i64::from(mlo),
+                    (false, true) => area - size - i64::from(mhi),
+                    (true, true) if asked == 0 => i64::from(mlo),
+                    _ => area / 2 - size / 2,
+                };
+                v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
             };
-            v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
-        };
         let [mt, mr, mb, ml] = self.margin;
         let a = self.anchors;
         (
-            axis(w, aw, a.left, a.right, ml, mr),
-            axis(h, ah, a.top, a.bottom, mt, mb),
+            axis(w, self.width, aw, a.left, a.right, ml, mr),
+            axis(h, self.height, ah, a.top, a.bottom, mt, mb),
         )
     }
 
@@ -169,6 +172,43 @@ impl LayerConfig {
             _ => (0, 0, clamp(w), clamp(h)),
         };
         (x.saturating_add(bx), y.saturating_add(by), bw, bh)
+    }
+
+    /// (centred-surface) The hole a click-away catcher configured to `area`
+    /// leaves for a surface of this config, `(w, h)` logical pixels: the
+    /// bounding box of `painted`, the rectangles (in the surface's own
+    /// coordinates) its painter takes input in (`SurfaceInfo::painted_input`:
+    /// a spanned panel's box, which its buffer is wider than), else its box
+    /// ([`LayerConfig::box_in`]). A click beside the box, on the surface's
+    /// own buffer where it takes no input, is a click away; one in a gap
+    /// between painted rectangles inside the box is not. `None`: it takes
+    /// input nowhere, so nothing is holed.
+    pub fn hole_in(
+        &self,
+        (w, h): (u32, u32),
+        area: (u32, u32),
+        painted: Option<&[(i32, i32, u32, u32)]>,
+    ) -> Option<(i32, i32, i32, i32)> {
+        let Some(painted) = painted else {
+            return Some(self.box_in((w, h), area));
+        };
+        let (x, y) = self.position_in((w, h), area);
+        let mut it = painted.iter().filter(|r| r.2 > 0 && r.3 > 0);
+        let &(x0, y0, rw, rh) = it.next()?;
+        let (mut x0, mut y0) = (i64::from(x0), i64::from(y0));
+        let (mut x1, mut y1) = (x0 + i64::from(rw), y0 + i64::from(rh));
+        for &(rx, ry, rw, rh) in it {
+            let (rx, ry) = (i64::from(rx), i64::from(ry));
+            (x0, y0) = (x0.min(rx), y0.min(ry));
+            (x1, y1) = (x1.max(rx + i64::from(rw)), y1.max(ry + i64::from(rh)));
+        }
+        let c = |v: i64| v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+        Some((
+            c(i64::from(x) + x0),
+            c(i64::from(y) + y0),
+            c(x1 - x0),
+            c(y1 - y0),
+        ))
     }
 
     /// Fits the requested size to an output of logical size `(w, h)`: the
@@ -383,6 +423,49 @@ fn one_edge(a: Anchors) -> Option<Edge> {
     }
 }
 
+/// The anchors of a `panel` or `osd` (any non-bar layer surface): its
+/// `anchor:`, with a panel's `attach:` anchoring that edge alone on its
+/// axis.
+fn anchors_of(spec: &SurfaceSpec) -> Anchors {
+    let mut anchors = match spec.anchor {
+        Anchor::Center => Anchors::default(),
+        Anchor::Top => Anchors::new(true, false, false, false),
+        Anchor::Bottom => Anchors::new(false, true, false, false),
+        Anchor::Left => Anchors::new(false, false, true, false),
+        Anchor::Right => Anchors::new(false, false, false, true),
+        Anchor::TopLeft => Anchors::new(true, false, true, false),
+        Anchor::TopRight => Anchors::new(true, false, false, true),
+        Anchor::BottomLeft => Anchors::new(false, true, true, false),
+        Anchor::BottomRight => Anchors::new(false, true, false, true),
+    };
+    // Attached: anchored to that edge (not the opposite one); the
+    // anchor's other axis stays.
+    match spec.attach.filter(|_| spec.kind == NodeKind::Panel) {
+        Some(Edge::Top) => (anchors.top, anchors.bottom) = (true, false),
+        Some(Edge::Bottom) => (anchors.top, anchors.bottom) = (false, true),
+        Some(Edge::Left) => (anchors.left, anchors.right) = (true, false),
+        Some(Edge::Right) => (anchors.left, anchors.right) = (false, true),
+        None => {}
+    }
+    anchors
+}
+
+/// (centred-surface) The axes (x, y) a `panel` or `osd` of `spec` may be
+/// stretched along by the compositor ([`SurfaceSpec::stretch`]): the one
+/// its anchors leave centred while the other is anchored to one edge (a
+/// top or bottom panel's x, a left or right one's y). None for a centred
+/// or corner surface, or any other kind.
+pub fn stretch_axes(spec: &SurfaceSpec) -> (bool, bool) {
+    if !matches!(spec.kind, NodeKind::Panel | NodeKind::Osd) {
+        return (false, false);
+    }
+    let a = anchors_of(spec);
+    (
+        !a.left && !a.right && a.top != a.bottom,
+        !a.top && !a.bottom && a.left != a.right,
+    )
+}
+
 /// Resolves the layer-surface state for `spec`.
 pub fn layer_config(spec: &SurfaceSpec) -> Result<LayerConfig, PlacementError> {
     layer_config_with(spec, false)
@@ -398,13 +481,20 @@ pub fn layer_config_with(
         .layer
         .ok_or(PlacementError::NotLayerSurface(spec.kind))?;
     let m = spec.margin;
+    // (centred-surface) An axis the compositor stretches: anchored at both
+    // ends with size 0, its buffer the output's less the margins there
+    // (moved out by the overhang, as on any anchored side: render keeps
+    // that within the margins).
+    let (sx, sy) = {
+        let (ax, ay) = stretch_axes(spec);
+        (spec.stretch.0 && ax, spec.stretch.1 && ay)
+    };
     let o = spec.overhang;
     let overhang = [o.top, o.right, o.bottom, o.left].map(|v| px(v).max(0));
     let [ot, or, ob, ol] = overhang;
     // `attach: <edge>` (a panel) anchors that edge; its margin there is
     // kept like any margin (0 unless set: flush with the edge or past a
     // bar's exclusive zone; negative over it, owner-testing.md gap 26).
-    let attach = spec.attach.filter(|_| spec.kind == NodeKind::Panel);
     // The box keeps its place: each margin moves out by the overhang.
     let margin = [
         px(m.top) - ot,
@@ -435,29 +525,11 @@ pub fn layer_config_with(
         let (Some(w), Some(h)) = (spec.width, spec.height) else {
             return Err(PlacementError::AutoSize(spec.kind));
         };
-        let mut anchors = match spec.anchor {
-            Anchor::Center => Anchors::default(),
-            Anchor::Top => Anchors::new(true, false, false, false),
-            Anchor::Bottom => Anchors::new(false, true, false, false),
-            Anchor::Left => Anchors::new(false, false, true, false),
-            Anchor::Right => Anchors::new(false, false, false, true),
-            Anchor::TopLeft => Anchors::new(true, false, true, false),
-            Anchor::TopRight => Anchors::new(true, false, false, true),
-            Anchor::BottomLeft => Anchors::new(false, true, true, false),
-            Anchor::BottomRight => Anchors::new(false, true, false, true),
-        };
-        // Attached: anchored to that edge (not the opposite one); the
-        // anchor's other axis stays.
-        match attach {
-            Some(Edge::Top) => (anchors.top, anchors.bottom) = (true, false),
-            Some(Edge::Bottom) => (anchors.top, anchors.bottom) = (false, true),
-            Some(Edge::Left) => (anchors.left, anchors.right) = (true, false),
-            Some(Edge::Right) => (anchors.left, anchors.right) = (false, true),
-            None => {}
-        }
+        let mut anchors = anchors_of(spec);
         // (flex) A panel's `exclusive:` along the one edge it is
         // anchored to; a corner or centre keeps nothing (layer-shell
-        // reserves only along one edge).
+        // reserves only along one edge). Stretched along it, the edge is
+        // still the one (anchored to it and both its neighbours).
         let zone = match (spec.exclusive_edge(), spec.exclusive_zone()) {
             (Some(edge), Some(z)) if z > 0.0 && one_edge(anchors) == Some(edge) => {
                 px(z)
@@ -470,12 +542,15 @@ pub fn layer_config_with(
             }
             _ => 0,
         };
-        (
-            anchors,
-            size(w) + (ol + or) as u32,
-            size(h) + (ot + ob) as u32,
-            zone,
-        )
+        let mut width = size(w) + (ol + or) as u32;
+        let mut height = size(h) + (ot + ob) as u32;
+        if sx {
+            (anchors.left, anchors.right, width) = (true, true, 0);
+        }
+        if sy {
+            (anchors.top, anchors.bottom, height) = (true, true, 0);
+        }
+        (anchors, width, height, zone)
     };
     let mut config = LayerConfig {
         namespace: spec.namespace(),
@@ -1113,6 +1188,89 @@ mod tests {
         assert_eq!((c.width, c.height, c.exclusive_zone), (400, 300, 0));
         assert_eq!(c.layer, Layer::Overlay);
         assert_eq!(c.keyboard, Keyboard::Exclusive);
+    }
+
+    /// (centred-surface) A panel or OSD anchored to one edge and stretched
+    /// along it (`stretch`, render's) is anchored to both ends of that
+    /// axis with size 0, its margins there kept (moved out by the overhang
+    /// render keeps within them): the compositor's configure gives it the
+    /// length. Its zone is still
+    /// its edge's; one centred, in a corner or not stretched keeps its
+    /// size and anchors.
+    #[test]
+    fn a_panel_anchored_to_one_edge_is_stretched_along_it() {
+        let panel = |kind: NodeKind, anchor: &str, stretch: (bool, bool)| {
+            let mut s = spec(
+                kind,
+                &[
+                    (Prop::Anchor, kw(anchor)),
+                    (Prop::Width, PropValue::Number(320.0)),
+                    (Prop::Height, PropValue::Number(48.0)),
+                    (Prop::Exclusive, PropValue::Number(40.0)),
+                ],
+            );
+            s.margin = Insets::from_values(&[6.0, 4.0, 2.0, 8.0]).unwrap();
+            s.overhang = Insets::from_values(&[5.0, 3.0, 30.0, 6.0]).unwrap();
+            s.stretch = stretch;
+            layer_config(&s).unwrap()
+        };
+        let x = (true, false);
+        let y = (false, true);
+        let top = panel(NodeKind::Panel, "top", x);
+        assert_eq!(top.anchors, Anchors::new(true, false, true, true));
+        assert_eq!((top.width, top.height), (0, 48 + 5 + 30));
+        assert_eq!(top.overhang, [5, 3, 30, 6]);
+        assert_eq!(top.margin, [6 - 5, 4 - 3, 2 - 30, 8 - 6]);
+        assert_eq!(top.reserved_edge(), Some(Edge::Top));
+        assert_eq!(top.exclusive_zone, 40 + 5);
+        // The compositor gives it the area less its margins, from the left:
+        // its box at its margin.
+        assert_eq!(top.position_in((1280 - 3, 83), (1280, 720)), (2, 1));
+        let bottom = panel(NodeKind::Osd, "bottom", x);
+        assert_eq!(bottom.anchors, Anchors::new(false, true, true, true));
+        assert_eq!(bottom.width, 0);
+        let left = panel(NodeKind::Panel, "left", y);
+        assert_eq!(left.anchors, Anchors::new(true, true, true, false));
+        assert_eq!((left.width, left.height), (320 + 3 + 6, 0));
+        assert_eq!(left.margin[0], 6 - 5);
+        assert_eq!(left.reserved_edge(), Some(Edge::Left));
+        // Not stretched, or no axis to stretch: its own size, centred.
+        let fixed = panel(NodeKind::Panel, "top", (false, false));
+        assert_eq!(fixed.anchors, Anchors::new(true, false, false, false));
+        assert_eq!(fixed.width, 320 + 9);
+        for anchor in ["center", "top_left"] {
+            let c = panel(NodeKind::Panel, anchor, (true, true));
+            assert_ne!(c.width, 0, "{anchor}");
+            assert_ne!(c.height, 0, "{anchor}");
+            assert!(!(c.anchors.left && c.anchors.right), "{anchor}");
+        }
+        assert_eq!(stretch_axes(&spec(NodeKind::Popup, &[])), (false, false));
+    }
+
+    /// (centred-surface) A catcher's hole is where its surface takes input:
+    /// a spanned panel's painted box, not its whole buffer, so a click
+    /// beside the box is a click away; several painted rectangles hole
+    /// their bounding box; none painted, the box.
+    #[test]
+    fn a_catchers_holes_are_where_its_surface_takes_input() {
+        let mut s = spec(
+            NodeKind::Panel,
+            &[
+                (Prop::Anchor, kw("top")),
+                (Prop::Width, PropValue::Number(640.0)),
+                (Prop::Height, PropValue::Number(348.0)),
+            ],
+        );
+        s.margin = Insets::from_values(&[6.0, 0.0, 0.0, 0.0]).unwrap();
+        s.stretch = (true, false);
+        let c = layer_config(&s).unwrap();
+        let (size, area) = ((1280, 348), (1280, 720));
+        assert_eq!(c.hole_in(size, area, None), Some((0, 6, 1280, 348)));
+        let card = [(320, 0, 640, 348)];
+        assert_eq!(c.hole_in(size, area, Some(&card)), Some((320, 6, 640, 348)));
+        let two = [(320, 0, 100, 32), (860, 300, 100, 48)];
+        assert_eq!(c.hole_in(size, area, Some(&two)), Some((320, 6, 640, 348)));
+        assert_eq!(c.hole_in(size, area, Some(&[])), None);
     }
 
     /// Shadows grow the buffer and move the margins out, so the box stays

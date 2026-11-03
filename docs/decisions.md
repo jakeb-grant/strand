@@ -5042,6 +5042,20 @@ press set (0, 0); a timer or IPC action still sends the last press's point.
 Under a delegated scale the point is `origin + corner × scale`
 (`Renderer::delegated_pose`; `a_press_sets_the_tray_click_point`).
 
+**2026-11-03 · m4-surface-w2: on Hyprland a surface's moves are painted too.**
+Hyprland runs `arrangeLayersForMonitor` on every commit with layer state, and
+each `set_margin` starts its own `layers` animation of the box on top of
+Strand's spring: the island's `enter { y: -14 }` sent 20 margins in 160 ms on
+the nested probe. With `hyprland_*` globals render keeps `x`/`y` (and so the
+scale, whose centring move needs the offset) in the frame and delegates only
+opacity (`Renderer::set_compositor_pose_offset`); a panel's or OSD's buffer
+keeps room for its own enter and exit moves (capped at its margin on an
+anchored side, so the island's -14 stays within its 6); and `clear_pose` sends
+margins only for a pose that moved, so a fade handed to the GPU sends no layer
+state. Other compositors keep delegating moves. Proof: `delegate`'s unit test
+with the offset off, and the probe's island log (no `set_margin` after its
+creation).
+
 ## m4-integration-w2-w2
 
 **2026-10-09 · m4-integration-w2: S-effects' CPU-only paints are islands on
@@ -12079,6 +12093,28 @@ rule. Tests: `a_shadow_springing_back_keeps_the_room_it_is_drawn_in`,
 `a_content_sized_panel_keeps_its_shadow_room_until_it_settles`,
 `shadow-lift-gaps.scn`.
 
+**2026-11-03 · shadow-buffer: a panel or OSD reserves its shadows' room once.**
+The overhang followed the shadows' reach at rest: a launcher's card springing
+taller than its row asked for 34 px more below mid-drop and gave it back on
+closing, each a `set_size` + `set_margin` Hyprland animates. Now a panel or OSD
+reserves, per side, the most its shadows and fillets reach where they rest, and
+for a box whose size or place springs (a `~` on `width`, `height`, `size`, `x`
+or `y`, or an `enter`/`exit` pose) the reach it would have at any edge of the
+root (`Boxes::reach`, the M6 hover-island rule made general); the reserve
+(`Renderer::reserve_reach`) only grows while the config stands and is forgotten
+on a reload (`forget_kept_sizes`), so the launcher has its 34 px below from its
+first configure. A box that does not spring keeps its positional reach, so a
+panel with a shadowed button grows by nothing. Bars keep the hold and release:
+a bar's grown overhang past its window side would flip `inside_exclusive_zone`
+for good and raise it over every later popup scrim, remaking it and its zone
+(the plan's critique 5); popups and windows keep it too, their place being the
+positioner's. Left: a shadow first set later (a hover's lift past what any
+shadow there reached) grows the reserve once per config; a bar's hover lift
+still resizes it. Tests: `a_content_sized_panel_keeps_its_shadow_room` (renamed
+from the one above, the room now kept at rest and on a second lift),
+`a_shadow_springing_back_keeps_the_room_it_is_drawn_in` (a bar, unchanged), the
+nested Hyprland probe.
+
 ## morph-memory
 
 **2026-10-20 · morph-memory: a box whose surface goes leaves the screen
@@ -14266,6 +14302,39 @@ changing moved the middle of a popup's anchor by half a pixel of rounding and
 repositioned the card hanging from it (`Renderer::steady_anchor`). With these,
 an island needs no popup and no copy of itself: one box whose contents decide
 its size, growing down from its anchored edge.
+
+**2026-11-03 · centred-surface: a spanned axis is the compositor's to size.**
+Asking for the output's length needed the output: a `screens: focused` panel
+made before any was known asked for its content's width first (`set_size(696,
+…)`, then 1280), and a span held while something moved, plus a shadow's side
+room, asked for 1336 at x -28 on the reopen and 1280 at x 0 at rest, the
+owner's 28 px twitch. Hyprland animates every layer `set_size`/`set_margin`
+(`arrangeLayersForMonitor`, `setBox`) and draws the current buffer at the
+animated box. Now render marks the axis (`SurfaceSpec::stretch`) and placement
+anchors both its ends with size 0, as gtk-layer-shell and Quickshell do: the
+first configure carries the length, nothing is asked on that axis again, and
+no hold applies there. The margins on that axis are kept, as layer-shell
+applies them between two anchors, and the overhang there is kept within them
+as on an anchored side (none without a margin: a shadow past the output is off
+screen), so a panel with side margins keeps its room and its shadow as the
+span gave them (`launcher-results-144`'s card shadow reaches 11 px into its
+24 px margin); the plan's "margin 0 there" would have dropped both. A
+left or right panel is now as tall as the area the compositor arranges it
+in, past the bars' zones, where the span asked for the whole output
+(`text-exit-squeeze`, 270 tall under a 30 px bar on a 300 px output, was 300).
+
+**2026-11-03 · centred-surface: a click beside a spanned panel's box is a click
+away.** The catcher's hole was the surface's whole buffer while a spanned
+panel took input only on its box (`Painter::input_region`), so a click beside
+the launcher's card fell through the panel's buffer and the hole to the window
+below and closed nothing. The hole is now the bounding box of the region the
+panel takes input in (`LayerConfig::hole_in`), updated whenever that region
+is (a region-only commit of the catcher, no layer state): a click in a gap
+between hit boxes inside the box is still no click away. Test:
+`a_catchers_holes_are_where_its_surface_takes_input`. `centred_span` and its dependence on the
+output's bounds are gone. Proof: `a_panel_centred_on_one_axis_never_resizes_there`,
+`a_panel_anchored_to_one_edge_is_stretched_along_it`, and the nested Hyprland
+probe (`target/try/geom/probe.sh`).
 
 ## kept-size
 

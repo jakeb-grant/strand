@@ -95,6 +95,13 @@ pub struct Boxes {
     pub size: LogicalSize,
     /// How far shadows reach past the root's box.
     pub overhang: Insets,
+    /// (shadow-buffer) How far the shadows of boxes that spring their
+    /// size or place (a `~` on `width`, `height`, `size`, `x` or `y`, or
+    /// an `enter`/`exit` pose) would reach past the root's box were the
+    /// box at any edge of it: what a panel's or OSD's buffer reserves
+    /// from its first frame, so such a box moving or growing never
+    /// resizes the surface.
+    pub reach: Insets,
     /// List rows laid out in this pass, over all lists.
     pub rows_laid_out: usize,
     /// Rows that exist in lists, laid out or not.
@@ -203,8 +210,9 @@ enum Ctx {
 type CellOf = Box<dyn Fn(NodeKind) -> (i16, i16)>;
 
 /// A node's shadows for the overhang: its node, its offset when placed
-/// by coordinates, whether `x` or `y` moves it, and the list.
-type ShadowAt = (NodeId, (f32, f32), bool, Vec<Shadow>);
+/// by coordinates, whether `x` or `y` moves it, whether its size or
+/// place springs (shadow-buffer), and the list.
+type ShadowAt = (NodeId, (f32, f32), bool, bool, Vec<Shadow>);
 
 /// Per-pass state while building the taffy tree.
 struct Build<'a> {
@@ -665,7 +673,8 @@ pub(crate) fn layout(
             n.kind == NodeKind::Popup
                 && matches!(n.get(Prop::Trigger), Some(PropValue::Keyword(k)) if k == "hover")
         });
-        for (id, (ox, oy), moves, list) in &b.shadows {
+        let mut any = Insets::default();
+        for (id, (ox, oy), moves, springs, list) in &b.shadows {
             let Some(r) = out.rects.get(id) else { continue };
             let mut r = LogicalRect::new(r.x + ox, r.y + oy, r.w, r.h);
             if *moves && island {
@@ -706,6 +715,15 @@ pub(crate) fn layout(
                     o.right = o.right.max(reach + dx);
                     o.bottom = o.bottom.max(reach + dy);
                 }
+                if *springs {
+                    // (shadow-buffer) The same rule for a box whose size
+                    // or place springs, kept apart: render reserves it for
+                    // a panel or OSD.
+                    any.left = any.left.max(reach - dx);
+                    any.top = any.top.max(reach - dy);
+                    any.right = any.right.max(reach + dx);
+                    any.bottom = any.bottom.max(reach + dy);
+                }
             }
         }
         let c = |v: f32| v.max(0.0).ceil();
@@ -714,6 +732,12 @@ pub(crate) fn layout(
             right: c(o.right),
             bottom: c(o.bottom),
             left: c(o.left),
+        };
+        out.reach = Insets {
+            top: c(o.top.max(any.top)),
+            right: c(o.right.max(any.right)),
+            bottom: c(o.bottom.max(any.bottom)),
+            left: c(o.left.max(any.left)),
         };
     }
     out

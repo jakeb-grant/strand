@@ -463,9 +463,16 @@ impl Renderer {
         // compositor's, an output too small) fills it, and never springs,
         // and one closing (what it held gone with its exit) takes no step.
         let spec = self.specs.get(&root);
-        let asked = |v: Option<f32>, have: f32| v.is_none_or(|v| (v - have).abs() < 0.5);
-        let asked =
-            spec.is_some_and(|sp| sp.open && asked(sp.width, frame.w) && asked(sp.height, frame.h));
+        // (centred-surface) A stretched axis asks for nothing: it has what
+        // the compositor gave.
+        let asked = |v: Option<f32>, stretched: bool, have: f32| {
+            stretched || v.is_none_or(|v| (v - have).abs() < 0.5)
+        };
+        let asked = spec.is_some_and(|sp| {
+            sp.open
+                && asked(sp.width, sp.stretch.0, frame.w)
+                && asked(sp.height, sp.stretch.1, frame.h)
+        });
         // Asking for a larger buffer than it has, its configure still to
         // come (the compositor is slow, or a preview pass): drawn at the
         // size it has, with what it holds kept as a step keeps it.
@@ -778,7 +785,10 @@ impl Renderer {
             } else {
                 self.held_reach.remove(&root);
             }
-            let grown = self.hold_shadow_reach(root, grown);
+            // (shadow-buffer) A panel or OSD keeps the room its shadows
+            // could need, grown only; anything else holds and releases.
+            let any = crate::fillet::grow(&self.tree, &boxes, root, boxes.reach);
+            let grown = self.reserve_reach(root, spec.kind, grown, any);
             let o = crate::fillet::flush(
                 &self.tree,
                 root,
@@ -1591,7 +1601,7 @@ fn clips(tree: &SceneTree, anim: &Animator, node: &crate::tree::Node) -> bool {
 }
 
 /// The larger of `a` and `b` on each side.
-fn max_insets(a: strand_scene::Insets, b: strand_scene::Insets) -> strand_scene::Insets {
+pub(super) fn max_insets(a: strand_scene::Insets, b: strand_scene::Insets) -> strand_scene::Insets {
     strand_scene::Insets {
         top: a.top.max(b.top),
         right: a.right.max(b.right),

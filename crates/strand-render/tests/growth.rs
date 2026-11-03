@@ -140,9 +140,20 @@ impl Host {
                     continue;
                 }
                 let o = spec.overhang;
+                // (centred-surface) An axis the compositor stretches is
+                // the output's, as a compositor configures it.
+                let (sx, sy) = spec.stretch;
                 let logical = LogicalSize::new(
-                    (spec.width.unwrap_or(1.0) + o.left + o.right).floor(),
-                    (spec.height.unwrap_or(1.0) + o.top + o.bottom).floor(),
+                    if sx {
+                        OUTPUT.0 as f32
+                    } else {
+                        (spec.width.unwrap_or(1.0) + o.left + o.right).floor()
+                    },
+                    if sy {
+                        OUTPUT.1 as f32
+                    } else {
+                        (spec.height.unwrap_or(1.0) + o.top + o.bottom).floor()
+                    },
                 );
                 let size = self.scale.physical_size(logical);
                 if !self.surfaces.contains_key(&node) {
@@ -524,11 +535,16 @@ fn a_bottom_osd_springs_up_from_its_edge() {
     );
     let mut h = Host::new(b.diff, root);
     h.run();
-    assert_eq!(h.now().0, Size::new(140, 20));
+    // (centred-surface) Stretched along its edge: the output's width.
+    assert_eq!(h.now().0, Size::new(OUTPUT.0 as u32, 20));
     let (d, _) = mount(col, 60, 0);
     h.apply(d);
     let shots = h.shots();
-    assert!(shots.iter().all(|s| s.buf == Size::new(140, 48)));
+    assert!(
+        shots
+            .iter()
+            .all(|s| s.buf == Size::new(OUTPUT.0 as u32, 48))
+    );
     let hs: Vec<f32> = shots.iter().map(|s| s.rects[&root].h).collect();
     springs(&hs, 20.0, 48.0);
     let at = (0.5, 1.0);

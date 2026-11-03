@@ -284,7 +284,8 @@ impl<'a> Flattener<'a> {
         // (M4) The root paints at rest what the compositor applies.
         if root && self.extras.delegates_pose(node.id) {
             let scale = !self.extras.compositor_pose_scale_off;
-            self.out.pose = crate::pose::delegate(node.kind, &mut props, laid, scale);
+            let offset = !self.extras.compositor_pose_offset_off;
+            self.out.pose = crate::pose::delegate(node.kind, &mut props, laid, scale, offset);
         }
         let inert = inh.inert || self.tree.is_ghost(node.id);
         let get = |p: Prop| props.iter().find(|(q, _)| *q == p).map(|(_, v)| v.as_ref());

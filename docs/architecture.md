@@ -1047,7 +1047,9 @@ is being saved, so the idle-wakeup windows hold.
   (or nothing it picks plugged in) one instance with `screen` bound to
   the focused (else first) monitor and no pin (decisions.md lockmon); a
   `window` is one instance, unpinned. A surface without a size of its
-  own gets it from a content layout pass before the spec is reported.
+  own gets it from a content layout pass before the spec is reported;
+  `stretch` names the axes render leaves to the compositor (a `panel`
+  or `osd` anchored to one edge and sized by its content along it).
   Render resolves specs through the node's token scope after every
   `apply`: `Renderer::surface_spec(node)` reads one, and
   `take_surface_changes()` returns `(NodeId, SurfaceChange)`s
@@ -1090,9 +1092,9 @@ is being saved, so the idle-wakeup windows hold.
   is configured at the larger size so the anchored edge stays put, and
   meanwhile `Painter::input_region` is the box as drawn. A content-sized
   surface never shrinks while something on it moves; a panel or OSD
-  anchored to one edge and sized by its content along it is as wide as
-  its output there and never resizes on that axis
-  (`Renderer::centred_span`). One sized by its content with a `~` on its
+  anchored to one edge and sized by its content along it is stretched
+  there by the compositor and never resizes on that axis
+  (`SurfaceSpec::stretch`, decisions.md centred-surface). One sized by its content with a `~` on its
   size also keeps, on the axes its content sizes, the largest size it has
   had, unless `exclusive: true` or `~ instant`; a size written out with a
   `~` still resizes (`refresh_specs`, decisions.md kept-size). The paint that
@@ -1316,8 +1318,10 @@ is being saved, so the idle-wakeup windows hold.
     a pose-only commit (no buffer, `age` unchanged).
   - **Compositor capabilities.** `CompositorCaps`, reported through
     `SurfaceHost::compositor_caps`; the host hands render
-    `set_compositor_blur`, `set_compositor_poses` and
-    `set_compositor_pose_scale(!hyprland)`.
+    `set_compositor_blur`, `set_compositor_poses`,
+    `set_compositor_pose_scale(!hyprland)` and
+    `set_compositor_pose_offset(!hyprland)` (Hyprland animates margin
+    changes: moves are painted there).
   - **Backends** (`strand_scene::backend`): `Backend`, `BackendChange`,
     `GpuStatus` and `AdapterInfo` live here so render, logic and the
     binary name them in a CPU-only build (decisions.md m4-scene).
@@ -2037,7 +2041,14 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   popup that draws nothing itself and for a content-sized surface drawn
   short of its buffer. Render keeps the overhang even on centred axes
   and no larger than the margin on an anchored side, so a buffer never
-  passes its output's edge. `LayerConfig::fit` clamps a layer box to
+  passes its output's edge. (centred-surface) On an axis in
+  `SurfaceSpec::stretch` (render fills it, `placement::stretch_axes`)
+  placement anchors both ends with size 0 (render keeps the overhang
+  there within the margins), the configure giving the length, and `spec.width`/`height` there is only
+  the content's. (shadow-buffer) A panel's or OSD's overhang only grows
+  (`Renderer::reserve_reach`, from `Boxes::reach`), until
+  `forget_kept_sizes` on a reload; a bar's, popup's or window's is held
+  while its shadows spring and released at rest. `LayerConfig::fit` clamps a layer box to
   its output; the host passes the output's size
   (`Renderer::set_surface_bounds`) and render holds a content-sized
   surface's frame for the configure at its new size
@@ -2049,8 +2060,9 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   are reported by `Renderer::has_surface_changes`; the host pings its
   loop so they apply at once.
 - **Click-away catchers** (`SurfaceInfo::click_away`): a transparent
-  layer surface on the same layer and output with the surface's box
-  holed (`LayerConfig::box_in`), and a whole-output one on every other
+  layer surface on the same layer and output with where the surface
+  takes input holed (`LayerConfig::hole_in`: the bounding box of
+  `SurfaceInfo::painted_input`, else `LayerConfig::box_in`), and a whole-output one on every other
   output showing no surface of that node.
 - **Keyboard.** One `wl_keyboard` per seat with xkbcommon keymaps and
   repeat, delivered as `InputEvent::Key` on the focused surface. Each
