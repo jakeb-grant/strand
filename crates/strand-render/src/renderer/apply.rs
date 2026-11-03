@@ -205,7 +205,7 @@ impl Renderer {
             // (integration-r8) A glow reaches as a shadow does.
             let shadow = match &op {
                 SceneOp::SetProp {
-                    prop: Prop::Shadow | Prop::Glow,
+                    prop: Prop::Shadow | Prop::Glow | Prop::ShadowRoom,
                     ..
                 } => true,
                 SceneOp::SetProp {

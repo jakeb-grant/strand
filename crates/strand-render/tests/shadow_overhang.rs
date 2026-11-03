@@ -324,3 +324,84 @@ fn a_glow_keeps_room_for_its_peak() {
     // Logic lighting the glow later lays the surface out again for it.
     assert_eq!(glow_overhang_then(num(0.0), Some(steady(10.0))), ten);
 }
+
+/// (shadow-buffer) A panel reserves from its first spec the room of
+/// every shadow a node on it may take (`Prop::ShadowRoom`: a hover's, a
+/// `when`'s), so the first time one shows asks for nothing; and (on
+/// Hyprland, moves painted) the room its own `enter` move takes is
+/// added once: diffs elsewhere leave its spec as it was.
+#[test]
+fn a_panel_reserves_the_shadows_it_may_take_once() {
+    let mut b = Builder::default();
+    let bar = b.node(
+        NodeKind::Bar,
+        None,
+        vec![(Prop::Height, num(40.0)), (Prop::Bg, color("#202020"))],
+    );
+    let panel = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Open, PropValue::Bool(true)),
+            (Prop::Width, num(200.0)),
+            (Prop::Height, num(100.0)),
+            (Prop::Enter, PropValue::Pose(vec![(Prop::Y, num(20.0))])),
+        ],
+    );
+    let card = b.node(
+        NodeKind::Box,
+        Some(panel),
+        vec![
+            (Prop::Width, num(60.0)),
+            (Prop::Height, num(30.0)),
+            (Prop::Bg, color("#ff0000")),
+            (Prop::Shadow, shadow(2.0, 4.0)),
+            (
+                Prop::ShadowRoom,
+                PropValue::List(vec![
+                    PropValue::List(vec![shadow(2.0, 4.0), shadow(40.0, 60.0)]),
+                    PropValue::List(Vec::new()),
+                    PropValue::Bool(false),
+                ]),
+            ),
+        ],
+    );
+    let mut r = renderer();
+    r.set_compositor_pose_offset(false);
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(SurfaceId(2), panel);
+    r.configure_surface(SurfaceId(2), Size::new(400, 400), Scale::ONE);
+    let mut buf = Buffer::new(400, 400, Scale::ONE);
+    buf.paint_at(&mut r, SurfaceId(2), 0, frame(0));
+    r.take_surface_changes();
+    let first = r.surface_spec(panel).unwrap().overhang;
+    // The lifted shadow (blur 60 at y 40) reaches 131 below the 30 px
+    // card, 61 past the 100 px panel, and the enter move 20 more.
+    assert_eq!(first.bottom, 81.0, "reserved from the start: {first:?}");
+    for (k, bg) in ["#303030", "#404040", "#505050", "#606060"]
+        .into_iter()
+        .enumerate()
+    {
+        let mut d = SceneDiff::new();
+        d.set(bar, Prop::Bg, color(bg));
+        assert!(r.apply(d).is_empty());
+        buf.paint_at(&mut r, SurfaceId(2), 0, frame(k as u32 + 1));
+        assert_eq!(
+            r.surface_spec(panel).unwrap().overhang,
+            first,
+            "diff {k} elsewhere"
+        );
+    }
+    set_shadow(&mut r, card, shadow(40.0, 60.0));
+    let mut k = 10;
+    while r.wants_frame(SurfaceId(2)) {
+        k += 1;
+        buf.paint_at(&mut r, SurfaceId(2), 0, frame(k));
+        assert!(k < 400, "the lift never settled");
+    }
+    assert_eq!(r.surface_spec(panel).unwrap().overhang, first, "lifted");
+    assert!(
+        r.take_surface_changes().is_empty(),
+        "the lift asked for nothing"
+    );
+}

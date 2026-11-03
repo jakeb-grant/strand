@@ -224,6 +224,15 @@ props! {
     /// catcher (see [`crate::SurfaceSpec::open_two_way`],
     /// [`crate::is_two_way`]).
     TwoWay = "two_way": Snap,
+    /// (shadow-buffer) What a node's shadows may become, for the room a
+    /// panel's or OSD's buffer reserves: a `PropValue::List` of a `List`
+    /// of every `shadow:` value it has (its base one and each `when`'s,
+    /// whichever holds now), a `List` of every `glow:` value likewise,
+    /// and a `Bool`, true when its `width`, `height` or `size` may change
+    /// (bound or set in a `when`), so its box may spring whatever its
+    /// size. Set by the compiler on a node with a shadow or a
+    /// glow, never written in source.
+    ShadowRoom = "shadow_room": Snap,
     // Paint.
     Bg = "bg": Effects,
     Color = "color": Effects,

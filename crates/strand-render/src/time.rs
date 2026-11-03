@@ -151,12 +151,14 @@ fn letter(_id: NodeId) -> (u32, u32) {
 
 /// True if a prop of `node` reads time (its `tokens` override aside: see
 /// [`overrides_read_time`]), directly or through a token of the global
-/// table that does (`glow: $pulse` with `$pulse: 8 * wave(2s)`).
+/// table that does (`glow: $pulse` with `$pulse: 8 * wave(2s)`). Its
+/// `shadow_room` is never drawn: a breathing glow listed there for the
+/// room it may take does not make the node follow time.
 pub(crate) fn reads_time(node: &Node, global: &TokenTable) -> bool {
     let timed = |p: &str| global.time_reads(p);
-    node.props
-        .iter()
-        .any(|e| e.prop != Prop::Tokens && e.value.reads_time_with(&timed))
+    node.props.iter().any(|e| {
+        !matches!(e.prop, Prop::Tokens | Prop::ShadowRoom) && e.value.reads_time_with(&timed)
+    })
 }
 
 /// True if `node`'s `tokens` override reads time (`set { $spin: t *

@@ -95,12 +95,15 @@ pub struct Boxes {
     pub size: LogicalSize,
     /// How far shadows reach past the root's box.
     pub overhang: Insets,
-    /// (shadow-buffer) How far the shadows of boxes that spring their
-    /// size or place (a `~` on `width`, `height`, `size`, `x` or `y`, or
-    /// an `enter`/`exit` pose) would reach past the root's box were the
-    /// box at any edge of it: what a panel's or OSD's buffer reserves
-    /// from its first frame, so such a box moving or growing never
-    /// resizes the surface.
+    /// (shadow-buffer) How far shadows may reach past the root's box: the
+    /// overhang, with every shadow a node may take (`Prop::ShadowRoom`:
+    /// its `when`s', a hover's) where it is, and the shadows of boxes
+    /// whose size or place may spring (a `~` on `width`, `height`,
+    /// `size`, `x` or `y`, a size bound or set in a `when`, or an
+    /// `enter`/`exit` pose) as they would reach were the box at any edge
+    /// of the root: what a panel's or OSD's buffer reserves from its
+    /// first frame, so a shadow showing or such a box moving or growing
+    /// never resizes the surface.
     pub reach: Insets,
     /// List rows laid out in this pass, over all lists.
     pub rows_laid_out: usize,
@@ -211,8 +214,9 @@ type CellOf = Box<dyn Fn(NodeKind) -> (i16, i16)>;
 
 /// A node's shadows for the overhang: its node, its offset when placed
 /// by coordinates, whether `x` or `y` moves it, whether its size or
-/// place springs (shadow-buffer), and the list.
-type ShadowAt = (NodeId, (f32, f32), bool, bool, Vec<Shadow>);
+/// place springs (shadow-buffer), the list, and (shadow-buffer) every
+/// shadow it may take (`Prop::ShadowRoom`), counted only in the reach.
+type ShadowAt = (NodeId, (f32, f32), bool, bool, Vec<Shadow>, Vec<Shadow>);
 
 /// Per-pass state while building the taffy tree.
 struct Build<'a> {
@@ -674,7 +678,7 @@ pub(crate) fn layout(
                 && matches!(n.get(Prop::Trigger), Some(PropValue::Keyword(k)) if k == "hover")
         });
         let mut any = Insets::default();
-        for (id, (ox, oy), moves, springs, list) in &b.shadows {
+        for (id, (ox, oy), moves, springs, list, room) in &b.shadows {
             let Some(r) = out.rects.get(id) else { continue };
             let mut r = LogicalRect::new(r.x + ox, r.y + oy, r.w, r.h);
             if *moves && island {
@@ -693,7 +697,11 @@ pub(crate) fn layout(
                 r.x = inside(r.x, r.w, rb.x, rb.w);
                 r.y = inside(r.y, r.h, rb.y, rb.h);
             }
-            for sh in list {
+            // (shadow-buffer) The shadows it may take but does not cast
+            // now count in the reach alone: a panel or OSD reserves them,
+            // anything else asks for what it draws.
+            let all = list.iter().map(|s| (s, true));
+            for (sh, now) in all.chain(room.iter().map(|s| (s, false))) {
                 if sh.color.a.is_nan() || sh.color.a <= 0.0 {
                     continue;
                 }
@@ -701,11 +709,12 @@ pub(crate) fn layout(
                 let blur = finite(sh.blur).unwrap_or(0.0).clamp(0.0, 1000.0);
                 let reach = (1.5 * blur).ceil() + 1.0 + spread;
                 let (dx, dy) = (finite(sh.x).unwrap_or(0.0), finite(sh.y).unwrap_or(0.0));
-                o.left = o.left.max(rb.x - (r.x + dx - reach));
-                o.top = o.top.max(rb.y - (r.y + dy - reach));
-                o.right = o.right.max(r.x + r.w + dx + reach - (rb.x + rb.w));
-                o.bottom = o.bottom.max(r.y + r.h + dy + reach - (rb.y + rb.h));
-                if *moves && island {
+                let at = if now { &mut o } else { &mut any };
+                at.left = at.left.max(rb.x - (r.x + dx - reach));
+                at.top = at.top.max(rb.y - (r.y + dy - reach));
+                at.right = at.right.max(r.x + r.w + dx + reach - (rb.x + rb.w));
+                at.bottom = at.bottom.max(r.y + r.h + dy + reach - (rb.y + rb.h));
+                if *moves && island && now {
                     // (M6) It may touch any edge of the popup as it moves
                     // inside it: the reach is the one there, so the
                     // overhang (the buffer's size and the popup's place)

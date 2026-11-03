@@ -1267,6 +1267,13 @@ is being saved, so the idle-wakeup windows hold.
     `meter`, `arc` or `graph` is two ends (numbers or `auto`); unset, 0
     to 1. A slider's drag writes in range units (`Range::at`, rounded
     by `Prop::Step`). A graph's `Value` does not spring.
+  - **Shadow room** (shadow-buffer). Logic sets `Prop::ShadowRoom` on a
+    node whose shadow or glow may change, or whose box casting one may
+    change its size or place: a `List` of every `shadow:` value (a
+    `List`), every `glow:` value (a `List`), each evaluated whichever
+    `when` holds, and a `Bool`, true when its `width`, `height` or
+    `size` is bound or set in a `when`. Render counts those shadows
+    only in `Boxes::reach`, the room a panel's or OSD's buffer reserves.
   - **Layout and input props** (flex). `Prop::Wrap`, `Prop::Axis`,
     `Prop::Snap`; `Prop::Cursor` is resolved by the Router and handed to
     strand-surface (`SurfaceHost::cursor`).

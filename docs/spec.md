@@ -1236,9 +1236,11 @@ monitor, the keyboard always).
   opacity and draws nothing (`color` and `track` of alpha 0, no `bg`).
   Shadows enlarge the buffer but not the input region. A `panel`'s or
   `osd`'s buffer keeps, from its first frame, room on each side for the
-  farthest any shadow or fillet on it reaches (a box whose size or place
-  springs taken at any edge of it); the room only grows until a reload
-  (decisions.md shadow-buffer).
+  farthest any shadow, glow or fillet on it reaches, every `when`'s
+  shadow counted (a box whose size or place may spring, by a `~`, a
+  pose, or a size bound or set in a `when`, taken at any edge of it); the room only grows
+  until a reload. A `bar` takes a lifted shadow's room while it shows
+  and gives it back at rest (decisions.md shadow-buffer).
 - **`wrap: true`** on a `row` or `col` runs its children on in another
   row (column) when one is full. The lines pack at its start, `gap`
   stands between lines as between children, and `align` and `justify`

@@ -1,12 +1,12 @@
 # strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
 ref "p8-cards-hover-lift-1_5"
 verdict good
-note "shadow-buffer 2026-11-03: a panel keeps the room its lifted shadow took instead of releasing it once the shadow settles, so the k148 frame that redrew at the smaller size paints nothing; no node moves, nothing is cut"
+note "shadow-buffer 2026-11-03: the panel reserves its cards' hover shadow ($elevation.lg, from shadow_room) from its first frame, 380x217, where it grew to that size when the second row's lift first showed; nothing moves on screen, no frame resizes"
 date 2026-11-03
-rev "6827541b+changes"
+rev "eca10398+changes"
 approver "claude"
 scenario 63305ed76d2857a7
-seal aa936819cae0220c
+seal c1f8d1110497aa6a
 S1 0 - "panel Dash"
 N0 "board|dash.strand:14:3|#0" "grid#board"
 N1 "|dash.strand:12:1|#0" "panel@dash.strand:12"
@@ -29,7 +29,7 @@ N17 "|dash.strand:21:9|[net]#1" "text(\"1.2 MB/s\")"
 N18 "|dash.strand:21:9|[temp]#1" "text(\"48 °C\")"
 N19 "|dash.strand:21:9|[up]#1" "text(\"3 h 12 min\")"
 k0 p1
-s1 z=380,188
+s1 z=380,217
 n0 x=0 y=0 w=380 h=188 ord=1
 n1 x=0 y=0 w=380 h=188
 n2 x=16 y=16 w=90 h=72 ord=2 bg=faf9ffff bd=ffffffff sh=00000040@3.328125,5.328125,115.328125,97.328125
@@ -376,7 +376,6 @@ n4 bd=ccd4e3ff sh=00000043@98.671875,0.1875,112.671875,110.671875/0000000d@114,1
 k115
 n4 bd=e0e5eeff sh=00000042@101.328125,2.265625,107.328125,105.328125/00000008@114,13,82,80
 k116
-s1 z=380,217
 n4 bd=edeff5ff sh=00000041@102.671875,3.21875,104.671875,102.671875/00000005@114,13,82,80
 n6 y=99 v=118,99.328125,74,72 bd=e2e7efff sh=00000042@101.328125,85.53125,107.328125,105.328125/00000007@114,96.328125,82,80
 n12 y=107 v=126,107.328125,58,12.671875 ink=126,109.328125,26.671875,10.671875

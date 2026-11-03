@@ -5954,3 +5954,28 @@ fn a_declaration_read_before_its_line_keeps_its_type() {
     }
     assert!(blank.is_empty(), "drew nothing, read after: {blank:?}");
 }
+
+/// (shadow-buffer) Render is told every shadow a node may take
+/// (`shadow_room`): the base one and a `when`'s, whichever holds, and
+/// whether its box may change its size (bound, or set in a `when`); a
+/// node whose shadow and box are fixed carries nothing.
+#[test]
+fn a_node_whose_shadow_or_box_may_change_lists_its_shadows() {
+    let src = "bar Top {\n  height: 30\n  box { width: 10; shadow: 0 2px 4px #000000\n    when hover { shadow: 0 12px 24px #000000 } }\n  box { width: 10; shadow: 0 2px 4px #000000 }\n  box { width: 10; shadow: 0 2px 4px #000000\n    when hover { width: 20 } }\n}\n";
+    let shell = boot(&[("s.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    let room = |b| match shell.scene.prop(b, Prop::ShadowRoom) {
+        Some(PropValue::List(items)) => match (&items[0], &items[2]) {
+            (PropValue::List(s), PropValue::Bool(moves)) => Some((s.len(), *moves)),
+            _ => None,
+        },
+        _ => None,
+    };
+    assert_eq!(room(boxes[0]), Some((2, false)), "a hover's shadow");
+    assert_eq!(room(boxes[1]), None, "fixed");
+    assert_eq!(room(boxes[2]), Some((1, true)), "a hover's width");
+}

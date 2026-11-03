@@ -12115,6 +12115,41 @@ from the one above, the room now kept at rest and on a second lift),
 `a_shadow_springing_back_keeps_the_room_it_is_drawn_in` (a bar, unchanged), the
 nested Hyprland probe.
 
+**2026-11-03 · shadow-buffer: the reserve counts every shadow a node may take.**
+Render sees a prop only as it is now, so a `when dropped { shadow: … }` on the
+launcher's card or a `when launcher.open { shadow: … }` on the island grew the
+reserve the first time it showed: the island asked for 115 px at the
+launcher's first opening (was 72) and the launcher for 435 mid-drop (was 382),
+the second opening at 435 from the start. The compiler now sends a node whose
+shadow or glow may change, or whose box casting one may change its size or
+place, `Prop::ShadowRoom`: every `shadow:` and `glow:` value it has (the base
+one and each `when`'s, evaluated whichever holds; one that fails to evaluate
+reserves nothing) and whether its `width`, `height` or `size` is bound or set
+in a `when` (`Ctx::shadow_room`); a flow node's `x`/`y` are paint offsets
+whose room is never taken, so a card's hover lift (`y: -3`) reserves its
+deeper shadow where the card rests, not at the panel's edges. Layout counts those shadows in
+`Boxes::reach` only, where they are, or at any edge for a box that may move,
+so a bar, popup or window, which ask for what they draw, see no change. The
+"may move" half closes a gap of the first rule: a size bound with no `~`
+springs on `$motion.spatial` too, and a card whose `height: dropped ? 348 :
+32` had no `~` asked for 34 px below mid-drop; a chunk the compiler cannot
+prove static (a `let`, a component's parameter) counts as moving, the cheap
+side next to a compositor's re-arrange. Fixed with it: on Hyprland the room
+for a panel's own enter and exit moves was added to the last spec's overhang
+whenever a refresh did not measure the panel again (a fixed-size or closed
+one), so a centred dialog with `enter { y: 20 }` grew 20 px at every diff
+anywhere; the reserve now keeps the shadows' room alone, the moves' added to
+it fresh, and a refresh that measures nothing keeps the spec's overhang. Left,
+said in design.md: a value no `when` names (a branch of `shadow: a ? b : c`, a
+service's shadow) still grows the reserve once per config, and a bar still
+takes a lifted shadow's room past its window side while it shows and gives it
+back, its zone side and scrim layer following (the reason above). Tests:
+`a_panel_reserves_the_shadows_it_may_take_once` (reserved from the first spec,
+four diffs elsewhere and the lift asking nothing, moves painted),
+`a_node_whose_shadow_or_box_may_change_lists_its_shadows`; the nested probe
+with `lc-hover` (lc-raw plus both `when` shadows): island 115 and launcher 435
+from their creation requests, one geometry on both openings.
+
 ## morph-memory
 
 **2026-10-20 · morph-memory: a box whose surface goes leaves the screen

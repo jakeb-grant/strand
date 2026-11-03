@@ -580,7 +580,11 @@ impl<'a> Build<'a> {
         ) {
             list.push(g);
         }
-        if !list.is_empty() {
+        // (shadow-buffer) Every shadow and glow it may take, and whether
+        // its box may change its size or place (`Prop::ShadowRoom`).
+        let room_value = get(Prop::ShadowRoom);
+        let (room, may_move) = shadow_room(node, room_value.as_ref().map(AsRef::as_ref));
+        if !list.is_empty() || !room.is_empty() {
             let placed = keyword(get(Prop::Place).as_ref().map(AsRef::as_ref)) == Some("absolute");
             let off = |p: Prop| {
                 get(p)
@@ -590,19 +594,61 @@ impl<'a> Build<'a> {
                     .unwrap_or(0.0)
             };
             let moves = placed && (get(Prop::X).is_some() || get(Prop::Y).is_some());
-            // (shadow-buffer) Its size or place springs, or a pose moves it.
-            let springs = node.props.iter().any(|e| {
-                matches!(
-                    e.prop,
-                    Prop::Width | Prop::Height | Prop::Size | Prop::X | Prop::Y
-                ) && !matches!(
-                    e.transition,
-                    strand_scene::Transition::Default | strand_scene::Transition::Instant
-                )
-            }) || node.get(Prop::Enter).is_some()
+            // (shadow-buffer) Its size or place springs (a `~` on it, or
+            // a size bound or set in a `when`, which springs on the
+            // default curve when it changes), or a pose moves it.
+            let springs = may_move
+                || node.props.iter().any(|e| {
+                    matches!(
+                        e.prop,
+                        Prop::Width | Prop::Height | Prop::Size | Prop::X | Prop::Y
+                    ) && !matches!(
+                        e.transition,
+                        strand_scene::Transition::Default | strand_scene::Transition::Instant
+                    )
+                })
+                || node.get(Prop::Enter).is_some()
                 || node.get(Prop::Exit).is_some();
-            self.shadows
-                .push((node.id, (off(Prop::X), off(Prop::Y)), moves, springs, list));
+            self.shadows.push((
+                node.id,
+                (off(Prop::X), off(Prop::Y)),
+                moves,
+                springs,
+                list,
+                room,
+            ));
         }
     }
+}
+
+/// (shadow-buffer) A node's `Prop::ShadowRoom` (resolved `v`): the
+/// shadows its `shadow:` and `glow:` values cast, whichever holds now, and
+/// whether its box may change its size.
+fn shadow_room(node: &Node, v: Option<&PropValue>) -> (Vec<strand_scene::Shadow>, bool) {
+    let Some(PropValue::List(items)) = v else {
+        return (Vec::new(), false);
+    };
+    let mut out = Vec::new();
+    if let Some(PropValue::List(shadows)) = items.first() {
+        for s in shadows {
+            if let PropValue::Shadow(list) = s {
+                out.extend(list.iter().cloned());
+            }
+        }
+    }
+    if let Some(PropValue::List(glows)) = items.get(1) {
+        // The unresolved values, for a glow's animated radius's peak.
+        let raw = match node.get(Prop::ShadowRoom) {
+            Some(PropValue::List(r)) => match r.get(1) {
+                Some(PropValue::List(g)) => Some(g),
+                _ => None,
+            },
+            _ => None,
+        };
+        for (i, g) in glows.iter().enumerate() {
+            let raw = raw.and_then(|r| r.get(i)).unwrap_or(g);
+            out.extend(crate::effects::light::Glow::overhang(Some(raw), Some(g)));
+        }
+    }
+    (out, matches!(items.get(2), Some(PropValue::Bool(true))))
 }

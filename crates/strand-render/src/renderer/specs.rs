@@ -368,19 +368,20 @@ impl Renderer {
         }
         use super::layout_pass::max_insets;
         let had = self.reserved.get(&root).copied().unwrap_or_default();
-        let mut want = max_insets(positional, any_edge);
+        // The shadows' and fillets' room alone is kept: the poses' is
+        // added to it fresh each time, never to what it added before.
+        let mut r = max_insets(had, max_insets(positional, any_edge));
+        self.reserved.insert(root, r);
         // (m4-surface-w2) Its own enter and exit moves, painted where the
         // compositor would animate a margin (Hyprland), take its box and
         // shadows that far towards the side they move to.
         if self.extras.compositor_pose_offset_off {
             let room = self.pose_room(root);
-            want.top += room.top;
-            want.right += room.right;
-            want.bottom += room.bottom;
-            want.left += room.left;
+            r.top += room.top;
+            r.right += room.right;
+            r.bottom += room.bottom;
+            r.left += room.left;
         }
-        let r = max_insets(had, want);
-        self.reserved.insert(root, r);
         r
     }
 
@@ -881,7 +882,17 @@ impl Renderer {
                 ),
                 _ => (LogicalSize::default(), Insets::default(), Insets::default()),
             };
-            let overhang = self.reserve_reach(id, spec.kind, overhang, any);
+            // (shadow-buffer) Only a fresh measure is reserved: the last
+            // spec's overhang already holds the reserve and the poses'
+            // room, and taking it again would add that room once more at
+            // every refresh (a fixed-size or closed panel, laid out by
+            // its layout pass or not at all).
+            let measured = asked.is_some();
+            let overhang = if measured {
+                self.reserve_reach(id, spec.kind, overhang, any)
+            } else {
+                overhang
+            };
             spec.overhang = crate::fillet::flush(
                 &self.tree,
                 id,

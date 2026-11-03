@@ -35,6 +35,8 @@ const COMPILER_SET: &[Prop] = &[
     Prop::Name,
     Prop::Watch,
     Prop::TwoWay,
+    // shadow-buffer.
+    Prop::ShadowRoom,
     // M4.
     Prop::Uniforms,
     Prop::Shader,
