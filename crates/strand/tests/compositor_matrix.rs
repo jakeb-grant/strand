@@ -4342,8 +4342,8 @@ fn grab(output: Option<&str>, dir: &std::path::Path) -> Option<Img> {
 /// a panel's popup (neither the panel nor the popup), and one on the
 /// popup of a bar whose shadow reaches past its exclusive zone (not the
 /// shadow); and on Hyprland the layer rules
-/// `strand compositor-rules` prints evaluate without errors and blur the
-/// surface they name.
+/// `strand compositor-rules` prints (the rule turning layer animations
+/// off included) evaluate without errors and blur the surface they name.
 #[test]
 fn surfaces_meet_the_live_compositor() {
     use strand_scene::{
@@ -4821,7 +4821,13 @@ fn surfaces_meet_the_live_compositor() {
             String::from_utf8_lossy(&out.stderr)
         );
         let lua = String::from_utf8(out.stdout).expect("UTF-8 rules");
-        assert_eq!(lua.matches("hl.layer_rule(").count(), 2, "{lua}");
+        // The rule keeping Hyprland's layer animations off every Strand
+        // surface, then the two blur rules: Hyprland takes all three.
+        assert_eq!(lua.matches("hl.layer_rule(").count(), 3, "{lua}");
+        assert!(
+            lua.contains("namespace = \"^strand-.*$\" },\n    no_anim = true,"),
+            "{lua}"
+        );
         // The printed rules open with Lua `--` comments, which hyprctl
         // would take for an unknown flag (it prints its usage and exits
         // 0): only the code goes to `eval`.
