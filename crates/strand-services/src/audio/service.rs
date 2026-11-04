@@ -36,6 +36,18 @@
 //!   for a device's item, answered the same way, and refused when it is
 //!   gone. A stream recording a sink's monitor (`stream.capture.sink`: a
 //!   visualiser, desktop-audio capture) is `monitor`, not `input`.
+//! - **Moves and profiles.** (audio-routing) `st.device` is the device a
+//!   stream's links reach (the loop follows links while streams are
+//!   followed). `st.move_to(dev)` asks the loop to move the stream
+//!   ([`AudioAction::MoveStream`], the stream by its serial, the device
+//!   by id and serial); `p.select()` for `p` in `dev.profiles` asks it
+//!   to switch the card ([`AudioAction::SetProfile`], the card by
+//!   [`AudioProfile::card`]). Either is refused (logged, nothing
+//!   written) when its item names a stream or device that left (another
+//!   program, or another node name, under the item's key now), and the
+//!   loop logs its own refusals, as for `make_default()`; the outcome
+//!   arrives in the stream (`st.device` moves; the card's devices come
+//!   back under new ids with another profile active).
 //! - **Levels.** The peak meters run for [`tap_levels`] taps (the M4
 //!   `spectrum` element's hook) and (services-round) for
 //!   `audio.levels(dev, bars)`, and only while a reader of the service
@@ -54,7 +66,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
 
-use super::model::{AudioChange, AudioDevice, AudioStream, LevelTarget, Levels};
+use super::model::{AudioChange, AudioDevice, AudioProfile, AudioStream, LevelTarget, Levels};
 use super::{AudioAction, AudioConfig, AudioError, Cmd, DeviceRef, Follow, Host, thread};
 use crate::{Call, Cx, Data, Msg, ServiceError, Step, Store, Write, service};
 
@@ -271,11 +283,19 @@ fn audio_fns(
     }))
 }
 
-/// `audio`'s actions.
+/// `audio`'s actions: on an `AudioDevice`, and (audio-routing) on an
+/// `AudioStream` and an `AudioProfile`.
 #[derive(Call, Debug)]
 pub enum AudioDeviceAction {
     /// `dev.make_default()`.
     MakeDefault { item: AudioDevice },
+    /// (audio-routing) `st.move_to(dev)`.
+    MoveTo {
+        item: AudioStream,
+        device: AudioDevice,
+    },
+    /// (audio-routing) `p.select()`.
+    Select { item: AudioProfile },
 }
 
 /// Audio devices, from PipeWire.
@@ -582,6 +602,34 @@ impl StoreHost {
             id: item.id,
             serial: self.serials.get(&item.id).copied(),
         }))
+    }
+
+    /// (audio-routing) The action `st.move_to(dev)`: the stream by its
+    /// serial, the device by id and serial; `None` when either item is of
+    /// one that left (another program's stream holds the stream's key,
+    /// another node the device's id).
+    fn move_to(&self, item: &AudioStream, device: &AudioDevice) -> Option<AudioAction> {
+        let s = self.cx.state();
+        if s.streams
+            .iter()
+            .find(|st| st.id == item.id)
+            .is_some_and(|st| st.app != item.app)
+        {
+            log::debug!("audio: move_to() from a stream that ended: {}", item.id);
+            return None;
+        }
+        let now = s.sinks.iter().chain(&s.sources).find(|d| d.id == device.id);
+        if now.is_some_and(|d| d.name != device.name) {
+            log::debug!("audio: move_to() onto a device that left: {}", device.id);
+            return None;
+        }
+        Some(AudioAction::MoveStream {
+            stream: self.stream_ref(item.id),
+            to: DeviceRef::Id {
+                id: device.id,
+                serial: self.serials.get(&device.id).copied(),
+            },
+        })
     }
 
     fn device(s: &AudioStore, shown: Shown) -> Option<Entry<'_>> {
@@ -892,6 +940,22 @@ impl Host for StoreHost {
                         let (tx, _) = oneshot::channel();
                         cmds.push(Cmd::Action(action, tx));
                     }
+                }
+                Ok(Msg::Action(AudioDeviceAction::MoveTo { item, device })) => {
+                    if let Some(action) = self.move_to(&item, &device) {
+                        let (tx, _) = oneshot::channel();
+                        cmds.push(Cmd::Action(action, tx));
+                    }
+                }
+                Ok(Msg::Action(AudioDeviceAction::Select { item })) => {
+                    let (tx, _) = oneshot::channel();
+                    cmds.push(Cmd::Action(
+                        AudioAction::SetProfile {
+                            card: item.card,
+                            profile: item.name,
+                        },
+                        tx,
+                    ));
                 }
                 Ok(Msg::Call(c, _)) => match c {},
                 Ok(Msg::Visible(_) | Msg::Watch { .. } | Msg::Keep(_)) => {}

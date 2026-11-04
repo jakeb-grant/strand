@@ -50,6 +50,11 @@ mod tests {
                 "provisional record AudioMeter key device {",
                 "record AudioMeter key device {",
             ),
+            (
+                SCHEMA,
+                "provisional record AudioProfile key name {",
+                "record AudioProfile key name {",
+            ),
             (SCHEMA, "provisional service audio {", "service audio {"),
             (
                 video,
@@ -64,23 +69,33 @@ mod tests {
         }
     }
 
-    /// The model's record has every schema field, and nothing else.
+    /// The model's records have every schema field, and nothing else.
     #[test]
     fn the_model_has_exactly_the_schema_fields() {
-        let d = crate::audio::AudioDevice::new(1, "n", crate::audio::Direction::Sink);
-        let shown = format!("{d:?}");
-        let fields: Vec<&str> = block(SCHEMA, "record AudioDevice key id {")
-            .into_iter()
-            .filter(|m| !m.starts_with("action "))
-            .map(|m| m.split(':').next().unwrap_or(m).trim())
-            .collect();
-        for name in &fields {
-            assert!(
-                shown.contains(&format!("{name}:")),
-                "AudioDevice lacks {name}"
-            );
+        use crate::ToData;
+        let device = crate::audio::AudioDevice::new(1, "n", crate::audio::Direction::Sink);
+        assert!(device.profiles.is_empty(), "a new device lists profiles");
+        for (head, data) in [
+            ("record AudioDevice key id {", device.to_data()),
+            (
+                "record AudioStream key id {",
+                crate::audio::AudioStream::default().to_data(),
+            ),
+            (
+                "record AudioProfile key name {",
+                crate::audio::AudioProfile::default().to_data(),
+            ),
+        ] {
+            let fields: Vec<&str> = block(SCHEMA, head)
+                .into_iter()
+                .filter(|m| !m.starts_with("action "))
+                .map(|m| m.split(':').next().unwrap_or(m).trim())
+                .collect();
+            let crate::Data::Record { fields: ours, .. } = data else {
+                panic!("{head}: not a record");
+            };
+            let ours: Vec<&str> = ours.iter().map(|(n, _)| &**n).collect();
+            assert_eq!(ours, fields, "{head}");
         }
-        // `AudioDevice { a: …, b: … }`: as many fields as the schema has.
-        assert_eq!(shown.matches(": ").count(), fields.len(), "{shown}");
     }
 }

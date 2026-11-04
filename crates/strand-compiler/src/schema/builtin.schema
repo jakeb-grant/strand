@@ -451,6 +451,34 @@ provisional record AudioStream key id {
   volume: float rw
   /// Muted. Writable.
   muted: bool rw
+  /// The device it plays to or records from now, an `id` of
+  /// `audio.sinks` or `audio.sources`: `audio.sinks.find(d => d.id ==
+  /// st.device)`. Null while it is linked to none.
+  device: int?
+  /// `st.move_to(dev)` moves it to device `dev`, where it stays when the
+  /// default changes; moving it to the default device lets it follow the
+  /// default again.
+  action move_to(device: AudioDevice)
+}
+
+/// A profile of the card an audio device belongs to: an item of
+/// `dev.profiles`.
+provisional record AudioProfile key name {
+  /// Its name, such as `a2dp-sink` or `output:analog-stereo`.
+  name: text
+  /// A readable description of it, such as `High Fidelity Playback
+  /// (A2DP Sink)`.
+  description: text
+  /// It can be used now: false when the card says what it needs is
+  /// unplugged.
+  available: bool
+  /// It is the card's profile now.
+  active: bool
+  /// The card it is a profile of.
+  card: int
+  /// Makes it the card's profile, which the session manager keeps:
+  /// `on click { p.select() }`.
+  action select()
 }
 
 /// A program taking video over PipeWire.
@@ -487,6 +515,10 @@ provisional record AudioDevice key id {
   icon: text
   /// It is the default device.
   default: bool
+  /// The profiles of its card, best first (a headset's call and
+  /// high-fidelity modes, a sound card's outputs), keyed by `name`;
+  /// empty for a device of no card. A card's `off` is not listed.
+  profiles: [AudioProfile]
   /// Makes it the default device.
   action make_default()
 }

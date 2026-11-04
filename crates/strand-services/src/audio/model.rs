@@ -3,9 +3,10 @@
 //!
 //! [`AudioDevice`] mirrors the builtin schema's `AudioDevice` record field
 //! for field (`id`, `name`, `description`, `volume`, `muted`, `icon`,
-//! `default`) and holds nothing else. [`AudioState`] is the `audio`
-//! service: the default `sink` and `source`, and every `sinks` and
-//! `sources`.
+//! `default`, `profiles`) and holds nothing else; (audio-routing)
+//! [`AudioProfile`] is one of its card's profiles. [`AudioState`] is the
+//! `audio` service: the default `sink` and `source`, and every `sinks`
+//! and `sources`.
 
 use std::collections::BTreeMap;
 
@@ -84,6 +85,34 @@ pub struct AudioStream {
     pub volume: f64,
     /// Muted.
     pub muted: bool,
+    /// (audio-routing) The device it plays to or records from now: the
+    /// id of the listed device its links reach (the sink a player's
+    /// links go into; the source a recorder's come from; the sink whose
+    /// monitor a `monitor` recording reads), the one with the most links
+    /// when there are several, the lowest id on a tie. `None` while it is
+    /// linked to no listed device.
+    pub device: Option<u32>,
+}
+
+/// (audio-routing) A profile of the card an audio device belongs to: an
+/// item of [`AudioDevice::profiles`], the schema's `AudioProfile` field
+/// for field.
+#[derive(crate::Data, Clone, Debug, Default, PartialEq)]
+#[data(name = "AudioProfile", key = name)]
+pub struct AudioProfile {
+    /// Its name (`SPA_PARAM_PROFILE_name`), unique on its card.
+    pub name: String,
+    /// A readable description of it.
+    pub description: String,
+    /// It can be used now: false only when the card says it is not
+    /// (`SPA_PARAM_AVAILABILITY_no`).
+    pub available: bool,
+    /// It is the card's profile now.
+    pub active: bool,
+    /// The card it is a profile of: the card's `object.serial` (its
+    /// global id where PipeWire gives no serial). `p.select()` names the
+    /// card by it.
+    pub card: u32,
 }
 
 /// (services-round) Where a program's video stream comes from.
@@ -141,6 +170,10 @@ pub struct AudioDevice {
     pub icon: String,
     /// It is the default device of its direction.
     pub default: bool,
+    /// (audio-routing) The profiles of the card it belongs to, best first
+    /// (the card's priority, then its order), without the card's `off`;
+    /// empty for a device of no card (a virtual or null sink).
+    pub profiles: Vec<AudioProfile>,
 }
 
 impl AudioDevice {
@@ -156,6 +189,7 @@ impl AudioDevice {
             muted: false,
             icon: icon(direction, 1.0, false).to_owned(),
             default: false,
+            profiles: Vec::new(),
         }
     }
 }

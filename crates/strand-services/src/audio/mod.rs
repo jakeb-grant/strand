@@ -10,7 +10,12 @@
 //!   `Audio/Duplex`, `Audio/Source`, `Audio/Source/Virtual`) and each one's
 //!   `Props` param: volume (`channelVolumes`, shown on the cubic scale
 //!   `pactl` and `wpctl` show) and mute; and the active `Route` params of
-//!   the audio devices (cards) those nodes belong to;
+//!   the audio devices (cards) those nodes belong to, and (audio-routing)
+//!   their `EnumProfile` and `Profile` params, each new set of profiles
+//!   shown only once whole (after a sync);
+//! - (audio-routing) follows the links between nodes, so a program's
+//!   stream names the device it plays to or records from
+//!   ([`AudioStream::device`]);
 //! - reads the default sink and source from the `default` metadata
 //!   (`default.audio.sink`, else `default.configured.audio.sink`; the same
 //!   for sources), reading it again [`REREAD`] after a client comes or
@@ -19,8 +24,9 @@
 //!   replace the ones held, so a lost clear is read too);
 //! - writes volume and mute on every channel: through the card's active
 //!   `Route` (`save: true`) when the node has one, as `wpctl` and
-//!   pipewire-pulse do, else with the node's `set_param(Props)`; and the
-//!   default with the metadata (see [`AudioAction`]);
+//!   pipewire-pulse do, else with the node's `set_param(Props)`; the
+//!   default, and (audio-routing) a stream's target, with the metadata;
+//!   and a card's profile with its `Profile` param (see [`AudioAction`]);
 //! - runs a peak meter (a passive capture stream) per [`LevelTarget`] only
 //!   while [`Audio::set_levels`] asks for it (the store asks while a
 //!   visible reader wants levels), at most one reading per meter per
@@ -82,8 +88,8 @@ use std::thread::JoinHandle;
 use tokio::sync::oneshot;
 
 pub use model::{
-    AudioChange, AudioDevice, AudioState, AudioStream, Direction, LevelTarget, Levels, Mirror,
-    Publisher, StreamDirection, VideoSource, VideoStream, icon, linear, perceptual,
+    AudioChange, AudioDevice, AudioProfile, AudioState, AudioStream, Direction, LevelTarget,
+    Levels, Mirror, Publisher, StreamDirection, VideoSource, VideoStream, icon, linear, perceptual,
 };
 pub use schema::SCHEMA;
 pub(crate) use service::config as service_config;
@@ -162,6 +168,39 @@ pub enum AudioAction {
     /// applies) and `default.audio.{sink,source}` (the effective default,
     /// for setups without a session manager).
     MakeDefault(DeviceRef),
+    /// (audio-routing) `st.move_to(dev)`: moves the program's stream
+    /// `stream` (a node of `audio.streams`, by id and serial) to device
+    /// `to` through the session manager, writing what pipewire-pulse
+    /// writes for `pactl move-sink-input` (and pavucontrol) on the
+    /// `default` metadata, with the stream's node as subject:
+    /// `target.node` cleared and `target.object` set to `to`'s
+    /// `object.serial` (`Spa:Id`), so it stays on `to` when the default
+    /// changes. A move to the device that is the default of its
+    /// direction now clears `target.object` too (PulseAudio's rule): the
+    /// stream follows the default again. A stream that plays moves to a
+    /// sink, one that records a source to a source, one that records a
+    /// sink's sound (`monitor`) to a sink; any other pair is
+    /// [`AudioError::WrongDirection`]. The session manager relinks it;
+    /// the outcome shows in [`AudioStream::device`].
+    MoveStream {
+        /// The stream.
+        stream: DeviceRef,
+        /// The device it moves to.
+        to: DeviceRef,
+    },
+    /// (audio-routing) `p.select()`: makes `profile` (a name of its
+    /// listed profiles) the profile of the card whose
+    /// [`AudioProfile::card`] is `card`, writing the card's `Profile`
+    /// param with `save: true` (what `wpctl set-profile` and `pactl
+    /// set-card-profile` write), which the session manager keeps. The
+    /// card's devices go and come back under new ids.
+    SetProfile {
+        /// The card: its `object.serial` (its global id where PipeWire
+        /// gives no serial).
+        card: u32,
+        /// The profile's name.
+        profile: String,
+    },
 }
 
 /// Why an action did not run.
@@ -176,6 +215,26 @@ pub enum AudioError {
     InvalidVolume(f64),
     /// No `default` metadata to write (no session manager has created it).
     NoDefaultMetadata,
+    /// (audio-routing) A stream cannot move to that device: one that
+    /// plays moves to a sink, one that records to a source, a `monitor`
+    /// recording to a sink.
+    WrongDirection {
+        /// The stream.
+        stream: DeviceRef,
+        /// The device it was asked to move to.
+        to: DeviceRef,
+    },
+    /// (audio-routing) No card with that key ([`AudioProfile::card`]): it
+    /// left, or never was.
+    UnknownCard(u32),
+    /// (audio-routing) The card lists no profile of that name (its
+    /// profiles changed under a kept item).
+    UnknownProfile {
+        /// The card.
+        card: u32,
+        /// The profile's name.
+        profile: String,
+    },
     /// PipeWire refused, or the request could not be built.
     Failed(String),
 }
@@ -187,6 +246,13 @@ impl std::fmt::Display for AudioError {
             Self::UnknownDevice(d) => write!(f, "no audio device {d:?}"),
             Self::InvalidVolume(v) => write!(f, "invalid volume {v}"),
             Self::NoDefaultMetadata => f.write_str("PipeWire has no `default` metadata"),
+            Self::WrongDirection { stream, to } => {
+                write!(f, "stream {stream:?} cannot move to device {to:?}")
+            }
+            Self::UnknownCard(card) => write!(f, "no audio card {card}"),
+            Self::UnknownProfile { card, profile } => {
+                write!(f, "audio card {card} has no profile `{profile}`")
+            }
             Self::Failed(why) => write!(f, "audio: {why}"),
         }
     }

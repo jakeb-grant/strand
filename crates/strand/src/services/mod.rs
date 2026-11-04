@@ -1120,6 +1120,59 @@ panel Login {
         );
     }
 
+    /// (audio-routing) A program's stream is moved with `st.move_to(dev)`
+    /// and names where it plays with `st.device`; a device's card
+    /// profiles are listed and switched with `p.select()`, against the
+    /// served schema and the compiler's stubs alike; a device is moved
+    /// to by its record, `st.device` is read-only, and `select` is an
+    /// action, not a value.
+    #[test]
+    fn the_audio_routing_checks() {
+        let src = "bar Top {
+  row {
+    for st in audio.streams key st.id {
+      for d in audio.sinks key d.id {
+        box { when d.id == st.device { bg: $accent.container }
+              on click { st.move_to(d) }; text d.description }
+      }
+      text audio.sinks.find(d => d.id == st.device)?.description ?? \"\"
+    }
+    for p in audio.sink.profiles key p.name {
+      box { when p.active { bg: $accent.container }; opacity: p.available ? 1 : 0.5
+            on click { p.select() }; text p.description }
+    }
+    text audio.sink.profiles.find(p => p.active)?.description ?? \"\"
+  }
+}
+";
+        for (which, schema) in [("served", schema()), ("builtin", Schema::builtin())] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", src);
+            let errors: Vec<_> = strand_compiler::compile_with(&map, schema)
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.is_error())
+                .collect();
+            assert!(errors.is_empty(), "{which}: {errors:#?}");
+        }
+        for bad in [
+            // A device is moved to by its record, not its id.
+            "bar B { for st in audio.streams key st.id { box { on click { st.move_to(3) } } } }\n",
+            // Where it plays is read, not written.
+            "bar B { for st in audio.streams key st.id { box { on click { st.device = 3 } } } }\n",
+            // `select` is an action, run from a handler.
+            "bar B { for p in audio.sink.profiles key p.name { box { opacity: p.select() } } }\n",
+        ] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", bad);
+            assert!(
+                strand_compiler::compile_with(&map, schema())
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.is_error()),
+                "{bad}"
+            );
+        }
+    }
+
     /// The schema the binary checks against holds each linked service's
     /// declaration in place of its stub, documented, and each store's
     /// fields and events are exactly its schema record's.

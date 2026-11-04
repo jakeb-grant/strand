@@ -1,5 +1,7 @@
 //! A node's `Props` param (what the audio thread reads: channel volumes,
-//! mute) and a device's `Route` param (where a card's volume is written).
+//! mute), a device's `Route` param (where a card's volume is written) and
+//! (audio-routing) its `EnumProfile` and `Profile` params (a card's
+//! profiles, and the one it uses).
 //! Pure functions over pod bytes, so they are tested without a PipeWire
 //! daemon.
 
@@ -141,6 +143,101 @@ impl Route {
             ],
         }))
     }
+}
+
+/// (audio-routing) Whether a card says a profile can be used now
+/// (`enum spa_param_availability`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Availability {
+    /// The card does not say.
+    #[default]
+    Unknown,
+    /// Not available (what it needs is unplugged).
+    No,
+    /// Available.
+    Yes,
+}
+
+impl Availability {
+    fn of(id: u32) -> Availability {
+        match id {
+            sys::SPA_PARAM_AVAILABILITY_no => Availability::No,
+            sys::SPA_PARAM_AVAILABILITY_yes => Availability::Yes,
+            _ => Availability::Unknown,
+        }
+    }
+}
+
+/// (audio-routing) One of a card's profiles: an item of its
+/// `EnumProfile` param, or (only `index` read) its active `Profile`, as
+/// ALSA cards (ACP) and Bluetooth devices (bluez5) report them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Profile {
+    /// Its index on the card (`SPA_PARAM_PROFILE_index`): what a write
+    /// names.
+    pub index: i32,
+    /// Its name, unique on the card (`a2dp-sink`, `output:analog-stereo`,
+    /// `off`).
+    pub name: String,
+    /// A readable description (the name when the card gives none).
+    pub description: String,
+    /// The card's ranking of it: higher is better.
+    pub priority: i32,
+    /// Whether it can be used now.
+    pub available: Availability,
+}
+
+impl Profile {
+    /// Reads a `ParamProfile` object pod. `None` for anything else, or a
+    /// profile without an index or name. Keys not read (`info`,
+    /// `classes`, `save`) are skipped.
+    pub fn parse(bytes: &[u8]) -> Option<Profile> {
+        let (_, value) = PodDeserializer::deserialize_any_from(bytes).ok()?;
+        let Value::Object(obj) = value else {
+            return None;
+        };
+        if obj.type_ != sys::SPA_TYPE_OBJECT_ParamProfile {
+            return None;
+        }
+        let (mut index, mut name, mut description) = (None, None, None);
+        let (mut priority, mut available) = (0, Availability::Unknown);
+        for p in obj.properties {
+            match (p.key, p.value) {
+                (sys::SPA_PARAM_PROFILE_index, Value::Int(i)) => index = Some(i),
+                (sys::SPA_PARAM_PROFILE_name, Value::String(n)) => name = Some(n),
+                (sys::SPA_PARAM_PROFILE_description, Value::String(d)) => description = Some(d),
+                (sys::SPA_PARAM_PROFILE_priority, Value::Int(p)) => priority = p,
+                (sys::SPA_PARAM_PROFILE_available, Value::Id(id)) => {
+                    available = Availability::of(id.0);
+                }
+                _ => {}
+            }
+        }
+        let name = name?;
+        Some(Profile {
+            index: index?,
+            description: description
+                .filter(|d| !d.is_empty())
+                .unwrap_or_else(|| name.clone()),
+            name,
+            priority,
+            available,
+        })
+    }
+}
+
+/// (audio-routing) The `Profile` pod that makes profile `index` a card's
+/// profile and asks the session manager to keep it (`save: true`): what
+/// `wpctl set-profile` and `pactl set-card-profile` send.
+pub fn select_profile_pod(index: i32) -> Result<Vec<u8>, String> {
+    serialize(&Value::Object(Object {
+        type_: sys::SPA_TYPE_OBJECT_ParamProfile,
+        id: sys::SPA_PARAM_Profile,
+        properties: vec![
+            Property::new(sys::SPA_PARAM_PROFILE_index, Value::Int(index)),
+            Property::new(sys::SPA_PARAM_PROFILE_save, Value::Bool(true)),
+        ],
+    }))
 }
 
 /// The node name in a `default` metadata value: `{ "name": "…" }`
@@ -295,6 +392,134 @@ mod tests {
         assert_eq!(obj.properties[3].value, Value::Bool(true));
         let inner = serialize(&obj.properties[2].value).unwrap();
         assert_eq!(Props::parse(&inner), Some(props));
+    }
+
+    /// An `EnumProfile` item as ACP and bluez5 emit it: every key, the
+    /// `info` and `classes` structs among them.
+    fn profile_value(index: i32, name: &str, available: u32, id: u32) -> Value {
+        use pipewire::spa::utils::Id;
+        Value::Object(Object {
+            type_: sys::SPA_TYPE_OBJECT_ParamProfile,
+            id,
+            properties: vec![
+                Property::new(sys::SPA_PARAM_PROFILE_index, Value::Int(index)),
+                Property::new(sys::SPA_PARAM_PROFILE_name, Value::String(name.into())),
+                Property::new(
+                    sys::SPA_PARAM_PROFILE_description,
+                    Value::String(format!("{name} description")),
+                ),
+                Property::new(sys::SPA_PARAM_PROFILE_priority, Value::Int(index * 10)),
+                Property::new(sys::SPA_PARAM_PROFILE_available, Value::Id(Id(available))),
+                Property::new(
+                    sys::SPA_PARAM_PROFILE_info,
+                    Value::Struct(vec![
+                        Value::Int(1),
+                        Value::String("profile.is-pro".into()),
+                        Value::String("false".into()),
+                    ]),
+                ),
+                Property::new(
+                    sys::SPA_PARAM_PROFILE_classes,
+                    Value::Struct(vec![
+                        Value::Int(1),
+                        Value::Struct(vec![
+                            Value::String("Audio/Sink".into()),
+                            Value::Int(1),
+                            Value::String("card.profile.devices".into()),
+                            Value::ValueArray(ValueArray::Int(vec![0])),
+                        ]),
+                    ]),
+                ),
+                Property::new(sys::SPA_PARAM_PROFILE_save, Value::Bool(false)),
+            ],
+        })
+    }
+
+    #[test]
+    fn profile_pods() {
+        let bytes = serialize(&profile_value(
+            2,
+            "a2dp-sink",
+            sys::SPA_PARAM_AVAILABILITY_yes,
+            sys::SPA_PARAM_EnumProfile,
+        ))
+        .unwrap();
+        assert_eq!(
+            Profile::parse(&bytes),
+            Some(Profile {
+                index: 2,
+                name: "a2dp-sink".into(),
+                description: "a2dp-sink description".into(),
+                priority: 20,
+                available: Availability::Yes,
+            })
+        );
+        for (id, availability) in [
+            (sys::SPA_PARAM_AVAILABILITY_no, Availability::No),
+            (sys::SPA_PARAM_AVAILABILITY_unknown, Availability::Unknown),
+            (7, Availability::Unknown),
+        ] {
+            let bytes = serialize(&profile_value(1, "x", id, sys::SPA_PARAM_EnumProfile)).unwrap();
+            assert_eq!(Profile::parse(&bytes).unwrap().available, availability);
+        }
+        // The card's active `Profile`: the same object, its index read.
+        let bytes = serialize(&profile_value(
+            3,
+            "headset-head-unit",
+            sys::SPA_PARAM_AVAILABILITY_yes,
+            sys::SPA_PARAM_Profile,
+        ))
+        .unwrap();
+        assert_eq!(Profile::parse(&bytes).map(|p| p.index), Some(3));
+        // No description: the name stands in.
+        let bare = Value::Object(Object {
+            type_: sys::SPA_TYPE_OBJECT_ParamProfile,
+            id: sys::SPA_PARAM_EnumProfile,
+            properties: vec![
+                Property::new(sys::SPA_PARAM_PROFILE_index, Value::Int(0)),
+                Property::new(sys::SPA_PARAM_PROFILE_name, Value::String("off".into())),
+            ],
+        });
+        assert_eq!(
+            Profile::parse(&serialize(&bare).unwrap()),
+            Some(Profile {
+                index: 0,
+                name: "off".into(),
+                description: "off".into(),
+                priority: 0,
+                available: Availability::Unknown,
+            })
+        );
+        // Another object, no pod, or a profile missing its index or name.
+        assert_eq!(Profile::parse(&Props::default().to_pod().unwrap()), None);
+        assert_eq!(Profile::parse(b"not a pod"), None);
+        assert_eq!(Profile::parse(&[]), None);
+        for key in [sys::SPA_PARAM_PROFILE_index, sys::SPA_PARAM_PROFILE_name] {
+            let Value::Object(mut obj) = profile_value(1, "x", 0, sys::SPA_PARAM_EnumProfile)
+            else {
+                unreachable!()
+            };
+            obj.properties.retain(|p| p.key != key);
+            assert_eq!(
+                Profile::parse(&serialize(&Value::Object(obj)).unwrap()),
+                None
+            );
+        }
+
+        // The write: index and save, nothing else.
+        let bytes = select_profile_pod(3).unwrap();
+        let (_, Value::Object(obj)) = PodDeserializer::deserialize_any_from(&bytes).unwrap() else {
+            panic!("not an object");
+        };
+        assert_eq!(obj.type_, sys::SPA_TYPE_OBJECT_ParamProfile);
+        assert_eq!(obj.id, sys::SPA_PARAM_Profile);
+        let keys: Vec<u32> = obj.properties.iter().map(|p| p.key).collect();
+        assert_eq!(
+            keys,
+            [sys::SPA_PARAM_PROFILE_index, sys::SPA_PARAM_PROFILE_save]
+        );
+        assert_eq!(obj.properties[0].value, Value::Int(3));
+        assert_eq!(obj.properties[1].value, Value::Bool(true));
     }
 
     #[test]
