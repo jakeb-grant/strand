@@ -288,7 +288,7 @@ the compositor's command line:
 For the rest, you declare one. Make `services.strand`:
 
 ```strand level=5 file=services.strand
-// services.strand: services of your own
+// services.strand: services Strand does not ship
 service ppd from dbus system "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }
 service host from file "/proc/sys/kernel/hostname" { name: text }
 service temps from poll ["sensors", "-j", "coretemp-*"] every 5s { cpu: float = temp1_input }
