@@ -24,15 +24,27 @@
 //! several. A call repeating one still in flight on its device (a double
 //! click; a connect while a pair runs, which connects too) is dropped:
 //! BlueZ would refuse it `InProgress`. A pairing that times out is
-//! cancelled (`CancelPairing`), so BlueZ does not go on with it. No
-//! pairing agent is registered: BlueZ uses the system's if one runs,
-//! else pairs without one.
+//! cancelled (`CancelPairing`), so BlueZ does not go on with it.
+//!
+//! (bt-agent) `request` (a `#[store(stream)]` field too) is the pairing
+//! request a dialog answers: while a reader reads it, Strand is BlueZ's
+//! pairing agent ([`agent`]), and what BlueZ asks it (a PIN, a passkey, a
+//! code to show or confirm, a service to allow) is shown there and
+//! answered by the request's own actions. While none does, no agent is
+//! registered: BlueZ uses the system's if one runs, else pairs without
+//! one.
+
+mod agent;
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, PoisonError};
 use std::time::Duration;
+
+use strand_auth::Password;
 
 use crate::dbus::{self, Daemon, DaemonEvent, Props};
 use crate::{Call, Cx, Event, Msg, ServiceError, Store, service};
+pub use agent::{AGENT_IFACE, AGENT_PATH, CAPABILITY, REQUEST_TIMEOUT};
 
 /// The schema the `bluetooth` service serves.
 pub const SCHEMA: &str = strand_services_schema::BLUETOOTH;
@@ -46,8 +58,8 @@ const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 
 /// How long a connect may take (BlueZ's own page timeout is shorter).
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long pairing may take: a person may be answering the system's
-/// pairing agent.
+/// How long pairing may take: a person may be answering a pairing
+/// request (Strand's own, or the system's agent's).
 const PAIR_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A Bluetooth device, paired or in range.
@@ -63,7 +75,37 @@ pub struct BluetoothDevice {
     pub disconnecting: bool,
 }
 
-/// `bluetooth`'s actions.
+/// What a pairing request asks (the schema's `BluetoothRequestKind`).
+#[derive(crate::Data, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[data(name = "BluetoothRequestKind")]
+pub enum BluetoothRequestKind {
+    /// A PIN to type.
+    #[default]
+    Pin,
+    /// A passkey of up to six digits to type.
+    Passkey,
+    /// A code to show while it is typed on the device.
+    Display,
+    /// Whether to pair, comparing a code when there is one.
+    Confirm,
+    /// Whether a paired device may use a service.
+    Service,
+}
+
+/// A device asking something while it pairs or connects: the schema's
+/// `BluetoothRequest`.
+#[derive(crate::Data, Clone, Debug, Default, PartialEq)]
+#[data(name = "BluetoothRequest")]
+pub struct BluetoothRequest {
+    pub device: BluetoothDevice,
+    pub kind: BluetoothRequestKind,
+    pub code: String,
+    pub entered: i64,
+    pub service: String,
+}
+
+/// `bluetooth`'s actions. A typed answer is a [`Password`] from the call on
+/// (its `Debug` shows only its length), wiped wherever it is dropped.
 #[derive(Call, Debug)]
 pub enum BluetoothAction {
     /// `d.connect()`.
@@ -74,17 +116,15 @@ pub enum BluetoothAction {
     Pair { item: BluetoothDevice },
     /// `d.forget()`.
     Forget { item: BluetoothDevice },
-}
-
-impl BluetoothAction {
-    fn item(self) -> BluetoothDevice {
-        match self {
-            BluetoothAction::Connect { item }
-            | BluetoothAction::Disconnect { item }
-            | BluetoothAction::Pair { item }
-            | BluetoothAction::Forget { item } => item,
-        }
-    }
+    /// `r.respond(answer)`.
+    Respond {
+        item: BluetoothRequest,
+        answer: Password,
+    },
+    /// `r.accept()`.
+    Accept { item: BluetoothRequest },
+    /// `r.reject()`.
+    Reject { item: BluetoothRequest },
 }
 
 /// See the module docs.
@@ -108,8 +148,23 @@ pub struct Bluetooth {
     /// The adapter is discovering devices, for `nearby` or for another
     /// program.
     pub scanning: bool,
+    /// The pairing request the shell is answering, or null. While a config
+    /// reads it, Strand is BlueZ's pairing agent (its default one, able to
+    /// show and type codes), so a device that asks for a PIN, a passkey or a
+    /// confirmation asks it here, whether `d.pair()` or the device started
+    /// the pairing. While none reads it, BlueZ uses the system's agent if
+    /// one runs. Read it where it is always read, as a panel's `open`:
+    /// `panel Pair { open: bluetooth.request != null; keyboard: exclusive … }`.
+    /// A request goes when it is answered, when BlueZ cancels it (the device
+    /// gave up, or a minute passed), when its pairing ends (`display`), and
+    /// when the config stops reading it (it is then refused). A newer
+    /// request takes its place: BlueZ asks one thing at a time.
+    #[store(stream)]
+    pub request: Option<BluetoothRequest>,
     /// Connecting, disconnecting, pairing or forgetting a device failed (out
-    /// of range, turned off, timed out, or the service not running): `on
+    /// of range, turned off, timed out, or the service not running), or an
+    /// answer to `bluetooth.request` did not fit (a PIN that is empty or
+    /// longer than 16 bytes, a passkey that is not digits): `on
     /// bluetooth.failed(address, error) { … }`.
     pub failed: Event<(String, String)>,
 }
@@ -117,14 +172,16 @@ pub struct Bluetooth {
 /// An action the service could not take (no system bus, its run backing
 /// off): `failed(address, error)`, as BlueZ refusing it is.
 fn refused(action: &BluetoothAction, error: &str) -> Option<BluetoothEvent> {
-    let (BluetoothAction::Connect { item }
-    | BluetoothAction::Disconnect { item }
-    | BluetoothAction::Pair { item }
-    | BluetoothAction::Forget { item }) = action;
-    Some(BluetoothEvent::Failed((
-        item.address.clone(),
-        error.to_string(),
-    )))
+    let address = match action {
+        BluetoothAction::Connect { item }
+        | BluetoothAction::Disconnect { item }
+        | BluetoothAction::Pair { item }
+        | BluetoothAction::Forget { item } => &item.address,
+        BluetoothAction::Respond { item, .. }
+        | BluetoothAction::Accept { item }
+        | BluetoothAction::Reject { item } => &item.device.address,
+    };
+    Some(BluetoothEvent::Failed((address.clone(), error.to_string())))
 }
 
 /// BlueZ's objects: path, then interface, then properties.
@@ -145,6 +202,53 @@ fn device_icon(p: &Props) -> String {
         Some(i) if !i.is_empty() => format!("{i}-symbolic"),
         _ => "bluetooth-symbolic".to_string(),
     }
+}
+
+/// A device as BlueZ's object for it (`ifaces`, its `Device1` `d`) shows
+/// it, with the shell's calls in flight (`busy`).
+fn device(
+    ifaces: &HashMap<String, Props>,
+    d: &Props,
+    address: String,
+    busy: &HashMap<String, Busy>,
+) -> BluetoothDevice {
+    let state = busy.get(&address).copied();
+    BluetoothDevice {
+        name: dbus::text(d, "Alias")
+            .or_else(|| dbus::text(d, "Name"))
+            .unwrap_or_default(),
+        connected: dbus::boolean(d, "Connected").unwrap_or(false),
+        battery: ifaces
+            .get(BATTERY)
+            .and_then(|b| dbus::number(b, "Percentage"))
+            .map(|p| (p / 100.0).clamp(0.0, 1.0)),
+        icon: device_icon(d),
+        connecting: state == Some(Busy::Connecting),
+        disconnecting: state == Some(Busy::Disconnecting),
+        address,
+    }
+}
+
+/// (bt-agent) The device at object `path`, paired or not, for a pairing
+/// request: as BlueZ lists it, else (not listed yet) by the address its
+/// path names, with no name.
+fn device_of(objects: &Objects, path: &str, busy: &HashMap<String, Busy>) -> BluetoothDevice {
+    let listed = objects.get(path).and_then(|ifaces| {
+        let d = ifaces.get(DEVICE)?;
+        let address = dbus::text(d, "Address")?;
+        Some(device(ifaces, d, address, busy))
+    });
+    listed.unwrap_or_else(|| BluetoothDevice {
+        address: agent::address_of_path(path),
+        icon: "bluetooth-symbolic".to_string(),
+        ..BluetoothDevice::default()
+    })
+}
+
+/// Whether the device at object `path` is listed and paired.
+fn paired_at(objects: &Objects, path: &str) -> Option<bool> {
+    let d = objects.get(path)?.get(DEVICE)?;
+    Some(dbus::boolean(d, "Paired").unwrap_or(false))
 }
 
 /// The properties that change with every advertisement a device sends
@@ -204,21 +308,7 @@ impl Bluetooth {
             let Some(address) = dbus::text(d, "Address") else {
                 continue;
             };
-            let state = busy.get(&address).copied();
-            let device = BluetoothDevice {
-                name: dbus::text(d, "Alias")
-                    .or_else(|| dbus::text(d, "Name"))
-                    .unwrap_or_default(),
-                connected: dbus::boolean(d, "Connected").unwrap_or(false),
-                battery: ifaces
-                    .get(BATTERY)
-                    .and_then(|b| dbus::number(b, "Percentage"))
-                    .map(|p| (p / 100.0).clamp(0.0, 1.0)),
-                icon: device_icon(d),
-                connecting: state == Some(Busy::Connecting),
-                disconnecting: state == Some(Busy::Disconnecting),
-                address,
-            };
+            let device = device(ifaces, d, address, busy);
             if paired {
                 devices.push(device);
             } else {
@@ -236,6 +326,8 @@ impl Bluetooth {
             available: true,
             nearby,
             scanning: dbus::boolean(adapter, "Discovering").unwrap_or(false),
+            // The store's own, set as it publishes.
+            request: None,
             failed: Event::default(),
         }
     }
@@ -276,6 +368,14 @@ impl InFlight {
     fn insert(&mut self, id: tokio::task::Id, address: String, ask: Ask) {
         self.asked += 1;
         self.calls.insert(id, (address, ask, self.asked));
+    }
+
+    /// The shell's own `pair()` of `address` runs: BlueZ has a pairing of
+    /// Strand's for it, which `CancelPairing` cancels.
+    fn pairs(&self, address: &str) -> bool {
+        self.calls
+            .values()
+            .any(|(a, ask, _)| a == address && *ask == Ask::Pair)
     }
 
     /// Task `id` ended.
@@ -321,35 +421,57 @@ async fn follow(
     let mut busy = InFlight::default();
     // The devices in range are listed (a reader reads them).
     let mut listing = cx.watched("nearby");
-    let publish = |cx: &mut Cx<Bluetooth>, objects: &Objects, busy: &InFlight, listing: bool| {
-        let busy = busy.by_address();
-        cx.update(|s| *s = Bluetooth::from_objects(objects, &busy, listing))
-    };
+    // (bt-agent) The pairing agent, exported and registered while a
+    // reader reads `request`, answering only BlueZ's current name; the
+    // request it shows. Dropped with the body, it takes the agent down
+    // and refuses the request.
+    let mut asking = cx.watched("request");
+    let bluez: agent::Owner = Arc::default();
+    let (asked_tx, mut asked) = tokio::sync::mpsc::unbounded_channel();
+    let mut reg = agent::Registration::new(conn, asked_tx, bluez.clone());
+    let mut pairing = agent::Pairing::default();
     loop {
         let mut objects = read(&daemon)
             .await
             .map_err(|e| ServiceError(format!("BlueZ did not answer: {e}")))?;
+        *bluez.lock().unwrap_or_else(PoisonError::into_inner) =
+            daemon.owner().map(|o| o.to_string());
         // A discovery of the BlueZ before went with it.
         discovery.forget();
         discovery.sync(conn, &objects, listing).await;
-        if !publish(cx, &objects, &busy, listing) {
+        if let Some(w) = reg.sync(asking).await
+            && !cx.warn(w)
+        {
+            return Ok(());
+        }
+        if !publish(cx, &objects, &busy, listing, &pairing) {
             return Ok(());
         }
         cx.ready();
         'follow: loop {
+            let deadline = pairing.deadline();
             tokio::select! {
                 Some(done) = calls.join_next_with_id(), if !calls.is_empty() => {
-                    let failure = match done {
-                        Ok((id, (address, error))) => {
-                            busy.remove(id);
-                            error.map(|e| (address, e))
-                        }
-                        Err(e) => {
-                            busy.remove(e.id());
-                            None
-                        }
+                    let id = match &done {
+                        Ok((id, _)) => *id,
+                        Err(e) => e.id(),
                     };
-                    if !publish(cx, &objects, &busy, listing) {
+                    // A `display` request ends with the shell's own pair
+                    // (or connect) of its device.
+                    if let Some((address, ask, _)) = busy.calls.get(&id)
+                        && matches!(ask, Ask::Pair | Ask::Connect)
+                        && pairing.shown().is_some_and(|s| {
+                            s.request.kind == BluetoothRequestKind::Display
+                                && s.request.device.address == *address
+                        })
+                    {
+                        pairing.withdraw("its pairing ended");
+                    }
+                    busy.remove(id);
+                    let failure = done
+                        .ok()
+                        .and_then(|(_, (address, error))| error.map(|e| (address, e)));
+                    if !publish(cx, &objects, &busy, listing, &pairing) {
                         return Ok(());
                     }
                     if let Some(failure) = failure
@@ -358,15 +480,56 @@ async fn follow(
                         return Ok(());
                     }
                 }
+                Some(a) = asked.recv() => {
+                    match a {
+                        agent::Asked::Request(r) if asking => {
+                            let device = device_of(&objects, &r.path, &busy.by_address());
+                            let paired = paired_at(&objects, &r.path);
+                            pairing.ask(*r, device, paired, tokio::time::Instant::now());
+                        }
+                        // Asked as the reader went: refused (its answer
+                        // dropped, so `Canceled`).
+                        agent::Asked::Request(_) => {}
+                        agent::Asked::Cancel => {
+                            pairing.withdraw("BlueZ cancelled it");
+                        }
+                        agent::Asked::Release => {
+                            pairing.withdraw("BlueZ released Strand's agent");
+                            reg.released();
+                        }
+                    }
+                    if !publish(cx, &objects, &busy, listing, &pairing) {
+                        return Ok(());
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now)),
+                    if deadline.is_some() => {
+                    if pairing.expire(tokio::time::Instant::now())
+                        && !publish(cx, &objects, &busy, listing, &pairing)
+                    {
+                        return Ok(());
+                    }
+                }
                 ev = daemon.next() => match ev {
                     None => return Err(ServiceError("the system bus connection ended".into())),
-                    Some(DaemonEvent::Owner) => break 'follow,
+                    Some(DaemonEvent::Owner) => {
+                        // BlueZ restarted or went: its requests went too.
+                        pairing.withdraw("BlueZ restarted");
+                        break 'follow;
+                    }
                     Some(DaemonEvent::Signal(m)) => {
                         if signal(&daemon, &mut objects, &m).await {
                             // The adapter powered on: discovery again if
                             // it is wanted.
                             discovery.sync(conn, &objects, listing).await;
-                            if !publish(cx, &objects, &busy, listing) {
+                            // A `display` request ends when its device
+                            // has paired, or went (once it was listed: a
+                            // device not listed yet has the minute).
+                            let paired = pairing.shown().and_then(|s| paired_at(&objects, &s.path));
+                            if pairing.display_ended(paired) {
+                                pairing.withdraw("its pairing ended");
+                            }
+                            if !publish(cx, &objects, &busy, listing, &pairing) {
                                 return Ok(());
                             }
                         }
@@ -377,7 +540,22 @@ async fn follow(
                     Some(Msg::Watch { field: "nearby", on }) => {
                         listing = on;
                         discovery.sync(conn, &objects, listing).await;
-                        if !publish(cx, &objects, &busy, listing) {
+                        if !publish(cx, &objects, &busy, listing, &pairing) {
+                            return Ok(());
+                        }
+                    }
+                    Some(Msg::Watch { field: "request", on }) => {
+                        asking = on;
+                        if !on {
+                            // No dialog shows it any more: refused.
+                            pairing.withdraw("no dialog shows it");
+                        }
+                        if let Some(w) = reg.sync(asking).await
+                            && !cx.warn(w)
+                        {
+                            return Ok(());
+                        }
+                        if !publish(cx, &objects, &busy, listing, &pairing) {
                             return Ok(());
                         }
                     }
@@ -406,13 +584,22 @@ async fn follow(
                         }
                     }
                     Some(Msg::Action(a)) => {
-                        let what = match &a {
-                            BluetoothAction::Connect { .. } => Ask::Connect,
-                            BluetoothAction::Disconnect { .. } => Ask::Disconnect,
-                            BluetoothAction::Pair { .. } => Ask::Pair,
-                            BluetoothAction::Forget { .. } => Ask::Forget,
+                        let (what, address) = match a {
+                            BluetoothAction::Connect { item } => (Ask::Connect, item.address),
+                            BluetoothAction::Disconnect { item } => (Ask::Disconnect, item.address),
+                            BluetoothAction::Pair { item } => (Ask::Pair, item.address),
+                            BluetoothAction::Forget { item } => (Ask::Forget, item.address),
+                            a @ (BluetoothAction::Respond { .. }
+                            | BluetoothAction::Accept { .. }
+                            | BluetoothAction::Reject { .. }) => {
+                                if !answer(cx, conn, &mut pairing, &busy, a)
+                                    || !publish(cx, &objects, &busy, listing, &pairing)
+                                {
+                                    return Ok(());
+                                }
+                                continue;
+                            }
                         };
-                        let address = a.item().address;
                         if busy.repeats(&address, what) {
                             log::debug!("bluetooth: {what:?} {address} already runs");
                             continue;
@@ -447,13 +634,81 @@ async fn follow(
                             (addr, r.err())
                         });
                         busy.insert(task.id(), address, what);
-                        if what.busy().is_some() && !publish(cx, &objects, &busy, listing) {
+                        if what.busy().is_some() && !publish(cx, &objects, &busy, listing, &pairing) {
                             return Ok(());
                         }
                     }
                     Some(_) => {}
                 },
             }
+        }
+    }
+}
+
+/// The state BlueZ's objects make, with the shell's calls in flight, the
+/// devices in range only while `listing`, and the pairing request shown
+/// (its device as BlueZ lists it now).
+fn publish(
+    cx: &mut Cx<Bluetooth>,
+    objects: &Objects,
+    busy: &InFlight,
+    listing: bool,
+    pairing: &agent::Pairing,
+) -> bool {
+    let busy = busy.by_address();
+    let request = pairing.shown().map(|s| BluetoothRequest {
+        device: device_of(objects, &s.path, &busy),
+        ..s.request.clone()
+    });
+    cx.update(|s| {
+        *s = Bluetooth::from_objects(objects, &busy, listing);
+        s.request = request;
+    })
+}
+
+/// (bt-agent) A `respond`, `accept` or `reject` of a pairing request;
+/// `false` once the store has stopped.
+fn answer(
+    cx: &mut Cx<Bluetooth>,
+    conn: &zbus::Connection,
+    pairing: &mut agent::Pairing,
+    busy: &InFlight,
+    a: BluetoothAction,
+) -> bool {
+    match pairing.answer(a) {
+        agent::Answered::Ignored | agent::Answered::Gone => true,
+        agent::Answered::Misfit(address, why) => {
+            cx.emit(BluetoothEvent::Failed((address, why.to_string())))
+        }
+        agent::Answered::DisplayRefused { address, .. } if !busy.pairs(&address) => {
+            // A pairing the device (or another program) started: only the
+            // dialog goes. BlueZ's `CancelPairing` cancels only its
+            // caller's own `Pair`, and with none running it removes the
+            // device's keys: a paired keyboard pairing again would be
+            // forgotten.
+            true
+        }
+        agent::Answered::DisplayRefused { path, .. } => {
+            // The code shown for the shell's own `pair()` is refused:
+            // BlueZ stops the pairing (which fails that `Pair`).
+            let conn = conn.clone();
+            tokio::spawn(async move {
+                let r = dbus::timed_for(
+                    dbus::READ_TIMEOUT,
+                    conn.call_method(
+                        Some(BLUEZ),
+                        path.as_str(),
+                        Some(DEVICE),
+                        "CancelPairing",
+                        &(),
+                    ),
+                )
+                .await;
+                if let Err(e) = r {
+                    log::debug!("bluetooth: pairing {path} not cancelled: {e}");
+                }
+            });
+            true
         }
     }
 }
@@ -827,6 +1082,27 @@ mod tests {
         let nearby: Vec<&str> = b.nearby.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(nearby, ["Stranger"], "the anonymous one is left out");
         assert_eq!(b.devices.len(), 1, "a paired device is not nearby");
+    }
+
+    /// (bt-agent) BlueZ's objects make no pairing request: the store sets
+    /// it as it publishes, its device as BlueZ lists it, else by the
+    /// address its object path names.
+    #[test]
+    fn from_objects_leaves_the_request_to_publish() {
+        let o = objects();
+        let none = HashMap::new();
+        assert_eq!(Bluetooth::from_objects(&o, &none, true).request, None);
+        let listed = device_of(&o, "/org/bluez/hci0/dev_2", &none);
+        assert_eq!(listed.address, "AA:BB:CC:DD:EE:FF");
+        assert_eq!(listed.name, "Stranger");
+        assert_eq!(paired_at(&o, "/org/bluez/hci0/dev_2"), Some(false));
+        assert_eq!(paired_at(&o, "/org/bluez/hci0/dev_1"), Some(true));
+        let unknown = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01";
+        let d = device_of(&o, unknown, &none);
+        assert_eq!(d.address, "AA:BB:CC:DD:EE:01");
+        assert_eq!(d.name, "");
+        assert_eq!(d.icon, "bluetooth-symbolic");
+        assert_eq!(paired_at(&o, unknown), None);
     }
 
     #[test]

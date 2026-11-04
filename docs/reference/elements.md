@@ -377,7 +377,7 @@ Also every prop and event of [`node`](#node).
 | --- | --- | --- |
 | `text` | `<-> text` | Its text, bound two-way. |
 | `placeholder` | `text` | Shown while it is empty. |
-| `type` | `InputKind` | `password` masks it, and the text it binds is a password: `check::secret_flow` warns where that reaches anything that shows, keeps or sends it, other than `auth.submit`, `polkit.respond`, `greetd.submit`, a network's `connect_with` and `network.join`'s `password` (its length and whether it is empty are free to show). |
+| `type` | `InputKind` | `password` masks it, and the text it binds is a password: `check::secret_flow` warns where that reaches anything that shows, keeps or sends it, other than `auth.submit`, `polkit.respond`, `greetd.submit`, a network's `connect_with`, `network.join`'s `password` and a Bluetooth request's `respond` (its length and whether it is empty are free to show). |
 | `nav` | `Node` | Routes arrow keys to a `list`: `nav: results`. |
 
 ### `letters`

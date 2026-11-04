@@ -25,10 +25,12 @@ record BluetoothDevice key address {
   action disconnect()
   /// Pairs with it, trusts it (so it may reconnect on its own) and connects
   /// to it: how a `nearby` device is added. One already paired is trusted
-  /// and connected. Strand asks for no PIN or passkey: BlueZ pairs through
-  /// the system's pairing agent if one runs, else without one (most
-  /// headphones, mice, keyboards and phones). A device that insists on a
-  /// PIN fails. A pairing not done within a minute is cancelled and fails.
+  /// and connected. While a config reads `bluetooth.request`, a device
+  /// that asks for a PIN, a passkey or a confirmation asks it there.
+  /// Otherwise BlueZ pairs through the system's pairing agent if one runs,
+  /// else without one (most headphones, mice, keyboards and phones), and a
+  /// device that insists on a code fails. A pairing not done within a
+  /// minute is cancelled and fails.
   /// Asked again while one runs (a double click), it is dropped. A failure
   /// is `bluetooth.failed`.
   action pair()
@@ -36,6 +38,51 @@ record BluetoothDevice key address {
   /// `devices`. Asked again while one runs, it is dropped. A failure is
   /// `bluetooth.failed`.
   action forget()
+}
+
+/// A Bluetooth device asking something of the shell while it pairs or
+/// connects: `bluetooth.request`. `kind` says what it asks; it is
+/// answered with `respond`, `accept` or `reject`.
+record BluetoothRequest {
+  /// The device asking: one of `bluetooth.devices` or `bluetooth.nearby`,
+  /// or one pairing from its own side (a phone pairing with this machine),
+  /// as BlueZ knows it.
+  device: BluetoothDevice
+  /// What it asks. `pin` and `passkey` are typed and given to `respond`.
+  /// `display` shows `code` to type on the device (a keyboard) and needs
+  /// no answer. `confirm` asks whether to pair, after checking that the
+  /// device shows `code` (when `code` is "", there is nothing to compare).
+  /// `service` asks whether a paired device may use `service`.
+  kind: BluetoothRequestKind
+  /// The code to show (`display`) or compare with the device's
+  /// (`confirm`): a passkey as six digits, zero-padded ("004213"), or a
+  /// PIN as BlueZ gives it. "" for the other kinds, and for a `confirm`
+  /// with nothing to compare.
+  code: text
+  /// How many digits of `code` have been typed on the device so far (a
+  /// keyboard being paired reports each key), for `display`; else 0.
+  entered: int
+  /// The service a `service` request asks for, by name where Strand knows
+  /// it ("Audio Sink", "Hands-Free", "Human Interface Device"), else its
+  /// UUID; "" for the other kinds.
+  service: text
+  /// Answers a `pin` request (1 to 16 bytes: up to 16 letters or digits)
+  /// or a `passkey` one (up to six digits) with `answer`: `input { type:
+  /// password; text: <-> typed; on activate {
+  /// bluetooth.request?.respond(typed); typed = "" } }`. An
+  /// answer that does not fit its kind is not sent: it is
+  /// `bluetooth.failed(address, error)`, and the request stays. Ignored
+  /// for the other kinds, and once the request has gone: an answer goes
+  /// only to the request it was typed for.
+  action respond(answer: text)
+  /// Allows it: pairs (`confirm`), or lets the device use the service
+  /// (`service`). Ignored for the other kinds, and once it has gone.
+  action accept()
+  /// Refuses it: the pairing fails, or the device may not use the
+  /// service. A `display` goes, and its pairing is cancelled when the
+  /// shell started it (`d.pair()`); one the device started goes on until
+  /// the device ends it. Ignored once it has gone.
+  action reject()
 }
 
 /// Bluetooth, from BlueZ, followed live: the first adapter, the devices
@@ -56,8 +103,22 @@ service bluetooth {
   /// The adapter is discovering devices, for `nearby` or for another
   /// program.
   scanning: bool
+  /// The pairing request the shell is answering, or null. While a config
+  /// reads it, Strand is BlueZ's pairing agent (its default one, able to
+  /// show and type codes), so a device that asks for a PIN, a passkey or a
+  /// confirmation asks it here, whether `d.pair()` or the device started
+  /// the pairing. While none reads it, BlueZ uses the system's agent if
+  /// one runs. Read it where it is always read, as a panel's `open`:
+  /// `panel Pair { open: bluetooth.request != null; keyboard: exclusive … }`.
+  /// A request goes when it is answered, when BlueZ cancels it (the device
+  /// gave up, or a minute passed), when its pairing ends (`display`), and
+  /// when the config stops reading it (it is then refused). A newer
+  /// request takes its place: BlueZ asks one thing at a time.
+  request: BluetoothRequest?
   /// Connecting, disconnecting, pairing or forgetting a device failed (out
-  /// of range, turned off, timed out, or the service not running): `on
+  /// of range, turned off, timed out, or the service not running), or an
+  /// answer to `bluetooth.request` did not fit (a PIN that is empty or
+  /// longer than 16 bytes, a passkey that is not digits): `on
   /// bluetooth.failed(address, error) { … }`.
   event failed(address: text, error: text)
 }

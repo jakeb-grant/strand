@@ -214,6 +214,15 @@ fn kept_or_sent() {
         flows(&field("  box { on click { network.join(pw, \"\") } }")),
         ["pw"]
     );
+    // (bt-agent) Only a Bluetooth request's `respond` is meant for it: a
+    // `respond` of another service's sends it.
+    assert_eq!(
+        flows(&format!(
+            "service chat from dbus session \"org.example.Chat\" {{\n  action respond(p: text) = Respond\n}}\n{}",
+            field("  box { on click { chat.respond(pw); bluetooth.request?.respond(pw) } }")
+        )),
+        ["pw"]
+    );
     // A service's field written.
     assert_eq!(
         flows(&field(
@@ -290,7 +299,8 @@ fn harmless_reads_and_the_meant_calls_do_not_warn() {
          input { type: password; text: <-> pw; when reveal { type: text } }\n  \
          box { on click { polkit.respond(pw); greetd.submit(pw); pw = \"\" } }\n  \
          for ap in network.access_points key ap.ssid { box { on click { ap.connect_with(pw) } } }\n  \
-         box { on click { network.join(\"Hidden\", pw) } }",
+         box { on click { network.join(\"Hidden\", pw) } }\n  \
+         box { on click { bluetooth.request?.respond(pw) } }",
     );
     assert_eq!(flows(&src), none);
     // Dots made by a `fn` or by a lambda a `let` holds, given the

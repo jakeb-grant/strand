@@ -1756,7 +1756,10 @@ Public interfaces:
     the stop with core's timers on `release` (no synchronous disposal in
     scope cleanup). `acquire_field`/`release_field` hold each field read
     directly, which is what a `#[store(stream)]` field's stream runs
-    for. Boot holds `instantiate::HELD_ANYWHERE` (`clipboard.history`)
+    for. A top-level surface's `open:` is lowered in the file's scope,
+    before the surface's own, so a field it reads is held while the
+    surface is closed (`bluetooth.request`'s pairing agent stays
+    registered under a closed dialog; decisions.md bt-agent). Boot holds `instantiate::HELD_ANYWHERE` (`clipboard.history`)
     for the program's life when read anywhere (spec.md 8.1).
   - Several service crates, one host: `Instance::new` takes one
     `Rc<dyn ServiceHost>`, and `ServiceHost` (with `Value` and the VM's
@@ -2668,7 +2671,10 @@ itself.
   Each module's doc comment gives its sources, fields and limits:
   `system`, `cpu`, `memory`, `disk`, `keyboard`, `battery`,
   `brightness`, `network` (NetworkManager, else iwd, never
-  D-Bus-activated), `bluetooth`, `notifications` (our own server;
+  D-Bus-activated), `bluetooth` (BlueZ; its pairing agent,
+  `bluetooth::agent`, registered while `request` is read; not a secret
+  service, since action arguments are never recorded),
+  `notifications` (our own server;
   history in the persist store), `apps`, `idle`, `polkit` (our own
   authentication agent), `greetd`, `auth`, `media` (MPRIS; remote art
   through `art`), `tray`, `session` (logind), `outputs`, `clipboard`,

@@ -89,6 +89,41 @@ where
     )
 }
 
+/// The unique bus name serving `iface` at `path` (an agent Strand
+/// exports), if one does: each unique name's `Introspect` of `path`.
+pub fn serving(
+    tokio: &tokio::runtime::Runtime,
+    conn: &zbus::Connection,
+    path: &str,
+    iface: &str,
+) -> Option<String> {
+    let dbus = tokio.block_on(zbus::fdo::DBusProxy::new(conn)).unwrap();
+    let names = tokio.block_on(dbus.list_names()).unwrap();
+    for n in names.iter().filter(|n| n.starts_with(':')) {
+        let xml = tokio.block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                conn.call_method(
+                    Some(n.as_str()),
+                    path,
+                    Some("org.freedesktop.DBus.Introspectable"),
+                    "Introspect",
+                    &(),
+                ),
+            )
+            .await
+        });
+        if let Ok(Ok(m)) = xml
+            && m.body()
+                .deserialize::<String>()
+                .is_ok_and(|x| x.contains(iface))
+        {
+            return Some(n.to_string());
+        }
+    }
+    None
+}
+
 /// The calls a dbusmock object logged for `method`: their arguments.
 pub fn mock_calls(
     tokio: &tokio::runtime::Runtime,

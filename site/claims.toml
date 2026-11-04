@@ -2038,6 +2038,12 @@ proof  = "read: 28 `##` sections in the generated reference"
 
 [[claim]]
 page   = "site/concepts/services.md"
+text   = "Bluetooth adapters, devices and pairing requests, from BlueZ"
+source = ['crates/strand-services-schema/src/bluetooth.schema "The pairing request the shell is answering, or null."']
+proof  = "crates/strand-services/tests/bluetooth_agent.rs::a_pin_or_passkey_is_typed_by_the_shell"
+
+[[claim]]
+page   = "site/concepts/services.md"
 text   = "stops 5 seconds after its last reader"
 source = ['crates/strand-services/src/client.rs "pub const STOP_GRACE: Duration = Duration::from_secs(5);"', 'docs/spec.md "and stops 5 s after its last reader leaves or becomes"']
 proof  = "read: STOP_GRACE"

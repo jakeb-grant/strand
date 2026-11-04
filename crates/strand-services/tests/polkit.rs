@@ -241,34 +241,7 @@ impl World {
 
     /// The unique name serving Strand's agent, if one does.
     fn serving(&self) -> Option<String> {
-        let dbus = self
-            .tokio
-            .block_on(zbus::fdo::DBusProxy::new(&self.conn))
-            .unwrap();
-        let names = self.tokio.block_on(dbus.list_names()).unwrap();
-        for n in names.iter().filter(|n| n.starts_with(':')) {
-            let xml = self.tokio.block_on(async {
-                tokio::time::timeout(
-                    Duration::from_secs(2),
-                    self.conn.call_method(
-                        Some(n.as_str()),
-                        AGENT_PATH,
-                        Some("org.freedesktop.DBus.Introspectable"),
-                        "Introspect",
-                        &(),
-                    ),
-                )
-                .await
-            });
-            if let Ok(Ok(m)) = xml
-                && m.body()
-                    .deserialize::<String>()
-                    .is_ok_and(|x| x.contains(AGENT_IFACE))
-            {
-                return Some(n.to_string());
-            }
-        }
-        None
+        serving(&self.tokio, &self.conn, AGENT_PATH, AGENT_IFACE)
     }
 
     fn begin(&self, agent: &str, cookie: &str, uids: &[u32]) {
