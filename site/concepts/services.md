@@ -33,7 +33,7 @@ field, function, action and event.
 | `greetd` | A login screen, when Strand runs as greetd's greeter |
 | `idle` | Whether you are away |
 | `keyboard` | Lock keys, layouts and modifiers |
-| `media` | The active media player, over MPRIS |
+| `media` | The media players, over MPRIS |
 | `network` | The network, from NetworkManager or iwd |
 | `notifications` | The notification server, which the shell is |
 | `outputs` | The monitors' configuration |
@@ -76,9 +76,127 @@ second.
   `on notifications.received(n) { … }`.
 
 Where a daemon may be missing (NetworkManager, BlueZ, logind,
-UDisks2, the backlight), the service's `available` field says whether
-it answers, so a config can hide what cannot work. A missing daemon never stops
-the shell.
+UDisks2, power-profiles-daemon, the backlight), the service's
+`available` field says whether it answers, so a config can hide what
+cannot work. A missing daemon never stops the shell.
+
+## A control panel and a pairing dialog
+
+A panel of controls that would otherwise need a tool each: the power
+profile, which output each app plays to, the default output's modes (a
+headset's call and high-fidelity profiles), and the drives plugged in:
+
+```strand file=controls.strand
+// controls.strand: the power profile, where each app plays, the
+// headset's mode and the drives plugged in
+export state open = false
+
+panel Controls {
+  anchor: top_right; keyboard: on_demand; open: <-> open
+  bg: $surface; color: $fg; font: $font.ui
+  state why = ""
+  on drives.failed(device, error) { why = error }
+  col { gap: $space.2; pad: $space.3
+    if power.available {
+      row { gap: $space.2
+        for p in power.profiles key p {
+          button match p { power_saver => "Saver", balanced => "Balanced", performance => "Fast" } {
+            when p == power.profile { bg: $accent }
+            on click { power.profile = p }
+          }
+        }
+      }
+    }
+    for st in audio.streams.filter(s => s.direction == output) key st.id {
+      row { gap: $space.2
+        text st.app
+        for dev in audio.sinks key dev.id {
+          button dev.description {
+            when st.device == dev.id { bg: $accent }
+            on click { st.move_to(dev) }
+          }
+        }
+      }
+    }
+    for p in audio.sink.profiles key p.name {
+      button p.description {
+        when p.active { bg: $accent }
+        on click { p.select() }
+      }
+    }
+    for d in drives.all key d.device {
+      row { gap: $space.2
+        icon d.icon
+        text d.name
+        for v in d.volumes key v.device {
+          button v.mounted ? "Unmount" : "Mount " + (v.label ?? bytes(v.size)) {
+            on click { if v.mounted { v.unmount() } else { v.mount() } }
+          }
+        }
+        if d.can_eject { button "Eject" { on click { d.eject() } } }
+      }
+    }
+    text why { color: $fg.muted }
+  }
+}
+```
+
+- **`power.profile = p`** asks power-profiles-daemon to switch. Only
+  the profiles the machine offers are in `power.profiles`.
+- **`st.move_to(dev)`** sends one app's sound to `dev`, where it stays
+  when the default output changes; `st.device` is the output it plays
+  to now.
+- **`p.select()`** switches the card's profile, a headset between its
+  call and high-fidelity modes.
+- **`d.eject()`** unmounts every filesystem on the drive, then ejects
+  the medium or powers the drive off, so it is safe to pull. A refusal,
+  such as a file still open on it, arrives as `drives.failed`.
+
+A device being paired may ask for a PIN or a passkey, or ask you to
+confirm a code. While a config reads `bluetooth.request`, Strand is
+BlueZ's pairing agent and the question arrives there, so the dialog is
+an ordinary panel that opens while there is a request:
+
+```strand file=pair.strand
+// pair.strand: what a Bluetooth device asks as it pairs
+panel Pair {
+  anchor: center; keyboard: exclusive; open: bluetooth.request != null
+  bg: $surface; color: $fg; font: $font.ui
+  state typed = ""
+  col { gap: $space.2; pad: $space.3
+    text bluetooth.request?.device?.name ?? ""
+    text match bluetooth.request?.kind ?? confirm {
+      pin => "Type the PIN"
+      passkey => "Type the passkey"
+      display => "Type this on the device"
+      confirm => "Does the device show this code?"
+      service => "Allow " + (bluetooth.request?.service ?? "")
+    }
+    text bluetooth.request?.code ?? ""
+    if bluetooth.request?.kind == pin || bluetooth.request?.kind == passkey {
+      input { type: password; focus: true; text: <-> typed
+        on activate { bluetooth.request?.respond(typed); typed = "" }
+      }
+    }
+    row { gap: $space.2
+      if bluetooth.request?.kind == confirm || bluetooth.request?.kind == service {
+        button "Allow" { on click { bluetooth.request?.accept() } }
+      }
+      button "Refuse" { on click { bluetooth.request?.reject() } }
+    }
+  }
+}
+```
+
+- **`?.` at each step.** `bluetooth.request` is null while nothing
+  asks, so `bluetooth.request?.device` may be null too, and the name
+  is `bluetooth.request?.device?.name`.
+- **`respond(typed)`** answers a PIN or a passkey, from a
+  `type: password` input; **`accept()`** allows a code to confirm or a
+  service the device wants, and **`reject()`** refuses any request.
+- **The panel's `open:` reads `request`** even while the panel is
+  closed, so Strand stays the agent and the dialog can open. A shell
+  that never reads it leaves pairing to the system's own agent.
 
 ## Services of your own
 

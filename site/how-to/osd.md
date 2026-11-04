@@ -87,3 +87,9 @@ fades out 1.2 seconds after the last one.
   the number changes.
 - **On every monitor.** `screens: all` on the `osd` puts a copy on each
   monitor, with `screen` in scope in each.
+- **The keyboard's light.** `brightness.keyboard` is the keyboard's
+  backlight, 0 to 1, where `brightness.keyboard_present` says there is
+  one. Add a third variant to `Kind` and an `on change
+  brightness.keyboard` beside the screen's, and bind the light's keys
+  to `strand set brightness.keyboard +50%` and `-50%`: a level between
+  the light's steps goes to the nearest, and it stays within 0 to 1.

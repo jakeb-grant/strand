@@ -2671,8 +2671,8 @@ itself.
   adds its text to `strand-services-schema` and its store to `Builtin`.
   Each module's doc comment gives its sources, fields and limits:
   `system`, `cpu`, `memory`, `disk`, `keyboard`, `battery`,
-  `brightness`, `network` (NetworkManager, else iwd, never
-  D-Bus-activated), `bluetooth` (BlueZ; its pairing agent,
+  `brightness` (the screen's and the keyboard's backlights), `network`
+  (NetworkManager, else iwd, never D-Bus-activated), `bluetooth` (BlueZ; its pairing agent,
   `bluetooth::agent`, registered while `request` is read; not a secret
   service, since action arguments are never recorded), `drives`
   (UDisks2, D-Bus-activated; its ObjectManager's signals and a
@@ -2681,7 +2681,9 @@ itself.
   history in the persist store), `apps`, `idle`, `polkit` (our own
   authentication agent), `greetd`, `auth`, `media` (MPRIS; remote art
   through `art`), `tray`, `session` (logind), `outputs`, `clipboard`,
-  `workspaces`/`windows`/`wm`, `audio` and `video`. `auth`, `polkit` and
+  `workspaces`/`windows`/`wm`, `audio`, `video` and `power`
+  (power-profiles-daemon under either bus name, never D-Bus-activated).
+  `auth`, `polkit` and
   `greetd` are `strand_services::secret` services
   (`strand_services_schema::SECRET`): never recorded, snapshotted,
   reported, or run from `strand call`; their answers are

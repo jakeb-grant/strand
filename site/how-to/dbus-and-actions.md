@@ -57,6 +57,9 @@ clicked:
 
 `service ppd from dbus system "net.hadess.PowerProfiles" { … }` is the
 power profiles daemon on the system bus.
+Strand's built-in `power` service already reads and sets the profile
+(`power.profile`); `ppd` is declared here for `HoldProfile`, which
+`power` does not do, and as the smallest daemon to show.
 
 - **`profile: text rw = ActiveProfile`** is its `ActiveProfile`
   property, read as `ppd.profile` and followed live. `rw` makes it

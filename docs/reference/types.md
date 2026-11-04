@@ -580,7 +580,7 @@ Keyed by `id`.
 | `can_seek` | `bool` | Writing `position` seeks it. |
 | `shuffle` | `bool rw` | It shuffles. Writable: MPRIS `Shuffle` on this player, as writing `media.shuffle` sets the active one's. |
 | `loop` | `Loop rw` | What it repeats. Writable: its MPRIS `LoopStatus`. |
-| `volume` | `float rw` | Its own volume, 0 to 1 (MPRIS `Volume`). Writable. |
+| `volume` | `float rw` | Its own volume, 0 to 1, as its MPRIS `Volume` reports it (above 1 when it amplifies). Writable: a write is held to 0 to 1. |
 | `can_shuffle` | `bool` | Writing `shuffle` changes it. |
 | `can_loop` | `bool` | Writing `loop` changes it. |
 | `can_volume` | `bool` | Writing `volume` changes it. |

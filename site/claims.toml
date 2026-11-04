@@ -2064,7 +2064,7 @@ proof  = "strand check in the container (scripts/container/run.sh) on a probe co
 page   = "site/concepts/services.md"
 text   = "the service's `available` field says whether it answers"
 source = ['docs/spec.md "may be missing, `available` says whether it answers (`network`,"']
-proof  = "read: `available` on network, bluetooth, session, brightness, drives in the reference"
+proof  = "read: `available` on network, bluetooth, session, brightness, drives, power in the reference"
 
 [[claim]]
 page   = "site/concepts/services.md"
@@ -2101,6 +2101,42 @@ page   = "site/concepts/services.md"
 text   = "An action with a result type"
 source = ['''docs/spec.md "declares an action whose command's output is its value: a call is an `Async<T>`"''']
 proof  = "crates/strand-compiler/tests/flex.rs::an_action_with_a_result_is_loaded_and_awaited"
+
+[[claim]]
+page   = "site/concepts/services.md"
+text   = "asks power-profiles-daemon to switch"
+source = ['crates/strand-services-schema/src/power.schema "Writable: the daemon is asked"', '''crates/strand-services-schema/src/power.schema "The profiles the machine offers, in the daemon's order"''']
+proof  = "crates/strand-services/tests/power.rs (power_follows_power_profiles_daemon_and_its_restarts, a_profile_the_daemon_does_not_offer_is_not_asked)"
+
+[[claim]]
+page   = "site/concepts/services.md"
+text   = "where it stays when the default output changes"
+source = ['crates/strand-services-schema/src/audio.schema "pavucontrol do), where it stays when the"']
+proof  = "crates/strand-services/tests/audio_routing.rs::a_stream_moves_and_follows_the_default_again"
+
+[[claim]]
+page   = "site/concepts/services.md"
+text   = "switches the card's profile"
+source = ['''crates/strand-services-schema/src/audio.schema "Makes it the card's profile"''']
+proof  = "crates/strand-services/src/audio/service.rs::tests::select_sets_the_items_profile_on_its_card"
+
+[[claim]]
+page   = "site/concepts/services.md"
+text   = "unmounts every filesystem on the drive, then ejects"
+source = ['crates/strand-services-schema/src/drives.schema "Makes it safe to remove. It unmounts each of its mounted filesystems"']
+proof  = "crates/strand-services/tests/drives.rs (a_stick_is_unmounted_then_powered_off, a_disc_or_card_is_ejected_and_its_drive_left_on, an_eject_stops_at_the_first_refusal)"
+
+[[claim]]
+page   = "site/concepts/services.md"
+text   = "Strand is BlueZ's pairing agent"
+source = ['''crates/strand-services-schema/src/bluetooth.schema "reads it, Strand is BlueZ's pairing agent"''', '''crates/strand-services-schema/src/bluetooth.schema "While none reads it, BlueZ uses the system's agent if"''']
+proof  = "crates/strand-services/tests/bluetooth_agent.rs::the_agent_registers_only_while_a_request_is_read; crates/strand-compiler/tests/checker.rs::a_pairing_dialog_checks"
+
+[[claim]]
+page   = "site/concepts/services.md"
+text   = "is `bluetooth.request?.device?.name`"
+source = ['crates/strand-compiler/src/check/expr.rs "use `?.` to read through null"']
+proof  = "strand check in the container (scripts/container/run.sh) on a probe config: `bluetooth.request?.device.name` is check::nullable, \"`bluetooth.request?.device` may be null\""
 
 [[claim]]
 page   = "site/concepts/live-reload.md"
@@ -2488,6 +2524,12 @@ proof  = "read: a new popup shows unless dnd holds it back (critical excepted); 
 
 [[claim]]
 page   = "site/how-to/osd.md"
+text   = "a level between the light's steps goes to the nearest"
+source = ['crates/strand-services-schema/src/brightness.schema "Writable: a level between"', 'crates/strand-services/src/brightness.rs "(l.clamp(0.0, 1.0) * self.max as f64).round() as u32"']
+proof  = "crates/strand-services/tests/brightness.rs::the_keyboard_backlight_follows_its_light_and_writes_through_logind"
+
+[[claim]]
+page   = "site/how-to/osd.md"
 text   = "a step from the value it has now, and it never goes below 0"
 source = ['docs/spec.md "a signed number or percentage (`+5%`) is a step from the current value, never below 0"', 'crates/strand/src/services/mod.rs "(current()? + n).max(0.0)"']
 proof  = "crates/strand/src/services/mod.rs::strand_set_writes_service_fields"
@@ -2665,6 +2707,30 @@ page   = "site/how-to/settings-file.md"
 text   = "would let other"
 source = ['docs/spec.md "makes a top-level value readable from other files and from the command line as `file.name`"']
 proof  = "strand check in the container (scripts/container/run.sh) on a probe config: `export state prefs from …` read as `bar.prefs.position` from another file checks clean"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "so a file named like a"
+source = ['crates/strand-compiler/src/check/collect.rs "rename `{}.strand`; its exports are read as `file.name`"', 'crates/strand-compiler/src/check/collect.rs "exported from a file named like it"']
+proof  = "crates/strand-compiler/tests/snapshots/checker__negative@export_shadowed.snap; strand check in the container (scripts/container/run.sh) on a probe config: a `power.strand` and a `drives.strand` exporting `open` each fail with this error, and without the export check clean"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "`power` and `drives` are new"
+source = ["crates/strand-services-schema/src/power.schema", "crates/strand-services-schema/src/drives.schema"]
+proof  = "read: decisions.md power-media-kbd and drives"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "already reads and sets the profile"
+source = ['crates/strand-services-schema/src/power.schema "Writable: the daemon is asked"', 'crates/strand-services-schema/src/power.schema "to switch (its `ActiveProfile`)"']
+proof  = "crates/strand-services/tests/power.rs::power_follows_power_profiles_daemon_and_its_restarts"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "`HoldProfile`, which"
+source = ['''crates/strand-services/src/power.rs "(`HoldProfile`) are not this service's: a config declares them as a"''']
+proof  = "read: the power schema has no hold; docs/decisions.md power-media-kbd"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"

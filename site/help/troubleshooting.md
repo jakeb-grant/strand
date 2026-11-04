@@ -54,6 +54,31 @@ its last good version keeps running, `strand watch` lists it under
 "held back", and the overlay below shows the problem. Fix it and save
 again.
 
+## A file named like a built-in service stops loading
+
+A file's exports are read as `file.name`, so a file named like a
+[built-in service](../concepts/services.md) cannot export anything:
+`power.open` would mean the service. A config that loaded before an
+upgrade can meet this when the upgrade adds a service of that name;
+`power` and `drives` are new, so a `power.strand` or `drives.strand`
+that exports a state or a function no longer loads:
+
+```text
+check::redeclared
+
+  × `power.open` cannot be read: `power` is a builtin service
+   ╭─[power.strand:1:14]
+ 1 │ export state open = false
+   ·              ──┬─
+   ·                ╰── exported from a file named like it
+   ╰────
+  help: rename `power.strand`; its exports are read as `file.name`
+```
+
+Rename the file (`powermenu.strand`) and change what reads its exports
+to the new name (`powermenu.open`). A file of that name that exports
+nothing keeps loading.
+
 ## The error overlay
 
 When a save leaves problems that stand for a quarter of a second, an

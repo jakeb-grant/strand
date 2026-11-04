@@ -357,6 +357,7 @@ run time, also by a release build:
 | `STRAND_MOCK_SCREEN` | `strand run` | With a mock, the output its first four workspaces are on; default `HEADLESS-1` |
 | `STRAND_MOCK_APPS` | `strand run` | With a mock, how many apps are installed, at most 100,000; default three |
 | `STRAND_BACKLIGHT_DIR` | the `brightness` service | A directory read in place of `/sys/class/backlight` |
+| `STRAND_LEDS_DIR` | the `brightness` service | A directory read in place of `/sys/class/leds` (the keyboard's backlight) |
 | `STRAND_GPU_SOFTWARE` | `strand` | `1` accepts a software adapter (lavapipe) as a device |
 | `STRAND_GPU_FIFO` | `strand` | `1` keeps a presented surface on `Fifo` where it would use `Mailbox` |
 | `STRAND_EVAL_APPROVER`, `STRAND_EVAL_FONTS`, `STRAND_EVAL_RULE_STATS` | `strand-eval` | See `docs/eval.md` |

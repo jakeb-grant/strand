@@ -161,8 +161,9 @@ service network {
   /// a menu gives a field for it. With a `password` (its WPA key) it is
   /// joined as a WPA personal network and the password saved; with none
   /// (`""`) it is joined open, or with what the daemon has saved for it.
-  /// Over NetworkManager a new connection is added for it, marked hidden;
-  /// over iwd it is `ConnectHiddenNetwork`. It is `network.connecting`
+  /// Over NetworkManager the connection saved for it is used when there
+  /// is one (a `password` given is saved in it first), else a new one is
+  /// added, marked hidden; over iwd it is `ConnectHiddenNetwork`. It is `network.connecting`
   /// while it is joined, as `ap.connect()` is; a failure (not found, a
   /// wrong password, a timeout) is `network.failed(ssid, error)`.
   action join(ssid: text, password: text = "")

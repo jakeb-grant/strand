@@ -7,7 +7,7 @@ You learn: `tokens`, spring overrides `~`, `service from dbus`,
 SVG layer selectors, and `service … from file | dir | listen | poll` with
 `permit exec`, and `action`.
 You build: a theme file, a CSS file of your colours that other programs
-can read, services Strand does not ship, a control centre and a dock.
+can read, services of your own, a control centre and a dock.
 
 This is the last level. After it you have met every construct in the
 language; [`docs/spec.md`](../spec.md) has the full rules for each.
@@ -259,12 +259,25 @@ the compositor's command line:
   video (`video.streams`) for a camera or screen-cast light;
 - battery, with the charge UPower recorded over past hours
   (`battery.history(10800s)`);
+- bluetooth, with a pairing dialog for a device that asks for a PIN or
+  a code: a panel with `open: bluetooth.request != null`, answered by
+  `respond(typed)`, `accept()` or `reject()`;
+- brightness, the screen's and the keyboard's backlights
+  (`brightness.level`, and `brightness.keyboard` where
+  `brightness.keyboard_present`);
+- drives, the removable ones plugged in (`drives.all`), each
+  filesystem mounted by `v.mount()` and the drive made safe to pull by
+  `d.eject()`;
 - network, with the bytes a second in and out (`network.rx`,
   `network.tx`) and your saved connections, a VPN toggle being
   `c.up()` and `c.down()` on an item of `network.connections`;
 - media, with every player (`media.players`) and `p.select()` to make
-  one the player `media.*` follows;
+  one the player `media.*` follows, and the player's own shuffle, loop
+  and volume (`media.shuffle`, `media.loop = playlist`,
+  `media.volume`), each with a `can_` field saying the player takes it;
 - memory: in use, cached, free and swap;
+- the power profile, from power-profiles-daemon (`power.profile =
+  power_saver`, and the `power.profiles` it offers);
 - the compositor: its binding mode (`wm.mode`), each window's place
   (`win.rect`) and `win.move_to(ws)`, the keyboard's layouts
   (`keyboard.next_layout()`);
@@ -275,7 +288,7 @@ the compositor's command line:
 For the rest, you declare one. Make `services.strand`:
 
 ```strand level=5 file=services.strand
-// services.strand: services Strand does not ship
+// services.strand: services of your own
 service ppd from dbus system "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }
 service host from file "/proc/sys/kernel/hostname" { name: text }
 service temps from poll ["sensors", "-j", "coretemp-*"] every 5s { cpu: float = temp1_input }
@@ -288,7 +301,9 @@ seconds after the last reader goes, as the built-in ones do.
 
 **`from dbus`** reads a D-Bus object. `ppd` is the power profiles
 daemon on the system bus, and its `profile` field is the daemon's
-`ActiveProfile` property. `rw` marks it writable: assigning
+`ActiveProfile` property. Strand ships the profile itself as `power`;
+`ppd` is declared here to show how any daemon is read, and it is the
+smallest one to show. `rw` marks the field writable: assigning
 `ppd.profile = "power-saver"` in a handler (or binding it with `<->`)
 sets the property, which the control centre below does when you click a
 profile. Strand checks every field against the object's

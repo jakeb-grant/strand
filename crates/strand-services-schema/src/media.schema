@@ -36,7 +36,8 @@ record Player key id {
   shuffle: bool rw
   /// What it repeats. Writable: its MPRIS `LoopStatus`.
   loop: Loop rw
-  /// Its own volume, 0 to 1 (MPRIS `Volume`). Writable.
+  /// Its own volume, 0 to 1, as its MPRIS `Volume` reports it (above 1
+  /// when it amplifies). Writable: a write is held to 0 to 1.
   volume: float rw
   /// Writing `shuffle` changes it.
   can_shuffle: bool
