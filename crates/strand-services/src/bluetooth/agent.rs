@@ -22,7 +22,11 @@
 //! `org.bluez.Error.Canceled`; a `DisplayPasskey` for the device and code
 //! shown only counts the digits typed. A request is withdrawn (answered
 //! `Canceled`) when BlueZ cancels or releases, restarts, the reader goes, or
-//! [`REQUEST_TIMEOUT`] passes with no answer.
+//! [`REQUEST_TIMEOUT`] passes with no answer; a `display` also when its
+//! pairing ends ([`Pairing::display_ended`]). Refusing a `display`
+//! ([`Answered::DisplayRefused`]) cancels its pairing only when the shell's
+//! own `pair()` started it: BlueZ's `CancelPairing` of a device with no
+//! pairing of its caller's running removes the device's keys.
 //!
 //! **Answers.** A `respond`, `accept` or `reject` carries the request it
 //! was called on, and applies only to the shown one (same device, kind,
@@ -59,8 +63,9 @@ pub const CAPABILITY: &str = "KeyboardDisplay";
 /// own agent timeout, so a `Cancel` that never comes leaves no dialog up.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Why an answer did not fit a `pin` request.
-pub const PIN_MISFIT: &str = "a PIN is 1 to 16 characters";
+/// Why an answer did not fit a `pin` request: BlueZ counts a PIN in
+/// bytes (16 letters or digits, fewer of other characters).
+pub const PIN_MISFIT: &str = "a PIN is 1 to 16 bytes";
 /// Why an answer did not fit a `passkey` request.
 pub const PASSKEY_MISFIT: &str = "a passkey is up to six digits";
 
@@ -409,6 +414,10 @@ pub struct Shown {
     /// Whether its device was paired when it came (a `display` ends when
     /// its device becomes paired).
     pub paired: bool,
+    /// Whether BlueZ has listed its device since it came: a `display` ends
+    /// when its device goes only once it was there to go (a device pairing
+    /// before Strand has read it listed waits for [`REQUEST_TIMEOUT`]).
+    pub listed: bool,
     reply: Option<Answer>,
     deadline: Instant,
 }
@@ -431,9 +440,10 @@ pub enum Answered {
     Gone,
     /// The answer did not fit: `failed(address, why)`, the request stays.
     Misfit(String, &'static str),
-    /// A `display` was refused: the pairing of the device at this path is
-    /// to be cancelled; the request went.
-    CancelPairing(String),
+    /// A `display` was refused: the request went. The pairing of the
+    /// device at `path` (`address`) is to be cancelled if the shell's own
+    /// `pair()` of it runs, and left alone otherwise.
+    DisplayRefused { path: String, address: String },
 }
 
 /// The one request BlueZ has asked and the shell has not answered.
@@ -453,10 +463,11 @@ impl Pairing {
         self.shown.as_ref().map(|s| s.deadline)
     }
 
-    /// BlueZ asks `a` of `device` (paired or not as it comes) at `now`: it
-    /// replaces the shown request, which is answered `Canceled`, unless it
-    /// is the shown `display` again with more digits typed.
-    pub fn ask(&mut self, a: Asking, device: BluetoothDevice, paired: bool, now: Instant) {
+    /// BlueZ asks `a` of `device` at `now`, the device paired or not as it
+    /// comes (`None` when BlueZ has not listed it yet): it replaces the
+    /// shown request, which is answered `Canceled`, unless it is the shown
+    /// `display` again with more digits typed.
+    pub fn ask(&mut self, a: Asking, device: BluetoothDevice, paired: Option<bool>, now: Instant) {
         if let Some(s) = &mut self.shown
             && s.request.kind == BluetoothRequestKind::Display
             && a.kind == BluetoothRequestKind::Display
@@ -476,7 +487,8 @@ impl Pairing {
                 service: a.service,
             },
             path: a.path,
-            paired,
+            paired: paired.unwrap_or(false),
+            listed: paired.is_some(),
             reply: a.reply,
             deadline: now + REQUEST_TIMEOUT,
         });
@@ -492,6 +504,26 @@ impl Pairing {
                 true
             }
             None => false,
+        }
+    }
+
+    /// Whether the shown request is a `display` whose pairing has ended,
+    /// its device now `paired` as BlueZ lists it (`None`: not listed): it
+    /// became paired, or it went after it was listed. A device not listed
+    /// yet is noted when it is.
+    pub fn display_ended(&mut self, paired: Option<bool>) -> bool {
+        let Some(s) = &mut self.shown else {
+            return false;
+        };
+        if s.request.kind != BluetoothRequestKind::Display {
+            return false;
+        }
+        match paired {
+            None => s.listed,
+            Some(now) => {
+                s.listed = true;
+                now && !s.paired
+            }
         }
     }
 
@@ -529,9 +561,12 @@ impl Pairing {
             },
             (Said::Accept, K::Confirm | K::Service) => Ok(Reply::Done),
             (Said::Reject, K::Display) => {
-                let path = s.path.clone();
+                let refused = Answered::DisplayRefused {
+                    path: s.path.clone(),
+                    address: s.request.device.address.clone(),
+                };
                 self.shown = None;
-                return Answered::CancelPairing(path);
+                return refused;
             }
             (Said::Reject, _) => Err(AgentError::Rejected("refused".into())),
             (Said::Respond(_), _) | (Said::Accept, _) => {
@@ -747,6 +782,10 @@ mod tests {
         assert_eq!(pin(&"x".repeat(16)), Ok("x".repeat(16)));
         assert_eq!(pin(""), Err(PIN_MISFIT));
         assert_eq!(pin(&"x".repeat(17)), Err(PIN_MISFIT));
+        // Counted in bytes, as BlueZ does: eight two-byte letters fit,
+        // nine do not.
+        assert_eq!(pin(&"é".repeat(8)), Ok("é".repeat(8)));
+        assert_eq!(pin(&"é".repeat(9)), Err(PIN_MISFIT));
         assert_eq!(pin("a\0b"), Err(PIN_MISFIT));
         let passkey = |s: &str| match parse(BluetoothRequestKind::Passkey, &pw(s)) {
             Ok(Reply::Passkey(n)) => Ok(n),
@@ -869,7 +908,7 @@ mod tests {
     async fn a_request_unanswered_for_a_minute_is_withdrawn() {
         let mut p = Pairing::default();
         let (a, mut rx) = asking(BluetoothRequestKind::Pin, "");
-        p.ask(a, device(), false, Instant::now());
+        p.ask(a, device(), Some(false), Instant::now());
         tokio::time::sleep(REQUEST_TIMEOUT - Duration::from_secs(1)).await;
         assert!(!p.expire(Instant::now()), "not yet");
         assert!(rx.try_recv().is_err(), "still waiting");
@@ -891,10 +930,10 @@ mod tests {
         let now = Instant::now();
         let mut p = Pairing::default();
         let (a, mut first) = asking(K::Confirm, "111111");
-        p.ask(a, device(), false, now);
+        p.ask(a, device(), Some(false), now);
         let item = p.shown().unwrap().request.clone();
         let (b, mut second) = asking(K::Confirm, "222222");
-        p.ask(b, device(), false, now);
+        p.ask(b, device(), Some(false), now);
         assert!(matches!(first.try_recv(), Ok(Err(AgentError::Canceled(_)))));
         // The first one's item answers nothing.
         assert_eq!(
@@ -913,7 +952,7 @@ mod tests {
         );
         assert_eq!(p.answer(BluetoothAction::Accept { item }), Answered::Gone);
         assert!(matches!(second.try_recv(), Ok(Ok(Reply::Done))));
-        // A display counts the digits typed; its reject cancels the pairing.
+        // A display counts the digits typed; its reject withdraws it.
         let display = |entered| Asking {
             path: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF".into(),
             kind: K::Display,
@@ -922,18 +961,21 @@ mod tests {
             service: String::new(),
             reply: None,
         };
-        p.ask(display(0), device(), false, now);
-        p.ask(display(3), device(), false, now);
+        p.ask(display(0), device(), Some(false), now);
+        p.ask(display(3), device(), Some(false), now);
         let item = p.shown().unwrap().request.clone();
         assert_eq!(item.entered, 3);
         assert_eq!(
             p.answer(BluetoothAction::Reject { item }),
-            Answered::CancelPairing("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF".into())
+            Answered::DisplayRefused {
+                path: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF".into(),
+                address: "AA:BB:CC:DD:EE:FF".into(),
+            }
         );
         assert!(p.shown().is_none());
         // A PIN that does not fit stays asked.
         let (c, mut third) = asking(K::Pin, "");
-        p.ask(c, device(), false, now);
+        p.ask(c, device(), Some(false), now);
         let item = p.shown().unwrap().request.clone();
         assert_eq!(
             p.answer(BluetoothAction::Respond {
@@ -951,6 +993,52 @@ mod tests {
             Answered::Gone
         );
         assert!(matches!(third.try_recv(), Ok(Ok(Reply::Pin(p))) if p.as_str() == "0000"));
+    }
+
+    #[test]
+    fn a_display_ends_when_its_device_pairs_or_goes_once_listed() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let _in = rt.enter();
+        let now = Instant::now();
+        let display = || Asking {
+            path: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF".into(),
+            kind: BluetoothRequestKind::Display,
+            code: "000042".into(),
+            entered: 0,
+            service: String::new(),
+            reply: None,
+        };
+        // Listed and unpaired: it ends when the device pairs, or goes.
+        let mut p = Pairing::default();
+        p.ask(display(), device(), Some(false), now);
+        assert!(!p.display_ended(Some(false)));
+        assert!(p.display_ended(Some(true)));
+        assert!(p.display_ended(None));
+        // Paired already (pairing again): only going ends it.
+        let mut p = Pairing::default();
+        p.ask(display(), device(), Some(true), now);
+        assert!(!p.display_ended(Some(true)));
+        assert!(p.display_ended(None));
+        // Not listed yet: not listed is not gone, until it was listed.
+        let mut p = Pairing::default();
+        p.ask(display(), device(), None, now);
+        assert!(!p.display_ended(None));
+        assert!(!p.display_ended(Some(false)), "listed now");
+        assert!(p.display_ended(None), "went once listed");
+        // Not listed yet, then listed paired: its pairing ended.
+        let mut p = Pairing::default();
+        p.ask(display(), device(), None, now);
+        assert!(p.display_ended(Some(true)));
+        // Only a display ends this way.
+        let mut p = Pairing::default();
+        let (a, _rx) = asking(BluetoothRequestKind::Confirm, "111111");
+        p.ask(a, device(), Some(false), now);
+        assert!(!p.display_ended(None));
+        assert!(!p.display_ended(Some(true)));
+        assert!(!Pairing::default().display_ended(None));
     }
 
     #[test]

@@ -163,8 +163,8 @@ pub struct Bluetooth {
     pub request: Option<BluetoothRequest>,
     /// Connecting, disconnecting, pairing or forgetting a device failed (out
     /// of range, turned off, timed out, or the service not running), or an
-    /// answer to `bluetooth.request` did not fit (a PIN longer than 16
-    /// characters, a passkey that is not digits): `on
+    /// answer to `bluetooth.request` did not fit (a PIN that is empty or
+    /// longer than 16 bytes, a passkey that is not digits): `on
     /// bluetooth.failed(address, error) { … }`.
     pub failed: Event<(String, String)>,
 }
@@ -370,6 +370,14 @@ impl InFlight {
         self.calls.insert(id, (address, ask, self.asked));
     }
 
+    /// The shell's own `pair()` of `address` runs: BlueZ has a pairing of
+    /// Strand's for it, which `CancelPairing` cancels.
+    fn pairs(&self, address: &str) -> bool {
+        self.calls
+            .values()
+            .any(|(a, ask, _)| a == address && *ask == Ask::Pair)
+    }
+
     /// Task `id` ended.
     fn remove(&mut self, id: tokio::task::Id) {
         self.calls.remove(&id);
@@ -476,7 +484,7 @@ async fn follow(
                     match a {
                         agent::Asked::Request(r) if asking => {
                             let device = device_of(&objects, &r.path, &busy.by_address());
-                            let paired = paired_at(&objects, &r.path).unwrap_or(false);
+                            let paired = paired_at(&objects, &r.path);
                             pairing.ask(*r, device, paired, tokio::time::Instant::now());
                         }
                         // Asked as the reader went: refused (its answer
@@ -515,14 +523,10 @@ async fn follow(
                             // it is wanted.
                             discovery.sync(conn, &objects, listing).await;
                             // A `display` request ends when its device
-                            // has paired, or went.
-                            if pairing.shown().is_some_and(|s| {
-                                s.request.kind == BluetoothRequestKind::Display
-                                    && match paired_at(&objects, &s.path) {
-                                        None => true,
-                                        Some(now) => now && !s.paired,
-                                    }
-                            }) {
+                            // has paired, or went (once it was listed: a
+                            // device not listed yet has the minute).
+                            let paired = pairing.shown().and_then(|s| paired_at(&objects, &s.path));
+                            if pairing.display_ended(paired) {
                                 pairing.withdraw("its pairing ended");
                             }
                             if !publish(cx, &objects, &busy, listing, &pairing) {
@@ -588,7 +592,7 @@ async fn follow(
                             a @ (BluetoothAction::Respond { .. }
                             | BluetoothAction::Accept { .. }
                             | BluetoothAction::Reject { .. }) => {
-                                if !answer(cx, conn, &mut pairing, a)
+                                if !answer(cx, conn, &mut pairing, &busy, a)
                                     || !publish(cx, &objects, &busy, listing, &pairing)
                                 {
                                     return Ok(());
@@ -668,6 +672,7 @@ fn answer(
     cx: &mut Cx<Bluetooth>,
     conn: &zbus::Connection,
     pairing: &mut agent::Pairing,
+    busy: &InFlight,
     a: BluetoothAction,
 ) -> bool {
     match pairing.answer(a) {
@@ -675,9 +680,17 @@ fn answer(
         agent::Answered::Misfit(address, why) => {
             cx.emit(BluetoothEvent::Failed((address, why.to_string())))
         }
-        agent::Answered::CancelPairing(path) => {
-            // The code shown is refused: BlueZ stops the pairing (which
-            // fails the `Pair` that started it).
+        agent::Answered::DisplayRefused { address, .. } if !busy.pairs(&address) => {
+            // A pairing the device (or another program) started: only the
+            // dialog goes. BlueZ's `CancelPairing` cancels only its
+            // caller's own `Pair`, and with none running it removes the
+            // device's keys: a paired keyboard pairing again would be
+            // forgotten.
+            true
+        }
+        agent::Answered::DisplayRefused { path, .. } => {
+            // The code shown for the shell's own `pair()` is refused:
+            // BlueZ stops the pairing (which fails that `Pair`).
             let conn = conn.clone();
             tokio::spawn(async move {
                 let r = dbus::timed_for(

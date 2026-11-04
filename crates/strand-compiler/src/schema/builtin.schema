@@ -700,7 +700,8 @@ provisional record BluetoothRequest {
   action respond(answer: text)
   /// Allows a `confirm` or `service` request.
   action accept()
-  /// Refuses it, or cancels the pairing a `display` request shows.
+  /// Refuses it; a `display` goes, its pairing cancelled when `pair()`
+  /// started it.
   action reject()
 }
 

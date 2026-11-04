@@ -8,8 +8,12 @@
 //! when the reader goes or the store stops); each kind of request shows
 //! and is answered; an answer goes only to the request it was typed for;
 //! only BlueZ is answered; and a request goes with its reader, its
-//! pairing and BlueZ. Not shown here: BlueZ routing a `Pair` to the agent
-//! its caller registered (the template never calls an agent itself).
+//! pairing (the shell's own `pair()` ending, its device pairing or going
+//! once listed), BlueZ, and BlueZ releasing the agent. A refused `display`
+//! cancels only the shell's own pairing. Not shown here: BlueZ routing a
+//! `Pair` to the agent its caller registered (the template never calls an
+//! agent itself), and the store loop's timer withdrawing a request after a
+//! minute (only `Pairing::expire`, in agent.rs, is proven).
 
 mod support;
 
@@ -18,7 +22,8 @@ use std::time::{Duration, Instant};
 
 use strand_core::Runtime;
 use strand_services::bluetooth::{
-    AGENT_IFACE, AGENT_PATH, BLUEZ, Bluetooth, BluetoothRequest, BluetoothRequestKind, CAPABILITY,
+    AGENT_IFACE, AGENT_PATH, BLUEZ, Bluetooth, BluetoothDevice, BluetoothRequest,
+    BluetoothRequestKind, CAPABILITY,
 };
 use strand_services::testing::{DbusMock, PrivateBus};
 use strand_services::{Builtin, Data, Services, Store, ToData};
@@ -248,6 +253,68 @@ impl World {
         self.rt.flush();
     }
 
+    /// `d.pair()` of the device at `address`.
+    fn pair(&self, address: &str) {
+        let item = BluetoothDevice {
+            address: address.into(),
+            ..BluetoothDevice::default()
+        };
+        self.b
+            .bluetooth
+            .dynamic()
+            .action(
+                &self.rt,
+                "pair",
+                Some(&item.to_data()),
+                &[],
+                Default::default(),
+            )
+            .unwrap();
+        self.rt.flush();
+    }
+
+    /// The mock's `Device1.method` of the device at `path` runs `code`.
+    fn device_method(&self, path: &str, method: &str, code: &str) {
+        mock(
+            &self.tokio,
+            &self.conn,
+            BLUEZ,
+            path,
+            "AddMethod",
+            &("org.bluez.Device1", method, "", "", code),
+        );
+    }
+
+    /// The mock's `org.bluez.Mock.method(args…)` on `/`.
+    fn bluez_mock<B>(&self, method: &str, body: &B)
+    where
+        B: serde::Serialize + zbus::zvariant::DynamicType,
+    {
+        call(
+            &self.tokio,
+            &self.conn,
+            BLUEZ,
+            "/",
+            "org.bluez.Mock",
+            method,
+            body,
+        );
+    }
+
+    /// The addresses of `bluetooth.devices`.
+    fn paired(&self) -> Vec<String> {
+        self.b
+            .bluetooth
+            .cells()
+            .devices
+            .get_untracked(&self.rt)
+            .unwrap()
+            .items()
+            .iter()
+            .map(|(_, d)| d.address.clone())
+            .collect()
+    }
+
     fn failures(&self) -> Vec<(String, String)> {
         self.failures.lock().unwrap().clone()
     }
@@ -375,10 +442,7 @@ fn a_pin_or_passkey_is_typed_by_the_shell() {
     w.until("the misfit", |w| !w.failures().is_empty());
     assert_eq!(
         w.failures()[0],
-        (
-            STRANGER.to_string(),
-            "a PIN is 1 to 16 characters".to_string()
-        )
+        (STRANGER.to_string(), "a PIN is 1 to 16 bytes".to_string())
     );
     assert_eq!(w.request(), Some(r.clone()));
     assert_eq!(w.outcome("p1"), "");
@@ -584,5 +648,116 @@ fn a_shown_request_goes_with_its_reader_its_pairing_or_bluez() {
     });
     assert_eq!(w.calls("RegisterAgent").len(), 1);
     assert_eq!(w.b.bluetooth.starts(), 1);
+    w.services.shutdown();
+}
+
+#[test]
+fn a_released_agent_withdraws_its_request_and_is_not_unregistered() {
+    let Some(w) = World::reading() else {
+        return;
+    };
+    w.ask("p1", "RequestPinCode", STRANGER_PATH, "", 0, 0);
+    w.shown("a PIN asked", |r| r.kind == BluetoothRequestKind::Pin);
+    // BlueZ drops the agent: the request is refused and goes.
+    w.ask("r1", "Release", STRANGER_PATH, "", 0, 0);
+    w.until_outcome("r1", "ok");
+    w.until_outcome("p1", "org.bluez.Error.Canceled");
+    w.until("gone", |w| w.request().is_none());
+    // The reader goes: taken down, with no `UnregisterAgent` of an agent
+    // BlueZ no longer has.
+    w.b.bluetooth.release_field(field("request"));
+    w.until("taken down", |w| w.serving().is_none());
+    w.settle(300);
+    assert!(w.calls("UnregisterAgent").is_empty());
+    assert_eq!(w.calls("RegisterAgent").len(), 1);
+    w.services.shutdown();
+}
+
+#[test]
+fn a_shown_code_goes_with_the_shells_pair_and_only_its_pairing_is_cancelled() {
+    let Some(w) = World::reading() else {
+        return;
+    };
+    use BluetoothRequestKind as K;
+    let cancels = |path: &str| mock_calls(&w.tokio, &w.conn, BLUEZ, path, "CancelPairing").len();
+
+    // The paired headphones pair again from their side: refusing the code
+    // only withdraws it. A `CancelPairing` with no `Pair` of Strand's
+    // running would make BlueZ forget their keys.
+    w.ask("d1", "DisplayPasskey", HEADPHONES_PATH, "", 42, 0);
+    let r = w.shown("a passkey shown", |r| r.kind == K::Display);
+    assert_eq!(r.device.address, HEADPHONES);
+    w.act("reject", &r, &[]);
+    w.until("refused: gone", |w| w.request().is_none());
+    w.settle(500);
+    assert_eq!(cancels(HEADPHONES_PATH), 0);
+    assert_eq!(w.paired(), [HEADPHONES]);
+
+    // The shell's own pair of the stranger ends (BlueZ refuses it): the
+    // code shown for it goes.
+    w.device_method(
+        STRANGER_PATH,
+        "Pair",
+        "raise dbus.exceptions.DBusException('Authentication Failed', \
+         name='org.bluez.Error.AuthenticationFailed')",
+    );
+    w.ask("d2", "DisplayPasskey", STRANGER_PATH, "", 7, 0);
+    w.shown("a passkey shown", |r| r.code == "000007");
+    w.pair(STRANGER);
+    w.until("its pair ended: gone", |w| w.request().is_none());
+    w.until("the failure", |w| !w.failures().is_empty());
+    assert_eq!(
+        w.failures()[0],
+        (STRANGER.to_string(), "Authentication Failed".to_string())
+    );
+
+    // Refused while the shell's own pair of it runs: that pairing is
+    // cancelled.
+    w.device_method(
+        STRANGER_PATH,
+        "Pair",
+        "time.sleep(2)\n\
+         raise dbus.exceptions.DBusException('Authentication Canceled', \
+         name='org.bluez.Error.AuthenticationCanceled')",
+    );
+    w.ask("d3", "DisplayPasskey", STRANGER_PATH, "", 9, 0);
+    w.shown("a passkey shown", |r| r.code == "000009");
+    w.pair(STRANGER);
+    let r = w.shown("pairing", |r| r.code == "000009" && r.device.connecting);
+    w.act("reject", &r, &[]);
+    w.until("refused: gone", |w| w.request().is_none());
+    w.until("the pairing cancelled", |_| cancels(STRANGER_PATH) == 1);
+    w.until("the pair failed", |w| w.failures().len() == 2);
+    assert_eq!(cancels(HEADPHONES_PATH), 0);
+    w.services.shutdown();
+}
+
+#[test]
+fn a_shown_code_for_a_device_not_listed_yet_waits_for_it() {
+    let Some(w) = World::reading() else {
+        return;
+    };
+    const KEYBOARD: &str = "DE:AD:BE:EF:00:03";
+    const KEYBOARD_PATH: &str = "/org/bluez/hci0/dev_DE_AD_BE_EF_00_03";
+    // A keyboard BlueZ has not listed (to Strand) pairs from its side.
+    w.ask("d1", "DisplayPasskey", KEYBOARD_PATH, "", 42, 0);
+    let r = w.shown("a passkey shown", |r| {
+        r.kind == BluetoothRequestKind::Display
+    });
+    assert_eq!(
+        (r.device.address.as_str(), r.device.name.as_str()),
+        (KEYBOARD, "")
+    );
+    // Another device changes: not listed is not gone.
+    w.bluez_mock("PairDevice", &("hci0", STRANGER));
+    w.until("the stranger paired", |w| w.paired().len() == 2);
+    w.settle(200);
+    assert_eq!(w.request(), Some(r));
+    // Listed: shown by name, still waiting for the code.
+    w.bluez_mock("AddDevice", &("hci0", KEYBOARD, "Keyboard"));
+    w.shown("named", |r| r.device.name == "Keyboard");
+    // Paired: gone.
+    w.bluez_mock("PairDevice", &("hci0", KEYBOARD));
+    w.until("paired: gone", |w| w.request().is_none());
     w.services.shutdown();
 }

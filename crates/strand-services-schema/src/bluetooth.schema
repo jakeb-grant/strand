@@ -66,9 +66,10 @@ record BluetoothRequest {
   /// it ("Audio Sink", "Hands-Free", "Human Interface Device"), else its
   /// UUID; "" for the other kinds.
   service: text
-  /// Answers a `pin` request (1 to 16 characters) or a `passkey` one (up
-  /// to six digits) with `answer`: `input { type: password; text: <-> pin;
-  /// on activate { bluetooth.request?.respond(pin); pin = "" } }`. An
+  /// Answers a `pin` request (1 to 16 bytes: up to 16 letters or digits)
+  /// or a `passkey` one (up to six digits) with `answer`: `input { type:
+  /// password; text: <-> typed; on activate {
+  /// bluetooth.request?.respond(typed); typed = "" } }`. An
   /// answer that does not fit its kind is not sent: it is
   /// `bluetooth.failed(address, error)`, and the request stays. Ignored
   /// for the other kinds, and once the request has gone: an answer goes
@@ -78,8 +79,9 @@ record BluetoothRequest {
   /// (`service`). Ignored for the other kinds, and once it has gone.
   action accept()
   /// Refuses it: the pairing fails, or the device may not use the
-  /// service. For `display`, the pairing is cancelled. Ignored once it
-  /// has gone.
+  /// service. A `display` goes, and its pairing is cancelled when the
+  /// shell started it (`d.pair()`); one the device started goes on until
+  /// the device ends it. Ignored once it has gone.
   action reject()
 }
 
@@ -115,8 +117,8 @@ service bluetooth {
   request: BluetoothRequest?
   /// Connecting, disconnecting, pairing or forgetting a device failed (out
   /// of range, turned off, timed out, or the service not running), or an
-  /// answer to `bluetooth.request` did not fit (a PIN longer than 16
-  /// characters, a passkey that is not digits): `on
+  /// answer to `bluetooth.request` did not fit (a PIN that is empty or
+  /// longer than 16 bytes, a passkey that is not digits): `on
   /// bluetooth.failed(address, error) { … }`.
   event failed(address: text, error: text)
 }
