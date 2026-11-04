@@ -126,9 +126,10 @@ pub(crate) enum Work {
         id: u32,
         name: Option<String>,
         description: Option<String>,
-        link: Option<RouteLink>,
-        /// (audio-routing) The card it belongs to (its `device.id`).
-        card: Option<u32>,
+        /// Its place on a card: the route link and (audio-routing) the
+        /// card it belongs to (its `device.id`), when its properties
+        /// changed ([`node_place`]).
+        place: Option<(Option<RouteLink>, Option<u32>)>,
         /// (services-round) What a stream's or a video node's info says,
         /// when its properties changed (a later info event without
         /// `PROPS` in its mask carries none of them).
@@ -738,12 +739,14 @@ pub(crate) enum ProfileParam {
 /// comes after a change of its params' flags, shown only once whole.
 ///
 /// A change of the `EnumProfile` flags starts collecting the list anew, a
-/// change of the `Profile` flags the active profile; the driver then
-/// issues a core sync ([`Profiles::syncing`]), and once it is back
-/// ([`Profiles::done`]) the collected parts replace the shown ones. The
-/// daemon sends a changed param's items right after the info that
-/// announces it, before it answers the sync, so a half-sent set is never
-/// shown.
+/// change of the `Profile` flags the active profile; the driver asks the
+/// device for that param again ([`ask_again`]), then issues a core sync
+/// ([`Profiles::syncing`]), and once it is back ([`Profiles::done`]) the
+/// collected parts replace the shown ones. The daemon sends the items
+/// asked for before it answers the sync, so a half-sent set is never
+/// shown. It sends a subscriber the items only once, when it subscribes:
+/// a later change (a headset switched to its headset profile) comes as
+/// the info alone, so without asking again the new set would be empty.
 #[derive(Debug, Default)]
 struct Profiles {
     enum_flags: Option<u32>,
@@ -761,20 +764,21 @@ struct Profiles {
 }
 
 impl Profiles {
-    /// The flags of its `EnumProfile` and `Profile` param infos. True when
-    /// either changed: a new set of that part comes, and the caller
-    /// issues a sync ([`Profiles::syncing`]).
-    fn info(&mut self, enum_flags: Option<u32>, active_flags: Option<u32>) -> bool {
-        let mut changed = false;
+    /// The flags of its `EnumProfile` and `Profile` param infos. The parts
+    /// whose flags changed: a new set of each is collected, the caller asks
+    /// for those it can read ([`ask_again`]) and then issues a sync
+    /// ([`Profiles::syncing`]). Empty when neither changed.
+    fn info(&mut self, enum_flags: Option<u32>, active_flags: Option<u32>) -> Vec<ParamType> {
+        let mut changed = Vec::new();
         if enum_flags != self.enum_flags {
             self.enum_flags = enum_flags;
             self.incoming_list = Some(Vec::new());
-            changed = true;
+            changed.push(ParamType::EnumProfile);
         }
         if active_flags != self.active_flags {
             self.active_flags = active_flags;
             self.incoming_active = Some(None);
-            changed = true;
+            changed.push(ParamType::Profile);
         }
         changed
     }
@@ -1007,12 +1011,15 @@ struct Routes {
 }
 
 impl Routes {
-    /// Its `Route` info flags: a change means a new set of routes comes.
-    fn info(&mut self, flags: Option<u32>) {
-        if flags != self.flags {
-            self.flags = flags;
-            self.stale = true;
+    /// Its `Route` info flags: a change means a new set of routes, which
+    /// the caller asks for ([`ask_again`]). True when they changed.
+    fn info(&mut self, flags: Option<u32>) -> bool {
+        if flags == self.flags {
+            return false;
         }
+        self.flags = flags;
+        self.stale = true;
+        true
     }
 
     /// One route of the set that follows the info.
@@ -1030,6 +1037,33 @@ impl Routes {
         }
         self.by_profile_device.get(&profile_device).copied()
     }
+}
+
+/// (card-params) A node's place on a card (its route link and its card)
+/// from an info event, or `None` when the event's properties did not
+/// change (`props_changed`): such an event carries none of them, and
+/// reading its `device.id` as absent would take the node off its card,
+/// its profiles gone and its volume written past the card's route, at
+/// every change of its state.
+fn node_place(
+    props_changed: bool,
+    device_id: Option<&str>,
+    profile_device: Option<&str>,
+) -> Option<(Option<RouteLink>, Option<u32>)> {
+    props_changed.then(|| {
+        (
+            RouteLink::of(device_id, profile_device),
+            device_id.and_then(|v| v.parse().ok()),
+        )
+    })
+}
+
+/// (card-params) Whether a device param whose info flags changed to
+/// `flags` is asked for: when it is still there and readable
+/// (`SPA_PARAM_INFO_READ`). Asking for one that went away would only earn
+/// an error.
+fn ask_again(flags: Option<u32>) -> bool {
+    flags.is_some_and(|f| f & pipewire::spa::sys::SPA_PARAM_INFO_READ != 0)
 }
 
 /// Where a volume or mute write goes.
@@ -1219,8 +1253,7 @@ impl Driver<'_> {
                 id,
                 name,
                 description,
-                link,
-                card,
+                place,
                 props,
             } if self.live(session) => {
                 let Some(s) = self.session.as_mut() else {
@@ -1233,8 +1266,10 @@ impl Driver<'_> {
                     if let Some(d) = description {
                         n.device.description = d;
                     }
-                    n.link = link;
-                    n.card = card;
+                    if let Some((link, card)) = place {
+                        n.link = link;
+                        n.card = card;
+                    }
                     if let (Some((_, p)), Some(props)) = (&mut n.stream, props) {
                         *p = props;
                     }
@@ -1259,10 +1294,24 @@ impl Driver<'_> {
                 let Some(d) = s.devices.get_mut(&id) else {
                     return;
                 };
-                d.routes.info(route_flags);
+                // A changed param is asked for again: the daemon sends a
+                // subscriber its items only when it subscribes, and a later
+                // change as the info alone.
+                let routes = d.routes.info(route_flags).then_some(ParamType::Route);
+                let profiles = d.profiles.info(enum_flags, active_flags);
+                let flags = |ty| match ty {
+                    ParamType::Route => route_flags,
+                    ParamType::EnumProfile => enum_flags,
+                    _ => active_flags,
+                };
+                for ty in routes.into_iter().chain(profiles.iter().copied()) {
+                    if ask_again(flags(ty)) {
+                        d.proxy.enum_params(0, Some(ty), 0, u32::MAX);
+                    }
+                }
                 // A new set of profiles comes: shown once the sync after
                 // it is back.
-                if d.profiles.info(enum_flags, active_flags)
+                if !profiles.is_empty()
                     && let Some(seq) = sync(s)
                     && let Some(d) = s.devices.get_mut(&id)
                 {
@@ -2285,8 +2334,11 @@ fn bind_node(
                 id,
                 name: p.get("node.name").map(str::to_owned),
                 description,
-                link: RouteLink::of(p.get("device.id"), p.get("card.profile.device")),
-                card: p.get("device.id").and_then(|v| v.parse().ok()),
+                place: node_place(
+                    info.change_mask().contains(NodeChangeMask::PROPS),
+                    p.get("device.id"),
+                    p.get("card.profile.device"),
+                ),
                 props: info
                     .change_mask()
                     .contains(NodeChangeMask::PROPS)
@@ -2370,8 +2422,7 @@ fn bind_video(s: &mut Session, q: Queue, global: &GlobalObject<PropertiesBox>, r
                 id,
                 name: None,
                 description: None,
-                link: None,
-                card: None,
+                place: None,
                 props: info
                     .change_mask()
                     .contains(NodeChangeMask::PROPS)
@@ -2793,18 +2844,18 @@ mod tests {
         let mut routes = Routes::default();
         // Before any info and set: nothing.
         assert_eq!(routes.active(0), None);
-        routes.info(Some(0b111));
+        assert!(routes.info(Some(0b111)));
         assert_eq!(routes.active(0), None);
         routes.route(r(2, 0));
         routes.route(r(5, 1));
         assert_eq!(routes.active(0), Some(r(2, 0)));
         assert_eq!(routes.active(1), Some(r(5, 1)));
         // The same flags again (another param changed): kept.
-        routes.info(Some(0b111));
+        assert!(!routes.info(Some(0b111)));
         assert_eq!(routes.active(1), Some(r(5, 1)));
         // The routes changed (the serial bit toggled): none is used
         // until the new set comes, which replaces the old one.
-        routes.info(Some(0b110));
+        assert!(routes.info(Some(0b110)));
         assert_eq!(routes.active(0), None);
         routes.route(r(3, 1));
         assert_eq!(routes.active(1), Some(r(3, 1)));
@@ -2812,6 +2863,40 @@ mod tests {
         // A set with no routes never comes: none is used.
         routes.info(Some(0b111));
         assert_eq!(routes.active(1), None);
+    }
+
+    /// (card-params) An info event whose properties did not change leaves
+    /// a node on its card: only one that carries them says where it is.
+    #[test]
+    fn a_node_stays_on_its_card_through_an_info_without_properties() {
+        let on_card = Some((
+            Some(RouteLink {
+                device: 59,
+                profile_device: 1,
+            }),
+            Some(59),
+        ));
+        assert_eq!(node_place(true, Some("59"), Some("1")), on_card);
+        assert_eq!(node_place(false, None, None), None);
+        assert_eq!(node_place(false, Some("59"), Some("1")), None);
+        // Properties that changed and name no card: off any card.
+        assert_eq!(node_place(true, None, None), Some((None, None)));
+    }
+
+    /// (card-params) A changed param is asked for again only while it is
+    /// there and readable: the serial bit alone, or a param gone, is not.
+    #[test]
+    fn a_changed_param_is_asked_for_while_readable() {
+        use pipewire::spa::sys::{
+            SPA_PARAM_INFO_READ, SPA_PARAM_INFO_SERIAL, SPA_PARAM_INFO_WRITE,
+        };
+        assert!(ask_again(Some(SPA_PARAM_INFO_READ)));
+        assert!(ask_again(Some(
+            SPA_PARAM_INFO_SERIAL | SPA_PARAM_INFO_READ | SPA_PARAM_INFO_WRITE
+        )));
+        assert!(!ask_again(Some(SPA_PARAM_INFO_SERIAL)));
+        assert!(!ask_again(Some(0)));
+        assert!(!ask_again(None));
     }
 
     fn profile(index: i32, name: &str, priority: i32, available: Availability) -> pod::Profile {
@@ -2834,7 +2919,10 @@ mod tests {
         let hsp = profile(2, "headset-head-unit", 10, Availability::Yes);
         let mut p = Profiles::default();
         // Bound: the first info announces both params.
-        assert!(p.info(Some(0b011), Some(0b011)));
+        assert_eq!(
+            p.info(Some(0b011), Some(0b011)),
+            [ParamType::EnumProfile, ParamType::Profile]
+        );
         p.syncing(7);
         p.param(ProfileParam::Listed(a2dp.clone()));
         assert!(!p.done(6), "an earlier sync");
@@ -2857,11 +2945,11 @@ mod tests {
         assert!(!p.done(9));
         assert_eq!((p.listed.len(), p.active), (2, Some(1)));
         // The same flags again (another param changed): nothing collected.
-        assert!(!p.info(Some(0b011), Some(0b011)));
+        assert!(p.info(Some(0b011), Some(0b011)).is_empty());
 
         // The profile switched: only the active flags changed, so the
         // list stays as shown and the new active one shows at the sync.
-        assert!(p.info(Some(0b011), Some(0b111)));
+        assert_eq!(p.info(Some(0b011), Some(0b111)), [ParamType::Profile]);
         p.syncing(12);
         p.param(ProfileParam::Active(2));
         assert_eq!(p.active, Some(1), "shown before its sync");
@@ -2872,7 +2960,7 @@ mod tests {
         // The list changed (a profile became unavailable): the new set
         // replaces the old one whole, at its sync and not before.
         let hsp_gone = profile(2, "headset-head-unit", 10, Availability::No);
-        assert!(p.info(Some(0b111), Some(0b111)));
+        assert_eq!(p.info(Some(0b111), Some(0b111)), [ParamType::EnumProfile]);
         p.syncing(15);
         p.param(ProfileParam::Listed(hsp_gone.clone()));
         assert!(!p.done(14));
@@ -2882,7 +2970,10 @@ mod tests {
         assert_eq!(p.listed, [hsp_gone, a2dp]);
         assert_eq!(p.active, Some(2), "a list-only change keeps the active one");
         // The params went away: an empty set, at its sync.
-        assert!(p.info(None, None));
+        assert_eq!(
+            p.info(None, None),
+            [ParamType::EnumProfile, ParamType::Profile]
+        );
         p.syncing(20);
         assert!(p.done(21));
         assert!(p.listed.is_empty());
