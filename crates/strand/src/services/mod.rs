@@ -2606,6 +2606,58 @@ service shelf {
             services.shutdown();
         }
 
+        /// (bt-agent) A top-level panel's `open:` is read while the panel
+        /// is closed, in the file's scope: a stream field it reads is
+        /// watched all along (as `bluetooth.request` keeps the pairing
+        /// agent registered while its dialog is closed), and the panel
+        /// opens once the stream gives it something.
+        #[test]
+        fn a_closed_panels_open_holds_a_stream_field() {
+            let _serial = WIFI_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            WIFI_LOG.lock().unwrap().clear();
+            let rt = Runtime::new();
+            let services = Services::new(&rt, Buses::none(), || {});
+            let wifi = services.register::<Wifi>(&rt);
+            let (mut inst, mut scene) = mount(
+                &rt,
+                WIFI_SCHEMA,
+                "panel P {\n  open: wifi.networks.len > 0\n  for n in wifi.networks key n { text n }\n}\n",
+                wifi.dynamic(),
+            );
+            // Closed (no networks yet), its `open:` reads them: the scan
+            // starts with nothing else reading them.
+            let u = inst.tick(Duration::ZERO);
+            assert!(u.errors.is_empty(), "{:?}", u.errors);
+            scene.apply(&u.diff).unwrap();
+            assert_eq!(scene.texts(), Vec::<String>::new(), "closed at first");
+            assert_eq!(wifi.field_readers(1), 1, "the closed panel's `open:`");
+            let mut step = |inst: &mut Instance| {
+                services.pump(&rt);
+                let u = inst.tick(Duration::ZERO);
+                assert!(u.errors.is_empty(), "{:?}", u.errors);
+                scene.apply(&u.diff).unwrap();
+                scene.texts()
+            };
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !WIFI_LOG
+                .lock()
+                .unwrap()
+                .contains(&"scanning=true (networks)".to_string())
+            {
+                assert!(Instant::now() < deadline, "the scan never started");
+                std::thread::sleep(Duration::from_millis(5));
+                step(&mut inst);
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !step(&mut inst).contains(&"cafe".to_string()) {
+                assert!(Instant::now() < deadline, "the panel never opened");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(wifi.field_readers(1), 2, "`open:` and the open panel");
+            inst.shutdown();
+            services.shutdown();
+        }
+
         /// Live reload never restarts a built-in service (design.md, "Live
         /// reload": built-in services are kept): a bar reading `cpu.usage`
         /// and a shown popup reading a stream field (`wifi.networks`) go
