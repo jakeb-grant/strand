@@ -543,6 +543,17 @@ impl Drop for StoreHost {
     }
 }
 
+/// (audio-routing) What `p.select()` on `item` asks of the thread: its
+/// card's profile set to `item`, the card named by the key the item
+/// carries ([`AudioProfile::card`]: the card's `object.serial`, not a
+/// device's).
+fn select_action(item: AudioProfile) -> AudioAction {
+    AudioAction::SetProfile {
+        card: item.card,
+        profile: item.name,
+    }
+}
+
 /// `d`'s field `attr` as written.
 fn holds(d: Entry<'_>, attr: Attr) -> bool {
     match attr {
@@ -949,13 +960,7 @@ impl Host for StoreHost {
                 }
                 Ok(Msg::Action(AudioDeviceAction::Select { item })) => {
                     let (tx, _) = oneshot::channel();
-                    cmds.push(Cmd::Action(
-                        AudioAction::SetProfile {
-                            card: item.card,
-                            profile: item.name,
-                        },
-                        tx,
-                    ));
+                    cmds.push(Cmd::Action(select_action(item), tx));
                 }
                 Ok(Msg::Call(c, _)) => match c {},
                 Ok(Msg::Visible(_) | Msg::Watch { .. } | Msg::Keep(_)) => {}
@@ -1088,6 +1093,26 @@ mod tests {
         assert_eq!((AudioStore::FIELDS[0].ty)(), "AudioDevice");
         assert_eq!((AudioStore::FIELDS[2].ty)(), "[AudioDevice]");
         assert_eq!(AudioDevice::KEY_FIELD, "id");
+    }
+
+    /// (audio-routing) `p.select()` sets the profile it was called on, of
+    /// the card its item names.
+    #[test]
+    fn select_sets_the_items_profile_on_its_card() {
+        let item = AudioProfile {
+            name: "headset-head-unit".into(),
+            description: "Headset Head Unit (HSP/HFP)".into(),
+            available: true,
+            active: false,
+            card: 1203,
+        };
+        assert_eq!(
+            select_action(item),
+            AudioAction::SetProfile {
+                card: 1203,
+                profile: "headset-head-unit".into(),
+            }
+        );
     }
 
     #[test]

@@ -1348,8 +1348,15 @@ fn a_move_is_refused_with_its_reason() {
         .mirror
         .device_ref(w.mirror.source_named("strand-source").unwrap().id);
     // What the session manager wrote of its own (WirePlumber marks a
-    // stream that asked not to be moved): the refusals add nothing.
-    let targets = || -> Vec<String> {
+    // stream that asked not to be moved): the refusals add nothing. Only
+    // the lines of the streams that stay are compared: the ended one's
+    // may go, or change, as it goes, whatever Strand writes.
+    let node_of = |r: DeviceRef| match r {
+        DeviceRef::Id { id, .. } => id,
+        other => panic!("a stream's reference is by id: {other:?}"),
+    };
+    let staying = [node_of(player_ref), node_of(recorder_ref)];
+    let all_targets = || -> Vec<String> {
         let mut t: Vec<String> = pw
             .metadata()
             .lines()
@@ -1359,8 +1366,20 @@ fn a_move_is_refused_with_its_reason() {
         t.sort();
         t
     };
+    let targets = || -> Vec<String> {
+        all_targets()
+            .into_iter()
+            .filter(|l| staying.iter().any(|n| l.contains(&format!("id:{n} "))))
+            .collect()
+    };
+    let no_target_object = |t: &[String]| !t.iter().any(|l| l.contains("key:'target.object'"));
     std::thread::sleep(Duration::from_millis(300));
     let targets_before = targets();
+    let everything_before = all_targets();
+    assert!(
+        no_target_object(&everything_before),
+        "{everything_before:?}"
+    );
 
     // A recorder of a source moves to a source; a player to a sink.
     for (stream, to) in [(recorder_ref, sink_b), (player_ref, source)] {
@@ -1403,12 +1422,9 @@ fn a_move_is_refused_with_its_reason() {
     std::thread::sleep(Duration::from_millis(600));
     w.poll();
     assert_eq!(targets(), targets_before, "a refused move wrote");
-    assert!(
-        !targets_before
-            .iter()
-            .any(|l| l.contains("key:'target.object'")),
-        "{targets_before:?}"
-    );
+    // No subject, the ended stream's among them, gained a target.object.
+    let everything = all_targets();
+    assert!(no_target_object(&everything), "{everything:?}");
     let player_now = w
         .mirror
         .streams

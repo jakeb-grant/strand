@@ -848,6 +848,58 @@ fn card_key(id: u32, serial: Option<&str>) -> u32 {
     serial.and_then(|v| v.parse::<u32>().ok()).unwrap_or(id)
 }
 
+/// (audio-routing) The profiles a device node lists: those of the card
+/// its `device.id` names (`card`), found by that global id through
+/// `card_of` (the card's profiles and its own `object.serial`), each
+/// keyed by the card's [`card_key`]. None for a node of no card, or of a
+/// card not bound.
+fn device_profiles<'a>(
+    card: Option<u32>,
+    card_of: impl Fn(u32) -> Option<(&'a Profiles, Option<&'a str>)>,
+) -> Vec<AudioProfile> {
+    let Some((card, (profiles, serial))) = card.and_then(|c| Some((c, card_of(c)?))) else {
+        return Vec::new();
+    };
+    profiles_of(&profiles.listed, profiles.active, card_key(card, serial))
+}
+
+/// (audio-routing) The card and profile index `p.select()` writes: the
+/// card (by global id) among `cards` (global id, `object.serial`,
+/// profiles) whose [`card_key`] is `card`, and the index of its listed
+/// profile named `profile`.
+fn profile_target<'a>(
+    cards: impl IntoIterator<Item = (u32, Option<&'a str>, &'a Profiles)>,
+    card: u32,
+    profile: &str,
+) -> Result<(u32, i32), AudioError> {
+    let (id, profiles) = cards
+        .into_iter()
+        .find(|(id, serial, _)| card_key(*id, *serial) == card)
+        .map(|(id, _, profiles)| (id, profiles))
+        .ok_or(AudioError::UnknownCard(card))?;
+    let index = profiles
+        .listed
+        .iter()
+        .find(|p| p.name == profile)
+        .map(|p| p.index)
+        .ok_or_else(|| AudioError::UnknownProfile {
+            card,
+            profile: profile.to_owned(),
+        })?;
+    Ok((id, index))
+}
+
+/// (audio-routing) What a card's profile param says: an `EnumProfile`
+/// item is one of its profiles, a `Profile` one the profile it uses now.
+/// `None` for another param or a pod that is no profile.
+fn profile_param(ty: ParamType, bytes: &[u8]) -> Option<ProfileParam> {
+    match ty {
+        ParamType::EnumProfile => pod::Profile::parse(bytes).map(ProfileParam::Listed),
+        ParamType::Profile => pod::Profile::parse(bytes).map(|p| ProfileParam::Active(p.index)),
+        _ => None,
+    }
+}
+
 /// (audio-routing) The device a program's stream (node `stream`, listed
 /// as `direction`) plays to or records from: the device its links reach
 /// (the input side of a player's links; the output side of a recorder's,
@@ -1652,21 +1704,11 @@ impl Driver<'_> {
                                     route,
                                 })
                             }
-                            ParamType::EnumProfile => {
-                                pod::Profile::parse(bytes).map(|p| Work::DeviceProfile {
-                                    session: number,
-                                    id,
-                                    param: ProfileParam::Listed(p),
-                                })
-                            }
-                            ParamType::Profile => {
-                                pod::Profile::parse(bytes).map(|p| Work::DeviceProfile {
-                                    session: number,
-                                    id,
-                                    param: ProfileParam::Active(p.index),
-                                })
-                            }
-                            _ => None,
+                            _ => profile_param(ty, bytes).map(|param| Work::DeviceProfile {
+                                session: number,
+                                id,
+                                param,
+                            }),
                         };
                         if let Some(work) = work {
                             q2.borrow_mut().push_back(work);
@@ -1957,22 +1999,12 @@ impl Driver<'_> {
                 Ok(())
             }
             AudioAction::SetProfile { card, profile } => {
-                let d = s
+                let cards = s
                     .devices
                     .iter()
-                    .find(|(id, d)| card_key(**id, d.serial.as_deref()) == card)
-                    .map(|(_, d)| d)
-                    .ok_or(AudioError::UnknownCard(card))?;
-                let index = d
-                    .profiles
-                    .listed
-                    .iter()
-                    .find(|p| p.name == profile)
-                    .map(|p| p.index)
-                    .ok_or_else(|| AudioError::UnknownProfile {
-                        card,
-                        profile: profile.clone(),
-                    })?;
+                    .map(|(id, d)| (*id, d.serial.as_deref(), &d.profiles));
+                let (id, index) = profile_target(cards, card, &profile)?;
+                let d = s.devices.get(&id).ok_or(AudioError::UnknownCard(card))?;
                 let bytes = select_profile_pod(index).map_err(AudioError::Failed)?;
                 let pod = Pod::from_bytes(&bytes)
                     .ok_or_else(|| AudioError::Failed("bad Profile pod".into()))?;
@@ -2579,13 +2611,11 @@ fn state_of(s: &Session) -> AudioState {
         let mut d = n.device.clone();
         d.default = Some(d.id) == sink || Some(d.id) == source;
         d.icon = icon(n.direction, d.volume, d.muted).to_owned();
-        if let Some((card, entry)) = n.card.and_then(|c| Some((c, s.devices.get(&c)?))) {
-            d.profiles = profiles_of(
-                &entry.profiles.listed,
-                entry.profiles.active,
-                card_key(card, entry.serial.as_deref()),
-            );
-        }
+        d.profiles = device_profiles(n.card, |c| {
+            s.devices
+                .get(&c)
+                .map(|e| (&e.profiles, e.serial.as_deref()))
+        });
         if let Some(serial) = n.serial.as_deref().and_then(|v| v.parse().ok()) {
             state.serials.insert(d.id, serial);
         }
@@ -2899,6 +2929,117 @@ mod tests {
         assert_eq!(card_key(48, Some("1203")), 1203);
         assert_eq!(card_key(48, None), 48);
         assert_eq!(card_key(48, Some("x")), 48);
+    }
+
+    /// (audio-routing) A card's profiles reach its device and come back
+    /// to the card: a node whose `device.id` is 48 lists the profiles of
+    /// card 48 (found by that global id, not the node's own id), keyed by
+    /// the card's own serial 1203 (not the node's), and `p.select()` on
+    /// one of them finds card 48 again by that key and its profile's
+    /// index.
+    #[test]
+    fn a_device_lists_its_cards_profiles_and_select_finds_the_card() {
+        let mut headset = Profiles::default();
+        headset.info(Some(1), Some(1));
+        headset.syncing(1);
+        headset.param(ProfileParam::Listed(profile(
+            1,
+            "a2dp-sink",
+            20,
+            Availability::Yes,
+        )));
+        headset.param(ProfileParam::Listed(profile(
+            2,
+            "headset-head-unit",
+            10,
+            Availability::Yes,
+        )));
+        headset.param(ProfileParam::Active(1));
+        assert!(headset.done(1));
+        let mut speakers = Profiles::default();
+        speakers.info(Some(1), Some(1));
+        speakers.syncing(1);
+        speakers.param(ProfileParam::Listed(profile(
+            4,
+            "output:analog-stereo",
+            6500,
+            Availability::Yes,
+        )));
+        assert!(speakers.done(1));
+        // Cards by global id: the headset 48 (serial 1203), the speakers
+        // 49 (serial 1300). Nodes have other ids and serials: a node's
+        // own id 1203 or 61 is no card.
+        let cards: BTreeMap<u32, (Option<&str>, &Profiles)> = [
+            (48, (Some("1203"), &headset)),
+            (49, (Some("1300"), &speakers)),
+        ]
+        .into();
+        let card_of = |c: u32| cards.get(&c).map(|(serial, p)| (*p, *serial));
+
+        let listed = device_profiles(Some(48), card_of);
+        let names: Vec<&str> = listed.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["a2dp-sink", "headset-head-unit"]);
+        assert!(listed.iter().all(|p| p.card == 1203), "{listed:?}");
+        assert_eq!(
+            listed.iter().map(|p| p.active).collect::<Vec<_>>(),
+            [true, false]
+        );
+        assert_eq!(device_profiles(Some(49), card_of)[0].card, 1300);
+        // A node of no card (a null sink), or of a card not bound.
+        assert!(device_profiles(None, card_of).is_empty());
+        assert!(device_profiles(Some(61), card_of).is_empty());
+
+        let all = || cards.iter().map(|(id, (serial, p))| (*id, *serial, *p));
+        // `p.select()` on the headset's second profile: card 48, index 2.
+        let hsp = &listed[1];
+        assert_eq!(profile_target(all(), hsp.card, &hsp.name), Ok((48, 2)));
+        assert_eq!(
+            profile_target(all(), 1300, "output:analog-stereo"),
+            Ok((49, 4))
+        );
+        // The card's global id is not its key once it has a serial.
+        assert_eq!(
+            profile_target(all(), 48, "a2dp-sink"),
+            Err(AudioError::UnknownCard(48))
+        );
+        // A profile of another card.
+        assert_eq!(
+            profile_target(all(), 1203, "output:analog-stereo"),
+            Err(AudioError::UnknownProfile {
+                card: 1203,
+                profile: "output:analog-stereo".into()
+            })
+        );
+        // A card with no serial is keyed, and found, by its id.
+        let bare = [(50, None, &speakers)];
+        assert_eq!(
+            device_profiles(Some(50), |_| Some((&speakers, None)))[0].card,
+            50
+        );
+        assert_eq!(
+            profile_target(bare, 50, "output:analog-stereo"),
+            Ok((50, 4))
+        );
+    }
+
+    /// (audio-routing) A card's `EnumProfile` items are its profiles, its
+    /// `Profile` param the one in use; other params are none of these.
+    #[test]
+    fn profile_params_are_told_apart() {
+        use pipewire::spa::sys;
+        let item = pod::tests::profile_bytes(2, "a2dp-sink", sys::SPA_PARAM_EnumProfile);
+        let Some(ProfileParam::Listed(p)) = profile_param(ParamType::EnumProfile, &item) else {
+            panic!("an EnumProfile item is a listed profile");
+        };
+        assert_eq!((p.index, p.name.as_str()), (2, "a2dp-sink"));
+        let active = pod::tests::profile_bytes(3, "headset-head-unit", sys::SPA_PARAM_Profile);
+        assert_eq!(
+            profile_param(ParamType::Profile, &active),
+            Some(ProfileParam::Active(3))
+        );
+        assert_eq!(profile_param(ParamType::Route, &item), None);
+        assert_eq!(profile_param(ParamType::Props, &item), None);
+        assert_eq!(profile_param(ParamType::EnumProfile, b"not a pod"), None);
     }
 
     /// (audio-routing) A stream plays to the device its links reach.

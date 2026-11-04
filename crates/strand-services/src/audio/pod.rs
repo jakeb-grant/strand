@@ -253,7 +253,7 @@ pub fn default_value(name: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -433,6 +433,19 @@ mod tests {
                 Property::new(sys::SPA_PARAM_PROFILE_save, Value::Bool(false)),
             ],
         })
+    }
+
+    /// (audio-routing) A card's profile param as the daemon sends it: an
+    /// available profile, an `EnumProfile` item or the `Profile` in use
+    /// (`id`).
+    pub(crate) fn profile_bytes(index: i32, name: &str, id: u32) -> Vec<u8> {
+        serialize(&profile_value(
+            index,
+            name,
+            sys::SPA_PARAM_AVAILABILITY_yes,
+            id,
+        ))
+        .unwrap()
     }
 
     #[test]
