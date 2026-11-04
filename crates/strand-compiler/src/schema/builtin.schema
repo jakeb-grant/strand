@@ -1442,6 +1442,53 @@ provisional service greetd {
   action cancel()
 }
 
+/// A filesystem on a removable drive, keyed by `device`.
+provisional record Volume key device {
+  /// Its block device.
+  device: text
+  /// Its label, or null.
+  label: text?
+  /// Its size in bytes.
+  size: float
+  /// It is mounted.
+  mounted: bool
+  /// Where it is mounted, or null.
+  path: text?
+  /// Mounts it.
+  action mount()
+  /// Unmounts it.
+  action unmount()
+}
+
+/// A removable drive with its medium in, keyed by `device`.
+provisional record Drive key device {
+  /// Its block device.
+  device: text
+  /// Its vendor and model.
+  name: text
+  /// Its size in bytes.
+  size: float
+  /// An icon name for its kind.
+  icon: text
+  /// `eject()` can make it safe to remove.
+  can_eject: bool
+  /// Its filesystems, keyed by `device`.
+  volumes: [Volume]
+  /// Unmounts its filesystems, then ejects it or powers it off.
+  action eject()
+}
+
+/// Removable drives and their filesystems, from UDisks2.
+provisional service drives {
+  /// Every removable drive with its medium in, keyed by `device`.
+  all: [Drive]
+  /// UDisks2 answers.
+  available: bool
+  /// Mounting, unmounting or ejecting failed:
+  /// `on drives.failed(device, error) { … }`.
+  event failed(device: text, error: text)
+}
+
 // ---------------------------------------------------------------------------
 // Functions. Overloads are tried in order; the first overload's doc
 // documents the name.

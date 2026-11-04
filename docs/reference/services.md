@@ -178,6 +178,22 @@ graph's `history`; otherwise not at all.
 | `free` | `float` | The root filesystem's bytes free to a user. |
 | `all` | `[Filesystem]` | Every mounted filesystem on a local disk, `/` first, keyed by `path`. |
 
+## `drives`
+
+Removable drives and their filesystems, from UDisks2, followed live
+as they are plugged in, mounted, unmounted and ejected. Internal disks,
+loop devices and drives with no medium in (an empty card reader or
+disc drive) are not listed. `disk` has the mounted filesystems' usage.
+
+| Field | Type | |
+| --- | --- | --- |
+| `all` | `[Drive]` | Every removable drive with its medium in, keyed by `device`: those there when UDisks2 started first, then in the order plugged in. |
+| `available` | `bool` | UDisks2 answers. False without it (or without a system bus), so a menu can hide what cannot work. |
+
+| Event | |
+| --- | --- |
+| `on drives.failed(device: text, error: text)` | Mounting, unmounting or ejecting failed (UDisks2 or polkit refused it, a filesystem was busy, UDisks2 or the system bus was missing): `on drives.failed(device, error) { … }`. `device` is the volume's for `mount()` and `unmount()` and the drive's for `eject()`; `error` is what UDisks2 says. |
+
 ## `greetd`
 
 A login screen for greetd: when Strand runs as greetd's greeter, its
