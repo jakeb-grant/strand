@@ -7,7 +7,8 @@
 //! `Encrypted` interfaces from a [`World`] the test changes. Each method
 //! called is logged in [`World::calls`] with its device (and a mount's
 //! options); [`World::refuse`] makes a method fail as UDisks2 does, and
-//! [`World::stall_mount`] holds a mount until the test lets it go.
+//! [`World::stall_mount`] and [`World::stall_unmount`] hold a mount or an
+//! unmount until the test lets it go.
 //! Dropping the connection [`serve`] gives loses the name: UDisks2 gone.
 //! Never the machine's own UDisks2.
 #![allow(dead_code)]
@@ -100,6 +101,9 @@ pub struct World {
     pub refuse: HashMap<String, (Refusal, String)>,
     /// `Mount` waits while this is set.
     pub stall_mount: bool,
+    /// `Unmount` waits while this is set (logged first), as umount does
+    /// flushing a slow stick.
+    pub stall_unmount: bool,
     /// Each method called: `Mount /dev/sdb1 {}`, `Eject /dev/sdb`.
     pub calls: Vec<String>,
     /// The ATA disks' `SmartUpdated`.
@@ -520,9 +524,12 @@ impl Filesystem {
                 .unwrap_or_default();
             w.calls.push(format!("Unmount {device}"));
             w.refusal("Unmount")?;
-            if let Some(b) = w.blocks.get_mut(&self.1) {
-                b.fs = Some(Vec::new());
-            }
+        }
+        while self.0.lock().unwrap().stall_unmount {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        if let Some(b) = self.0.lock().unwrap().blocks.get_mut(&self.1) {
+            b.fs = Some(Vec::new());
         }
         self.mount_points_changed(&e).await?;
         Ok(())
@@ -755,6 +762,31 @@ pub fn add_block_now(
     let id = b.id.clone();
     w.lock().unwrap().blocks.insert(id.clone(), b);
     tokio.block_on(add_block(conn.object_server(), w, &id));
+}
+
+/// Block `id` relabelled (`IdLabel` changed), as a reformat does.
+pub fn set_label(
+    tokio: &tokio::runtime::Runtime,
+    conn: &zbus::Connection,
+    w: &W,
+    id: &str,
+    label: &str,
+) {
+    if let Some(b) = w.lock().unwrap().blocks.get_mut(id) {
+        b.label = label.into();
+    }
+    tokio.block_on(async {
+        let b = conn
+            .object_server()
+            .interface::<_, Block>(block_path(id).as_str())
+            .await
+            .unwrap();
+        b.get()
+            .await
+            .id_label_changed(b.signal_emitter())
+            .await
+            .unwrap();
+    });
 }
 
 /// The ATA disks' SMART readings refreshed (`SmartUpdated` changed on

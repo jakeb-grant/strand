@@ -1,9 +1,11 @@
 //! `drives` against a small zbus UDisks2 on a private bus (`udisks/`;
 //! python-dbusmock has no udisks2 template): the removable drives with
 //! their medium in and their filesystems, followed as drives are plugged,
-//! pulled and given a medium; mounting and unmounting; ejecting in order;
-//! refusals as `drives.failed`; a repeat in flight dropped; and UDisks2
-//! restarting or missing.
+//! pulled, given a medium and relabelled; mounting and unmounting;
+//! ejecting in order (a stick powered off, a disc or card ejected, an
+//! unlocked encrypted volume locked), an eject finishing after its service
+//! stops; refusals as `drives.failed`; a repeat in flight dropped; and
+//! UDisks2 restarting or missing.
 
 mod support;
 mod udisks;
@@ -147,6 +149,12 @@ fn drives_follow_udisks() {
     );
     assert_eq!(d.volumes[0].size, 8_000_000_000.0);
 
+    // A volume relabelled (a `Block` property changed).
+    set_label(&tokio, &fake, &w, "sdb2", "PHOTOS");
+    until(&rt, &s, "the new label", || {
+        volume(&b, &rt, "/dev/sdb2").is_some_and(|v| v.label.as_deref() == Some("PHOTOS"))
+    });
+
     // A second stick is plugged in, then pulled out.
     plug(
         &tokio,
@@ -288,7 +296,7 @@ fn refusals_arrive_as_drives_failed() {
 }
 
 #[test]
-fn eject_unmounts_then_ejects_and_powers_off() {
+fn a_stick_is_unmounted_then_powered_off() {
     let Some(bus) = PrivateBus::start() else {
         return;
     };
@@ -305,39 +313,192 @@ fn eject_unmounts_then_ejects_and_powers_off() {
     });
     eject(&rt, &b, "/dev/sdb");
     until(&rt, &s, "gone", || all(&b, &rt).is_empty());
-    assert_eq!(
-        calls(&w),
-        ["Unmount /dev/sdb1", "Eject /dev/sdb", "PowerOff /dev/sdb"]
-    );
+    settle(&rt, &s, Duration::from_millis(300));
+    // Ejectable and able to be powered off, its medium fixed: powered off
+    // only.
+    assert_eq!(calls(&w), ["Unmount /dev/sdb1", "PowerOff /dev/sdb"]);
     assert!(failures.lock().unwrap().is_empty());
     assert!(available(&b, &rt));
     s.shutdown();
 }
 
 #[test]
-fn a_disc_is_ejected_without_powering_its_drive_off() {
+fn a_disc_or_card_is_ejected_and_its_drive_left_on() {
     let Some(bus) = PrivateBus::start() else {
         return;
     };
     let tokio = tokio();
-    let (d, mut blocks) = disc_drive();
-    blocks[0].fs = Some(vec!["/run/media/tester/FILMS".into()]);
-    let w = world(vec![(d, blocks)]);
+    // A USB disc drive and a USB card reader: each ejects, and each can
+    // be powered off.
+    let (mut dvd, mut disc) = disc_drive();
+    dvd.can_power_off = true;
+    disc[0].fs = Some(vec!["/run/media/tester/FILMS".into()]);
+    let (mut reader, mut slot) = card_reader();
+    reader.media_available = true;
+    reader.can_power_off = true;
+    slot.push(BlockSpec {
+        id: "sdc1".into(),
+        device: "/dev/sdc1".into(),
+        drive: Some("Generic_SD_Reader".into()),
+        label: "CAMERA".into(),
+        size: 32_000_000_000,
+        partition: Some(1),
+        fs: Some(vec!["/run/media/tester/CAMERA".into()]),
+        ..BlockSpec::default()
+    });
+    let w = world(vec![(dvd, disc), (reader, slot)]);
     let _fake = serve(&tokio, &bus.address, &w);
     let rt = Runtime::new();
     let (s, b) = services(&rt, bus.buses());
     let failures = failures_of(&b);
     b.drives.acquire(&rt);
     assert!(s.wait_ready(&rt, Duration::from_secs(10)));
-    until(&rt, &s, "the disc", || devices(&b, &rt) == ["/dev/sr0"]);
-    let disc = &all(&b, &rt)[0];
-    assert_eq!(disc.icon, "media-optical-symbolic");
-    assert!(disc.can_eject);
+    until(&rt, &s, "the disc and the card", || {
+        devices(&b, &rt) == ["/dev/sdc", "/dev/sr0"]
+    });
+    let disc = all(&b, &rt).into_iter().find(|d| d.device == "/dev/sr0");
+    assert_eq!(
+        disc.map(|d| (d.icon, d.can_eject)),
+        Some(("media-optical-symbolic".to_string(), true))
+    );
     eject(&rt, &b, "/dev/sr0");
-    until(&rt, &s, "the disc out", || all(&b, &rt).is_empty());
+    until(&rt, &s, "the disc out", || devices(&b, &rt) == ["/dev/sdc"]);
+    eject(&rt, &b, "/dev/sdc");
+    until(&rt, &s, "the card out", || all(&b, &rt).is_empty());
     settle(&rt, &s, Duration::from_millis(300));
-    assert_eq!(calls(&w), ["Unmount /dev/sr0", "Eject /dev/sr0"]);
+    assert_eq!(
+        calls(&w),
+        [
+            "Unmount /dev/sr0",
+            "Eject /dev/sr0",
+            "Unmount /dev/sdc1",
+            "Eject /dev/sdc"
+        ],
+        "neither powered off"
+    );
+    {
+        let w = w.lock().unwrap();
+        let mut left: Vec<(&str, bool)> = w
+            .drives
+            .values()
+            .map(|d| (d.device.as_str(), d.media_available))
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [("/dev/sdc", false), ("/dev/sr0", false)],
+            "both drives still there, empty, for the next medium"
+        );
+    }
     assert!(failures.lock().unwrap().is_empty());
+    s.shutdown();
+}
+
+#[test]
+fn an_unlocked_encrypted_volume_is_unmounted_then_locked() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    // The stick's second partition is LUKS, unlocked and mounted.
+    let (d, mut blocks) = the_stick(false);
+    blocks[2].fs = None;
+    blocks[2].encrypted = true;
+    blocks.push(BlockSpec {
+        id: "dm_2d0".into(),
+        device: "/dev/mapper/luks-1234".into(),
+        drive: None,
+        label: "SECRET".into(),
+        size: 7_900_000_000,
+        backing: Some("sdb2".into()),
+        fs: Some(vec!["/run/media/tester/SECRET".into()]),
+        ..BlockSpec::default()
+    });
+    let w = world(vec![(d, blocks)]);
+    // Powering off refused, so what the lock left can be seen.
+    w.lock().unwrap().refuse.insert(
+        "PowerOff".into(),
+        (
+            Refusal::NotAuthorizedDismissed,
+            "Not authorized to perform operation".into(),
+        ),
+    );
+    let _fake = serve(&tokio, &bus.address, &w);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = failures_of(&b);
+    b.drives.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    until(&rt, &s, "the unlocked volume", || {
+        volume(&b, &rt, "/dev/mapper/luks-1234").is_some_and(|v| v.mounted)
+    });
+    let vols = |b: &strand_services::Builtin| -> Vec<String> {
+        all(b, &rt)
+            .into_iter()
+            .flat_map(|d| d.volumes)
+            .map(|v| v.device)
+            .collect()
+    };
+    assert_eq!(vols(&b), ["/dev/sdb1", "/dev/mapper/luks-1234"]);
+    eject(&rt, &b, "/dev/sdb");
+    until(&rt, &s, "the power off refused", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        calls(&w),
+        [
+            "Unmount /dev/mapper/luks-1234",
+            "Lock /dev/sdb2",
+            "PowerOff /dev/sdb"
+        ]
+    );
+    assert_eq!(
+        *failures.lock().unwrap(),
+        [(
+            "/dev/sdb".to_string(),
+            "Not authorized to perform operation".to_string()
+        )]
+    );
+    until(&rt, &s, "the cleartext volume gone", || {
+        vols(&b) == ["/dev/sdb1"]
+    });
+    assert_eq!(devices(&b, &rt), ["/dev/sdb"], "still there");
+    s.shutdown();
+}
+
+#[test]
+fn an_eject_under_way_finishes_after_its_service_stops() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let w = world(vec![the_stick(true)]);
+    // The unmount takes a while (umount flushing a slow stick).
+    w.lock().unwrap().stall_unmount = true;
+    let _fake = serve(&tokio, &bus.address, &w);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.drives.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    until(&rt, &s, "the stick mounted", || {
+        volume(&b, &rt, "/dev/sdb1").is_some_and(|v| v.mounted)
+    });
+    eject(&rt, &b, "/dev/sdb");
+    until(&rt, &s, "the unmount asked", || calls(&w).len() == 1);
+    // The menu closes on its click: nobody reads `drives`, and it stops
+    // with its unmount still under way.
+    b.drives.release(&rt);
+    rt.tick(strand_services::STOP_GRACE + Duration::from_millis(1));
+    until(&rt, &s, "drives stopped", || !b.drives.running());
+    w.lock().unwrap().stall_unmount = false;
+    strand_test_support::wait::until(
+        "the power off",
+        Duration::from_secs(30),
+        Duration::from_millis(20),
+        || calls(&w).len() == 2,
+    );
+    assert_eq!(calls(&w), ["Unmount /dev/sdb1", "PowerOff /dev/sdb"]);
+    assert!(w.lock().unwrap().drives.is_empty(), "powered off");
     s.shutdown();
 }
 

@@ -6,9 +6,11 @@
 //! `InterfacesRemoved` there and the `PropertiesChanged` of the three
 //! interfaces it shows ([`Daemon`]). Each of those is a match rule with
 //! the interface as `arg0` ([`dbus::properties_rule`]), so the bus itself
-//! drops the rest: an internal disk's SMART refresh (`Drive.Ata`), swap
-//! and loop devices never wake the process. Nothing polls. Only the
-//! drive, block, filesystem and partition interfaces are kept.
+//! drops the rest: `Drive.Ata` SMART refreshes and `Loop`/`Swapspace`
+//! property changes never reach the process; block and filesystem changes
+//! of any device (internal ones and loop devices too) do, and change
+//! nothing in the state. Nothing polls. Only the drive, block, filesystem
+//! and partition interfaces are kept.
 //!
 //! [`Drives::from_objects`] makes the state: a drive UDisks2 calls
 //! `Removable` with its medium in, keyed by its whole-disk block device,
@@ -20,14 +22,22 @@
 //! `v.mount()` and `v.unmount()` are the filesystem's `Mount` and
 //! `Unmount` with no options: UDisks2 picks the mount point, and polkit
 //! may ask (the session's agent, Strand's while a config reads `polkit`).
-//! `d.eject()` is safe removal in GVfs's order ([`eject_plan`]): unmount
-//! every mounted filesystem, lock what was unlocked, then `Eject` where
-//! the drive is ejectable and `PowerOff` where it can be; the first step
-//! refused stops it. Each runs as a task with no timeout (a polkit dialog
-//! may stay open as long as the user leaves it, as for `session`'s power
-//! actions), cancelled with the body. A call repeating one in flight (a
-//! double click) is dropped. A failure is `failed(device, error)` in
-//! UDisks2's words.
+//! `d.eject()` is safe removal ([`eject_plan`]): unmount every mounted
+//! filesystem, lock what was unlocked, then one last step, never both:
+//! `Eject` where the medium comes out of the drive (a disc, a card: the
+//! drive stays powered for the next one), else `PowerOff` where the drive
+//! can be (a stick, a disk), else `Eject`. GVfs maps `g_drive_eject` to
+//! `Drive.Eject` and `g_drive_stop` to `Drive.PowerOff`, and a file
+//! manager calls one or the other: a card reader or USB disc drive
+//! reports both, and powering it off after its medium would take every
+//! slot with it, deaf to the next card or disc until it is plugged in
+//! again. The first step refused stops it. Each runs as a task
+//! with no timeout (a polkit dialog may stay open as long as the user
+//! leaves it, as for `session`'s power actions); one started outlives the
+//! body ([`Calls`]), so a menu closing on its click (its service stopping
+//! 5 s later) never leaves a drive unmounted and still powered. A call
+//! repeating one in flight (a double click) is dropped. A failure is
+//! `failed(device, error)` in UDisks2's words.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -390,11 +400,12 @@ fn drive_path(objects: &Objects, device: &str) -> Option<String> {
     })
 }
 
-/// How `eject()` makes drive `path` safe to remove, in GVfs's order:
-/// unmount each mounted filesystem on it, lock each encrypted one
-/// unlocked, then eject its medium if it is ejectable and power it off if
-/// it can be. A drive that can do neither is refused before anything is
-/// unmounted.
+/// How `eject()` makes drive `path` safe to remove: unmount each mounted
+/// filesystem on it, lock each encrypted one unlocked, then either eject
+/// it or power it off (see the module docs): `Eject` for a medium that
+/// comes out (`MediaRemovable`) of a drive that ejects, else `PowerOff`
+/// where it can be, else `Eject`. A drive that can do neither is refused
+/// before anything is unmounted.
 fn eject_plan(objects: &Objects, path: &str) -> Result<Vec<Step>, String> {
     let d = objects
         .get(path)
@@ -402,9 +413,15 @@ fn eject_plan(objects: &Objects, path: &str) -> Result<Vec<Step>, String> {
         .ok_or_else(|| "no such drive".to_string())?;
     let flag = |name| dbus::boolean(d, name).unwrap_or(false);
     let (eject, power_off) = (flag("Ejectable"), flag("CanPowerOff"));
-    if !eject && !power_off {
+    let last = if eject && flag("MediaRemovable") {
+        Step::Eject(path.to_string())
+    } else if power_off {
+        Step::PowerOff(path.to_string())
+    } else if eject {
+        Step::Eject(path.to_string())
+    } else {
         return Err("the drive cannot be ejected".to_string());
-    }
+    };
     let fs = filesystems(objects, path);
     let mut steps: Vec<Step> = fs
         .iter()
@@ -423,13 +440,24 @@ fn eject_plan(objects: &Objects, path: &str) -> Result<Vec<Step>, String> {
         .collect();
     backing.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     steps.extend(backing.into_iter().map(|(_, b)| Step::Lock(b)));
-    if eject {
-        steps.push(Step::Eject(path.to_string()));
-    }
-    if power_off {
-        steps.push(Step::PowerOff(path.to_string()));
-    }
+    steps.push(last);
     Ok(steps)
+}
+
+/// The shell's calls under way, each bringing back its device and, if it
+/// failed, why. Dropped with the body (it returned, or the service
+/// stopped and its future was dropped), they are let go rather than
+/// cancelled: an eject is several calls the client makes in turn, and
+/// cancelled after its `Unmount` it would leave the drive unmounted but
+/// still powered, its `failed` never sent. They finish on the services
+/// runtime; what they bring back is dropped.
+#[derive(Default)]
+struct Calls(JoinSet<(String, Option<String>)>);
+
+impl Drop for Calls {
+    fn drop(&mut self) {
+        self.0.detach_all();
+    }
 }
 
 /// The shell's calls in flight, by task: each one's device and what it
@@ -492,9 +520,9 @@ async fn follow(cx: &mut Cx<Drives>, conn: &zbus::Connection) -> Result<(), Serv
             .subscribe(key, dbus::properties_rule(ROOT, iface)?)
             .await?;
     }
-    // Mounts, unmounts and ejects in flight: dropped (cancelled) with the
-    // body. Each brings back its device and, if it failed, why.
-    let mut calls: JoinSet<(String, Option<String>)> = JoinSet::new();
+    // Mounts, unmounts and ejects in flight: let go, not cancelled, when
+    // the body ends.
+    let mut calls = Calls::default();
     let mut busy = InFlight::default();
     loop {
         let mut objects = read(&daemon)
@@ -507,7 +535,7 @@ async fn follow(cx: &mut Cx<Drives>, conn: &zbus::Connection) -> Result<(), Serv
         cx.ready();
         loop {
             tokio::select! {
-                Some(done) = calls.join_next_with_id(), if !calls.is_empty() => {
+                Some(done) = calls.0.join_next_with_id(), if !calls.0.is_empty() => {
                     let failure = match done {
                         Ok((id, (device, error))) => {
                             busy.remove(id);
@@ -558,7 +586,7 @@ async fn follow(cx: &mut Cx<Drives>, conn: &zbus::Connection) -> Result<(), Serv
                         };
                         let conn = conn.clone();
                         let dev = device.clone();
-                        let task = calls.spawn(async move {
+                        let task = calls.0.spawn(async move {
                             let r = act(&conn, &steps).await;
                             if let Err(e) = &r {
                                 log::warn!("drives: {ask:?} {dev}: {e}");
@@ -1052,11 +1080,12 @@ mod tests {
             "MountPoints",
             aay(&["/run/media/you/STICK"]),
         );
+        // A stick (its medium never comes out), ejectable and able to be
+        // powered off: powered off only.
         assert_eq!(
             eject_plan(&o, &stick),
             Ok(vec![
                 Step::Unmount(format!("{B}sdb1")),
-                Step::Eject(stick.clone()),
                 Step::PowerOff(stick.clone()),
             ])
         );
@@ -1070,11 +1099,39 @@ mod tests {
             "MountPoints",
             aay(&["/run/media/you/FILMS"]),
         );
+        let disc_out = Ok(vec![
+            Step::Unmount(format!("{B}sr0")),
+            Step::Eject(dvd.clone()),
+        ]);
+        assert_eq!(eject_plan(&o, &dvd), disc_out);
+        // A USB disc drive, which can be powered off too: still only the
+        // disc out, so it hears the next one.
+        set(&mut o, &dvd, DRIVE, "CanPowerOff", v(Value::from(true)));
+        assert_eq!(eject_plan(&o, &dvd), disc_out);
+        // A card in a USB reader that can be powered off: the card out,
+        // the reader (every slot of it) left on.
+        let reader = format!("{D}reader");
+        set(
+            &mut o,
+            &reader,
+            DRIVE,
+            "MediaAvailable",
+            v(Value::from(true)),
+        );
+        set(&mut o, &reader, DRIVE, "CanPowerOff", v(Value::from(true)));
+        block(
+            &mut o,
+            "sdc1",
+            "reader",
+            Some(1),
+            "CAMERA",
+            Some(&["/run/media/you/CAMERA"]),
+        );
         assert_eq!(
-            eject_plan(&o, &dvd),
+            eject_plan(&o, &reader),
             Ok(vec![
-                Step::Unmount(format!("{B}sr0")),
-                Step::Eject(dvd.clone())
+                Step::Unmount(format!("{B}sdc1")),
+                Step::Eject(reader.clone())
             ])
         );
         // A USB disk that is not ejectable: powered off.
@@ -1086,8 +1143,18 @@ mod tests {
                 Step::PowerOff(stick.clone())
             ])
         );
-        // Neither: refused, nothing unmounted.
+        // Ejectable, its medium fixed, and no power off: ejected.
+        set(&mut o, &stick, DRIVE, "Ejectable", v(Value::from(true)));
         set(&mut o, &stick, DRIVE, "CanPowerOff", v(Value::from(false)));
+        assert_eq!(
+            eject_plan(&o, &stick),
+            Ok(vec![
+                Step::Unmount(format!("{B}sdb1")),
+                Step::Eject(stick.clone())
+            ])
+        );
+        // Neither: refused, nothing unmounted.
+        set(&mut o, &stick, DRIVE, "Ejectable", v(Value::from(false)));
         assert!(eject_plan(&o, &stick).is_err());
         assert!(plan(&o, "/dev/sdb", Ask::Eject, true).is_err());
         // An unlocked encrypted filesystem is unmounted, then locked.
@@ -1098,7 +1165,6 @@ mod tests {
             Ok(vec![
                 Step::Unmount(format!("{B}dm_2d0")),
                 Step::Lock(format!("{B}sdb2")),
-                Step::Eject(stick.clone()),
                 Step::PowerOff(stick.clone()),
             ])
         );
