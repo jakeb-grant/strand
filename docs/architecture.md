@@ -130,8 +130,8 @@ blocking-pool thread 500 ms after its last task
 (`client::BLOCKING_KEEP_ALIVE`). The memory budget rests on the root
 `Cargo.toml`'s `[profile.release.package]` opt-levels (decisions.md
 m5-speed-profile), which packagers' profiles do not carry, so packages
-build from the workspace. `budgets.rs` holds `.text` to 29,097,984 B
-(24,903,680 B without the GPU backend; re-bases are dated decisions.md
+build from the workspace. `budgets.rs` holds `.text` to 29,622,272 B
+(25,690,112 B without the GPU backend; re-bases are dated decisions.md
 entries). Every program strand starts gets back the inherited THP
 setting (`strand_services::child`).
 
@@ -400,7 +400,7 @@ The binary's default `gpu` feature enables render's and surface's `gpu`
 and the compiler's `shaders` (which `strand-dev` also turns on, so the
 LSP checks shaders); with `--no-default-features` it links
 none of wgpu, vello_gpu, naga or libwayland-client, which the CPU-only
-`.text` gate measures (24,903,680 B).
+`.text` gate measures (25,690,112 B).
 
 ```
 strand-scene <── strand-gpu (wgpu, vello_gpu, vello_common, raw-window-handle)
@@ -2486,8 +2486,9 @@ watch`, and keeps it for `strand report` and the inspector.
 **Budgets and tests.**
 
 - `.text` (`strand/tests/budgets.rs`, `TEXT_GATE_GPU`/`TEXT_GATE_CPU`):
-  the default build at most 29,097,984 B, `--no-default-features` at
-  most 24,903,680 B (decisions.md wave-cost, 2026-10-30; services-round,
+  the default build at most 29,622,272 B, `--no-default-features` at
+  most 25,690,112 B (decisions.md services-merge, 2026-11-03; wave-cost,
+  2026-10-30; services-round,
   2026-10-24, records each earlier re-base).
 - Memory (`budgets.rs`), two legs since the device is warm wherever one
   can start (decisions.md gpu-first). Warm, under `STRAND_REQUIRE_GPU=1`
