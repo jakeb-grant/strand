@@ -145,8 +145,28 @@ or one in range (`bluetooth.nearby`), keyed by `address`.
 | --- | --- |
 | `action connect()` | Connects to it; a failure is `bluetooth.failed`. Asked again while a connect or pair of it runs (a double click), it is dropped. |
 | `action disconnect()` | Disconnects from it; a failure is `bluetooth.failed`. Asked again while one runs, it is dropped. |
-| `action pair()` | Pairs with it, trusts it (so it may reconnect on its own) and connects to it: how a `nearby` device is added. One already paired is trusted and connected. Strand asks for no PIN or passkey: BlueZ pairs through the system's pairing agent if one runs, else without one (most headphones, mice, keyboards and phones). A device that insists on a PIN fails. A pairing not done within a minute is cancelled and fails. Asked again while one runs (a double click), it is dropped. A failure is `bluetooth.failed`. |
+| `action pair()` | Pairs with it, trusts it (so it may reconnect on its own) and connects to it: how a `nearby` device is added. One already paired is trusted and connected. While a config reads `bluetooth.request`, a device that asks for a PIN, a passkey or a confirmation asks it there. Otherwise BlueZ pairs through the system's pairing agent if one runs, else without one (most headphones, mice, keyboards and phones), and a device that insists on a code fails. A pairing not done within a minute is cancelled and fails. Asked again while one runs (a double click), it is dropped. A failure is `bluetooth.failed`. |
 | `action forget()` | Forgets it: unpaired and removed from the adapter, so it leaves `devices`. Asked again while one runs, it is dropped. A failure is `bluetooth.failed`. |
+
+### `BluetoothRequest`
+
+A Bluetooth device asking something of the shell while it pairs or
+connects: `bluetooth.request`. `kind` says what it asks; it is
+answered with `respond`, `accept` or `reject`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `device` | `BluetoothDevice` | The device asking: one of `bluetooth.devices` or `bluetooth.nearby`, or one pairing from its own side (a phone pairing with this machine), as BlueZ knows it. |
+| `kind` | `BluetoothRequestKind` | What it asks. `pin` and `passkey` are typed and given to `respond`. `display` shows `code` to type on the device (a keyboard) and needs no answer. `confirm` asks whether to pair, after checking that the device shows `code` (when `code` is "", there is nothing to compare). `service` asks whether a paired device may use `service`. |
+| `code` | `text` | The code to show (`display`) or compare with the device's (`confirm`): a passkey as six digits, zero-padded ("004213"), or a PIN as BlueZ gives it. "" for the other kinds, and for a `confirm` with nothing to compare. |
+| `entered` | `int` | How many digits of `code` have been typed on the device so far (a keyboard being paired reports each key), for `display`; else 0. |
+| `service` | `text` | The service a `service` request asks for, by name where Strand knows it ("Audio Sink", "Hands-Free", "Human Interface Device"), else its UUID; "" for the other kinds. |
+
+| Method | |
+| --- | --- |
+| `action respond(answer: text)` | Answers a `pin` request (1 to 16 bytes: up to 16 letters or digits) or a `passkey` one (up to six digits) with `answer`: `input { type: password; text: <-> typed; on activate { bluetooth.request?.respond(typed); typed = "" } }`. An answer that does not fit its kind is not sent: it is `bluetooth.failed(address, error)`, and the request stays. Ignored for the other kinds, and once the request has gone: an answer goes only to the request it was typed for. |
+| `action accept()` | Allows it: pairs (`confirm`), or lets the device use the service (`service`). Ignored for the other kinds, and once it has gone. |
+| `action reject()` | Refuses it: the pairing fails, or the device may not use the service. A `display` goes, and its pairing is cancelled when the shell started it (`d.pair()`); one the device started goes on until the device ends it. Ignored once it has gone. |
 
 ### `Canvas`
 
@@ -733,6 +753,7 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `Arrows` | `focus`, `focus_wrap` |
 | `Axis` | `vertical`, `horizontal`, `both`. Which way a `scroll` scrolls. |
 | `Blend` | `normal`, `screen`, `add`, `multiply`, `overlay`, `difference` |
+| `BluetoothRequestKind` | `pin`, `passkey`, `display`, `confirm`, `service`. What a Bluetooth pairing request asks: a PIN to type (`pin`), a passkey of up to six digits to type (`passkey`), a code to show while it is typed on the device (`display`), whether to pair, comparing a code the device shows when there is one (`confirm`), or whether a paired device may use a service (`service`). |
 | `BlurFallback` | `tint`, `none` |
 | `Cap` | `butt`, `round`, `square` |
 | `ConnectionKind` | `wifi`, `ethernet`, `vpn`, `wireguard`, `other`. What kind of network a connection is: a Wi-Fi network, a wired one, a VPN, a WireGuard tunnel, or another kind (a bridge, a modem, a hotspot shared over Bluetooth). |

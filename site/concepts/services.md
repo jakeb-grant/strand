@@ -23,7 +23,7 @@ field, function, action and event.
 | `audio` | Audio devices and the programs' streams, from PipeWire |
 | `auth` | The lock screen's password check, through PAM |
 | `battery` | The battery, from UPower |
-| `bluetooth` | Bluetooth adapters and devices, from BlueZ |
+| `bluetooth` | Bluetooth adapters, devices and pairing requests, from BlueZ |
 | `brightness` | The screen's backlight |
 | `calendar` | Month grids for calendars |
 | `clipboard` | The clipboard, and a history of what you copied |

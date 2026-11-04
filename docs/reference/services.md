@@ -90,10 +90,11 @@ them.
 | `available` | `bool` | BlueZ answers and has an adapter: false without them (or without a system bus), so a menu can hide what cannot work. |
 | `nearby` | `[BluetoothDevice]` | Unpaired devices in range that have a name, keyed by `address`, found by discovery. Discovery runs only while a visible reader reads them (a pairing page that is open). |
 | `scanning` | `bool` | The adapter is discovering devices, for `nearby` or for another program. |
+| `request` | `BluetoothRequest?` | The pairing request the shell is answering, or null. While a config reads it, Strand is BlueZ's pairing agent (its default one, able to show and type codes), so a device that asks for a PIN, a passkey or a confirmation asks it here, whether `d.pair()` or the device started the pairing. While none reads it, BlueZ uses the system's agent if one runs. Read it where it is always read, as a panel's `open`: `panel Pair { open: bluetooth.request != null; keyboard: exclusive … }`. A request goes when it is answered, when BlueZ cancels it (the device gave up, or a minute passed), when its pairing ends (`display`), and when the config stops reading it (it is then refused). A newer request takes its place: BlueZ asks one thing at a time. |
 
 | Event | |
 | --- | --- |
-| `on bluetooth.failed(address: text, error: text)` | Connecting, disconnecting, pairing or forgetting a device failed (out of range, turned off, timed out, or the service not running): `on bluetooth.failed(address, error) { … }`. |
+| `on bluetooth.failed(address: text, error: text)` | Connecting, disconnecting, pairing or forgetting a device failed (out of range, turned off, timed out, or the service not running), or an answer to `bluetooth.request` did not fit (a PIN that is empty or longer than 16 bytes, a passkey that is not digits): `on bluetooth.failed(address, error) { … }`. |
 
 ## `brightness`
 

@@ -517,7 +517,13 @@ monitor, the keyboard always).
   `greetd.submit` and `greetd.start(command)`, each of the command's
   texts one word, and `strand run` ends once greetd takes the session.
   Neither service's answers are recorded, reported or taken by
-  `strand call` (section 13), as with `auth`.
+  `strand call` (section 13), as with `auth`. A Bluetooth pairing
+  dialog is an ordinary panel too (decisions.md bt-agent),
+  `panel Pair { open: bluetooth.request != null … }`: while a config
+  reads `bluetooth.request`, Strand is the session's default BlueZ
+  pairing agent, and the request is answered by its own `respond`,
+  `accept` and `reject`. `bluetooth` is not a secret service: a typed
+  answer, like every action's argument, is never recorded.
 - **A password's way out is warned** (`check::secret_flow`, a warning;
   decisions.md oi-lock, 2026-10-26). What an `input` whose `type` may
   be `password` writes (`text: <-> pw`) is a password (`password`
@@ -537,8 +543,8 @@ monitor, the keyboard always).
   a pose or keyframes; an argument of a declared `action`
   (the process list shows it) or of an action of a service or record
   (`clipboard.copy`, `n.reply`, a `from dbus` method), other than
-  `auth.submit`, `polkit.respond`, `greetd.submit` and an access
-  point's `connect_with`; a write to a service's field or a settings
+  `auth.submit`, `polkit.respond`, `greetd.submit`, an access
+  point's `connect_with` and a Bluetooth request's `respond`; a write to a service's field or a settings
   field; and a `state` holding it that is `persist` or exported. A
   `bool` made from it (`pw != ""`, `pw.contains(" ")`) and its length
   (`pw.len`) carry nothing: password dots and a field that changes
