@@ -684,12 +684,16 @@ impl Players {
         })
     }
 
-    /// (power-media-kbd) Read `name` whole again (a `Set` it refused: its
-    /// real value comes back), while `owner` still owns it: what to ask.
-    fn reread(&mut self, name: &str, owner: &str) -> Option<Ask> {
+    /// (power-media-kbd) Read `name` whole again (a `Set` of `prop` it
+    /// refused: its real value comes back), while `owner` still owns it:
+    /// what to ask. The refused value leaves what reads in flight are
+    /// answered over: the reread is asked after the write, so its answer
+    /// is the truth for `prop`, and a change signalled or written after
+    /// this is held again by [`Players::changed`].
+    fn reread(&mut self, name: &str, owner: &str, prop: &str) -> Option<Ask> {
         let p = self.by_name.get_mut(name).filter(|p| p.owner == owner)?;
         p.reading += 1;
-        p.pending.get_or_insert_with(Props::new);
+        p.pending.get_or_insert_with(Props::new).remove(prop);
         Some(Ask {
             props: true,
             asked: p.asked,
@@ -1268,7 +1272,7 @@ impl Media {
                         if let Some(next) = setting.landed(&done.name, done.prop) {
                             sets.spawn(next.run(conn.clone()));
                         } else if !done.ok
-                            && let Some(ask) = players.reread(&done.name, &done.owner)
+                            && let Some(ask) = players.reread(&done.name, &done.owner, done.prop)
                         {
                             // Refused, nothing waiting: its real value back.
                             let conn = conn.clone();
@@ -2254,7 +2258,7 @@ mod tests {
             .set(P, "loop", &Loop::Playlist.to_data(), t0)
             .unwrap();
         assert_eq!(looped.prop, "LoopStatus");
-        assert_eq!(&*looped.value.downcast_ref::<&str>().unwrap(), "Playlist");
+        assert_eq!(looped.value.downcast_ref::<&str>().unwrap(), "Playlist");
         let loud = players.set(P, "volume", &Data::Float(1.4), t0).unwrap();
         assert_eq!(loud.value.downcast_ref::<f64>().unwrap(), 1.0, "held to 1");
         let s = players.state(t0);
@@ -2323,8 +2327,77 @@ mod tests {
             "free again"
         );
         // A refused one reads the player whole again, while it is the same.
-        assert!(players.reread(P, ":1.9").is_none(), "another owner");
-        let ask = players.reread(P, ":1.5").unwrap();
+        assert!(
+            players.reread(P, ":1.9", "Volume").is_none(),
+            "another owner"
+        );
+        let ask = players.reread(P, ":1.5", "Volume").unwrap();
         assert!(ask.props);
+    }
+
+    /// A refused write made while a whole read is in flight: the reread's
+    /// answer is the player's real value, not the refused one laid over
+    /// it, whichever read lands last; a slider drag on a player refusing
+    /// every volume settles on the player's value too; and a write made
+    /// after the reread was asked still stands over it.
+    #[test]
+    fn a_refused_write_comes_back_with_a_read_in_flight() {
+        let t0 = Instant::now();
+        let whole = |asked: u64, volume: f64| {
+            let mut props = status("Playing");
+            props.insert("Volume".into(), OwnedValue::from(volume));
+            props.insert("Metadata".into(), meta(&[("xesam:title", text("First"))]));
+            Read {
+                name: P.into(),
+                owner: ":1.5".into(),
+                asked,
+                identity: None,
+                props: Some(Ok(props)),
+                position: None,
+            }
+        };
+        let in_flight = |players: &mut Players| {
+            let p = players.by_name.get_mut(P).unwrap();
+            p.reading = 1;
+            p.pending = Some(Props::new());
+        };
+        let volume =
+            |players: &mut Players, x: f64| players.set(P, "volume", &Data::Float(x), t0).unwrap();
+
+        // A whole read in flight, a write of 0.6 refused, reread.
+        let mut players = playing(meta(&[("xesam:title", text("First"))]), t0);
+        put(&mut players, "Volume", OwnedValue::from(0.3f64));
+        in_flight(&mut players);
+        volume(&mut players, 0.6);
+        assert_eq!(players.state(t0).volume, 0.6, "at once");
+        assert!(players.reread(P, ":1.5", "Volume").is_some());
+        // The stale read lands, then the reread.
+        players.answer(whole(1, 0.3), t0);
+        players.answer(whole(1, 0.3), t0);
+        assert_eq!(players.state(t0).volume, 0.3, "the player's own value");
+        assert!(players.by_name[P].pending.is_none(), "nothing in flight");
+
+        // A drag: 0.5 refused, 0.7 written while that reread is in
+        // flight and refused too.
+        let mut players = playing(meta(&[("xesam:title", text("First"))]), t0);
+        put(&mut players, "Volume", OwnedValue::from(0.3f64));
+        volume(&mut players, 0.5);
+        assert!(players.reread(P, ":1.5", "Volume").is_some());
+        volume(&mut players, 0.7);
+        assert!(players.reread(P, ":1.5", "Volume").is_some());
+        players.answer(whole(1, 0.3), t0);
+        players.answer(whole(1, 0.3), t0);
+        assert_eq!(players.state(t0).volume, 0.3, "the drag settles");
+
+        // A write after the reread was asked stands over its answer.
+        let mut players = playing(meta(&[("xesam:title", text("First"))]), t0);
+        put(&mut players, "Volume", OwnedValue::from(0.3f64));
+        in_flight(&mut players);
+        volume(&mut players, 0.6);
+        assert!(players.reread(P, ":1.5", "Volume").is_some());
+        volume(&mut players, 0.9);
+        players.answer(whole(1, 0.3), t0);
+        players.answer(whole(1, 0.3), t0);
+        assert_eq!(players.state(t0).volume, 0.9, "the newer write holds");
     }
 }

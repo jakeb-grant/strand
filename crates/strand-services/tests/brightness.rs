@@ -253,14 +253,33 @@ fn the_keyboard_backlight_follows_its_light_and_writes_through_logind() {
     assert_eq!(cells.keyboard_present.get_untracked(&rt), Ok(true));
     assert_eq!(cells.keyboard.get_untracked(&rt), Ok(0.5));
 
-    // The firmware turns it up (an Fn key): the driver writes the level
-    // and notifies `brightness_hw_changed`.
-    std::fs::write(kbd.join("brightness"), "2\n").unwrap();
+    // The firmware turns it up (an Fn key): the level changes with no
+    // notification of `brightness` (sysfs gives none for it), and the
+    // driver notifies `brightness_hw_changed`. The new level is renamed
+    // over `brightness`, whose watched inode lives on under a spare name
+    // (so no IN_IGNORED) and is never modified: only
+    // `brightness_hw_changed` can say it changed.
+    let spare = kbd.join("brightness.watched");
+    std::fs::hard_link(kbd.join("brightness"), &spare).unwrap();
+    let fresh = kbd.join("brightness.new");
+    std::fs::write(&fresh, "2\n").unwrap();
+    std::fs::rename(&fresh, kbd.join("brightness")).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    rt.flush();
+    assert_eq!(
+        cells.keyboard.get_untracked(&rt),
+        Ok(0.5),
+        "the level alone notifies nothing"
+    );
     std::fs::write(kbd.join("brightness_hw_changed"), "2\n").unwrap();
     until(&rt, &s, "the firmware's level", || {
         cells.keyboard.get_untracked(&rt) == Ok(1.0)
     });
     assert_eq!(*changes.lock().unwrap(), [1.0], "an outside change fires");
+    // The watched inode back as `brightness`, at the same level.
+    std::fs::write(&spare, "2\n").unwrap();
+    std::fs::rename(&spare, kbd.join("brightness")).unwrap();
     // The lock keys' light is not the keyboard's.
     std::fs::write(caps.join("brightness"), "1\n").unwrap();
 
