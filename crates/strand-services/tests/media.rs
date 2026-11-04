@@ -39,6 +39,23 @@ struct Track {
     can_control: bool,
     /// Its track's `mpris:length` in microseconds, when it names one.
     length_us: Option<i64>,
+    /// Its `Shuffle`, `LoopStatus` and `Volume`.
+    shuffle: bool,
+    loop_status: String,
+    volume: f64,
+    /// It refuses a property written (its `Set` fails).
+    refuse: bool,
+}
+
+impl Track {
+    /// A property written: logged, and refused while `refuse` is set.
+    fn written(&mut self, what: String) -> zbus::fdo::Result<()> {
+        self.calls.push(what);
+        if self.refuse {
+            return Err(zbus::fdo::Error::Failed("refused".into()));
+        }
+        Ok(())
+    }
 }
 
 struct Player(Arc<Mutex<Track>>);
@@ -172,6 +189,45 @@ impl Player {
         self.0.lock().unwrap().rate
     }
 
+    #[zbus(property)]
+    fn shuffle(&self) -> bool {
+        self.0.lock().unwrap().shuffle
+    }
+
+    #[zbus(property)]
+    fn set_shuffle(&mut self, on: bool) -> zbus::fdo::Result<()> {
+        let mut t = self.0.lock().unwrap();
+        t.written(format!("Set Shuffle {on}"))?;
+        t.shuffle = on;
+        Ok(())
+    }
+
+    #[zbus(property)]
+    fn loop_status(&self) -> String {
+        self.0.lock().unwrap().loop_status.clone()
+    }
+
+    #[zbus(property)]
+    fn set_loop_status(&mut self, status: String) -> zbus::fdo::Result<()> {
+        let mut t = self.0.lock().unwrap();
+        t.written(format!("Set LoopStatus {status}"))?;
+        t.loop_status = status;
+        Ok(())
+    }
+
+    #[zbus(property)]
+    fn volume(&self) -> f64 {
+        self.0.lock().unwrap().volume
+    }
+
+    #[zbus(property)]
+    fn set_volume(&mut self, volume: f64) -> zbus::fdo::Result<()> {
+        let mut t = self.0.lock().unwrap();
+        t.written(format!("Set Volume {volume}"))?;
+        t.volume = volume;
+        Ok(())
+    }
+
     #[zbus(signal)]
     async fn seeked(e: &SignalEmitter<'_>, position: i64) -> zbus::Result<()>;
 }
@@ -221,6 +277,10 @@ fn player_with(
         can_go_previous: true,
         can_control: true,
         length_us: Some(200_000_000),
+        shuffle: false,
+        loop_status: "None".into(),
+        volume: 0.8,
+        refuse: false,
     };
     f(&mut t);
     let track = Arc::new(Mutex::new(t));
@@ -1016,5 +1076,170 @@ fn players_list_every_player_and_select_picks_the_one_media_follows() {
     b.media.release_field(field);
     until(&rt, &s, "the list dropped", || list().is_empty());
     let _ = media::MediaPlayer::from_data(&held.to_data()).unwrap();
+    s.shutdown();
+}
+
+/// (power-media-kbd) `media.shuffle`, `media.loop` and `media.volume` are
+/// the active player's own, read and followed, each with its `can_`
+/// field; writing one sets it on the player (MPRIS `Shuffle`,
+/// `LoopStatus`, `Volume`) and holds the value at once; a player taking
+/// no control is not asked; a refused write brings the real value back; a
+/// volume is held to 1; and an item's write reaches only its player.
+#[test]
+fn media_sets_shuffle_loop_and_volume_on_the_player() {
+    use strand_services::{Data, Step, ToData};
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let (a_conn, a) = player(&tokio, &bus.address, "mpv", "Playing", "First", 0);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.media.cells();
+    let field = |name: &str| {
+        media::Media::FIELDS
+            .iter()
+            .position(|f| f.name == name)
+            .unwrap()
+    };
+    let write = |name: &str, v: Data| {
+        b.media.dynamic().write(&rt, field(name), &[], v).unwrap();
+        rt.flush();
+    };
+    let volume = || cells.volume.get_untracked(&rt).unwrap();
+    let can = || {
+        (
+            cells.can_shuffle.get_untracked(&rt).unwrap(),
+            cells.can_loop.get_untracked(&rt).unwrap(),
+            cells.can_volume.get_untracked(&rt).unwrap(),
+        )
+    };
+    let calls = |t: &Arc<Mutex<Track>>| -> Vec<String> {
+        t.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|c| c.starts_with("Set "))
+            .cloned()
+            .collect()
+    };
+    b.media.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    rt.flush();
+    assert_eq!(cells.shuffle.get_untracked(&rt), Ok(false));
+    assert_eq!(cells.r#loop.get_untracked(&rt), Ok(media::Loop::None));
+    assert_eq!(volume(), 0.8);
+    assert_eq!(can(), (true, true, true));
+
+    // Written: the player is asked, and the values hold at once.
+    write("shuffle", Data::Bool(true));
+    write("loop", media::Loop::Playlist.to_data());
+    write("volume", Data::Float(0.3));
+    assert_eq!(cells.shuffle.get_untracked(&rt), Ok(true));
+    assert_eq!(cells.r#loop.get_untracked(&rt), Ok(media::Loop::Playlist));
+    assert_eq!(volume(), 0.3);
+    until(&rt, &s, "the three set", || calls(&a).len() == 3);
+    // Each property in a task of its own: in any order.
+    let mut three = calls(&a);
+    three.sort();
+    assert_eq!(
+        three,
+        [
+            "Set LoopStatus Playlist",
+            "Set Shuffle true",
+            "Set Volume 0.3"
+        ]
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    s.pump(&rt);
+    rt.flush();
+    assert_eq!(cells.shuffle.get_untracked(&rt), Ok(true));
+    assert_eq!(cells.r#loop.get_untracked(&rt), Ok(media::Loop::Playlist));
+    assert_eq!(volume(), 0.3);
+
+    // The player changes on its own: followed.
+    a.lock().unwrap().shuffle = false;
+    signal!(tokio, a_conn, shuffle_changed);
+    until(&rt, &s, "its own shuffle", || {
+        cells.shuffle.get_untracked(&rt) == Ok(false)
+    });
+
+    // It takes no control: nothing can be set, and nothing is asked.
+    a.lock().unwrap().can_control = false;
+    signal!(tokio, a_conn, can_control_changed);
+    until(&rt, &s, "no control", || can() == (false, false, false));
+    write("volume", Data::Float(0.5));
+    until(&rt, &s, "the volume kept", || volume() == 0.3);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(calls(&a).len(), 3, "asked without control");
+    a.lock().unwrap().can_control = true;
+    signal!(tokio, a_conn, can_control_changed);
+    until(&rt, &s, "control again", || can() == (true, true, true));
+
+    // It refuses: its real value comes back.
+    a.lock().unwrap().refuse = true;
+    write("volume", Data::Float(0.6));
+    assert_eq!(volume(), 0.6, "held at once");
+    until(&rt, &s, "the refused volume back", || {
+        calls(&a).len() == 4 && volume() == 0.3
+    });
+    a.lock().unwrap().refuse = false;
+
+    // Too loud: held to 1.
+    write("volume", Data::Float(1.4));
+    until(&rt, &s, "held to 1", || {
+        calls(&a).last().map(String::as_str) == Some("Set Volume 1") && volume() == 1.0
+    });
+
+    // An item's write reaches its player only.
+    let (v_conn, v) = player(&tokio, &bus.address, "vlc", "Paused", "Other", 0);
+    let players = field("players");
+    b.media.acquire_field(players);
+    let list = || -> Vec<media::MediaPlayer> {
+        cells
+            .players
+            .get_untracked(&rt)
+            .unwrap()
+            .items()
+            .iter()
+            .map(|(_, p)| p.clone())
+            .collect()
+    };
+    until(&rt, &s, "two players listed", || list().len() == 2);
+    assert_eq!(
+        cells.player.get_untracked(&rt),
+        Ok(Some("mpv".into())),
+        "mpv plays on"
+    );
+    let held = list().into_iter().find(|p| p.name == "vlc").unwrap();
+    assert!(held.can_volume);
+    b.media
+        .dynamic()
+        .write_item(
+            &rt,
+            "Player",
+            &held.to_data(),
+            &[Step::Field("volume".into())],
+            Data::Float(0.25),
+        )
+        .unwrap();
+    rt.flush();
+    until(&rt, &s, "vlc's volume", || {
+        calls(&v) == ["Set Volume 0.25"]
+            && list().iter().any(|p| p.name == "vlc" && p.volume == 0.25)
+    });
+    assert_eq!(calls(&a).len(), 5, "mpv was not asked");
+    assert_eq!(volume(), 1.0, "the active player's own");
+    // What each can do is its own.
+    v.lock().unwrap().can_control = false;
+    signal!(tokio, v_conn, can_control_changed);
+    until(&rt, &s, "vlc takes no control", || {
+        list()
+            .iter()
+            .any(|p| p.name == "vlc" && !p.can_volume && !p.can_shuffle)
+    });
+    assert!(list().iter().any(|p| p.name == "mpv" && p.can_volume));
+    assert_eq!(can(), (true, true, true));
+    b.media.release_field(players);
     s.shutdown();
 }

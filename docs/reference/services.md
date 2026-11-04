@@ -269,6 +269,12 @@ and only while a visible reader shows it.
 | `can_next` | `bool` | The active player can skip to the next track (MPRIS `CanGoNext`): `opacity: media.can_next ? 1 : 0.4`. False when no player runs or it takes no control (`CanControl` false). |
 | `can_previous` | `bool` | The active player can go back to the previous track (`CanGoPrevious`, as `can_next`). |
 | `can_seek` | `bool` | Writing `position` seeks: the active player can seek (`CanSeek`, as `can_next`) and the track's length is known. |
+| `shuffle` | `bool rw` | The active player shuffles: `on click { media.shuffle = !media.shuffle }`. Writable: MPRIS `Shuffle`. False when no player runs or it has no shuffle. A write it cannot take (`can_shuffle` false) leaves the value as it was. |
+| `loop` | `Loop rw` | What the active player repeats: `media.loop = playlist`. Writable: MPRIS `LoopStatus`. `none` when no player runs or it has no loop setting. A write it cannot take (`can_loop` false) leaves the value as it was. |
+| `volume` | `float rw` | The active player's own volume, apart from the system's (`audio.sink.volume`): `slider { value: <-> media.volume }`. 0 to 1, as MPRIS `Volume` reports it (above 1 when the player amplifies). Writable: a write is held to 0 to 1, and one it cannot take (`can_volume` false) leaves the value as it was. 0 when no player runs or it has no volume. |
+| `can_shuffle` | `bool` | Writing `shuffle` changes it: the active player has MPRIS `Shuffle` and takes control (`CanControl` not false). False when no player runs. |
+| `can_loop` | `bool` | Writing `loop` changes it (`LoopStatus`, as `can_shuffle`). |
+| `can_volume` | `bool` | Writing `volume` changes it (`Volume`, as `can_shuffle`). |
 | `players` | `[Player]` | Every player running, keyed by its bus name (`for p in media.players key p.id { … }`): a switcher, a card per player. The one `media.*` follows is `active`; `p.select()` picks another. Read only while a visible reader reads it; its playing players' times tick once a second then. |
 
 | Method | |

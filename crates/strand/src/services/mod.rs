@@ -910,7 +910,9 @@ osd Playing { inhibit_idle: true; text \"x\" }
     /// (power-media-kbd) The power profile checks against the served
     /// schema and the builtin stubs alike, as a profile menu uses it: a
     /// profile written in a handler, matched exhaustively, the profiles
-    /// offered listed. A profile is a `PowerProfile`, not text.
+    /// offered listed. A profile is a `PowerProfile`, not text. The
+    /// player's shuffle, loop and own volume, the active one's and an
+    /// item's, as a player card writes them; a loop is a `Loop`.
     #[test]
     fn the_power_profile_player_modes_and_keyboard_light_check() {
         let src = "bar Top {
@@ -924,6 +926,17 @@ osd Playing { inhibit_idle: true; text \"x\" }
     }
     if power.available && power.degraded == null { text \"ok\" }
     box { on click { power.profile = performance } }
+    box { when media.shuffle && media.can_shuffle { opacity: 1 }; on click { media.shuffle = !media.shuffle } }
+    box { when media.can_loop { opacity: 1 }; on click { media.loop = playlist } }
+    text match media.loop { none => \"\", track => \"1\", playlist => \"all\" }
+    slider { value: <-> media.volume }
+    for p in media.players key p.id {
+      box {
+        when p.shuffle || p.can_volume || p.can_loop { opacity: 1 }
+        on click { p.volume = 0.5; p.loop = track; p.shuffle = true }
+        slider { value: <-> p.volume }
+      }
+    }
   }
 }
 ";
@@ -939,6 +952,8 @@ osd Playing { inhibit_idle: true; text \"x\" }
         for bad in [
             "bar B { box { on click { power.profile = \"performance\" } } }\n",
             "bar B { box { on click { power.available = true } } }\n",
+            "bar B { box { on click { media.loop = \"track\" } } }\n",
+            "bar B { box { on click { media.can_volume = true } } }\n",
         ] {
             let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", bad);
             assert!(

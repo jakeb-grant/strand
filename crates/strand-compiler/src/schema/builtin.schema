@@ -78,6 +78,9 @@ enum VideoSource { camera, screencast }
 /// A power-profiles-daemon profile: `power_saver` (its `power-saver`),
 /// `balanced` or `performance`.
 enum PowerProfile { power_saver, balanced, performance }
+/// What a media player repeats: nothing, the track or the playlist (MPRIS
+/// `LoopStatus`: `None`, `Track`, `Playlist`).
+enum Loop { none, track, playlist }
 
 // Values with no inner structure the language can see.
 opaque Palette, TokenSet, Spring, Easing, Pose, SwapTransition, Mask, Filter, HitArea, Sprite
@@ -948,6 +951,18 @@ provisional record Player key id {
   can_previous: bool
   /// Writing `position` seeks it.
   can_seek: bool
+  /// It shuffles. Writable.
+  shuffle: bool rw
+  /// What it repeats. Writable.
+  loop: Loop rw
+  /// Its own volume, 0 to 1. Writable.
+  volume: float rw
+  /// Writing `shuffle` changes it.
+  can_shuffle: bool
+  /// Writing `loop` changes it.
+  can_loop: bool
+  /// Writing `volume` changes it.
+  can_volume: bool
   /// Plays or pauses it.
   action play_pause()
   /// Skips it to the next track.
@@ -987,6 +1002,18 @@ provisional service media {
   can_previous: bool
   /// Writing `position` seeks.
   can_seek: bool
+  /// The active player shuffles. Writable.
+  shuffle: bool rw
+  /// What the active player repeats. Writable.
+  loop: Loop rw
+  /// The active player's own volume, 0 to 1. Writable.
+  volume: float rw
+  /// Writing `shuffle` changes it.
+  can_shuffle: bool
+  /// Writing `loop` changes it.
+  can_loop: bool
+  /// Writing `volume` changes it.
+  can_volume: bool
   /// Every player running, keyed by its bus name.
   players: [Player]
   /// Plays or pauses.

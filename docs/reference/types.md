@@ -513,6 +513,12 @@ Keyed by `id`.
 | `can_next` | `bool` | It can skip to the next track. |
 | `can_previous` | `bool` | It can go back to the previous track. |
 | `can_seek` | `bool` | Writing `position` seeks it. |
+| `shuffle` | `bool rw` | It shuffles. Writable: MPRIS `Shuffle` on this player, as writing `media.shuffle` sets the active one's. |
+| `loop` | `Loop rw` | What it repeats. Writable: its MPRIS `LoopStatus`. |
+| `volume` | `float rw` | Its own volume, 0 to 1 (MPRIS `Volume`). Writable. |
+| `can_shuffle` | `bool` | Writing `shuffle` changes it. |
+| `can_loop` | `bool` | Writing `loop` changes it. |
+| `can_volume` | `bool` | Writing `volume` changes it. |
 
 | Method | |
 | --- | --- |
@@ -752,6 +758,7 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `Justify` | `start`, `center`, `end`, `space_between`, `space_around`, `space_evenly` |
 | `Keyboard` | `none`, `on_demand`, `exclusive` |
 | `Layer` | `background`, `bottom`, `top`, `overlay` |
+| `Loop` | `none`, `track`, `playlist`. What a media player repeats: nothing, the track or the playlist (MPRIS `LoopStatus`: `None`, `Track`, `Playlist`). |
 | `Markup` | `none`, `basic` |
 | `OutputTransform` | `normal`, `rotate_90`, `rotate_180`, `rotate_270`, `flipped`, `flipped_90`, `flipped_180`, `flipped_270`. An output's rotation and flip, as `wl_output` (and niri) name them: counter-clockwise, so sway's clockwise `transform 90` is `rotate_270`; `flipped_90` is flipped about the vertical axis, then rotated 90 degrees. |
 | `Place` | `flow`, `absolute` |

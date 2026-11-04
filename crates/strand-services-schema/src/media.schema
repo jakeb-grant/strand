@@ -31,6 +31,19 @@ record Player key id {
   can_previous: bool
   /// Writing `position` seeks it.
   can_seek: bool
+  /// It shuffles. Writable: MPRIS `Shuffle` on this player, as writing
+  /// `media.shuffle` sets the active one's.
+  shuffle: bool rw
+  /// What it repeats. Writable: its MPRIS `LoopStatus`.
+  loop: Loop rw
+  /// Its own volume, 0 to 1 (MPRIS `Volume`). Writable.
+  volume: float rw
+  /// Writing `shuffle` changes it.
+  can_shuffle: bool
+  /// Writing `loop` changes it.
+  can_loop: bool
+  /// Writing `volume` changes it.
+  can_volume: bool
   /// Plays or pauses it.
   action play_pause()
   /// Skips it to the next track.
@@ -86,6 +99,31 @@ service media {
   /// Writing `position` seeks: the active player can seek (`CanSeek`, as
   /// `can_next`) and the track's length is known.
   can_seek: bool
+  /// The active player shuffles: `on click { media.shuffle =
+  /// !media.shuffle }`. Writable: MPRIS `Shuffle`. False when no player
+  /// runs or it has no shuffle. A write it cannot take (`can_shuffle`
+  /// false) leaves the value as it was.
+  shuffle: bool rw
+  /// What the active player repeats: `media.loop = playlist`. Writable:
+  /// MPRIS `LoopStatus`. `none` when no player runs or it has no loop
+  /// setting. A write it cannot take (`can_loop` false) leaves the value
+  /// as it was.
+  loop: Loop rw
+  /// The active player's own volume, apart from the system's
+  /// (`audio.sink.volume`): `slider { value: <-> media.volume }`. 0 to 1,
+  /// as MPRIS `Volume` reports it (above 1 when the player amplifies).
+  /// Writable: a write is held to 0 to 1, and one it cannot take
+  /// (`can_volume` false) leaves the value as it was. 0 when no player
+  /// runs or it has no volume.
+  volume: float rw
+  /// Writing `shuffle` changes it: the active player has MPRIS `Shuffle`
+  /// and takes control (`CanControl` not false). False when no player
+  /// runs.
+  can_shuffle: bool
+  /// Writing `loop` changes it (`LoopStatus`, as `can_shuffle`).
+  can_loop: bool
+  /// Writing `volume` changes it (`Volume`, as `can_shuffle`).
+  can_volume: bool
   /// Every player running, keyed by its bus name (`for p in
   /// media.players key p.id { … }`): a switcher, a card per player. The
   /// one `media.*` follows is `active`; `p.select()` picks another. Read

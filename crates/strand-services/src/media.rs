@@ -44,8 +44,25 @@
 //! leaves or another player starts playing after it was selected; the
 //! usual choice applies again from there. While the list is read, its
 //! playing players' times tick once a second as `elapsed` does.
+//!
+//! (power-media-kbd) `shuffle`, `loop` and `volume` are the player's own
+//! MPRIS `Shuffle`, `LoopStatus` and `Volume`, followed by the same
+//! `PropertiesChanged` as the rest, and each has its `can_` field: the
+//! property is reported and `CanControl` is not false (MPRIS makes
+//! `Shuffle` and `LoopStatus` optional, so a property not reported is one
+//! the player lacks, unlike `CanGoNext`). Writing one (the active
+//! player's, or an item's of `players`) fixes the value at once
+//! ([`Players::set`], through [`Players::changed`], so a whole read in
+//! flight cannot undo it) and sets the property on the player in a task,
+//! bounded by [`dbus::CALL_TIMEOUT`]. One `Set` per player and property is
+//! in flight at a time ([`Setting`]): a newer write meanwhile waits,
+//! replacing an older waiting one, and goes when the call lands, so a
+//! dragged slider lands in order and ends at its last value. A failed
+//! `Set` with nothing waiting reads the player again, so its real value
+//! comes back. A volume written is held to 0 to 1; one read is shown as
+//! the player reports it, never below 0.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 use futures_lite::StreamExt;
@@ -54,7 +71,7 @@ use zbus::message::Type as MessageType;
 use zbus::zvariant::OwnedValue;
 
 use crate::dbus::{self, Props};
-use crate::{Call, Cx, Data, Msg, ServiceError, Store, art, service};
+use crate::{Call, Cx, Data, FromData, Msg, ServiceError, Store, art, service};
 
 /// The schema the `media` service serves.
 pub const SCHEMA: &str = strand_services_schema::MEDIA;
@@ -91,6 +108,41 @@ pub enum MediaAction {
     Previous,
 }
 
+/// (power-media-kbd) What a player repeats (`media.loop`): MPRIS
+/// `LoopStatus`.
+#[derive(crate::Data, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[data(name = "Loop")]
+pub enum Loop {
+    /// `None`, and what a player without `LoopStatus` reads.
+    #[default]
+    None,
+    /// `Track`.
+    Track,
+    /// `Playlist`.
+    Playlist,
+}
+
+impl Loop {
+    /// MPRIS's `LoopStatus` as a `Loop`: anything but `Track` and
+    /// `Playlist` is `none`.
+    pub fn of_mpris(status: &str) -> Loop {
+        match status {
+            "Track" => Loop::Track,
+            "Playlist" => Loop::Playlist,
+            _ => Loop::None,
+        }
+    }
+
+    /// Its MPRIS name.
+    pub fn mpris_name(self) -> &'static str {
+        match self {
+            Loop::None => "None",
+            Loop::Track => "Track",
+            Loop::Playlist => "Playlist",
+        }
+    }
+}
+
 /// (services-round) One player of `media.players`: the schema's
 /// `Player`, keyed by its bus name.
 #[derive(crate::Data, Clone, Debug, Default, PartialEq)]
@@ -110,6 +162,12 @@ pub struct MediaPlayer {
     pub can_next: bool,
     pub can_previous: bool,
     pub can_seek: bool,
+    pub shuffle: bool,
+    pub r#loop: Loop,
+    pub volume: f64,
+    pub can_shuffle: bool,
+    pub can_loop: bool,
+    pub can_volume: bool,
 }
 
 /// See the module docs.
@@ -154,6 +212,34 @@ pub struct Media {
     /// Writing `position` seeks: the active player can seek (`CanSeek`, as
     /// `can_next`) and the track's length is known.
     pub can_seek: bool,
+    /// The active player shuffles: `on click { media.shuffle =
+    /// !media.shuffle }`. Writable: MPRIS `Shuffle`. False when no player
+    /// runs or it has no shuffle. A write it cannot take (`can_shuffle`
+    /// false) leaves the value as it was.
+    #[store(rw)]
+    pub shuffle: bool,
+    /// What the active player repeats: `media.loop = playlist`. Writable:
+    /// MPRIS `LoopStatus`. `none` when no player runs or it has no loop
+    /// setting. A write it cannot take (`can_loop` false) leaves the value
+    /// as it was.
+    #[store(rw)]
+    pub r#loop: Loop,
+    /// The active player's own volume, apart from the system's
+    /// (`audio.sink.volume`): `slider { value: <-> media.volume }`. 0 to 1,
+    /// as MPRIS `Volume` reports it (above 1 when the player amplifies).
+    /// Writable: a write is held to 0 to 1, and one it cannot take
+    /// (`can_volume` false) leaves the value as it was. 0 when no player
+    /// runs or it has no volume.
+    #[store(rw)]
+    pub volume: f64,
+    /// Writing `shuffle` changes it: the active player has MPRIS `Shuffle`
+    /// and takes control (`CanControl` not false). False when no player
+    /// runs.
+    pub can_shuffle: bool,
+    /// Writing `loop` changes it (`LoopStatus`, as `can_shuffle`).
+    pub can_loop: bool,
+    /// Writing `volume` changes it (`Volume`, as `can_shuffle`).
+    pub can_volume: bool,
     /// Every player running, keyed by its bus name (`for p in
     /// media.players key p.id { … }`): a switcher, a card per player. The
     /// one `media.*` follows is `active`; `p.select()` picks another. Read
@@ -285,6 +371,15 @@ impl Player {
         self.can("CanSeek") && length.is_some_and(|l| !l.is_zero())
     }
 
+    /// (power-media-kbd) Writing `prop` (`Shuffle`, `LoopStatus`,
+    /// `Volume`) can change it: it takes control and reports the
+    /// property. Unlike [`Player::can`], a property not reported counts
+    /// as missing: MPRIS makes `Shuffle` and `LoopStatus` optional, and a
+    /// `Volume` that cannot be read cannot be set.
+    fn can_set(&self, prop: &str) -> bool {
+        dbus::boolean(&self.props, "CanControl") != Some(false) && self.props.contains_key(prop)
+    }
+
     fn metadata(&self) -> Props {
         self.props
             .get("Metadata")
@@ -361,6 +456,12 @@ struct Shown {
     can_next: bool,
     can_previous: bool,
     can_seek: bool,
+    shuffle: bool,
+    r#loop: Loop,
+    volume: f64,
+    can_shuffle: bool,
+    can_loop: bool,
+    can_volume: bool,
 }
 
 impl Shown {
@@ -386,6 +487,14 @@ impl Shown {
             can_next: p.can("CanGoNext"),
             can_previous: p.can("CanGoPrevious"),
             can_seek: p.can_seek(length),
+            shuffle: dbus::boolean(&p.props, "Shuffle") == Some(true),
+            r#loop: Loop::of_mpris(&dbus::text(&p.props, "LoopStatus").unwrap_or_default()),
+            volume: dbus::number(&p.props, "Volume")
+                .filter(|v| v.is_finite())
+                .map_or(0.0, |v| v.max(0.0)),
+            can_shuffle: p.can_set("Shuffle"),
+            can_loop: p.can_set("LoopStatus"),
+            can_volume: p.can_set("Volume"),
         }
     }
 }
@@ -440,6 +549,12 @@ impl Players {
                     can_next: v.can_next,
                     can_previous: v.can_previous,
                     can_seek: v.can_seek,
+                    shuffle: v.shuffle,
+                    r#loop: v.r#loop,
+                    volume: v.volume,
+                    can_shuffle: v.can_shuffle,
+                    can_loop: v.can_loop,
+                    can_volume: v.can_volume,
                 }
             })
             .collect()
@@ -471,6 +586,12 @@ impl Players {
             can_next: v.can_next,
             can_previous: v.can_previous,
             can_seek: v.can_seek,
+            shuffle: v.shuffle,
+            r#loop: v.r#loop,
+            volume: v.volume,
+            can_shuffle: v.can_shuffle,
+            can_loop: v.can_loop,
+            can_volume: v.can_volume,
             players: Vec::new(),
         }
     }
@@ -528,6 +649,52 @@ impl Players {
             .get(&name)
             .is_some_and(|p| p.known)
             .then_some(name)
+    }
+
+    /// (power-media-kbd) A write of `field` (`shuffle`, `loop` or
+    /// `volume`) of the player `name` to `value` at `now`: the value is
+    /// fixed at once, as the player's own `PropertiesChanged` would fix it
+    /// (so a whole read in flight cannot undo it), and the `Set` to make
+    /// is returned. A volume is held to 0 to 1. `None`: the player is not
+    /// listed, cannot take it ([`Player::can_set`]), or `value` is not one
+    /// (a volume that is not a number).
+    fn set(&mut self, name: &str, field: &str, value: &Data, now: Instant) -> Option<PropSet> {
+        let p = self.by_name.get(name).filter(|p| p.known)?;
+        let (prop, v): (&'static str, zbus::zvariant::Value<'static>) = match (field, value) {
+            ("shuffle", Data::Bool(on)) => ("Shuffle", (*on).into()),
+            ("loop", d @ Data::Enum { .. }) => {
+                ("LoopStatus", Loop::from_data(d).ok()?.mpris_name().into())
+            }
+            ("volume", Data::Float(x)) if x.is_finite() => ("Volume", x.clamp(0.0, 1.0).into()),
+            ("volume", Data::Int(x)) => ("Volume", (*x as f64).clamp(0.0, 1.0).into()),
+            _ => return None,
+        };
+        if !p.can_set(prop) {
+            return None;
+        }
+        let owner = p.owner.clone();
+        let fixed = OwnedValue::try_from(v).ok()?;
+        let value = fixed.try_clone().ok()?;
+        self.changed(name, Props::from([(prop.to_string(), fixed)]), &[], now);
+        Some(PropSet {
+            name: name.to_string(),
+            owner,
+            prop,
+            value,
+        })
+    }
+
+    /// (power-media-kbd) Read `name` whole again (a `Set` it refused: its
+    /// real value comes back), while `owner` still owns it: what to ask.
+    fn reread(&mut self, name: &str, owner: &str) -> Option<Ask> {
+        let p = self.by_name.get_mut(name).filter(|p| p.owner == owner)?;
+        p.reading += 1;
+        p.pending.get_or_insert_with(Props::new);
+        Some(Ask {
+            props: true,
+            asked: p.asked,
+            ..Ask::default()
+        })
     }
 
     fn by_owner(&mut self, owner: &str) -> Option<(&String, &mut Player)> {
@@ -727,6 +894,91 @@ impl Seek {
             ..Ask::default()
         };
         Some(read(conn, self.name, self.owner, ask).await)
+    }
+}
+
+/// (power-media-kbd) A property to set on a player ([`Players::set`]).
+#[derive(Debug)]
+struct PropSet {
+    /// The player's bus name.
+    name: String,
+    /// Its owner when it was written.
+    owner: String,
+    /// `Shuffle`, `LoopStatus` or `Volume`.
+    prop: &'static str,
+    value: OwnedValue,
+}
+
+/// A [`PropSet`] landed: which, and whether the player took it.
+#[derive(Debug)]
+struct SetDone {
+    name: String,
+    owner: String,
+    prop: &'static str,
+    ok: bool,
+}
+
+impl PropSet {
+    /// `Properties.Set` on the player, bounded by [`dbus::CALL_TIMEOUT`].
+    async fn run(self, conn: zbus::Connection) -> SetDone {
+        let r = match self.value.try_clone() {
+            Ok(v) => {
+                dbus::timed(dbus::set(
+                    &conn,
+                    &self.name,
+                    PATH,
+                    PLAYER,
+                    self.prop,
+                    v.into(),
+                ))
+                .await
+            }
+            Err(e) => Err(e.into()),
+        };
+        if let Err(e) = &r {
+            log::warn!("media: setting {} on {}: {e}", self.prop, self.name);
+        }
+        SetDone {
+            name: self.name,
+            owner: self.owner,
+            prop: self.prop,
+            ok: r.is_ok(),
+        }
+    }
+}
+
+/// (power-media-kbd) The `Set`s in flight, at most one per player and
+/// property, each with the newest value written since waiting behind it.
+#[derive(Debug, Default)]
+struct Setting {
+    busy: HashMap<(String, &'static str), Option<PropSet>>,
+}
+
+impl Setting {
+    /// `set` to send now; `None` while one of its player and property is
+    /// in flight, `set` then waiting (in place of an older waiting one).
+    fn want(&mut self, set: PropSet) -> Option<PropSet> {
+        match self.busy.entry((set.name.clone(), set.prop)) {
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                e.insert(Some(set));
+                None
+            }
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(None);
+                Some(set)
+            }
+        }
+    }
+
+    /// The `Set` of `prop` on `name` landed: the one waiting, to send next
+    /// (in flight from now), or none (nothing in flight any more).
+    fn landed(&mut self, name: &str, prop: &'static str) -> Option<PropSet> {
+        let key = (name.to_string(), prop);
+        let next = self.busy.get_mut(&key)?.take();
+        if next.is_none() {
+            self.busy.remove(&key);
+        }
+        next
     }
 }
 
@@ -965,6 +1217,10 @@ impl Media {
             zbus::MessageStream::for_match_rule(dbus::path_rule(PATH)?, &conn, Some(256)).await?;
         let mut players = Players::default();
         let mut tasks = Tasks::new();
+        // (power-media-kbd) Property writes in flight, one per player and
+        // property.
+        let mut setting = Setting::default();
+        let mut sets: tokio::task::JoinSet<SetDone> = tokio::task::JoinSet::new();
         for name in dbus_proxy.list_names().await? {
             let name = name.to_string();
             if !name.starts_with(PREFIX) {
@@ -1006,6 +1262,21 @@ impl Media {
                 Some(done) = tasks.join_next(), if !tasks.is_empty() => match done {
                     Ok(Some(r)) => players.answer(r, Instant::now()),
                     _ => false,
+                },
+                Some(done) = sets.join_next(), if !sets.is_empty() => match done {
+                    Ok(done) => {
+                        if let Some(next) = setting.landed(&done.name, done.prop) {
+                            sets.spawn(next.run(conn.clone()));
+                        } else if !done.ok
+                            && let Some(ask) = players.reread(&done.name, &done.owner)
+                        {
+                            // Refused, nothing waiting: its real value back.
+                            let conn = conn.clone();
+                            tasks.spawn(async move { Some(read(conn, done.name, done.owner, ask).await) });
+                        }
+                        false
+                    }
+                    Err(_) => false,
                 },
                 // Never closed: `kept` holds a sender.
                 Some(done) = kept.ended() => {
@@ -1079,6 +1350,36 @@ impl Media {
                         }
                         false
                     }
+                    // (power-media-kbd) `media.shuffle = …`, or an item's
+                    // `p.volume = …`: the active player, or that one.
+                    Some(Msg::Write(w)) if matches!(w.field, "shuffle" | "loop" | "volume")
+                        || (w.field == "players" && player_mode(&w.path).is_some()) => {
+                        let now = Instant::now();
+                        let (name, field) = if w.field == "players" {
+                            let name = match &w.key {
+                                Some(Data::Text(n)) => Some(n.to_string()),
+                                _ => None,
+                            };
+                            (name, player_mode(&w.path).unwrap_or_default())
+                        } else {
+                            (players.active_name(), w.field)
+                        };
+                        match name.and_then(|n| players.set(&n, field, &w.value, now)) {
+                            Some(set) => {
+                                if let Some(set) = setting.want(set) {
+                                    sets.spawn(set.run(conn.clone()));
+                                }
+                            }
+                            None => log::info!("media: no player takes {field} = {:?}", w.value),
+                        }
+                        // The value stands (or is kept): the write is
+                        // answered with it.
+                        let state = shown(&players, &mut kept, now, listing);
+                        if !cx.report(&w, |s| *s = state) {
+                            return Ok(());
+                        }
+                        false
+                    }
                     Some(Msg::Write(w)) if w.field == "position" || w.field == "players" => {
                         let now = Instant::now();
                         let seek = if w.field == "position" {
@@ -1122,6 +1423,17 @@ impl Media {
                 }
             }
         }
+    }
+}
+
+/// (power-media-kbd) The player field an item write's `path` names, when
+/// it is `shuffle`, `loop` or `volume` (`p.volume = 0.5`).
+fn player_mode(path: &[crate::Step]) -> Option<&'static str> {
+    match path {
+        [crate::Step::Field(f)] => ["shuffle", "loop", "volume"]
+            .into_iter()
+            .find(|m| *m == f.as_str()),
+        _ => None,
     }
 }
 
@@ -1847,5 +2159,172 @@ mod tests {
             .insert("CanGoNext".into(), flag(false));
         let ask = players.changed(P, Props::new(), &["CanGoNext".to_string()], t0);
         assert!(ask.props, "read again");
+    }
+
+    fn put(players: &mut Players, k: &str, v: OwnedValue) {
+        players
+            .by_name
+            .get_mut(P)
+            .unwrap()
+            .props
+            .insert(k.into(), v);
+    }
+
+    fn loop_status(s: &str) -> OwnedValue {
+        OwnedValue::try_from(zbus::zvariant::Value::from(s)).unwrap()
+    }
+
+    /// (power-media-kbd) A player that reports no `Shuffle`, `LoopStatus`
+    /// or `Volume` has none to set: its `can_` fields are false, its
+    /// values the defaults. Reported, they are read and settable; an
+    /// unknown `LoopStatus` is `none`; a volume above 1 shows as reported,
+    /// one below 0 as 0; no player is the defaults.
+    #[test]
+    fn a_player_without_shuffle_or_loop_says_so() {
+        let t0 = Instant::now();
+        let none = Players::default().state(t0);
+        assert!(!none.shuffle && !none.can_shuffle && !none.can_loop && !none.can_volume);
+        assert_eq!((none.r#loop, none.volume), (Loop::None, 0.0));
+        let mut players = playing(meta(&[("xesam:title", text("First"))]), t0);
+        let s = players.state(t0);
+        assert!(
+            !s.can_shuffle && !s.can_loop && !s.can_volume,
+            "not reported"
+        );
+        assert!(!s.shuffle);
+        assert_eq!((s.r#loop, s.volume), (Loop::None, 0.0));
+        assert!(
+            players.set(P, "shuffle", &Data::Bool(true), t0).is_none(),
+            "the write agrees"
+        );
+        put(&mut players, "Shuffle", flag(true));
+        put(&mut players, "LoopStatus", loop_status("Track"));
+        put(&mut players, "Volume", OwnedValue::from(1.5f64));
+        let s = players.state(t0);
+        assert!(s.shuffle && s.can_shuffle && s.can_loop && s.can_volume);
+        assert_eq!((s.r#loop, s.volume), (Loop::Track, 1.5));
+        let item = &players.items(t0)[0];
+        assert!(item.shuffle && item.can_volume);
+        assert_eq!((item.r#loop, item.volume), (Loop::Track, 1.5));
+        put(&mut players, "LoopStatus", loop_status("Playlist"));
+        assert_eq!(players.state(t0).r#loop, Loop::Playlist);
+        put(&mut players, "LoopStatus", loop_status("Shuffle"));
+        assert_eq!(players.state(t0).r#loop, Loop::None);
+        put(&mut players, "Volume", OwnedValue::from(-0.2f64));
+        assert_eq!(players.state(t0).volume, 0.0);
+        put(&mut players, "CanControl", flag(false));
+        let s = players.state(t0);
+        assert!(!s.can_shuffle && !s.can_loop && !s.can_volume, "no control");
+        assert!(players.set(P, "volume", &Data::Float(0.5), t0).is_none());
+        for l in [Loop::None, Loop::Track, Loop::Playlist] {
+            assert_eq!(Loop::of_mpris(l.mpris_name()), l);
+        }
+    }
+
+    /// (power-media-kbd) A write fixes the value in the player's
+    /// properties and in what a read in flight will be answered over, so
+    /// a stale whole read landing later does not undo it; a volume is held
+    /// to 0 to 1 and a value of the wrong kind is no write; and one `Set`
+    /// per player and property is in flight, the newest waiting value
+    /// replacing older ones.
+    #[test]
+    fn a_write_fixes_the_value_and_waits_its_turn() {
+        use crate::ToData;
+        let t0 = Instant::now();
+        let mut players = playing(meta(&[("xesam:title", text("First"))]), t0);
+        put(&mut players, "Shuffle", flag(false));
+        put(&mut players, "LoopStatus", loop_status("None"));
+        put(&mut players, "Volume", OwnedValue::from(0.8f64));
+        {
+            // A whole read in flight, asked before the writes.
+            let p = players.by_name.get_mut(P).unwrap();
+            p.reading = 1;
+            p.pending = Some(Props::new());
+        }
+        let shuffle = players.set(P, "shuffle", &Data::Bool(true), t0).unwrap();
+        assert_eq!((shuffle.prop, shuffle.owner.as_str()), ("Shuffle", ":1.5"));
+        assert_eq!(
+            dbus::boolean(
+                &Props::from([("v".into(), shuffle.value.try_clone().unwrap())]),
+                "v"
+            ),
+            Some(true)
+        );
+        let looped = players
+            .set(P, "loop", &Loop::Playlist.to_data(), t0)
+            .unwrap();
+        assert_eq!(looped.prop, "LoopStatus");
+        assert_eq!(&*looped.value.downcast_ref::<&str>().unwrap(), "Playlist");
+        let loud = players.set(P, "volume", &Data::Float(1.4), t0).unwrap();
+        assert_eq!(loud.value.downcast_ref::<f64>().unwrap(), 1.0, "held to 1");
+        let s = players.state(t0);
+        assert!(s.shuffle);
+        assert_eq!((s.r#loop, s.volume), (Loop::Playlist, 1.0), "at once");
+        assert!(
+            players
+                .set(P, "volume", &Data::Float(f64::NAN), t0)
+                .is_none()
+        );
+        assert!(players.set(P, "shuffle", &Data::Float(1.0), t0).is_none());
+        assert!(
+            players
+                .set(
+                    "org.mpris.MediaPlayer2.gone",
+                    "shuffle",
+                    &Data::Bool(true),
+                    t0
+                )
+                .is_none()
+        );
+        // The stale read lands, saying what the player had before.
+        let mut before = status("Playing");
+        before.insert("Shuffle".into(), flag(false));
+        before.insert("LoopStatus".into(), loop_status("None"));
+        before.insert("Volume".into(), OwnedValue::from(0.8f64));
+        before.insert("Metadata".into(), meta(&[("xesam:title", text("First"))]));
+        let stale = Read {
+            name: P.into(),
+            owner: ":1.5".into(),
+            asked: 1,
+            identity: None,
+            props: Some(Ok(before)),
+            position: None,
+        };
+        assert!(players.answer(stale, t0));
+        let s = players.state(t0);
+        assert!(s.shuffle, "the stale read did not undo it");
+        assert_eq!((s.r#loop, s.volume), (Loop::Playlist, 1.0));
+
+        // One in flight per player and property.
+        let volume =
+            |players: &mut Players, x: f64| players.set(P, "volume", &Data::Float(x), t0).unwrap();
+        let mut setting = Setting::default();
+        let first = setting.want(volume(&mut players, 0.1)).unwrap();
+        assert!(setting.want(volume(&mut players, 0.2)).is_none(), "waits");
+        assert!(
+            setting.want(volume(&mut players, 0.3)).is_none(),
+            "replaces"
+        );
+        // Another property goes at once.
+        assert!(
+            setting
+                .want(players.set(P, "shuffle", &Data::Bool(false), t0).unwrap())
+                .is_some()
+        );
+        assert_eq!(players.state(t0).volume, 0.3, "the last written stands");
+        let next = setting.landed(&first.name, first.prop).unwrap();
+        assert_eq!(next.value.downcast_ref::<f64>().unwrap(), 0.3, "the newest");
+        assert!(
+            setting.landed(&next.name, next.prop).is_none(),
+            "nothing waits"
+        );
+        assert!(
+            setting.want(volume(&mut players, 0.4)).is_some(),
+            "free again"
+        );
+        // A refused one reads the player whole again, while it is the same.
+        assert!(players.reread(P, ":1.9").is_none(), "another owner");
+        let ask = players.reread(P, ":1.5").unwrap();
+        assert!(ask.props);
     }
 }
