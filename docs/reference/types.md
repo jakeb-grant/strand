@@ -758,6 +758,7 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `PopupAnchor` | `pointer`. A popup opened where the press that opened it went down. |
 | `PopupTrigger` | `open`, `hover` |
 | `PoseName` | `none`, `fade`, `slidefade` |
+| `PowerProfile` | `power_saver`, `balanced`, `performance`. A power-profiles-daemon profile: `power_saver` (its `power-saver`), `balanced` or `performance`. |
 | `RadiusKeyword` | `full` |
 | `Screens` | `all`, `focused` |
 | `Shape` | `rect`, `circle`, `pill`, `cookie`, `clover`, `burst`, `flower`, `gem`, `sunny`, `triangle`, `pentagon`, `hexagon`, `heart` |

@@ -403,6 +403,22 @@ wiped once sent. A panel shows it:
 | `action cancel()` | Dismisses `request`: the program is told it was refused, and the next request, if any, shows. |
 | `action choose(user: text)` | Asks for `user`'s password instead (one of `request.users`). |
 
+## `power`
+
+The power profile, from power-profiles-daemon on the system bus
+(`org.freedesktop.UPower.PowerProfiles`, else the older
+`net.hadess.PowerProfiles`), followed live: the daemon restarting is
+read afresh, and the daemon missing is `available` false until it
+appears. Strand never starts it: a machine that runs another power
+manager (TLP, auto-cpufreq) keeps it stopped.
+
+| Field | Type | |
+| --- | --- | --- |
+| `profile` | `PowerProfile rw` | The active profile: `power.profile = power_saver` in a handler, or `strand set power.profile performance`. Writable: the daemon is asked to switch (its `ActiveProfile`). A profile it does not offer (`profiles`), or a write while it is not `available`, leaves the profile as it was. `balanced` while no daemon answers. |
+| `profiles` | `[PowerProfile]` | The profiles the machine offers, in the daemon's order: `for p in power.profiles key p { … }`. `performance` is listed only where a driver supports it. Empty while no daemon answers. |
+| `available` | `bool` | power-profiles-daemon answers. False without it, or without a system bus, so a menu can hide what cannot work. |
+| `degraded` | `text?` | Why `performance` is held back, as the daemon names it (`lap-detected`, `high-operating-temperature`); null when it is not. |
+
 ## `screens`
 
 Monitors.

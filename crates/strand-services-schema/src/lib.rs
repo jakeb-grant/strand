@@ -78,6 +78,8 @@ pub const IDLE: &str = include_str!("idle.schema");
 pub const POLKIT: &str = include_str!("polkit.schema");
 /// (services-round) `greetd`: a login screen over greetd's socket.
 pub const GREETD: &str = include_str!("greetd.schema");
+/// `power`: the power profile (power-profiles-daemon).
+pub const POWER: &str = include_str!("power.schema");
 
 /// (services-round) The builtin services whose actions carry secrets
 /// (a lock's password, a polkit or greetd answer): never recorded in a
@@ -112,5 +114,6 @@ pub fn schemas() -> Vec<&'static str> {
         IDLE,
         POLKIT,
         GREETD,
+        POWER,
     ]
 }

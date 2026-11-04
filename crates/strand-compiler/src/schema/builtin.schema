@@ -75,6 +75,9 @@ enum StreamDirection { output, input, monitor }
 /// Where a program's video comes from: a camera, or a
 /// screen (or window) cast.
 enum VideoSource { camera, screencast }
+/// A power-profiles-daemon profile: `power_saver` (its `power-saver`),
+/// `balanced` or `performance`.
+enum PowerProfile { power_saver, balanced, performance }
 
 // Values with no inner structure the language can see.
 opaque Palette, TokenSet, Spring, Easing, Pose, SwapTransition, Mask, Filter, HitArea, Sprite
@@ -865,6 +868,18 @@ provisional service brightness {
   level: float rw
   /// A backlight was found.
   available: bool
+}
+
+/// The power profile, from power-profiles-daemon.
+provisional service power {
+  /// The active profile. Writable.
+  profile: PowerProfile rw
+  /// The profiles the machine offers.
+  profiles: [PowerProfile]
+  /// power-profiles-daemon answers.
+  available: bool
+  /// Why `performance` is held back, as the daemon says; null when it is not.
+  degraded: text?
 }
 
 /// The system tray (a StatusNotifierItem host with DBusMenu).
