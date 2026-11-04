@@ -2703,7 +2703,7 @@ fn saved_networks_are_known_and_forgotten() {
             .unwrap()
             .items()
             .is_empty(),
-        "connections is not read"
+        "connections stays empty unless it is read itself"
     );
     let forget = |ssid: &str| {
         let item = AccessPoint {
