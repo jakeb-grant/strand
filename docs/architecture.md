@@ -2668,7 +2668,9 @@ itself.
   Each module's doc comment gives its sources, fields and limits:
   `system`, `cpu`, `memory`, `disk`, `keyboard`, `battery`,
   `brightness`, `network` (NetworkManager, else iwd, never
-  D-Bus-activated), `bluetooth`, `notifications` (our own server;
+  D-Bus-activated), `bluetooth`, `drives` (UDisks2, D-Bus-activated;
+  its ObjectManager's signals and a `PropertiesChanged` rule per
+  interface it reads, `dbus::properties_rule`), `notifications` (our own server;
   history in the persist store), `apps`, `idle`, `polkit` (our own
   authentication agent), `greetd`, `auth`, `media` (MPRIS; remote art
   through `art`), `tray`, `session` (logind), `outputs`, `clipboard`,

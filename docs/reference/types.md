@@ -259,7 +259,7 @@ card, a disc), keyed by `device`.
 
 | Method | |
 | --- | --- |
-| `action eject()` | Makes it safe to remove. It unmounts each of its mounted filesystems (and locks an encrypted one unlocked), then ejects its medium where it has one to eject (a disc, a card) and powers it off where it can be (a USB stick or disk). The drive then leaves `drives.all`. The first step refused (a filesystem in use) stops it, as `drives.failed`. With `can_eject` false it fails at once and unmounts nothing. Asked again while one runs, it is dropped. |
+| `action eject()` | Makes it safe to remove. It unmounts each of its mounted filesystems (and locks an encrypted one unlocked), then takes one last step: it ejects the medium where the medium comes out (a disc, a card), leaving the drive on for the next one, and otherwise powers the drive off where it can be (a USB stick or disk). The drive then leaves `drives.all`. The first step refused (a filesystem in use) stops it, as `drives.failed`. With `can_eject` false it fails at once and unmounts nothing. Asked again while one runs, it is dropped; once started it finishes, even if the shell stops reading `drives` meanwhile. |
 
 ### `Drop`
 

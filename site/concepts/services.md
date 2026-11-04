@@ -13,7 +13,7 @@ for ws in workspaces.all { text ws.name }        // every workspace, live
 
 ## Built-in services
 
-Strand has 28 built-in services. Each one is in the
+Strand has 29 built-in services. Each one is in the
 [service reference](../../docs/reference/services.md), with every
 field, function, action and event.
 
@@ -29,6 +29,7 @@ field, function, action and event.
 | `clipboard` | The clipboard, and a history of what you copied |
 | `clock` | The date and time |
 | `cpu`, `memory`, `disk` | Processor load, memory use, disk usage |
+| `drives` | Removable drives: mount, unmount, eject, from UDisks2 |
 | `greetd` | A login screen, when Strand runs as greetd's greeter |
 | `idle` | Whether you are away |
 | `keyboard` | Lock keys, layouts and modifiers |
@@ -73,9 +74,9 @@ second.
 - **Events** are delivered one by one, in order:
   `on notifications.received(n) { … }`.
 
-Where a daemon may be missing (NetworkManager, BlueZ, logind, the
-backlight), the service's `available` field says whether it answers,
-so a config can hide what cannot work. A missing daemon never stops
+Where a daemon may be missing (NetworkManager, BlueZ, logind,
+UDisks2, the backlight), the service's `available` field says whether
+it answers, so a config can hide what cannot work. A missing daemon never stops
 the shell.
 
 ## Services of your own
