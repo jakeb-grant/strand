@@ -226,6 +226,13 @@ impl Worker {
         cache: Option<PathBuf>,
         out: calloop::channel::Sender<FromWorker>,
     ) -> io::Result<(Worker, Outcome)> {
+        // The watcher reports a saved file by its absolute path, so the
+        // boot loads the files by theirs: a config named by a relative
+        // path (`strand run strand`) was loaded as `strand/a.strand` and
+        // saved as `/home/…/strand/a.strand`, two files declaring the
+        // same names, and every save was held back (decisions.md
+        // relative-config).
+        let dir = &std::path::absolute(dir)?;
         let (jobs, rx) = mpsc::channel::<Job>();
         let (sink, events) = strand_watch::channel();
         let poke = jobs.clone();
@@ -777,6 +784,61 @@ mod tests {
         let loaded = loaded.expect("the save reloads");
         let build = loaded.outcome.build.as_ref().expect("a build");
         assert_eq!(build.program.shaders["a.wgsl"].wgsl, edited);
+        assert!(worker.join().is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A config named by a relative path is one set of files: a save
+    /// replaces the file the boot loaded. It came back as a second copy
+    /// under its absolute path, every name in it declared twice, and the
+    /// save was held back (decisions.md relative-config).
+    #[test]
+    fn a_save_in_a_config_named_by_a_relative_path_replaces_its_file() {
+        let dir = std::env::temp_dir().join(format!("strand-live-rel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        let file = dir.join("config/shell.strand");
+        std::fs::write(
+            &file,
+            "export state a = 1\npanel P { width: 10; height: 10 }\n",
+        )
+        .unwrap();
+        // The same folder, named from the current directory without
+        // changing it (other tests share the process).
+        let cwd = std::env::current_dir().unwrap();
+        let mut relative: PathBuf = cwd.components().skip(1).map(|_| "..").collect();
+        relative.push(dir.join("config").strip_prefix("/").unwrap());
+        assert!(
+            relative.is_relative() && relative.is_dir(),
+            "{}",
+            relative.display()
+        );
+        let (out, rx) = calloop::channel::channel::<FromWorker>();
+        let (worker, boot) = Worker::spawn(&relative, None, out).unwrap();
+        assert!(boot.build.is_some(), "{:?}", boot.diagnostics);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::fs::write(
+            &file,
+            "export state a = 2\npanel P { width: 20; height: 10 }\n",
+        )
+        .unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        let mut loaded = None;
+        while loaded.is_none() && Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(FromWorker::Loaded(l)) => loaded = Some(l),
+                Ok(_) => {}
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+        let loaded = loaded.expect("the save reloads");
+        assert_eq!(
+            loaded.outcome.errors(),
+            0,
+            "{:?}",
+            loaded.outcome.diagnostics
+        );
+        assert!(loaded.outcome.build.is_some(), "the save is committed");
         assert!(worker.join().is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
