@@ -21,8 +21,9 @@ live.
 
 ## `audio`
 
-Audio devices and the programs' streams, from PipeWire, and levels for
-a visualiser of one's own (`audio.levels`).
+Audio devices with their cards' profiles, and the programs' streams
+and where each plays, from PipeWire, and levels for a visualiser of
+one's own (`audio.levels`).
 
 | Field | Type | |
 | --- | --- | --- |

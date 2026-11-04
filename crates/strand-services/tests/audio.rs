@@ -578,21 +578,6 @@ fn writes_land_where_wpctl_reads_them() {
     );
 }
 
-/// `pw-cli create-node` of a lingering null sink named `name`.
-fn create_sink(pw: &PipeWire, name: &str) {
-    pw.run(
-        "pw-cli",
-        &[
-            "create-node",
-            "adapter",
-            &format!(
-                "{{ factory.name=support.null-audio-sink node.name={name} \
-                 media.class=Audio/Sink audio.position=[FL FR] object.linger=true }}"
-            ),
-        ],
-    );
-}
-
 #[test]
 fn a_reference_never_reaches_a_device_that_reused_its_id() {
     let Some(pw) = PipeWire::start("a_reference_never_reaches_a_device_that_reused_its_id") else {
@@ -631,7 +616,7 @@ fn a_reference_never_reaches_a_device_that_reused_its_id() {
     // taken before (an open popup's) is refused, and the new device is
     // untouched. PipeWire hands out freed ids again, so devices are made
     // and destroyed until one lands on the old id.
-    create_sink(&pw, "strand-reuse-0");
+    pw.create_sink("strand-reuse-0");
     w.until(5, "the first device", |m| {
         m.sink_named("strand-reuse-0").is_some()
     });
@@ -651,7 +636,7 @@ fn a_reference_never_reaches_a_device_that_reused_its_id() {
     let mut tried = Vec::new();
     let reused = (1..=40).find_map(|i| {
         let name = format!("strand-reuse-{i}");
-        create_sink(&pw, &name);
+        pw.create_sink(&name);
         w.until(5, "a new device", |m| m.sink_named(&name).is_some());
         let d = w.sink(&name);
         if d.id == first.id {
@@ -1297,4 +1282,217 @@ fn a_test_tone_lights_its_spectrum_band() {
     std::thread::sleep(Duration::from_millis(700));
     w.poll();
     assert_eq!(w.levels.len(), after, "readings, and FFTs, while silent");
+}
+
+/// (audio-routing) The reference to the stream of program `app` the
+/// mirror lists: its node by id and serial (an item's `id` is the
+/// serial).
+fn stream_ref(m: &Mirror, app: &str) -> Option<DeviceRef> {
+    let (_, st) = m.streams.iter().find(|(_, s)| s.app == app)?;
+    let (node, serial) = m.serials.iter().find(|(_, s)| **s == u64::from(st.id))?;
+    Some(DeviceRef::device(*node, *serial))
+}
+
+/// (audio-routing) A move the loop cannot make is refused with its
+/// reason, and writes nothing: a recorder onto a sink, a stream onto
+/// another stream, an item of a stream that ended, and any move once the
+/// session manager (its `default` metadata) is gone.
+#[test]
+fn a_move_is_refused_with_its_reason() {
+    let Some(mut pw) = PipeWire::start("a_move_is_refused_with_its_reason") else {
+        return;
+    };
+    let wav = pw.dir.path().join("long.wav");
+    square_wav(&wav, 120.0, 0.01);
+    let mut w = Watch::start(pw.config());
+    w.audio.set_streams(true);
+    w.until(10, "the devices", ready);
+    let a = w.sink("strand-sink-a");
+    let b = w.sink("strand-sink-b");
+    let mut player = pw.play_with(
+        &wav,
+        "strand-sink-a",
+        &["-P", "{ application.name = \"strand-refused-player\" }"],
+    );
+    let mut ended = pw.play_with(
+        &wav,
+        "strand-sink-a",
+        &["-P", "{ application.name = \"strand-refused-ended\" }"],
+    );
+    let mut recorder = pw
+        .command("pw-record")
+        .args(["--target", "strand-source"])
+        .args(["-P", "{ application.name = \"strand-refused-recorder\" }"])
+        .arg(pw.dir.path().join("rec.wav"))
+        .spawn()
+        .expect("pw-record starts");
+    w.until(10, "the streams, linked", |m| {
+        [
+            "strand-refused-player",
+            "strand-refused-ended",
+            "strand-refused-recorder",
+        ]
+        .iter()
+        .all(|app| {
+            m.streams
+                .iter()
+                .any(|(_, s)| s.app == *app && s.device.is_some())
+        })
+    });
+    let player_ref = stream_ref(&w.mirror, "strand-refused-player").unwrap();
+    let recorder_ref = stream_ref(&w.mirror, "strand-refused-recorder").unwrap();
+    let ended_ref = stream_ref(&w.mirror, "strand-refused-ended").unwrap();
+    let sink_a = w.mirror.device_ref(a.id);
+    let sink_b = w.mirror.device_ref(b.id);
+    let source = w
+        .mirror
+        .device_ref(w.mirror.source_named("strand-source").unwrap().id);
+    // What the session manager wrote of its own (WirePlumber marks a
+    // stream that asked not to be moved): the refusals add nothing. Only
+    // the lines of the streams that stay are compared: the ended one's
+    // may go, or change, as it goes, whatever Strand writes.
+    let node_of = |r: DeviceRef| match r {
+        DeviceRef::Id { id, .. } => id,
+        other => panic!("a stream's reference is by id: {other:?}"),
+    };
+    let staying = [node_of(player_ref), node_of(recorder_ref)];
+    let all_targets = || -> Vec<String> {
+        let mut t: Vec<String> = pw
+            .metadata()
+            .lines()
+            .filter(|l| l.contains("key:'target."))
+            .map(str::to_owned)
+            .collect();
+        t.sort();
+        t
+    };
+    let targets = || -> Vec<String> {
+        all_targets()
+            .into_iter()
+            .filter(|l| staying.iter().any(|n| l.contains(&format!("id:{n} "))))
+            .collect()
+    };
+    let no_target_object = |t: &[String]| !t.iter().any(|l| l.contains("key:'target.object'"));
+    std::thread::sleep(Duration::from_millis(300));
+    let targets_before = targets();
+    let everything_before = all_targets();
+    assert!(
+        no_target_object(&everything_before),
+        "{everything_before:?}"
+    );
+
+    // A recorder of a source moves to a source; a player to a sink.
+    for (stream, to) in [(recorder_ref, sink_b), (player_ref, source)] {
+        assert_eq!(
+            w.act(AudioAction::MoveStream { stream, to }),
+            Err(AudioError::WrongDirection { stream, to })
+        );
+    }
+    // A stream is no device to move to.
+    assert_eq!(
+        w.act(AudioAction::MoveStream {
+            stream: player_ref,
+            to: recorder_ref
+        }),
+        Err(AudioError::UnknownDevice(recorder_ref))
+    );
+    // A device is no stream to move.
+    assert_eq!(
+        w.act(AudioAction::MoveStream {
+            stream: sink_a,
+            to: sink_b
+        }),
+        Err(AudioError::UnknownDevice(sink_a))
+    );
+    // A stream that ended.
+    let _ = ended.kill();
+    let _ = ended.wait();
+    w.until(10, "the ended stream gone", |m| {
+        !m.streams
+            .iter()
+            .any(|(_, s)| s.app == "strand-refused-ended")
+    });
+    assert_eq!(
+        w.act(AudioAction::MoveStream {
+            stream: ended_ref,
+            to: sink_b
+        }),
+        Err(AudioError::UnknownDevice(ended_ref))
+    );
+    std::thread::sleep(Duration::from_millis(600));
+    w.poll();
+    assert_eq!(targets(), targets_before, "a refused move wrote");
+    // No subject, the ended stream's among them, gained a target.object.
+    let everything = all_targets();
+    assert!(no_target_object(&everything), "{everything:?}");
+    let player_now = w
+        .mirror
+        .streams
+        .iter()
+        .find(|(_, s)| s.app == "strand-refused-player");
+    assert_eq!(player_now.and_then(|(_, s)| s.device), Some(a.id));
+    let recorder_now = w
+        .mirror
+        .streams
+        .iter()
+        .find(|(_, s)| s.app == "strand-refused-recorder");
+    assert_eq!(
+        recorder_now.and_then(|(_, s)| s.device),
+        w.mirror.source_named("strand-source").map(|d| d.id)
+    );
+
+    // No session manager, no metadata to move with.
+    pw.kill_wireplumber();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut last;
+    loop {
+        last = w.act(AudioAction::MoveStream {
+            stream: player_ref,
+            to: sink_b,
+        });
+        if last == Err(AudioError::NoDefaultMetadata) || Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // (The links WirePlumber made went with it: nothing to compare.)
+    assert_eq!(last, Err(AudioError::NoDefaultMetadata));
+    let _ = player.kill();
+    let _ = player.wait();
+    let _ = recorder.kill();
+    let _ = recorder.wait();
+}
+
+/// (audio-routing) Null sinks and sources belong to no card: they list
+/// no profiles, and a profile asked of a card nobody has is refused,
+/// changing nothing. This is the whole live coverage of card profiles:
+/// the container and CI have no sound card (no snd-dummy), so their
+/// parsing, listing and write are unit-tested (`audio::pod`,
+/// `audio::thread`).
+#[test]
+fn devices_of_no_card_list_no_profiles() {
+    let Some(pw) = PipeWire::start("devices_of_no_card_list_no_profiles") else {
+        return;
+    };
+    let mut w = Watch::start(pw.config());
+    w.until(10, "the devices", ready);
+    std::thread::sleep(Duration::from_millis(300));
+    w.poll();
+    let before = w.mirror.clone();
+    for (_, d) in before.sinks.iter().chain(&before.sources) {
+        assert!(d.profiles.is_empty(), "{} lists {:?}", d.name, d.profiles);
+    }
+    assert!(before.sink.as_ref().is_some_and(|d| d.profiles.is_empty()));
+    assert_eq!(
+        w.act(AudioAction::SetProfile {
+            card: 999_999,
+            profile: "a2dp-sink".into()
+        }),
+        Err(AudioError::UnknownCard(999_999))
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    w.poll();
+    assert_eq!(w.mirror.sinks, before.sinks);
+    assert_eq!(w.mirror.sources, before.sources);
+    assert_eq!(w.mirror.sink, before.sink);
 }

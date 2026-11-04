@@ -95,6 +95,7 @@ Keyed by `id`.
 | `muted` | `bool rw` | Muted. Writable: `audio.sink.muted = !audio.sink.muted`. |
 | `icon` | `text` | An icon name for its volume and mute state. |
 | `default` | `bool` | It is the default device. |
+| `profiles` | `[AudioProfile]` | The profiles of the card it belongs to, best first (a headset's call and high-fidelity modes, a sound card's outputs), keyed by `name`: `for p in audio.sink.profiles key p.name { … }`, the one in use `audio.sink.profiles.find(p => p.active)`. Empty for a device of no card (a virtual or null sink). A card's `off` is not listed: it would remove the device it was chosen from. |
 
 | Method | |
 | --- | --- |
@@ -112,6 +113,25 @@ Keyed by `device`.
 | `device` | `int` | The device it reads (`AudioDevice.id`). |
 | `bands` | `[float]` | Its latest spectrum: 64 bands from low to high pitch, each 0 to 1; empty while the device is quiet. |
 
+### `AudioProfile`
+
+A profile of the card an audio device belongs to: an item of
+`dev.profiles`.
+
+Keyed by `name`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `name` | `text` | Its name, such as `a2dp-sink` or `output:analog-stereo`. |
+| `description` | `text` | A readable description of it, such as `High Fidelity Playback (A2DP Sink)`. |
+| `available` | `bool` | It can be used now: false only when the card says what it needs is unplugged (unknown counts as available). |
+| `active` | `bool` | It is the card's profile now. |
+| `card` | `int` | The card it is a profile of (PipeWire's `object.serial` for it): the same for every profile of a device's card. |
+
+| Method | |
+| --- | --- |
+| `action select()` | Makes it the card's profile (the card's `Profile` with `save`, as `wpctl set-profile` writes it), which the session manager keeps: `on click { p.select() }`. The card's devices go and come back under new ids. |
+
 ### `AudioStream`
 
 A program's audio stream, from PipeWire: what it
@@ -127,6 +147,11 @@ Keyed by `id`.
 | `direction` | `StreamDirection` | `output` while it plays, `input` while it records a source (a microphone in use), `monitor` while it records what a sink plays (a visualiser, a recorder of the desktop's sound): a microphone light is `audio.streams.any(s => s.direction == input)`. |
 | `volume` | `float rw` | Its own volume, on the scale a device's uses. Writable: `st.volume = v`. |
 | `muted` | `bool rw` | Muted. Writable: `st.muted = !st.muted`. |
+| `device` | `int?` | The device it plays to or records from now: the `id` of the item of `audio.sinks` (a stream that plays, or one that records what a sink plays) or `audio.sources` its links reach, as pavucontrol shows it. Null while it is linked to none (starting, or linked only to another program): `audio.sinks.find(d => d.id == st.device)?.description`. |
+
+| Method | |
+| --- | --- |
+| `action move_to(device: AudioDevice)` | `st.move_to(dev)` moves it to `dev` through the session manager (the `default` metadata's `target.object`, as `pactl move-sink-input` and pavucontrol do), where it stays when the default changes. Moving it to the device that is the default now lets it follow the default again. A stream that plays moves to a sink, one that records a source to a source, a `monitor` to a sink; any other move, or one from an item whose stream ended, changes nothing. A program that named its own device, or asked never to be moved, may stay where it is when the default changes: that is the session manager's rule. |
 
 ### `BluetoothDevice`
 

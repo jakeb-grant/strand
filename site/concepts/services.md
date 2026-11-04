@@ -20,7 +20,7 @@ field, function, action and event.
 | Service | What it is |
 | --- | --- |
 | `apps` | Installed apps, from their desktop entries, with search |
-| `audio` | Audio devices and the programs' streams, from PipeWire |
+| `audio` | Audio devices, their cards' profiles and the programs' streams, from PipeWire |
 | `auth` | The lock screen's password check, through PAM |
 | `battery` | The battery, from UPower |
 | `bluetooth` | Bluetooth adapters, devices and pairing requests, from BlueZ |

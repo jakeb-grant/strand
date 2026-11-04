@@ -8,7 +8,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::ffi::OsString;
+use std::ffi::{CString, OsString};
 use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
@@ -33,10 +33,12 @@ use rustix::fs::inotify;
 
 use super::meter::{Meter, MeterEvent, MeterTarget, retry_delay};
 use super::model::{
-    AudioChange, AudioDevice, AudioState, AudioStream, Direction, LevelTarget, Publisher,
-    StreamDirection, VideoSource, VideoStream, icon, linear, perceptual,
+    AudioChange, AudioDevice, AudioProfile, AudioState, AudioStream, Direction, LevelTarget,
+    Publisher, StreamDirection, VideoSource, VideoStream, icon, linear, perceptual,
 };
-use super::pod::{Props, Route, default_name, default_value};
+use super::pod::{
+    self, Availability, Props, Route, default_name, default_value, select_profile_pod,
+};
 use super::{AudioAction, AudioConfig, AudioError, Cmd, DeviceRef, Follow, Host};
 
 /// The first wait after a lost or refused connection.
@@ -125,17 +127,28 @@ pub(crate) enum Work {
         name: Option<String>,
         description: Option<String>,
         link: Option<RouteLink>,
+        /// (audio-routing) The card it belongs to (its `device.id`).
+        card: Option<u32>,
         /// (services-round) What a stream's or a video node's info says,
         /// when its properties changed (a later info event without
         /// `PROPS` in its mask carries none of them).
         props: Option<NodeProps>,
     },
     /// A device's `Route` param info flags (they change, the serial bit
-    /// toggling, whenever its routes change).
+    /// toggling, whenever its routes change), and (audio-routing) its
+    /// `EnumProfile` and `Profile` ones.
     DeviceInfo {
         session: u64,
         id: u32,
         route_flags: Option<u32>,
+        enum_flags: Option<u32>,
+        active_flags: Option<u32>,
+    },
+    /// (audio-routing) One of a device's profiles, or its active one.
+    DeviceProfile {
+        session: u64,
+        id: u32,
+        param: ProfileParam,
     },
     DeviceRoute {
         session: u64,
@@ -475,8 +488,9 @@ struct Session {
     /// (services-round) The video sources and the streams that take
     /// video ([`Follow::Video`]).
     video: BTreeMap<u32, VideoNode>,
-    /// (services-round) Every link's output and input node
-    /// ([`Follow::Video`]).
+    /// (services-round) Every link's output and input node: the video
+    /// streams' sources, and (audio-routing) the device a program's audio
+    /// stream plays to or records from.
     links: BTreeMap<u32, (u32, u32)>,
     devices: BTreeMap<u32, DeviceEntry>,
     metadata: Option<MetaEntry>,
@@ -534,6 +548,9 @@ struct NodeEntry {
     serial: Option<String>,
     /// The card profile device it belongs to, if it is a card's node.
     link: Option<RouteLink>,
+    /// (audio-routing) The card it belongs to (`device.id`), whose
+    /// profiles it lists.
+    card: Option<u32>,
     /// The sync issued after binding it; it is shown once that returns
     /// (with its properties and volume read).
     sync: i32,
@@ -697,11 +714,284 @@ impl RouteLink {
     }
 }
 
-/// A bound audio device (a card): its active routes, by profile device.
+/// A bound audio device (a card): its active routes, by profile device,
+/// and (audio-routing) its profiles.
 struct DeviceEntry {
     _listener: DeviceListener,
     proxy: Device,
     routes: Routes,
+    /// (audio-routing) Its `object.serial`: [`AudioProfile::card`].
+    serial: Option<String>,
+    profiles: Profiles,
+}
+
+/// (audio-routing) What a device's profile params say.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ProfileParam {
+    /// One of its profiles (`EnumProfile`).
+    Listed(pod::Profile),
+    /// The index of the profile it uses now (`Profile`).
+    Active(i32),
+}
+
+/// (audio-routing) A device's profiles: the set shown, and the set that
+/// comes after a change of its params' flags, shown only once whole.
+///
+/// A change of the `EnumProfile` flags starts collecting the list anew, a
+/// change of the `Profile` flags the active profile; the driver then
+/// issues a core sync ([`Profiles::syncing`]), and once it is back
+/// ([`Profiles::done`]) the collected parts replace the shown ones. The
+/// daemon sends a changed param's items right after the info that
+/// announces it, before it answers the sync, so a half-sent set is never
+/// shown.
+#[derive(Debug, Default)]
+struct Profiles {
+    enum_flags: Option<u32>,
+    active_flags: Option<u32>,
+    /// The profiles shown, in the card's order.
+    listed: Vec<pod::Profile>,
+    /// The index of the profile in use, as shown.
+    active: Option<i32>,
+    /// A new list being collected.
+    incoming_list: Option<Vec<pod::Profile>>,
+    /// A new active profile being collected.
+    incoming_active: Option<Option<i32>>,
+    /// The sync after which what is collected is whole.
+    sync: Option<i32>,
+}
+
+impl Profiles {
+    /// The flags of its `EnumProfile` and `Profile` param infos. True when
+    /// either changed: a new set of that part comes, and the caller
+    /// issues a sync ([`Profiles::syncing`]).
+    fn info(&mut self, enum_flags: Option<u32>, active_flags: Option<u32>) -> bool {
+        let mut changed = false;
+        if enum_flags != self.enum_flags {
+            self.enum_flags = enum_flags;
+            self.incoming_list = Some(Vec::new());
+            changed = true;
+        }
+        if active_flags != self.active_flags {
+            self.active_flags = active_flags;
+            self.incoming_active = Some(None);
+            changed = true;
+        }
+        changed
+    }
+
+    /// The sync issued after a change: what comes before it is back is
+    /// the whole new set.
+    fn syncing(&mut self, seq: i32) {
+        self.sync = Some(seq);
+    }
+
+    /// A param of the set being collected; one that comes while nothing
+    /// is collected is not part of a set announced, and is dropped.
+    fn param(&mut self, param: ProfileParam) {
+        match param {
+            ProfileParam::Listed(p) => {
+                if let Some(list) = &mut self.incoming_list {
+                    list.retain(|q| q.index != p.index);
+                    list.push(p);
+                }
+            }
+            ProfileParam::Active(index) => {
+                if let Some(active) = &mut self.incoming_active {
+                    *active = Some(index);
+                }
+            }
+        }
+    }
+
+    /// A sync came back: once it is the one after the last change, the
+    /// collected parts are shown. True when what is shown changed.
+    fn done(&mut self, seq: i32) -> bool {
+        if !self.sync.is_some_and(|s| seq >= s) {
+            return false;
+        }
+        self.sync = None;
+        let mut changed = false;
+        if let Some(list) = self.incoming_list.take() {
+            changed |= list != self.listed;
+            self.listed = list;
+        }
+        if let Some(active) = self.incoming_active.take() {
+            changed |= active != self.active;
+            self.active = active;
+        }
+        changed
+    }
+}
+
+/// (audio-routing) The profiles a device of card `card` lists: the
+/// card's, best first (its priority, then its index), without `off`
+/// (choosing it would remove the device it was chosen from), the one in
+/// use `active`, each `available` unless the card says it is not.
+fn profiles_of(listed: &[pod::Profile], active: Option<i32>, card: u32) -> Vec<AudioProfile> {
+    let mut shown: Vec<&pod::Profile> = listed.iter().filter(|p| p.name != "off").collect();
+    shown.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.index.cmp(&b.index)));
+    shown
+        .into_iter()
+        .map(|p| AudioProfile {
+            name: p.name.clone(),
+            description: p.description.clone(),
+            available: p.available != Availability::No,
+            active: Some(p.index) == active,
+            card,
+        })
+        .collect()
+}
+
+/// (audio-routing) A card's key ([`AudioProfile::card`]): its
+/// `object.serial`, else its global id.
+fn card_key(id: u32, serial: Option<&str>) -> u32 {
+    serial.and_then(|v| v.parse::<u32>().ok()).unwrap_or(id)
+}
+
+/// (audio-routing) The profiles a device node lists: those of the card
+/// its `device.id` names (`card`), found by that global id through
+/// `card_of` (the card's profiles and its own `object.serial`), each
+/// keyed by the card's [`card_key`]. None for a node of no card, or of a
+/// card not bound.
+fn device_profiles<'a>(
+    card: Option<u32>,
+    card_of: impl Fn(u32) -> Option<(&'a Profiles, Option<&'a str>)>,
+) -> Vec<AudioProfile> {
+    let Some((card, (profiles, serial))) = card.and_then(|c| Some((c, card_of(c)?))) else {
+        return Vec::new();
+    };
+    profiles_of(&profiles.listed, profiles.active, card_key(card, serial))
+}
+
+/// (audio-routing) The card and profile index `p.select()` writes: the
+/// card (by global id) among `cards` (global id, `object.serial`,
+/// profiles) whose [`card_key`] is `card`, and the index of its listed
+/// profile named `profile`.
+fn profile_target<'a>(
+    cards: impl IntoIterator<Item = (u32, Option<&'a str>, &'a Profiles)>,
+    card: u32,
+    profile: &str,
+) -> Result<(u32, i32), AudioError> {
+    let (id, profiles) = cards
+        .into_iter()
+        .find(|(id, serial, _)| card_key(*id, *serial) == card)
+        .map(|(id, _, profiles)| (id, profiles))
+        .ok_or(AudioError::UnknownCard(card))?;
+    let index = profiles
+        .listed
+        .iter()
+        .find(|p| p.name == profile)
+        .map(|p| p.index)
+        .ok_or_else(|| AudioError::UnknownProfile {
+            card,
+            profile: profile.to_owned(),
+        })?;
+    Ok((id, index))
+}
+
+/// (audio-routing) What a card's profile param says: an `EnumProfile`
+/// item is one of its profiles, a `Profile` one the profile it uses now.
+/// `None` for another param or a pod that is no profile.
+fn profile_param(ty: ParamType, bytes: &[u8]) -> Option<ProfileParam> {
+    match ty {
+        ParamType::EnumProfile => pod::Profile::parse(bytes).map(ProfileParam::Listed),
+        ParamType::Profile => pod::Profile::parse(bytes).map(|p| ProfileParam::Active(p.index)),
+        _ => None,
+    }
+}
+
+/// (audio-routing) The device a program's stream (node `stream`, listed
+/// as `direction`) plays to or records from: the device its links reach
+/// (the input side of a player's links; the output side of a recorder's,
+/// a sink's monitor ports being the sink's own), counting only nodes
+/// `is_device` lists; the one with the most links (one per channel), the
+/// lowest id on a tie. `None` when no link reaches a listed device.
+fn linked_device(
+    stream: u32,
+    direction: StreamDirection,
+    links: &BTreeMap<u32, (u32, u32)>,
+    is_device: impl Fn(u32) -> bool,
+) -> Option<u32> {
+    let mut count: BTreeMap<u32, usize> = BTreeMap::new();
+    for &(output, input) in links.values() {
+        let peer = match direction {
+            StreamDirection::Output => (output == stream).then_some(input),
+            StreamDirection::Input | StreamDirection::Monitor => {
+                (input == stream).then_some(output)
+            }
+        };
+        if let Some(peer) = peer.filter(|p| *p != stream && is_device(*p)) {
+            *count.entry(peer).or_default() += 1;
+        }
+    }
+    count
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
+        .map(|(id, _)| id)
+}
+
+/// (audio-routing) One `default` metadata write: a key, and its type and
+/// value (`None` clears it).
+type MetaWrite = (&'static str, Option<(&'static str, String)>);
+
+/// (audio-routing) What moving a stream listed as `stream` to a device of
+/// `target` direction whose `object.serial` is `serial` writes on the
+/// `default` metadata (subject: the stream's node), as pipewire-pulse's
+/// `do_move_stream` does for `pactl move-sink-input` and pavucontrol:
+/// the legacy `target.node` cleared, and `target.object` the target's
+/// serial (`Spa:Id`), or cleared too when the target is the default of
+/// its direction now (PulseAudio's rule: a move to the default forgets
+/// the preferred device, so the stream follows the default again).
+/// `None` when the stream cannot go there: a player moves to a sink, a
+/// recorder of a source to a source, a recorder of a sink's sound to a
+/// sink.
+fn move_keys(
+    stream: StreamDirection,
+    target: Direction,
+    target_is_default: bool,
+    serial: u64,
+) -> Option<[MetaWrite; 2]> {
+    let fits = matches!(
+        (stream, target),
+        (StreamDirection::Output, Direction::Sink)
+            | (StreamDirection::Input, Direction::Source)
+            | (StreamDirection::Monitor, Direction::Sink)
+    );
+    if !fits {
+        return None;
+    }
+    let object = (!target_is_default).then(|| ("Spa:Id", serial.to_string()));
+    Some([("target.node", None), ("target.object", object)])
+}
+
+/// (audio-routing) Writes one key of `meta` for `subject`. A key, type or
+/// value holding a NUL is refused, not a panic (`Metadata::set_property`
+/// `expect`s).
+fn set_meta(
+    meta: &Metadata,
+    subject: u32,
+    key: &str,
+    value: Option<(&str, &str)>,
+) -> Result<(), AudioError> {
+    let c = |v: &str| {
+        CString::new(v).map_err(|_| AudioError::Failed(format!("a NUL in metadata `{v}`")))
+    };
+    let key = c(key)?;
+    let (ty, value) = match value {
+        Some((ty, value)) => (Some(c(ty)?), Some(c(value)?)),
+        None => (None, None),
+    };
+    meta.set_property_cstr(subject, &key, ty.as_deref(), value.as_deref());
+    Ok(())
+}
+
+/// (audio-routing) The direction a program's stream is listed with: an
+/// input that records a sink's sound is a `monitor`.
+fn listed_direction(direction: StreamDirection, props: &NodeProps) -> StreamDirection {
+    match direction {
+        StreamDirection::Input if props.capture_sink => StreamDirection::Monitor,
+        d => d,
+    }
 }
 
 /// A device's active routes.
@@ -930,6 +1220,7 @@ impl Driver<'_> {
                 name,
                 description,
                 link,
+                card,
                 props,
             } if self.live(session) => {
                 let Some(s) = self.session.as_mut() else {
@@ -943,6 +1234,7 @@ impl Driver<'_> {
                         n.device.description = d;
                     }
                     n.link = link;
+                    n.card = card;
                     if let (Some((_, p)), Some(props)) = (&mut n.stream, props) {
                         *p = props;
                     }
@@ -958,9 +1250,28 @@ impl Driver<'_> {
                 session,
                 id,
                 route_flags,
+                enum_flags,
+                active_flags,
             } if self.live(session) => {
+                let Some(s) = self.session.as_mut() else {
+                    return;
+                };
+                let Some(d) = s.devices.get_mut(&id) else {
+                    return;
+                };
+                d.routes.info(route_flags);
+                // A new set of profiles comes: shown once the sync after
+                // it is back.
+                if d.profiles.info(enum_flags, active_flags)
+                    && let Some(seq) = sync(s)
+                    && let Some(d) = s.devices.get_mut(&id)
+                {
+                    d.profiles.syncing(seq);
+                }
+            }
+            Work::DeviceProfile { session, id, param } if self.live(session) => {
                 if let Some(d) = self.session.as_mut().and_then(|s| s.devices.get_mut(&id)) {
-                    d.routes.info(route_flags);
+                    d.profiles.param(param);
                 }
             }
             Work::DeviceRoute { session, id, route } if self.live(session) => {
@@ -1025,6 +1336,9 @@ impl Driver<'_> {
                             n.ready = true;
                         }
                     }
+                    for d in s.devices.values_mut() {
+                        d.profiles.done(seq);
+                    }
                     for v in s.video.values_mut() {
                         if !v.ready && seq >= v.sync {
                             v.ready = true;
@@ -1078,6 +1392,7 @@ impl Driver<'_> {
             | Work::GlobalRemove { .. }
             | Work::NodeInfo { .. }
             | Work::DeviceInfo { .. }
+            | Work::DeviceProfile { .. }
             | Work::DeviceRoute { .. }
             | Work::NodeProps { .. }
             | Work::Meta { .. }
@@ -1328,13 +1643,18 @@ impl Driver<'_> {
                     }
                 }
             }
-            ObjectType::Link if self.follow == Follow::Video => {
+            // The video streams' sources, and (audio-routing) where a
+            // program's audio stream plays: kept always, shown only while
+            // streams are followed.
+            ObjectType::Link => {
                 let node = |k: &str| get(k).and_then(|v| v.parse::<u32>().ok());
                 if let (Some(out), Some(input)) =
                     (node("link.output.node"), node("link.input.node"))
                 {
                     s.links.insert(global.id, (out, input));
-                    self.dirty = true;
+                    if self.follow == Follow::Video || self.streams {
+                        self.dirty = true;
+                    }
                 }
             }
             // The rest serves only the audio devices.
@@ -1354,34 +1674,52 @@ impl Driver<'_> {
                 };
                 let (number, id) = (s.number, global.id);
                 let (q1, q2) = (q.clone(), q);
+                let serial = get("object.serial");
                 let listener = device
                     .add_listener_local()
                     .info(move |info| {
-                        let route_flags = info
-                            .params()
-                            .iter()
-                            .find(|p| p.id() == ParamType::Route)
-                            .map(|p| p.flags().bits());
+                        let flags = |ty: ParamType| {
+                            info.params()
+                                .iter()
+                                .find(|p| p.id() == ty)
+                                .map(|p| p.flags().bits())
+                        };
                         q1.borrow_mut().push_back(Work::DeviceInfo {
                             session: number,
                             id,
-                            route_flags,
+                            route_flags: flags(ParamType::Route),
+                            enum_flags: flags(ParamType::EnumProfile),
+                            active_flags: flags(ParamType::Profile),
                         });
                     })
                     .param(move |_, ty, _, _, pod| {
-                        if ty != ParamType::Route {
+                        let Some(bytes) = pod.map(Pod::as_bytes) else {
                             return;
-                        }
-                        if let Some(route) = pod.and_then(|p| Route::parse(p.as_bytes())) {
-                            q2.borrow_mut().push_back(Work::DeviceRoute {
+                        };
+                        let work = match ty {
+                            ParamType::Route => {
+                                Route::parse(bytes).map(|route| Work::DeviceRoute {
+                                    session: number,
+                                    id,
+                                    route,
+                                })
+                            }
+                            _ => profile_param(ty, bytes).map(|param| Work::DeviceProfile {
                                 session: number,
                                 id,
-                                route,
-                            });
+                                param,
+                            }),
+                        };
+                        if let Some(work) = work {
+                            q2.borrow_mut().push_back(work);
                         }
                     })
                     .register();
-                device.subscribe_params(&[ParamType::Route]);
+                device.subscribe_params(&[
+                    ParamType::Route,
+                    ParamType::EnumProfile,
+                    ParamType::Profile,
+                ]);
                 // The first state (and the actions waiting for it) waits
                 // for its routes, so no early write goes to a card node's
                 // `Props`.
@@ -1394,6 +1732,8 @@ impl Driver<'_> {
                         _listener: listener,
                         proxy: device,
                         routes: Routes::default(),
+                        serial,
+                        profiles: Profiles::default(),
                     },
                 );
             }
@@ -1428,7 +1768,8 @@ impl Driver<'_> {
         let Some(s) = &mut self.session else { return };
         s.devices.remove(&id);
         s.stream_globals.remove(&id);
-        if s.video.remove(&id).is_some() | s.links.remove(&id).is_some() {
+        let link_shown = self.follow == Follow::Video || self.streams;
+        if s.video.remove(&id).is_some() | (s.links.remove(&id).is_some() && link_shown) {
             self.dirty = true;
         }
         if s.clients.remove(&id) {
@@ -1623,6 +1964,51 @@ impl Driver<'_> {
                     meta.proxy
                         .set_property(0, &key, Some("Spa:String:JSON"), Some(&value));
                 }
+                Ok(())
+            }
+            AudioAction::MoveStream { stream, to } => {
+                let (subject, from) = {
+                    let n = node_mut(s, stream)?;
+                    let Some((direction, props)) = &n.stream else {
+                        return Err(AudioError::UnknownDevice(stream));
+                    };
+                    (n.device.id, listed_direction(*direction, props))
+                };
+                let (target, direction, serial) = {
+                    let n = node_mut(s, to)?;
+                    // A program's stream is no device to move to.
+                    if n.stream.is_some() {
+                        return Err(AudioError::UnknownDevice(to));
+                    }
+                    (n.device.id, n.direction, n.serial.clone())
+                };
+                let is_default = default_id(s, direction) == Some(target);
+                let serial = serial.as_deref().and_then(|v| v.parse::<u64>().ok());
+                let keys = move_keys(from, direction, is_default, serial.unwrap_or_default())
+                    .ok_or(AudioError::WrongDirection { stream, to })?;
+                if serial.is_none() && !is_default {
+                    return Err(AudioError::Failed(format!(
+                        "device {target} has no object.serial to move a stream to"
+                    )));
+                }
+                let meta = s.metadata.as_ref().ok_or(AudioError::NoDefaultMetadata)?;
+                for (key, value) in &keys {
+                    let value = value.as_ref().map(|(ty, v)| (*ty, v.as_str()));
+                    set_meta(&meta.proxy, subject, key, value)?;
+                }
+                Ok(())
+            }
+            AudioAction::SetProfile { card, profile } => {
+                let cards = s
+                    .devices
+                    .iter()
+                    .map(|(id, d)| (*id, d.serial.as_deref(), &d.profiles));
+                let (id, index) = profile_target(cards, card, &profile)?;
+                let d = s.devices.get(&id).ok_or(AudioError::UnknownCard(card))?;
+                let bytes = select_profile_pod(index).map_err(AudioError::Failed)?;
+                let pod = Pod::from_bytes(&bytes)
+                    .ok_or_else(|| AudioError::Failed("bad Profile pod".into()))?;
+                d.proxy.set_param(ParamType::Profile, 0, pod);
                 Ok(())
             }
         }
@@ -1900,6 +2286,7 @@ fn bind_node(
                 name: p.get("node.name").map(str::to_owned),
                 description,
                 link: RouteLink::of(p.get("device.id"), p.get("card.profile.device")),
+                card: p.get("device.id").and_then(|v| v.parse().ok()),
                 props: info
                     .change_mask()
                     .contains(NodeChangeMask::PROPS)
@@ -1937,6 +2324,7 @@ fn bind_node(
             channels: 0,
             serial: get("object.serial"),
             link: None,
+            card: None,
             sync,
             ready: false,
             echoes: Echoes::default(),
@@ -1983,6 +2371,7 @@ fn bind_video(s: &mut Session, q: Queue, global: &GlobalObject<PropertiesBox>, r
                 name: None,
                 description: None,
                 link: None,
+                card: None,
                 props: info
                     .change_mask()
                     .contains(NodeChangeMask::PROPS)
@@ -2202,12 +2591,19 @@ fn state_of(s: &Session) -> AudioState {
                         .unwrap_or(n.device.id),
                     app: props.app.clone(),
                     icon: props.icon.clone(),
-                    direction: match direction {
-                        StreamDirection::Input if props.capture_sink => StreamDirection::Monitor,
-                        d => *d,
-                    },
+                    direction: listed_direction(*direction, props),
                     volume: n.device.volume,
                     muted: n.device.muted,
+                    device: linked_device(
+                        n.device.id,
+                        listed_direction(*direction, props),
+                        &s.links,
+                        |id| {
+                            s.nodes
+                                .get(&id)
+                                .is_some_and(|m| m.ready && m.stream.is_none())
+                        },
+                    ),
                 });
             }
             continue;
@@ -2215,6 +2611,11 @@ fn state_of(s: &Session) -> AudioState {
         let mut d = n.device.clone();
         d.default = Some(d.id) == sink || Some(d.id) == source;
         d.icon = icon(n.direction, d.volume, d.muted).to_owned();
+        d.profiles = device_profiles(n.card, |c| {
+            s.devices
+                .get(&c)
+                .map(|e| (&e.profiles, e.serial.as_deref()))
+        });
         if let Some(serial) = n.serial.as_deref().and_then(|v| v.parse().ok()) {
             state.serials.insert(d.id, serial);
         }
@@ -2411,6 +2812,344 @@ mod tests {
         // A set with no routes never comes: none is used.
         routes.info(Some(0b111));
         assert_eq!(routes.active(1), None);
+    }
+
+    fn profile(index: i32, name: &str, priority: i32, available: Availability) -> pod::Profile {
+        pod::Profile {
+            index,
+            name: name.into(),
+            description: format!("{name}!"),
+            priority,
+            available,
+        }
+    }
+
+    /// (audio-routing) A card's profiles are shown a whole set at a time:
+    /// nothing before the first set's sync is back, a new list only at
+    /// the sync after its flags changed, the active profile alone when
+    /// only it changed.
+    #[test]
+    fn a_card_shows_a_whole_set_of_profiles() {
+        let a2dp = profile(1, "a2dp-sink", 20, Availability::Yes);
+        let hsp = profile(2, "headset-head-unit", 10, Availability::Yes);
+        let mut p = Profiles::default();
+        // Bound: the first info announces both params.
+        assert!(p.info(Some(0b011), Some(0b011)));
+        p.syncing(7);
+        p.param(ProfileParam::Listed(a2dp.clone()));
+        assert!(!p.done(6), "an earlier sync");
+        assert!(p.listed.is_empty(), "half a set shown");
+        p.param(ProfileParam::Listed(hsp.clone()));
+        p.param(ProfileParam::Active(1));
+        assert!(p.done(7));
+        assert_eq!(p.listed, [a2dp.clone(), hsp.clone()]);
+        assert_eq!(p.active, Some(1));
+        // Another sync comes back: nothing changes.
+        assert!(!p.done(8));
+        // A param that no info announced is no set's.
+        p.param(ProfileParam::Listed(profile(
+            9,
+            "stray",
+            0,
+            Availability::Yes,
+        )));
+        p.param(ProfileParam::Active(9));
+        assert!(!p.done(9));
+        assert_eq!((p.listed.len(), p.active), (2, Some(1)));
+        // The same flags again (another param changed): nothing collected.
+        assert!(!p.info(Some(0b011), Some(0b011)));
+
+        // The profile switched: only the active flags changed, so the
+        // list stays as shown and the new active one shows at the sync.
+        assert!(p.info(Some(0b011), Some(0b111)));
+        p.syncing(12);
+        p.param(ProfileParam::Active(2));
+        assert_eq!(p.active, Some(1), "shown before its sync");
+        assert!(p.done(12));
+        assert_eq!(p.active, Some(2));
+        assert_eq!(p.listed, [a2dp.clone(), hsp.clone()]);
+
+        // The list changed (a profile became unavailable): the new set
+        // replaces the old one whole, at its sync and not before.
+        let hsp_gone = profile(2, "headset-head-unit", 10, Availability::No);
+        assert!(p.info(Some(0b111), Some(0b111)));
+        p.syncing(15);
+        p.param(ProfileParam::Listed(hsp_gone.clone()));
+        assert!(!p.done(14));
+        assert_eq!(p.listed, [a2dp.clone(), hsp.clone()]);
+        p.param(ProfileParam::Listed(a2dp.clone()));
+        assert!(p.done(15));
+        assert_eq!(p.listed, [hsp_gone, a2dp]);
+        assert_eq!(p.active, Some(2), "a list-only change keeps the active one");
+        // The params went away: an empty set, at its sync.
+        assert!(p.info(None, None));
+        p.syncing(20);
+        assert!(p.done(21));
+        assert!(p.listed.is_empty());
+        assert_eq!(p.active, None);
+    }
+
+    /// (audio-routing) What a device lists: best first, `off` left out,
+    /// the active one marked, unavailable only when the card says so.
+    #[test]
+    fn profiles_are_listed_best_first_without_off() {
+        let listed = [
+            profile(0, "off", 0, Availability::Yes),
+            profile(1, "output:analog-stereo", 6500, Availability::Unknown),
+            profile(2, "output:hdmi-stereo", 5900, Availability::No),
+            profile(3, "pro-audio", 1, Availability::Yes),
+            profile(
+                4,
+                "output:analog-stereo+input:analog-stereo",
+                6500,
+                Availability::Yes,
+            ),
+        ];
+        let shown = profiles_of(&listed, Some(4), 77);
+        let names: Vec<&str> = shown.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "output:analog-stereo",
+                "output:analog-stereo+input:analog-stereo",
+                "output:hdmi-stereo",
+                "pro-audio"
+            ]
+        );
+        let active: Vec<bool> = shown.iter().map(|p| p.active).collect();
+        assert_eq!(active, [false, true, false, false]);
+        let available: Vec<bool> = shown.iter().map(|p| p.available).collect();
+        assert_eq!(available, [true, true, false, true]);
+        assert!(shown.iter().all(|p| p.card == 77));
+        assert_eq!(shown[0].description, "output:analog-stereo!");
+        // The card's `off` in use: none is active.
+        assert!(profiles_of(&listed, Some(0), 77).iter().all(|p| !p.active));
+        assert!(profiles_of(&[], Some(1), 77).is_empty());
+        // A card's key is its serial, else its id.
+        assert_eq!(card_key(48, Some("1203")), 1203);
+        assert_eq!(card_key(48, None), 48);
+        assert_eq!(card_key(48, Some("x")), 48);
+    }
+
+    /// (audio-routing) A card's profiles reach its device and come back
+    /// to the card: a node whose `device.id` is 48 lists the profiles of
+    /// card 48 (found by that global id, not the node's own id), keyed by
+    /// the card's own serial 1203 (not the node's), and `p.select()` on
+    /// one of them finds card 48 again by that key and its profile's
+    /// index.
+    #[test]
+    fn a_device_lists_its_cards_profiles_and_select_finds_the_card() {
+        let mut headset = Profiles::default();
+        headset.info(Some(1), Some(1));
+        headset.syncing(1);
+        headset.param(ProfileParam::Listed(profile(
+            1,
+            "a2dp-sink",
+            20,
+            Availability::Yes,
+        )));
+        headset.param(ProfileParam::Listed(profile(
+            2,
+            "headset-head-unit",
+            10,
+            Availability::Yes,
+        )));
+        headset.param(ProfileParam::Active(1));
+        assert!(headset.done(1));
+        let mut speakers = Profiles::default();
+        speakers.info(Some(1), Some(1));
+        speakers.syncing(1);
+        speakers.param(ProfileParam::Listed(profile(
+            4,
+            "output:analog-stereo",
+            6500,
+            Availability::Yes,
+        )));
+        assert!(speakers.done(1));
+        // Cards by global id: the headset 48 (serial 1203), the speakers
+        // 49 (serial 1300). Nodes have other ids and serials: a node's
+        // own id 1203 or 61 is no card.
+        let cards: BTreeMap<u32, (Option<&str>, &Profiles)> = [
+            (48, (Some("1203"), &headset)),
+            (49, (Some("1300"), &speakers)),
+        ]
+        .into();
+        let card_of = |c: u32| cards.get(&c).map(|(serial, p)| (*p, *serial));
+
+        let listed = device_profiles(Some(48), card_of);
+        let names: Vec<&str> = listed.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["a2dp-sink", "headset-head-unit"]);
+        assert!(listed.iter().all(|p| p.card == 1203), "{listed:?}");
+        assert_eq!(
+            listed.iter().map(|p| p.active).collect::<Vec<_>>(),
+            [true, false]
+        );
+        assert_eq!(device_profiles(Some(49), card_of)[0].card, 1300);
+        // A node of no card (a null sink), or of a card not bound.
+        assert!(device_profiles(None, card_of).is_empty());
+        assert!(device_profiles(Some(61), card_of).is_empty());
+
+        let all = || cards.iter().map(|(id, (serial, p))| (*id, *serial, *p));
+        // `p.select()` on the headset's second profile: card 48, index 2.
+        let hsp = &listed[1];
+        assert_eq!(profile_target(all(), hsp.card, &hsp.name), Ok((48, 2)));
+        assert_eq!(
+            profile_target(all(), 1300, "output:analog-stereo"),
+            Ok((49, 4))
+        );
+        // The card's global id is not its key once it has a serial.
+        assert_eq!(
+            profile_target(all(), 48, "a2dp-sink"),
+            Err(AudioError::UnknownCard(48))
+        );
+        // A profile of another card.
+        assert_eq!(
+            profile_target(all(), 1203, "output:analog-stereo"),
+            Err(AudioError::UnknownProfile {
+                card: 1203,
+                profile: "output:analog-stereo".into()
+            })
+        );
+        // A card with no serial is keyed, and found, by its id.
+        let bare = [(50, None, &speakers)];
+        assert_eq!(
+            device_profiles(Some(50), |_| Some((&speakers, None)))[0].card,
+            50
+        );
+        assert_eq!(
+            profile_target(bare, 50, "output:analog-stereo"),
+            Ok((50, 4))
+        );
+    }
+
+    /// (audio-routing) A card's `EnumProfile` items are its profiles, its
+    /// `Profile` param the one in use; other params are none of these.
+    #[test]
+    fn profile_params_are_told_apart() {
+        use pipewire::spa::sys;
+        let item = pod::tests::profile_bytes(2, "a2dp-sink", sys::SPA_PARAM_EnumProfile);
+        let Some(ProfileParam::Listed(p)) = profile_param(ParamType::EnumProfile, &item) else {
+            panic!("an EnumProfile item is a listed profile");
+        };
+        assert_eq!((p.index, p.name.as_str()), (2, "a2dp-sink"));
+        let active = pod::tests::profile_bytes(3, "headset-head-unit", sys::SPA_PARAM_Profile);
+        assert_eq!(
+            profile_param(ParamType::Profile, &active),
+            Some(ProfileParam::Active(3))
+        );
+        assert_eq!(profile_param(ParamType::Route, &item), None);
+        assert_eq!(profile_param(ParamType::Props, &item), None);
+        assert_eq!(profile_param(ParamType::EnumProfile, b"not a pod"), None);
+    }
+
+    /// (audio-routing) A stream plays to the device its links reach.
+    #[test]
+    fn a_stream_plays_to_the_device_it_is_linked_to() {
+        // Devices: sinks 30, 31; source 40. 50 is another program's
+        // stream, 60 Strand's own meter.
+        let devices = [30, 31, 40];
+        let is_device = |id: u32| devices.contains(&id);
+        let links = |l: &[(u32, u32)]| -> BTreeMap<u32, (u32, u32)> {
+            l.iter()
+                .enumerate()
+                .map(|(i, &l)| (100 + i as u32, l))
+                .collect()
+        };
+        // A player (70): its two channels go into sink 31.
+        let l = links(&[(70, 31), (70, 31), (31, 60)]);
+        assert_eq!(
+            linked_device(70, StreamDirection::Output, &l, is_device),
+            Some(31)
+        );
+        // A recorder (71) of source 40, and a visualiser (72) of sink 30's
+        // monitor (its ports are the sink node's own).
+        let l = links(&[(40, 71), (30, 72), (30, 72)]);
+        assert_eq!(
+            linked_device(71, StreamDirection::Input, &l, is_device),
+            Some(40)
+        );
+        assert_eq!(
+            linked_device(72, StreamDirection::Monitor, &l, is_device),
+            Some(30)
+        );
+        // Direction matters: a player's incoming links are not where it
+        // plays.
+        assert_eq!(
+            linked_device(71, StreamDirection::Output, &l, is_device),
+            None
+        );
+        // No links, or links only to what is not a listed device.
+        assert_eq!(
+            linked_device(70, StreamDirection::Output, &BTreeMap::new(), is_device),
+            None
+        );
+        let l = links(&[(70, 50), (70, 60)]);
+        assert_eq!(
+            linked_device(70, StreamDirection::Output, &l, is_device),
+            None
+        );
+        // Mid-move, linked to two devices: the most links win, the lowest
+        // id on a tie.
+        let l = links(&[(70, 30), (70, 31), (70, 31)]);
+        assert_eq!(
+            linked_device(70, StreamDirection::Output, &l, is_device),
+            Some(31)
+        );
+        let l = links(&[(70, 31), (70, 30)]);
+        assert_eq!(
+            linked_device(70, StreamDirection::Output, &l, is_device),
+            Some(30)
+        );
+    }
+
+    /// (audio-routing) A move writes what pipewire-pulse writes for
+    /// `pactl move-sink-input`: `target.node` cleared and `target.object`
+    /// the device's serial, or both cleared for a move to the default.
+    #[test]
+    fn a_move_writes_what_pactl_move_sink_input_writes() {
+        assert_eq!(
+            move_keys(StreamDirection::Output, Direction::Sink, false, 1234),
+            Some([
+                ("target.node", None),
+                ("target.object", Some(("Spa:Id", "1234".to_owned())))
+            ])
+        );
+        assert_eq!(
+            move_keys(StreamDirection::Output, Direction::Sink, true, 1234),
+            Some([("target.node", None), ("target.object", None)])
+        );
+        assert!(move_keys(StreamDirection::Input, Direction::Source, false, 9).is_some());
+        assert!(move_keys(StreamDirection::Monitor, Direction::Sink, false, 9).is_some());
+        for (stream, target) in [
+            (StreamDirection::Output, Direction::Source),
+            (StreamDirection::Input, Direction::Sink),
+            (StreamDirection::Monitor, Direction::Source),
+        ] {
+            for default in [false, true] {
+                assert_eq!(
+                    move_keys(stream, target, default, 9),
+                    None,
+                    "{stream:?} to a {target:?}"
+                );
+            }
+        }
+        // A recorder of a sink's sound is listed as `monitor`.
+        let props = NodeProps {
+            capture_sink: true,
+            ..NodeProps::default()
+        };
+        assert_eq!(
+            listed_direction(StreamDirection::Input, &props),
+            StreamDirection::Monitor
+        );
+        assert_eq!(
+            listed_direction(StreamDirection::Input, &NodeProps::default()),
+            StreamDirection::Input
+        );
+        assert_eq!(
+            listed_direction(StreamDirection::Output, &props),
+            StreamDirection::Output
+        );
     }
 
     #[test]

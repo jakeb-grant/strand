@@ -252,8 +252,11 @@ the compositor's command line:
 
 - audio, with each program's stream and its own volume
   (`audio.streams`: a microphone light is `audio.streams.any(s =>
-  s.direction == input)`), and the programs taking video
-  (`video.streams`) for a camera or screen-cast light;
+  s.direction == input)`), where each one plays (`st.device`, an id of
+  `audio.sinks`) and `st.move_to(dev)` to send one app to the
+  headphones, a headset's modes (`for p in audio.sink.profiles key
+  p.name`, each switched by `p.select()`), and the programs taking
+  video (`video.streams`) for a camera or screen-cast light;
 - battery, with the charge UPower recorded over past hours
   (`battery.history(10800s)`);
 - network, with the bytes a second in and out (`network.rx`,

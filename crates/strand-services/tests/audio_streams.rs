@@ -5,7 +5,8 @@
 //! `monitor`, not an `input`); Strand's own peak meter is not; a
 //! stream's volume and mute writes land where `wpctl` reads them; a
 //! stream that ends leaves the list; and nothing is followed (no stream
-//! node bound) while nobody reads it.
+//! node bound) while nobody reads it. (audio-routing) Each names the
+//! device its links reach.
 
 #![cfg(feature = "pipewire")]
 
@@ -108,6 +109,25 @@ fn streams_are_listed_while_read_and_written() {
         stream(&b, &rt, "strand-player").is_some()
             && stream(&b, &rt, "strand-recorder").is_some()
             && stream(&b, &rt, "strand-visualiser").is_some()
+    });
+    // (audio-routing) Each names the device it plays to or records
+    // from, once linked: the player and the visualiser sink a, the
+    // recorder the source.
+    let sink_a = state(&b, &rt)
+        .sinks
+        .iter()
+        .find(|d| d.name == "strand-sink-a")
+        .map(|d| d.id);
+    let source = state(&b, &rt)
+        .sources
+        .iter()
+        .find(|d| d.name == "strand-source")
+        .map(|d| d.id);
+    assert!(sink_a.is_some() && source.is_some());
+    until(&rt, &s, "each stream's device", || {
+        stream(&b, &rt, "strand-player").is_some_and(|s| s.device == sink_a)
+            && stream(&b, &rt, "strand-recorder").is_some_and(|s| s.device == source)
+            && stream(&b, &rt, "strand-visualiser").is_some_and(|s| s.device == sink_a)
     });
     let played = stream(&b, &rt, "strand-player").unwrap();
     let recorded = stream(&b, &rt, "strand-recorder").unwrap();
