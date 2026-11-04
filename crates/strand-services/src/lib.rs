@@ -23,8 +23,8 @@
 //! Builtin services implemented here: [`system`] (the portal's
 //! appearance settings), [`cpu`] and [`memory`] (procfs, sampled once a
 //! second while a reader is visible), and on D-Bus ([`dbus`] holds what
-//! they share): [`battery`] (UPower), [`brightness`] (the backlight,
-//! written through logind), [`network`] (NetworkManager or iwd, and the kernel's
+//! they share): [`battery`] (UPower), [`brightness`] (the screen's and
+//! the keyboard's backlights, written through logind), [`network`] (NetworkManager or iwd, and the kernel's
 //! addresses over rtnetlink), [`bluetooth`]
 //! (BlueZ), [`notifications`] (the shell's own notification server),
 //! [`media`] (MPRIS) and [`tray`] (StatusNotifierItem and DBusMenu);
@@ -39,7 +39,8 @@
 //! lights, the compositor); and (services-round) [`idle`] (whether the
 //! user is away, ext-idle-notify-v1), [`polkit`] (Strand's own polkit
 //! authentication agent, polkit's helper checking the password) and
-//! [`greetd`] (a login screen over greetd's socket).
+//! [`greetd`] (a login screen over greetd's socket); and [`power`] (the
+//! power profile, power-profiles-daemon, never D-Bus-activated).
 //! [`schemas`] lists their schema texts, which replace the builtin
 //! schema's provisional stubs. A failed run, and what a service needs the
 //! user to act on, is a [`ServiceDiagnostic`] ([`Services::take_diagnostics`]).
@@ -79,6 +80,7 @@ pub mod notifications;
 pub mod outputs;
 pub mod pixmap;
 pub mod polkit;
+pub mod power;
 mod procfs;
 mod service;
 pub mod session;
@@ -136,6 +138,7 @@ pub struct Builtin {
     pub idle: Client<idle::Idle>,
     pub polkit: Client<polkit::Polkit>,
     pub greetd: Client<greetd::Greetd>,
+    pub power: Client<power::Power>,
 }
 
 impl Builtin {
@@ -169,6 +172,7 @@ impl Builtin {
             idle: services.register(rt),
             polkit: services.register(rt),
             greetd: services.register(rt),
+            power: services.register(rt),
         };
         // (history) The ones sampled on a clock, so a value kept while
         // hidden is known to be a poll.
@@ -209,6 +213,7 @@ impl Builtin {
             self.idle.dynamic(),
             self.polkit.dynamic(),
             self.greetd.dynamic(),
+            self.power.dynamic(),
         ]
     }
 }

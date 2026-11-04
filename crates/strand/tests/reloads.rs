@@ -1578,6 +1578,7 @@ fn a_hundred_reloads_reconnect_and_restart_nothing() {
             .env("XDG_CACHE_HOME", dir.join("cache"))
             .env("XDG_STATE_HOME", dir.join("state"))
             .env("STRAND_BACKLIGHT_DIR", &backlight)
+            .env("STRAND_LEDS_DIR", dir.join("leds"))
             .env("STRAND_LOG", "info")
             .envs(bus.env())
             .env_remove("STRAND_MOCK")

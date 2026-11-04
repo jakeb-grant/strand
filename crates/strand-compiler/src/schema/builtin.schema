@@ -81,6 +81,12 @@ enum VideoSource { camera, screencast }
 /// code the device shows when there is one (`confirm`), or whether a
 /// paired device may use a service (`service`).
 enum BluetoothRequestKind { pin, passkey, display, confirm, service }
+/// A power-profiles-daemon profile: `power_saver` (its `power-saver`),
+/// `balanced` or `performance`.
+enum PowerProfile { power_saver, balanced, performance }
+/// What a media player repeats: nothing, the track or the playlist (MPRIS
+/// `LoopStatus`: `None`, `Track`, `Playlist`).
+enum Loop { none, track, playlist }
 
 // Values with no inner structure the language can see.
 opaque Palette, TokenSet, Spring, Easing, Pose, SwapTransition, Mask, Filter, HitArea, Sprite
@@ -923,12 +929,29 @@ provisional service video {
   streams: [VideoStream]
 }
 
-/// The screen backlight, set through logind (no root or udev rules).
+/// The screen's and the keyboard's backlights, set through logind (no
+/// root or udev rules).
 provisional service brightness {
   /// Backlight level, 0 to 1. Writable.
   level: float rw
-  /// A backlight was found.
+  /// A screen backlight was found.
   available: bool
+  /// The keyboard's backlight level, 0 to 1. Writable.
+  keyboard: float rw
+  /// The keyboard has a backlight.
+  keyboard_present: bool
+}
+
+/// The power profile, from power-profiles-daemon.
+provisional service power {
+  /// The active profile. Writable.
+  profile: PowerProfile rw
+  /// The profiles the machine offers.
+  profiles: [PowerProfile]
+  /// power-profiles-daemon answers.
+  available: bool
+  /// Why `performance` is held back, as the daemon says; null when it is not.
+  degraded: text?
 }
 
 /// The system tray (a StatusNotifierItem host with DBusMenu).
@@ -997,6 +1020,18 @@ provisional record Player key id {
   can_previous: bool
   /// Writing `position` seeks it.
   can_seek: bool
+  /// It shuffles. Writable.
+  shuffle: bool rw
+  /// What it repeats. Writable.
+  loop: Loop rw
+  /// Its own volume, 0 to 1. Writable.
+  volume: float rw
+  /// Writing `shuffle` changes it.
+  can_shuffle: bool
+  /// Writing `loop` changes it.
+  can_loop: bool
+  /// Writing `volume` changes it.
+  can_volume: bool
   /// Plays or pauses it.
   action play_pause()
   /// Skips it to the next track.
@@ -1036,6 +1071,18 @@ provisional service media {
   can_previous: bool
   /// Writing `position` seeks.
   can_seek: bool
+  /// The active player shuffles. Writable.
+  shuffle: bool rw
+  /// What the active player repeats. Writable.
+  loop: Loop rw
+  /// The active player's own volume, 0 to 1. Writable.
+  volume: float rw
+  /// Writing `shuffle` changes it.
+  can_shuffle: bool
+  /// Writing `loop` changes it.
+  can_loop: bool
+  /// Writing `volume` changes it.
+  can_volume: bool
   /// Every player running, keyed by its bus name.
   players: [Player]
   /// Plays or pauses.

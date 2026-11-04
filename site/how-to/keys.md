@@ -208,8 +208,8 @@ beside a search box runs and the typing stays in the box. An element you wrote
 nearest thing that way, by where things are laid out, so it works on a row, a
 column or tiles of any size. `arrows: focus_wrap` goes round at the ends.
 
-```strand file=power.strand
-// power.strand: a menu of tiles, the arrows between them
+```strand file=powermenu.strand
+// powermenu.strand: a menu of tiles, the arrows between them
 export state open = false
 
 panel Power {

@@ -596,6 +596,7 @@ impl Desktop {
                 .env("XDG_CACHE_HOME", dir.join("cache"))
                 .env("XDG_STATE_HOME", dir.join("state"))
                 .env("STRAND_BACKLIGHT_DIR", home.0.join("backlight"))
+                .env("STRAND_LEDS_DIR", home.0.join("leds"))
                 .env("STRAND_LOG", "info,damage")
                 .envs(bus.env())
                 .env_remove("STRAND_MOCK")

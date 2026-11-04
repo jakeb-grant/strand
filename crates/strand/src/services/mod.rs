@@ -641,6 +641,38 @@ mod tests {
         assert!(err("nothing.level", "1").contains("nothing is exported"));
     }
 
+    /// (power-media-kbd) `strand set power.profile performance`: an enum
+    /// field set by its variant's name; a name that is no variant, and a
+    /// read-only field, refused. `strand set brightness.keyboard +50%`.
+    #[test]
+    fn strand_set_writes_an_enum_service_field() {
+        let rt = Runtime::new();
+        let types = schema().types.clone();
+        let host = SchemaHost::new(&rt, &types, None);
+        set_text(&host, &rt, &types, "power.profile", "performance").unwrap();
+        let profile = host.get(&rt, "power.profile").unwrap();
+        let Value::Enum(e, v) = profile else {
+            panic!("{profile:?}");
+        };
+        assert_eq!(types.enum_(e).name, "PowerProfile");
+        assert_eq!(types.enum_(e).variant("performance"), Some(v));
+        set_text(&host, &rt, &types, "power.profile", "power_saver").unwrap();
+        let err = |p: &str, v: &str| set_text(&host, &rt, &types, p, v).unwrap_err();
+        assert!(
+            err("power.profile", "turbo").contains("is not a PowerProfile"),
+            "{}",
+            err("power.profile", "turbo")
+        );
+        assert!(err("power.available", "true").contains("read-only"));
+        assert!(err("power.profiles", "balanced").contains("read-only"));
+        // (power-media-kbd) The keyboard's light steps as the screen's.
+        set_text(&host, &rt, &types, "brightness.keyboard", "0").unwrap();
+        set_text(&host, &rt, &types, "brightness.keyboard", "+50%").unwrap();
+        let lit = host.get(&rt, "brightness.keyboard").unwrap().as_f64();
+        assert_eq!(lit, Some(0.5));
+        assert!(err("brightness.keyboard_present", "true").contains("read-only"));
+    }
+
     /// The compositor services' uses design.md shows (and the reload
     /// event in both handler forms: its `failed` argument may be left
     /// out) check against the served schema, and alike against the bare
@@ -879,6 +911,69 @@ osd Playing { inhibit_idle: true; text \"x\" }
             .map(|d| d.code)
             .collect();
         assert_eq!(codes, ["check::type_mismatch"], "a timeout is a duration");
+    }
+
+    /// (power-media-kbd) The power profile checks against the served
+    /// schema and the builtin stubs alike, as a profile menu uses it: a
+    /// profile written in a handler, matched exhaustively, the profiles
+    /// offered listed. A profile is a `PowerProfile`, not text. The
+    /// player's shuffle, loop and own volume, the active one's and an
+    /// item's, as a player card writes them; a loop is a `Loop`. The
+    /// keyboard's backlight, as a slider and a key toggle it.
+    #[test]
+    fn the_power_profile_player_modes_and_keyboard_light_check() {
+        let src = "bar Top {
+  row {
+    text match power.profile { power_saver => \"eco\", balanced => \"normal\", performance => \"fast\" }
+    for p in power.profiles key p {
+      box {
+        when p == power.profile { opacity: 1 }
+        on click { power.profile = p }
+      }
+    }
+    if power.available && power.degraded == null { text \"ok\" }
+    box { on click { power.profile = performance } }
+    box { when media.shuffle && media.can_shuffle { opacity: 1 }; on click { media.shuffle = !media.shuffle } }
+    box { when media.can_loop { opacity: 1 }; on click { media.loop = playlist } }
+    text match media.loop { none => \"\", track => \"1\", playlist => \"all\" }
+    slider { value: <-> media.volume }
+    for p in media.players key p.id {
+      box {
+        when p.shuffle || p.can_volume || p.can_loop { opacity: 1 }
+        on click { p.volume = 0.5; p.loop = track; p.shuffle = true }
+        slider { value: <-> p.volume }
+      }
+    }
+    if brightness.keyboard_present { slider { value: <-> brightness.keyboard } }
+    box { on click { brightness.keyboard = brightness.keyboard > 0 ? 0 : 1 } }
+  }
+}
+";
+        for (which, schema) in [("served", schema()), ("builtin", Schema::builtin())] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", src);
+            let errors: Vec<_> = strand_compiler::compile_with(&map, schema)
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.is_error())
+                .collect();
+            assert!(errors.is_empty(), "{which}: {errors:#?}");
+        }
+        for bad in [
+            "bar B { box { on click { power.profile = \"performance\" } } }\n",
+            "bar B { box { on click { power.available = true } } }\n",
+            "bar B { box { on click { media.loop = \"track\" } } }\n",
+            "bar B { box { on click { media.can_volume = true } } }\n",
+            "bar B { box { on click { brightness.keyboard_present = true } } }\n",
+        ] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", bad);
+            assert!(
+                strand_compiler::compile_with(&map, schema())
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.is_error()),
+                "{bad}"
+            );
+        }
     }
 
     /// (services-round, S2) The battery's history, the media players

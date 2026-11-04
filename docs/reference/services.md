@@ -99,14 +99,17 @@ them.
 
 ## `brightness`
 
-The screen backlight: read from `/sys/class/backlight` (watched, so a
-brightness key shows at once) and set through logind's
-`SetBrightness` (no root or udev rules).
+The screen's and the keyboard's backlights. They are read from
+`/sys/class/backlight` and `/sys/class/leds/*::kbd_backlight` and
+watched, so a brightness key shows at once. They are set through
+logind's `SetBrightness` (no root or udev rules).
 
 | Field | Type | |
 | --- | --- | --- |
 | `level` | `float rw` | Backlight level, 0 to 1. Writable. |
-| `available` | `bool` | A backlight was found. |
+| `available` | `bool` | A screen backlight was found. |
+| `keyboard` | `float rw` | The keyboard's backlight level, 0 to 1, in the steps it has (most have two or three). Use `slider { value: <-> brightness.keyboard }` or `strand set brightness.keyboard +50%`. Writable: a level between two steps goes to the nearest. A change the firmware makes on its own (an Fn key, or the light timing out) shows where the driver reports it (`brightness_hw_changed`), as most laptop drivers do. 0 without a keyboard backlight. |
+| `keyboard_present` | `bool` | The keyboard has a backlight (a `*::kbd_backlight` light), as `battery.present` says a battery exists. |
 
 ## `calendar`
 
@@ -271,6 +274,12 @@ and only while a visible reader shows it.
 | `can_next` | `bool` | The active player can skip to the next track (MPRIS `CanGoNext`): `opacity: media.can_next ? 1 : 0.4`. False when no player runs or it takes no control (`CanControl` false). |
 | `can_previous` | `bool` | The active player can go back to the previous track (`CanGoPrevious`, as `can_next`). |
 | `can_seek` | `bool` | Writing `position` seeks: the active player can seek (`CanSeek`, as `can_next`) and the track's length is known. |
+| `shuffle` | `bool rw` | The active player shuffles: `on click { media.shuffle = !media.shuffle }`. Writable: MPRIS `Shuffle`. False when no player runs or it has no shuffle. A write it cannot take (`can_shuffle` false) leaves the value as it was. |
+| `loop` | `Loop rw` | What the active player repeats: `media.loop = playlist`. Writable: MPRIS `LoopStatus`. `none` when no player runs or it has no loop setting. A write it cannot take (`can_loop` false) leaves the value as it was. |
+| `volume` | `float rw` | The active player's own volume, apart from the system's (`audio.sink.volume`): `slider { value: <-> media.volume }`. 0 to 1, as MPRIS `Volume` reports it (above 1 when the player amplifies). Writable: a write is held to 0 to 1, and one it cannot take (`can_volume` false) leaves the value as it was. 0 when no player runs or it has no volume. |
+| `can_shuffle` | `bool` | Writing `shuffle` changes it: the active player has MPRIS `Shuffle` and takes control (`CanControl` not false). False when no player runs. |
+| `can_loop` | `bool` | Writing `loop` changes it (`LoopStatus`, as `can_shuffle`). |
+| `can_volume` | `bool` | Writing `volume` changes it (`Volume`, as `can_shuffle`). |
 | `players` | `[Player]` | Every player running, keyed by its bus name (`for p in media.players key p.id { … }`): a switcher, a card per player. The one `media.*` follows is `active`; `p.select()` picks another. Read only while a visible reader reads it; its playing players' times tick once a second then. |
 
 | Method | |
@@ -405,6 +414,22 @@ wiped once sent. A panel shows it:
 | `action respond(answer: text)` | Answers `request.prompt` with `answer` (the password): `input { type: password; text: <-> pw; on activate { polkit.respond(pw); pw = "" } }`. Ignored while one is being checked, and when the request shown has not asked yet (it went, or another user was chosen, since the answer was typed: an answer is never given to a request it was not typed for). After a refusal an answer typed before the check asks again waits for that question, and only a secret one (not `echo`) takes it. Pass a password to nothing else: the config is trusted code, and a declared action's arguments can be read by every user in the process list. |
 | `action cancel()` | Dismisses `request`: the program is told it was refused, and the next request, if any, shows. |
 | `action choose(user: text)` | Asks for `user`'s password instead (one of `request.users`). |
+
+## `power`
+
+The power profile, from power-profiles-daemon on the system bus
+(`org.freedesktop.UPower.PowerProfiles`, else the older
+`net.hadess.PowerProfiles`), followed live: the daemon restarting is
+read afresh, and the daemon missing is `available` false until it
+appears. Strand never starts it: a machine that runs another power
+manager (TLP, auto-cpufreq) keeps it stopped.
+
+| Field | Type | |
+| --- | --- | --- |
+| `profile` | `PowerProfile rw` | The active profile: `power.profile = power_saver` in a handler, or `strand set power.profile performance`. Writable: the daemon is asked to switch (its `ActiveProfile`). A profile it does not offer (`profiles`), or a write while it is not `available`, leaves the profile as it was. `balanced` while no daemon answers. |
+| `profiles` | `[PowerProfile]` | The profiles the machine offers, in the daemon's order: `for p in power.profiles key p { … }`. `performance` is listed only where a driver supports it. Empty while no daemon answers. |
+| `available` | `bool` | power-profiles-daemon answers. False without it, or without a system bus, so a menu can hide what cannot work. |
+| `degraded` | `text?` | Why `performance` is held back, as the daemon names it (`lap-detected`, `high-operating-temperature`); null when it is not. |
 
 ## `screens`
 

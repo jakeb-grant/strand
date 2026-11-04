@@ -32,7 +32,8 @@ pub const POLLED: [(&str, std::time::Duration); 4] = [
 
 /// `battery`: UPower's display device and power sources.
 pub const BATTERY: &str = include_str!("battery.schema");
-/// `brightness`: the backlight (sysfs, logind).
+/// `brightness`: the screen's and the keyboard's backlights (sysfs,
+/// logind).
 pub const BRIGHTNESS: &str = include_str!("brightness.schema");
 /// `network`: NetworkManager or iwd.
 pub const NETWORK: &str = include_str!("network.schema");
@@ -78,6 +79,8 @@ pub const IDLE: &str = include_str!("idle.schema");
 pub const POLKIT: &str = include_str!("polkit.schema");
 /// (services-round) `greetd`: a login screen over greetd's socket.
 pub const GREETD: &str = include_str!("greetd.schema");
+/// `power`: the power profile (power-profiles-daemon).
+pub const POWER: &str = include_str!("power.schema");
 
 /// (services-round) The builtin services whose actions carry secrets
 /// (a lock's password, a polkit or greetd answer): never recorded in a
@@ -112,5 +115,6 @@ pub fn schemas() -> Vec<&'static str> {
         IDLE,
         POLKIT,
         GREETD,
+        POWER,
     ]
 }

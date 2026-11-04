@@ -1,6 +1,6 @@
 //! The idle budget of the D-Bus services: with every one of them running
-//! against its daemon (python-dbusmock's UPower, NetworkManager, BlueZ
-//! and logind, a fake backlight, an MPRIS player, the tray's watcher and
+//! against its daemon (python-dbusmock's UPower, NetworkManager, BlueZ,
+//! logind and power-profiles-daemon, a fake backlight and keyboard light, an MPRIS player, the tray's watcher and
 //! the notification server) and nothing changing, the services thread
 //! does not wake at all: they wait on D-Bus and inotify, nothing polls.
 //! A change wakes it, and it sleeps again.
@@ -119,6 +119,15 @@ fn the_dbus_services_sleep_when_nothing_changes() {
     else {
         return;
     };
+    let Some(_ppd) = DbusMock::start(
+        &bus,
+        "upower_power_profiles_daemon",
+        true,
+        None,
+        strand_services::power::PPD,
+    ) else {
+        return;
+    };
     let root = std::env::temp_dir().join(format!("strand-idle-backlight-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let light = root.join("acpi_video0");
@@ -126,6 +135,15 @@ fn the_dbus_services_sleep_when_nothing_changes() {
     std::fs::write(light.join("max_brightness"), "10\n").unwrap();
     std::fs::write(light.join("actual_brightness"), "5\n").unwrap();
     strand_services::brightness::set_backlight_root(Some(root.clone()));
+    // A keyboard light, watched too (never the machine's own).
+    let leds = std::env::temp_dir().join(format!("strand-idle-leds-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&leds);
+    let kbd = leds.join("dell::kbd_backlight");
+    std::fs::create_dir_all(&kbd).unwrap();
+    std::fs::write(kbd.join("max_brightness"), "2\n").unwrap();
+    std::fs::write(kbd.join("brightness"), "1\n").unwrap();
+    std::fs::write(kbd.join("brightness_hw_changed"), "1\n").unwrap();
+    strand_services::brightness::set_leds_root(Some(leds.clone()));
     let _player = tokio.block_on(async {
         zbus::connection::Builder::address(bus.address.as_str())
             .unwrap()
@@ -147,6 +165,7 @@ fn the_dbus_services_sleep_when_nothing_changes() {
     b.notifications.acquire(&rt);
     b.media.acquire(&rt);
     b.tray.acquire(&rt);
+    b.power.acquire(&rt);
     assert!(
         s.wait_ready(&rt, Duration::from_secs(10)),
         "every first read"
@@ -154,6 +173,14 @@ fn the_dbus_services_sleep_when_nothing_changes() {
     assert!(b.battery.cells().present.get_untracked(&rt).unwrap());
     assert!(b.bluetooth.cells().powered.get_untracked(&rt).unwrap());
     assert!(b.brightness.cells().available.get_untracked(&rt).unwrap());
+    assert!(
+        b.brightness
+            .cells()
+            .keyboard_present
+            .get_untracked(&rt)
+            .unwrap()
+    );
+    assert!(b.power.cells().available.get_untracked(&rt).unwrap());
     // Settled: a whole second without a wakeup.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -217,7 +244,34 @@ fn the_dbus_services_sleep_when_nothing_changes() {
     let after = switches("strand-services");
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(switches("strand-services"), after, "asleep again");
+    // The power profile switches: it wakes, and sleeps again.
+    mock(
+        &tokio,
+        &conn,
+        strand_services::power::PPD,
+        strand_services::power::PPD_PATH,
+        "UpdateProperties",
+        &(
+            "",
+            HashMap::from([("ActiveProfile", Value::from("power-saver"))]),
+        ),
+    );
+    until(&rt, &s, "the profile", || {
+        b.power.cells().profile.get_untracked(&rt)
+            == Ok(strand_services::power::PowerProfile::PowerSaver)
+    });
+    assert!(switches("strand-services") > after);
+    std::thread::sleep(Duration::from_millis(300));
+    let after = switches("strand-services");
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(
+        switches("strand-services"),
+        after,
+        "asleep again after the profile"
+    );
     s.shutdown();
     strand_services::brightness::set_backlight_root(None);
+    strand_services::brightness::set_leds_root(None);
     let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&leds);
 }
