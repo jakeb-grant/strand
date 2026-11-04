@@ -13,7 +13,7 @@ for ws in workspaces.all { text ws.name }        // every workspace, live
 
 ## Built-in services
 
-Strand has 28 built-in services. Each one is in the
+Strand has 30 built-in services. Each one is in the
 [service reference](../../docs/reference/services.md), with every
 field, function, action and event.
 
@@ -24,11 +24,12 @@ field, function, action and event.
 | `auth` | The lock screen's password check, through PAM |
 | `battery` | The battery, from UPower |
 | `bluetooth` | Bluetooth adapters, devices and pairing requests, from BlueZ |
-| `brightness` | The screen's backlight |
+| `brightness` | The screen's backlight and the keyboard's |
 | `calendar` | Month grids for calendars |
 | `clipboard` | The clipboard, and a history of what you copied |
 | `clock` | The date and time |
 | `cpu`, `memory`, `disk` | Processor load, memory use, disk usage |
+| `drives` | Removable drives: mount, unmount, eject, from UDisks2 |
 | `greetd` | A login screen, when Strand runs as greetd's greeter |
 | `idle` | Whether you are away |
 | `keyboard` | Lock keys, layouts and modifiers |
@@ -37,6 +38,7 @@ field, function, action and event.
 | `notifications` | The notification server, which the shell is |
 | `outputs` | The monitors' configuration |
 | `polkit` | The admin password dialog, as the session's polkit agent |
+| `power` | The power profile, from power-profiles-daemon |
 | `screens` | The monitors |
 | `session` | The login session and power: lock, suspend, log out |
 | `system` | The desktop's appearance settings: dark, accent, contrast |
@@ -73,9 +75,9 @@ second.
 - **Events** are delivered one by one, in order:
   `on notifications.received(n) { … }`.
 
-Where a daemon may be missing (NetworkManager, BlueZ, logind, the
-backlight), the service's `available` field says whether it answers,
-so a config can hide what cannot work. A missing daemon never stops
+Where a daemon may be missing (NetworkManager, BlueZ, logind,
+UDisks2, the backlight), the service's `available` field says whether
+it answers, so a config can hide what cannot work. A missing daemon never stops
 the shell.
 
 ## Services of your own

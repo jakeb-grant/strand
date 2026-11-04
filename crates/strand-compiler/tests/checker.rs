@@ -1459,6 +1459,37 @@ fn a_pairing_dialog_checks() {
     );
 }
 
+/// (drives) A drive menu: each removable drive with its filesystems, a
+/// volume mounted or unmounted by a click, the drive ejected, the menu
+/// hidden without UDisks2, and a refusal as an event.
+#[test]
+fn drives_list_mount_and_eject() {
+    assert_eq!(
+        codes(
+            "bar B {\n  state why = \"\"\n  \
+             on drives.failed(device, error) { why = join(\" \", device, error) }\n  \
+             text why\n  \
+             if !drives.available { text \"No UDisks2\" }\n  \
+             for d in drives.all {\n    \
+             text d.name\n    \
+             text bytes(d.size)\n    \
+             icon d.icon\n    \
+             for v in d.volumes {\n      \
+             text v.label ?? bytes(v.size)\n      \
+             text v.path ?? \"\"\n      \
+             button v.mounted ? \"Unmount\" : \"Mount\" { on click { if v.mounted { v.unmount() } else { v.mount() } } }\n    \
+             }\n    \
+             if d.can_eject { button \"Eject\" { on click { d.eject() } } }\n  \
+             }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        codes("bar B { for d in drives.all { text \"x\" { opacity: d.eject() } } }\n"),
+        ["check::action_in_binding"]
+    );
+}
+
 /// (m6-service-gaps, owner-testing gap 30) A clipboard history popup:
 /// its entries drawn as text or image, copied again and removed by item
 /// actions, the service's own `copy` and `clear` from handlers, its

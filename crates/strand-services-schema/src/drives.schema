@@ -1,0 +1,79 @@
+/// A filesystem on a removable drive, mounted or not, keyed by `device`.
+record Volume key device {
+  /// Its block device: `/dev/sdb1` (an unlocked encrypted one's
+  /// `/dev/mapper/…`), as `Filesystem.device` names it once mounted.
+  device: text
+  /// Its label (`STICK`), or null when it has none:
+  /// `v.label ?? bytes(v.size)`.
+  label: text?
+  /// Its size in bytes.
+  size: float
+  /// It is mounted.
+  mounted: bool
+  /// Where it is mounted (`/run/media/you/STICK`), or null. Once mounted
+  /// it is in `disk.all` under this `path`, with its usage.
+  path: text?
+  /// Mounts it through UDisks2, where UDisks2 chooses
+  /// (`/run/media/$USER/<label>`). A removable drive's filesystem mounts
+  /// without a password on most systems; where polkit asks for one, the
+  /// session's polkit agent asks (Strand's own while a config reads
+  /// `polkit`). Asked again while one runs (a double click), it is
+  /// dropped. A failure is `drives.failed`.
+  action mount()
+  /// Unmounts it. A program holding a file open on it makes it fail
+  /// (`target is busy`), as `drives.failed`. Asked again while one runs,
+  /// it is dropped.
+  action unmount()
+}
+
+/// A removable drive with its medium in (a USB stick or disk, a memory
+/// card, a disc), keyed by `device`.
+record Drive key device {
+  /// Its block device: `/dev/sdb`, `/dev/sr0`.
+  device: text
+  /// Its vendor and model (`Kingston DataTraveler 3.0`), or its device
+  /// when it names neither.
+  name: text
+  /// Its size in bytes (its medium's, for a card or a disc).
+  size: float
+  /// An icon name for its kind: `media-optical-symbolic` for a disc
+  /// drive, `media-flash-symbolic` for a stick or a card,
+  /// `drive-removable-media-symbolic` otherwise.
+  icon: text
+  /// `eject()` can make it safe to remove: UDisks2 can eject its medium
+  /// or power it off.
+  can_eject: bool
+  /// Its filesystems, keyed by `device`, in partition order. Filesystems
+  /// UDisks2 is told to hide, and encrypted ones still locked, are left out.
+  volumes: [Volume]
+  /// Makes it safe to remove. It unmounts each of its mounted filesystems
+  /// (and locks an encrypted one unlocked), then takes one last step:
+  /// it ejects the medium where the medium comes out (a disc, a card),
+  /// leaving the drive on for the next one, and otherwise powers the
+  /// drive off where it can be (a USB stick or disk). The drive then
+  /// leaves `drives.all`. The first step refused (a filesystem in use)
+  /// stops it, as `drives.failed`. With `can_eject` false it fails at
+  /// once and unmounts nothing. Asked again while one runs, it is
+  /// dropped; once started it finishes, even if the shell stops reading
+  /// `drives` meanwhile.
+  action eject()
+}
+
+/// Removable drives and their filesystems, from UDisks2, followed live
+/// as they are plugged in, mounted, unmounted and ejected. Internal disks,
+/// loop devices and drives with no medium in (an empty card reader or
+/// disc drive) are not listed. `disk` has the mounted filesystems' usage.
+service drives {
+  /// Every removable drive with its medium in, keyed by `device`: those
+  /// there when UDisks2 started first, then in the order plugged in.
+  all: [Drive]
+  /// UDisks2 answers. False without it (or without a system bus), so a
+  /// menu can hide what cannot work.
+  available: bool
+  /// Mounting, unmounting or ejecting failed (UDisks2 or polkit refused
+  /// it, a filesystem was busy, UDisks2 or the system bus was missing):
+  /// `on drives.failed(device, error) { … }`. `device` is the volume's for
+  /// `mount()` and `unmount()` and the drive's for `eject()`; `error` is
+  /// what UDisks2 says.
+  event failed(device: text, error: text)
+}

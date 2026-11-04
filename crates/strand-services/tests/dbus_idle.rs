@@ -1,7 +1,8 @@
 //! The idle budget of the D-Bus services: with every one of them running
 //! against its daemon (python-dbusmock's UPower, NetworkManager, BlueZ,
-//! logind and power-profiles-daemon, a fake backlight and keyboard light, an MPRIS player, the tray's watcher and
-//! the notification server) and nothing changing, the services thread
+//! logind and power-profiles-daemon, a fake backlight and keyboard light,
+//! an MPRIS player, the tray's watcher, the notification server and a
+//! small UDisks2) and nothing changing, the services thread
 //! does not wake at all: they wait on D-Bus and inotify, nothing polls.
 //! A change wakes it, and it sleeps again.
 //!
@@ -9,6 +10,7 @@
 //! thread named `strand-services`, which only this test's registry has.
 
 mod support;
+mod udisks;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -144,6 +146,10 @@ fn the_dbus_services_sleep_when_nothing_changes() {
     std::fs::write(kbd.join("brightness"), "1\n").unwrap();
     std::fs::write(kbd.join("brightness_hw_changed"), "1\n").unwrap();
     strand_services::brightness::set_leds_root(Some(leds.clone()));
+    // (drives) UDisks2 with only the internal ATA disk.
+    let disks: udisks::W = std::sync::Arc::new(std::sync::Mutex::new(udisks::World::default()));
+    disks.lock().unwrap().plug(udisks::internal_disk());
+    let udisks_conn = udisks::serve(&tokio, &bus.address, &disks);
     let _player = tokio.block_on(async {
         zbus::connection::Builder::address(bus.address.as_str())
             .unwrap()
@@ -166,6 +172,7 @@ fn the_dbus_services_sleep_when_nothing_changes() {
     b.media.acquire(&rt);
     b.tray.acquire(&rt);
     b.power.acquire(&rt);
+    b.drives.acquire(&rt);
     assert!(
         s.wait_ready(&rt, Duration::from_secs(10)),
         "every first read"
@@ -181,6 +188,7 @@ fn the_dbus_services_sleep_when_nothing_changes() {
             .unwrap()
     );
     assert!(b.power.cells().available.get_untracked(&rt).unwrap());
+    assert!(b.drives.cells().available.get_untracked(&rt).unwrap());
     // Settled: a whole second without a wakeup.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -217,6 +225,9 @@ fn the_dbus_services_sleep_when_nothing_changes() {
             0x100u32,
         ),
     );
+    // (drives) UDisks2 refreshes the internal disk's SMART readings (a
+    // `Drive.Ata` change, which no match rule asks for).
+    udisks::refresh_smart(&tokio, &udisks_conn, &disks, "Samsung_SSD");
     std::thread::sleep(Duration::from_secs(3));
     assert_eq!(
         switches("strand-services"),
@@ -268,6 +279,28 @@ fn the_dbus_services_sleep_when_nothing_changes() {
         switches("strand-services"),
         after,
         "asleep again after the profile"
+    );
+    // (drives) A stick plugged in wakes it, and it sleeps again.
+    udisks::plug(
+        &tokio,
+        &udisks_conn,
+        &disks,
+        udisks::stick("Kingston_1", "sdb", "STICK", "01hotplug/1"),
+    );
+    until(&rt, &s, "the stick", || {
+        b.drives
+            .cells()
+            .all
+            .get_untracked(&rt)
+            .is_ok_and(|all| all.items().iter().any(|(_, d)| d.volumes.len() == 2))
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let after = switches("strand-services");
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(
+        switches("strand-services"),
+        after,
+        "asleep again after the stick"
     );
     s.shutdown();
     strand_services::brightness::set_backlight_root(None);

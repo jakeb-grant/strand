@@ -2673,8 +2673,10 @@ itself.
   `brightness`, `network` (NetworkManager, else iwd, never
   D-Bus-activated), `bluetooth` (BlueZ; its pairing agent,
   `bluetooth::agent`, registered while `request` is read; not a secret
-  service, since action arguments are never recorded),
-  `notifications` (our own server;
+  service, since action arguments are never recorded), `drives`
+  (UDisks2, D-Bus-activated; its ObjectManager's signals and a
+  `PropertiesChanged` rule per interface it reads,
+  `dbus::properties_rule`), `notifications` (our own server;
   history in the persist store), `apps`, `idle`, `polkit` (our own
   authentication agent), `greetd`, `auth`, `media` (MPRIS; remote art
   through `art`), `tray`, `session` (logind), `outputs`, `clipboard`,

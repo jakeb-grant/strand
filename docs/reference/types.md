@@ -290,6 +290,24 @@ Keyed by `date`.
 | `today` | `bool` | It is today. |
 | `weekend` | `bool` | It falls on a weekend. |
 
+### `Drive`
+
+A removable drive with its medium in (a USB stick or disk, a memory
+card, a disc), keyed by `device`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `device` | `text` | Its block device: `/dev/sdb`, `/dev/sr0`. |
+| `name` | `text` | Its vendor and model (`Kingston DataTraveler 3.0`), or its device when it names neither. |
+| `size` | `float` | Its size in bytes (its medium's, for a card or a disc). |
+| `icon` | `text` | An icon name for its kind: `media-optical-symbolic` for a disc drive, `media-flash-symbolic` for a stick or a card, `drive-removable-media-symbolic` otherwise. |
+| `can_eject` | `bool` | `eject()` can make it safe to remove: UDisks2 can eject its medium or power it off. |
+| `volumes` | `[Volume]` | Its filesystems, keyed by `device`, in partition order. Filesystems UDisks2 is told to hide, and encrypted ones still locked, are left out. |
+
+| Method | |
+| --- | --- |
+| `action eject()` | Makes it safe to remove. It unmounts each of its mounted filesystems (and locks an encrypted one unlocked), then takes one last step: it ejects the medium where the medium comes out (a disc, a card), leaving the drive on for the next one, and otherwise powers the drive off where it can be (a USB stick or disk). The drive then leaves `drives.all`. The first step refused (a filesystem in use) stops it, as `drives.failed`. With `can_eject` false it fails at once and unmounts nothing. Asked again while one runs, it is dropped; once started it finishes, even if the shell stops reading `drives` meanwhile. |
+
 ### `Drop`
 
 What another program drops on an element (design.md, "Drag and drop"):
@@ -724,6 +742,23 @@ Keyed by `id`.
 | `id` | `int` | Its PipeWire id (the program's stream). |
 | `app` | `text` | The program's name, such as `Firefox`. |
 | `source` | `VideoSource` | Where the video comes from: `camera` when any source it takes is a camera, else `screencast` (a screen or window cast). |
+
+### `Volume`
+
+A filesystem on a removable drive, mounted or not, keyed by `device`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `device` | `text` | Its block device: `/dev/sdb1` (an unlocked encrypted one's `/dev/mapper/…`), as `Filesystem.device` names it once mounted. |
+| `label` | `text?` | Its label (`STICK`), or null when it has none: `v.label ?? bytes(v.size)`. |
+| `size` | `float` | Its size in bytes. |
+| `mounted` | `bool` | It is mounted. |
+| `path` | `text?` | Where it is mounted (`/run/media/you/STICK`), or null. Once mounted it is in `disk.all` under this `path`, with its usage. |
+
+| Method | |
+| --- | --- |
+| `action mount()` | Mounts it through UDisks2, where UDisks2 chooses (`/run/media/$USER/<label>`). A removable drive's filesystem mounts without a password on most systems; where polkit asks for one, the session's polkit agent asks (Strand's own while a config reads `polkit`). Asked again while one runs (a double click), it is dropped. A failure is `drives.failed`. |
+| `action unmount()` | Unmounts it. A program holding a file open on it makes it fail (`target is busy`), as `drives.failed`. Asked again while one runs, it is dropped. |
 
 ### `Window`
 

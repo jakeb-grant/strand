@@ -2032,9 +2032,9 @@ proof  = "crates/strand-compiler/tests/reload.rs::a_lock_edit_is_deferred_while_
 
 [[claim]]
 page   = "site/concepts/services.md"
-text   = "Strand has 28 built-in services."
+text   = "Strand has 30 built-in services."
 source = ["docs/reference/services.md"]
-proof  = "read: 28 `##` sections in the generated reference"
+proof  = "read: 30 `##` sections in the generated reference"
 
 [[claim]]
 page   = "site/concepts/services.md"
@@ -2064,7 +2064,7 @@ proof  = "strand check in the container (scripts/container/run.sh) on a probe co
 page   = "site/concepts/services.md"
 text   = "the service's `available` field says whether it answers"
 source = ['docs/spec.md "may be missing, `available` says whether it answers (`network`,"']
-proof  = "read: `available` on network, bluetooth, session, brightness in the reference"
+proof  = "read: `available` on network, bluetooth, session, brightness, drives in the reference"
 
 [[claim]]
 page   = "site/concepts/services.md"

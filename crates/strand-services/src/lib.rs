@@ -40,7 +40,8 @@
 //! user is away, ext-idle-notify-v1), [`polkit`] (Strand's own polkit
 //! authentication agent, polkit's helper checking the password) and
 //! [`greetd`] (a login screen over greetd's socket); and [`power`] (the
-//! power profile, power-profiles-daemon, never D-Bus-activated).
+//! power profile, power-profiles-daemon, never D-Bus-activated) and
+//! [`drives`] (removable drives over UDisks2: mount, unmount, eject).
 //! [`schemas`] lists their schema texts, which replace the builtin
 //! schema's provisional stubs. A failed run, and what a service needs the
 //! user to act on, is a [`ServiceDiagnostic`] ([`Services::take_diagnostics`]).
@@ -68,6 +69,7 @@ mod cx;
 mod data;
 pub mod dbus;
 pub mod disk;
+pub mod drives;
 pub mod greetd;
 pub mod icon_theme;
 pub mod idle;
@@ -139,6 +141,7 @@ pub struct Builtin {
     pub polkit: Client<polkit::Polkit>,
     pub greetd: Client<greetd::Greetd>,
     pub power: Client<power::Power>,
+    pub drives: Client<drives::Drives>,
 }
 
 impl Builtin {
@@ -173,6 +176,7 @@ impl Builtin {
             polkit: services.register(rt),
             greetd: services.register(rt),
             power: services.register(rt),
+            drives: services.register(rt),
         };
         // (history) The ones sampled on a clock, so a value kept while
         // hidden is known to be a poll.
@@ -214,6 +218,7 @@ impl Builtin {
             self.polkit.dynamic(),
             self.greetd.dynamic(),
             self.power.dynamic(),
+            self.drives.dynamic(),
         ]
     }
 }

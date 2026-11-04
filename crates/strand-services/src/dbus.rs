@@ -279,6 +279,19 @@ pub fn path_rule(path: &str) -> zbus::Result<MatchRule<'static>> {
         .build())
 }
 
+/// A signal rule: `PropertiesChanged` of interface `iface` on objects
+/// under `namespace`. The bus matches the interface (`arg0`), so changes
+/// of the daemon's other interfaces never reach the process.
+pub fn properties_rule(namespace: &str, iface: &str) -> zbus::Result<MatchRule<'static>> {
+    Ok(MatchRule::builder()
+        .msg_type(MessageType::Signal)
+        .interface(PROPERTIES)?
+        .member("PropertiesChanged")?
+        .path_namespace(namespace.to_string())?
+        .arg(0, iface.to_string())?
+        .build())
+}
+
 impl Daemon {
     /// Follow `name` on `conn`, with the signals of the daemon's objects
     /// under `namespace` (`/` for all). Subscribes before the first read,

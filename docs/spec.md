@@ -2301,14 +2301,14 @@ people can edit by hand.
   bus missing) is never a runtime fault: it is logged and arrives as
   that service's failure event where it has one (`session.failed`,
   `network.failed`, `bluetooth.failed`, `outputs.failed`,
-  `clipboard.failed`), as the daemon refusing it would; a write to such a service is dropped and
+  `clipboard.failed`, `drives.failed`), as the daemon refusing it would; a write to such a service is dropped and
   logged, the field keeping the service's last value. Where a daemon
   may be missing, `available` says whether it answers (`network`,
-  `bluetooth`, `session`, `brightness`, `outputs` for the compositor's
-  output configuration and `clipboard` for its data control), false too
-  while a failed service waits to try again, so a config can hide what
-  cannot work (decisions.md m6-owner-fixes, gaps 18 and 20;
-  m6-service-gaps, gap 30).
+  `bluetooth`, `session`, `brightness`, `drives` for UDisks2, `outputs`
+  for the compositor's output configuration and `clipboard` for its
+  data control), false too while a failed service waits to try again,
+  so a config can hide what cannot work (decisions.md m6-owner-fixes,
+  gaps 18 and 20; m6-service-gaps, gap 30; drives).
 
 ## 13. The command line and IPC
 
