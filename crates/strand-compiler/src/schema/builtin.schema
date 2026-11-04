@@ -75,6 +75,12 @@ enum StreamDirection { output, input, monitor }
 /// Where a program's video comes from: a camera, or a
 /// screen (or window) cast.
 enum VideoSource { camera, screencast }
+/// What a Bluetooth pairing request asks: a PIN to type (`pin`), a
+/// passkey of up to six digits to type (`passkey`), a code to show while
+/// it is typed on the device (`display`), whether to pair, comparing a
+/// code the device shows when there is one (`confirm`), or whether a
+/// paired device may use a service (`service`).
+enum BluetoothRequestKind { pin, passkey, display, confirm, service }
 
 // Values with no inner structure the language can see.
 opaque Palette, TokenSet, Spring, Easing, Pose, SwapTransition, Mask, Filter, HitArea, Sprite
@@ -678,6 +684,26 @@ provisional record BluetoothDevice key address {
   action forget()
 }
 
+/// A Bluetooth device asking something while it pairs or connects.
+provisional record BluetoothRequest {
+  /// The device asking.
+  device: BluetoothDevice
+  /// What it asks.
+  kind: BluetoothRequestKind
+  /// The code to show or compare, or "".
+  code: text
+  /// How many digits of `code` were typed on the device.
+  entered: int
+  /// The service asked for, or "".
+  service: text
+  /// Answers a `pin` or `passkey` request with `answer`.
+  action respond(answer: text)
+  /// Allows a `confirm` or `service` request.
+  action accept()
+  /// Refuses it, or cancels the pairing a `display` request shows.
+  action reject()
+}
+
 /// What `canvas { draw: (c) => … }` draws on, with the paint API the
 /// renderer uses.
 handle record Canvas {
@@ -1127,6 +1153,8 @@ provisional service bluetooth {
   nearby: [BluetoothDevice]
   /// The adapter is discovering devices.
   scanning: bool
+  /// The pairing request being answered, or null.
+  request: BluetoothRequest?
   /// Connecting, disconnecting, pairing or forgetting a device failed:
   /// `on bluetooth.failed(address, error) { … }`.
   event failed(address: text, error: text)
@@ -2240,8 +2268,9 @@ element input: node {
   /// `password` masks it, and the text it binds is a password:
   /// `check::secret_flow` warns where that reaches anything that shows,
   /// keeps or sends it, other than `auth.submit`, `polkit.respond`,
-  /// `greetd.submit` and a network's `connect_with` (its length and
-  /// whether it is empty are free to show).
+  /// `greetd.submit`, a network's `connect_with` and a Bluetooth
+  /// request's `respond` (its length and whether it is empty are free to
+  /// show).
   type: InputKind
   /// Routes arrow keys to a `list`: `nav: results`.
   nav: Node

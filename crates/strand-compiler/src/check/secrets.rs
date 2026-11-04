@@ -1,7 +1,8 @@
 //! (oi-lock) `check::secret_flow`: a warning where a password typed into
 //! a `type: password` input (the lock's, a polkit dialog's, a greeter's, a
-//! Wi-Fi network's) flows somewhere that shows, keeps or sends it
-//! (decisions.md oi-lock, 2026-10-26; spec.md 5.1).
+//! Wi-Fi network's, a Bluetooth pairing dialog's PIN) flows somewhere that
+//! shows, keeps or sends it (decisions.md oi-lock, 2026-10-26; spec.md
+//! 5.1).
 //!
 //! **Where a password starts.** The place an `input` whose `type` may be
 //! `password` binds its `text` to (`text: <-> pw`): a `state` (or a field
@@ -35,11 +36,12 @@
 //! a `placeholder`, a canvas's `draw`, a `file`'s text), except the `text`
 //! of a password input; an argument to a declared `action` (the process
 //! list shows it) or to an action of a service or record (`clipboard.copy`,
-//! `n.reply`, a `from dbus` service's method), except the four meant for a
-//! password: `auth.submit`, `polkit.respond`, `greetd.submit` and an access
-//! point's `connect_with`; a write to a service's field or a settings
-//! field; and a `state` that holds it and is persisted (written to disk)
-//! or exported (`strand get` reads it, as does every other file).
+//! `n.reply`, a `from dbus` service's method), except the five meant for a
+//! password: `auth.submit`, `polkit.respond`, `greetd.submit`, an access
+//! point's `connect_with` and a Bluetooth request's `respond` (bt-agent);
+//! a write to a service's field or a settings field; and a `state` that
+//! holds it and is persisted (written to disk) or exported (`strand get`
+//! reads it, as does every other file).
 //!
 //! The language has no `log` call and no notification of its own to send,
 //! so those reach it only through the actions above.
@@ -59,9 +61,10 @@ use crate::ty::{Prim, Ty, TypeTable};
 const CODE: &str = "check::secret_flow";
 
 /// What the warning suggests.
-const HELP: &str = "pass a password only to `auth.submit`, `polkit.respond`, `greetd.submit` or an \
-                    access point's `connect_with`; to show that something is typed, read its \
-                    length (`pw.len`) or whether it is empty (`pw != \"\"`)";
+const HELP: &str = "pass a password only to `auth.submit`, `polkit.respond`, `greetd.submit`, an \
+                    access point's `connect_with` or a Bluetooth request's `respond`; to show \
+                    that something is typed, read its length (`pw.len`) or whether it is empty \
+                    (`pw != \"\"`)";
 
 /// The actions meant for a password: (the record or service, the action).
 const INTENDED: &[(&str, &str)] = &[
@@ -69,6 +72,7 @@ const INTENDED: &[(&str, &str)] = &[
     ("polkit", "respond"),
     ("greetd", "submit"),
     ("AccessPoint", "connect_with"),
+    ("BluetoothRequest", "respond"),
 ];
 
 /// Something that may hold the password.

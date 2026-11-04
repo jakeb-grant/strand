@@ -1425,6 +1425,40 @@ fn bluetooth_is_a_pairing_page() {
     );
 }
 
+/// (bt-agent) A pairing dialog: a panel open while `bluetooth.request`
+/// is set, a PIN typed into a password input and given to `respond`, a
+/// code shown or compared, and `accept()` and `reject()`; the request's
+/// actions, like every action, only in handlers.
+#[test]
+fn a_pairing_dialog_checks() {
+    let (out, map) = compile_files(&[(
+        "a.strand",
+        "panel Pair {\n  open: bluetooth.request != null\n  keyboard: exclusive\n  \
+         state typed = \"\"\n  \
+         text bluetooth.request?.device?.name ?? \"\"\n  \
+         text match bluetooth.request?.kind ?? confirm {\n    \
+         pin => \"Type the PIN\"\n    passkey => \"Type the passkey\"\n    \
+         display => \"Type this on the device\"\n    confirm => \"Does the device show this?\"\n    \
+         service => \"Allow \" + (bluetooth.request?.service ?? \"\")\n  }\n  \
+         text bluetooth.request?.code ?? \"\"\n  \
+         text num(bluetooth.request?.entered ?? 0)\n  \
+         input {\n    type: password\n    text: <-> typed\n    \
+         on activate { bluetooth.request?.respond(typed); typed = \"\" }\n  }\n  \
+         text \"Pair\" { on click { bluetooth.request?.accept() } }\n  \
+         text \"Cancel\" { on click { bluetooth.request?.reject() } }\n}\n"
+            .to_string(),
+    )]);
+    assert!(
+        out.diagnostics.is_empty(),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    assert_eq!(
+        codes("bar B { text \"x\" { opacity: bluetooth.request?.accept() } }\n"),
+        ["check::action_in_binding"]
+    );
+}
+
 /// (m6-service-gaps, owner-testing gap 30) A clipboard history popup:
 /// its entries drawn as text or image, copied again and removed by item
 /// actions, the service's own `copy` and `clear` from handlers, its
