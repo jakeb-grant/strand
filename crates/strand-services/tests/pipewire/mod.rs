@@ -474,6 +474,67 @@ impl PipeWire {
             .expect("pw-play starts")
     }
 
+    /// (audio-routing) Plays `wav` as program `app` (its `node.name` and
+    /// `application.name` too), in the background, to whatever the
+    /// session manager chooses: no `--target` and no
+    /// `node.dont-reconnect`, so it follows the default and may be moved,
+    /// as most programs' streams are.
+    pub fn play_following(&self, wav: &Path, app: &str) -> Child {
+        self.command("pw-play")
+            .args([
+                "-P",
+                &format!("{{ application.name = \"{app}\", node.name = \"{app}\" }}"),
+            ])
+            .arg(wav)
+            .spawn()
+            .expect("pw-play starts")
+    }
+
+    /// `pw-cli create-node` of a lingering null sink named `name`.
+    pub fn create_sink(&self, name: &str) {
+        self.run(
+            "pw-cli",
+            &[
+                "create-node",
+                "adapter",
+                &format!(
+                    "{{ factory.name=support.null-audio-sink node.name={name} \
+                     media.class=Audio/Sink audio.position=[FL FR] object.linger=true }}"
+                ),
+            ],
+        );
+    }
+
+    /// (audio-routing) The `default` metadata's `key` for subject `id`
+    /// (`pw-metadata` prints `update: id:57 key:'target.object'
+    /// value:'1234' type:'Spa:Id'`): its value, or `None` when unset.
+    pub fn metadata_of(&self, id: u32, key: &str) -> Option<String> {
+        let subject = format!("id:{id} ");
+        let key = format!("key:'{key}'");
+        self.metadata()
+            .lines()
+            .filter(|l| l.contains(&subject) && l.contains(&key))
+            .find_map(|l| {
+                let v = l.split_once("value:'")?.1;
+                Some(v.split_once('\'')?.0.to_owned())
+            })
+    }
+
+    /// (audio-routing) The `object.serial` of the node whose global id is
+    /// `id` (`pw-cli info`).
+    pub fn serial_of(&self, id: u32) -> u64 {
+        let info = self.run("pw-cli", &["info", &id.to_string()]);
+        info.lines()
+            .find_map(|l| {
+                let v = l.trim().trim_start_matches('*').trim();
+                v.strip_prefix("object.serial = \"")?
+                    .strip_suffix('"')?
+                    .parse()
+                    .ok()
+            })
+            .unwrap_or_else(|| panic!("no object.serial for {id}: {info}"))
+    }
+
     /// The node names `node`'s output ports are linked to (`pw-link -l`).
     pub fn linked_to(&self, node: &str) -> Vec<String> {
         self.peers(node, "|-> ")
