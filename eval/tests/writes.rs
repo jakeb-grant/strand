@@ -702,8 +702,10 @@ fn an_item_write_an_older_ring_did_not_record_is_named() {
     assert_eq!(named.len(), 1, "{:#?}", r.plan.limits);
     assert!(
         named[0].starts_with(
-            // (services-round) Programs' streams have a writable `volume` too.
-            "service list `audio.sinks` or `audio.sources` or `audio.streams`: the config \
+            // (services-round) Programs' streams have a writable `volume` too,
+            // and (power-media-kbd) so do the players.
+            "service list `audio.sinks` or `audio.sources` or `audio.streams` or \
+             `media.players`: the config \
              writes an item of it \
              (`volume` at shell.strand:11), and this report's recorder (changes dump version 2, \
              before version 3) kept nothing of a config's write to an item of a keyed list, so \
@@ -714,8 +716,10 @@ fn an_item_write_an_older_ring_did_not_record_is_named() {
         named[0]
     );
     assert!(
-        r.text
-            .contains("  - service list `audio.sinks` or `audio.sources` or `audio.streams`: "),
+        r.text.contains(
+            "  - service list `audio.sinks` or `audio.sources` or `audio.streams` or \
+                 `media.players`: "
+        ),
         "{}",
         r.text
     );
