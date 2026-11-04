@@ -42,12 +42,13 @@
 //!   ([`AudioAction::MoveStream`], the stream by its serial, the device
 //!   by id and serial); `p.select()` for `p` in `dev.profiles` asks it
 //!   to switch the card ([`AudioAction::SetProfile`], the card by
-//!   [`AudioProfile::card`]). Either is refused (logged, nothing
+//!   [`AudioProfile::card`]). A move is refused here (logged, nothing
 //!   written) when its item names a stream or device that left (another
-//!   program, or another node name, under the item's key now), and the
-//!   loop logs its own refusals, as for `make_default()`; the outcome
-//!   arrives in the stream (`st.device` moves; the card's devices come
-//!   back under new ids with another profile active).
+//!   program, or another node name, under the item's key now); the loop
+//!   refuses a card or profile that is gone, and logs its own refusals,
+//!   as for `make_default()`; the outcome arrives in the state
+//!   (`st.device` moves; the card's devices come back under new ids with
+//!   another profile active).
 //! - **Levels.** The peak meters run for [`tap_levels`] taps (the M4
 //!   `spectrum` element's hook) and (services-round) for
 //!   `audio.levels(dev, bars)`, and only while a reader of the service

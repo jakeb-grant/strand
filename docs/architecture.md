@@ -2836,10 +2836,10 @@ itself.
   `Serials`, and `Levels` (at most one per meter per `audio::FRAME`).
   `AudioDevice` is exactly the schema's record; `audio::Mirror`
   applies the stream.
-  `request(AudioAction::{SetVolume, SetMuted, MakeDefault}) ->
-  AudioReply` (`.await`, or `wait()` outside a runtime) answers `Ok`
-  once PipeWire was asked, or an `AudioError`; dropped unanswered reads
-  as `NotConnected`. Actions before a connection settles wait in order;
+  `request(AudioAction::{SetVolume, SetMuted, MakeDefault, MoveStream,
+  SetProfile}) -> AudioReply` (`.await`, or `wait()` outside a runtime)
+  answers `Ok` once PipeWire was asked, or an `AudioError`; dropped
+  unanswered reads as `NotConnected`. Actions before a connection settles wait in order;
   with no connection they answer `NotConnected` after `audio::GRACE`
   (2 s). A connection settles once its syncs and the `default`
   metadata are back, or after `audio::SETTLE` (3 s); until then the
@@ -2855,6 +2855,29 @@ itself.
   mute go to the card's active `Route` when there is one, else the
   node's `Props`. The thread reports a volume it wrote exactly as
   written (within the last `audio::ECHOES` writes).
+  (audio-routing) `MoveStream { stream, to }` writes on the `default`
+  metadata what pipewire-pulse writes for `pactl move-sink-input`
+  (subject the stream's node: `target.node` cleared, `target.object` the
+  device's `object.serial` as `Spa:Id`, both cleared for a move onto the
+  default of its direction, so the stream follows the default again),
+  through `set_property_cstr` with fallible `CString`s; a player moves
+  only to a sink, a recorder of a source to a source, a `monitor` to a
+  sink, else `WrongDirection`; a stream as target, a device as stream or
+  an ended stream is `UnknownDevice`, no metadata `NoDefaultMetadata`.
+  `AudioStream.device` is read from the Link globals, which `Follow::
+  Audio` now keeps too (no binding; they mark the state for publishing
+  only while streams are followed): the listed device with the most
+  links, the lowest id on a tie, else null. Each card (`Audio/Device`)
+  subscribes `Route`, `EnumProfile` and `Profile` and keeps its
+  `object.serial`; a new set of profiles, announced by the params'
+  flags, is shown only once the core sync issued after it is back.
+  `AudioDevice.profiles` lists its node's card's (`device.id`) best
+  first, without `off`; `AudioProfile.card` is the card's
+  `object.serial` (else its global id), a field the schema declares,
+  since the language side keeps only declared fields of an item it
+  hands back. `SetProfile { card, profile }` writes the card's
+  `Profile { index, save: true }` (`wpctl set-profile`), else
+  `UnknownCard` or `UnknownProfile`.
   The store (`audio::AudioStore`) maps writes of `audio.sink`/`source`
   to the default device and item writes to `DeviceRef::Id`, refusing a
   write from an item held past its device (`Write::held`). Each write is
@@ -2862,7 +2885,11 @@ itself.
   device as it is when refused or unseen within `audio::ANSWER_WAIT`
   (1 s); answers go in write order per cell. Streams (`audio.streams`,
   keyed by `object.serial`) are bound only while watched; this shell's
-  own meters are left out. `strand_services::video` runs the same loop
+  own meters are left out. (audio-routing) `AudioDeviceAction::{MoveTo,
+  Select}` map `st.move_to(dev)` (refused, logged, when the stream item
+  or the device item names one that left, as `make_default()` is) and
+  `p.select()` to `MoveStream` and `SetProfile`; the thread's refusals
+  are logged. `strand_services::video` runs the same loop
   following only video nodes and links (`camera` or `screencast`).
   `levels(device, bars)` is a service fn over `meters` (64-band
   spectra), leased per evaluation (`ask_levels`/`release_levels`,
