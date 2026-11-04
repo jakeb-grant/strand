@@ -327,10 +327,11 @@ networks now.
 | --- | --- |
 | `action disconnect()` | Leaves the Wi-Fi network joined, or stops the one being joined; the daemon then joins nothing on its own until a network is joined again. A join it stops is no failure; if the disconnect itself fails, that join goes on and is reported as any join is. A `disconnect()` while one is in flight (a double click) is dropped. Without a network joined or being joined it fails. A failure is `network.failed`. |
 | `action scan()` | Scans for Wi-Fi networks now (a refresh button): `scanning` while it runs, `access_points` read again when it ends. A scan the daemon is already running, or has just run, is not asked again and is no failure. With the radio off, or a Wi-Fi device that cannot scan (its hardware switch off, not ready), it fails, as `network.failed("", error)`. |
+| `action join(ssid: text, password: text = "")` | Joins the Wi-Fi network named `ssid`, which need not be in `access_points`: a hidden network, which does not say its name, so a menu gives a field for it. With a `password` (its WPA key) it is joined as a WPA personal network and the password saved; with none (`""`) it is joined open, or with what the daemon has saved for it. Over NetworkManager a new connection is added for it, marked hidden; over iwd it is `ConnectHiddenNetwork`. It is `network.connecting` while it is joined, as `ap.connect()` is; a failure (not found, a wrong password, a timeout) is `network.failed(ssid, error)`. |
 
 | Event | |
 | --- | --- |
-| `on network.failed(ssid: text, error: text)` | Joining a network failed (no password and no secret agent to ask for one, a wrong one, out of range, timed out, or the service not running): `on network.failed(ssid, error) { … }`. `ssid` is the network the action was about (a connection's `name` for its `up()` and `down()`), "" for one that names none (`scan()`, or a `disconnect()` the service could not take). |
+| `on network.failed(ssid: text, error: text)` | Joining a network failed (no password and no secret agent to ask for one, a wrong one, out of range, timed out, or the service not running), or another action did (a `forget()`, a `scan()`): `on network.failed(ssid, error) { … }`. `ssid` is the network the action was about (a connection's `name` for its `up()` and `down()`), "" for one that names none (`scan()`, or a `disconnect()` the service could not take). |
 
 ## `notifications`
 

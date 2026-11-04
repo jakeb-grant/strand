@@ -173,6 +173,7 @@ fn network_follows_networkmanager_and_scans_only_while_watched() {
         strength: 0.6,
         secure: true,
         active: false,
+        known: false,
     };
     b.network
         .dynamic()
@@ -265,6 +266,7 @@ fn network_follows_networkmanager_and_scans_only_while_watched() {
         strength: 0.0,
         secure: true,
         active: false,
+        known: false,
     };
     b.network
         .dynamic()
@@ -363,6 +365,7 @@ fn a_join_that_fails_later_is_reported() {
         strength: 0.5,
         secure: true,
         active: false,
+        known: false,
     };
 
     // The menu closes as the shell joins (the access points are not
@@ -648,6 +651,7 @@ fn enterprise_networks_join_only_through_a_saved_profile() {
             strength: 0.5,
             secure: true,
             active: false,
+            known: false,
         };
         let (name, args) = match password {
             Some(p) => ("connect_with", vec![Data::Text(p.into())]),
@@ -825,6 +829,7 @@ fn a_new_key_keeps_the_saved_profile_s_security_settings() {
         strength: 0.5,
         secure: true,
         active: false,
+        known: false,
     };
     b.network
         .dynamic()
@@ -1181,6 +1186,7 @@ fn a_slow_join_does_not_hold_up_the_radio() {
         strength: 0.6,
         secure: true,
         active: false,
+        known: false,
     };
     b.network
         .dynamic()
@@ -1245,6 +1251,7 @@ fn join_slow(rt: &Runtime, b: &strand_services::Builtin, password: &str) {
         strength: 0.6,
         secure: true,
         active: false,
+        known: false,
     };
     b.network
         .dynamic()
@@ -1819,6 +1826,7 @@ fn a_repeat_while_the_join_is_activating_is_dropped() {
             strength: 0.6,
             secure: true,
             active: false,
+            known: false,
         };
         b.network
             .dynamic()
@@ -2606,6 +2614,286 @@ fn without_a_bus_up_fails_naming_the_connection() {
     assert_eq!(
         failures.lock().unwrap()[0],
         ("Work VPN".to_string(), "no system bus".to_string())
+    );
+    s.shutdown();
+}
+
+/// (wifi-forget) A Wi-Fi network saved in NetworkManager (a connection
+/// whose `802-11-wireless.ssid` is its SSID) reads `known`, one with none
+/// reads not, while the access points are listed (`connections` itself
+/// stays unread, so empty). `forget()` deletes its saved connection
+/// (`Settings.Connection.Delete`), whose `ConnectionRemoved` turns
+/// `known` false; a `Delete` NetworkManager refuses, and a forget of a
+/// network with nothing saved, are `failed(ssid, error)`.
+#[test]
+fn saved_networks_are_known_and_forgotten() {
+    use std::collections::HashMap;
+    use zbus::zvariant::Value;
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some(_nm) = DbusMock::start(&bus, "networkmanager", true, None, NM) else {
+        return;
+    };
+    let (dev, _) = wifi_home(&tokio, &conn);
+    add_ap(&tokio, &conn, &dev, "Mock_AP2", "Cafe", 60);
+    add_ap(&tokio, &conn, &dev, "Mock_AP3", "Airport", 50);
+    let profile: HashMap<&str, HashMap<&str, Value>> = HashMap::from([
+        (
+            "connection",
+            HashMap::from([
+                ("id", Value::from("Cafe")),
+                ("uuid", Value::from("u-cafe")),
+                ("type", Value::from("802-11-wireless")),
+            ]),
+        ),
+        (
+            "802-11-wireless",
+            HashMap::from([("ssid", Value::from(b"Cafe".to_vec()))]),
+        ),
+    ]);
+    let cafe = call(
+        &tokio,
+        &conn,
+        NM,
+        "/org/freedesktop/NetworkManager/Settings",
+        "org.freedesktop.NetworkManager.Settings",
+        "AddConnection",
+        &(profile,),
+    )
+    .body()
+    .deserialize::<zbus::zvariant::OwnedObjectPath>()
+    .unwrap()
+    .to_string();
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = failures_of(&b);
+    let cells = b.network.cells();
+    b.network.acquire(&rt);
+    b.network.acquire_field(field("access_points"));
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let known = || -> Vec<(String, bool)> {
+        let mut v: Vec<(String, bool)> = cells
+            .access_points
+            .get_untracked(&rt)
+            .unwrap()
+            .items()
+            .iter()
+            .map(|(_, a)| (a.ssid.clone(), a.known))
+            .collect();
+        v.sort();
+        v
+    };
+    let want = |cafe: bool| {
+        vec![
+            ("Airport".to_string(), false),
+            ("Cafe".to_string(), cafe),
+            ("Home".to_string(), true),
+        ]
+    };
+    until(&rt, &s, "Home and Cafe known, Airport not", || {
+        known() == want(true)
+    });
+    assert!(
+        cells
+            .connections
+            .get_untracked(&rt)
+            .unwrap()
+            .items()
+            .is_empty(),
+        "connections is not read"
+    );
+    let forget = |ssid: &str| {
+        let item = AccessPoint {
+            ssid: ssid.into(),
+            strength: 0.5,
+            secure: true,
+            active: false,
+            known: true,
+        };
+        b.network
+            .dynamic()
+            .action(
+                &rt,
+                "forget",
+                Some(&item.to_data()),
+                &[],
+                Default::default(),
+            )
+            .unwrap();
+    };
+    let csettings = "org.freedesktop.NetworkManager.Settings.Connection";
+
+    // Nothing saved for Airport: a failure, nothing deleted.
+    forget("Airport");
+    until(&rt, &s, "Airport's failure", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        failures.lock().unwrap()[0],
+        ("Airport".to_string(), "`Airport` is not saved".to_string())
+    );
+
+    // NetworkManager refuses to delete Cafe's: a failure, still known.
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        &cafe,
+        "AddMethod",
+        &(
+            csettings,
+            "Delete",
+            "",
+            "",
+            "raise dbus.exceptions.DBusException('Not authorized', \
+             name='org.freedesktop.NetworkManager.Settings.PermissionDenied')",
+        ),
+    );
+    forget("Cafe");
+    until(&rt, &s, "Cafe's refusal", || {
+        failures.lock().unwrap().len() == 2
+    });
+    assert_eq!(
+        failures.lock().unwrap()[1],
+        ("Cafe".to_string(), "Not authorized".to_string())
+    );
+    assert_eq!(mock_calls(&tokio, &conn, NM, &cafe, "Delete").len(), 1);
+    assert_eq!(known(), want(true));
+
+    // Allowed: deleted, and Cafe is no longer known.
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        &cafe,
+        "AddMethod",
+        &(csettings, "Delete", "", "", "self.ConnectionDelete(self)"),
+    );
+    forget("Cafe");
+    until(&rt, &s, "Cafe forgotten", || known() == want(false));
+    let listed: Vec<zbus::zvariant::OwnedObjectPath> = call(
+        &tokio,
+        &conn,
+        NM,
+        "/org/freedesktop/NetworkManager/Settings",
+        "org.freedesktop.NetworkManager.Settings",
+        "ListConnections",
+        &(),
+    )
+    .body()
+    .deserialize()
+    .unwrap();
+    assert!(
+        !listed.iter().any(|p| p.as_str() == cafe),
+        "Cafe's connection is still saved"
+    );
+    assert_eq!(failures.lock().unwrap().len(), 2);
+    s.shutdown();
+}
+
+/// (wifi-forget) `network.join(ssid, password)` joins a network no scan
+/// lists (a hidden one) by name: `AddAndActivateConnection` with no
+/// access point and a connection marked `hidden` for its SSID, a WPA
+/// personal one with the password given; NetworkManager's refusal (here
+/// the template's, which finds no access point for it) is `failed(ssid,
+/// error)`.
+#[test]
+fn a_hidden_network_joins_by_name() {
+    use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+    type Settings =
+        std::collections::HashMap<String, std::collections::HashMap<String, OwnedValue>>;
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some(_nm) = DbusMock::start(&bus, "networkmanager", true, None, NM) else {
+        return;
+    };
+    let (dev, _) = wifi_home(&tokio, &conn);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let failures = failures_of(&b);
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let join = |args: &[&str]| {
+        let args: Vec<Data> = args.iter().map(|a| Data::Text((*a).into())).collect();
+        b.network
+            .dynamic()
+            .action(&rt, "join", None, &args, Default::default())
+            .unwrap();
+    };
+    let added = || mock_calls(&tokio, &conn, NM, ROOT, "AddAndActivateConnection");
+    let text = |s: &str| OwnedValue::try_from(Value::from(s)).unwrap();
+
+    // No password (`join(ssid)`): an open hidden connection, refused here.
+    join(&["Den"]);
+    until(&rt, &s, "the refusal", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(failures.lock().unwrap()[0].0, "Den");
+    let call = &added()[0];
+    let settings: Settings = call[0].try_clone().unwrap().try_into().unwrap();
+    let wireless = &settings["802-11-wireless"];
+    let ssid: Vec<u8> = wireless["ssid"].try_clone().unwrap().try_into().unwrap();
+    assert_eq!(ssid, b"Den");
+    assert_eq!(wireless["hidden"], OwnedValue::from(true));
+    assert!(!settings.contains_key("802-11-wireless-security"));
+    let on: OwnedObjectPath = call[1].try_clone().unwrap().try_into().unwrap();
+    let ap: OwnedObjectPath = call[2].try_clone().unwrap().try_into().unwrap();
+    assert_eq!((on.as_str(), ap.as_str()), (dev.as_str(), "/"));
+
+    // NetworkManager finds it: joined with the password, no failure.
+    let active = "/org/freedesktop/NetworkManager/ActiveConnection/88";
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        ROOT,
+        "AddMethod",
+        &(
+            NM,
+            "AddAndActivateConnection",
+            "a{sa{sv}}oo",
+            "oo",
+            format!(
+                "self.AddObject('{active}', 'org.freedesktop.NetworkManager.Connection.Active', \
+                 {{'State': dbus.UInt32(2)}}, [])\n\
+                 ret = (dbus.ObjectPath('/org/freedesktop/NetworkManager/Settings/88'), \
+                 dbus.ObjectPath('{active}'))"
+            ),
+        ),
+    );
+    join(&["Attic", "hunter22"]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while added().len() < 2 {
+        assert!(std::time::Instant::now() < deadline, "never joined Attic");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let settings: Settings = added()[1][0].try_clone().unwrap().try_into().unwrap();
+    let ssid: Vec<u8> = settings["802-11-wireless"]["ssid"]
+        .try_clone()
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(ssid, b"Attic");
+    assert_eq!(
+        settings["802-11-wireless"]["hidden"],
+        OwnedValue::from(true)
+    );
+    let sec = &settings["802-11-wireless-security"];
+    assert_eq!(sec["key-mgmt"], text("wpa-psk"));
+    assert_eq!(sec["psk"], text("hunter22"));
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    assert_eq!(
+        failures.lock().unwrap().len(),
+        1,
+        "{:?}",
+        failures.lock().unwrap()
     );
     s.shutdown();
 }

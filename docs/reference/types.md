@@ -20,11 +20,13 @@ Keyed by `ssid`.
 | `strength` | `float` | Signal strength, 0 to 1. |
 | `secure` | `bool` | It needs a password: a WPA, WPA2 or WPA3 personal or a WEP network, which `connect_with` joins (a network menu's password field). An open or Enhanced Open network takes none, and an enterprise (802.1X) one joins through its saved profile, with `connect()`. |
 | `active` | `bool` | It is the network joined (`network.ssid`); not while it is still being joined or being left (`network.connecting`, `network.disconnecting`). |
+| `known` | `bool` | It is saved: NetworkManager has a connection for it (its `802-11-wireless` SSID this one's), or iwd knows it (its `KnownNetwork`). `connect()` then joins it without a password, so a network menu asks for one only where this is false: `if ap.secure && !ap.known { … }`. |
 
 | Method | |
 | --- | --- |
 | `action connect()` | Joins it: with its saved connection if there is one, else a new one (for a `secure` network NetworkManager asks its secret agent for the password; iwd joins only a network it knows this way); an enterprise (802.1X) network with no saved profile is refused (it is set up in the system's network settings, or iwd's provisioning file). A failure, including one NetworkManager reports later (no password, a wrong one, a timeout), is `network.failed`. |
 | `action connect_with(password: text)` | Joins a `secure` network with `password` (its WPA key or WEP key), saved in its connection: a network menu's password field. On any other network it fails. A failure is `network.failed`. |
+| `action forget()` | Forgets it: its saved settings and password go (NetworkManager's connections for its SSID are deleted; iwd forgets its known network), and `known` turns false. Forgetting the network joined leaves it (the daemon does). A network that is not `known`, or a forget the daemon refuses, fails: `network.failed(ssid, error)`. |
 
 ### `ActionRun`
 

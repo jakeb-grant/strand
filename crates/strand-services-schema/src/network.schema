@@ -15,6 +15,12 @@ record AccessPoint key ssid {
   /// being joined or being left (`network.connecting`,
   /// `network.disconnecting`).
   active: bool
+  /// It is saved: NetworkManager has a connection for it (its
+  /// `802-11-wireless` SSID this one's), or iwd knows it (its
+  /// `KnownNetwork`). `connect()` then joins it without a password, so a
+  /// network menu asks for one only where this is false: `if ap.secure
+  /// && !ap.known { … }`.
+  known: bool
   /// Joins it: with its saved connection if there is one, else a new one
   /// (for a `secure` network NetworkManager asks its secret agent for the
   /// password; iwd joins only a network it knows this way); an enterprise
@@ -27,6 +33,12 @@ record AccessPoint key ssid {
   /// saved in its connection: a network menu's password field. On any
   /// other network it fails. A failure is `network.failed`.
   action connect_with(password: text)
+  /// Forgets it: its saved settings and password go (NetworkManager's
+  /// connections for its SSID are deleted; iwd forgets its known
+  /// network), and `known` turns false. Forgetting the network joined
+  /// leaves it (the daemon does). A network that is not `known`, or a
+  /// forget the daemon refuses, fails: `network.failed(ssid, error)`.
+  action forget()
 }
 
 /// A connection saved in NetworkManager (a Wi-Fi
@@ -144,11 +156,22 @@ service network {
   /// hardware switch off, not ready), it fails, as
   /// `network.failed("", error)`.
   action scan()
+  /// Joins the Wi-Fi network named `ssid`, which need not be in
+  /// `access_points`: a hidden network, which does not say its name, so
+  /// a menu gives a field for it. With a `password` (its WPA key) it is
+  /// joined as a WPA personal network and the password saved; with none
+  /// (`""`) it is joined open, or with what the daemon has saved for it.
+  /// Over NetworkManager a new connection is added for it, marked hidden;
+  /// over iwd it is `ConnectHiddenNetwork`. It is `network.connecting`
+  /// while it is joined, as `ap.connect()` is; a failure (not found, a
+  /// wrong password, a timeout) is `network.failed(ssid, error)`.
+  action join(ssid: text, password: text = "")
   /// Joining a network failed (no password and no secret agent to ask
   /// for one, a wrong one, out of range, timed out, or the service not
-  /// running): `on network.failed(ssid, error) { … }`. `ssid` is the
-  /// network the action was about (a connection's `name` for its `up()`
-  /// and `down()`), "" for one that names none (`scan()`, or a
-  /// `disconnect()` the service could not take).
+  /// running), or another action did (a `forget()`, a `scan()`): `on
+  /// network.failed(ssid, error) { … }`. `ssid` is the network the action
+  /// was about (a connection's `name` for its `up()` and `down()`), "" for
+  /// one that names none (`scan()`, or a `disconnect()` the service could
+  /// not take).
   event failed(ssid: text, error: text)
 }

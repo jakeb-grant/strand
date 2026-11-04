@@ -35,9 +35,10 @@
 //! a `placeholder`, a canvas's `draw`, a `file`'s text), except the `text`
 //! of a password input; an argument to a declared `action` (the process
 //! list shows it) or to an action of a service or record (`clipboard.copy`,
-//! `n.reply`, a `from dbus` service's method), except the four meant for a
-//! password: `auth.submit`, `polkit.respond`, `greetd.submit` and an access
-//! point's `connect_with`; a write to a service's field or a settings
+//! `n.reply`, a `from dbus` service's method), except those meant for a
+//! password: `auth.submit`, `polkit.respond`, `greetd.submit`, an access
+//! point's `connect_with` and (wifi-forget) `network.join`'s `password`
+//! (its `ssid` is no place for one); a write to a service's field or a settings
 //! field; and a `state` that holds it and is persisted (written to disk)
 //! or exported (`strand get` reads it, as does every other file).
 //!
@@ -59,16 +60,19 @@ use crate::ty::{Prim, Ty, TypeTable};
 const CODE: &str = "check::secret_flow";
 
 /// What the warning suggests.
-const HELP: &str = "pass a password only to `auth.submit`, `polkit.respond`, `greetd.submit` or an \
-                    access point's `connect_with`; to show that something is typed, read its \
+const HELP: &str = "pass a password only to `auth.submit`, `polkit.respond`, `greetd.submit`, an \
+                    access point's `connect_with` or `network.join`'s `password`; to show that something is typed, read its \
                     length (`pw.len`) or whether it is empty (`pw != \"\"`)";
 
-/// The actions meant for a password: (the record or service, the action).
-const INTENDED: &[(&str, &str)] = &[
-    ("auth", "submit"),
-    ("polkit", "respond"),
-    ("greetd", "submit"),
-    ("AccessPoint", "connect_with"),
+/// The actions meant for a password: (the record or service, the action,
+/// the parameter that takes it by index, or every one).
+const INTENDED: &[(&str, &str, Option<usize>)] = &[
+    ("auth", "submit", None),
+    ("polkit", "respond", None),
+    ("greetd", "submit", None),
+    ("AccessPoint", "connect_with", None),
+    // (wifi-forget) `network.join(ssid, password)`.
+    ("network", "join", Some(1)),
 ];
 
 /// Something that may hold the password.
@@ -1182,11 +1186,15 @@ impl<'a> Walk<'a> {
                         self.expr(receiver);
                         if action(self.types, &receiver.ty, name) {
                             let owner = record_name(self.types, &receiver.ty).unwrap_or("");
-                            let meant = INTENDED.iter().any(|(r, a)| *r == owner && a == name);
-                            if !meant {
-                                let call = shown(receiver, self.defs, self.locals)
-                                    .map_or_else(|| name.clone(), |r| format!("{r}.{name}"));
-                                for a in args {
+                            let meant = |param: Option<usize>| {
+                                INTENDED.iter().any(|(r, a, p)| {
+                                    *r == owner && a == name && (p.is_none() || *p == param)
+                                })
+                            };
+                            let call = shown(receiver, self.defs, self.locals)
+                                .map_or_else(|| name.clone(), |r| format!("{r}.{name}"));
+                            for a in args {
+                                if !meant(a.param) {
                                     self.sinks.push(Sink {
                                         file: self.file,
                                         span: a.value.span,

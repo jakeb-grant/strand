@@ -208,6 +208,12 @@ fn kept_or_sent() {
         )),
         ["pw"]
     );
+    // (wifi-forget) `network.join` takes a password only as its
+    // `password`: as its `ssid` it is sent.
+    assert_eq!(
+        flows(&field("  box { on click { network.join(pw, \"\") } }")),
+        ["pw"]
+    );
     // A service's field written.
     assert_eq!(
         flows(&field(
@@ -283,7 +289,8 @@ fn harmless_reads_and_the_meant_calls_do_not_warn() {
          text pw.contains(\" \") ? \"a space\" : \"\"\n  \
          input { type: password; text: <-> pw; when reveal { type: text } }\n  \
          box { on click { polkit.respond(pw); greetd.submit(pw); pw = \"\" } }\n  \
-         for ap in network.access_points key ap.ssid { box { on click { ap.connect_with(pw) } } }",
+         for ap in network.access_points key ap.ssid { box { on click { ap.connect_with(pw) } } }\n  \
+         box { on click { network.join(\"Hidden\", pw) } }",
     );
     assert_eq!(flows(&src), none);
     // Dots made by a `fn` or by a lambda a `let` holds, given the

@@ -23,6 +23,8 @@ const HOME: &str = "/net/connman/iwd/0/4/486f6d65_psk";
 const ATTIC: &str = "/net/connman/iwd/0/4/4174746963_psk";
 const LOFT: &str = "/net/connman/iwd/0/4/4c6f6674_psk";
 const CAFE: &str = "/net/connman/iwd/0/4/43616665_open";
+/// A hidden network, which iwd names once `ConnectHiddenNetwork` finds it.
+const DEN: &str = "/net/connman/iwd/0/4/44656e_psk";
 
 #[derive(Default)]
 struct World {
@@ -69,6 +71,8 @@ struct World {
     leaving: bool,
     /// `KnownNetwork.Forget` waits while this is set.
     stall_forget: bool,
+    /// `KnownNetwork.Forget` is refused (as a policy that denies it would).
+    refuse_forget: bool,
     /// How often `GetOrderedNetworks` was asked.
     ordered_reads: u32,
 }
@@ -88,6 +92,7 @@ enum IwdError {
     Aborted(String),
     Busy(String),
     NotConnected(String),
+    NotFound(String),
 }
 
 struct Device(W);
@@ -238,6 +243,52 @@ impl Station {
             self.0.lock().unwrap().scanning = false;
             self.scanning_changed(&e).await.unwrap();
         }
+    }
+
+    /// (wifi-forget) Joins a hidden network: only "Den" (personal) is
+    /// found, its object served as iwd makes one, its passphrase asked of
+    /// the agent (`hunter22` is right), then joined.
+    async fn connect_hidden_network(
+        &self,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(object_server)] server: &zbus::ObjectServer,
+        #[zbus(signal_emitter)] e: SignalEmitter<'_>,
+        name: String,
+    ) -> Result<(), IwdError> {
+        let agent = {
+            let mut w = self.0.lock().unwrap();
+            w.calls.push(format!("ConnectHidden {name}"));
+            w.agent.clone()
+        };
+        if name != "Den" {
+            return Err(IwdError::NotFound("Network not found".into()));
+        }
+        server.at(DEN, Net::new(&self.0, DEN, "Den", "psk")).await?;
+        let Some((sender, agent)) = agent else {
+            return Err(IwdError::Aborted("no agent".into()));
+        };
+        let reply = conn
+            .call_method(
+                Some(sender.as_str()),
+                agent.as_str(),
+                Some("net.connman.iwd.Agent"),
+                "RequestPassphrase",
+                &(ObjectPath::try_from(DEN).unwrap(),),
+            )
+            .await
+            .map_err(|_| IwdError::Aborted("Operation aborted".into()))?;
+        let passphrase: String = reply.body().deserialize()?;
+        if passphrase != "hunter22" {
+            return Err(IwdError::Failed("Operation failed".into()));
+        }
+        {
+            let mut w = self.0.lock().unwrap();
+            w.known.insert(DEN.to_string());
+            w.connected = Some(DEN.to_string());
+        }
+        self.state_changed(&e).await?;
+        self.connected_network_changed(&e).await?;
+        Ok(())
     }
 
     fn get_ordered_networks(&self) -> Vec<(OwnedObjectPath, i16)> {
@@ -415,21 +466,34 @@ impl Net {
     }
 }
 
-/// A network iwd knows: forgetting it drops its passphrase.
+/// A network iwd knows: forgetting it drops its passphrase, and the
+/// network's `KnownNetwork` says so.
 struct Known(W, String, String);
 
 #[zbus::interface(name = "net.connman.iwd.KnownNetwork")]
 impl Known {
-    async fn forget(&self) {
-        self.0
-            .lock()
-            .unwrap()
-            .calls
-            .push(format!("Forget {}", self.2));
+    async fn forget(
+        &self,
+        #[zbus(object_server)] server: &zbus::ObjectServer,
+    ) -> Result<(), IwdError> {
+        let refused = {
+            let mut w = self.0.lock().unwrap();
+            w.calls.push(format!("Forget {}", self.2));
+            w.refuse_forget
+        };
+        if refused {
+            return Err(IwdError::Failed("Not authorized".into()));
+        }
         while self.0.lock().unwrap().stall_forget {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         self.0.lock().unwrap().known.remove(&self.1);
+        let n = server.interface::<_, Net>(self.1.as_str()).await?;
+        n.get()
+            .await
+            .known_network_changed(n.signal_emitter())
+            .await?;
+        Ok(())
     }
 }
 
@@ -673,6 +737,7 @@ fn network_follows_iwd_where_networkmanager_is_absent() {
             strength: 0.5,
             secure: true,
             active: false,
+            known: false,
         };
         let (name, args) = match password {
             Some(p) => ("connect_with", vec![Data::Text(p.into())]),
@@ -890,6 +955,7 @@ fn join(rt: &Runtime, b: &strand_services::Builtin, ssid: &str) {
         strength: 0.5,
         secure: true,
         active: false,
+        known: false,
     };
     b.network
         .dynamic()
@@ -1206,6 +1272,7 @@ fn a_disconnect_before_iwd_joins_stops_the_join_itself() {
         strength: 0.6,
         secure: true,
         active: false,
+        known: false,
     };
     b.network
         .dynamic()
@@ -1361,5 +1428,192 @@ fn iwd_has_no_saved_connections_and_says_so() {
         failures.lock().unwrap()[0],
         ("Work VPN".to_string(), IWD_NO_CONNECTIONS.to_string())
     );
+    s.shutdown();
+}
+
+/// (wifi-forget) A network iwd knows reads `known` (its `KnownNetwork`),
+/// one it does not reads not; `forget()` is `KnownNetwork.Forget`, after
+/// which iwd no longer knows it and `known` turns false. A forget iwd
+/// refuses, and one of a network it does not know (iwd not asked), is
+/// `failed(ssid, error)`.
+#[test]
+fn iwd_knows_saved_networks_and_forgets_them() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let w: W = Arc::new(Mutex::new(World {
+        powered: true,
+        connected: Some(HOME.into()),
+        known: HashSet::from([HOME.to_string()]),
+        ordered: vec![
+            (HOME.into(), -6000),
+            (ATTIC.into(), -7000),
+            (LOFT.into(), -8500),
+        ],
+        refuse_forget: true,
+        ..World::default()
+    }));
+    let _iwd = fake_iwd(&tokio, &bus.address, &w);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.network.cells();
+    let failures = failures_of(&b);
+    b.network.acquire(&rt);
+    b.network.acquire_field(field("access_points"));
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let known = || -> Vec<(String, bool)> {
+        let mut v: Vec<(String, bool)> = cells
+            .access_points
+            .get_untracked(&rt)
+            .unwrap()
+            .items()
+            .iter()
+            .filter(|(_, a)| a.ssid != "Cafe")
+            .map(|(_, a)| (a.ssid.clone(), a.known))
+            .collect();
+        v.sort();
+        v
+    };
+    let want = |home: bool| {
+        vec![
+            ("Attic".to_string(), false),
+            ("Home".to_string(), home),
+            ("Loft".to_string(), false),
+        ]
+    };
+    until(&rt, &s, "Home known, Attic and Loft not", || {
+        known() == want(true)
+    });
+    let forget = |ssid: &str| {
+        let item = AccessPoint {
+            ssid: ssid.into(),
+            strength: 0.5,
+            secure: true,
+            active: false,
+            known: true,
+        };
+        b.network
+            .dynamic()
+            .action(
+                &rt,
+                "forget",
+                Some(&item.to_data()),
+                &[],
+                Default::default(),
+            )
+            .unwrap();
+    };
+    let calls = |what: &str| {
+        w.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|c| *c == what)
+            .count()
+    };
+
+    // Refused: a failure naming Home, which stays known.
+    forget("Home");
+    until(&rt, &s, "the refusal", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        failures.lock().unwrap()[0],
+        ("Home".to_string(), "Not authorized".to_string())
+    );
+    assert_eq!(calls("Forget Home"), 1);
+    assert_eq!(known(), want(true));
+
+    // Forgotten: iwd no longer knows it, and `known` turns false.
+    w.lock().unwrap().refuse_forget = false;
+    forget("Home");
+    until(&rt, &s, "Home forgotten", || known() == want(false));
+    assert_eq!(calls("Forget Home"), 2);
+    assert!(!w.lock().unwrap().known.contains(HOME));
+
+    // Loft is not known: refused before iwd is asked.
+    forget("Loft");
+    until(&rt, &s, "Loft's failure", || {
+        failures.lock().unwrap().len() == 2
+    });
+    assert_eq!(
+        failures.lock().unwrap()[1],
+        ("Loft".to_string(), "`Loft` is not saved".to_string())
+    );
+    assert!(
+        !w.lock().unwrap().calls.iter().any(|c| c == "Forget Loft"),
+        "iwd was asked"
+    );
+    s.shutdown();
+}
+
+/// (wifi-forget) `network.join(ssid, password)` joins a network no scan
+/// lists (a hidden one) by name: `Station.ConnectHiddenNetwork`, the
+/// password given to iwd's agent for the network it names; one iwd does
+/// not find, and a wrong password, are `failed(ssid, error)`.
+#[test]
+fn iwd_joins_a_hidden_network_by_name() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let w = home_world("wlan0", None);
+    w.lock().unwrap().connected = None;
+    let _iwd = fake_iwd(&tokio, &bus.address, &w);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.network.cells();
+    let failures = failures_of(&b);
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let join = |ssid: &str, password: &str| {
+        b.network
+            .dynamic()
+            .action(
+                &rt,
+                "join",
+                None,
+                &[Data::Text(ssid.into()), Data::Text(password.into())],
+                Default::default(),
+            )
+            .unwrap();
+    };
+
+    // Not found: iwd's error, naming the network.
+    join("Nowhere", "");
+    until(&rt, &s, "the failure", || {
+        !failures.lock().unwrap().is_empty()
+    });
+    assert_eq!(
+        failures.lock().unwrap()[0],
+        ("Nowhere".to_string(), "Network not found".to_string())
+    );
+    // A wrong password: refused.
+    join("Den", "nope");
+    until(&rt, &s, "the wrong password", || {
+        failures.lock().unwrap().len() == 2
+    });
+    assert_eq!(
+        failures.lock().unwrap()[1],
+        ("Den".to_string(), "Operation failed".to_string())
+    );
+    // The right one: joined, the password given for the network iwd
+    // named.
+    join("Den", "hunter22");
+    until(&rt, &s, "Den joined", || {
+        cells.ssid.get_untracked(&rt) == Ok(Some("Den".into()))
+    });
+    assert_eq!(cells.connecting.get_untracked(&rt), Ok(None));
+    assert!(w.lock().unwrap().known.contains(DEN));
+    let hidden = w
+        .lock()
+        .unwrap()
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("ConnectHidden "))
+        .count();
+    assert_eq!(hidden, 3);
+    assert_eq!(failures.lock().unwrap().len(), 2);
     s.shutdown();
 }

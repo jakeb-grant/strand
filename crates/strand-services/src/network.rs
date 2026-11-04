@@ -39,6 +39,19 @@
 //! which knows only Wi-Fi networks, `kind` is `wifi` while one is
 //! joined, `connections` is empty and `up()`/`down()` fail saying so.
 //!
+//! (wifi-forget) An access point is `known` when a saved connection's
+//! `802-11-wireless.ssid` is its SSID: the saved connections are read,
+//! and their settings' signals followed, while the access points are
+//! listed too (`NewConnection` and `ConnectionRemoved` keep it current).
+//! `ap.forget()` deletes every connection saved for its SSID
+//! (`Settings.Connection.Delete`) in a task; one with none saved, or a
+//! `Delete` refused, is `failed(ssid, error)`. Over iwd, `known` is the
+//! network's `KnownNetwork` and `forget()` its `KnownNetwork.Forget`.
+//! `network.join(ssid, password)` joins a network by name, hidden ones
+//! included: through its saved connection if there is one, else a new one
+//! marked `hidden` (`AddAndActivateConnection` with no access point), in
+//! a task followed as any join is.
+//!
 //! Where NetworkManager is not running and iwd is, the network is iwd's
 //! ([`iwd`], owner-testing gaps 15): NetworkManager is chosen whenever it
 //! runs (it may run iwd as its own Wi-Fi backend), iwd otherwise; either
@@ -136,6 +149,9 @@ pub struct AccessPoint {
     pub strength: f64,
     pub secure: bool,
     pub active: bool,
+    /// (wifi-forget) It is saved: a NetworkManager connection for its
+    /// SSID, or an iwd known network.
+    pub known: bool,
 }
 
 /// How a Wi-Fi network is secured (`network.security`).
@@ -161,6 +177,15 @@ pub enum NetworkAction {
     Connect { item: AccessPoint },
     /// `ap.connect_with(password)`.
     ConnectWith { item: AccessPoint, password: String },
+    /// (wifi-forget) `ap.forget()`.
+    Forget { item: AccessPoint },
+    /// (wifi-forget) `network.join(ssid, password)`: a network by name,
+    /// hidden ones included; no password (or "") joins it open, or with
+    /// what the daemon has saved for it.
+    Join {
+        ssid: String,
+        password: Option<String>,
+    },
     /// `network.disconnect()`.
     Disconnect,
     /// `network.scan()`.
@@ -255,10 +280,11 @@ pub struct Network {
     pub connections: Vec<Connection>,
     /// Joining a network failed (no password and no secret agent to ask
     /// for one, a wrong one, out of range, timed out, or the service not
-    /// running): `on network.failed(ssid, error) { … }`. `ssid` is the
-    /// network the action was about (a connection's `name` for its `up()`
-    /// and `down()`), "" for one that names none (`scan()`, or a
-    /// `disconnect()` the service could not take).
+    /// running), or another action did (a `forget()`, a `scan()`): `on
+    /// network.failed(ssid, error) { … }`. `ssid` is the network the action
+    /// was about (a connection's `name` for its `up()` and `down()`), "" for
+    /// one that names none (`scan()`, or a `disconnect()` the service could
+    /// not take).
     pub failed: Event<(String, String)>,
 }
 
@@ -267,9 +293,10 @@ pub struct Network {
 /// names no network.
 fn refused(action: &NetworkAction, error: &str) -> Option<NetworkEvent> {
     let ssid = match action {
-        NetworkAction::Connect { item } | NetworkAction::ConnectWith { item, .. } => {
-            item.ssid.clone()
-        }
+        NetworkAction::Connect { item }
+        | NetworkAction::ConnectWith { item, .. }
+        | NetworkAction::Forget { item } => item.ssid.clone(),
+        NetworkAction::Join { ssid, .. } => ssid.clone(),
         NetworkAction::Up { item } | NetworkAction::Down { item } => item.name.clone(),
         NetworkAction::Disconnect | NetworkAction::Scan => String::new(),
     };
@@ -537,8 +564,12 @@ pub struct Nm {
     /// scan ended.
     scanned: bool,
     /// (services-round) The saved connections, by settings path, while
-    /// they are read (`connections` watched).
+    /// they are read (`connections` watched, or (wifi-forget) the access
+    /// points listed: their `known`).
     profiles: Option<BTreeMap<String, Profile>>,
+    /// `connections` is watched: the saved connections are shown there,
+    /// not only read for `known`.
+    shown: bool,
 }
 
 /// (services-round) A saved connection's settings that `connections`
@@ -548,6 +579,8 @@ struct Profile {
     uuid: String,
     name: String,
     kind: String,
+    /// (wifi-forget) A Wi-Fi connection's SSID (`802-11-wireless.ssid`).
+    ssid: Option<String>,
 }
 
 impl Nm {
@@ -652,9 +685,9 @@ impl Nm {
     }
 
     /// (services-round) The saved connections, by name, each active when
-    /// an activated connection is its; empty while not read.
+    /// an activated connection is its; empty while not shown.
     fn connections(&self) -> Vec<Connection> {
-        let Some(profiles) = &self.profiles else {
+        let Some(profiles) = self.profiles.as_ref().filter(|_| self.shown) else {
             return Vec::new();
         };
         let mut out: Vec<Connection> = profiles
@@ -695,6 +728,14 @@ impl Nm {
             .map(|(path, _)| path.clone())
     }
 
+    /// (wifi-forget) A connection saved for the Wi-Fi network `name`, as
+    /// last read.
+    fn known(&self, name: &str) -> bool {
+        self.profiles
+            .as_ref()
+            .is_some_and(|p| p.values().any(|p| p.ssid.as_deref() == Some(name)))
+    }
+
     /// The state these objects make.
     pub fn state(&self, scanning: bool) -> Network {
         let state = dbus::number(&self.manager, "State").unwrap_or(0.0);
@@ -719,6 +760,7 @@ impl Nm {
                     strength: strength(p),
                     secure: secure(p),
                     active: joined_aps.contains(path),
+                    known: self.known(&name),
                 };
                 by_ssid
                     .entry(name)
@@ -775,13 +817,19 @@ impl Nm {
     /// change only by the settings' own signals ([`Nm::settings_signal`]),
     /// not with the connection states that make the rest be read again.
     /// A new NetworkManager forgets them first ([`Nm::profiles`] `None`).
+    /// They are read while `profiles` (`connections` watched, and shown
+    /// there) or (wifi-forget) while `scanning`, for the access points'
+    /// `known`.
     async fn read(&mut self, daemon: &Daemon, scanning: bool, profiles: bool) -> zbus::Result<()> {
         let kept = self.profiles.take();
-        *self = Nm::default();
+        *self = Nm {
+            shown: profiles,
+            ..Nm::default()
+        };
         if daemon.owner().is_none() {
             return Ok(());
         }
-        if profiles {
+        if profiles || scanning {
             self.profiles = Some(match kept {
                 Some(p) => p,
                 None => read_profiles(daemon.conn()).await?,
@@ -992,9 +1040,10 @@ async fn read_profiles(conn: &zbus::Connection) -> zbus::Result<BTreeMap<String,
     Ok(out)
 }
 
-/// (services-round) One saved connection's `connection` settings; `None`
-/// for one gone meanwhile, or NetworkManager's loopback connection. A
-/// hung NetworkManager is an error.
+/// (services-round) One saved connection's `connection` settings (and,
+/// wifi-forget, a Wi-Fi one's SSID); `None` for one gone meanwhile, or
+/// NetworkManager's loopback connection. A hung NetworkManager is an
+/// error.
 async fn read_profile(conn: &zbus::Connection, path: &str) -> zbus::Result<Option<Profile>> {
     let settings = dbus::timed_for(
         dbus::READ_TIMEOUT,
@@ -1025,6 +1074,9 @@ async fn read_profile(conn: &zbus::Connection, path: &str) -> zbus::Result<Optio
         uuid: text("uuid"),
         name: text("id"),
         kind,
+        ssid: settings
+            .get("802-11-wireless")
+            .and_then(|w| ssid_at(w, "ssid")),
     }))
 }
 
@@ -1036,6 +1088,9 @@ enum Switched {
     Up(String, Result<String, String>),
     /// `down()` of the connection named so: done, or why not.
     Down(String, Result<(), String>),
+    /// (wifi-forget) `ap.forget()` of the network named so: done, or why
+    /// not.
+    Forget(String, Result<(), String>),
 }
 
 /// (services-round) Activates saved connection `uuid` (`path` when it
@@ -1219,7 +1274,8 @@ async fn with_nm(
         if listing {
             sync_subscriptions(&mut daemon, &nm, listing, false, &mut used).await;
         }
-        if profiles {
+        // (wifi-forget) Read for the access points' `known` too.
+        if profiles || listing {
             if !daemon.subscribed("settings")
                 && let Ok(r) = dbus::namespace_rule(SETTINGS)
                 && let Err(e) = daemon.subscribe("settings", r).await
@@ -1535,8 +1591,12 @@ async fn with_nm(
                                 None
                             }
                         },
-                        Ok(Switched::Up(name, Err(e)) | Switched::Down(name, Err(e))) => Some((name, e)),
-                        Ok(Switched::Down(_, Ok(()))) => None,
+                        Ok(
+                            Switched::Up(name, Err(e))
+                            | Switched::Down(name, Err(e))
+                            | Switched::Forget(name, Err(e)),
+                        ) => Some((name, e)),
+                        Ok(Switched::Down(_, Ok(())) | Switched::Forget(_, Ok(()))) => None,
                         Err(e) => {
                             log::debug!("network: a switch stopped: {e}");
                             None
@@ -1590,6 +1650,47 @@ async fn with_nm(
                             Switched::Down(name, deactivate(&conn, &active).await)
                         });
                         switch_names.insert(task.id(), label);
+                    }
+                    Some(Msg::Action(NetworkAction::Forget { item })) => {
+                        // (wifi-forget) Its saved connections are
+                        // deleted in a task; their `ConnectionRemoved`
+                        // turns `known` false.
+                        let conn = daemon.conn().clone();
+                        let name = item.ssid;
+                        let label = name.clone();
+                        let task = switching.spawn(async move {
+                            let r = forget(&conn, &name).await;
+                            Switched::Forget(name, r)
+                        });
+                        switch_names.insert(task.id(), label);
+                    }
+                    Some(Msg::Action(NetworkAction::Join { ssid, password })) => {
+                        // (wifi-forget) A network by name, which no scan
+                        // may list (a hidden one): asked in a task and
+                        // followed as a join is. A join of it already
+                        // asked or activating with this password is a
+                        // repeat, dropped.
+                        let password = password.filter(|p| !p.is_empty());
+                        let asked_with = fingerprint(password.as_deref());
+                        if asked.asking.contains_key(&ssid) {
+                            log::debug!("network: already joining {ssid}");
+                            continue;
+                        }
+                        if repeats_joining(&mut joining, &ssid, asked_with) {
+                            continue;
+                        }
+                        let conn = daemon.conn().clone();
+                        let devices: Vec<String> = nm.wifi_devices.keys().cloned().collect();
+                        let name = ssid.clone();
+                        let pw = password.clone();
+                        let id = asking
+                            .spawn(async move { connect_hidden(&conn, &devices, &name, pw.as_deref()).await })
+                            .id();
+                        asked.started(ssid.clone(), id, password.as_deref());
+                        pending.join = Some(ssid);
+                        if !publish(cx, &nm, &pending, listing) {
+                            return Ok(Next::Stop);
+                        }
                     }
                     Some(Msg::Write(w)) if w.field == "wifi" => {
                         let on: bool = w.value().unwrap_or(nm.state(listing).wifi);
@@ -1691,7 +1792,9 @@ async fn with_nm(
                             NetworkAction::Disconnect
                             | NetworkAction::Scan
                             | NetworkAction::Up { .. }
-                            | NetworkAction::Down { .. } => continue,
+                            | NetworkAction::Down { .. }
+                            | NetworkAction::Forget { .. }
+                            | NetworkAction::Join { .. } => continue,
                         };
                         // Asked in a task (up to 25 s for the
                         // activation): NetworkManager's signals, the
@@ -2425,40 +2528,8 @@ async fn connect(
         Some(pw) => security(kind, pw)?,
         None => None,
     };
-    if let Some((path, mut settings)) = saved {
-        if let Some(secret) = &secret {
-            // The new password, saved in it: merged into the section the
-            // profile has, so what else it says (a shared-key WEP
-            // `auth-alg`, its transmit key, `proto`, `pmf`) stays.
-            let had = settings.remove("802-11-wireless-security");
-            let sec = merged_security(had, secret)?;
-            settings.insert("802-11-wireless-security".into(), sec);
-            dbus::timed_for(
-                dbus::READ_TIMEOUT,
-                conn.call_method(
-                    Some(NM),
-                    path.as_str(),
-                    Some(CONNECTION_IFACE),
-                    "Update",
-                    &(settings,),
-                ),
-            )
-            .await?;
-        }
-        let active: zbus::zvariant::OwnedObjectPath = dbus::timed_for(
-            ACTIVATE_TIMEOUT,
-            conn.call_method(
-                Some(NM),
-                ROOT,
-                Some(NM),
-                "ActivateConnection",
-                &(path.as_ref(), &dev, &ap),
-            ),
-        )
-        .await?
-        .body()
-        .deserialize()?;
-        return Ok(active.to_string());
+    if let Some((path, settings)) = saved {
+        return activate_saved(conn, path, settings, secret.as_ref(), &dev, &ap).await;
     }
     let mut new: HashMap<&str, HashMap<&str, OwnedValue>> = HashMap::new();
     if let Some(secret) = secret {
@@ -2483,6 +2554,116 @@ async fn connect(
     Ok(active.to_string())
 }
 
+/// Activate saved connection `path` (its `settings`) on `dev` and `ap`
+/// ("/" for none), the new password's `secret` saved in it first: merged
+/// into the section the profile has, so what else it says (a shared-key
+/// WEP `auth-alg`, its transmit key, `proto`, `pmf`) stays. The active
+/// connection NetworkManager made.
+async fn activate_saved(
+    conn: &zbus::Connection,
+    path: zbus::zvariant::OwnedObjectPath,
+    mut settings: Settings,
+    secret: Option<&HashMap<&'static str, OwnedValue>>,
+    dev: &zbus::zvariant::ObjectPath<'_>,
+    ap: &zbus::zvariant::ObjectPath<'_>,
+) -> zbus::Result<String> {
+    if let Some(secret) = secret {
+        let had = settings.remove("802-11-wireless-security");
+        let sec = merged_security(had, secret)?;
+        settings.insert("802-11-wireless-security".into(), sec);
+        dbus::timed_for(
+            dbus::READ_TIMEOUT,
+            conn.call_method(
+                Some(NM),
+                path.as_str(),
+                Some(CONNECTION_IFACE),
+                "Update",
+                &(settings,),
+            ),
+        )
+        .await?;
+    }
+    let active: zbus::zvariant::OwnedObjectPath = dbus::timed_for(
+        ACTIVATE_TIMEOUT,
+        conn.call_method(
+            Some(NM),
+            ROOT,
+            Some(NM),
+            "ActivateConnection",
+            &(path.as_ref(), dev, ap),
+        ),
+    )
+    .await?
+    .body()
+    .deserialize()?;
+    Ok(active.to_string())
+}
+
+/// (wifi-forget) Join the Wi-Fi network named `name`, which no scan need
+/// list (a hidden network), on the first Wi-Fi device: through the
+/// connection saved for it if there is one (given `password`, saved in
+/// it first), else a new one marked `hidden` (NetworkManager then probes
+/// for it by name), a WPA personal one with `password`, else open. The
+/// active connection NetworkManager made. Every call bounded, as
+/// [`connect`]'s are.
+async fn connect_hidden(
+    conn: &zbus::Connection,
+    devices: &[String],
+    name: &str,
+    password: Option<&str>,
+) -> zbus::Result<String> {
+    use zbus::zvariant::{ObjectPath, Value};
+    let Some(dev) = devices.first() else {
+        return Err(zbus::Error::Failure("there is no Wi-Fi device".into()));
+    };
+    let dev = ObjectPath::try_from(dev.as_str())?;
+    let none = ObjectPath::from_static_str_unchecked("/");
+    let secret = match password {
+        Some(pw) => security(Kind::Personal("wpa-psk"), pw)?,
+        None => None,
+    };
+    if let Some((path, settings)) = saved_connection(conn, name).await? {
+        return activate_saved(conn, path, settings, secret.as_ref(), &dev, &none).await;
+    }
+    let text = |s: &str| OwnedValue::try_from(Value::from(s.to_string()));
+    let mut new: HashMap<&str, HashMap<&str, OwnedValue>> = HashMap::from([
+        (
+            "connection",
+            HashMap::from([("id", text(name)?), ("type", text("802-11-wireless")?)]),
+        ),
+        (
+            "802-11-wireless",
+            HashMap::from([
+                (
+                    "ssid",
+                    OwnedValue::try_from(Value::from(name.as_bytes().to_vec()))?,
+                ),
+                ("hidden", OwnedValue::from(true)),
+            ]),
+        ),
+    ]);
+    if let Some(secret) = secret {
+        new.insert("802-11-wireless-security", secret);
+    }
+    let (_, active): (
+        zbus::zvariant::OwnedObjectPath,
+        zbus::zvariant::OwnedObjectPath,
+    ) = dbus::timed_for(
+        ACTIVATE_TIMEOUT,
+        conn.call_method(
+            Some(NM),
+            ROOT,
+            Some(NM),
+            "AddAndActivateConnection",
+            &(new, &dev, &none),
+        ),
+    )
+    .await?
+    .body()
+    .deserialize()?;
+    Ok(active.to_string())
+}
+
 /// A connection's settings, as `GetSettings` answers them.
 type Settings = HashMap<String, HashMap<String, OwnedValue>>;
 
@@ -2492,6 +2673,49 @@ async fn saved_connection(
     conn: &zbus::Connection,
     name: &str,
 ) -> zbus::Result<Option<(zbus::zvariant::OwnedObjectPath, Settings)>> {
+    Ok(saved_connections(conn, name, true)
+        .await?
+        .into_iter()
+        .next())
+}
+
+/// (wifi-forget) Forget the Wi-Fi network `name`: every connection saved
+/// for its SSID is deleted (`Settings.Connection.Delete`; NetworkManager
+/// deactivates one that is active, leaving the network). With none saved
+/// it fails, as a refused `Delete` does.
+async fn forget(conn: &zbus::Connection, name: &str) -> Result<(), String> {
+    let saved = saved_connections(conn, name, false)
+        .await
+        .map_err(error_text)?;
+    if saved.is_empty() {
+        return Err(format!("`{name}` is not saved"));
+    }
+    for (path, _) in saved {
+        dbus::timed_for(
+            dbus::READ_TIMEOUT,
+            conn.call_method(
+                Some(NM),
+                path.as_str(),
+                Some(CONNECTION_IFACE),
+                "Delete",
+                &(),
+            ),
+        )
+        .await
+        .map_err(error_text)?;
+    }
+    Ok(())
+}
+
+/// The connections saved for the Wi-Fi network `name` (its SSID their
+/// `802-11-wireless.ssid`), with their settings (no secrets): the first
+/// only when `first`.
+async fn saved_connections(
+    conn: &zbus::Connection,
+    name: &str,
+    first: bool,
+) -> zbus::Result<Vec<(zbus::zvariant::OwnedObjectPath, Settings)>> {
+    let mut out = Vec::new();
     let saved: Vec<zbus::zvariant::OwnedObjectPath> = dbus::timed_for(
         dbus::READ_TIMEOUT,
         conn.call_method(
@@ -2529,10 +2753,13 @@ async fn saved_connection(
             .get("802-11-wireless")
             .is_some_and(|w| ssid_at(w, "ssid").as_deref() == Some(name))
         {
-            return Ok(Some((path, settings)));
+            out.push((path, settings));
+            if first {
+                break;
+            }
         }
     }
-    Ok(None)
+    Ok(out)
 }
 
 #[cfg(test)]

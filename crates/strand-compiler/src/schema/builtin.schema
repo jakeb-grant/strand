@@ -771,10 +771,15 @@ provisional record AccessPoint key ssid {
   secure: bool
   /// It is the network joined.
   active: bool
+  /// It is saved: the daemon keeps its settings and password, so
+  /// `connect()` joins it without one.
+  known: bool
   /// Joins it.
   action connect()
   /// Joins a `secure` network with `password`.
   action connect_with(password: text)
+  /// Forgets it: its saved settings and password go.
+  action forget()
 }
 
 /// The battery, from UPower.
@@ -1111,6 +1116,9 @@ provisional service network {
   action disconnect()
   /// Scans for Wi-Fi networks now.
   action scan()
+  /// Joins the Wi-Fi network named `ssid`, which need not be in
+  /// `access_points` (a hidden one), with `password` when it is secured.
+  action join(ssid: text, password: text = "")
   /// Joining a network failed: `on network.failed(ssid, error) { … }`.
   event failed(ssid: text, error: text)
 }
@@ -2240,8 +2248,8 @@ element input: node {
   /// `password` masks it, and the text it binds is a password:
   /// `check::secret_flow` warns where that reaches anything that shows,
   /// keeps or sends it, other than `auth.submit`, `polkit.respond`,
-  /// `greetd.submit` and a network's `connect_with` (its length and
-  /// whether it is empty are free to show).
+  /// `greetd.submit`, a network's `connect_with` and `network.join`'s
+  /// `password` (its length and whether it is empty are free to show).
   type: InputKind
   /// Routes arrow keys to a `list`: `nav: results`.
   nav: Node

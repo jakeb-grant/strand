@@ -34,6 +34,14 @@
 //! `Station.Disconnect` in a task; the joins it stops are not reported
 //! (iwd answers them `Aborted`) unless it fails, when they go on.
 //! `scan()` is `Station.Scan`, iwd's `Busy` being no failure.
+//!
+//! (wifi-forget) A network in range is `known` while its `KnownNetwork`
+//! names one (iwd keeps its passphrase), followed through the network's
+//! `PropertiesChanged`; `forget()` is `KnownNetwork.Forget` on that path,
+//! in a task, its failure `failed(ssid, error)`. `network.join(ssid,
+//! password)` is `Station.ConnectHiddenNetwork`, followed as a join is;
+//! its password is held by name, since iwd names the hidden network's
+//! object only when it asks the agent (which reads that object's `Name`).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -380,11 +388,13 @@ impl Iwd {
                     strength: if active { strength } else { *s },
                     secure: matches!(self.kind(path), Some(Kind::Personal(_) | Kind::Wep)),
                     active,
+                    known: self.known_network(path).is_some(),
                 };
                 by_ssid
                     .entry(ssid)
                     .and_modify(|e| {
                         e.active |= ap.active;
+                        e.known |= ap.known;
                         if ap.strength > e.strength {
                             e.strength = ap.strength;
                         }
@@ -424,6 +434,35 @@ impl Iwd {
             connections: Vec::new(),
             failed: Event::default(),
         }
+    }
+
+    /// (wifi-forget) The known network that network `path` names: iwd
+    /// keeps its passphrase.
+    fn known_network(&self, path: &str) -> Option<String> {
+        self.props(path, NETWORK)
+            .and_then(|n| object_path(n, "KnownNetwork"))
+            .filter(|k| k != "/")
+    }
+
+    /// (wifi-forget) The known networks of every network named `ssid`, to
+    /// forget; or why there are none.
+    fn to_forget(&self, ssid: &str) -> Result<Vec<String>, String> {
+        let mut known: Vec<String> = self
+            .objects
+            .iter()
+            .filter(|(_, ifaces)| {
+                ifaces
+                    .get(NETWORK)
+                    .is_some_and(|n| dbus::text(n, "Name").as_deref() == Some(ssid))
+            })
+            .filter_map(|(path, _)| self.known_network(path))
+            .collect();
+        known.sort();
+        known.dedup();
+        if known.is_empty() {
+            return Err(format!("`{ssid}` is not saved"));
+        }
+        Ok(known)
     }
 
     /// How network `path` is joined (iwd's `Type`).
@@ -624,6 +663,10 @@ impl Iwd {
 /// The passwords `connect_with` gives, by network path, for the agent.
 type Passwords = Arc<Mutex<HashMap<String, String>>>;
 
+/// (wifi-forget) The passwords `network.join` gives, by network name: a
+/// hidden network's path is known only once iwd asks for it.
+type Hidden = Arc<Mutex<HashMap<String, String>>>;
+
 /// iwd's unique bus name: the only peer the agents answer (review minor
 /// 7: a password goes to iwd, never to another process on the bus).
 type Owner = Arc<Mutex<Option<String>>>;
@@ -640,7 +683,23 @@ fn from_iwd(iwd: &Owner, h: &zbus::message::Header<'_>) -> bool {
 /// The passphrase agent (`net.connman.iwd.Agent`).
 struct Agent {
     passwords: Passwords,
+    hidden: Hidden,
     iwd: Owner,
+}
+
+/// (wifi-forget) The name of iwd's network `path`, for a hidden
+/// network's password.
+async fn network_name(conn: &zbus::Connection, path: &str) -> Option<String> {
+    let r: zbus::Result<zbus::zvariant::OwnedValue> = call(
+        conn,
+        path,
+        dbus::PROPERTIES,
+        "Get",
+        &(NETWORK, "Name"),
+        dbus::CALL_TIMEOUT,
+    )
+    .await;
+    r.ok().and_then(|v| String::try_from(v).ok())
 }
 
 #[derive(Debug, zbus::DBusError)]
@@ -655,12 +714,14 @@ enum AgentError {
 impl Agent {
     fn release(&self) {}
 
-    /// The password `connect_with` gave for `network`; refused when none
-    /// was (a `connect()` of a network iwd does not know), and to anyone
-    /// but iwd.
-    fn request_passphrase(
+    /// The password `connect_with` gave for `network`, else the one
+    /// `network.join` gave for its name; refused when none was (a
+    /// `connect()` of a network iwd does not know), and to anyone but
+    /// iwd.
+    async fn request_passphrase(
         &self,
         #[zbus(header)] h: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
         network: ObjectPath<'_>,
     ) -> Result<String, AgentError> {
         if !from_iwd(&self.iwd, &h) {
@@ -671,7 +732,17 @@ impl Agent {
             .lock()
             .ok()
             .and_then(|p| p.get(network.as_str()).cloned());
-        given.ok_or_else(|| AgentError::Canceled("no password was given".into()))
+        if let Some(given) = given {
+            return Ok(given);
+        }
+        let hiding = self.hidden.lock().is_ok_and(|h| !h.is_empty());
+        if hiding && let Some(name) = network_name(conn, network.as_str()).await {
+            let given = self.hidden.lock().ok().and_then(|h| h.get(&name).cloned());
+            if let Some(given) = given {
+                return Ok(given);
+            }
+        }
+        Err(AgentError::Canceled("no password was given".into()))
     }
 
     fn cancel(&self, reason: String) {
@@ -721,6 +792,7 @@ impl Agents {
     async fn serve(
         conn: &zbus::Connection,
         passwords: Passwords,
+        hidden: Hidden,
         levels: mpsc::UnboundedSender<u8>,
         iwd: Owner,
     ) -> zbus::Result<Agents> {
@@ -730,6 +802,7 @@ impl Agents {
         let _ = server.remove::<Levels, _>(AGENT_PATH).await;
         let agent = Agent {
             passwords,
+            hidden,
             iwd: iwd.clone(),
         };
         server.at(AGENT_PATH, agent).await?;
@@ -907,13 +980,40 @@ async fn join(
     r.map_err(join_error)
 }
 
+/// (wifi-forget) Join the network named `ssid`, hidden, through
+/// `station` (`Station.ConnectHiddenNetwork`): iwd answers once it is
+/// joined or not, asking the agent for a passphrase it does not know.
+/// Once `stop` is raised nothing is asked.
+async fn join_hidden(
+    conn: zbus::Connection,
+    station: String,
+    ssid: String,
+    stop: Arc<AtomicBool>,
+) -> Result<(), String> {
+    if stop.load(Ordering::SeqCst) {
+        return Err("the join was stopped".into());
+    }
+    let r: zbus::Result<()> = call(
+        &conn,
+        &station,
+        STATION,
+        "ConnectHiddenNetwork",
+        &(ssid.as_str(),),
+        super::ACTIVATE_TIMEOUT,
+    )
+    .await;
+    r.map_err(join_error)
+}
+
 /// A join asked and not answered.
 #[derive(Debug)]
 struct Join {
     /// Its network's name.
     ssid: String,
-    /// Its network's path.
+    /// Its network's path ("" for a hidden one's, [`Join::hidden`]).
     path: String,
+    /// (wifi-forget) A `network.join()`: its password is kept by name.
+    hidden: bool,
     /// The `disconnect()` (its task) that stopped it: its end is not
     /// reported, unless that disconnect fails (connectivity-r1-6).
     stopped_by: Option<tokio::task::Id>,
@@ -930,6 +1030,7 @@ impl Join {
         Join {
             ssid,
             path,
+            hidden: false,
             stopped_by: None,
             dropped: false,
             stop,
@@ -1000,6 +1101,31 @@ fn fail_joins(cx: &mut Cx<Network>, joining: &mut Joining, why: &str) -> bool {
     true
 }
 
+/// (wifi-forget) Forgets each of the `known` networks
+/// (`KnownNetwork.Forget`): iwd drops its passphrase, and leaves it if it
+/// is joined.
+async fn forget(conn: &zbus::Connection, known: &[String]) -> Result<(), String> {
+    for k in known {
+        let r: zbus::Result<()> =
+            call(conn, k, KNOWN_NETWORK, "Forget", &(), dbus::CALL_TIMEOUT).await;
+        r.map_err(error_text)?;
+    }
+    Ok(())
+}
+
+/// (wifi-forget) Forgets asked and not answered, by task: their networks.
+type Forgetting = HashMap<tokio::task::Id, String>;
+
+/// Every forget in flight fails with `why` (its task is dropped with the
+/// body); `false` once the service was stopped.
+fn fail_forgets(cx: &mut Cx<Network>, forgetting: &mut Forgetting, why: &str) -> bool {
+    let mut ssids: Vec<String> = forgetting.drain().map(|(_, s)| s).collect();
+    ssids.sort();
+    ssids
+        .into_iter()
+        .all(|ssid| cx.emit(NetworkEvent::Failed((ssid, why.to_string()))))
+}
+
 /// Whether `name` has an owner on `conn` now.
 pub(super) async fn owned(conn: &zbus::Connection, name: &str) -> bool {
     let Ok(dbus) = zbus::fdo::DBusProxy::new(conn).await else {
@@ -1034,8 +1160,10 @@ pub(super) async fn run(
     }
     let owner: Owner = Arc::new(Mutex::new(daemon.owner().map(|o| o.to_string())));
     let passwords = Passwords::default();
+    let hidden = Hidden::default();
     let (levels_tx, mut levels) = mpsc::unbounded_channel();
-    let mut agents = Agents::serve(conn, passwords.clone(), levels_tx, owner).await?;
+    let mut agents =
+        Agents::serve(conn, passwords.clone(), hidden.clone(), levels_tx, owner).await?;
     let mut iwd = Iwd::default();
     let mut joins: JoinSet<Result<(), String>> = JoinSet::new();
     let mut joining = Joining::new();
@@ -1044,6 +1172,9 @@ pub(super) async fn run(
     let mut leave: Option<(tokio::task::Id, String)> = None;
     // Failures of joins `leave` stopped, while it is in flight.
     let mut held: Vec<(tokio::task::Id, String, String)> = Vec::new();
+    // (wifi-forget) `forget()`s in flight.
+    let mut forgets: JoinSet<Result<(), String>> = JoinSet::new();
+    let mut forgetting = Forgetting::new();
     let mut pending = Pending {
         rates: rates.now(),
         ..Pending::default()
@@ -1091,7 +1222,9 @@ pub(super) async fn run(
                         return Err(ServiceError("the system bus connection ended".into()));
                     }
                     Some(DaemonEvent::Owner) => {
-                        if !fail_joins(cx, &mut joining, "iwd stopped") {
+                        if !fail_joins(cx, &mut joining, "iwd stopped")
+                            || !fail_forgets(cx, &mut forgetting, "iwd stopped")
+                        {
                             break 'body Next::Stop;
                         }
                         break 'body Next::Again;
@@ -1118,7 +1251,9 @@ pub(super) async fn run(
                     if o.args().ok().is_some_and(|a| a.new_owner().is_some()) {
                         // Its joins are dropped with this body (review
                         // minor 2).
-                        if !fail_joins(cx, &mut joining, "NetworkManager took over") {
+                        if !fail_joins(cx, &mut joining, "NetworkManager took over")
+                            || !fail_forgets(cx, &mut forgetting, "NetworkManager took over")
+                        {
                             break 'body Next::Stop;
                         }
                         break 'body Next::Again;
@@ -1191,7 +1326,11 @@ pub(super) async fn run(
                     let Some(j) = joining.remove(&id) else {
                         continue;
                     };
-                    if let Ok(mut p) = passwords.lock() {
+                    if j.hidden {
+                        if let Ok(mut h) = hidden.lock() {
+                            h.remove(&j.ssid);
+                        }
+                    } else if let Ok(mut p) = passwords.lock() {
                         p.remove(&j.path);
                     }
                     if !j.cancelled() && pending.join.as_deref() == Some(j.ssid.as_str()) {
@@ -1221,6 +1360,23 @@ pub(super) async fn run(
                     }
                     if !publish(cx, &iwd, &pending, listing) {
                         break 'body Next::Stop;
+                    }
+                }
+                Some(done) = forgets.join_next_with_id(), if !forgets.is_empty() => {
+                    let (id, r) = match done {
+                        Ok((id, r)) => (id, r),
+                        Err(e) => (e.id(), Err("the forget stopped".to_string())),
+                    };
+                    let Some(ssid) = forgetting.remove(&id) else {
+                        continue;
+                    };
+                    // Done: iwd's signals say the network is no longer
+                    // known.
+                    if let Err(error) = r {
+                        log::info!("network: not forgetting {ssid}: {error}");
+                        if !cx.emit(NetworkEvent::Failed((ssid, error))) {
+                            break 'body Next::Stop;
+                        }
                     }
                 }
                 m = cx.recv() => match m {
@@ -1319,6 +1475,50 @@ pub(super) async fn run(
                             break 'body Next::Stop;
                         }
                     }
+                    Some(Msg::Action(NetworkAction::Join { ssid, password })) => {
+                        // (wifi-forget) A network by name, hidden ones
+                        // included: followed as any join is. One join of
+                        // a network at a time; a repeat is dropped.
+                        if joining.values().any(|j| j.ssid == ssid && !j.cancelled()) {
+                            continue;
+                        }
+                        let Some((station, _)) = iwd.station() else {
+                            if !cx.emit(NetworkEvent::Failed((ssid, "Wi-Fi is off".into()))) {
+                                break 'body Next::Stop;
+                            }
+                            continue;
+                        };
+                        let station = station.clone();
+                        if let Some(password) = password.filter(|p| !p.is_empty())
+                            && let Ok(mut h) = hidden.lock()
+                        {
+                            h.insert(ssid.clone(), password);
+                        }
+                        let stop = Arc::new(AtomicBool::new(false));
+                        let task = joins.spawn(join_hidden(conn.clone(), station, ssid.clone(), stop.clone()));
+                        pending.join = Some(ssid.clone());
+                        let mut j = Join::new(ssid, String::new(), stop);
+                        j.hidden = true;
+                        joining.insert(task.id(), j);
+                        if !publish(cx, &iwd, &pending, listing) {
+                            break 'body Next::Stop;
+                        }
+                    }
+                    Some(Msg::Action(NetworkAction::Forget { item })) => {
+                        match iwd.to_forget(&item.ssid) {
+                            Err(error) => {
+                                log::info!("network: not forgetting {}: {error}", item.ssid);
+                                if !cx.emit(NetworkEvent::Failed((item.ssid, error))) {
+                                    break 'body Next::Stop;
+                                }
+                            }
+                            Ok(known) => {
+                                let conn = conn.clone();
+                                let task = forgets.spawn(async move { forget(&conn, &known).await });
+                                forgetting.insert(task.id(), item.ssid);
+                            }
+                        }
+                    }
                     Some(Msg::Action(NetworkAction::Up { item } | NetworkAction::Down { item })) => {
                         // (services-round) Saved connections are
                         // NetworkManager's.
@@ -1333,7 +1533,9 @@ pub(super) async fn run(
                             NetworkAction::Disconnect
                             | NetworkAction::Scan
                             | NetworkAction::Up { .. }
-                            | NetworkAction::Down { .. } => continue,
+                            | NetworkAction::Down { .. }
+                            | NetworkAction::Forget { .. }
+                            | NetworkAction::Join { .. } => continue,
                         };
                         // One join of a network at a time; a repeat is
                         // dropped.
@@ -1750,6 +1952,54 @@ mod tests {
             ))
         );
         assert_eq!(iwd.to_join("Home", false), Ok((home.to_string(), None)));
+    }
+
+    /// (wifi-forget) A network iwd knows (its `KnownNetwork` names one) is
+    /// `known`, and is forgotten through that known network; one it does
+    /// not know (`KnownNetwork` "/" or absent) is neither, and forgetting
+    /// it fails before iwd is asked.
+    #[test]
+    fn a_known_network_is_known_and_forgotten_through_it() {
+        let mut iwd = wlan0();
+        let dev = "/net/connman/iwd/0/4";
+        for (net, known) in [
+            ("486f6d65_psk", "/net/connman/iwd/486f6d65_psk"),
+            ("43616665_open", "/"),
+        ] {
+            iwd.objects
+                .get_mut(&format!("{dev}/{net}"))
+                .unwrap()
+                .get_mut(NETWORK)
+                .unwrap()
+                .insert(
+                    "KnownNetwork".into(),
+                    OwnedValue::try_from(path(known)).unwrap(),
+                );
+        }
+        let known: Vec<(String, bool)> = iwd
+            .state(true)
+            .access_points
+            .into_iter()
+            .map(|a| (a.ssid, a.known))
+            .collect();
+        assert_eq!(
+            known,
+            [
+                ("Home".to_string(), true),
+                ("Cafe".to_string(), false),
+                ("Work".to_string(), false)
+            ]
+        );
+        assert_eq!(
+            iwd.to_forget("Home"),
+            Ok(vec!["/net/connman/iwd/486f6d65_psk".to_string()])
+        );
+        for ssid in ["Cafe", "Work", "Gone"] {
+            assert!(
+                iwd.to_forget(ssid).unwrap_err().contains("is not saved"),
+                "{ssid}"
+            );
+        }
     }
 
     /// Review minor 4: the station going (the radio off) or coming back

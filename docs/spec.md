@@ -537,8 +537,8 @@ monitor, the keyboard always).
   a pose or keyframes; an argument of a declared `action`
   (the process list shows it) or of an action of a service or record
   (`clipboard.copy`, `n.reply`, a `from dbus` method), other than
-  `auth.submit`, `polkit.respond`, `greetd.submit` and an access
-  point's `connect_with`; a write to a service's field or a settings
+  `auth.submit`, `polkit.respond`, `greetd.submit`, an access
+  point's `connect_with` and `network.join`'s `password`; a write to a service's field or a settings
   field; and a `state` holding it that is `persist` or exported. A
   `bool` made from it (`pw != ""`, `pw.contains(" ")`) and its length
   (`pw.len`) carry nothing: password dots and a field that changes
