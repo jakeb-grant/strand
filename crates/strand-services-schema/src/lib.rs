@@ -32,7 +32,8 @@ pub const POLLED: [(&str, std::time::Duration); 4] = [
 
 /// `battery`: UPower's display device and power sources.
 pub const BATTERY: &str = include_str!("battery.schema");
-/// `brightness`: the backlight (sysfs, logind).
+/// `brightness`: the screen's and the keyboard's backlights (sysfs,
+/// logind).
 pub const BRIGHTNESS: &str = include_str!("brightness.schema");
 /// `network`: NetworkManager or iwd.
 pub const NETWORK: &str = include_str!("network.schema");

@@ -1,6 +1,6 @@
 //! The idle budget of the D-Bus services: with every one of them running
 //! against its daemon (python-dbusmock's UPower, NetworkManager, BlueZ,
-//! logind and power-profiles-daemon, a fake backlight, an MPRIS player, the tray's watcher and
+//! logind and power-profiles-daemon, a fake backlight and keyboard light, an MPRIS player, the tray's watcher and
 //! the notification server) and nothing changing, the services thread
 //! does not wake at all: they wait on D-Bus and inotify, nothing polls.
 //! A change wakes it, and it sleeps again.
@@ -135,6 +135,15 @@ fn the_dbus_services_sleep_when_nothing_changes() {
     std::fs::write(light.join("max_brightness"), "10\n").unwrap();
     std::fs::write(light.join("actual_brightness"), "5\n").unwrap();
     strand_services::brightness::set_backlight_root(Some(root.clone()));
+    // A keyboard light, watched too (never the machine's own).
+    let leds = std::env::temp_dir().join(format!("strand-idle-leds-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&leds);
+    let kbd = leds.join("dell::kbd_backlight");
+    std::fs::create_dir_all(&kbd).unwrap();
+    std::fs::write(kbd.join("max_brightness"), "2\n").unwrap();
+    std::fs::write(kbd.join("brightness"), "1\n").unwrap();
+    std::fs::write(kbd.join("brightness_hw_changed"), "1\n").unwrap();
+    strand_services::brightness::set_leds_root(Some(leds.clone()));
     let _player = tokio.block_on(async {
         zbus::connection::Builder::address(bus.address.as_str())
             .unwrap()
@@ -164,6 +173,13 @@ fn the_dbus_services_sleep_when_nothing_changes() {
     assert!(b.battery.cells().present.get_untracked(&rt).unwrap());
     assert!(b.bluetooth.cells().powered.get_untracked(&rt).unwrap());
     assert!(b.brightness.cells().available.get_untracked(&rt).unwrap());
+    assert!(
+        b.brightness
+            .cells()
+            .keyboard_present
+            .get_untracked(&rt)
+            .unwrap()
+    );
     assert!(b.power.cells().available.get_untracked(&rt).unwrap());
     // Settled: a whole second without a wakeup.
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -255,5 +271,7 @@ fn the_dbus_services_sleep_when_nothing_changes() {
     );
     s.shutdown();
     strand_services::brightness::set_backlight_root(None);
+    strand_services::brightness::set_leds_root(None);
     let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&leds);
 }

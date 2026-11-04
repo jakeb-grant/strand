@@ -97,14 +97,17 @@ them.
 
 ## `brightness`
 
-The screen backlight: read from `/sys/class/backlight` (watched, so a
-brightness key shows at once) and set through logind's
-`SetBrightness` (no root or udev rules).
+The screen's and the keyboard's backlights. They are read from
+`/sys/class/backlight` and `/sys/class/leds/*::kbd_backlight` and
+watched, so a brightness key shows at once. They are set through
+logind's `SetBrightness` (no root or udev rules).
 
 | Field | Type | |
 | --- | --- | --- |
 | `level` | `float rw` | Backlight level, 0 to 1. Writable. |
-| `available` | `bool` | A backlight was found. |
+| `available` | `bool` | A screen backlight was found. |
+| `keyboard` | `float rw` | The keyboard's backlight level, 0 to 1, in the steps it has (most have two or three). Use `slider { value: <-> brightness.keyboard }` or `strand set brightness.keyboard +50%`. Writable: a level between two steps goes to the nearest. A change the firmware makes on its own (an Fn key, or the light timing out) shows where the driver reports it (`brightness_hw_changed`), as most laptop drivers do. 0 without a keyboard backlight. |
+| `keyboard_present` | `bool` | The keyboard has a backlight (a `*::kbd_backlight` light), as `battery.present` says a battery exists. |
 
 ## `calendar`
 

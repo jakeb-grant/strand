@@ -643,7 +643,7 @@ mod tests {
 
     /// (power-media-kbd) `strand set power.profile performance`: an enum
     /// field set by its variant's name; a name that is no variant, and a
-    /// read-only field, refused.
+    /// read-only field, refused. `strand set brightness.keyboard +50%`.
     #[test]
     fn strand_set_writes_an_enum_service_field() {
         let rt = Runtime::new();
@@ -665,6 +665,12 @@ mod tests {
         );
         assert!(err("power.available", "true").contains("read-only"));
         assert!(err("power.profiles", "balanced").contains("read-only"));
+        // (power-media-kbd) The keyboard's light steps as the screen's.
+        set_text(&host, &rt, &types, "brightness.keyboard", "0").unwrap();
+        set_text(&host, &rt, &types, "brightness.keyboard", "+50%").unwrap();
+        let lit = host.get(&rt, "brightness.keyboard").unwrap().as_f64();
+        assert_eq!(lit, Some(0.5));
+        assert!(err("brightness.keyboard_present", "true").contains("read-only"));
     }
 
     /// The compositor services' uses design.md shows (and the reload
@@ -912,7 +918,8 @@ osd Playing { inhibit_idle: true; text \"x\" }
     /// profile written in a handler, matched exhaustively, the profiles
     /// offered listed. A profile is a `PowerProfile`, not text. The
     /// player's shuffle, loop and own volume, the active one's and an
-    /// item's, as a player card writes them; a loop is a `Loop`.
+    /// item's, as a player card writes them; a loop is a `Loop`. The
+    /// keyboard's backlight, as a slider and a key toggle it.
     #[test]
     fn the_power_profile_player_modes_and_keyboard_light_check() {
         let src = "bar Top {
@@ -937,6 +944,8 @@ osd Playing { inhibit_idle: true; text \"x\" }
         slider { value: <-> p.volume }
       }
     }
+    if brightness.keyboard_present { slider { value: <-> brightness.keyboard } }
+    box { on click { brightness.keyboard = brightness.keyboard > 0 ? 0 : 1 } }
   }
 }
 ";
@@ -954,6 +963,7 @@ osd Playing { inhibit_idle: true; text \"x\" }
             "bar B { box { on click { power.available = true } } }\n",
             "bar B { box { on click { media.loop = \"track\" } } }\n",
             "bar B { box { on click { media.can_volume = true } } }\n",
+            "bar B { box { on click { brightness.keyboard_present = true } } }\n",
         ] {
             let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", bad);
             assert!(

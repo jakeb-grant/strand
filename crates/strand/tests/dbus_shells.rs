@@ -411,6 +411,7 @@ fn design_shells_on_the_real_dbus_services() {
             .env("XDG_STATE_HOME", dir.join("state"))
             .env("STRAND_LOG", "damage")
             .env("STRAND_BACKLIGHT_DIR", &backlight)
+            .env("STRAND_LEDS_DIR", dir.join("leds"))
             .envs(bus.env())
             .env_remove("STRAND_MOCK")
             .stdin(Stdio::null())

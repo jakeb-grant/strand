@@ -865,12 +865,17 @@ provisional service video {
   streams: [VideoStream]
 }
 
-/// The screen backlight, set through logind (no root or udev rules).
+/// The screen's and the keyboard's backlights, set through logind (no
+/// root or udev rules).
 provisional service brightness {
   /// Backlight level, 0 to 1. Writable.
   level: float rw
-  /// A backlight was found.
+  /// A screen backlight was found.
   available: bool
+  /// The keyboard's backlight level, 0 to 1. Writable.
+  keyboard: float rw
+  /// The keyboard has a backlight.
+  keyboard_present: bool
 }
 
 /// The power profile, from power-profiles-daemon.
