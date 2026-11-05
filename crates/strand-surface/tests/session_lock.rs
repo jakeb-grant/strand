@@ -335,7 +335,8 @@ fn locks_every_output_including_hotplug() {
 /// shows its content on the leftmost monitor, the first of logic's
 /// `screens.all` whose `screen` the instance has, not on the first
 /// output advertised: HEADLESS-1, advertised first, is placed right of
-/// the second.
+/// the second. Moving the monitors while locked moves the content to
+/// the new leftmost.
 #[test]
 fn an_unfocused_lock_shows_on_the_leftmost_monitor() {
     let test = "an_unfocused_lock_shows_on_the_leftmost_monitor";
@@ -378,6 +379,41 @@ fn an_unfocused_lock_shows_on_the_leftmost_monitor() {
         shot(&sway, "HEADLESS-1"),
         [GREEN, GREEN],
         "the solid on HEADLESS-1"
+    );
+
+    // The monitors move while locked (kanshi after a dock): only their
+    // places change, and the content follows the new leftmost, as logic's
+    // `screens.focused` does.
+    sway.msg(&["output", &second, "pos", "3840", "0"]);
+    sway.msg(&["output", "HEADLESS-1", "pos", "0", "0"]);
+    let ok = lock
+        .dispatch_until(WAIT, |s| {
+            s.lock_content_on("HEADLESS-1")
+                .and_then(|c| s.surface(c))
+                .is_some_and(|i| i.stats.commits > 0)
+                && s.lock_solid_outputs() == [second.clone()]
+        })
+        .unwrap();
+    assert!(
+        ok,
+        "the content moved to the new leftmost output (HEADLESS-1); content on {:?}, solids on {:?}",
+        lock.state().lock_content_on("HEADLESS-1"),
+        lock.state().lock_solid_outputs()
+    );
+    assert_eq!(
+        lock.state().lock_content(),
+        lock.state().lock_content_on("HEADLESS-1")
+    );
+    pump_lock(&mut lock, Duration::from_millis(300));
+    assert_eq!(
+        shot(&sway, "HEADLESS-1"),
+        [BLUE, BLUE],
+        "content on HEADLESS-1"
+    );
+    assert_eq!(
+        shot(&sway, &second),
+        [GREEN, GREEN],
+        "the solid on {second}"
     );
     assert!(lock.state_mut().unlock(token()));
 }

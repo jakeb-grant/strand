@@ -201,6 +201,11 @@ impl<H: SurfaceHost + 'static> OutputHandler for State<H> {
             // what it was fitted to is out of date, up or down.
             self.refit_layers_on(&monitor.id);
             self.place_layers_on(&monitor.id);
+            // (screen-position) A monitor moved can change which output
+            // is leftmost, the lock's fallback (`lock_output`), as logic's
+            // `screens.focused` follows it on `monitor_changed`: re-place
+            // the lock's content (nothing while no lock is asked for).
+            self.sync_lock_surfaces();
         }
     }
 
