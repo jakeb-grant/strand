@@ -539,6 +539,16 @@ pub struct Router {
     /// left them, by row: a diff removing one is seen as removed from
     /// that list (the diff names only the row).
     away_rows: HashMap<NodeId, NodeId>,
+    /// (list-selection) The lists `away_rows` was noted for, in order:
+    /// it is noted again only when they change or a diff changed which
+    /// rows the tree has (`rows_changed`), not on every routing.
+    away_noted: Vec<NodeId>,
+    /// (list-selection) A diff created, removed or moved nodes since
+    /// `away_rows` was noted.
+    rows_changed: bool,
+    /// (list-selection) How many times `away_rows` was noted with a
+    /// selection away ([`Router::away_rows_noted`]).
+    away_notes: usize,
     /// (list-selection) Lists whose `selected_index:` logic's diff set
     /// (as they mount too), followed when routing settles.
     starts: Vec<NodeId>,
@@ -724,6 +734,14 @@ impl Router {
     /// be applied, and [`Router::settle`] does each in turn.
     pub fn observe(&mut self, diff: &SceneDiff) {
         self.asks.extend_from_slice(&diff.asks);
+        if diff.ops.iter().any(|op| {
+            matches!(
+                op,
+                SceneOp::Create { .. } | SceneOp::Remove { .. } | SceneOp::Move { .. }
+            )
+        }) {
+            self.rows_changed = true;
+        }
         // (flex) `focus:` turned true: focus moves there (`settle`).
         for op in &diff.ops {
             if let SceneOp::SetProp {
@@ -1023,6 +1041,13 @@ impl Router {
                 .then(|| self.sel_index.get(&list).copied())
                 .flatten(),
         }
+    }
+
+    /// (list-selection) How many times routing has noted the rows of the
+    /// lists whose selection is away (tests: only after a diff changed
+    /// the rows or which lists are away, never per pointer motion).
+    pub fn away_rows_noted(&self) -> usize {
+        self.away_notes
     }
 
     /// The node with keyboard focus on `surface`.
@@ -1809,12 +1834,32 @@ impl Router {
 
     /// (list-selection) Remembers the rows of each list whose selection
     /// is away, so [`Router::observe`] knows the list of a row logic
-    /// removes. Nothing is kept while no selection is away.
+    /// removes. Nothing is kept while no selection is away. Only a diff
+    /// changes the tree's rows, so what was noted holds until one does or
+    /// another list's selection goes away (or lands): pointer motion and
+    /// keys that leave both alone note nothing again.
     fn note_away_rows(&mut self, tree: Option<&SceneTree>) {
-        self.away_rows.clear();
+        let same_lists = self.away_noted.len() == self.away.len()
+            && self
+                .away
+                .keys()
+                .all(|l| self.away_noted.binary_search(l).is_ok());
+        if !self.rows_changed && same_lists {
+            return;
+        }
+        if !self.away_rows.is_empty() {
+            self.away_rows.clear();
+        }
+        self.away_noted.clear();
         let Some(tree) = tree else {
             return;
         };
+        self.rows_changed = false;
+        self.away_noted.extend(self.away.keys().copied());
+        self.away_noted.sort_unstable();
+        if !self.away.is_empty() {
+            self.away_notes += 1;
+        }
         for &list in self.away.keys() {
             if let Some(n) = tree.get(list) {
                 for &r in &n.children {

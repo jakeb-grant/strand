@@ -1212,6 +1212,21 @@ fn a_start_after_the_rows_are_replaced_is_followed_again() {
     }
 }
 
+/// A virtualised list of 2,000 rows starting on `at`, the user moved to
+/// row 1500 and the wheel's `scroll_to` then left it out of the window:
+/// the selection is away, on no row.
+fn scrolled_away(nav: bool, at: &str) -> Shell {
+    let mut sh = started(&(0..2000i64).collect::<Vec<_>>(), at, nav);
+    tap(&mut sh, "s", true);
+    sh.settle();
+    assert_eq!(index(&sh), Some(1500), "nav {nav} at {at}");
+    tap(&mut sh, "w", true);
+    sh.settle();
+    assert_eq!(sh.router.selected(list(&sh)), None, "nav {nav}: away");
+    assert_eq!(index(&sh), Some(1500), "nav {nav} at {at}");
+    sh
+}
+
 /// (list-selection) The user moved in a virtualised list and scrolled the
 /// selection out of its window, so it is away, not on a row; the rows
 /// replaced whole still start the list again: on the next page's start,
@@ -1219,17 +1234,7 @@ fn a_start_after_the_rows_are_replaced_is_followed_again() {
 /// and none without.
 #[test]
 fn rows_replaced_whole_start_an_away_selection_again() {
-    let away = |nav: bool, at: &str| {
-        let mut sh = started(&(0..2000i64).collect::<Vec<_>>(), at, nav);
-        tap(&mut sh, "s", true);
-        sh.settle();
-        assert_eq!(index(&sh), Some(1500), "nav {nav} at {at}");
-        tap(&mut sh, "w", true);
-        sh.settle();
-        assert_eq!(sh.router.selected(list(&sh)), None, "nav {nav}: away");
-        assert_eq!(index(&sh), Some(1500), "nav {nav} at {at}");
-        sh
-    };
+    let away = scrolled_away;
     for nav in [true, false] {
         let mut sh = away(nav, "null");
         tap(&mut sh, "e", true);
@@ -1245,6 +1250,56 @@ fn rows_replaced_whole_start_an_away_selection_again() {
             sh.settle();
             assert_eq!(index(&sh), then, "nav {nav} at {at}");
         }
+    }
+}
+
+/// (list-selection) Return pressed on a selection away from the mounted
+/// rows waits for its row to land; when logic replaces the rows whole
+/// before it does (another page), the list starts again and the waiting
+/// Return goes with the rows it was for: nothing is activated, not the
+/// row that takes the old index on the new page.
+#[test]
+fn a_waiting_return_goes_with_rows_replaced_whole() {
+    for nav in [true, false] {
+        let mut sh = scrolled_away(nav, "null");
+        let surface = sh.keyboard.unwrap();
+        sh.queue(InputEvent::Key {
+            surface,
+            key: KeyInput {
+                name: "Return".into(),
+                text: String::new(),
+                state: ButtonState::Pressed,
+                repeat: false,
+                modifiers: Modifiers::default(),
+                time: 0,
+                latin: None,
+            },
+        });
+        sh.set("items", ints(5000..5006));
+        sh.settle();
+        assert_eq!(sh.num("activated"), -1.0, "nav {nav}: nothing ran");
+        assert_eq!(index(&sh), nav.then_some(0), "nav {nav}: started again");
+    }
+}
+
+/// (list-selection) The rows of a list whose selection is away are noted
+/// again only when a diff changes the rows or another selection goes
+/// away, not on every routing: pointer motion over the list notes
+/// nothing, and the rows noted before still start the list again when
+/// logic replaces them whole.
+#[test]
+fn pointer_motion_does_not_note_the_away_rows_again() {
+    for nav in [true, false] {
+        let mut sh = scrolled_away(nav, "null");
+        let noted = sh.router.away_rows_noted();
+        assert!(noted > 0, "nav {nav}: noted while away");
+        for i in 0..12 {
+            sh.move_to(20.0 + i as f32 * 7.0, 40.0 + (i % 5) as f32 * 9.0);
+        }
+        assert_eq!(sh.router.away_rows_noted(), noted, "nav {nav}");
+        assert_eq!(sh.router.selected(list(&sh)), None, "nav {nav}: away");
+        sh.set("items", ints(5000..5006));
+        assert_eq!(index(&sh), nav.then_some(0), "nav {nav}: started again");
     }
 }
 
