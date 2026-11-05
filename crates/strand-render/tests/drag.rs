@@ -32,6 +32,11 @@ struct Desk {
 
 impl Desk {
     fn new() -> Self {
+        Self::with(vec![])
+    }
+
+    /// [`Desk::new`] with `extra` props on the column.
+    fn with(extra: Vec<(Prop, PropValue)>) -> Self {
         let mut b = Builder::default();
         let root = b.node(
             NodeKind::Panel,
@@ -43,14 +48,12 @@ impl Desk {
             ],
         );
         let pin = || PropValue::Keyword("Pin".into());
-        let col = b.node(
-            NodeKind::Col,
-            Some(root),
-            vec![
-                (Prop::Height, num(60.0)),
-                (Prop::Accepts, PropValue::List(vec![pin()])),
-            ],
-        );
+        let mut props = vec![
+            (Prop::Height, num(60.0)),
+            (Prop::Accepts, PropValue::List(vec![pin()])),
+        ];
+        props.extend(extra);
+        let col = b.node(NodeKind::Col, Some(root), props);
         let row = |b: &mut Builder, c: &str| {
             b.node(
                 NodeKind::Box,
@@ -214,6 +217,37 @@ fn a_row_dropped_nowhere_springs_back() {
     assert!(tops[0] > 40, "starts from where it was let go: {tops:?}");
     assert!(tops.windows(2).all(|w| w[1] <= w[0]), "{tops:?}");
     assert_eq!(d.red_top(), Some(0));
+}
+
+/// (glide-curve) Let go under `set { $motion.spatial: 100ms linear }`
+/// on its column, the row springs back on that curve, the one in effect
+/// where it lies: its 65 px evenly over 100 ms, about 11 px a frame.
+/// (It took the global `$motion.spatial`, the set's ignored.)
+#[test]
+fn a_row_let_go_springs_back_on_the_spatial_token_in_effect() {
+    let mut t = TokenTable::default();
+    t.insert(
+        "motion.spatial",
+        PropValue::Transition(Transition::Duration {
+            duration: Duration::from_millis(100),
+            easing: Easing::Linear,
+        }),
+    );
+    let mut d = Desk::with(vec![(Prop::Tokens, PropValue::Tokens(Box::new(t)))]);
+    d.lift_red(75.0);
+    d.paint(1);
+    assert_eq!(d.red_top(), Some(65));
+    d.left(75.0, ButtonState::Released);
+    let tops = d.settle(2);
+    assert_eq!(tops.last(), Some(&0), "{tops:?}");
+    let steps: Vec<i32> = std::iter::once(65 - tops[0] as i32)
+        .chain(tops.windows(2).map(|w| w[0] as i32 - w[1] as i32))
+        .filter(|s| *s != 0)
+        .collect();
+    assert!(
+        (5..=7).contains(&steps.len()) && steps.iter().all(|s| (9..=13).contains(s)),
+        "linear over 100 ms: {tops:?}"
+    );
 }
 
 /// Dropped past the blue row's middle, the drop lands at index 2 of the

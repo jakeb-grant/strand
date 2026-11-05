@@ -15,7 +15,7 @@ use strand_scene::{
 };
 
 use super::Renderer;
-use super::layout_pass::TextInfo;
+use super::layout_pass::{TextInfo, glide_curve};
 use crate::anim::{exit_pose, is_pose, page_slide};
 use crate::layout::{
     keep_in_view, layout_margin, list_columns, list_horizontal, relayout_list, row_span,
@@ -173,15 +173,15 @@ impl Renderer {
 
     /// (M4) Drag and drop: draws `node` (a `drag:` source) `offset` away
     /// from its box, above its siblings, as the pointer drags it; `None`
-    /// lets it go, and it springs (`$motion.spatial`, as a FLIP) from
-    /// where it was held to its box, or to the box a drop moved it to.
+    /// lets it go, and it springs (`$motion.spatial` as the tokens in
+    /// effect at `node` give it, as a FLIP: [`glide_curve`]) from where it
+    /// was held to its box, or to the box a drop moved it to.
     /// Under `reduced_motion` it is back at once.
     pub fn lift(&mut self, node: NodeId, offset: Option<LogicalPoint>) {
         let curve = if self.anim.reduced() {
             Curve::Instant
         } else {
-            let tables = [&self.tree.tokens];
-            Curve::of(&TokenScope::new(&tables).transition(&Transition::Default, Prop::X))
+            glide_curve(&self.tree, node)
         };
         self.anim.lift(node, offset.map(|p| [p.x, p.y]), curve);
         self.mark_node_dirty(node);
@@ -211,14 +211,16 @@ impl Renderer {
         }
     }
 
-    /// The spring a wheel step (or a snap) moves an offset along: the
-    /// default spatial transition, at once under `reduced_motion`.
-    fn scroll_curve(&self) -> Curve {
+    /// The spring a wheel step (or a snap) moves the offset of `id`
+    /// along: the default spatial transition, `$motion.spatial` as the
+    /// tokens in effect at `id` give it (a `set` reaches it, spec.md 9.4;
+    /// decisions.md glide-curve), at once under `reduced_motion`.
+    fn scroll_curve(&self, id: NodeId) -> Curve {
         if self.anim.reduced() {
             Curve::Instant
         } else {
-            let tables = [&self.tree.tokens];
-            Curve::of(&TokenScope::new(&tables).transition(&Transition::Default, Prop::Y))
+            let scopes = crate::flatten::scope_tables(&self.tree, id);
+            Curve::of(&TokenScope::new(&scopes).transition(&Transition::Default, Prop::Y))
         }
     }
 
@@ -239,7 +241,7 @@ impl Renderer {
                 let (id, x) = self.lists.touching.remove(&surface)?;
                 let last = self.last_frame(surface);
                 self.lists.revealing.remove(&id);
-                let curve = self.scroll_curve();
+                let curve = self.scroll_curve(id);
                 let st = self.axis_state(id, x);
                 // (flex) `snap: true`: it settles on a child, flung or not.
                 let moved = if st.snaps.is_some() {
@@ -283,7 +285,7 @@ impl Renderer {
                     .scrollable_at(surface, point, (input.dx, input.dy), true)
                     .or_else(|| self.sideways_wheel_at(surface, point, (input.dx, input.dy)))?;
                 self.lists.revealing.remove(&id);
-                let curve = self.scroll_curve();
+                let curve = self.scroll_curve(id);
                 let last = self.last_frame(surface);
                 self.axis_state(id, x).wheel(d, curve, last);
                 self.scrolled(id);
@@ -542,7 +544,7 @@ impl Renderer {
         } else {
             (y, x)
         };
-        let curve = self.scroll_curve();
+        let curve = self.scroll_curve(id);
         let last = self.laid_surface(id).and_then(|s| self.last_frame(s));
         let mut moved = false;
         for (along_x, value) in [

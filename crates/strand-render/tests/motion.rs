@@ -419,6 +419,89 @@ fn keyed_reorder_glides_to_new_slots() {
     assert_eq!(st.red_top(10), Some(48));
 }
 
+/// A `set` (spec.md 9.4) making `$motion.spatial` a linear `duration`,
+/// as a node's tokens (render takes any transition there).
+fn spatial_over(duration: Duration) -> (Prop, PropValue) {
+    let mut t = TokenTable::default();
+    t.insert(
+        "motion.spatial",
+        PropValue::Transition(Transition::Duration {
+            duration,
+            easing: Easing::Linear,
+        }),
+    );
+    (Prop::Tokens, PropValue::Tokens(Box::new(t)))
+}
+
+/// (glide-curve) Siblings glide to their new places on the
+/// `$motion.spatial` in effect where they are (spec.md 6.6): two columns
+/// side by side reorder alike, the red box moved from the top to the
+/// end. In the one under `set { $motion.spatial: 100ms linear }` it
+/// glides its 48 px evenly over 100 ms, never past its slot; in the one
+/// beside it, outside the set, along the default spring. (Every glide
+/// took the global `$motion.spatial`, the set's ignored.)
+#[test]
+fn a_glide_follows_the_spatial_token_in_effect_where_it_is() {
+    let mut reds = Vec::new();
+    let mut st = Stage::new(80, 80, |b, root| {
+        let row = b.node(NodeKind::Row, Some(root), vec![(Prop::Gap, num(20.0))]);
+        for set in [true, false] {
+            let mut props = vec![(Prop::Gap, num(4.0))];
+            if set {
+                props.push(spatial_over(Duration::from_millis(100)));
+            }
+            let col = b.node(NodeKind::Col, Some(row), props);
+            reds.push(red_box(b, col, vec![]));
+            for c in ["#00ff00", "#0000ff"] {
+                b.node(
+                    NodeKind::Box,
+                    Some(col),
+                    vec![(Prop::Size, num(20.0)), (Prop::Bg, color(c))],
+                );
+            }
+        }
+    });
+    // Each column's top (the row centres them in the panel).
+    let base = st.red_top(10).unwrap() as i32;
+    assert_eq!(st.red_top(50), Some(base as u32));
+    let mut d = SceneDiff::new();
+    for red in &reds {
+        let col = st.r.tree().get(*red).unwrap().parent.unwrap();
+        d.push(SceneOp::Move {
+            id: *red,
+            parent: Some(col),
+            index: 2,
+        });
+    }
+    st.apply(d);
+    let (mut set, mut outside) = (Vec::new(), Vec::new());
+    let mut k = 1;
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        set.push(st.red_top(10).unwrap() as i32 - base);
+        outside.push(st.red_top(50).unwrap() as i32 - base);
+        k += 1;
+        assert!(k < 400, "never settled");
+    }
+    assert_eq!((set.last(), outside.last()), (Some(&48), Some(&48)));
+    // Linear over 100 ms at 60 Hz: 8 px a frame (whole pixels), its
+    // first frame one refresh along.
+    let moving: Vec<i32> = std::iter::once(set[0])
+        .chain(set.windows(2).map(|w| w[1] - w[0]))
+        .filter(|d| *d != 0)
+        .collect();
+    assert!(
+        (5..=7).contains(&moving.len()) && moving.iter().all(|d| (7..=9).contains(d)),
+        "linear over 100 ms: {set:?}"
+    );
+    assert!(set.iter().all(|t| *t <= 48), "never past its slot: {set:?}");
+    assert_springs_to(&outside, 0, 48);
+    assert!(
+        outside.iter().any(|t| *t > 48),
+        "the default spring overshoots: {outside:?}"
+    );
+}
+
 /// (decisions.md first-frame-lead) A change starts one refresh of its
 /// surface before the first frame that shows it: on a 144 Hz surface
 /// that sat idle, a glide's first frame shows one 144 Hz frame of
@@ -3596,6 +3679,70 @@ fn wheel_steps_spring_the_offset() {
     st.paint(frame(k));
     assert_eq!(st.r.scroll_offset(lst), Some(120.0));
     assert!(!st.r.wants_frame(S));
+}
+
+/// (glide-curve) A wheel step springs the offset on the
+/// `$motion.spatial` in effect at the list (spec.md 6.6, 9.4): two lists
+/// side by side take the same 45 px step, the one in a column under
+/// `set { $motion.spatial: 100ms linear }` evenly over 100 ms and never
+/// past it, the one beside it on the default spring. (The wheel took the
+/// global `$motion.spatial`, the set's ignored.)
+#[test]
+fn a_wheel_step_follows_the_spatial_token_in_effect_at_the_list() {
+    let mut lists = Vec::new();
+    let mut st = Stage::new(120, 200, |b, root| {
+        let row = b.node(NodeKind::Row, Some(root), vec![]);
+        for set in [true, false] {
+            let mut props = vec![(Prop::Width, num(60.0))];
+            if set {
+                props.push(spatial_over(Duration::from_millis(100)));
+            }
+            let col = b.node(NodeKind::Col, Some(row), props);
+            let l = b.node(NodeKind::List, Some(col), vec![(Prop::Height, num(200.0))]);
+            for _ in 0..40 {
+                b.node(
+                    NodeKind::Box,
+                    Some(l),
+                    vec![(Prop::Height, num(30.0)), (Prop::Bg, color("#ff0000"))],
+                );
+            }
+            lists.push(l);
+        }
+    });
+    let (under, outside) = (lists[0], lists[1]);
+    for (x, l) in [(30.0, under), (90.0, outside)] {
+        let at = LogicalPoint::new(x, 100.0);
+        assert_eq!(st.r.scroll_input(S, at, wheel(45.0, 0)), Some(l));
+    }
+    let (mut set, mut beside) = (Vec::new(), Vec::new());
+    let mut k = 1;
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        set.push(st.r.scroll_offset(under).unwrap());
+        beside.push(st.r.scroll_offset(outside).unwrap());
+        k += 1;
+        assert!(k < 400, "never settled");
+    }
+    assert_eq!((set.last(), beside.last()), (Some(&45.0), Some(&45.0)));
+    // Linear over 100 ms at 60 Hz: 7.5 px a frame.
+    let moving: Vec<f32> = std::iter::once(set[0])
+        .chain(set.windows(2).map(|w| w[1] - w[0]))
+        .filter(|d| *d > 0.01)
+        .collect();
+    assert!(
+        (5..=7).contains(&moving.len()) && moving.iter().all(|d| (6.0..=9.0).contains(d)),
+        "linear over 100 ms: {set:?}"
+    );
+    assert!(
+        set.iter().all(|t| *t <= 45.0),
+        "never past its step: {set:?}"
+    );
+    // The default spring is quicker off the mark and settles later.
+    let settled = |v: &[f32]| v.iter().position(|t| (*t - 45.0).abs() < 0.01);
+    assert!(
+        beside[0] > set[0] + 1.0 && settled(&beside) > settled(&set).map(|i| i + 2),
+        "the default spring beside it: {beside:?} beside {set:?}"
+    );
 }
 
 /// A touchpad moves the offset with the fingers, and lifting them while

@@ -84,6 +84,13 @@ frame, and [the OSD](../how-to/osd.md) a surface springing in.
 A panel, OSD or popup that is the size of what it holds springs its
 own size when that changes, growing and shrinking alike.
 
+Siblings glide on the `$motion.spatial` in effect where they are, so a
+[`set`](theming.md#overrides-for-part-of-a-tree) in their row picks the
+curve. With `let glide = spring(520, 0.78)`, a highlight that moves on
+`~ glide` keeps in step with the chips it sits behind when their row
+says `set { $motion.spatial: glide }`. In a panel that is springing its
+own size, what moves rides the panel's box on its curve instead.
+
 ## Timed animations: `keyframes`
 
 For a movement that is not a change of value, such as a shake or a

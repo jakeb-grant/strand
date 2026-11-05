@@ -1330,6 +1330,18 @@ proof  = "crates/strand-render/tests/motion.rs::keyed_reorder_glides_to_new_slot
 
 [[claim]]
 page   = "site/concepts/motion.md"
+text   = "Siblings glide on the `$motion.spatial` in effect where they are, so a"
+source = ['docs/spec.md "Each glides on the `$motion.spatial` in effect where it is"', 'docs/spec.md "overrides tokens for the enclosing node and its descendants"', 'crates/strand-render/src/renderer/layout_pass.rs "pub(super) fn glide_curve(tree: &SceneTree, id: NodeId) -> Curve {"']
+proof  = "crates/strand-render/tests/motion.rs::a_glide_follows_the_spatial_token_in_effect_where_it_is, crates/strand-compiler/tests/theme.rs::a_set_overrides_the_spatial_motion_with_a_spring"
+
+[[claim]]
+page   = "site/concepts/motion.md"
+text   = "own size, what moves rides the panel's box on its curve instead."
+source = ['docs/spec.md "what the change that starts the step moves included"', 'crates/strand-render/src/renderer/layout_pass.rs "(glide-curve) The pass that starts a step"']
+proof  = "crates/strand-render/tests/growth.rs::a_mount_that_starts_the_growth_glides_on_the_steps_curve_under_a_set, ::a_glide_mid_growth_takes_the_steps_curve_under_a_set"
+
+[[claim]]
+page   = "site/concepts/motion.md"
 text   = "own size when that changes, growing and shrinking alike."
 source = ['docs/design.md "A panel, OSD, popup or window sized by its content springs its box"', 'docs/design.md "Growing and shrinking are the same spring"']
 proof  = "crates/strand-render/tests/motion.rs::a_content_sized_panel_shrinks_when_nothing_moves"
