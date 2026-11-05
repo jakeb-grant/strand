@@ -180,6 +180,18 @@ impl Flattener<'_> {
         else {
             return;
         };
+        // (caret) A caret in the group is in the GPU's pixels, which a
+        // turn shown or hidden in place would not change: it turns as any
+        // clock does instead, the scene flattened anew for each turn.
+        let mut lost = Vec::new();
+        self.out.carets.retain(|c| {
+            let inside = c.item > i;
+            if inside && c.next.is_some() {
+                lost.push(crate::clock::Clock { next: c.next });
+            }
+            !inside
+        });
+        self.out.clocks.extend(lost);
         // What the input's pixels depend on: the group's region, effects,
         // transform and items.
         let mut h = DefaultHasher::new();

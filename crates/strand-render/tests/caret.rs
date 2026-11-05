@@ -59,6 +59,8 @@ struct Shape {
     size: (f32, f32),
     /// Rows of 40 text cells under the field (a real surface's content).
     rows: usize,
+    /// The field's row is bloomed, a bundled GPU filter.
+    bloom: bool,
 }
 
 impl Default for Shape {
@@ -68,6 +70,7 @@ impl Default for Shape {
             bg: None,
             size: (240.0, 40.0),
             rows: 0,
+            bloom: false,
         }
     }
 }
@@ -91,11 +94,15 @@ fn field_with(scale: f64, shape: &Shape) -> Field {
             (Prop::Font, PropValue::Font(f)),
         ],
     );
-    let row = b.node(
-        NodeKind::Row,
-        Some(root),
-        vec![(Prop::Height, num(24.0)), (Prop::Pad, num(8.0))],
-    );
+    let mut row_props = vec![(Prop::Height, num(24.0)), (Prop::Pad, num(8.0))];
+    if shape.bloom {
+        let bloom = PropValue::Call {
+            name: "bloom".into(),
+            args: vec![num(6.0)],
+        };
+        row_props.push((Prop::Filter, bloom));
+    }
+    let row = b.node(NodeKind::Row, Some(root), row_props);
     let mut props = vec![
         (Prop::Width, num(200.0)),
         (Prop::InputType, PropValue::Keyword("password".into())),
@@ -589,6 +596,80 @@ fn a_turn_flattens_nothing_and_a_key_no_more_than_a_steady_caret() {
             shape.size
         );
     }
+}
+
+/// A caret under a bundled GPU filter is in the GPU's pixels of the
+/// group, which showing or hiding its fill in a reused scene would not
+/// change: each turn flattens the scene and asks the GPU for the group
+/// again, so the caret drawn blinks as one outside the group does.
+#[test]
+fn a_caret_under_a_gpu_filter_is_drawn_again_on_each_turn() {
+    use strand_gpu::{AdapterInfo, GpuReply, GpuRequest, Readback};
+    let mut f = field_with(
+        1.0,
+        &Shape {
+            bloom: true,
+            ..Shape::default()
+        },
+    );
+    f.r.set_promotion(false);
+    f.r.deliver_gpu(GpuReply::Ready(AdapterInfo::default()));
+    // Answers the passes the last frame asked for: how many.
+    let answer = |r: &mut Renderer| {
+        let mut n = 0;
+        for q in r.take_gpu_requests() {
+            if let GpuRequest::Pass(p) = q {
+                let (w, h) = (p.size.w, p.size.h);
+                r.deliver_gpu(GpuReply::PassPixels {
+                    key: p.key,
+                    frame: p.id,
+                    pixels: Readback {
+                        width: w,
+                        height: h,
+                        stride: w * 4,
+                        bytes: vec![0; (w * h * 4) as usize],
+                    },
+                });
+                n += 1;
+            }
+        }
+        n
+    };
+    let t1 = f.focus();
+    answer(&mut f.r);
+    // The GPU's pixels in, the group is drawn from them.
+    let mut t = t1;
+    while f.r.wants_frame(S) {
+        t += HZ60;
+        f.paint(t);
+        answer(&mut f.r);
+    }
+    let before = f.r.flattens();
+    let mut turns = Vec::new();
+    while t + HZ60 <= t1 + ms(3700) {
+        t += HZ60;
+        let now = f.i0 + (t - T0);
+        f.r.set_now(Some(now));
+        if f.r.next_wake().is_some_and(|w| w <= now) {
+            f.r.update();
+        }
+        if f.r.wants_frame(S) {
+            f.paint(t);
+            turns.push((t, answer(&mut f.r)));
+        }
+    }
+    // Each turn asks for the group, and the frame after it draws the
+    // pixels the GPU gave back.
+    let asked: Vec<Duration> = turns.iter().filter(|t| t.1 > 0).map(|t| t.0).collect();
+    assert_eq!(asked.len(), 6, "each turn asks the GPU again: {turns:?}");
+    for w in asked.windows(2) {
+        let gap = w[1] - w[0];
+        assert!(
+            gap > ms(550) && gap < ms(650),
+            "a turn every 600 ms: {turns:?}"
+        );
+    }
+    assert!(f.r.flattens() > before, "a turn flattens the scene");
 }
 
 /// Types 30 characters into `f`'s field, a frame 100 ms after each:
