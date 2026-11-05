@@ -511,3 +511,48 @@ fn a_lone_carriage_return_is_a_line_break() {
     );
     assert!(short.starts_with("e.strand:2:15:"), "{short}");
 }
+
+/// (dictionary) `[ … ]` is a dictionary when its first item is `key:
+/// value`, over lines and with a trailing comma as a list; a ternary key
+/// has taken its own `:`, an enum key is a bare name, and `[]` stays the
+/// one empty form (the checker reads it by the type expected). A type
+/// `[K: V]` is a dictionary type, nesting and optional as any other.
+#[test]
+fn a_bracket_whose_first_item_has_a_value_is_a_dictionary() {
+    let one_line = top("let m = [1: \"web\", 2: \"code\"]");
+    assert_eq!(one_line, "let m (= (dict (: 1 \"web\") (: 2 \"code\")))");
+    assert_eq!(top("let m = [\n  1: \"web\",\n  2: \"code\",\n]"), one_line);
+    assert_eq!(
+        top("let m = [c ? a : b: v]"),
+        "let m (= (dict (: (?: c a b) v)))"
+    );
+    assert_eq!(
+        top("let m: [Urgency: duration] = [low: 3s, critical: 0s]"),
+        "let m :[Urgency: duration] (= (dict (: low 3s) (: critical 0s)))"
+    );
+    assert_eq!(
+        top("let m: [int: text] = []"),
+        "let m :[int: text] (= array)"
+    );
+    assert_eq!(
+        top("state m: [text: [int: text]]? = []"),
+        "state m :[text: [int: text]]? (= array)"
+    );
+    assert_eq!(
+        top("fn f(m: [AppId: float]) -> [int: text] { [] }"),
+        "fn f (params (m :[AppId: float])) (-> :[int: text])\n  expr array"
+    );
+    // In a head, the dictionary is the positional and `{` the block.
+    assert_eq!(
+        body("Chips [low: 1, high: 2] { x: 1 }"),
+        "element Chips (dict (: low 1) (: high 2))\n  prop x: 1"
+    );
+    assert_eq!(
+        body("text names[n + 1] ?? \"\""),
+        "element text (?? (index names (+ n 1)) \"\")"
+    );
+    assert_eq!(
+        top("let a = f([\"a\": 1], by: 2)"),
+        "let a (= (call f (dict (: \"a\" 1)) (by: 2)))"
+    );
+}

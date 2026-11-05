@@ -1,0 +1,5 @@
+// expect: check::nullable
+// A key read through `?.` may be null: give it a fallback, as for a
+// list's index (spec 7.1).
+state last_win: [int: text] = []
+let shown = last_win[windows.focused?.workspace] ?? ""

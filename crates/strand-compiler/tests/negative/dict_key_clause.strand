@@ -1,0 +1,3 @@
+// expect: check::dict_keyed
+// A dictionary is keyed by its keys: a `key` clause on one is a mistake.
+state names: [int: text] key id = []

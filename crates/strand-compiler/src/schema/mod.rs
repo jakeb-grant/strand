@@ -53,8 +53,8 @@ mod parse;
 pub mod plugins;
 
 pub use members::{
-    ASYNC_TRANSFORMS, MemberInfo, MemberKind, async_members, builtin_methods, list_members,
-    members_of,
+    ASYNC_TRANSFORMS, MemberInfo, MemberKind, async_members, builtin_methods, dict_members,
+    find_entry, list_members, members_of,
 };
 
 use std::collections::{BTreeMap, BTreeSet};

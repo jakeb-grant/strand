@@ -97,6 +97,7 @@ const LADDER: &[(&str, u32, &str)] = &[
     ("canvas", 5, "`canvas`"),
     ("type", 5, "`type`"),
     ("key", 5, "`key`"),
+    ("a dictionary", 5, "dictionaries `[K: V]`"),
     ("slot", 5, "`slot`"),
     ("fn", 5, "`fn`"),
     (
@@ -140,6 +141,9 @@ const PROSE: &[(&str, &str)] = &[
     // Level 5: an action's command is the reader's own (a compositor's
     // dispatch, an app of theirs), not one the guide's build can run.
     ("action", "`action dispatch("),
+    // Level 5 names dictionaries beside `type` and `key` (design.md's
+    // ladder, decisions.md dictionary): one remembered value per key.
+    ("a dictionary", "`[int: text]`"),
 ];
 
 fn prose(name: &str) -> Option<&'static str> {
@@ -675,6 +679,13 @@ impl Walk<'_> {
             ExprKind::List(xs) | ExprKind::Spaced(xs) => {
                 for x in xs {
                     self.expr(x);
+                }
+            }
+            ExprKind::Dict(entries) => {
+                self.at("a dictionary", e.span);
+                for (k, v) in entries {
+                    self.expr(k);
+                    self.expr(v);
                 }
             }
             ExprKind::Commas(xs) => {

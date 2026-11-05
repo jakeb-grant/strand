@@ -1,0 +1,50 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::dict_key
+
+  × a dictionary cannot be keyed by `Pin`
+   ╭─[dict_key_record.strand:5:16]
+ 4 │ type Pin { app: text; label: text }
+ 5 │ state by_pin: [Pin: int] = []
+   ·                ─┬─
+   ·                 ╰── not a key type
+ 6 │ state by_window: [Window: text] = []
+   ╰────
+  help: keys are `int`, `text`, `path`, `bool` or an enum: key by one of its fields
+
+check::dict_key
+
+  × a dictionary cannot be keyed by `Window`
+   ╭─[dict_key_record.strand:6:19]
+ 5 │ state by_pin: [Pin: int] = []
+ 6 │ state by_window: [Window: text] = []
+   ·                   ───┬──
+   ·                      ╰── not a key type
+ 7 │ state by_list: [[int]: text] = []
+   ╰────
+  help: key by its `id`, a `text`: `[text: …]`
+
+check::dict_key
+
+  × a dictionary cannot be keyed by `[int]`
+   ╭─[dict_key_record.strand:7:17]
+ 6 │ state by_window: [Window: text] = []
+ 7 │ state by_list: [[int]: text] = []
+   ·                 ──┬──
+   ·                   ╰── not a key type
+ 8 │ state by_maybe: [int?: text] = []
+   ╰────
+  help: keys are `int`, `text`, `path`, `bool` or an enum
+
+check::dict_key
+
+  × a dictionary cannot be keyed by `int?`
+   ╭─[dict_key_record.strand:8:18]
+ 7 │ state by_list: [[int]: text] = []
+ 8 │ state by_maybe: [int?: text] = []
+   ·                  ──┬─
+   ·                    ╰── not a key type
+   ╰────
+  help: a key is never null; drop the `?`: `int`

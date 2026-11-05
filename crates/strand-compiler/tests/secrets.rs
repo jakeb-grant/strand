@@ -483,3 +483,37 @@ fn a_claim_around_a_slot_given_a_password_is_an_error() {
         1
     );
 }
+
+/// (dictionary) A dictionary keeps its keys as well as its values: a
+/// persisted one keyed or filled by the password warns, through an entry
+/// write (`m[k] = v`) and through a literal; a key or value from
+/// elsewhere does not.
+#[test]
+fn a_persisted_dictionary_keyed_or_filled_by_a_secret() {
+    let kept = "  state seen: [text: int] = [] persist\n";
+    assert_eq!(
+        flows(&field(&format!(
+            "{kept}  box {{ on click {{ seen[pw] = 1 }} }}"
+        ))),
+        ["seen"]
+    );
+    let held = "  state held: [int: text] = [] persist\n";
+    assert_eq!(
+        flows(&field(&format!(
+            "{held}  box {{ on click {{ held[1] = pw }} }}"
+        ))),
+        ["held"]
+    );
+    assert_eq!(
+        flows(&field(&format!(
+            "{held}  box {{ on click {{ held = [1: pw] }} }}"
+        ))),
+        ["held"]
+    );
+    assert_eq!(
+        flows(&field(&format!(
+            "{held}  box {{ on click {{ held[pw.len] = \"x\" }} }}"
+        ))),
+        Vec::<String>::new()
+    );
+}

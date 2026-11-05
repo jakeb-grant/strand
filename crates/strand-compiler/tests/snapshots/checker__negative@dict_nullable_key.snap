@@ -1,0 +1,14 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::nullable
+
+  × a key expects `int`, but this may be null
+   ╭─[dict_nullable_key.strand:5:22]
+ 4 │ state last_win: [int: text] = []
+ 5 │ let shown = last_win[windows.focused?.workspace] ?? ""
+   ·                      ─────────────┬────────────
+   ·                                   ╰── this is `int?`
+   ╰────
+  help: give a fallback: `… ?? default`

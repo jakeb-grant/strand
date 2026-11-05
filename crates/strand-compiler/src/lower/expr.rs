@@ -623,6 +623,12 @@ impl Lowerer<'_> {
                 }
                 c.emit(Op::List(items.len() as u32), span);
             }
+            // (dictionary) A dictionary is checked but not yet built: its
+            // value is this error, so nothing reads a half-made one.
+            ExprKind::Dict(_) => {
+                let msg = c.name("dictionaries are checked but cannot run yet");
+                c.emit(Op::Fail(msg), span);
+            }
             ExprKind::Commas(items) => {
                 for i in items {
                     self.expr(c, i);

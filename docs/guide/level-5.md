@@ -2,7 +2,7 @@
 
 You learn: `tokens`, spring overrides `~`, `service from dbus`,
 `pages`, drag and drop, shaders, `file`; also `set { }`, `keyframes` and
-`play`, `canvas`, `type` and `key`, `slot`, `fn`, a node's `box` and
+`play`, `canvas`, `type` and `key`, dictionaries `[K: V]`, `slot`, `fn`, a node's `box` and
 `pointer`, settings files,
 SVG layer selectors, and `service … from file | dir | listen | poll` with
 `permit exec`, and `action`.
@@ -625,6 +625,14 @@ there does nothing. Because each item is known by
 its key, an icon keeps its place, its animation and anything it holds
 when the order changes, and glides to its new spot. `persist` keeps the
 list across restarts.
+
+**A dictionary remembers one value per key**, when there is no record
+to keep in order. A `[int: text]` holds one `text` for each `int` key:
+`state last_win: [int: text] = [] persist` holds a window id for each
+workspace number. `last_win[3]` reads one, `null` when there is none,
+so it is written `last_win[ws.id] ?? ""`; in a handler,
+`last_win[3] = id` sets it and `last_win.remove(3)` forgets it. Walk it
+with `for e in last_win.entries`, each entry a `key` and a `value`.
 
 **Drag and drop.** `drag: p` makes the icon draggable, carrying its
 pin. `on drop(p: Pin, at: int)` on the row receives it with the index

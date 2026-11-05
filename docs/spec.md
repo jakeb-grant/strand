@@ -91,6 +91,7 @@ guide's ladder test use this table as the list of constructs.
 | `after T while c`, `every T while c` | `timer` | 8.4 |
 | handler statements, `=`, `+=`, `-=`, `*=`, `/=`, `await` | `stmt`, `assign_op`, `unary` | 8.3 |
 | literals, units, colours, strings | lexical | 7.1 |
+| `[K: V]`, `[k: v, …]`, `m[k]` (dictionaries) | `type_atom`, `primary`, `postfix` | 7.1 |
 | `?.`, `??`, ternary, lambdas, calls, named args, `from` args | `expr` | 7.2 |
 | `$token.path`, token methods | `token_path`, `postfix` | 9.2 |
 | `file "path" { template: "t"; run: [argv] }` or `{ text: expr }`, at the top level or in a tree | `top_file`, `element` | 4.1, 9.7 |
@@ -641,7 +642,9 @@ monitor, the keyboard always).
 - **`state x = expr`** declares a writable cell. Its initial value is
   the default expression, evaluated once when the cell is created.
   `state x: T = expr` gives the type; `state xs: [T] key f = []`
-  declares a keyed collection (section 6.5).
+  declares a keyed collection (section 6.5), and `state m: [K: V] =
+  []` a dictionary (section 7.1), which is keyed by its keys: a `key`
+  clause on one is a load error (`check::dict_keyed`).
 - **`let x = expr`** declares a derived, read-only value. It is
   recomputed lazily when what it reads changes. Assigning to a `let` is
   a load error.
@@ -672,8 +675,9 @@ monitor, the keyboard always).
   written to it, as is the value it came from, and a fraction pushed or
   inserted into a whole list makes it a `[float]`.
 - **`persist`** (`state x = 0 persist`) keeps the value across restarts
-  (section 10.3). It is allowed only on a `state` holding plain data:
-  not functions, `Async` values, runtime handles or live service items.
+  (section 10.3). It is allowed only on a `state` holding plain data
+  (lists, dictionaries and records of it): not functions, `Async`
+  values, runtime handles or live service items.
 - **`export`** (`export state`, `export let`) makes a top-level value
   readable from other files and from the command line as `file.name`
   (section 4.2). It changes nothing else.
@@ -1670,6 +1674,7 @@ monitor, the keyboard always).
 | `text` | `"Search apps"`; any UTF-8, escapes `\" \\ \n \t \r \0 \u{…}`; no interpolation |
 | `bool` | `true`, `false` |
 | `[T]` | `[]`, `["a", "b"]`; lists |
+| `[K: V]` | `[]`, `[1: "web", 2: "code"]`, `[low: 3s, critical: 0s]`; dictionaries, one `V` per key |
 | `T?` | `T` or `null` |
 | `Async<T>` | section 8.6 |
 | records, enums | sections 5.4 |
@@ -1691,6 +1696,48 @@ monitor, the keyboard always).
   keep it, so rows keep their state as the query changes. `Match<T>` can be
   written as a type, as `Async<T>` can; a config's own `type Match` takes
   the name instead.
+- **Dictionaries.** `[K: V]` holds one value of type `V` for each key of
+  type `K` (decisions.md dictionary).
+  - A key is an `int`, a `text` (or an alias of one, such as `AppId`), a
+    `path`, a `bool` or an enum. Any other key type is
+    `check::dict_key`: a `float` may be a fraction and a number with a
+    unit compares by unit (`2px` and `2ch` would be two keys), so the
+    help says to key by a whole number (`x.round()`) or a `text`;
+    records, lists and functions have no key form. A `K?` key type is
+    the same error: a key is never null.
+  - A value is any type but an optional one: `[K: V?]` is
+    `check::dict_value`, since a missing key already reads `null`.
+  - `[k: v, …]` takes its type from the type expected, its keys checked
+    as `K` and values as `V`. Without one, its keys and values each
+    join as a list's items do (`[1: "a"]` is an `[int: text]`). `[]`
+    is the empty dictionary wherever one is expected; an untyped `state
+    m = []` is a list, and indexing one with a `text` key is
+    `check::dict_untyped`, whose help declares it: `state m: [text: V]
+    = []`. The same constant key twice in a literal is
+    `check::dict_duplicate`.
+  - `m[k]` reads a `V?`: `null` when `k` is absent. The key is expected
+    as a `K`, so a `K?` key must be unwrapped first, as a list index
+    must. A miss in a chain needs `?.`: `pins["kitty"]?.at`.
+  - In a handler, `m[k] = v` adds the entry or replaces its value, and
+    `m[k].f = x` writes a field of a present entry: the target is a
+    `V`, so `m[k] = null` is a type mismatch whose help says
+    `m.remove(k)`. A compound `m[k] += 1` is `check::dict_compound`,
+    since the entry may be missing: write `m[k] = (m[k] ?? 0) + 1`.
+  - Its members are listed in docs/reference/functions.md under
+    `[K: V]`: `len`, `keys` (a `[K]`), `values` (a `[V]`), `entries`,
+    `filter(e => …)` (a `[K: V]`), and in a handler `remove(k)`, which
+    does nothing when `k` is absent, and `clear()`. There is no `get`,
+    `set` or `has`: `m[k]`, `m[k] = v` and `m[k] != null` are those.
+  - `m.entries` is a `[Entry<K, V>]`, each with its `key` and `value`,
+    keyed by `key`, so `for e in m.entries { … }` needs no `key` clause
+    and keeps each row by its key. `for e in m` is `check::dict_for`,
+    whose fix is `m.entries`. `Entry<K, V>` can be written as a type,
+    as `Match<T>` can; a config's own `type Entry` takes the name
+    instead.
+  - Binding a prop two-way to an entry (`value: <-> m[k]`) is
+    `check::dict_two_way`: bind a `state` and write the entry `on
+    change`. A service field, an action's parameter or a command's
+    output cannot hold a dictionary yet (`check::dict_service`).
 - A list's members (`len`, `filter`, `find`, `push`, …) are listed in
   docs/reference/functions.md under `[T]`. `xs[i]` counts from 0 and
   reads `null` past the end. `xs.index_of(test)` is the index of the

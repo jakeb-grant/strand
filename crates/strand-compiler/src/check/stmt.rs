@@ -198,7 +198,9 @@ impl<'a> Checker<'a> {
             };
         }
         let mark = self.diags.len();
+        let place = std::mem::replace(&mut self.ctx.place, true);
         let t = self.expr(target, None);
+        self.ctx.place = place;
         if self.ctx.pure_fn {
             self.error(
                 "check::impure",
@@ -221,15 +223,43 @@ impl<'a> Checker<'a> {
             }
             self.not_writable(why, target.span, "assign");
         }
+        let entry = self.dict_entry(&t, target);
         let v = match op {
             AssignOp::Set => {
                 let v = self.expr(value, Some(&t.ty));
                 self.record_flow(&t, &v);
                 // `xs = [0.5]`: the items' own type, not the target's.
                 let written = self.written_ty(&v);
-                if !self.widen(&t, &written) {
-                    self.require(&v, &t.ty, "this assignment");
+                if !self.widen(&t, &written)
+                    && !self.require(&v, &t.ty, "this assignment")
+                    && let Some((m, k)) = &entry
+                    && v.ty.is_optional()
+                    && let Some(d) = self.diags.last_mut()
+                {
+                    // `m[k] = null`: a dictionary's values are never
+                    // null, and removing is its own word.
+                    d.help = Some(format!(
+                        "a dictionary's values are never null; to remove the entry, `{m}.remove({k})`"
+                    ));
                 }
+                v
+            }
+            _ if entry.is_some() => {
+                let v = self.expr(value, None);
+                let (m, k) = entry.unwrap_or_default();
+                let op_text = op.as_str();
+                let bin = &op_text[..1];
+                let start = if bin == "*" || bin == "/" { "1" } else { "0" };
+                self.error(
+                    "check::dict_compound",
+                    format!("`{op_text}` cannot change a dictionary entry, which may be missing"),
+                    t.span,
+                    "an entry of a dictionary",
+                )
+                .help = Some(format!(
+                    "write the entry whole, with a value for a missing key: \
+                     `{m}[{k}] = ({m}[{k}] ?? {start}) {bin} …`"
+                ));
                 v
             }
             _ => {
@@ -272,6 +302,31 @@ impl<'a> Checker<'a> {
             op,
             value: v,
         }
+    }
+
+    /// The dictionary and key `t` writes an entry of, when `t` is `m[k]`,
+    /// as `target` writes them (`last_win`, `3`), for messages.
+    fn dict_entry(&self, t: &hir::Expr, target: &ast::Expr) -> Option<(String, String)> {
+        let hir::ExprKind::Index { base, .. } = &t.kind else {
+            return None;
+        };
+        if !matches!(base.ty.non_null(), Ty::Dict(..)) {
+            return None;
+        }
+        let mut written = target;
+        while let ast::ExprKind::Paren(inner) = &written.kind {
+            written = inner;
+        }
+        let (m, k) = match &written.kind {
+            ast::ExprKind::Index { base, index } => {
+                (super::expr::written(base), super::expr::written(index))
+            }
+            _ => (None, None),
+        };
+        Some((
+            m.unwrap_or_else(|| "m".into()),
+            k.unwrap_or_else(|| "k".into()),
+        ))
     }
 
     /// The prop an assignment target names when it is a prop of the
@@ -352,6 +407,28 @@ impl<'a> Checker<'a> {
             Ty::Optional(_) => {
                 self.nullable_use(iter, ast, "operand");
                 Ty::Error
+            }
+            Ty::Dict(k, v) => {
+                // One way to walk a dictionary: its entries, each a key
+                // and a value (decisions.md, dictionary).
+                let entry = self.entry_of(k, v);
+                let shown = self.show(&iter.ty);
+                let written = super::expr::path_text(ast);
+                let at = Span::at(ast.span.end);
+                let d = self.error(
+                    "check::dict_for",
+                    format!("`for` walks a list, and this is a dictionary, `{shown}`"),
+                    iter.span,
+                    "a dictionary",
+                );
+                d.help = Some(match &written {
+                    Some(m) => format!(
+                        "walk its entries, each a `key` and a `value`: `for e in {m}.entries`"
+                    ),
+                    None => "walk its entries, each a `key` and a `value`: `.entries`".into(),
+                });
+                d.add_suggestion(at, ".entries");
+                entry
             }
             t => match t.list_elem() {
                 Some((e, _)) => e.clone(),

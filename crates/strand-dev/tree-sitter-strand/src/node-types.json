@@ -24,6 +24,10 @@
         "named": true
       },
       {
+        "type": "dictionary",
+        "named": true
+      },
+      {
         "type": "identifier",
         "named": true
       },
@@ -121,6 +125,10 @@
         "multiple": false,
         "required": false,
         "types": [
+          {
+            "type": "dictionary_type",
+            "named": true
+          },
           {
             "type": "list_type",
             "named": true
@@ -400,6 +408,10 @@
             "named": true
           },
           {
+            "type": "dictionary",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -487,6 +499,97 @@
         "types": [
           {
             "type": "token_block",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "dictionary",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "dictionary_entry",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "dictionary_entry",
+    "named": true,
+    "fields": {
+      "key": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "_expression",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "dictionary_type",
+    "named": true,
+    "fields": {
+      "key": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "dictionary_type",
+            "named": true
+          },
+          {
+            "type": "list_type",
+            "named": true
+          },
+          {
+            "type": "optional_type",
+            "named": true
+          },
+          {
+            "type": "type_name",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "dictionary_type",
+            "named": true
+          },
+          {
+            "type": "list_type",
+            "named": true
+          },
+          {
+            "type": "optional_type",
+            "named": true
+          },
+          {
+            "type": "type_name",
             "named": true
           }
         ]
@@ -646,6 +749,10 @@
         "multiple": false,
         "required": true,
         "types": [
+          {
+            "type": "dictionary_type",
+            "named": true
+          },
           {
             "type": "list_type",
             "named": true
@@ -824,6 +931,10 @@
         "required": false,
         "types": [
           {
+            "type": "dictionary_type",
+            "named": true
+          },
+          {
             "type": "list_type",
             "named": true
           },
@@ -970,6 +1081,10 @@
           },
           {
             "type": "color",
+            "named": true
+          },
+          {
+            "type": "dictionary",
             "named": true
           },
           {
@@ -1144,6 +1259,10 @@
         "required": false,
         "types": [
           {
+            "type": "dictionary_type",
+            "named": true
+          },
+          {
             "type": "list_type",
             "named": true
           },
@@ -1193,6 +1312,10 @@
         "required": false,
         "types": [
           {
+            "type": "dictionary_type",
+            "named": true
+          },
+          {
             "type": "list_type",
             "named": true
           },
@@ -1226,6 +1349,10 @@
       "multiple": false,
       "required": true,
       "types": [
+        {
+          "type": "dictionary_type",
+          "named": true
+        },
         {
           "type": "list_type",
           "named": true
@@ -1457,6 +1584,10 @@
             "named": true
           },
           {
+            "type": "dictionary",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -1605,6 +1736,10 @@
       "required": true,
       "types": [
         {
+          "type": "dictionary_type",
+          "named": true
+        },
+        {
           "type": "list_type",
           "named": true
         },
@@ -1647,6 +1782,10 @@
         "multiple": false,
         "required": false,
         "types": [
+          {
+            "type": "dictionary_type",
+            "named": true
+          },
           {
             "type": "list_type",
             "named": true
@@ -2181,6 +2320,10 @@
         "required": false,
         "types": [
           {
+            "type": "dictionary_type",
+            "named": true
+          },
+          {
             "type": "list_type",
             "named": true
           },
@@ -2628,6 +2771,10 @@
       "multiple": true,
       "required": true,
       "types": [
+        {
+          "type": "dictionary_type",
+          "named": true
+        },
         {
           "type": "identifier",
           "named": true

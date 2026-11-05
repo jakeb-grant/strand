@@ -1,0 +1,42 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+syntax::dict_braces
+
+  × dictionaries use brackets: `[K: V]`
+   ╭─[dict_braces.strand:4:14]
+ 3 │ // blocks and records' fields. The fix rewrites the braces as brackets.
+ 4 │ state names: {int: text} = []
+   ·              ─────┬─────
+   ·                   ╰── braces hold a record's fields or a block, not a type
+ 5 │ let more: [int: text] = {1: "web", 2: "code"}
+   ╰────
+  help: did you mean `[int: text]`?
+
+syntax::dict_braces
+
+  × dictionaries use brackets: `[k: v]`
+   ╭─[dict_braces.strand:5:25]
+ 4 │ state names: {int: text} = []
+ 5 │ let more: [int: text] = {1: "web", 2: "code"}
+   ·                         ──────────┬──────────
+   ·                                   ╰── braces hold a block, not a value
+ 6 │ let none: [text: int] = {}
+   ╰────
+  help: did you mean `[1: "web", 2: "code"]`?
+
+syntax::dict_braces
+
+  × dictionaries use brackets: `[k: v]`
+   ╭─[dict_braces.strand:6:25]
+ 5 │ let more: [int: text] = {1: "web", 2: "code"}
+ 6 │ let none: [text: int] = {}
+   ·                         ─┬
+   ·                          ╰── braces hold a block, not a value
+   ╰────
+  help: did you mean `[]`?
+
+fix [syntax::dict_braces] dict_braces.strand: `{int: text}` -> `[int: text]`
+fix [syntax::dict_braces] dict_braces.strand: `{1: "web", 2: "code"}` -> `[1: "web", 2: "code"]`
+fix [syntax::dict_braces] dict_braces.strand: `{}` -> `[]`

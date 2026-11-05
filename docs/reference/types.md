@@ -322,6 +322,17 @@ which; the other fields are empty. A drag inside the shell delivers the
 | `app` | `App?` | The dropped app. |
 | `text` | `text` | The dropped text. |
 
+### `Entry`
+
+An entry of a dictionary `[K: V]`, as `Entry<K, V>`: what `m.entries`
+holds and what `m.filter(e => …)` is given. Keyed by `key`, so a `for e
+in m.entries` row keeps its state while its value changes.
+
+| Field | Type | |
+| --- | --- | --- |
+| `key` | `any` | Its key, a `K`. |
+| `value` | `any` | Its value, a `V`. |
+
 ### `File`
 
 A file a `from dir` service lists: `service walls

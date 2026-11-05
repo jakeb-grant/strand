@@ -327,6 +327,11 @@ pub(crate) struct Ctx {
     /// (M6) In a `use tokens …, palette …` clause: the palette is being
     /// chosen, so `$palette.<name>` cannot be read there.
     pub in_use: bool,
+    /// On the path of an assignment's target (its names, fields and
+    /// indexes, not its keys): a dictionary entry `m[k]` there is the
+    /// entry written, a `V`, where a read gives a `V?` (decisions.md,
+    /// dictionary).
+    pub place: bool,
 }
 
 /// An element being checked.
@@ -1269,6 +1274,11 @@ impl<'a> Checker<'a> {
                     self.deep_sources(i, out);
                 }
             }
+            K::Dict(entries) => {
+                for (_, v) in entries {
+                    self.deep_sources(v, out);
+                }
+            }
             K::Lambda {
                 body: hir::LambdaBody::Expr(b),
                 ..
@@ -1312,6 +1322,119 @@ impl<'a> Checker<'a> {
             _ => None,
         };
         Ty::Record(self.types.add_record(def))
+    }
+
+    /// `Entry<K, V>`, an entry of a `[K: V]` (what `m.entries` holds and
+    /// `m.filter` takes): the schema's `Entry` with `key: K` and `value:
+    /// V` under its own name, one per (K, V), keyed by `key`, made as
+    /// [`Checker::match_of`] makes `Match<T>`.
+    pub(crate) fn entry_of(&mut self, key: &Ty, value: &Ty) -> Ty {
+        if key.is_error() && value.is_error() {
+            return Ty::Error;
+        }
+        if let Some(r) = crate::schema::find_entry(&self.types, key, value) {
+            return Ty::Record(r);
+        }
+        let name = format!("Entry<{}, {}>", self.show(key), self.show(value));
+        let Some(template) = self.types.find_schema_record("Entry") else {
+            return Ty::Error;
+        };
+        let mut def = self.types.record(template).clone();
+        def.name = name;
+        for f in &mut def.fields {
+            match f.name.as_str() {
+                "key" => f.ty = key.clone(),
+                "value" => f.ty = value.clone(),
+                _ => {}
+            }
+        }
+        Ty::Record(self.types.add_record(def))
+    }
+
+    /// `[K: V]` as written: reports a key type no dictionary takes
+    /// (`check::dict_key`) and an optional value (`check::dict_value`).
+    /// What is reported stays a dictionary of what was meant, so its uses
+    /// check without more errors.
+    pub(crate) fn dict_type(&mut self, key: Ty, key_span: Span, value: Ty, value_span: Span) -> Ty {
+        let key = if self.dict_key_ok(&key, key_span) {
+            key
+        } else {
+            Ty::Error
+        };
+        let value = if let Ty::Optional(inner) = &value {
+            let shown = self.show(&value);
+            let plain = self.show(inner);
+            self.error(
+                "check::dict_value",
+                format!("a dictionary's value cannot be `{shown}`"),
+                value_span,
+                "may be null",
+            )
+            .help = Some(format!(
+                "a missing key already reads null; drop the `?`: `{plain}`"
+            ));
+            (**inner).clone()
+        } else if value == Ty::Null {
+            self.error(
+                "check::dict_value",
+                "a dictionary's value cannot be `null`",
+                value_span,
+                "only null",
+            )
+            .help = Some("a missing key already reads null; give the values a type".into());
+            Ty::Error
+        } else {
+            value
+        };
+        Ty::dict(key, value)
+    }
+
+    /// Whether `key` may key a dictionary; reports `check::dict_key` at
+    /// `span` when not.
+    pub(crate) fn dict_key_ok(&mut self, key: &Ty, span: Span) -> bool {
+        if self.types.is_dict_key(key) {
+            return true;
+        }
+        let shown = self.show(key);
+        let help = match key {
+            Ty::Optional(inner) => {
+                format!("a key is never null; drop the `?`: `{}`", self.show(inner))
+            }
+            Ty::Prim(p) if p.is_scalar() => format!(
+                "keys are compared exactly, and a `{shown}` may be a fraction: key by a whole \
+                 number (`x.round()` is an `int`) or by `text`"
+            ),
+            Ty::Prim(p) if p.is_numeric() => format!(
+                "keys are compared exactly, and a `{shown}` carries a unit (`2px` and `2ch` \
+                 would be two keys): key by a whole number (`x.round()` is an `int`) or by `text`"
+            ),
+            Ty::Record(r) => {
+                let rec = self.types.record(*r);
+                match rec
+                    .key
+                    .as_ref()
+                    .and_then(|path| self.types.field_path(*r, path).map(|t| (path.join("."), t)))
+                {
+                    Some((path, t)) if self.types.is_dict_key(&t) => format!(
+                        "key by its `{path}`, a `{}`: `[{}: …]`",
+                        self.show(&t),
+                        self.show(&t)
+                    ),
+                    _ => "keys are `int`, `text`, `path`, `bool` or an enum: key by one of its \
+                          fields"
+                        .into(),
+                }
+            }
+            _ => "keys are `int`, `text`, `path`, `bool` or an enum".into(),
+        };
+        self.error(
+            "check::dict_key",
+            format!("a dictionary cannot be keyed by `{shown}`"),
+            span,
+            "not a key type",
+        )
+        .help = Some(help);
+        false
     }
 
     /// True if member `name` of a `recv` hands on the receiver's items
@@ -1500,6 +1623,11 @@ impl<'a> Checker<'a> {
                 Schema::list_of(&self.types, elem)
             }
             ast::TypeKind::Optional(inner) => self.resolve_type(inner).optional(),
+            ast::TypeKind::Dict(k, v) => {
+                let key = self.resolve_type(k);
+                let value = self.resolve_type(v);
+                self.dict_type(key, k.span, value, v.span)
+            }
             ast::TypeKind::Named { path, args } => {
                 let name: Vec<&str> = path.iter().map(|i| i.name.as_str()).collect();
                 let span = t.span;
@@ -1531,6 +1659,28 @@ impl<'a> Checker<'a> {
                                 "`Match` takes one type: `Match<T>`",
                                 span,
                                 "expected one type argument",
+                            );
+                            Ty::Error
+                        }
+                    };
+                }
+                // `Entry<K, V>`, an entry of a `[K: V]`, as `Match<T>`.
+                if name == ["Entry"] && !self.types.user_named("Entry") {
+                    return match args.as_slice() {
+                        [k, v] => {
+                            let key = self.resolve_type(k);
+                            let value = self.resolve_type(v);
+                            match self.dict_type(key, k.span, value, v.span) {
+                                Ty::Dict(key, value) => self.entry_of(&key, &value),
+                                _ => Ty::Error,
+                            }
+                        }
+                        _ => {
+                            self.error(
+                                "check::unknown_type",
+                                "`Entry` takes two types: `Entry<K, V>`",
+                                span,
+                                "expected two type arguments",
                             );
                             Ty::Error
                         }
@@ -1640,7 +1790,7 @@ impl<'a> Checker<'a> {
 fn holds_number(ty: &Ty) -> bool {
     match ty {
         Ty::Error | Ty::Any | Ty::Prim(Prim::Int | Prim::Float) => true,
-        Ty::Optional(t) | Ty::List(t, _) | Ty::Async(t) => holds_number(t),
+        Ty::Optional(t) | Ty::List(t, _) | Ty::Async(t) | Ty::Dict(_, t) => holds_number(t),
         Ty::Tuple(ts) | Ty::Union(ts) => ts.iter().any(holds_number),
         Ty::Fn(sig) => holds_number(&sig.ret),
         _ => false,
@@ -1652,6 +1802,7 @@ fn mentions_opaque(ty: &Ty, name: &str) -> bool {
     match ty {
         Ty::Opaque(n) => &**n == name,
         Ty::Optional(t) | Ty::List(t, _) | Ty::Async(t) => mentions_opaque(t, name),
+        Ty::Dict(k, v) => mentions_opaque(k, name) || mentions_opaque(v, name),
         Ty::Tuple(ts) | Ty::Union(ts) => ts.iter().any(|t| mentions_opaque(t, name)),
         Ty::Fn(sig) => {
             mentions_opaque(&sig.ret, name)

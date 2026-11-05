@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use super::{DocKey, Schema};
-use crate::ty::{FnSig, ParamSig, Prim, Ty, TypeTable};
+use crate::ty::{FnSig, ParamSig, Prim, RecordId, Ty, TypeTable};
 
 /// What a member is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -313,6 +313,71 @@ pub fn list_members(elem: &Ty, keyed: bool, key: &Ty) -> Vec<MemberInfo> {
     ]
 }
 
+/// The members of a dictionary `[key: value]`. `entry` is its
+/// `Entry<K, V>` (a record the checker makes per key and value type, see
+/// [`find_entry`]); `filter` takes one and keeps the dictionary's type.
+/// Reads by key are `m[k]`, writes `m[k] = v`: there is no `get` or `set`.
+pub fn dict_members(key: &Ty, value: &Ty, entry: &Ty) -> Vec<MemberInfo> {
+    let dict = Ty::dict(key.clone(), value.clone());
+    let pred = Ty::Fn(Arc::new(FnSig::positional(vec![entry.clone()], Ty::BOOL)));
+    let m = |name: &str, params: Vec<ParamSig>, ret: Ty, writes: bool, doc: &str| {
+        MemberInfo::method(name, FnSig::new(params, ret), writes, doc)
+    };
+    vec![
+        MemberInfo::field("len", Ty::INT, "How many entries."),
+        MemberInfo::field("keys", Ty::list(key.clone()), "The keys, in key order."),
+        MemberInfo::field(
+            "values",
+            Ty::list(value.clone()),
+            "The values, in the order of their keys.",
+        ),
+        MemberInfo::field(
+            "entries",
+            Ty::keyed_list(entry.clone()),
+            "The entries (`Entry<K, V>`, each a `key` and a `value`), in key \
+             order and keyed by `key`: `for e in m.entries { … }`.",
+        ),
+        m(
+            "filter",
+            vec![param("keep", pred)],
+            dict,
+            false,
+            "The entries `keep` is true for, as a dictionary: `m.filter(e => \
+             e.value > 0)`.",
+        ),
+        m(
+            "remove",
+            vec![param("key", key.clone())],
+            Ty::Unit,
+            true,
+            "Removes the entry for `key`, and does nothing when there is none \
+             (handlers only).",
+        ),
+        m(
+            "clear",
+            vec![],
+            Ty::Unit,
+            true,
+            "Removes every entry (handlers only).",
+        ),
+    ]
+}
+
+/// The `Entry<K, V>` the checker made for a dictionary of `key` to
+/// `value`, if it made one (found by its field types, not its name, as a
+/// type's shown name changes once another file declares the same one).
+pub fn find_entry(types: &TypeTable, key: &Ty, value: &Ty) -> Option<RecordId> {
+    types
+        .records
+        .iter()
+        .rposition(|r| {
+            r.name.starts_with("Entry<")
+                && r.field("key").is_some_and(|f| f.ty == *key)
+                && r.field("value").is_some_and(|f| f.ty == *value)
+        })
+        .map(|i| RecordId(i as u32))
+}
+
 /// The members of an `Async<inner>`: `pending`, `error`, `value`, and for
 /// a list its `len` and the transforms that keep it loading.
 pub fn async_members(inner: &Ty, key: &Ty) -> Vec<MemberInfo> {
@@ -357,6 +422,10 @@ pub fn members_of(t: &Ty, schema: &Schema, types: &TypeTable) -> Vec<MemberInfo>
             let key = list_key(elem, types);
             list_members(elem, *keyed, &key)
         }
+        Ty::Dict(k, v) => {
+            let entry = find_entry(types, k, v).map_or_else(|| Ty::opaque("Entry"), Ty::Record);
+            dict_members(k, v, &entry)
+        }
         Ty::Async(inner) => {
             let key = inner
                 .list_elem()
@@ -365,7 +434,8 @@ pub fn members_of(t: &Ty, schema: &Schema, types: &TypeTable) -> Vec<MemberInfo>
         }
         Ty::Record(r) => {
             let rec = types.record(*r);
-            // `Match<Pin>` is documented as `Match`.
+            // `Match<Pin>` is documented as `Match`, `Entry<int, text>`
+            // as `Entry`.
             let documented = rec.name.split('<').next().unwrap_or(&rec.name);
             let doc = |m: &str| {
                 schema

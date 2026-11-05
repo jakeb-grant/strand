@@ -101,7 +101,9 @@ impl<'a> Checker<'a> {
             let ty = match &p.ty {
                 Some(t) => {
                     let ty = self.resolve_type(t);
-                    if !passable(&ty, dbus) {
+                    if super::tree::holds_dict(&self.types, &ty, &mut Vec::new()) {
+                        self.dict_service(&ty, t.span, "an action's parameter");
+                    } else if !passable(&ty, dbus) {
                         let shown = self.types.show(&ty);
                         self.error(
                             "check::type_mismatch",
@@ -165,6 +167,10 @@ impl<'a> Checker<'a> {
             // records the config declares and the builtin `File` and
             // `Date` (services-round), never a live handle (`Window`,
             // `Canvas`).
+            if super::tree::holds_dict(&self.types, &ty, &mut Vec::new()) {
+                self.dict_service(&ty, t.span, "a command's output");
+                return Ty::Error;
+            }
             if !super::tree::readable(&self.types, &ty, &mut Vec::new()) {
                 let shown = self.types.show(&ty);
                 self.error(

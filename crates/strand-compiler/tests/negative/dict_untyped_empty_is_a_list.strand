@@ -1,0 +1,8 @@
+// expect: check::needs_type, check::dict_untyped
+// An untyped `[]` is still a list. Used with a text key, the error says
+// how to declare the dictionary meant; an `int` index reads it as a list.
+state seen = []
+let first = seen[0]
+component C {
+  box { on click { seen["kitty"] = 1 } }
+}

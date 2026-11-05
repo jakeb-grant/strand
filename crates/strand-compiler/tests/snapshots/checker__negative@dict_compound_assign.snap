@@ -1,0 +1,28 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::dict_compound
+
+  × `+=` cannot change a dictionary entry, which may be missing
+   ╭─[dict_compound_assign.strand:7:20]
+ 6 │ component C {
+ 7 │   box { on click { hits["a"] += 1; scale["b"] *= 2 } }
+   ·                    ────┬────
+   ·                        ╰── an entry of a dictionary
+ 8 │ }
+   ╰────
+  help: write the entry whole, with a value for a missing key: `hits["a"] = (hits["a"] ?? 0) + …`
+
+check::dict_compound
+
+  × `*=` cannot change a dictionary entry, which may be missing
+   ╭─[dict_compound_assign.strand:7:36]
+ 6 │ component C {
+ 7 │   box { on click { hits["a"] += 1; scale["b"] *= 2 } }
+   ·                                    ─────┬────
+   ·                                         ╰── an entry of a dictionary
+ 8 │ }
+   ╰────
+  help: write the entry whole, with a value for a missing key: `scale["b"] = (scale["b"] ?? 1) * …
+        `

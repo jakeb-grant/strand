@@ -54,6 +54,56 @@ its last good version keeps running, `strand watch` lists it under
 "held back", and the overlay below shows the problem. Fix it and save
 again.
 
+## A dictionary that does not check
+
+A [dictionary](../concepts/language.md#dictionaries) keeps one value
+per key, and most of its mistakes come from another language's habits.
+This one is computed when the site is built:
+
+```strand-check
+state last_win: {int: text} = []
+```
+
+Each error and its fix:
+
+- **`syntax::dict_braces`**, "dictionaries use brackets": a dictionary
+  or its type is written in brackets, `[1: "web"]` and `[int: text]`,
+  and an empty one is `[]`. Braces hold a block.
+- **`syntax::dict_item`**, "every item of a dictionary is `key:
+  value`": `[1: "a", 2]` mixes entries with a list's items. Give every
+  item a value, or none for a list. `[:]` is this error too; an empty
+  dictionary is `[]`.
+- **`check::dict_key`**, "a dictionary cannot be keyed by …": a key is
+  an `int`, `text`, `path`, `bool` or an enum. Key by a whole number
+  (`x.round()`) instead of a `float` or a length, and by a record's
+  `id` instead of the record. A key type is never optional.
+- **`check::dict_value`**, "a dictionary's value cannot be `T?`": a
+  missing key already reads `null`, so drop the `?`.
+- **`check::dict_duplicate`**, "… is a key twice in this dictionary":
+  remove one of the two entries.
+- **`check::dict_untyped`**, "… is an untyped `[]`, a list read by
+  position": `state m = []` is a list. To key it by text, declare it:
+  `state m: [text: int] = []`.
+- **`check::type_mismatch`** on `m[k] = null`: a dictionary's values
+  are never `null`; forget an entry with `m.remove(k)`.
+- **`check::dict_compound`**, "`+=` cannot change a dictionary entry":
+  the entry may be missing, so write it whole with a value for that
+  case: `m[k] = (m[k] ?? 0) + 1`.
+- **`check::nullable`** on a key: `m[windows.focused?.workspace]`
+  keys by a value that may be `null`. Give a fallback with `??`, or
+  read it only when it is there.
+- **`check::dict_for`**, "`for` walks a list, and this is a
+  dictionary": walk its entries, `for e in m.entries { … e.key …
+  e.value }`.
+- **`check::dict_keyed`**, "a dictionary is already keyed": drop the
+  `key …` clause; `[K: V]` is keyed by its keys.
+- **`check::dict_two_way`**, "… cannot be bound two-way to a dictionary
+  entry": bind a `state` (`value: <-> level`) and write the entry
+  `on change level { m[k] = level }`.
+- **`check::dict_service`**, "… cannot hold a dictionary yet": a
+  service field, an action's parameter or a command's output reads a
+  list of a `type` you declare instead.
+
 ## A file named like a built-in service stops loading
 
 A file's exports are read as `file.name`, so a file named like a

@@ -703,6 +703,16 @@ record Match {
   ranges: [Range]
 }
 
+/// An entry of a dictionary `[K: V]`, as `Entry<K, V>`: what `m.entries`
+/// holds and what `m.filter(e => …)` is given. Keyed by `key`, so a `for e
+/// in m.entries` row keeps its state while its value changes.
+record Entry key key {
+  /// Its key, a `K`.
+  key: any
+  /// Its value, a `V`.
+  value: any
+}
+
 /// A Bluetooth device, paired or in range, keyed by `address`.
 provisional record BluetoothDevice key address {
   /// Its address.

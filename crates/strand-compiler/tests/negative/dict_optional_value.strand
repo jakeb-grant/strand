@@ -1,0 +1,5 @@
+// expect: check::dict_value
+// A missing key already reads null, so a value is never optional: the
+// help drops the `?`. A literal of only nulls has no value type either.
+state names: [int: text?] = []
+let nothing = [1: null]

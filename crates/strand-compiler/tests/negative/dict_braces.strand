@@ -1,0 +1,6 @@
+// expect: syntax::dict_braces
+// Dictionaries use brackets, in a type and in a literal: braces hold
+// blocks and records' fields. The fix rewrites the braces as brackets.
+state names: {int: text} = []
+let more: [int: text] = {1: "web", 2: "code"}
+let none: [text: int] = {}

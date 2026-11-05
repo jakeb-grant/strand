@@ -184,6 +184,14 @@ const SYNTAX_ERRORS: &[&str] = &[
     "service t from pol \"x\" every 1s { a: text }\n",
     "service t from dbus systm \"a.b\" { a: text = A }\n",
     "service t from poll \"/tmp/x\" { a: text }\n",
+    // (dictionary) Every item of a dictionary is `key: value`, an empty
+    // one is `[]`, and braces hold a block, not a dictionary.
+    "let m = [1: \"a\", 2]\n",
+    "let m = [1, 2: \"a\"]\n",
+    "let m: [int: text] = [:]\n",
+    "let m: [int: text] = {1: \"a\"}\n",
+    "state m: {int: text} = []\n",
+    "let m: [int: text: bool] = []\n",
 ];
 
 #[test]
@@ -852,4 +860,39 @@ fn a_qualified_component_call_is_one_element() {
             ts.root_node().to_sexp()
         );
     }
+}
+
+/// (dictionary) `[k: v, …]` is a `dictionary` of `dictionary_entry`s
+/// where the parser reads one (first item with a `:`, over lines, a
+/// trailing comma, a ternary key, in a head), `[]` stays an `array`, and
+/// `[K: V]` is a `dictionary_type`, nesting and optional.
+#[test]
+fn dictionaries_parse_as_the_parser_reads_them() {
+    let src = "enum Urgency { low, critical }\n\
+               state last_win: [int: text] = [] persist\n\
+               let waits: [Urgency: duration]? = [low: 3s, critical: 0s]\n\
+               let deep: [text: [int: [text]]] = [\n  \"a\": [1: [\"x\"]],\n  \"b\": [],\n]\n\
+               let pick = [c ? a : b: v]\n\
+               fn f(m: [AppId: float]) -> [int: text] { [] }\n\
+               bar Top {\n  Chips [low: 1, high: 2] { x: 1 }\n  text last_win[3] ?? \"\"\n}\n";
+    assert_eq!(syntax_errors(src), Vec::<&str>::new());
+    let tree = ts_parse(src);
+    assert_eq!(first_error(&tree), None, "{}", tree.root_node().to_sexp());
+    fn count(n: Node<'_>, kind: &str) -> usize {
+        usize::from(n.kind() == kind)
+            + (0..n.child_count())
+                .filter_map(|i| n.child(i))
+                .map(|c| count(c, kind))
+                .sum::<usize>()
+    }
+    let root = tree.root_node();
+    assert_eq!(count(root, "dictionary_type"), 6);
+    assert_eq!(count(root, "dictionary"), 5);
+    assert_eq!(count(root, "dictionary_entry"), 8);
+    assert_eq!(count(root, "array"), 4);
+    let sexp = root.to_sexp();
+    assert!(
+        sexp.contains("(dictionary (dictionary_entry key: (ternary_expression"),
+        "{sexp}"
+    );
 }

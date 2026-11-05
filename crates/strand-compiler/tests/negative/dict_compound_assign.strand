@@ -1,0 +1,8 @@
+// expect: check::dict_compound
+// An entry may be missing, so `+=` has nothing to add to: the help
+// writes the entry whole, with a value for a missing key.
+state hits: [text: int] = []
+state scale: [text: float] = []
+component C {
+  box { on click { hits["a"] += 1; scale["b"] *= 2 } }
+}

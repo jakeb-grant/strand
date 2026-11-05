@@ -344,3 +344,18 @@ fn qualified_component_calls_format() {
     let tree = strand_compiler::syntax::dump::tree(&parse(FileId::default(), &out).file).render();
     assert!(tree.contains("element tray.Row"), "{tree}");
 }
+
+/// (dictionary) A dictionary's `:` is spaced as a prop's, in a literal
+/// and in a type (`[int: text]`, not the tight `[Pin]` of other types),
+/// and values the author aligned keep their column; a ternary key keeps
+/// its spaced `?` and `:`, and a literal over lines keeps its lines and
+/// their offset from the line that opened it, as a list does.
+#[test]
+fn dictionaries_format() {
+    let src = "state last_win:[int:text]=[]  persist\nlet names : [ int :text ]? = [1:\"web\" ,2 : \"code\"]\nlet waits: [Urgency: duration] = [\n    low:3s,\n    critical : 0s,\n]\nlet sizes = [\n  1:  \"s\",\n  10: \"m\",\n]\nlet pick = [c?a:b : v]\nfn f(m:[AppId:[text]])->[int:text] { [] }\n";
+    let out = assert_formats("dictionaries", src);
+    assert_eq!(
+        out,
+        "state last_win: [int: text] = [] persist\nlet names: [int: text]? = [1: \"web\", 2: \"code\"]\nlet waits: [Urgency: duration] = [\n    low: 3s,\n    critical: 0s,\n]\nlet sizes = [\n  1:  \"s\",\n  10: \"m\",\n]\nlet pick = [c ? a : b: v]\nfn f(m: [AppId: [text]]) -> [int: text] { [] }\n"
+    );
+}

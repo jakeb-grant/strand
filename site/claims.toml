@@ -3490,3 +3490,40 @@ page   = "site/start/running.md"
 text   = "set `STRAND_ICON_THEME`"
 source = ['crates/strand-icons/src/lib.rs "std::env::var("STRAND_ICON_THEME")"']
 proof  = "crates/strand-services/tests/builtin.rs::the_portal_icon_theme_is_followed_live"
+
+# --- dictionary ---
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "A key is an `int`, a `text`, a `path`, a `bool` or an enum, written"
+source = ['crates/strand-compiler/src/ty.rs "pub fn is_dict_key(&self, ty: &Ty) -> bool {"', 'docs/spec.md "A key is an `int`, a `text` (or an alias of one, such as `AppId`), a"']
+proof  = "crates/strand-compiler/tests/checker.rs::dictionaries_check_by_their_key_and_value_types (int, text and enum keys), tests/negative/dict_key_float.strand, dict_key_record.strand"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "bare (`low`). `last_win[3]` reads the value for `3`, or `null` when"
+source = ['docs/spec.md "`m[k]` reads a `V?`: `null` when `k` is absent."']
+proof  = "crates/strand-compiler/tests/checker.rs::dictionaries_check_by_their_key_and_value_types (`names[1]` is a `text?`, `waits[critical] ?? 6s` a `duration`); the runtime's miss is the next step's"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "in Strand, so `{\"a\": 1}` is an error whose fix is `[\"a\": 1]`. A"
+source = ['crates/strand-compiler/src/syntax/parser/expr.rs "dictionaries use brackets: `[k: v]`"', 'docs/grammar.md "are `syntax::dict_braces`"']
+proof  = "crates/strand-compiler/tests/diagnostics.rs::dictionary_mistakes_are_one_error_and_recover, tests/negative/dict_braces.strand (its fix rewrites the braces)"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "(`state m: [text: int] = []`); an untyped `[]` is a list. There are no"
+source = ['crates/strand-compiler/src/check/expr.rs "is an untyped `[]`, a list read by position"', 'docs/spec.md "m = []` is a list, and indexing one with a `text` key is"']
+proof  = "crates/strand-compiler/tests/negative/dict_untyped_empty_is_a_list.strand"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "the entry may be missing, so write it whole with a value for that"
+source = ['crates/strand-compiler/src/check/stmt.rs "cannot change a dictionary entry, which may be missing"']
+proof  = "crates/strand-compiler/tests/negative/dict_compound_assign.strand (its help: `hits[\"a\"] = (hits[\"a\"] ?? 0) + …`)"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "dictionary\": walk its entries, `for e in m.entries { … e.key …"
+source = ['crates/strand-compiler/src/check/stmt.rs "walk its entries, each a `key` and a `value`"']
+proof  = "crates/strand-compiler/tests/negative/dict_for_without_entries.strand (fix: `.entries`)"

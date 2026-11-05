@@ -145,3 +145,17 @@ A list of `T` items. `remove_key`, `move` and `update` are a keyed list's (`[T] 
 | `fn move(key: K, to: int)` | Moves the item with `key` to `to` (keyed lists, handlers only). |
 | `fn update(key: K, f: fn(T) -> T)` | Replaces the item with `key` by `f` of it (keyed lists, handlers only). |
 
+### `[K: V]`
+
+A dictionary: one `V` for each key `K`. `m[k]` reads the value for `k`, a `V?` that is `null` when there is none, and in a handler `m[k] = v` sets it (spec.md, section 7.1).
+
+| Member | |
+| --- | --- |
+| `len: int` | How many entries. |
+| `keys: [K]` | The keys, in key order. |
+| `values: [V]` | The values, in the order of their keys. |
+| `entries: [Entry<K, V>]` | The entries (`Entry<K, V>`, each a `key` and a `value`), in key order and keyed by `key`: `for e in m.entries { … }`. |
+| `fn filter(keep: fn(Entry<K, V>) -> bool) -> [K: V]` | The entries `keep` is true for, as a dictionary: `m.filter(e => e.value > 0)`. |
+| `fn remove(key: K)` | Removes the entry for `key`, and does nothing when there is none (handlers only). |
+| `fn clear()` | Removes every entry (handlers only). |
+

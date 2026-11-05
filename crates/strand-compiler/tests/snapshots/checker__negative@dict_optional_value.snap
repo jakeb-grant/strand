@@ -1,0 +1,26 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::dict_value
+
+  × a dictionary's value cannot be `text?`
+   ╭─[dict_optional_value.strand:4:20]
+ 3 │ // help drops the `?`. A literal of only nulls has no value type either.
+ 4 │ state names: [int: text?] = []
+   ·                    ──┬──
+   ·                      ╰── may be null
+ 5 │ let nothing = [1: null]
+   ╰────
+  help: a missing key already reads null; drop the `?`: `text`
+
+check::dict_value
+
+  × a dictionary's value cannot be `null`
+   ╭─[dict_optional_value.strand:5:19]
+ 4 │ state names: [int: text?] = []
+ 5 │ let nothing = [1: null]
+   ·                   ──┬─
+   ·                     ╰── only null
+   ╰────
+  help: a missing key already reads null; give the values a type

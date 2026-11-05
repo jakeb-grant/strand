@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::type_mismatch
+
+  × this assignment expects `text`, found `null`
+   ╭─[dict_assign_null.strand:6:34]
+ 5 │ component C {
+ 6 │   box { on click { last_win[3] = null } }
+   ·                                  ──┬─
+   ·                                    ╰── this is `null`
+ 7 │ }
+   ╰────
+  help: a dictionary's values are never null; to remove the entry, `last_win.remove(3)`

@@ -517,6 +517,139 @@ fn index_of_is_an_optional_int_of_a_predicate() {
     );
 }
 
+/// (dictionary) `[K: V]`: a literal takes its type from where it is
+/// written or from its entries, `[]` is the empty dictionary where one is
+/// expected, `m[k]` reads a `V?`, the members are typed by K and V
+/// (`Entry<K, V>` made per pair, keyed by `key`), and an entry written in
+/// a handler is a `V`, so `m[k].f = x` needs no fallback.
+#[test]
+fn dictionaries_check_by_their_key_and_value_types() {
+    let out = one("enum Urgency { low, normal, critical }\n\
+                   type Pin { app: text; at: int }\n\
+                   state last_win: [int: text] = [] persist\n\
+                   state waits: [Urgency: duration] = [low: 3s, normal: 6s, critical: 0s]\n\
+                   state pins: [text: Pin] = []\n\
+                   state prefs from \"prefs.toml\" { wallpapers: [text: path] = [] }\n\
+                   let names = [1: \"web\", 2: \"code\"]\n\
+                   let counts = [\"a\": 1, \"b\": 2]\n\
+                   let typed: [int: text] = [1: \"web\"]\n\
+                   let empty: [text: [text]] = []\n\
+                   let one = names[1]\n\
+                   let len = names.len\n\
+                   let keys = names.keys\n\
+                   let values = names.values\n\
+                   let entries = names.entries\n\
+                   let busy = names.filter(e => e.key > 1 && e.value != \"\")\n\
+                   let wait = waits[critical] ?? 6s\n\
+                   let same = names == typed\n\
+                   let first: Entry<int, text>? = names.entries.first\n\
+                   let at = pins[\"kitty\"]?.at ?? 0\n\
+                   bar B {\n\
+                     for e in names.entries { text e.value }\n\
+                     box { on click {\n\
+                       last_win[3] = \"0x55\"\n\
+                       pins[\"kitty\"].at = 2\n\
+                       last_win.remove(3)\n\
+                       last_win.clear()\n\
+                       last_win = last_win.filter(e => e.key != 3)\n\
+                       prefs.wallpapers[\"DP-1\"] = \"~/walls/left.jpg\"\n\
+                     } }\n\
+                   }\n");
+    let p = &out.program;
+    for (name, ty) in [
+        ("names", "[int: text]"),
+        ("counts", "[text: int]"),
+        ("typed", "[int: text]"),
+        ("empty", "[text: [text]]"),
+        ("one", "text?"),
+        ("len", "int"),
+        ("keys", "[int]"),
+        ("values", "[text]"),
+        ("entries", "[Entry<int, text>]"),
+        ("busy", "[int: text]"),
+        ("wait", "duration"),
+        ("same", "bool"),
+        ("first", "Entry<int, text>?"),
+        ("at", "int"),
+        ("waits", "[Urgency: duration]"),
+    ] {
+        assert_eq!(def_ty(p, name), ty, "{name}");
+    }
+    assert!(matches!(
+        find_let(p, "empty").value.kind,
+        ExprKind::Dict(ref entries) if entries.is_empty()
+    ));
+    // One `Entry<int, text>`, keyed by `key`, however often it is named.
+    let entry: Vec<_> = p
+        .types
+        .records
+        .iter()
+        .filter(|r| r.name == "Entry<int, text>")
+        .collect();
+    assert_eq!(entry.len(), 1);
+    assert_eq!(entry[0].key.as_deref(), Some(&["key".to_string()][..]));
+}
+
+/// (dictionary) What a dictionary refuses beyond the negative corpus: a
+/// read through a missing entry needs `?.`, its writes are for handlers
+/// on a writable place, a `get` or `set` method says how to read and
+/// write by key, and an untyped `[]` is a list.
+#[test]
+fn dictionary_reads_and_writes_keep_to_their_rules() {
+    let pins = "type Pin { app: text; at: int }\nstate pins: [text: Pin] = []\n";
+    assert_eq!(
+        codes(&format!("{pins}let at = pins[\"kitty\"].at\n")),
+        ["check::nullable"]
+    );
+    assert_eq!(
+        codes(&format!("{pins}let gone = pins.remove(\"kitty\")\n")),
+        ["check::action_in_binding"]
+    );
+    assert_eq!(
+        codes("let m: [int: text] = []\nbar B { box { on click { m[1] = \"a\" } } }\n"),
+        ["check::assign_to_let"]
+    );
+    assert_eq!(
+        codes("let m: [int: text] = []\nlet k = m[\"a\"]\n"),
+        ["check::type_mismatch"]
+    );
+    let (out, _) = compile_files(&[(
+        "a.strand",
+        "let m: [int: text] = []\nlet a = m.get(1)\nbar B { box { on click { m.set(1, \"a\") } } }\n"
+            .to_string(),
+    )]);
+    let helps: Vec<_> = out
+        .diagnostics
+        .iter()
+        .map(|d| (d.code, d.help.clone()))
+        .collect();
+    assert_eq!(
+        helps,
+        [
+            (
+                "check::unknown_field",
+                Some("read an entry by its key: `m[k]`, null when it is absent".into())
+            ),
+            (
+                "check::unknown_field",
+                Some("write an entry by its key, in a handler: `m[k] = v`".into())
+            ),
+        ]
+    );
+    // `state xs = [1, 2]` and `xs[0]` stay a list and its index.
+    let out = one("state xs = [1, 2]\nlet x = xs[0]\n");
+    assert_eq!(def_ty(&out.program, "xs"), "[int]");
+    // An untyped literal's whole numbers are `int`s, and a dictionary is
+    // not widened by a fraction written to an entry: its type is declared.
+    assert_eq!(
+        codes("state m = [\"a\": 1]\nbar B { box { on click { m[\"b\"] = 0.5 } } }\n"),
+        ["check::type_mismatch"]
+    );
+    let out = one("state m = [\"a\": 1, \"b\": 0.5]\nlet w = [1: 2]\n");
+    assert_eq!(def_ty(&out.program, "m"), "[text: float]");
+    assert_eq!(def_ty(&out.program, "w"), "[int: int]");
+}
+
 /// A list literal of whole numbers is an `[int]` (design.md: `state xs =
 /// [1, 2]`), so its items index, count and fill `int` props; a fraction
 /// written to the list or to one of its items makes it a `[float]`.

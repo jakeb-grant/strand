@@ -617,7 +617,9 @@ unary    = ( '!' | '-' | kw:await ) unary | postfix
 postfix  = primary ( ( '.' | '?.' ) SAME_LINE ( IDENT | INT ) | TOUCH '(' args? ')' | TOUCH '[' expr ']' )*
 primary  = NUMBER | STRING | HASH | kw:true | kw:false | kw:null
          | token_path | IDENT | '(' expr ')' | '[' ( expr ( ',' expr )* ','? )? ']'
+         | '[' entry ( ',' entry )* ','? ']'      // a dictionary: [1: "web", 2: "code"]
          | match_expr
+entry    = expr ':' expr
 token_path = DOLLAR ( '.' ( IDENT | INT ) )*       // a segment followed by TOUCH '(' is a method
 match_expr = kw:match expr '{' SEP? ( expr_arm ( ( ',' | SEP ) expr_arm )* ','? )? SEP? '}'
 expr_arm   = pattern '=>' expr
@@ -667,6 +669,17 @@ Notes:
   commas or line breaks; an arm continues onto the next line only by rule 3.
 - **`await`** is accepted in any expression; the checker allows it only in
   handlers, which are coroutines.
+- **Dictionaries.** `[ … ]` is a dictionary when a `:` follows its first
+  item, and then every item is `key: value`; an item without a value, or a
+  list's item with one, is `syntax::dict_item`, and so is `[:]` (an empty
+  dictionary is `[]`, whose type the checker takes from the type expected:
+  `state m: [text: int] = []`). A ternary key has taken its own `:` before
+  the entry's: `[c ? a : b: v]` keys by the ternary. Braces hold a block,
+  not a value, so `{1: "web"}`, `{"a": 1}` and `{}` where a value was meant
+  are `syntax::dict_braces` ("dictionaries use brackets: `[k: v]`"), with a
+  fix that rewrites the braces as brackets when the literal is on one line.
+  In a prop value a name then `:` in braces is a sub-block's prop, so only a
+  quoted or number key reads as a dictionary there.
 
 ### Literals
 
@@ -680,6 +693,7 @@ Notes:
 | Strings | `"Search apps"`, `"‹"` |
 | Booleans, null | `true`, `false`, `null` |
 | Arrays | `[]`, `["a", "b"]` |
+| Dictionaries | `[1: "web", 2: "code"]`, `[low: 3s, critical: 0s]`, `[]` |
 
 Enum variants (`critical`, `volume`, `top_right`) and names in scope are
 plain identifiers; the checker resolves them by expected type.
@@ -688,13 +702,17 @@ plain identifiers; the checker resolves them by expected type.
 
 ```
 type    = type_atom ( TOUCH '?' )*
-type_atom = '[' type ']'                      // [Pin]
+type_atom = '[' type ( ':' type )? ']'        // [Pin], a dictionary [int: text]
           | IDENT ( '.' IDENT )* ( '<' type ( ',' type )* '>' )?   // Async<[Hit]>
 pattern = IDENT ( '.' IDENT )*                // a variant, or `_`
         | '-'? NUMBER | STRING | HASH | kw:true | kw:false | kw:null
 ```
 
 A negative pattern on its own line (`-1 => …`) is a new arm, by rule 3.
+
+A type in braces with a `:` in it (`{int: text}`) is `syntax::dict_braces`
+("dictionaries use brackets: `[K: V]`"), fixed to `[int: text]`; a record's
+fields are declared with `type`, not written inline.
 
 `_` is the wildcard pattern.
 
@@ -768,6 +786,7 @@ diagnostic and resynchronises:
 | `enter {}`, `exit {}` | `pose` |
 | `state x = 0 persist`, `state p from "f.toml" { … }`, `let`, `export` | `state`, `let`, `export` |
 | `enum`, `type`, `state xs: [T] key f = []` | `enum_decl`, `type_decl`, `state` |
+| `state m: [K: V] = []`, `[k: v, …]` | `type_atom`, `primary` |
 | `on click`, `on scroll(dy)`, `on change a, b after T` | `on_handler` |
 | `after T while c { }`, `every T while c { }` | `timer` |
 | `prop: <-> target` | `prop` |

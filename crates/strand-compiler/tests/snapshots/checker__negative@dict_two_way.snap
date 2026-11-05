@@ -1,0 +1,16 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::dict_two_way
+
+  × `value` cannot be bound two-way to a dictionary entry
+   ╭─[dict_two_way.strand:6:23]
+ 5 │ component C {
+ 6 │   slider { value: <-> levels["main"] }
+   ·                       ───────┬──────
+   ·                              ╰── an entry may be missing
+ 7 │ }
+   ╰────
+  help: bind a `state` and write the entry when it changes: `value: <-> v` and `on change v
+        { levels["main"] = v }`

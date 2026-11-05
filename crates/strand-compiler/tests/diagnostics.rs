@@ -559,3 +559,76 @@ fn diagnostics_carry_their_file() {
     let joined: String = parsed.tokens.iter().map(|t| t.span.text(b_src)).collect();
     assert_eq!(joined, b_src);
 }
+
+/// (dictionary) A dictionary's mistakes are one diagnostic each, and the
+/// line after still parses: an item without a value (or a list item with
+/// one), `[:]`, a missing value or `]`, and braces where brackets were
+/// meant, in a literal or a type, whose fix rewrites them as brackets.
+#[test]
+fn dictionary_mistakes_are_one_error_and_recover() {
+    for (src, code) in [
+        ("let m = [1: \"a\", 2]\nlet y = 3\n", "syntax::dict_item"),
+        ("let m = [1, 2: \"a\"]\nlet y = 3\n", "syntax::dict_item"),
+        ("let m: [int: text] = [:]\nlet y = 3\n", "syntax::dict_item"),
+        ("let m = [1: ]\nlet y = 3\n", "syntax::expected"),
+        ("let m = [1: \"a\"\nlet y = 3\n", "syntax::expected"),
+        (
+            "let m: [int: text] = {1: \"a\"}\nlet y = 3\n",
+            "syntax::dict_braces",
+        ),
+        (
+            "let m: [int: text] = {}\nlet y = 3\n",
+            "syntax::dict_braces",
+        ),
+        (
+            "state m: {int: text} = []\nlet y = 3\n",
+            "syntax::dict_braces",
+        ),
+        (
+            "component A {\n  box { on click { m = {\"a\": 1} } }\n  text \"x\"\n}\n",
+            "syntax::dict_braces",
+        ),
+    ] {
+        let parsed = parse(FileId::default(), src);
+        let codes: Vec<_> = parsed.diagnostics.iter().map(|d| d.code).collect();
+        assert_eq!(codes, [code], "{src}\n{}", report(src));
+        let tree = dump::tree(&parsed.file).render();
+        assert!(
+            tree.contains("let y") || tree.contains("element text \"x\""),
+            "{src}\n{tree}"
+        );
+    }
+    assert_eq!(
+        helps("let m: [int: text] = {1: \"web\", 2: \"code\"}\n"),
+        ["did you mean `[1: \"web\", 2: \"code\"]`?"]
+    );
+    assert_eq!(
+        helps("state m: {AppId: float} = []\n"),
+        ["did you mean `[AppId: float]`?"]
+    );
+    assert_eq!(
+        helps("let m = {\n  1: \"web\"\n}\n"),
+        ["write it `[k: v, …]`; an empty one is `[]`"]
+    );
+    assert_eq!(
+        helps("let m = [1: \"a\", 2]\n"),
+        ["give every item a value for a dictionary (`[k: v, …]`), or none for a list"]
+    );
+    // In a prop value, a name and `:` in braces may be a sub-block's prop,
+    // so only a quoted or number key reads as a dictionary there.
+    let codes = |src: &str| -> Vec<&'static str> {
+        parse(FileId::default(), src)
+            .diagnostics
+            .iter()
+            .map(|d| d.code)
+            .collect()
+    };
+    assert_eq!(
+        codes("component A {\n  box { x: {\"a\": 1} }\n}\n"),
+        ["syntax::dict_braces"]
+    );
+    assert_ne!(
+        codes("component A {\n  box { x: { y: 1 } }\n}\n"),
+        ["syntax::dict_braces"]
+    );
+}

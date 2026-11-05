@@ -21,7 +21,7 @@ fn element_event(o: &ast::On) -> bool {
 }
 
 /// Why `persist` and settings files refuse a type.
-const PLAIN_DATA_HELP: &str = "only plain data is stored: numbers, text, paths, colours, enums, and lists and records of those; for a node or a live item (a window, an app) store its key instead";
+const PLAIN_DATA_HELP: &str = "only plain data is stored: numbers, text, paths, colours, enums, and lists, dictionaries and records of those; for a node or a live item (a window, an app) store its key instead";
 
 /// What a tree block may hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2310,6 +2310,21 @@ impl<'a> Checker<'a> {
                 // against a binding that cannot exist.
             } else if let Err(why) = self.writable(&h) {
                 self.not_writable_bind(why, p.value.span);
+            } else if dict_entry_on_path(&h) {
+                let entry = super::expr::written(p.value).unwrap_or_else(|| "m[k]".into());
+                // `m[k]` reads a `V?` and writes a `V`: no one value to
+                // bind, and the widget would write to a key that may be
+                // gone.
+                self.error(
+                    "check::dict_two_way",
+                    format!("`{name}` cannot be bound two-way to a dictionary entry"),
+                    p.value.span,
+                    "an entry may be missing",
+                )
+                .help = Some(format!(
+                    "bind a `state` and write the entry when it changes: `{name}: <-> v` and \
+                     `on change v {{ {entry} = v }}`"
+                ));
             } else if self.widen(&h, &ps.ty) {
                 // `state level = 0` bound to a slider: a `float` next pass.
             } else if !ps.ty.is_lenient()
@@ -2400,6 +2415,24 @@ impl<'a> Checker<'a> {
             sub,
             inherited: ps.inherited,
         }
+    }
+
+    /// `check::dict_service`: a dictionary in what a service or a command
+    /// hands over (`what`: "a service field", "an action's parameter", …),
+    /// which strand-services cannot carry yet (decisions.md, dictionary).
+    pub(super) fn dict_service(&mut self, ty: &Ty, span: Span, what: &str) {
+        let shown = self.show(ty);
+        let message = if matches!(ty.non_null(), Ty::Dict(..)) {
+            format!("{what} cannot hold a dictionary yet: `{shown}`")
+        } else {
+            format!("{what} cannot hold a dictionary yet, and `{shown}` holds one")
+        };
+        self.error("check::dict_service", message, span, "not yet")
+            .help = Some(
+            "services and commands do not carry dictionaries yet: read a list of a `type` you \
+             declare instead (`type Pair { key: text; value: int }`)"
+                .into(),
+        );
     }
 
     fn not_writable_bind(&mut self, why: super::expr::NotWritable, span: Span) {
@@ -2860,6 +2893,19 @@ impl<'a> Checker<'a> {
             }
             return None;
         };
+        if let Ty::Dict(..) = ty {
+            self.error(
+                "check::dict_keyed",
+                "a dictionary is already keyed, by its keys",
+                k.span,
+                "a `key` clause on a dictionary",
+            )
+            .help = Some(
+                "drop the `key …`: a list of records needs one, a dictionary `[K: V]` has its keys"
+                    .into(),
+            );
+            return None;
+        }
         let Ty::List(elem, _) = ty.clone() else {
             if !ty.is_lenient() {
                 let shown = self.show(ty);
@@ -2912,7 +2958,10 @@ impl<'a> Checker<'a> {
     fn inferable(&mut self, ty: &Ty, name: &ast::Ident, span: Span, what: &str) {
         let problem = match ty {
             Ty::Null => Some(format!("`{what} {}: T? = null`", name.name)),
-            Ty::List(e, _) if e.is_error() => Some(format!("`{what} {}: [T] = []`", name.name)),
+            Ty::List(e, _) if e.is_error() => Some(format!(
+                "`{what} {n}: [T] = []`, or for a dictionary `{what} {n}: [K: V] = []`",
+                n = name.name
+            )),
             _ => None,
         };
         if let Some(help) = problem {
@@ -3320,7 +3369,9 @@ impl<'a> Checker<'a> {
                     None => (None, vec![f.name.name.clone()]),
                 },
             };
-            if !readable(&self.types, &ty, &mut Vec::new()) {
+            if holds_dict(&self.types, &ty, &mut Vec::new()) {
+                self.dict_service(&ty, f.ty.span, "a service field");
+            } else if !readable(&self.types, &ty, &mut Vec::new()) {
                 self.error(
                     "check::type_mismatch",
                     format!(
@@ -3450,6 +3501,40 @@ impl<'a> Checker<'a> {
 /// (a `from dir` service's files, and their times): plain data, read
 /// field by field like a declared `type`.
 const DOCUMENT_RECORDS: &[&str] = &["File", "Date"];
+
+/// Whether a value of `ty` holds a dictionary anywhere (itself, in a list
+/// or an optional, or in a record's field).
+pub(super) fn holds_dict(
+    types: &crate::ty::TypeTable,
+    ty: &Ty,
+    seen: &mut Vec<crate::ty::RecordId>,
+) -> bool {
+    match ty {
+        Ty::Dict(..) => true,
+        Ty::Optional(t) | Ty::List(t, _) | Ty::Async(t) => holds_dict(types, t, seen),
+        Ty::Record(r) if !seen.contains(r) => {
+            seen.push(*r);
+            types
+                .record(*r)
+                .fields
+                .iter()
+                .any(|f| holds_dict(types, &f.ty, seen))
+        }
+        _ => false,
+    }
+}
+
+/// Whether the place `h` goes through a dictionary entry (`m[k]`,
+/// `m[k].f`).
+pub(super) fn dict_entry_on_path(h: &hir::Expr) -> bool {
+    match &h.kind {
+        hir::ExprKind::Index { base, .. } if matches!(base.ty.non_null(), Ty::Dict(..)) => true,
+        hir::ExprKind::Index { base, .. } | hir::ExprKind::Field { base, .. } => {
+            dict_entry_on_path(base)
+        }
+        _ => false,
+    }
+}
 
 pub(super) fn readable(
     types: &crate::ty::TypeTable,
