@@ -12,7 +12,10 @@
 //! in the focused input it is the `nav:` list of.
 //! Then `results.selected_index` reads the start in that tick, before
 //! the diff goes, so its `on change` and what reads it are in the same
-//! diff. The router tells logic where the selection is after each start
+//! diff. A start that changed while the user has not moved is read
+//! earlier, in the flush that changes it (`mount.rs`, `read_start`), so
+//! what reads it runs once, with it; the rest are read here, at the end
+//! of the flush. The router tells logic where the selection is after each start
 //! it was given either way, so a start logic read and the router did not
 //! take (the user's move still on its way) is put right.
 

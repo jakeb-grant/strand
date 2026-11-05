@@ -1615,6 +1615,12 @@ monitor, the keyboard always).
   replaced whole, the start is what it reads, and what its `on change`
   hears once, in that tick, so a preview or highlight read from it shows
   the start's row from the first frame, never the row selected before. A
+  changed start the user has not moved away from is read before anything
+  that reads it runs, so an `on change` of a value read from it hears only
+  the start's; one the list mounts with or starts again on is read at the
+  tick's end, where such an `on change` may also hear the row before
+  (never drawn), and an `on change` mounted with the list hears the start
+  rather than taking it for its first value. A
   `nav:` list whose surface opens again starts on its start as the
   keyboard enters it, and logic reads that a tick after, as it reads the
   keys. (decisions.md list-start)

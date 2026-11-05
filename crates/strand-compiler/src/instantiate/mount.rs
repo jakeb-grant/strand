@@ -2682,6 +2682,12 @@ impl Ctx {
                 entry.bindings.push(memo.id());
             }
         }
+        if prop == SceneProp::SelectedIndex && kind == NodeKind::List {
+            let state = self.em.borrow().nodes.get(&id).map(|e| e.state.clone());
+            if let Some(state) = state {
+                read_start(rt, memo, &state);
+            }
+        }
     }
 
     /// (M6) Binds `id`'s `open` to its node's `shown` (a `trigger: hover`
@@ -5205,4 +5211,41 @@ mod tests {
         assert_eq!(longest_increasing(&[3, 0, 1, 2]), [0, 1, 2]);
         assert_eq!(longest_increasing(&[2, 1, 0]).len(), 1);
     }
+}
+
+/// (list-start) A `list`'s changed start is its `results.selected_index`
+/// in the flush that changes it, before the `on change` handlers and what
+/// reads it run, while the user has not moved the selection since it last
+/// started: the router takes it as it settles that diff (decisions.md
+/// list-start). Below 0 is the first row, as render reads it. Its first
+/// value is left to the end of the tick (`Instance::read_starts`), so an
+/// `on change` mounted with the list hears it as it did, rather than
+/// taking it for its first value.
+fn read_start(rt: &Runtime, memo: strand_core::Memo<PropOut>, state: &Rc<NodeState>) {
+    let index = state.selected_index(rt);
+    let st = state.clone();
+    let mut first = true;
+    let effect = rt.effect(move |rt| {
+        let out = memo.get(rt);
+        rt.untrack(|rt| {
+            let first = std::mem::replace(&mut first, false);
+            let Ok(PropOut {
+                value: PropValue::Number(f),
+                ..
+            }) = out
+            else {
+                return Ok(());
+            };
+            if !f.is_finite() {
+                return Ok(());
+            }
+            if !first && !st.list_moved.get() {
+                index.set(rt, Value::int(i64::from(f as u32)))?;
+            }
+            Ok(())
+        })
+    });
+    let _ = rt.reads_from(effect.id(), &[memo.id()]);
+    let _ = rt.writes_to(effect.id(), index.id());
+    rt.set_name(effect.id(), "list start");
 }

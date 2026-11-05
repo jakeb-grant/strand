@@ -1370,8 +1370,8 @@ fn the_first_row_rule_still_shows_its_row_after_one_leaves() {
 /// Themes page. The page's preview box is blue when the theme it shows
 /// is the one in use, orange otherwise (it comes with the themes, so its
 /// first frame is its colour, not a spring from another); `changes`
-/// counts the `on change`. Ctrl+A shows the Apps page, Ctrl+T the Themes
-/// page.
+/// counts the `on change`, `peeks` the preview's. Ctrl+A shows the Apps
+/// page, Ctrl+T the Themes page.
 fn launcher(themes: &str, view: &str) -> Shell {
     let mut sh = Shell::new(&format!(
         "state view = \"{view}\"\n\
@@ -1381,6 +1381,7 @@ fn launcher(themes: &str, view: &str) -> Shell {
          state q = \"\"\n\
          state results_at = 0\n\
          state changes = 0\n\
+         state peeks = 0\n\
          let theme_at = themes.index_of(t => t == current) ?? 0\n\
          let sel = results_at\n\
          let peek = view == \"themes\" ? themes.skip(sel).first ?? \"\" : \"\"\n\
@@ -1388,6 +1389,7 @@ fn launcher(themes: &str, view: &str) -> Shell {
            on key \"ctrl+a\" {{ view = \"apps\" }}\n\
            on key \"ctrl+t\" {{ view = \"themes\" }}\n\
            on change results.selected_index {{ results_at = results.selected_index ?? 0; changes = changes + 1 }}\n\
+           on change peek {{ peeks = peeks + 1 }}\n\
            col {{\n\
              input {{ height: 30; text: <-> q; focus: true; nav: results }}\n\
              box {{ height: 40; if peek != \"\" {{ box {{ grow: 1; bg: peek == current ? #5b8def : #e0a040 }} }} }}\n\
@@ -1470,7 +1472,7 @@ fn a_start_is_read_in_the_tick_the_list_takes_it() {
             assert_eq!(index(&sh), Some(1));
         }
         assert_eq!(sh.num("results_at"), if moved { 1.0 } else { 0.0 });
-        let changes = sh.num("changes");
+        let (changes, peeks) = (sh.num("changes"), sh.num("peeks"));
         ctrl_step(&mut sh, "t");
         assert_eq!(index(&sh), Some(7), "moved {moved}: the list took it");
         assert_eq!(
@@ -1485,6 +1487,12 @@ fn a_start_is_read_in_the_tick_the_list_takes_it() {
         sh.settle();
         assert_eq!(sh.num("results_at"), 7.0, "moved {moved}");
         assert_eq!(sh.num("changes"), changes + 1.0, "moved {moved}: once");
+        // Read in the flush that set it, the preview's `on change` hears
+        // the theme in use alone, never the first theme on the way; rows
+        // replaced under a move are read at the tick's end, after it.
+        if !moved {
+            assert_eq!(sh.num("peeks"), peeks + 1.0, "the preview changed once");
+        }
     }
 }
 

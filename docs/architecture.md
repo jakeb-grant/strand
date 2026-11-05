@@ -1387,7 +1387,11 @@ is being saved, so the idle-wakeup windows hold.
     nodes or a change of which lists are away (never per pointer
     motion). A Return waiting on such a selection goes with the rows.
     (decisions.md list-start) Logic reads a start as the list's
-    `selected_index` in the tick that sets it (`instantiate/starts.rs`,
+    `selected_index` in the tick that sets it: a changed one the user has
+    not moved away from in the flush that changes it, by an effect per
+    list with a `selected_index:` that declares its write
+    (`instantiate/mount.rs`, `read_start`), and the rest at the tick's end
+    (`instantiate/starts.rs`,
     run at the end of `Instance::tick`, which flushes again for what
     reads it, at most `MAX_START_PASSES` times, and sends a prop set
     again then once): as the list mounts with one, when it changes while
