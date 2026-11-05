@@ -1034,6 +1034,8 @@ provisional record Player key id {
   can_volume: bool
   /// `raise()` brings it forward.
   can_raise: bool
+  /// `seek(by)` seeks it.
+  can_seek_by: bool
   /// An icon name for its app.
   icon: text
   /// The installed app it belongs to, when an entry matches.
@@ -1095,6 +1097,8 @@ provisional service media {
   can_volume: bool
   /// `media.raise()` brings the active player forward.
   can_raise: bool
+  /// `media.seek(by)` seeks the active player.
+  can_seek_by: bool
   /// An icon name for the active player's app; null when no player runs.
   icon: text?
   /// The installed app the active player belongs to, when an entry

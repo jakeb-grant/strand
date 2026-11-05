@@ -979,25 +979,28 @@ osd Playing { inhibit_idle: true; text \"x\" }
     /// (player-raise-seek) A player card raises its player, skips 15 s
     /// either way by an offset (a negative duration seeks back) and shows
     /// its app's icon and name, the active one's and an item's alike,
-    /// against the served schema and the builtin stubs. `seek` takes a
-    /// duration, and `can_raise` is read only.
+    /// against the served schema and the builtin stubs, its skips shown
+    /// by `can_seek_by`. `seek` takes a duration, and `can_raise` and
+    /// `can_seek_by` are read only.
     #[test]
     fn the_players_raise_seek_and_app_check() {
         let src = "let step = 15s
 bar Top {
   row {
-    image media.icon ?? \"audio-x-generic\" { size: 16 }
+    image media.app?.icon ?? \"audio-x-generic\" { size: 16 }
     text media.app?.name ?? media.player ?? \"\"
     box { when media.can_raise { opacity: 1 }; on click { media.raise() } }
-    box { on click { media.seek(by: -step) } }
-    box { on click { media.seek(by: step) } }
+    if media.can_seek_by {
+      box { on click { media.seek(by: -step) } }
+      box { on click { media.seek(by: step) } }
+    }
     for p in media.players key p.id {
       row {
         image p.icon { size: 16 }
         text p.app?.name ?? p.name
         box { when p.can_raise { opacity: 1 }; on click { p.raise() } }
-        box { on click { p.seek(by: -15s) } }
-        box { on click { p.seek(by: 15s) } }
+        if p.can_seek_by { box { on click { p.seek(by: -15s) } } }
+        box { when p.can_seek_by { opacity: 1 }; on click { p.seek(by: 15s) } }
       }
     }
   }
@@ -1016,6 +1019,7 @@ bar Top {
             "bar B { box { on click { media.seek(by: 15) } } }\n",
             "bar B { box { on click { media.seek(by: 0.5) } } }\n",
             "bar B { box { on click { media.can_raise = true } } }\n",
+            "bar B { box { on click { media.can_seek_by = true } } }\n",
             "bar B { box { on click { media.icon = \"x\" } } }\n",
         ] {
             let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", bad);

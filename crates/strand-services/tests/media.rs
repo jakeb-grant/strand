@@ -1264,10 +1264,12 @@ fn media_sets_shuffle_loop_and_volume_on_the_player() {
 }
 
 /// (player-raise-seek) `media.raise()` and `p.raise()` call the player's
-/// MPRIS `Raise`, not asked of one whose `CanRaise` is false, which its
+/// MPRIS `Raise`, an item's raise reaching that player and not the
+/// active one, not asked of one whose `CanRaise` is false, which its
 /// root's `PropertiesChanged` brings; `media.seek(by: -15s)` and
 /// `p.seek(by)` call `Seek` with the offset on a stream of unknown length
-/// (which a `position` write cannot seek), the time showing the target
+/// (which a `position` write cannot seek, `can_seek` false and
+/// `can_seek_by` true), the time showing the target
 /// at once; and `media.icon`, `media.app` and each item's come from the
 /// player's `DesktopEntry` (else its bus name's app part) looked up in
 /// the desktop entries, again when they change.
@@ -1336,6 +1338,7 @@ fn players_raise_seek_by_an_offset_and_name_their_app() {
         Ok(false),
         "no position write"
     );
+    assert_eq!(cells.can_seek_by.get_untracked(&rt), Ok(true), "a seek");
     b.media
         .dynamic()
         .action(
@@ -1422,10 +1425,40 @@ fn players_raise_seek_by_an_offset_and_name_their_app() {
         .find(|p| p.name == "vlc.instance42")
         .unwrap();
     assert_eq!((vlc.icon.as_str(), vlc.app.as_ref()), ("vlc", None));
-    assert!(!vlc.can_raise);
+    assert!(!vlc.can_raise && vlc.can_seek_by);
+    // vlc, the newer of two paused players, is the active one.
+    assert!(vlc.active);
     let mpv = list().into_iter().find(|p| p.name == "mpv").unwrap();
     assert_eq!(mpv.icon, icon);
     assert_eq!(mpv.app.as_ref().map(|a| a.id.as_str()), Some("io.mpv.Mpv"));
+    assert!(!mpv.active && mpv.can_seek_by);
+    // mpv raises again: its item's raise reaches it, not the active vlc.
+    a.lock().unwrap().can_raise = true;
+    tokio.block_on(async {
+        let i = a_conn
+            .object_server()
+            .interface::<_, Root>(media::PATH)
+            .await
+            .unwrap();
+        i.get()
+            .await
+            .can_raise_changed(i.signal_emitter())
+            .await
+            .unwrap();
+    });
+    until(&rt, &s, "mpv raises again", || {
+        list().iter().any(|p| p.name == "mpv" && p.can_raise)
+    });
+    let mpv = list().into_iter().find(|p| p.name == "mpv").unwrap();
+    b.media
+        .dynamic()
+        .action(&rt, "raise", Some(&mpv.to_data()), &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "mpv raised", || {
+        a.lock().unwrap().calls.len() == 3
+            && a.lock().unwrap().calls.last().map(String::as_str) == Some("Raise")
+    });
+    // An item that cannot raise is not asked.
     b.media
         .dynamic()
         .action(&rt, "raise", Some(&vlc.to_data()), &[], Default::default())
@@ -1448,7 +1481,7 @@ fn players_raise_seek_by_an_offset_and_name_their_app() {
             .iter()
             .any(|p| p.name == "vlc.instance42" && p.elapsed == Duration::from_secs(40))
     });
-    assert_eq!(a.lock().unwrap().calls.len(), 2, "mpv was not asked");
+    assert_eq!(a.lock().unwrap().calls.len(), 3, "mpv was not asked");
     // An item's position write still needs a length: mpv's is unknown.
     b.media
         .dynamic()
@@ -1464,7 +1497,7 @@ fn players_raise_seek_by_an_offset_and_name_their_app() {
     s.pump(&rt);
     assert_eq!(
         a.lock().unwrap().calls.len(),
-        2,
+        3,
         "no length, no position write"
     );
     b.media.release_field(players);

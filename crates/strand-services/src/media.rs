@@ -68,8 +68,9 @@
 //! latest question's answer standing. `raise()` calls its `Raise`, unless
 //! `CanRaise` is false. `seek(by)` calls `Seek` with the offset (back when
 //! negative: a [`crate::Offset`]), so it needs no track length, only that
-//! the player can seek; the time shows the target at once, as a
-//! `position` write's does. `icon` and `app` are found from the player's
+//! the player can seek, which `can_seek_by` says (`can_seek` keeps saying
+//! a `position` write seeks, which needs the length); the time shows the
+//! target at once, as a `position` write's does. `icon` and `app` are found from the player's
 //! `DesktopEntry` (else its bus name's app part) as a window's are from
 //! its app id ([`crate::apps::AppIndex::window`]): the desktop entries are
 //! read on the blocking pool for the names not yet looked up, and for
@@ -197,6 +198,7 @@ pub struct MediaPlayer {
     pub can_loop: bool,
     pub can_volume: bool,
     pub can_raise: bool,
+    pub can_seek_by: bool,
     pub icon: String,
     pub app: Option<crate::apps::App>,
 }
@@ -241,7 +243,8 @@ pub struct Media {
     /// (`CanGoPrevious`, as `can_next`).
     pub can_previous: bool,
     /// Writing `position` seeks: the active player can seek (`CanSeek`, as
-    /// `can_next`) and the track's length is known.
+    /// `can_next`) and the track's length is known. A scrubber's flag; a
+    /// skip by a time needs only `can_seek_by`.
     pub can_seek: bool,
     /// The active player shuffles: `on click { media.shuffle =
     /// !media.shuffle }`. Writable: MPRIS `Shuffle`. False when no player
@@ -275,12 +278,20 @@ pub struct Media {
     /// `CanRaise` (a player that does not say counts as able). False when
     /// no player runs.
     pub can_raise: bool,
-    /// An icon name for the active player's app: `image media.icon ??
-    /// "audio-x-generic"`. Found as a window's `icon` is, the app named by
-    /// the player's MPRIS `DesktopEntry` (else by its bus name: `vlc` for
-    /// `org.mpris.MediaPlayer2.vlc.instance42`) in place of an app id: its
-    /// desktop entry's icon, else that name when the icon theme has it.
-    /// Null when no player runs.
+    /// `media.seek(by)` seeks the active player: its MPRIS `CanSeek` (as
+    /// `can_next`), whether or not the track's length is known, so a skip
+    /// button that works on a stream is `if media.can_seek_by { … }`.
+    /// Unlike `can_seek` (writing `position`), it needs no length. False
+    /// when no player runs.
+    pub can_seek_by: bool,
+    /// An icon name for the active player's app. Found as a window's `icon`
+    /// is, the app named by the player's MPRIS `DesktopEntry` (else by its
+    /// bus name: `vlc` for `org.mpris.MediaPlayer2.vlc.instance42`) in
+    /// place of an app id: its desktop entry's icon, else that name
+    /// (lowercased when only that is in the icon theme). So when no entry
+    /// matches it is the name itself, which the theme may lack; `image
+    /// media.app?.icon ?? "audio-x-generic"` falls back then. Null when no
+    /// player runs.
     pub icon: Option<String>,
     /// The installed app the active player belongs to, found as `icon`'s
     /// entry is: `media.app?.name`. Null when no player runs or no entry
@@ -449,7 +460,14 @@ impl Player {
     /// and the length is known. What `media.can_seek` says and what
     /// [`Players::seek`] does, so the field and the write agree.
     fn can_seek(&self, length: Option<Duration>) -> bool {
-        self.can("CanSeek") && length.is_some_and(|l| !l.is_zero())
+        self.can_seek_by() && length.is_some_and(|l| !l.is_zero())
+    }
+
+    /// (player-raise-seek) `seek(by)` seeks it: it can seek
+    /// ([`Player::can`] of `CanSeek`), whatever the track's length. What
+    /// `can_seek_by` says and what [`Players::seek_by`] does.
+    fn can_seek_by(&self) -> bool {
+        self.can("CanSeek")
     }
 
     /// (power-media-kbd) Writing `prop` (`Shuffle`, `LoopStatus`,
@@ -551,6 +569,7 @@ struct Shown {
     can_loop: bool,
     can_volume: bool,
     can_raise: bool,
+    can_seek_by: bool,
     icon: String,
     app: Option<crate::apps::App>,
 }
@@ -591,6 +610,7 @@ impl Shown {
             can_loop: p.can_set("LoopStatus"),
             can_volume: p.can_set("Volume"),
             can_raise: p.can_raise(),
+            can_seek_by: p.can_seek_by(),
             icon,
             app,
         }
@@ -653,6 +673,7 @@ impl Players {
                     can_loop: v.can_loop,
                     can_volume: v.can_volume,
                     can_raise: v.can_raise,
+                    can_seek_by: v.can_seek_by,
                     icon: v.icon,
                     app: v.app,
                 }
@@ -696,6 +717,7 @@ impl Players {
             can_loop: v.can_loop,
             can_volume: v.can_volume,
             can_raise: v.can_raise,
+            can_seek_by: v.can_seek_by,
             icon: Some(v.icon),
             app: v.app,
             players: Vec::new(),
@@ -707,10 +729,10 @@ impl Players {
     /// call to make, its position fixed at the target meanwhile (never
     /// below 0, nor past a known length). Unlike a `position` write it
     /// needs no length. `None` when the player is not listed, cannot seek
-    /// ([`Player::can`] of `CanSeek`), or `by` is not a number.
+    /// ([`Player::can_seek_by`]), or `by` is not a number.
     fn seek_by(&mut self, name: &str, by: f64, now: Instant) -> Option<Seek> {
         let p = self.by_name.get_mut(name).filter(|p| p.known)?;
-        if !by.is_finite() || !p.can("CanSeek") {
+        if !by.is_finite() || !p.can_seek_by() {
             return None;
         }
         let length = p.metadata().get("mpris:length").and_then(micros);
@@ -2718,6 +2740,8 @@ mod tests {
     /// length known at all (a stream), which a `position` write cannot
     /// seek. A player that cannot seek, or takes no control, is not asked,
     /// nor is one not listed; an offset that is no number is no seek.
+    /// `can_seek_by` says the same: true on the stream where `can_seek` is
+    /// false, false when the seek would not be asked.
     #[test]
     fn seeking_by_an_offset_moves_from_where_it_is() {
         let t0 = Instant::now();
@@ -2749,7 +2773,10 @@ mod tests {
             ))
             .unwrap(),
         );
-        assert!(!players.state(t0).can_seek, "no position write");
+        let s = players.state(t0);
+        assert!(!s.can_seek, "no position write");
+        assert!(s.can_seek_by, "a seek by an offset");
+        assert!(players.items(t0)[0].can_seek_by);
         let seek = players.seek_by(P, 15.0, t0).unwrap();
         assert_eq!(seek.call, SeekCall::Seek(15_000_000));
         assert_eq!(players.state(t0).elapsed, Duration::from_secs(135));
@@ -2762,10 +2789,13 @@ mod tests {
         );
         put(&mut players, "CanSeek", flag(false));
         assert!(players.seek_by(P, 5.0, t0).is_none(), "cannot seek");
+        assert!(!players.state(t0).can_seek_by && !players.items(t0)[0].can_seek_by);
         put(&mut players, "CanSeek", flag(true));
         put(&mut players, "CanControl", flag(false));
         assert!(players.seek_by(P, 5.0, t0).is_none(), "no control");
+        assert!(!players.state(t0).can_seek_by);
         assert_eq!(players.state(t0).elapsed, Duration::from_secs(135));
+        assert!(!Players::default().state(t0).can_seek_by, "no player");
     }
 
     /// (player-raise-seek) The root interface says the player's name,

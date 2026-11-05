@@ -47,7 +47,11 @@ record Player key id {
   can_volume: bool
   /// `raise()` brings it forward (its MPRIS `CanRaise`).
   can_raise: bool
-  /// An icon name for its app, as `media.icon` names the active one's.
+  /// `seek(by)` seeks it (its MPRIS `CanSeek`), a track of unknown length
+  /// too.
+  can_seek_by: bool
+  /// An icon name for its app, as `media.icon` names the active one's:
+  /// the name itself when no entry matches.
   icon: text
   /// The installed app it belongs to, found from its MPRIS
   /// `DesktopEntry` as a window's app is: `p.app?.name`. Null when no
@@ -66,7 +70,8 @@ record Player key id {
   /// Not asked when `can_raise` is false.
   action raise()
   /// Seeks it by `by` from where it is, back when `by` is negative
-  /// (MPRIS `Seek`), as `media.seek(by)` seeks the active one.
+  /// (MPRIS `Seek`), as `media.seek(by)` seeks the active one. Not asked
+  /// when `can_seek_by` is false.
   action seek(by: duration)
 }
 
@@ -112,7 +117,8 @@ service media {
   /// (`CanGoPrevious`, as `can_next`).
   can_previous: bool
   /// Writing `position` seeks: the active player can seek (`CanSeek`, as
-  /// `can_next`) and the track's length is known.
+  /// `can_next`) and the track's length is known. A scrubber's flag; a
+  /// skip by a time needs only `can_seek_by`.
   can_seek: bool
   /// The active player shuffles: `on click { media.shuffle =
   /// !media.shuffle }`. Writable: MPRIS `Shuffle`. False when no player
@@ -143,12 +149,20 @@ service media {
   /// `CanRaise` (a player that does not say counts as able). False when
   /// no player runs.
   can_raise: bool
-  /// An icon name for the active player's app: `image media.icon ??
-  /// "audio-x-generic"`. Found as a window's `icon` is, the app named by
-  /// the player's MPRIS `DesktopEntry` (else by its bus name: `vlc` for
-  /// `org.mpris.MediaPlayer2.vlc.instance42`) in place of an app id: its
-  /// desktop entry's icon, else that name when the icon theme has it.
-  /// Null when no player runs.
+  /// `media.seek(by)` seeks the active player: its MPRIS `CanSeek` (as
+  /// `can_next`), whether or not the track's length is known, so a skip
+  /// button that works on a stream is `if media.can_seek_by { … }`.
+  /// Unlike `can_seek` (writing `position`), it needs no length. False
+  /// when no player runs.
+  can_seek_by: bool
+  /// An icon name for the active player's app. Found as a window's `icon`
+  /// is, the app named by the player's MPRIS `DesktopEntry` (else by its
+  /// bus name: `vlc` for `org.mpris.MediaPlayer2.vlc.instance42`) in
+  /// place of an app id: its desktop entry's icon, else that name
+  /// (lowercased when only that is in the icon theme). So when no entry
+  /// matches it is the name itself, which the theme may lack; `image
+  /// media.app?.icon ?? "audio-x-generic"` falls back then. Null when no
+  /// player runs.
   icon: text?
   /// The installed app the active player belongs to, found as `icon`'s
   /// entry is: `media.app?.name`. Null when no player runs or no entry
@@ -173,7 +187,7 @@ service media {
   /// Seeks the active player by `by` from where it is, back when `by` is
   /// negative: `media.seek(by: -15s)`. MPRIS `Seek`, so it works on a
   /// track of unknown length too; the time shows the target at once and
-  /// the player's `Seeked` corrects it. Not asked when the player cannot
-  /// seek (`CanSeek` or `CanControl` false).
+  /// the player's `Seeked` corrects it. Not asked when `can_seek_by` is
+  /// false.
   action seek(by: duration)
 }
