@@ -1390,8 +1390,9 @@ is being saved, so the idle-wakeup windows hold.
     `selected_index` in the tick that sets it: a changed one the user has
     not moved away from in the flush that changes it, by an effect per
     list with a `selected_index:` that declares its write
-    (`instantiate/mount.rs`, `read_start`), and the rest at the tick's end
-    (`instantiate/starts.rs`,
+    (`instantiate/mount.rs`, `read_start`, writing through
+    `rt.as_input` so the write-rate guard does not count it), and the
+    rest at the tick's end (`instantiate/starts.rs`,
     run at the end of `Instance::tick`, which flushes again for what
     reads it, at most `MAX_START_PASSES` times, and sends a prop set
     again then once): as the list mounts with one, when it changes while
@@ -1559,8 +1560,11 @@ by `strand-compiler`, not here. See `crates/strand-core/src/lib.rs`.
   graph-triggered events, rate-counted per site (the 30 writes/s
   guard); `rt.spawn_input(Some(site), fut)` runs external input, not
   counted up to its first suspending `await` and counted per run after.
-  `<->` writes are not counted. Timers are `rt.after/every(_dyn)`; `on
-  change` is `rt.on_change_each` (`rt.on_change_after_each` for the
+  `<->` writes are not counted, nor those `f` makes in
+  `rt.as_input(f)` (a sink mirroring what the host takes as input: the
+  compiler's `read_start`, decisions.md list-start). Timers are
+  `rt.after/every(_dyn)`; `on change` is `rt.on_change_each`
+  (`rt.on_change_after_each` for the
   late phase), each target paired with the
   identity of the keyed object it reads, so it never fires on a sink
   switch; `on change` handlers run after the tick's other effects

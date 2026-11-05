@@ -1587,6 +1587,77 @@ fn a_changed_start_is_read_in_its_tick_until_the_user_moves() {
     assert_eq!(sh.num("changes"), changes, "nothing to tell");
 }
 
+/// (list-start) A start that changes faster than 30 times a second while
+/// the user has not moved (a start read from a search a key repeats, or
+/// from a value reported every frame) is the list's own place, which the
+/// router takes as input: logic reads each one in its tick, and the
+/// write-rate guard takes none of it for a feedback loop.
+#[test]
+fn a_start_changing_every_frame_is_not_a_feedback_loop() {
+    let mut sh = Shell::new(
+        "state at = 0\n\
+         state seen = -1\n\
+         panel L { anchor: top_left; width: 300; height: 100; keyboard: exclusive\n\
+           on change results.selected_index { seen = results.selected_index ?? -1 }\n\
+           list { id: results; height: 100; focus: true; selected_index: at\n\
+             for i in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] key i { box { height: 20 } }\n\
+           }\n\
+         }\n",
+    );
+    sh.keyboard_to("L");
+    sh.settle();
+    for i in 1..=90i64 {
+        sh.now += std::time::Duration::from_millis(16);
+        sh.inst
+            .set_value("shell", "at", Value::int(i % 10))
+            .unwrap();
+        sh.step();
+        assert_eq!(index(&sh), Some((i % 10) as u32), "tick {i}: the list");
+        assert_eq!(sh.num("seen"), (i % 10) as f64, "tick {i}: logic");
+    }
+    assert!(!sh.throttled(), "{:?}", sh.diags);
+}
+
+/// (list-start) The one start read a tick behind, as the keys are: a
+/// `nav:` list whose surface gets the keyboard again after the user moved
+/// goes back to its start as the keyboard enters, on the render side,
+/// and `selected_index` reads it at logic's next tick (spec.md 6.7, the
+/// exception its docs name).
+#[test]
+fn a_start_taken_as_the_keyboard_enters_is_read_a_tick_later() {
+    let mut sh = Shell::new(
+        "state q = \"\"\n\
+         state seen = -1\n\
+         panel L { anchor: top_left; width: 300; height: 130; keyboard: exclusive\n\
+           on change results.selected_index { seen = results.selected_index ?? -1 }\n\
+           col {\n\
+             input { height: 30; text: <-> q; focus: true; nav: results }\n\
+             list { id: results; height: 100; selected_index: 3\n\
+               for i in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] key i { box { height: 20 } }\n\
+             }\n\
+           }\n\
+         }\n",
+    );
+    sh.keyboard_to("L");
+    sh.settle();
+    assert_eq!(index(&sh), Some(3));
+    press(&mut sh, "Down");
+    assert_eq!(index(&sh), Some(4));
+    assert_eq!(sh.num("seen"), 4.0);
+    let surface = sh.keyboard.unwrap();
+    sh.send(InputEvent::KeyboardLeave { surface });
+    sh.run(2);
+    sh.queue(InputEvent::KeyboardEnter { surface });
+    assert_eq!(
+        index(&sh),
+        Some(3),
+        "the list starts as the keyboard enters"
+    );
+    assert_eq!(sh.num("seen"), 4.0, "logic has not answered yet");
+    sh.step();
+    assert_eq!(sh.num("seen"), 3.0, "read at its next tick");
+}
+
 /// (list-start) A start logic read and the list did not take (the user's
 /// move still on its way to logic, so logic did not know of it) is put
 /// right: routing tells logic where the selection is after every start

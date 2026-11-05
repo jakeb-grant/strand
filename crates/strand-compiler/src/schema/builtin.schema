@@ -114,7 +114,9 @@ handle record Node {
   /// on other elements. `text join(" of ", (results.selected_index ?? 0) +
   /// 1, n)` follows the selection. It updates a tick after the keys move
   /// the selection, and in the tick that sets it for a start the list
-  /// takes from its `selected_index:`.
+  /// takes from its `selected_index:`, except a start a `nav:` list takes
+  /// as its surface gets the keyboard again, read a tick later as the keys
+  /// are.
   selected_index: int?
   /// Its laid-out width. `when self.width < 300 { … }` is a container
   /// query, with 4 px hysteresis so it cannot flicker.
@@ -2340,7 +2342,9 @@ element list: node {
   /// reads the row, and it is selected when the row arrives. Null starts
   /// as a list without it does. `results.selected_index` reads a start in
   /// the tick that sets it, so what reads that shows the start's row from
-  /// the first frame.
+  /// the first frame, except when a `nav:` list's surface gets the
+  /// keyboard again: it starts on its start as the keyboard enters, which
+  /// `results.selected_index` reads a tick later, as it reads the keys.
   selected_index: int?
   /// Arrows and `next()` and `prev()` go round from one end to the other.
   /// Page keys, Home and End stop at the ends.

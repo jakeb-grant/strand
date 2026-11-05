@@ -5198,26 +5198,13 @@ pub(crate) fn hold_services(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::longest_increasing;
-
-    #[test]
-    fn longest_increasing_runs() {
-        assert_eq!(longest_increasing(&[]), Vec::<usize>::new());
-        assert_eq!(longest_increasing(&[0, 1, 2]), [0, 1, 2]);
-        // One item moved from the front to the back.
-        assert_eq!(longest_increasing(&[1, 2, 3, 0]), [1, 2, 3]);
-        assert_eq!(longest_increasing(&[3, 0, 1, 2]), [0, 1, 2]);
-        assert_eq!(longest_increasing(&[2, 1, 0]).len(), 1);
-    }
-}
-
 /// (list-start) A `list`'s changed start is its `results.selected_index`
 /// in the flush that changes it, before the `on change` handlers and what
 /// reads it run, while the user has not moved the selection since it last
 /// started: the router takes it as it settles that diff (decisions.md
-/// list-start). Below 0 is the first row, as render reads it. Its first
+/// list-start). Below 0 is the first row, as render reads it. Its write is
+/// run as input (`Runtime::as_input`), uncounted by the write-rate guard,
+/// as the router's own report of the place is. Its first
 /// value is left to the end of the tick (`Instance::read_starts`), so an
 /// `on change` mounted with the list hears it as it did, rather than
 /// taking it for its first value.
@@ -5239,8 +5226,12 @@ fn read_start(rt: &Runtime, memo: strand_core::Memo<PropOut>, state: &Rc<NodeSta
             if !f.is_finite() {
                 return Ok(());
             }
+            // The router takes the start as the list's place, as it would
+            // a key: the write is input's, not counted by the write-rate
+            // guard, so a start that changes every frame (a search a key
+            // repeats) is neither a feedback loop nor held.
             if !first && !st.list_moved.get() {
-                index.set(rt, Value::int(i64::from(f as u32)))?;
+                rt.as_input(|rt| index.set(rt, Value::int(i64::from(f as u32))))?;
             }
             Ok(())
         })
@@ -5248,4 +5239,19 @@ fn read_start(rt: &Runtime, memo: strand_core::Memo<PropOut>, state: &Rc<NodeSta
     let _ = rt.reads_from(effect.id(), &[memo.id()]);
     let _ = rt.writes_to(effect.id(), index.id());
     rt.set_name(effect.id(), "list start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::longest_increasing;
+
+    #[test]
+    fn longest_increasing_runs() {
+        assert_eq!(longest_increasing(&[]), Vec::<usize>::new());
+        assert_eq!(longest_increasing(&[0, 1, 2]), [0, 1, 2]);
+        // One item moved from the front to the back.
+        assert_eq!(longest_increasing(&[1, 2, 3, 0]), [1, 2, 3]);
+        assert_eq!(longest_increasing(&[3, 0, 1, 2]), [0, 1, 2]);
+        assert_eq!(longest_increasing(&[2, 1, 0]).len(), 1);
+    }
 }

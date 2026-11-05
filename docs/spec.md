@@ -1574,7 +1574,9 @@ monitor, the keyboard always).
   rows, null with none and on other elements: reactive, it follows a tick
   behind the keys, and an `on change` of it is input, as of `selected`. A
   start the list takes from its `selected_index:` (below) it reads in the
-  tick that sets it instead.
+  tick that sets it instead, all but the one a `nav:` list takes as its
+  surface gets the keyboard again, which it reads a tick behind, as the
+  keys.
 - **Where a `list`'s selection starts, and where it goes.** `selected_index:
   n` on a `list` (`int?`) is the row its selection starts on, in place of the
   first: a `nav:` list selects it wherever it would select its first row (it
@@ -2101,9 +2103,11 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   the held value. A writer is a handler, or one run of an input
   handler (below).
 - **What is not counted.** Writes from `strand set` and the other
-  command-line writes, values a service reports, and writes through
-  `<->` are never counted. An input handler (`on click`,
-  `on scroll(dy)`, and the other events of a node the user acts on)
+  command-line writes, values a service reports, writes through
+  `<->`, and a list's `selected_index` reading its start (section 6.7),
+  which the router takes as the user's place, are never counted. An
+  input handler (`on click`, `on scroll(dy)`, and the other events of a
+  node the user acts on)
   is not counted until its first `await` that suspends; after it, the
   run's writes count against that run alone, not against the handler.
   So `on scroll(dy) { await x; v -= dy * 0.05 }` at 60 Hz, sixty runs
