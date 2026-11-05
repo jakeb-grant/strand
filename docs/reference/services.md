@@ -442,7 +442,7 @@ manager (TLP, auto-cpufreq) keeps it stopped.
 
 | Field | Type | |
 | --- | --- | --- |
-| `profile` | `PowerProfile rw` | The active profile: `power.profile = power_saver` in a handler, or `strand set power.profile performance`. Writable: the daemon is asked to switch (its `ActiveProfile`). A profile it does not offer (`profiles`), or a write while it is not `available`, leaves the profile as it was. A daemon that settles on another profile within two seconds of a write it took is asked once more, then followed. `balanced` while no daemon answers. |
+| `profile` | `PowerProfile rw` | The active profile: `power.profile = power_saver` in a handler, or `strand set power.profile performance`. Writable: the daemon is asked to switch (its `ActiveProfile`). A profile it does not offer (`profiles`), or a write while it is not `available`, leaves the profile as it was. A daemon that settles on another profile within two seconds of a write it took is asked once more, then followed, so a key or tool switching in those two seconds is undone once; a hold another program takes then is followed. `balanced` while no daemon answers. |
 | `profiles` | `[PowerProfile]` | The profiles the machine offers, in the daemon's order: `for p in power.profiles key p { … }`. `performance` is listed only where a driver supports it. Empty while no daemon answers. |
 | `available` | `bool` | power-profiles-daemon answers. False without it, or without a system bus, so a menu can hide what cannot work. |
 | `degraded` | `text?` | Why `performance` is held back, as the daemon names it (`lap-detected`, `high-operating-temperature`); null when it is not. |

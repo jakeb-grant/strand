@@ -30,7 +30,10 @@
 //! `balanced`. So when the daemon reports another profile within
 //! [`SETTLE`] of a write, the written one is asked once more before the
 //! change is shown; if the daemon settles elsewhere again, that is
-//! followed.
+//! followed. A key or another tool switching in that time comes the same
+//! way and is asked back once too, so it is undone; a hold another program
+//! takes is not (its change names the hold, [`held`]), since a `Set`
+//! would cancel it.
 
 use std::time::Duration;
 
@@ -55,7 +58,8 @@ pub const LEGACY_PATH: &str = "/net/hadess/PowerProfiles";
 
 /// How long after a write the daemon settling on another profile counts
 /// as its quirk, so the written profile is asked once more (the module
-/// docs). A switch made later, by a key or another tool, is followed.
+/// docs). A switch made later, by a key or another tool, is followed; one
+/// made sooner is asked back once.
 pub const SETTLE: Duration = Duration::from_secs(2);
 
 /// A power-profiles-daemon profile (`power.profile`).
@@ -101,8 +105,10 @@ pub struct Power {
     /// to switch (its `ActiveProfile`). A profile it does not offer
     /// (`profiles`), or a write while it is not `available`, leaves the
     /// profile as it was. A daemon that settles on another profile within
-    /// two seconds of a write it took is asked once more, then followed.
-    /// `balanced` while no daemon answers.
+    /// two seconds of a write it took is asked once more, then followed,
+    /// so a key or tool switching in those two seconds is undone once; a
+    /// hold another program takes then is followed. `balanced` while no
+    /// daemon answers.
     #[store(rw)]
     pub profile: PowerProfile,
     /// The profiles the machine offers, in the daemon's order: `for p in
@@ -179,6 +185,23 @@ fn profiles(props: &Props) -> Vec<PowerProfile> {
         .collect()
 }
 
+/// Whether another program holds a profile (`ActiveProfileHolds` is not
+/// empty). The daemon names its holds in the same `PropertiesChanged` as
+/// the profile a hold switches to, and a `Set` of `ActiveProfile` cancels
+/// every hold, so a profile changed by a hold is never asked away
+/// (decisions.md power-reask).
+fn held(props: &Props) -> bool {
+    let Some(v) = props.get("ActiveProfileHolds") else {
+        return false;
+    };
+    let v: &Value<'_> = v;
+    let v = match v {
+        Value::Value(inner) => &**inner,
+        v => v,
+    };
+    matches!(v, Value::Array(list) if !list.is_empty())
+}
+
 impl Power {
     /// The state from the daemon's properties (`GetAll` of its
     /// interface): an `ActiveProfile` this service does not know reads
@@ -235,8 +258,14 @@ impl Power {
             // settling on another is asked once more (the module docs).
             let mut asked: Option<(PowerProfile, Instant)> = None;
             loop {
-                // A signal from either name's owner, and which name.
+                // A signal from either name's owner, and which name. What
+                // the daemon said comes before the next write: the echo of
+                // a write is queued before its `Set` returns, so an echo
+                // of an earlier write is never read after a later write
+                // as the daemon settling away from it (decisions.md
+                // power-reask).
                 let signal = tokio::select! {
+                    biased;
                     ev = new.next() => match ev {
                         None => return Err(ServiceError("the system bus connection ended".into())),
                         Some(DaemonEvent::Owner) => break,
@@ -281,7 +310,7 @@ impl Power {
                 {
                     // Once only: what the daemon says next is followed.
                     asked = None;
-                    if Instant::now() < by && state.profiles.contains(&wanted) {
+                    if Instant::now() < by && state.profiles.contains(&wanted) && !held(&props) {
                         log::info!(
                             "power: the daemon settled on {} after {} was set; asking once more",
                             state.profile.ppd_name(),
@@ -463,6 +492,43 @@ mod tests {
         );
         assert!(!Power::default().available);
         assert_eq!(Power::default().profile, PowerProfile::Balanced);
+    }
+
+    /// A hold is a non-empty `ActiveProfileHolds`, whatever its items'
+    /// type (python-dbusmock's template starts it as `a(aa{sv})`), and as
+    /// a property's value or inside a variant.
+    #[test]
+    fn an_active_hold_is_one_listed() {
+        assert!(!held(&Props::new()));
+        let empty: Vec<HashMap<String, Value<'static>>> = Vec::new();
+        let none = OwnedValue::try_from(Value::from(empty)).unwrap();
+        assert!(!held(&Props::from([(
+            "ActiveProfileHolds".to_string(),
+            none
+        )])));
+        let one = vec![HashMap::from([
+            (
+                "Profile".to_string(),
+                Value::from("performance".to_string()),
+            ),
+            (
+                "ApplicationId".to_string(),
+                Value::from("gamemode".to_string()),
+            ),
+        ])];
+        let one = OwnedValue::try_from(Value::from(one)).unwrap();
+        let wrapped = OwnedValue::try_from(Value::Value(Box::new(Value::from(
+            one.try_clone().unwrap(),
+        ))))
+        .unwrap();
+        assert!(held(&Props::from([(
+            "ActiveProfileHolds".to_string(),
+            one
+        )])));
+        assert!(held(&Props::from([(
+            "ActiveProfileHolds".to_string(),
+            wrapped
+        )])));
     }
 
     #[test]
