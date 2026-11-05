@@ -7,6 +7,7 @@
 //! reads it. Logic still hears every change as flags and two-way writes.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use strand_scene::{Insets, NodeId, PropValue};
 
@@ -137,6 +138,122 @@ pub fn slider_span(x0: f64, x1: f64, active: bool, s: f64) -> (f64, f64) {
 
 /// An `input` caret's width, logical pixels.
 pub const CARET_WIDTH: f32 = 1.5;
+
+/// (caret) How long a blinking caret shows, and then how long it hides:
+/// half of GTK's `gtk-cursor-blink-time` default (a 1200 ms cycle), the
+/// rate the text fields of the rest of a Linux desktop blink at.
+pub const CARET_BLINK_HALF: Duration = Duration::from_millis(600);
+
+/// (caret) How long after the last key, caret move, selection change or
+/// focus gain a caret blinks: GTK's `gtk-cursor-blink-timeout` default.
+/// It then stays shown, so a focused field left alone does not wake the
+/// shell.
+pub const CARET_BLINK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// (caret) When a caret's blink ends, since it restarted: the first
+/// whole cycle at or past [`CARET_BLINK_TIMEOUT`] (10.8 s), so it ends
+/// shown, as it started.
+pub const fn caret_blink_stop() -> Duration {
+    let cycle = CARET_BLINK_HALF.as_nanos() * 2;
+    let cycles = CARET_BLINK_TIMEOUT.as_nanos().div_ceil(cycle);
+    Duration::from_nanos((cycles * cycle) as u64)
+}
+
+/// (caret) A caret whose blink restarted `elapsed` ago: whether it
+/// shows, and when (since the restart) it next turns; `None` once the
+/// blink has ended and it stays shown.
+pub fn caret_blink(elapsed: Duration) -> (bool, Option<Duration>) {
+    if elapsed >= caret_blink_stop() {
+        return (true, None);
+    }
+    let half = CARET_BLINK_HALF.as_nanos();
+    let n = elapsed.as_nanos() / half;
+    let next = Duration::from_nanos(((n + 1) * half) as u64);
+    (n.is_multiple_of(2), Some(next))
+}
+
+/// (caret) A caret as one frame draws it: shown or hidden, the time it
+/// next turns on the frame's clock (`None`: steady), and whether its
+/// blink restarted in a frame that is only previewed (a painted frame
+/// must follow to start it).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CaretPhase {
+    pub shown: bool,
+    pub next: Option<Duration>,
+    pub restarted: bool,
+}
+
+/// (caret) Each focused `input`'s blink: the frame time it restarted at
+/// and what its caret showed then (its text, position and anchor,
+/// hashed), so a caret that moved or text that changed restarts it as a
+/// key does.
+#[derive(Debug, Default)]
+pub(crate) struct Blinks {
+    /// A host holds every caret steady (the evaluation sandbox:
+    /// [`crate::Renderer::set_caret_blink`]).
+    steady: bool,
+    started: HashMap<NodeId, (u64, Duration)>,
+}
+
+impl Blinks {
+    pub(crate) fn set_steady(&mut self, steady: bool) {
+        self.steady = steady;
+        self.started.clear();
+    }
+
+    /// A host holds every caret steady.
+    pub(crate) fn steady(&self) -> bool {
+        self.steady
+    }
+
+    /// `id`'s caret, showing `key`, in the frame drawn at `time`; `slack`
+    /// is how early a turn counts as reached (half a frame), `commit` that
+    /// the frame is painted, `still` that time stands still in it
+    /// (`reduced_motion`, a frame at time zero): the caret is then steady.
+    pub(crate) fn phase(
+        &mut self,
+        id: NodeId,
+        key: u64,
+        time: Duration,
+        slack: Duration,
+        commit: bool,
+        still: bool,
+    ) -> CaretPhase {
+        if self.steady || still {
+            return CaretPhase {
+                shown: true,
+                next: None,
+                restarted: false,
+            };
+        }
+        let (from, restarted) = match self.started.get(&id) {
+            Some(&(k, from)) if k == key => (from, false),
+            _ => {
+                if commit {
+                    self.started.insert(id, (key, time));
+                }
+                (time, !commit)
+            }
+        };
+        let (shown, next) = caret_blink((time + slack).saturating_sub(from));
+        CaretPhase {
+            shown,
+            next: next.map(|n| from + n),
+            restarted,
+        }
+    }
+
+    /// `id`'s blink restarts at the next painted frame that draws it (a
+    /// key, a caret move, focus gained or lost).
+    pub(crate) fn restart(&mut self, id: NodeId) {
+        self.started.remove(&id);
+    }
+
+    /// Forgets nodes `keep` rejects.
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
+        self.started.retain(|id, _| keep(*id));
+    }
+}
 
 /// The options of a `segmented` (`options: Look` arrives as a list of
 /// the enum's variants as keywords; a list of texts or numbers works

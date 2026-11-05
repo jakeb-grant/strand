@@ -1378,6 +1378,18 @@ proof  = "crates/strand-render/tests/motion.rs::snap_rules_and_reduced_motion; c
 
 [[claim]]
 page   = "site/concepts/motion.md"
+text   = "A focused `input`'s caret blinks on its own, 600 ms shown and 600 ms hidden, shows again at once on every key, and stays shown once 10 s pass without one."
+source = ['docs/spec.md "shown for 600 ms, hidden for 600 ms"', 'crates/strand-render/src/widgets.rs "pub const CARET_BLINK_HALF: Duration = Duration::from_millis(600);"', 'crates/strand-render/src/widgets.rs "pub const CARET_BLINK_TIMEOUT: Duration = Duration::from_secs(10);"']
+proof  = "crates/strand-render/tests/caret.rs::the_loop_paints_once_per_turn_then_stops; crates/strand-render/tests/caret.rs::a_key_a_move_or_new_text_shows_the_caret_and_restarts_the_blink"
+
+[[claim]]
+page   = "site/concepts/motion.md"
+text   = "With reduced motion on it does not blink."
+source = ['''docs/spec.md "It does not blink with the desktop's reduced-motion setting on"''']
+proof  = "crates/strand-render/tests/caret.rs::reduced_motion_holds_the_caret_steady"
+
+[[claim]]
+page   = "site/concepts/motion.md"
 text   = "are paint-only: animating"
 source = ['crates/strand-render/src/layout/mod.rs "Paint-only props (`x`, `y`, `scale`, `rotate`,"', 'docs/spec.md "**Paint-only props** (`x`, `y`, `scale`, `rotate`, `opacity`) never cause layout."']
 proof  = "crates/strand-render/tests/motion.rs::paint_only_springs_never_relayout"

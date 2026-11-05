@@ -365,7 +365,7 @@ impl Shell {
                         let origin = self.origin_text(f, sp, config_dir)?;
                         let ident = self.inst.identity(n.node);
                         let r = n.rect;
-                        Some(json!({
+                        let mut node = json!({
                             "ref": node_ref(n.node),
                             "origin": origin,
                             "id": ident.as_ref().and_then(|i| i.id.clone()),
@@ -374,7 +374,13 @@ impl Shell {
                             "opacity": q(n.opacity),
                             "travel": q(n.travel),
                             "fade": q(n.fade),
-                        }))
+                        });
+                        // (caret) A caret blinking: the replay holds it
+                        // steady and leaves its pixels out.
+                        if let Some(c) = n.caret {
+                            node["caret"] = json!([q(c.x), q(c.y), q(c.w), q(c.h)]);
+                        }
+                        Some(node)
                     })
                     .collect();
                 json!({

@@ -952,6 +952,11 @@ impl Renderer {
         if changed && draws {
             self.mark_node_dirty(node);
         }
+        // (caret) Focus gained or lost: the caret shows at once when it
+        // comes back.
+        if changed && flag == crate::Flag::Focused {
+            self.anim.blinks.restart(node);
+        }
         // (m6-owner-fixes) A press held on a `trigger: hover` popup takes
         // its input region to its whole box (`input_region`): a frame
         // commits it. So on a surface whose region is its box alone (a
@@ -977,14 +982,32 @@ impl Renderer {
     }
 
     /// An `input`'s caret and selection (`None`: at the end of its text).
+    /// (caret) Every call is a key or a pointer at work in the input, so
+    /// its caret shows again and its blink restarts, also where the caret
+    /// stays (Left at the start).
     pub fn set_caret(&mut self, node: NodeId, caret: Option<crate::widgets::Caret>) {
         let w = &mut self.extras.widgets;
         let old = match caret {
             Some(c) => w.carets.insert(node, c),
             None => w.carets.remove(&node),
         };
-        if old != caret {
+        self.anim.blinks.restart(node);
+        // A caret that stayed put asks for a frame only while carets
+        // blink: a hidden one shows again in it.
+        let blinks = !self.anim.blinks.steady() && !self.anim.reduced();
+        if old != caret || blinks {
             self.mark_node_dirty(node);
+        }
+    }
+
+    /// (caret) Holds every `input`'s caret steady (`false`) or lets it
+    /// blink (`true`, the default): the evaluation sandbox holds it
+    /// steady, so its recordings and rests do not depend on the blink's
+    /// phase, as a frame at time zero and `reduced_motion` do.
+    pub fn set_caret_blink(&mut self, on: bool) {
+        self.anim.blinks.set_steady(!on);
+        for s in self.surfaces.values_mut() {
+            s.mark_dirty();
         }
     }
 

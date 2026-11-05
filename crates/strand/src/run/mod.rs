@@ -760,6 +760,12 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
     let mut renderer = Renderer::try_new(TextBackend::Worker(worker)).map_err(DemoError::Io)?;
     renderer.set_first_frame_wait(FIRST_FRAME_TEXT_WAIT);
     renderer.set_quiet_frames(true);
+    // (caret) A mock desktop is a test's or a headless shot's: a focused
+    // input's caret holds steady there, so a screenshot taken a while
+    // after the last key shows it whatever the blink's phase.
+    if crate::mock::requested().is_some() {
+        renderer.set_caret_blink(false);
+    }
     #[cfg(feature = "gpu")]
     gpu::configure(&mut renderer);
     // (kept-size) A panel maps at the size it will need.

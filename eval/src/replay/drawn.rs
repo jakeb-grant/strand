@@ -63,6 +63,10 @@ pub struct Drawn {
     /// opacity's change; 0 at rest.
     pub travel: f64,
     pub fade: f64,
+    /// (caret) Its caret while it blinked live, `[x, y, w, h]` (`None`:
+    /// none, or a steady one): the replay holds it steady, so those
+    /// pixels are left out of the comparison.
+    pub caret: Option<[f64; 4]>,
 }
 
 impl Drawn {
@@ -602,6 +606,7 @@ fn nodes_of(run: &RunOutput, fr: &Frame, sid: u32) -> Vec<Drawn> {
                 opacity: op,
                 travel: tb.max(ta),
                 fade: fb.max(fa),
+                caret: None,
             })
         })
         .collect()
@@ -804,6 +809,10 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Verdict {
                             opacity: n["opacity"].as_f64().unwrap_or(1.0),
                             travel: n["travel"].as_f64().unwrap_or(0.0),
                             fade: n["fade"].as_f64().unwrap_or(0.0),
+                            caret: n["caret"].as_array().and_then(|c| {
+                                let g = |i: usize| c.get(i).and_then(Json::as_f64);
+                                Some([g(0)?, g(1)?, g(2)?, g(3)?])
+                            }),
                         })
                     })
                     .collect()
@@ -828,6 +837,9 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Verdict {
         v.surfaces += 1;
         v.nodes += live.len();
         let mut mask = Vec::new();
+        // (caret) A caret blinking live is steady in the replay: its
+        // pixels are left out, a pixel around it besides.
+        mask.extend(live.iter().filter_map(|l| l.caret).map(|c| grown(c, 1.0)));
         let mut used = vec![false; replay.len()];
         for l in live {
             let m = replay

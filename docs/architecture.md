@@ -909,7 +909,9 @@ says to run `scripts/report-view.sh --no-open <dir>` or `strand replay
 `Renderer::drawn_nodes(SurfaceId) -> Option<DrawnFrame>` flattens the
 surface's scene at its last paint, and a frame period later for each
 node's `travel` and `fade`, peeking at motion without advancing it; it
-runs only when a report asks, on main between frames.
+runs only when a report asks, on main between frames. (caret) A focused
+`input` whose caret blinks carries the caret's box (`DrawnNode::caret`),
+which the replay, holding the caret steady, leaves out of its pixels.
 
 **The replay** is eval's (`strand-eval replay <bundle>`; docs/eval.md
 "Replaying a glitch report"): it reads dumps with `flight::read` and
@@ -1200,7 +1202,16 @@ is being saved, so the idle-wakeup windows hold.
   router owns but widgets draw (hover, press, focus, caret, a dragged
   slider's value) lives in render (`strand_render::widgets::Widgets`),
   written through `InputScene`, so widgets answer on the frame the input
-  arrives; logic still gets flags and two-way writes. Images decode at
+  arrives; logic still gets flags and two-way writes. (caret) A focused
+  `input`'s caret blinks on a clock of its surface's
+  (`widgets::caret_blink`: 600 ms shown, 600 ms hidden, steady 10.8 s
+  after its blink restarted), restarted by `Renderer::set_caret`, focus
+  gained or a change of its text; a turn is one glyph cell of the
+  input's record, so it damages the caret alone.
+  `Renderer::set_caret_blink(false)` holds every caret steady (the
+  evaluation sandbox, `strand run` under `STRAND_MOCK`), as
+  `reduced_motion` and a frame at time zero do.
+  Images decode at
   the box's physical size into a 32 MB LRU on a worker; the paint cache
   (32 MB) frees entries unused for `IDLE_FREE` (30 s) at the next paint
   or `update`, never by a wake of its own, so an idle shell does zero
@@ -1235,7 +1246,8 @@ is being saved, so the idle-wakeup windows hold.
     frames has a clock (`strand-render`'s `clock.rs`); a clock not due
     by the next frame leaves `wants_frame` false and puts its due instant
     in `next_wake()`. Hidden nodes have no clock, and the frame loop
-    stops when every clock is idle.
+    stops when every clock is idle. A focused `input`'s caret blink is
+    one too, due at its next turn (decisions.md caret).
   - **Shader uniforms.** `u_*` props travel as one `Prop::Uniforms`,
     each entry springing as its type would; the checked WGSL is
     `Prop::Shader` (`PropValue::Shader(Arc<ShaderCode>)`), set by the

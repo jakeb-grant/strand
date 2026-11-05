@@ -1259,7 +1259,8 @@ monitor, the keyboard always).
   nothing): `smooth` eases it, and each column is its value at that
   column's tick on the boot clock, not a spring's position at whatever
   frame drew it (decisions.md graph-follow; section 14). With the desktop's reduced-motion setting on, every
-  transition snaps and loops, time signals and effects stop.
+  transition snaps and loops, time signals and effects stop. A focused
+  `input`'s caret stops blinking too (section 6.7).
 - **Paint-only props** (`x`, `y`, `scale`, `rotate`, `opacity`) never
   cause layout. A size spring relays out only the subtree under the
   nearest ancestor whose size does not change.
@@ -1670,6 +1671,19 @@ monitor, the keyboard always).
   reconnect) is shown in `clipboard.text` but is no copy and is never
   recorded, so an entry removed or cleared stays gone (decisions.md
   m6-service-gaps).
+- **The caret.** A focused `input` draws its caret where the next key
+  types, a selection's moving end included: an `$accent` bar 1.5 px wide
+  and as tall as its line. It blinks as a desktop's text field does, with
+  nothing to set: shown for 600 ms, hidden for 600 ms (GTK's 1200 ms
+  cycle), shown again at once and blinking anew from each key, caret
+  move, click, change of its text and focus gained, and shown for good
+  once 10 s pass without one (at the end of that cycle, 10.8 s), so a
+  field left focused does not keep the shell awake. The render thread
+  alone redraws it, the caret's pixels and no more; logic hears nothing
+  of it. It does not blink with the desktop's reduced-motion setting on,
+  in a frame at time zero (offline pictures), in the evaluation sandbox
+  or on a mock desktop (`STRAND_MOCK`, the tests' screenshots), which
+  hold it steady (decisions.md caret).
 - **`tooltip: expr`** shows a tooltip on hover.
 - **Drag and drop.** `drag: value` on a source; `on drop(v: T, at: int)`
   on a target. `at` is where it lands among the target's rows (for a

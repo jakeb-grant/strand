@@ -447,7 +447,10 @@ waited for as the next tick starts, so it reaches logic one tick after the
 lookup that asked for it, and a `rest` does not end while one is being
 quantised (wallpaper-follow). The renderer's wall-clock holds
 are neutralised with its own setters (the query hold excepted: logic always
-answers in time), so a run is a function of its scenario. Surfaces are
+answers in time), so a run is a function of its scenario. A focused
+input's caret is held steady (`Renderer::set_caret_blink(false)`,
+decisions.md caret): a recording, a `rest` and the site's media do not
+depend on the blink's phase, which strand-render's tests hold instead. Surfaces are
 attached (with the screen as their output's bounds) and configured at the
 size their spec asks, as the surface manager does, each through the host
 loop (`attached`, `configured`, `detached`), and placed on the output as
@@ -2732,7 +2735,9 @@ named as `nodes.json` names a node (origin, `id:`, `for` row key) with
 its box as drawn (surface logical px, through every transform, axis
 aligned, to 1/64), its own opacity, and how far it moves over the next
 frame period: `travel`, the largest move of an edge in px, and `fade`,
-of its opacity (0 at rest; docs/architecture.md "Glitch reports").
+of its opacity (0 at rest; docs/architecture.md "Glitch reports"), and
+(caret) for a focused `input` whose caret was blinking, `caret`: where
+it is drawn when shown, its box as the node's is given.
 
 In CI and `test-report-view.sh --e2e`, a session that fails leaves its
 bundle (the live frames) and its replay (the replay's frames) in
@@ -2773,7 +2778,8 @@ over the next tick), and pairs the nodes in paint order by origin,
   is a live one; and the surface's pixels, where the bundle has a PNG
   of it, within `cpu-gpu`'s tolerance of the replay's image of that
   frame, outside the boxes (both sides', grown by their bound) of what
-  moves;
+  moves and a live blinking caret's box grown by 1 px (the replay holds
+  the caret steady, decisions.md caret);
 - **DRIFTED**: anything else, one line per difference: a node at rest
   (`@origin[key] #id`) and its surface, the live box and opacity, the
   replay's, and how many px apart its farthest edge is (and how far

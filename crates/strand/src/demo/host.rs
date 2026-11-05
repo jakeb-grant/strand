@@ -3433,4 +3433,67 @@ mod tests {
             "no wake for a removed grace"
         );
     }
+
+    /// (caret, docs/decisions.md caret) A focused input's caret blinks on
+    /// the main thread alone: the renderer's own wake runs `update`, the
+    /// surface paints a frame per turn (18 over 10.8 s, then none), and
+    /// logic hears nothing of it, neither layout facts nor anything else.
+    #[test]
+    fn a_blinking_caret_tells_logic_nothing() {
+        use std::time::{Duration, Instant};
+        use strand_scene::{NodeKind, PropValue};
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(font),
+        ]));
+        let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let (tx, mut el) = setup_channel();
+        let mut host = Host::new(renderer, false).forwarding(tx);
+        let (panel, input) = (NodeId::new(0, 0), NodeId::new(1, 0));
+        let mut d = SceneDiff::new();
+        d.create(panel, NodeKind::Panel, None, 0)
+            .set(panel, Prop::Width, PropValue::Number(220.0))
+            .set(panel, Prop::Height, PropValue::Number(30.0))
+            .create(input, NodeKind::Input, Some(panel), 0)
+            .set(input, Prop::Width, PropValue::Number(200.0))
+            .set(input, Prop::Text, PropValue::Text("hunter2".into()))
+            .set(input, Prop::Watch, PropValue::Keyword("size".into()));
+        assert!(host.renderer.apply(d).is_empty());
+        let s = SurfaceId(1);
+        let size = Size::new(220, 30);
+        host.surface_attached(s, panel, None);
+        host.surface_configured(s, size, Scale::ONE);
+        let i0 = Instant::now();
+        let t0 = Duration::from_secs(10);
+        let mut px = vec![0u8; 220 * 30 * 4];
+        let mut paint = |host: &mut Host, t: Duration| {
+            host.renderer.set_now(Some(i0 + (t - t0)));
+            let target = PaintTarget::new(&mut px, size, 220 * 4, Scale::ONE, 1).unwrap();
+            let damage = host.paint(s, &mut target.at(t));
+            host.painted(s, &damage);
+        };
+        paint(&mut host, t0);
+        host.renderer.set_widget_flag(input, Flag::Focused, true);
+        let hz60 = Duration::from_nanos(16_666_667);
+        let mut t = t0 + hz60;
+        paint(&mut host, t);
+        let _ = drain_channel(&mut el);
+        let mut frames = 0;
+        while t < t0 + Duration::from_secs(13) {
+            t += hz60;
+            let now = i0 + (t - t0);
+            host.renderer.set_now(Some(now));
+            if host.renderer.next_wake().is_some_and(|w| w <= now) {
+                host.renderer.update();
+            }
+            if host.wants_frame(s) {
+                paint(&mut host, t);
+                frames += 1;
+            }
+        }
+        assert_eq!(frames, 18, "a frame per turn");
+        assert_eq!(host.renderer.next_wake(), None, "steady: no wake");
+        let told = drain_channel(&mut el);
+        assert!(told.is_empty(), "logic was told {told:?}");
+    }
 }

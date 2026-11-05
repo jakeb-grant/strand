@@ -161,7 +161,9 @@ impl Renderer {
     /// paint draws nothing and takes them, routing and the input region
     /// with them, in a bare commit, or on a surface the GPU thread presents
     /// a present of its last frame (decisions.md hit-through,
-    /// presented-quiet).
+    /// presented-quiet). So does one where a caret's blink restarted (a
+    /// key that left the caret where it was shown): a painted frame
+    /// starts it (decisions.md caret).
     pub fn update(&mut self) {
         let now = Instant::now();
         if self.timer_due.is_some_and(|d| d <= now) {
@@ -236,6 +238,7 @@ impl Renderer {
                     && s.opaque == f.opaque
                     && s.hits == f.hits
                     && !deferred
+                    && !f.caret_restarted
                 {
                     s.dirty = false;
                 }

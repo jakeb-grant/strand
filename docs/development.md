@@ -353,7 +353,7 @@ run time, also by a release build:
 
 | Variable | Read by | What it does |
 | --- | --- | --- |
-| `STRAND_MOCK` | `strand run` | `desktop` or `acceptance`: a mock desktop in place of the real services |
+| `STRAND_MOCK` | `strand run` | `desktop` or `acceptance`: a mock desktop in place of the real services, with a focused input's caret held steady for screenshots |
 | `STRAND_MOCK_SCREEN` | `strand run` | With a mock, the output its first four workspaces are on; default `HEADLESS-1` |
 | `STRAND_MOCK_APPS` | `strand run` | With a mock, how many apps are installed, at most 100,000; default three |
 | `STRAND_BACKLIGHT_DIR` | the `brightness` service | A directory read in place of `/sys/class/backlight` |

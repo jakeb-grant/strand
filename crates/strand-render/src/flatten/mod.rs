@@ -176,10 +176,11 @@ pub struct NodeRecord {
     pub bounds: Rect,
     pub sig: u64,
     /// A text node drawn untransformed at its own scale, with nothing
-    /// after its glyphs (no underline or caret): what it draws besides
-    /// its glyphs, and each glyph's box, so a text change damages only
-    /// the glyphs that changed (a clock tick repaints its last digit,
-    /// design.md: "a clock tick repaints about 60×20 px").
+    /// after its glyphs (no underline; an input's caret is a cell of its
+    /// own): what it draws besides its glyphs, and each glyph's box, so
+    /// a text change damages only the glyphs that changed (a clock tick
+    /// repaints its last digit, design.md: "a clock tick repaints about
+    /// 60×20 px"), and a caret's blink only the caret.
     pub glyphs: Option<Arc<GlyphCells>>,
     /// A node with a border along its box: what it draws besides the
     /// border, and the ring's four strips (buffer pixels), so a change of
@@ -344,6 +345,9 @@ pub struct Flattened {
     /// `wave(…)`, `noise(t)`) or draw a CPU raster source:
     /// they repaint on every tick of their clock while drawn.
     pub(crate) clocks: Vec<crate::clock::Clock>,
+    /// (caret) A caret's blink restarted in this scene, which is only a
+    /// preview: a painted frame must start it (its surface stays dirty).
+    pub(crate) caret_restarted: bool,
     /// (shared-morph-on) The drawn nodes with a `morph` name and their
     /// boxes, in paint order: where each name is on screen once a frame
     /// paints this scene, flattened for it or reused.

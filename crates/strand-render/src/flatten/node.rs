@@ -1425,9 +1425,9 @@ impl<'a> Flattener<'a> {
                     .filter_map(|r| Some((r.underline?, slot_color(r.color, &span_colors, color))))
                     .collect();
                 // Glyph cells, when the glyphs are the last thing drawn
-                // and land on buffer pixels as they are.
+                // (but an input's caret, a cell of its own: caret) and land
+                // on buffer pixels as they are.
                 if lines.is_empty()
-                    && caret.is_none()
                     && k == 1.0
                     && self.xform == kurbo::Affine::IDENTITY
                     && text_fill.is_none()
@@ -1562,18 +1562,42 @@ impl<'a> Flattener<'a> {
             ink = ink.union(bounds);
         }
         self.shift_fillet_fill(content_start, self.out.items.len() - before_light);
-        // An input's caret, over its text.
+        let mut blinking = None;
+        // An input's caret, over its text, blinking (caret): shown or
+        // hidden by its phase, its next turn a clock of the surface's, and
+        // with the glyphs it is one more cell, so a turn damages only the
+        // caret.
         if has_area && let (Some(c), Some(at)) = (caret, &caret_at) {
-            self.caret(
-                frame,
-                at,
-                mask_map(c.pos),
-                &scope,
-                text_color,
-                &font,
-                &mut sig,
-                &mut ink,
-            );
+            let mut key = DefaultHasher::new();
+            (own_text, c.pos, c.anchor).hash(&mut key);
+            let phase = self.anim.caret(node.id, key.finish());
+            self.out.caret_restarted |= phase.restarted;
+            if phase.next.is_some() && self.drawn.is_some() {
+                blinking = super::widget::caret_rect(frame, at, mask_map(c.pos), &font, s);
+            }
+            self.out
+                .clocks
+                .extend(phase.next.map(|n| crate::clock::Clock { next: Some(n) }));
+            let drawn = phase.shown.then(|| {
+                self.caret(
+                    frame,
+                    at,
+                    mask_map(c.pos),
+                    &scope,
+                    text_color,
+                    &font,
+                    &mut sig,
+                    &mut ink,
+                )
+            });
+            if let (Some((_, cells)), Some(Some(b))) = (glyph_cells.as_mut(), drawn) {
+                let mut h = DefaultHasher::new();
+                if let Some(last) = self.out.items.last() {
+                    hash_item(&mut h, &last.item);
+                }
+                let cell = b.inflate(1).intersect(self.surface).unwrap_or_default();
+                cells.push((cell, h.finish()));
+            }
         }
 
         let mut bounds = ink
@@ -1728,6 +1752,9 @@ impl<'a> Flattener<'a> {
             );
         }
         self.drawn_push(node.id, opacity, frame);
+        if let Some(r) = blinking {
+            self.drawn_caret(r);
+        }
 
         // Hit shape: the rounded box, grown by `hit: grow(n)`; none with
         // `hit: none`.
@@ -2571,7 +2598,23 @@ impl<'a> Flattener<'a> {
             opacity,
             travel: 0.0,
             fade: 0.0,
+            caret: None,
         });
+    }
+
+    /// (caret) The node [`Flattener::drawn_push`] pushed last blinks its
+    /// caret at `r` (physical px, under the node's transform).
+    fn drawn_caret(&mut self, r: kurbo::Rect) {
+        let s = self.scale.as_f64();
+        let v = self.xform.transform_rect_bbox(r);
+        if let Some(d) = self.drawn.as_mut().and_then(|d| d.last_mut()) {
+            d.caret = Some(LogicalRect::new(
+                (v.x0 / s) as f32,
+                (v.y0 / s) as f32,
+                (v.width() / s) as f32,
+                (v.height() / s) as f32,
+            ));
+        }
     }
 
     /// True if a part of `svg` reads time: the `svg` then has a clock.
