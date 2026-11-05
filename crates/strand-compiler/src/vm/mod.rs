@@ -406,6 +406,7 @@ impl Env {
             window_cell: Default::default(),
             blank_cell: Default::default(),
             selected_index_cell: Default::default(),
+            list_moved: Default::default(),
             scroll_x_cell: Default::default(),
             scroll_y_cell: Default::default(),
             alias_cell: Default::default(),

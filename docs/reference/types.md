@@ -424,7 +424,7 @@ A live handle, not data: it compares, but `persist` and settings files cannot st
 | `pressed` | `bool` | A pointer button is held down on it. |
 | `focused` | `bool` | It has keyboard focus. On a `window` (its `id:`), the compositor has it focused (its `activated` state): `w.focused`. |
 | `selected` | `bool` | It is the selected item of a `list`; arrow keys move the selection. |
-| `selected_index` | `int?` | On a `list`, the place of its selected row among all its rows, from 0, whether or not that row is mounted; null with no selection, and on other elements. `text join(" of ", (results.selected_index ?? 0) + 1, n)` follows the selection. It updates a tick after the selection moves. |
+| `selected_index` | `int?` | On a `list`, the place of its selected row among all its rows, from 0, whether or not that row is mounted; null with no selection, and on other elements. `text join(" of ", (results.selected_index ?? 0) + 1, n)` follows the selection. It updates a tick after the keys move the selection, and in the tick that sets it for a start the list takes from its `selected_index:`. |
 | `width` | `float` | Its laid-out width. `when self.width < 300 { … }` is a container query, with 4 px hysteresis so it cannot flicker. |
 | `height` | `float` | Its laid-out height. |
 | `open` | `bool` | A `popup` (or another surface) is open: from the moment its `open` turns true (or the pointer opens a `trigger: hover` one) until it turns false, as its exit pose starts. False on other elements. `when cal.open { bg: $surface.hi }` styles an anchor while its popup shows. |

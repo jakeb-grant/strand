@@ -121,8 +121,16 @@ pub enum Intent {
         value: PropValue,
     },
     /// (keyboard) `list`'s selection is at the row with this global index,
-    /// or nowhere (`results.selected_index`).
-    SelectedIndex { list: NodeId, index: Option<u32> },
+    /// or nowhere (`results.selected_index`). (list-start) `moved`: the
+    /// user moved it (an arrow, a click, a list action) since the list
+    /// last started, so a changed `selected_index:` is not followed;
+    /// logic, which reads its own start in the tick it sets it, follows a
+    /// change itself only while this is false.
+    SelectedIndex {
+        list: NodeId,
+        index: Option<u32>,
+        moved: bool,
+    },
     /// (M6) For the host, not logic: a focused `input` copies to or
     /// pastes from the compositor's clipboard (Ctrl+C/X/V). A paste comes
     /// back as [`InputEvent::Paste`].
@@ -570,8 +578,13 @@ pub struct Router {
     /// again, unless focus moved on meanwhile.
     focus_lost: HashMap<SurfaceId, (NodeId, NodeId)>,
     /// (keyboard) Each list's selection as logic last heard it
-    /// ([`Intent::SelectedIndex`]).
-    told_index: HashMap<NodeId, u32>,
+    /// ([`Intent::SelectedIndex`]), and whether the user had moved it.
+    told_index: HashMap<NodeId, (u32, bool)>,
+    /// (list-start) Lists whose start logic may have read before routing
+    /// took it (a `selected_index:` set, rows replaced whole): logic hears
+    /// where their selection is when routing settles, changed or not, so a
+    /// start logic read and routing did not take is put right.
+    retell: HashSet<NodeId>,
     /// The last pointer position on each surface the pointer is over.
     pointer: HashMap<SurfaceId, LogicalPoint>,
     /// (still-pointer) Where hover went under a pointer that stays still.
@@ -1732,6 +1745,9 @@ impl Router {
             {
                 continue;
             }
+            // (list-start) Logic reads a start again where its rows were
+            // replaced whole: it hears where the selection is either way.
+            self.retell.insert(l.list);
             let w = window_rows(tree, l.list);
             if w.rows.iter().any(|r| !l.arrived.contains(r)) {
                 if l.away {
@@ -1772,6 +1788,9 @@ impl Router {
         lists.sort();
         lists.dedup();
         for list in lists {
+            // (list-start) Logic read the start as it set it, unless it had
+            // heard of the user's move: it hears where the selection is.
+            self.retell.insert(list);
             if self.moved.contains(&list) {
                 continue;
             }
@@ -1972,25 +1991,41 @@ impl Router {
                 .then(|| self.sel_index.get(l).copied())
                 .flatten(),
         };
+        let mut retell = std::mem::take(&mut self.retell);
+        let moved = &self.moved;
         let (told, out) = (&mut self.told_index, &mut self.out);
         told.retain(|l, _| {
             let held = now(l).is_some();
             if !held {
+                retell.remove(l);
                 out.push(Intent::SelectedIndex {
                     list: *l,
                     index: None,
+                    moved: false,
                 });
             }
             held
         });
         for l in self.selected.keys().chain(self.away.keys()) {
             let Some(i) = now(l) else { continue };
-            if told.insert(*l, i) != Some(i) {
+            let place = (i, moved.contains(l));
+            let again = retell.remove(l);
+            if told.insert(*l, place) != Some(place) || again {
                 out.push(Intent::SelectedIndex {
                     list: *l,
                     index: Some(i),
+                    moved: place.1,
                 });
             }
+        }
+        // (list-start) A start logic read that left no selection here
+        // (it never does, unless logic's read raced the user): nowhere.
+        for l in retell {
+            out.push(Intent::SelectedIndex {
+                list: l,
+                index: None,
+                moved: false,
+            });
         }
     }
 
@@ -2805,6 +2840,7 @@ impl Router {
         self.moved.retain(|list| live(*list));
         self.away.retain(|list, _| live(*list));
         self.starts.retain(|list| live(*list));
+        self.retell.retain(|list| live(*list));
         self.selected.retain(|list, row| {
             live(*list) && live(*row) && tree.get(*row).is_some_and(|r| r.parent == Some(*list))
         });

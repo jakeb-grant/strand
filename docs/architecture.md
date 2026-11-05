@@ -52,8 +52,11 @@ a hot path.
 - **Render → logic**: routed input (flags, node events, two-way writes,
   `Renderer::take_scroll_facts` as `ToLogic::Scroll` for `s.scroll_y`, only
   for nodes it is read of (`Prop::Watch` with `scroll`),
-  `Intent::SelectedIndex` as `ToLogic::SelectedIndex` for
-  `results.selected_index`, sent when the place changes), layout facts
+  `Intent::SelectedIndex { list, index, moved }` as
+  `ToLogic::SelectedIndex` for `results.selected_index`, sent when the
+  place or `moved` (the user moved it since the list last started)
+  changes, and after each start the router is given, changed or not;
+  `Instance::set_selected_index(list, index, moved)`), layout facts
   (`Renderer::take_layout_facts`, changed boxes of `Prop::Watch` nodes,
   sent as `ToLogic::Layout { seq, sizes }`) and pointer facts
   (`Renderer::take_pointer_facts`, sent as `ToLogic::Pointer`, applied
@@ -1383,6 +1386,20 @@ is being saved, so the idle-wakeup windows hold.
     notes them again only after a diff that creates, removes or moves
     nodes or a change of which lists are away (never per pointer
     motion). A Return waiting on such a selection goes with the rows.
+    (decisions.md list-start) Logic reads a start as the list's
+    `selected_index` in the tick that sets it (`instantiate/starts.rs`,
+    run at the end of `Instance::tick`, which flushes again for what
+    reads it, at most `MAX_START_PASSES` times, and sends a prop set
+    again then once): as the list mounts with one, when it changes while
+    the last `moved` it heard is false and no handler asked the list to
+    move in that tick, and when every row the list has came in that tick
+    and it had a selection (rows a `Remove` without `window` took out
+    are noted by the emitter, `Emitter::left_rows`) or the tick set the
+    text of the focused `input` whose `nav:` it is. The router tells
+    the place of every list whose start it was given or whose selected
+    row (or a row, while its selection is away) logic removed
+    (`retell`), so a start logic read that it did not take is put
+    right.
   - Submenus: Right opens the first closed two-way `popup` under the
     selected row (else the hovered chain); Left in a nested popup closes
     it as Escape does (decisions.md m4-lists-w1).

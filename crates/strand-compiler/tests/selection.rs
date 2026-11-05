@@ -1363,3 +1363,270 @@ fn the_first_row_rule_still_shows_its_row_after_one_leaves() {
     let offset = sh.r.scroll_offset(list(&sh)).unwrap();
     assert!(offset < 1.0, "the new first row shows: {offset}");
 }
+
+/// (list-start) The owner's launcher in small: a list shared by pages
+/// (`if view == …` blocks), its selection mirrored into `results_at` by an
+/// `on change` for a preview, and its start the theme in use on the
+/// Themes page. The page's preview box is blue when the theme it shows
+/// is the one in use, orange otherwise (it comes with the themes, so its
+/// first frame is its colour, not a spring from another); `changes`
+/// counts the `on change`. Ctrl+A shows the Apps page, Ctrl+T the Themes
+/// page.
+fn launcher(themes: &str, view: &str) -> Shell {
+    let mut sh = Shell::new(&format!(
+        "state view = \"{view}\"\n\
+         state apps: [text] = [\"files\", \"mail\", \"music\", \"notes\"]\n\
+         state themes: [text] = [{themes}]\n\
+         state current = \"tokyo\"\n\
+         state q = \"\"\n\
+         state results_at = 0\n\
+         state changes = 0\n\
+         let theme_at = themes.index_of(t => t == current) ?? 0\n\
+         let sel = results_at\n\
+         let peek = view == \"themes\" ? themes.skip(sel).first ?? \"\" : \"\"\n\
+         panel L {{ anchor: top_left; width: 300; height: 170; keyboard: exclusive\n\
+           on key \"ctrl+a\" {{ view = \"apps\" }}\n\
+           on key \"ctrl+t\" {{ view = \"themes\" }}\n\
+           on change results.selected_index {{ results_at = results.selected_index ?? 0; changes = changes + 1 }}\n\
+           col {{\n\
+             input {{ height: 30; text: <-> q; focus: true; nav: results }}\n\
+             box {{ height: 40; if peek != \"\" {{ box {{ grow: 1; bg: peek == current ? #5b8def : #e0a040 }} }} }}\n\
+             list {{ id: results; height: 100; selected_index: view == \"themes\" ? theme_at : null\n\
+               if view == \"apps\" {{ for a in apps key a {{ box {{ height: 20 }} }} }}\n\
+               if view == \"themes\" {{ for t in themes key t {{ box {{ height: 20 }} }} }}\n\
+             }}\n\
+           }}\n\
+         }}\n"
+    ));
+    sh.keyboard_to("L");
+    sh.settle();
+    sh
+}
+
+const THEMES: &str = "\"latte\", \"frappe\", \"macchiato\", \"mocha\", \"nord\", \"gruvbox\", \
+                      \"dracula\", \"tokyo\", \"rose\", \"kanagawa\"";
+
+fn themes() -> Value {
+    let names = [
+        "latte",
+        "frappe",
+        "macchiato",
+        "mocha",
+        "nord",
+        "gruvbox",
+        "dracula",
+        "tokyo",
+        "rose",
+        "kanagawa",
+    ];
+    Value::list(names.iter().map(|n| Value::text(*n)).collect())
+}
+
+/// The preview box's colour in the frame drawn now, before logic answers
+/// again: `true` for blue, the theme in use.
+fn previews_current(sh: &mut Shell, y: u32) -> bool {
+    let shot = sh.frame("L");
+    let p = shell::px(&shot, 150, y);
+    assert!(
+        p == [0xef, 0x8d, 0x5b, 0xff] || p == [0x40, 0xa0, 0xe0, 0xff],
+        "the preview is blue or orange: {p:?}"
+    );
+    p == [0xef, 0x8d, 0x5b, 0xff]
+}
+
+/// One press of Ctrl+`k`, then one logic tick and nothing else: the
+/// state of the first frame after the diff the press caused.
+fn ctrl_step(sh: &mut Shell, k: &str) {
+    let surface = sh.keyboard.unwrap();
+    sh.queue(InputEvent::Key {
+        surface,
+        key: KeyInput {
+            name: k.into(),
+            text: String::new(),
+            state: ButtonState::Pressed,
+            repeat: false,
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+            time: 0,
+            latin: None,
+        },
+    });
+    sh.step();
+}
+
+/// (list-start) The Themes page opens on the theme in use, and the tick
+/// that brings its rows and start has `results.selected_index` read it:
+/// the `on change` ran, the preview reads it, and the first frame shows
+/// the theme in use, never the row the Apps page had (or the user moved
+/// to there). The `on change` ran once for it.
+#[test]
+fn a_start_is_read_in_the_tick_the_list_takes_it() {
+    for moved in [false, true] {
+        let mut sh = launcher(THEMES, "apps");
+        if moved {
+            press(&mut sh, "Down");
+            assert_eq!(index(&sh), Some(1));
+        }
+        assert_eq!(sh.num("results_at"), if moved { 1.0 } else { 0.0 });
+        let changes = sh.num("changes");
+        ctrl_step(&mut sh, "t");
+        assert_eq!(index(&sh), Some(7), "moved {moved}: the list took it");
+        assert_eq!(
+            sh.num("results_at"),
+            7.0,
+            "moved {moved}: the on change heard it in the same tick"
+        );
+        assert!(
+            previews_current(&mut sh, 50),
+            "moved {moved}: the first frame"
+        );
+        sh.settle();
+        assert_eq!(sh.num("results_at"), 7.0, "moved {moved}");
+        assert_eq!(sh.num("changes"), changes + 1.0, "moved {moved}: once");
+    }
+}
+
+/// (list-start) Rows that arrive a tick after the page (the themes read
+/// only while it shows): the start waits, then moves to the theme in use
+/// as they come; each tick's `selected_index` is the list's, and the frame
+/// after the rows shows the theme in use.
+#[test]
+fn a_start_that_comes_with_its_rows_is_read_with_them() {
+    let mut sh = launcher("", "apps");
+    ctrl_step(&mut sh, "t");
+    assert_eq!(index(&sh), Some(0), "no themes yet: the start is 0");
+    assert_eq!(sh.num("results_at"), 0.0);
+    sh.settle();
+    let changes = sh.num("changes");
+    sh.inst.set_value("shell", "themes", themes()).unwrap();
+    sh.step();
+    assert_eq!(index(&sh), Some(7));
+    assert_eq!(sh.num("results_at"), 7.0, "in the tick the rows came");
+    assert!(previews_current(&mut sh, 50));
+    sh.settle();
+    assert_eq!(sh.num("changes"), changes + 1.0, "once");
+}
+
+/// (list-start) A list that mounts with its start reads it in the tick
+/// it mounts.
+#[test]
+fn a_list_that_mounts_with_a_start_reads_it_at_once() {
+    let mut sh = Shell::new(&format!(
+        "state themes: [text] = [{THEMES}]\n\
+         state current = \"tokyo\"\n\
+         state shown = false\n\
+         state results_at = -1\n\
+         state changes = 0\n\
+         panel L {{ anchor: top_left; width: 300; height: 170; keyboard: exclusive\n\
+           on change results.selected_index {{ results_at = results.selected_index ?? -1; changes = changes + 1 }}\n\
+           col {{\n\
+             if shown {{\n\
+               box {{ height: 40; bg: results_at == 7 ? #5b8def : #e0a040 }}\n\
+               list {{ id: results; height: 100; focus: true\n\
+                 selected_index: themes.index_of(t => t == current)\n\
+                 for t in themes key t {{ box {{ height: 20 }} }}\n\
+               }}\n\
+             }}\n\
+           }}\n\
+         }}\n"
+    ));
+    sh.keyboard_to("L");
+    sh.settle();
+    sh.inst
+        .set_value("shell", "shown", Value::Bool(true))
+        .unwrap();
+    sh.step();
+    assert_eq!(index(&sh), Some(7));
+    assert_eq!(sh.num("results_at"), 7.0, "in the tick it mounted");
+    assert!(previews_current(&mut sh, 20));
+    sh.settle();
+    assert_eq!(sh.num("changes"), 1.0, "once");
+}
+
+/// (list-start) A start that changes while the user has not moved the
+/// selection is read in the tick it changes; once the user moves, a
+/// change is not followed, and `selected_index` neither moves nor tells
+/// its `on change`, as the list keeps the user's row.
+#[test]
+fn a_changed_start_is_read_in_its_tick_until_the_user_moves() {
+    let mut sh = launcher(THEMES, "themes");
+    assert_eq!(index(&sh), Some(7));
+    assert_eq!(sh.num("results_at"), 7.0);
+    let changes = sh.num("changes");
+    sh.inst
+        .set_value("shell", "current", Value::text("nord"))
+        .unwrap();
+    sh.step();
+    assert_eq!(index(&sh), Some(4));
+    assert_eq!(sh.num("results_at"), 4.0, "in the tick it changed");
+    assert!(previews_current(&mut sh, 50));
+    sh.settle();
+    assert_eq!(sh.num("changes"), changes + 1.0, "once");
+    press(&mut sh, "Down");
+    assert_eq!(index(&sh), Some(5));
+    let changes = sh.num("changes");
+    sh.inst
+        .set_value("shell", "current", Value::text("latte"))
+        .unwrap();
+    sh.step();
+    assert_eq!(index(&sh), Some(5), "the user's row stays");
+    assert_eq!(sh.num("results_at"), 5.0, "and logic reads it");
+    sh.settle();
+    assert_eq!(index(&sh), Some(5));
+    assert_eq!(sh.num("results_at"), 5.0);
+    assert_eq!(sh.num("changes"), changes, "nothing to tell");
+}
+
+/// (list-start) A start logic read and the list did not take (the user's
+/// move still on its way to logic, so logic did not know of it) is put
+/// right: routing tells logic where the selection is after every start
+/// it is given, changed or not.
+#[test]
+fn a_start_the_list_did_not_take_is_put_right() {
+    let mut sh = launcher(THEMES, "themes");
+    press(&mut sh, "Down");
+    assert_eq!(index(&sh), Some(8));
+    assert_eq!(sh.num("results_at"), 8.0);
+    // Logic has not heard that the user moved: it reads the next start.
+    let l = list(&sh);
+    sh.inst.set_selected_index(l, Some(8), false);
+    sh.inst
+        .set_value("shell", "current", Value::text("nord"))
+        .unwrap();
+    sh.step();
+    assert_eq!(index(&sh), Some(8), "the user's row stays");
+    sh.settle();
+    assert_eq!(sh.num("results_at"), 8.0, "logic hears where it is");
+}
+
+/// (list-start) A text typed in the `nav:` input starts its list again
+/// on the start, whatever the user had moved to, when the diff with the
+/// new text reaches the router; logic reads it in that tick.
+#[test]
+fn a_text_typed_reads_the_start_with_the_key() {
+    let mut sh = launcher(THEMES, "themes");
+    press(&mut sh, "Down");
+    press(&mut sh, "Down");
+    assert_eq!(index(&sh), Some(9));
+    assert_eq!(sh.num("results_at"), 9.0);
+    let surface = sh.keyboard.unwrap();
+    sh.queue(InputEvent::Key {
+        surface,
+        key: KeyInput {
+            name: "x".into(),
+            text: "x".into(),
+            state: ButtonState::Pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+            time: 0,
+            latin: None,
+        },
+    });
+    sh.step();
+    assert_eq!(index(&sh), Some(7), "a new text starts it on its start");
+    assert_eq!(sh.num("results_at"), 7.0, "in the tick that heard the key");
+    sh.settle();
+    assert_eq!(sh.num("results_at"), 7.0);
+}

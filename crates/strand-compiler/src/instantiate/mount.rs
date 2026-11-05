@@ -1665,6 +1665,7 @@ impl Ctx {
             {
                 let _ = state.selected_index(rt).set(rt, v);
             }
+            state.list_moved.set(was.list_moved.get());
             // (keyboard) A scroll keeps its place, which render says again
             // only on a change.
             for (a, b) in [

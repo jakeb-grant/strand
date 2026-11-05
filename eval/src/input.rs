@@ -201,8 +201,8 @@ pub fn to_logic(
                 }
                 any = true;
             }
-            Intent::SelectedIndex { list, index } => {
-                inst.set_selected_index(list, index);
+            Intent::SelectedIndex { list, index, moved } => {
+                inst.set_selected_index(list, index, moved);
                 any = true;
             }
             // (report) A paste's ask is answered by a `paste` step (the

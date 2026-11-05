@@ -125,7 +125,9 @@ To start somewhere other than the first row, name the row with
 `selected_index:` on the list: `selected_index: names.index_of(n => n ==
 current)` opens on `current`. A row that has not arrived yet is waited for, so
 a list whose rows come in after it opens lands on its row with no handler. The
-selection follows the value until someone moves it. When the selected row
+selection follows the value until someone moves it. `results.selected_index`
+reads the start from the first frame, so a preview read from it never shows the
+row selected before. When the selected row
 leaves and others stay, as when a notification is cleared, the selection
 stays at its place, on the row that takes it.
 

@@ -34,6 +34,7 @@ mod outputs;
 mod overlay;
 mod reload;
 mod report;
+mod starts;
 pub mod theme;
 
 pub use outputs::{OutputChange, OutputContent};
@@ -95,6 +96,12 @@ pub const MAX_MOUNT_DEPTH: u32 = 256;
 
 /// (M4) How long a keyframes block with no `duration:` plays.
 pub const KEYFRAMES_DURATION: Duration = Duration::from_millis(300);
+
+/// (list-start) How many times a tick flushes again for the starts it
+/// read as lists' places ([`Instance::tick`]): a start that changes with
+/// what reads it settles in one, and one that never settles is left to
+/// the router after these.
+const MAX_START_PASSES: usize = 3;
 
 /// Which node flag render reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1908,21 +1915,42 @@ impl Instance {
     }
 
     fn collect(&self, tick: strand_core::Tick) -> Update {
-        // (report) The cells this tick wrote, told to the tap.
-        self.tap_cells(&tick.written);
-        // The new tree took its holds during the tick.
-        self.release_bridge();
+        let mut tick = tick;
         let mut new_tokens = None;
-        for id in &tick.changed {
-            if self.tokens.is_some_and(|t| t.id() == *id) {
-                new_tokens = self.tokens.and_then(|t| t.get_untracked(&self.rt).ok());
-                continue;
+        let mut errs = Vec::new();
+        let mut diagnostics = Vec::new();
+        // (list-start) The ops before the tick flushed again for a start.
+        let mut first_pass = None;
+        for pass in 0.. {
+            // (report) The cells this tick wrote, told to the tap.
+            self.tap_cells(&tick.written);
+            // The new tree took its holds during the tick.
+            self.release_bridge();
+            for id in &tick.changed {
+                if self.tokens.is_some_and(|t| t.id() == *id) {
+                    new_tokens = self.tokens.and_then(|t| t.get_untracked(&self.rt).ok());
+                    continue;
+                }
+                self.emit_binding(*id);
             }
-            self.emit_binding(*id);
+            self.ctx.settle_node_props();
+            self.emit_watched();
+            errs.extend(tick.errors);
+            diagnostics.extend(tick.diagnostics);
+            // (list-start) A list's start is its `selected_index` in the
+            // tick that sets it: what reads it goes in the same diff. A
+            // start that moves with what it starts stops after a few.
+            if pass == MAX_START_PASSES || !self.read_starts() {
+                break;
+            }
+            first_pass.get_or_insert(self.ctx.em.borrow().ops.len());
+            tick = self.rt.flush();
         }
-        self.ctx.settle_node_props();
-        self.emit_watched();
+        self.ctx.em.borrow_mut().left_rows.clear();
         let mut ops = std::mem::take(&mut self.ctx.em.borrow_mut().ops);
+        if let Some(from) = first_pass {
+            starts::merge_sets(&mut ops, from);
+        }
         if let Some(table) = new_tokens {
             ops.push(SceneOp::SetTokens {
                 table,
@@ -1931,7 +1959,7 @@ impl Instance {
         }
         let kept = self.inspect_tick(&ops, self.ctx.kept.borrow_mut().drain(..).collect());
         let mut errors: Vec<RuntimeError> = self.ctx.errors.borrow_mut().drain(..).collect();
-        for (id, e) in tick.errors {
+        for (id, e) in errs {
             let site = self.ctx.sites.borrow().get(&id).cloned();
             let err = match site {
                 Some(site) => self.ctx.located(&site, e),
@@ -1948,7 +1976,7 @@ impl Instance {
                 ..SceneDiff::default()
             },
             errors,
-            diagnostics: self.ctx.storage.tokens.with_notices(tick.diagnostics),
+            diagnostics: self.ctx.storage.tokens.with_notices(diagnostics),
             notices: self.ctx.notices.borrow_mut().drain(..).collect(),
             kept,
         }
@@ -2079,8 +2107,11 @@ impl Instance {
     }
 
     /// (keyboard) Render reports where `list`'s selection is
-    /// (`results.selected_index`): a row's global index, or `None`.
-    pub fn set_selected_index(&self, list: NodeId, index: Option<u32>) {
+    /// (`results.selected_index`): a row's global index, or `None`; and
+    /// (list-start) whether the user `moved` it since the list last
+    /// started, which decides whether logic reads a changed start as the
+    /// list's place in the tick it sets it ([`Instance::tick`]).
+    pub fn set_selected_index(&self, list: NodeId, index: Option<u32>, moved: bool) {
         let state = self
             .ctx
             .em
@@ -2090,6 +2121,7 @@ impl Instance {
             .map(|e| e.state.clone());
         if let Some(s) = state {
             let v = index.map_or(Value::Null, |i| Value::int(i64::from(i)));
+            s.list_moved.set(moved);
             let _ = s.selected_index(&self.rt).set(&self.rt, v);
         }
     }

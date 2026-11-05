@@ -874,8 +874,8 @@ fn to_logic(
                 }
                 any = true;
             }
-            Intent::SelectedIndex { list, index } => {
-                inst.set_selected_index(list, index);
+            Intent::SelectedIndex { list, index, moved } => {
+                inst.set_selected_index(list, index, moved);
                 any = true;
             }
             Intent::Clipboard(_) => notes.push("the clipboard is not on the web".into()),

@@ -246,6 +246,26 @@ impl Shell {
         self.run(400);
     }
 
+    /// (list-start) One logic tick, its diff applied and routing settled
+    /// on it, and no frame painted: what the next frame would show.
+    pub fn step(&mut self) -> bool {
+        self.answer()
+    }
+
+    /// (list-start) `name`'s surface drawn now, from scratch, without
+    /// letting logic answer first (as [`Shell::shot`] does): the frame
+    /// that follows the last diff.
+    pub fn frame(&mut self, name: &str) -> (Size, Vec<u8>) {
+        let id = self.surface(name).id;
+        let size = self.size_of(id);
+        self.r.invalidate(id);
+        let mut px = vec![0u8; (size.w * size.h * 4) as usize];
+        let t = PaintTarget::new(&mut px, size, size.w * 4, Scale::ONE, 0).unwrap();
+        self.r.paint(id, &mut t.at(self.now));
+        host_loop::painted(self, id).unwrap();
+        (size, px)
+    }
+
     /// Logic's answer to what it was handed (its diff applied); whether
     /// there was one.
     fn answer(&mut self) -> bool {
@@ -706,8 +726,8 @@ impl LoopHost for Shell {
                 Intent::Write { node, prop, value } => {
                     let _ = self.inst.write(node, prop, value);
                 }
-                Intent::SelectedIndex { list, index } => {
-                    self.inst.set_selected_index(list, index);
+                Intent::SelectedIndex { list, index, moved } => {
+                    self.inst.set_selected_index(list, index, moved);
                 }
                 Intent::Clipboard(_) => {}
             }

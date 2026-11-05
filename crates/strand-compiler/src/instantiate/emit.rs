@@ -142,6 +142,10 @@ pub(crate) struct Emitter {
     /// Nodes made outside the program (the error overlay), with their
     /// kind: kept as they are across reloads.
     pub external: HashMap<NodeId, NodeKind>,
+    /// (list-start) Rows taken out of a `list` since the tick's diff was
+    /// last collected, with their list: `Instance::tick` tells from them
+    /// a list whose rows were replaced whole, which starts again.
+    pub left_rows: Vec<(NodeId, NodeId)>,
 }
 
 /// What [`Emitter::unmount`] took off: scopes to dispose, element
@@ -550,11 +554,16 @@ impl Emitter {
             let scene_parent = self.scene_parent(root);
             // A parked fragment is off the scene already.
             let on_scene = !self.parked.remove(&root);
+            let list = scene_parent
+                .filter(|p| self.nodes.get(p).is_some_and(|e| e.kind == NodeKind::List));
             for n in self.top_nodes(root).into_iter().filter(|_| on_scene) {
                 self.ops.push(SceneOp::Remove {
                     id: n,
                     window: false,
                 });
+                if let Some(l) = list {
+                    self.left_rows.push((l, n));
+                }
                 if let Some(o) = self.order.get_mut(&scene_parent) {
                     o.retain(|&x| x != n);
                 }

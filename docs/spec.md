@@ -1572,7 +1572,9 @@ monitor, the keyboard always).
   nothing, and the first such call in a run says so to `strand watch`.
   `results.selected_index` (`int?`) is the selected row's place among all the
   rows, null with none and on other elements: reactive, it follows a tick
-  behind the keys, and an `on change` of it is input, as of `selected`.
+  behind the keys, and an `on change` of it is input, as of `selected`. A
+  start the list takes from its `selected_index:` (below) it reads in the
+  tick that sets it instead.
 - **Where a `list`'s selection starts, and where it goes.** `selected_index:
   n` on a `list` (`int?`) is the row its selection starts on, in place of the
   first: a `nav:` list selects it wherever it would select its first row (it
@@ -1606,7 +1608,16 @@ monitor, the keyboard always).
   with the rows it was for, and activates nothing. The place a selected
   row leaves is not scrolled to, except that a `nav:` list the user has
   not moved shows its first row as it always does. (decisions.md
-  list-selection)
+  list-selection) `results.selected_index` reads a start in the tick that
+  sets it, not a tick behind as it reads the keys: when the list mounts with
+  one, when its value changes while the user has not moved the selection,
+  and when it starts again on a new text in its `nav:` input or its rows
+  replaced whole, the start is what it reads, and what its `on change`
+  hears once, in that tick, so a preview or highlight read from it shows
+  the start's row from the first frame, never the row selected before. A
+  `nav:` list whose surface opens again starts on its start as the
+  keyboard enters it, and logic reads that a tick after, as it reads the
+  keys. (decisions.md list-start)
 - **`wrap: true` on a `list`** takes the arrows and `next()` and `prev()`
   round from one end to the other; Page keys, Home and End, and `select`
   stop at the ends.
