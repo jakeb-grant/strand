@@ -3100,14 +3100,20 @@ writes. It depends on neither `strand-compiler` nor `strand-core`.
 - **`FileBatch { changes, rescan, notices, first_event, last_event }`.**
   One batch per quiet period: 15 ms after the last completed write
   (50 ms when the latest event removed a watched file; at most 500 ms
-  after the first event). A flush whose read finds a watched file gone,
-  or whose module-set listing leaves a module out, takes the inotify
-  queue first: a removal (or write) of that file queued there is not
-  reported yet, the file stays pending (the module set unchanged that
-  flush, nothing leaving or joining it) and waits the removal grace from
-  that event, so a delete-then-create save made as an earlier batch is
-  cut is still one `Modified`, and a rename then one batch (decisions.md
-  save-blank; a polled directory has no queue, its listing decides).
+  after the first event). A watched file or module whose removal was
+  heard less than the removal grace ago is never reported `Removed`,
+  whichever flush finds it gone (one cut at 500 ms, or 15 ms after
+  another file's put-off read): it stays pending, unread, and the next
+  flush comes the grace after that removal. A flush whose read finds a
+  watched file gone, or whose module-set listing leaves a module out,
+  takes the inotify queue first, so a removal queued but not yet heard
+  counts too (as does a re-creation queued there). While a module the
+  listing left out waits so, the module set is unchanged that flush,
+  nothing leaving or joining it, every module it left out kept back with
+  it. So a delete-then-create save made as an earlier batch is cut is
+  still one `Modified`, and a rename then one batch (decisions.md
+  save-blank; a polled directory has no queue, and a removal no poll has
+  seen yet is its listing's to decide).
   `changes` is sorted by path then role, one
   `FileChange { path, canonical, kind, hash, role, error }` per role;
   unchanged hashes and own writes are dropped, so every change is real.
