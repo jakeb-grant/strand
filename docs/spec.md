@@ -1500,15 +1500,20 @@ monitor, the keyboard always).
   and start come in after it opens lands on its row with no handler and
   never shows its first row on the way. An arrow meanwhile moves from `n`'s
   place among the rows there; Return goes where `select(n)` would, the last
-  row, and activates it. Null starts as a list without it does: a `nav:`
-  list on its first row, another with no selection, and a turn to null
+  row, and activates it, and with no rows at all does nothing. Null starts
+  as a list without it does: a `nav:` list on its first row, another with
+  no selection, and a turn to null
   leaves the selection where it is. When the selected row leaves (logic
   removes it: a keyed item gone, not the window scrolling past it) while
   other rows that were there stay, the selection stays at its place: on the
   row that takes it (`selected_index` unchanged), or the new last row when
   it was the last. When no row stays (every row replaced, a page
   of the list changed, or none left) the list starts again: on its start,
-  else as above. (decisions.md list-selection)
+  else as above. A list started again on its start, as one opening again or
+  given a new text, follows its start again, whatever the user moved on the
+  rows before. The place a selected row leaves is not scrolled to, except
+  that a `nav:` list the user has not moved shows its first row as it
+  always does. (decisions.md list-selection)
 - **`wrap: true` on a `list`** takes the arrows and `next()` and `prev()`
   round from one end to the other; Page keys, Home and End, and `select`
   stop at the ends.

@@ -1665,6 +1665,11 @@ impl Router {
     /// page, or no rows left) the list starts its selection again: on its
     /// `selected_index:` if it has one, else as the first-row rule of a
     /// `nav:` list does, a list without one keeping none.
+    ///
+    /// The kept place is not scrolled to (a row leaving moves no view),
+    /// except on a focused input's `nav:` list the user has not moved:
+    /// its first-row rule selects that row next, scrolled into view as it
+    /// always was, and finds it selected already.
     fn keep_places(&mut self, scene: &mut dyn InputScene) {
         let left = std::mem::take(&mut self.left);
         for l in left {
@@ -1679,12 +1684,19 @@ impl Router {
             }
             let w = window_rows(tree, l.list);
             if w.rows.iter().any(|r| !l.arrived.contains(r)) {
+                let first_row_rule = !self.moved.contains(&l.list)
+                    && self.focus.values().any(|f| {
+                        tree.get(*f).is_some_and(|n| {
+                            n.kind == NodeKind::Input
+                                && matches!(n.get(Prop::Nav), Some(PropValue::Node(x)) if *x == l.list)
+                        })
+                    });
                 self.away.insert(
                     l.list,
                     Away {
                         index: l.index,
                         activate: false,
-                        reveal: false,
+                        reveal: first_row_rule,
                         exact: false,
                     },
                 );
@@ -1740,8 +1752,11 @@ impl Router {
 
     /// (list-selection) `list`'s selection goes to row `n`, as `select(n)`
     /// would while the list has it; past its rows, it waits for that row,
-    /// nothing selected, and lands when the row arrives.
+    /// nothing selected, and lands when the row arrives. Starting again
+    /// forgets a move the user made before (on rows gone, or another
+    /// query's), so the start is followed again when it changes.
     fn start_at(&mut self, scene: &mut dyn InputScene, list: NodeId, w: &WindowRows, n: u32) {
+        self.moved.remove(&list);
         if n < w.count {
             self.go_to(scene, list, w, n);
             return;
@@ -1818,13 +1833,17 @@ impl Router {
     /// mounted row with none; a selection on its way when it lands.
     fn activate_selected(&mut self, scene: &mut dyn InputScene, list: NodeId, w: &WindowRows) {
         // (list-selection) A start waiting for a row the list does not
-        // have: Return goes where `select(n)` would, and activates that.
+        // have: Return goes where `select(n)` would, and activates that;
+        // with no rows at all, nothing, as `select(n)` does nothing.
         if let Some(a) = self.away.get(&list)
             && a.exact
-            && w.count > 0
-            && a.index >= w.count
         {
-            self.go_to(scene, list, w, w.count - 1);
+            if w.count == 0 {
+                return;
+            }
+            if a.index >= w.count {
+                self.go_to(scene, list, w, w.count - 1);
+            }
         }
         if let Some(a) = self.away.get_mut(&list) {
             a.activate = true;
