@@ -3047,7 +3047,8 @@ writes. It depends on neither `strand-compiler` nor `strand-core`.
   or whose module-set listing leaves a module out, takes the inotify
   queue first: a removal (or write) of that file queued there is not
   reported yet, the file stays pending (the module set unchanged that
-  flush, nothing leaving or joining it) and waits the removal grace from
+  flush, nothing leaving or joining it, a module whose removal was heard
+  earlier kept back too) and waits the removal grace from
   that event, so a delete-then-create save made as an earlier batch is
   cut is still one `Modified`, and a rename then one batch (decisions.md
   save-blank; a polled directory has no queue, its listing decides).

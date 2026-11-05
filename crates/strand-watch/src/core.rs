@@ -1733,6 +1733,16 @@ impl<B: Backend> Core<B> {
                 .iter()
                 .any(|(path, e)| e.module && !new.contains(path) && unsettled.contains(path));
             if wait {
+                // Every module the listing left out waits with it: one
+                // whose removal was heard before this flush (the old name
+                // of a rename) would otherwise go out `Removed` from its
+                // read below, a grace before the new name joins.
+                unsettled.extend(
+                    self.files
+                        .iter()
+                        .filter(|(path, e)| e.module && !new.contains(*path))
+                        .map(|(path, _)| path.clone()),
+                );
                 self.pending.config = true;
                 self.schedule(now);
                 return;
@@ -3057,6 +3067,57 @@ mod tests {
         assert_eq!(
             got,
             [(&bar, ChangeKind::Removed), (&panel, ChangeKind::Created)],
+            "{b:#?}"
+        );
+        assert!(core.deadline().is_none());
+    }
+
+    /// A rename heard before its batch is cut (`mv bar.strand
+    /// panel.strand`), while a delete-then-create save of another module,
+    /// `colors.strand`, is in its gap as that batch is cut: the module set
+    /// waits whole for the save's grace, the old name included. Its read
+    /// finds no file, yet it is not `Removed` a grace before the new name
+    /// joins: the rename and the save are one batch (decisions.md
+    /// save-blank).
+    #[test]
+    fn a_rename_heard_while_another_module_waits_is_one_batch() {
+        let (_tmp, root) = cfg_dir();
+        let bar = root.join("bar.strand");
+        let colors = root.join("colors.strand");
+        let panel = root.join("panel.strand");
+        std::fs::write(&bar, "bar").unwrap();
+        std::fs::write(&colors, "colors").unwrap();
+        let queue = Queued::default();
+        let opts = Options::default();
+        let mut core = Core::new(queue.clone(), opts.clone(), Some(config(&root)));
+        settle(&mut core);
+        let t0 = Instant::now();
+        std::fs::rename(&bar, &panel).unwrap();
+        core.on_raw(Raw::Gone(bar.clone()), t0);
+        core.on_raw(Raw::Written(panel.clone()), t0);
+        let cut = core.deadline().unwrap();
+        // The save of colors.strand deletes it as that batch is cut.
+        std::fs::remove_file(&colors).unwrap();
+        queue.push(Raw::Gone(colors.clone()));
+        assert!(
+            core.flush(cut).is_none(),
+            "the rename waits with colors.strand"
+        );
+        assert!(core.files[&bar].module);
+        assert!(core.files[&bar].exists);
+        // ... and creates it again within the grace.
+        let t1 = cut + Duration::from_millis(20);
+        std::fs::write(&colors, "colors 2").unwrap();
+        core.on_raw(Raw::Written(colors.clone()), t1);
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        let got: Vec<_> = b.changes.iter().map(|c| (&c.path, c.kind)).collect();
+        assert_eq!(
+            got,
+            [
+                (&bar, ChangeKind::Removed),
+                (&colors, ChangeKind::Modified),
+                (&panel, ChangeKind::Created),
+            ],
             "{b:#?}"
         );
         assert!(core.deadline().is_none());
