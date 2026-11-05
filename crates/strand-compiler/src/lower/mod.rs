@@ -130,6 +130,9 @@ pub struct ExecAction {
     pub name: String,
     /// The program first, then its arguments; each parameter is one.
     pub argv: Vec<crate::hir::ArgvPart>,
+    /// (path-tilde) The parameters typed `path`, by index: a value `~`
+    /// or `~/…` reaches the program with the home folder in its place.
+    pub paths: Vec<usize>,
     /// (flex) `-> T`: what its output is read as; the call is then an
     /// `Async<T>` the host answers ([`crate::vm::ExecReply`]).
     pub ret: Option<Ty>,
@@ -980,6 +983,16 @@ impl Lowerer<'_> {
                     ExecAction {
                         name: self.hir.def(a.def).name.clone(),
                         argv: a.argv.clone(),
+                        paths: match &self.hir.def(a.def).ty {
+                            Ty::Fn(sig) => sig
+                                .params
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, p)| p.ty == Ty::PATH)
+                                .map(|(i, _)| i)
+                                .collect(),
+                            _ => Vec::new(),
+                        },
                         ret: match &self.hir.def(a.def).ty {
                             Ty::Fn(sig) => match &sig.ret {
                                 Ty::Async(t) => Some((**t).clone()),

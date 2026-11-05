@@ -88,7 +88,10 @@ handler runs it.
 - **The command is a list.** Its first item is the program, written
   out; the others are texts and the action's parameters. Each
   parameter is exactly one argument, never split on spaces, and no
-  shell stands between Strand and the program.
+  shell stands between Strand and the program. A `path` parameter's
+  `~/…` is your home folder, as everywhere Strand takes a path, so
+  `rec("~/Videos/a.mp4")` with `action rec(file: path)` records there;
+  a `text` parameter is passed as written.
 - **`permit exec` lists the programs a config may run.** An action
   whose program it does not allow is a load error. `strand check`
   lists every action with its command, so you can see what a config
