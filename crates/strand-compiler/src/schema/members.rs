@@ -291,7 +291,7 @@ pub fn list_members(elem: &Ty, keyed: bool, key: &Ty) -> Vec<MemberInfo> {
             vec![param("key", key.clone())],
             Ty::Unit,
             true,
-            "Removes the item with `key` (keyed lists, handlers only).",
+            "Removes the item with `key`, and does nothing when there is none (keyed lists, handlers only).",
         ),
         m(
             "move",

@@ -952,7 +952,7 @@ fn unmount_cancels_a_suspended_handler() {
 /// Handler errors are values: reported in the tick, the shell runs on.
 #[test]
 fn handler_errors_are_values() {
-    let src = "type Pin { app: text; label: text }\nstate pins: [Pin] key app = []\nstate n = 0\nbar B {\n  box { on click { pins.remove_key(\"x\") } }\n  box { on secondary { n += 1 } }\n}\n";
+    let src = "type Pin { app: text; label: text }\nstate pins: [Pin] key app = []\nstate n = 0\nbar B {\n  box { on click { pins.update(\"x\", p => p) } }\n  box { on secondary { n += 1 } }\n}\n";
     let mut shell = boot(&[("t.strand", src)], |rt, host| {
         screens(rt, host, &["DP-1"])
     });
@@ -961,13 +961,93 @@ fn handler_errors_are_values() {
     let u = shell.flush();
     assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
     assert!(
-        u.errors[0].contains("no item with this key"),
+        u.errors[0].contains("`update`: no item with this key"),
         "{:?}",
         u.errors
     );
     shell.inst.event(boxes[1], "secondary", Vec::new());
     shell.flush();
     assert_eq!(shell.inst.value_of("t", "n").unwrap(), Value::int(1));
+}
+
+/// Clicks each box in turn and returns, per click, the texts shown after
+/// it and the handler errors it raised.
+fn click_each_box(src: &str) -> Vec<(String, Vec<String>)> {
+    let mut shell = boot(&[("keys.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let mut seen = vec![(shell.scene.texts().join(" "), Vec::new())];
+    for b in shell.scene.of_kind(NodeKind::Box) {
+        shell.inst.event(b, "click", Vec::new());
+        let u = shell.flush();
+        let errors = u.errors.iter().map(|e| e.error.to_string()).collect();
+        seen.push((shell.scene.texts().join(" "), errors));
+    }
+    seen
+}
+
+/// `remove_key` of a key the collection does not hold does nothing, as a
+/// dictionary's `remove` will: forgetting an entry is idempotent
+/// (decisions.md dictionary). On a keyed `state` (core's keyed
+/// collection) and on a persisted one (a plain list cell) alike; `move`
+/// and `update` of a missing key stay handler errors.
+#[test]
+fn remove_key_of_a_missing_key_does_nothing() {
+    for persist in ["", " persist"] {
+        let src = format!(
+            "type Pin {{ app: text; label: text }}\nstate pins: [Pin] key app = [Pin(app: \"a\", label: \"A\")]{persist}\nstate writes = 0\non change pins {{ writes += 1 }}\nbar B {{\n  text join(\" \", pins.len, writes)\n  box {{ on click {{ pins.remove_key(\"x\") }} }}\n  box {{ on click {{ pins.move(\"x\", 0) }} }}\n  box {{ on click {{ pins.update(\"x\", p => p) }} }}\n  box {{ on click {{ pins.remove_key(\"a\"); pins.remove_key(\"a\") }} }}\n}}\n"
+        );
+        let seen = click_each_box(&src);
+        let none: Vec<String> = Vec::new();
+        assert_eq!(seen[0], ("1 0".to_string(), none.clone()), "{persist}");
+        // A miss: no error and no write (`on change` does not fire).
+        assert_eq!(seen[1], ("1 0".to_string(), none.clone()), "{persist}");
+        for (i, method) in [(2, "move"), (3, "update")] {
+            assert_eq!(seen[i].0, "1 0", "{persist}");
+            assert_eq!(
+                seen[i].1,
+                [format!("`{method}`: no item with this key")],
+                "{persist}"
+            );
+        }
+        // Removing a key twice in one handler: the second does nothing.
+        assert_eq!(seen[4], ("0 1".to_string(), none), "{persist}");
+    }
+}
+
+/// A number key is one key whatever its tag: `int` and `float` are not
+/// units, so `3` and `3.0` are one key (decisions.md dictionary; spec.md
+/// 6.5). Items whose `float` key was written `3` (held as `3.0`) are
+/// found by an `int` state holding 3, by `remove_key`, `move`,
+/// `update`, `push`'s duplicate check and `.contains`, on a keyed
+/// `state` and on a persisted one. Before, the keyed `state` missed
+/// them: the key kept the number's tag.
+#[test]
+fn remove_key_finds_a_key_whatever_its_number_tag() {
+    for persist in ["", " persist"] {
+        let src = format!(
+            "type Row {{ at: float; label: text }}\nstate rows: [Row] key at = [Row(at: 3, label: \"a\"), Row(at: 4, label: \"b\")]{persist}\nstate three = 3\nbar B {{\n  text join(\" \", rows.len, rows.contains(Row(at: three, label: \"c\")), rows.first?.label)\n  box {{ on click {{ rows.update(three, r => Row(at: r.at, label: \"c\")) }} }}\n  box {{ on click {{ rows.move(three, 1) }} }}\n  box {{ on click {{ rows.push(Row(at: three, label: \"d\")) }} }}\n  box {{ on click {{ rows.remove_key(three) }} }}\n}}\n"
+        );
+        let seen = click_each_box(&src);
+        let none: Vec<String> = Vec::new();
+        let texts: Vec<&str> = seen.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(
+            texts,
+            ["2 false a", "2 true c", "2 true b", "2 true b", "1 false b"],
+            "{persist}"
+        );
+        for (i, (_, errors)) in seen.iter().enumerate() {
+            if i == 3 {
+                assert_eq!(
+                    errors,
+                    &["`push`: an item with this key is already in the list"],
+                    "{persist}"
+                );
+            } else {
+                assert_eq!(errors, &none, "{persist} {i}");
+            }
+        }
+    }
 }
 
 /// Events go to the innermost handler; `propagate()` passes one on.

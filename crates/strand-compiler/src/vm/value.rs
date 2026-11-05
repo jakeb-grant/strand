@@ -812,7 +812,11 @@ pub fn hex(c: Color) -> String {
 }
 
 /// A value used as a hash key (keyed lists, `on change` identities).
-/// Floats compare by bits, so `NaN` keys are equal to themselves.
+/// Floats compare by bits, so `NaN` keys are equal to themselves. A
+/// number keeps its unit (`2px` and `2ch` are two keys), but `int` and
+/// `float` are one plain number, not units: `3` and `3.0` are one key,
+/// so a key a handler computes finds its item whatever tag the
+/// arithmetic left it (decisions.md dictionary).
 #[derive(Clone, Debug)]
 pub struct ValueKey(pub Value);
 
@@ -832,7 +836,9 @@ impl Hash for ValueKey {
 
 fn key_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
-        (Value::Num(x, u), Value::Num(y, v)) => u == v && norm(*x) == norm(*y),
+        (Value::Num(x, u), Value::Num(y, v)) => {
+            key_unit(*u) == key_unit(*v) && norm(*x) == norm(*y)
+        }
         (Value::List(x), Value::List(y))
         | (Value::Commas(x), Value::Commas(y))
         | (Value::Spaced(x), Value::Spaced(y)) => {
@@ -847,6 +853,14 @@ fn key_eq(a: &Value, b: &Value) -> bool {
     }
 }
 
+/// The unit a number keys by: `float` keys as `int`, both plain numbers.
+fn key_unit(u: Num) -> Num {
+    match u {
+        Num::Float => Num::Int,
+        u => u,
+    }
+}
+
 fn norm(x: f64) -> u64 {
     if x == 0.0 { 0 } else { x.to_bits() }
 }
@@ -857,7 +871,7 @@ fn key_hash<H: Hasher>(v: &Value, state: &mut H) {
         Value::Bool(b) => b.hash(state),
         Value::Num(n, u) => {
             norm(*n).hash(state);
-            u.hash(state);
+            key_unit(*u).hash(state);
         }
         Value::Text(t) => t.hash(state),
         Value::Color(c) => c.to_rgba8().hash(state),
@@ -1052,7 +1066,12 @@ mod tests {
         let mut set = HashSet::new();
         assert!(set.insert(ValueKey(Value::int(1))));
         assert!(!set.insert(ValueKey(Value::int(1))));
-        assert!(set.insert(ValueKey(Value::float(1.0))));
+        // `int` and `float` are one plain number: `1.0` is the key `1`,
+        // `1.5` another; a unit is a key of its own.
+        assert!(!set.insert(ValueKey(Value::float(1.0))));
+        assert!(set.contains(&ValueKey(Value::float(1.0))));
+        assert!(set.insert(ValueKey(Value::float(1.5))));
+        assert!(set.insert(ValueKey(Value::Num(1.0, Num::Px))));
         assert!(set.insert(ValueKey(Value::float(f64::NAN))));
         assert!(!set.insert(ValueKey(Value::float(f64::NAN))));
         assert!(set.insert(ValueKey(Value::text("a"))));

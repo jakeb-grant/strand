@@ -855,11 +855,13 @@ fn mutate(
             list.remove(at as usize);
         }
         "clear" => list.clear(),
+        // Forgetting a key the list does not hold does nothing, and
+        // writes nothing (decisions.md dictionary).
         "remove_key" => match find(&list, &arg(0)) {
             Some(i) => {
                 list.remove(i);
             }
-            None => return Err(fail("`remove_key`: no item with this key")),
+            None => return Ok(()),
         },
         "move" => match find(&list, &arg(0)) {
             Some(i) => {
@@ -937,6 +939,11 @@ fn mutate_keyed(
         "remove_key" | "move" | "update" => {
             let key = ValueKey(arg(0));
             if !has(&key)? {
+                // `remove_key` of a missing key does nothing; `move` and
+                // `update` of one are errors (decisions.md dictionary).
+                if method == "remove_key" {
+                    return Ok(());
+                }
                 return Err(fail(format!("`{method}`: no item with this key")));
             }
             match method {

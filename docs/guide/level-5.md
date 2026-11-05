@@ -620,7 +620,8 @@ with named fields. Build one with its name and named arguments:
 **`state pins: [Pin] key app = […]` is a keyed list.** `[Pin]` is a
 list of pins, and `key app` says each pin is known by its `app`. Change
 it with `pins.push(p)`, `pins.insert(i, p)`, `pins.remove_key(k)`,
-`pins.move(k, i)` and `pins.update(k, …)`. Because each item is known by
+`pins.move(k, i)` and `pins.update(k, …)`; removing a key that is not
+there does nothing. Because each item is known by
 its key, an icon keeps its place, its animation and anything it holds
 when the order changes, and glides to its new spot. `persist` keeps the
 list across restarts.

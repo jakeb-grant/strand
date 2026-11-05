@@ -141,7 +141,7 @@ A list of `T` items. `remove_key`, `move` and `update` are a keyed list's (`[T] 
 | `fn insert(at: int, item: T)` | Inserts `item` at `at` (handlers only). |
 | `fn remove(at: int)` | Removes the item at `at` (handlers only). |
 | `fn clear()` | Removes every item (handlers only). |
-| `fn remove_key(key: K)` | Removes the item with `key` (keyed lists, handlers only). |
+| `fn remove_key(key: K)` | Removes the item with `key`, and does nothing when there is none (keyed lists, handlers only). |
 | `fn move(key: K, to: int)` | Moves the item with `key` to `to` (keyed lists, handlers only). |
 | `fn update(key: K, f: fn(T) -> T)` | Replaces the item with `key` by `f` of it (keyed lists, handlers only). |
 

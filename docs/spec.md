@@ -1183,16 +1183,21 @@ monitor, the keyboard always).
   `for p in pins key p.app { … }`. A `for` over plain data without a
   key is a load error. A key is an identity, not an equality: a number
   key keeps its unit, so `2px` and `2ch` are two keys although
-  `2ch == 2px` (section 7.2).
+  `2ch == 2px` (section 7.2). `int` and `float` are not units: `3` and
+  `3.0` are one key, so a key computed by arithmetic finds its item
+  whichever of the two it is (decisions.md dictionary).
 - When `xs` changes, copies whose key stays are kept with their state
   and move to their new place (they glide there, section 6.6); copies
   whose key goes play `exit` and unmount; new keys mount and play
   `enter`.
 - `state xs: [T] key f = []` declares a keyed collection: each item's
   key is its field `f`. Handlers change it with `push`, `insert`,
-  `remove_key`, `move` and `update`. `.filter`, `.map`, `.take`,
-  `.sort_by` and `.fuzzy` on a keyed collection or a service list keep
-  keys and update incrementally.
+  `remove_key`, `move` and `update`. `remove_key` of a key the
+  collection does not hold does nothing, so forgetting an item is safe
+  to repeat; `move` and `update` of one are an error of the handler
+  (section 8.3), as `push` and `insert` of a key it already holds are.
+  `.filter`, `.map`, `.take`, `.sort_by` and `.fuzzy` on a keyed
+  collection or a service list keep keys and update incrementally.
 - A `list` container lays out and mounts only its visible rows
   (virtualisation is the container's job, not the loop's).
 - Rows that change above a `list`'s view keep the rows in view where
