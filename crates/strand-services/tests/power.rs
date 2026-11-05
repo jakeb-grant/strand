@@ -4,7 +4,9 @@
 //! (the older `net.hadess.PowerProfiles`). The profile read and followed,
 //! written through `ActiveProfile` (the mock's log shows each `Set`), the
 //! daemon restarting and switching names followed without the service
-//! restarting, and the daemon never started for the shell.
+//! restarting, the daemon never started for the shell, and a daemon that
+//! settles on another profile right after a write asked once more
+//! ([`settles_elsewhere`] stands in for it).
 
 mod support;
 
@@ -12,12 +14,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use strand_core::Runtime;
-use strand_services::power::{LEGACY, LEGACY_PATH, PPD, PPD_PATH, PowerProfile};
+use futures_lite::StreamExt;
+use strand_core::{Effect, Runtime};
+use strand_services::power::{LEGACY, LEGACY_PATH, PPD, PPD_PATH, PowerProfile, SETTLE};
 use strand_services::testing::{DbusMock, PrivateBus};
 use strand_services::{Builtin, Services, ToData};
 use support::*;
-use zbus::zvariant::Value;
+use zbus::zvariant::{OwnedValue, Value};
 
 const NEW: &str = "upower_power_profiles_daemon";
 const OLD: &str = "power_profiles_daemon";
@@ -49,6 +52,104 @@ fn until_set(mock: &DbusMock, path: &str, iface: &str, profile: &str) {
 fn write(rt: &Runtime, b: &Builtin, p: PowerProfile) {
     b.power.dynamic().write(rt, 0, &[], p.to_data()).unwrap();
     rt.flush();
+}
+
+/// The daemon's own `ActiveProfile`.
+fn active(tokio: &tokio::runtime::Runtime, conn: &zbus::Connection) -> String {
+    let reply = call(
+        tokio,
+        conn,
+        PPD,
+        PPD_PATH,
+        "org.freedesktop.DBus.Properties",
+        "Get",
+        &(PPD, "ActiveProfile"),
+    );
+    let v: OwnedValue = reply.body().deserialize().unwrap();
+    String::try_from(v).unwrap()
+}
+
+/// Stands in for power-profiles-daemon on firmware with no low-power
+/// profile (the owner's laptop, where `platform_profile_choices` lists
+/// only balanced and performance): `power-saver` set while on
+/// `performance` settles on `balanced` 80 ms later, the daemon reading its
+/// own write to the firmware back as a switch, while from `balanced` it
+/// takes. With `always`, every `power-saver` settles on `balanced`. The
+/// switch is the mock's `UpdateProperties`, so the mock's log holds only
+/// the shell's `Set`s. Watching from `from`, the profile it starts on.
+fn settles_elsewhere(
+    tokio: &tokio::runtime::Runtime,
+    conn: &zbus::Connection,
+    from: &str,
+    always: bool,
+) {
+    let conn = conn.clone();
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface("org.freedesktop.DBus.Properties")
+        .unwrap()
+        .member("PropertiesChanged")
+        .unwrap()
+        .path(PPD_PATH)
+        .unwrap()
+        .build();
+    let mut stream = tokio
+        .block_on(zbus::MessageStream::for_match_rule(rule, &conn, None))
+        .unwrap();
+    let mut prev = from.to_string();
+    tokio.spawn(async move {
+        while let Some(Ok(m)) = stream.next().await {
+            let Ok((_, changed, _)) = m
+                .body()
+                .deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>()
+            else {
+                continue;
+            };
+            let Some(new) = changed
+                .get("ActiveProfile")
+                .and_then(|v| String::try_from(v.try_clone().ok()?).ok())
+            else {
+                continue;
+            };
+            if new == "power-saver" && (always || prev == "performance") {
+                prev = "balanced".into();
+                let conn = conn.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                    let _ = conn
+                        .call_method(
+                            Some(PPD),
+                            PPD_PATH,
+                            Some("org.freedesktop.DBus.Mock"),
+                            "UpdateProperties",
+                            &(
+                                "",
+                                HashMap::from([("ActiveProfile", Value::from("balanced"))]),
+                            ),
+                        )
+                        .await;
+                });
+            } else {
+                prev = new;
+            }
+        }
+    });
+}
+
+/// Every value `power.profile` changes to, from now on.
+fn changes(rt: &Runtime, b: &Builtin) -> (Arc<Mutex<Vec<PowerProfile>>>, Effect) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let c = seen.clone();
+    let field = b.power.cells().profile;
+    let watch = rt.on_change(
+        move |rt| field.get(rt),
+        move |_, v: &PowerProfile| {
+            c.lock().unwrap().push(*v);
+            Ok(())
+        },
+    );
+    rt.flush();
+    (seen, watch)
 }
 
 fn profile(rt: &Runtime, b: &Builtin) -> PowerProfile {
@@ -331,5 +432,116 @@ fn power_never_starts_power_profiles_daemon() {
     );
     assert_eq!(b.power.cells().available.get_untracked(&rt), Ok(false));
     assert!(b.power.running());
+    s.shutdown();
+}
+
+/// The owner's laptop: power-saver asked while on performance settles on
+/// balanced, the daemon reading its own write to the firmware back. The
+/// service asks once more, which takes, and the shell never sees
+/// balanced. Without the second ask the profile ends on balanced, one
+/// `Set` in the log.
+#[test]
+fn a_profile_the_daemon_settles_away_from_is_asked_once_more() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some(ppd) = DbusMock::start(
+        &bus,
+        NEW,
+        true,
+        Some(r#"{"ActiveProfile":"performance"}"#),
+        PPD,
+    ) else {
+        return;
+    };
+    settles_elsewhere(&tokio, &conn, "performance", false);
+    let rt = Runtime::new();
+    let (s, b) = start(&rt, &bus);
+    assert_eq!(profile(&rt, &b), PowerProfile::Performance);
+    let (seen, _watch) = changes(&rt, &b);
+
+    write(&rt, &b, PowerProfile::PowerSaver);
+    until(&rt, &s, "power-saver asked twice", || sets(&ppd).len() == 2);
+    until(&rt, &s, "the daemon on power-saver", || {
+        active(&tokio, &conn) == "power-saver" && profile(&rt, &b) == PowerProfile::PowerSaver
+    });
+    assert!(
+        sets(&ppd).iter().all(|l| l.ends_with(&format!(
+            "Set {PPD_PATH} {PPD}.ActiveProfile \"power-saver\""
+        ))),
+        "{:?}",
+        sets(&ppd)
+    );
+    // Nothing more comes: the second ask took.
+    std::thread::sleep(Duration::from_millis(300));
+    s.pump(&rt);
+    rt.flush();
+    assert_eq!(profile(&rt, &b), PowerProfile::PowerSaver);
+    assert_eq!(active(&tokio, &conn), "power-saver");
+    assert_eq!(sets(&ppd).len(), 2, "{:?}", sets(&ppd));
+    assert_eq!(*seen.lock().unwrap(), [PowerProfile::PowerSaver]);
+    s.shutdown();
+}
+
+/// A daemon that settles elsewhere every time is asked once more only,
+/// then followed; and a switch it makes on its own once the window is
+/// over is followed, never asked away.
+#[test]
+fn a_daemon_that_settles_elsewhere_again_is_followed() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some(ppd) = DbusMock::start(&bus, NEW, true, None, PPD) else {
+        return;
+    };
+    settles_elsewhere(&tokio, &conn, "balanced", true);
+    let rt = Runtime::new();
+    let (s, b) = start(&rt, &bus);
+    assert_eq!(profile(&rt, &b), PowerProfile::Balanced);
+
+    write(&rt, &b, PowerProfile::PowerSaver);
+    until(&rt, &s, "power-saver asked twice", || sets(&ppd).len() == 2);
+    until(&rt, &s, "balanced followed", || {
+        active(&tokio, &conn) == "balanced" && profile(&rt, &b) == PowerProfile::Balanced
+    });
+    // Past the window: no third ask.
+    std::thread::sleep(SETTLE + Duration::from_millis(500));
+    s.pump(&rt);
+    rt.flush();
+    assert_eq!(profile(&rt, &b), PowerProfile::Balanced);
+    assert_eq!(sets(&ppd).len(), 2, "asked a third time: {:?}", sets(&ppd));
+
+    // A write that takes, then the daemon switching on its own (a key)
+    // once the window is over: followed.
+    write(&rt, &b, PowerProfile::Performance);
+    until_set(&ppd, PPD_PATH, PPD, "performance");
+    until(&rt, &s, "performance", || {
+        profile(&rt, &b) == PowerProfile::Performance
+    });
+    std::thread::sleep(SETTLE + Duration::from_millis(200));
+    mock(
+        &tokio,
+        &conn,
+        PPD,
+        PPD_PATH,
+        "UpdateProperties",
+        &(
+            "",
+            HashMap::from([("ActiveProfile", Value::from("balanced"))]),
+        ),
+    );
+    until(&rt, &s, "the daemon's own switch", || {
+        profile(&rt, &b) == PowerProfile::Balanced
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    s.pump(&rt);
+    rt.flush();
+    assert_eq!(profile(&rt, &b), PowerProfile::Balanced);
+    assert_eq!(active(&tokio, &conn), "balanced");
+    assert_eq!(sets(&ppd).len(), 3, "{:?}", sets(&ppd));
     s.shutdown();
 }

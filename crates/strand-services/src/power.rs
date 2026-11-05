@@ -22,7 +22,19 @@
 //! `brightness` and `bluetooth.powered` refuse writes. Holds
 //! (`HoldProfile`) are not this service's: a config declares them as a
 //! `from dbus` action.
+//!
+//! A daemon can settle on another profile right after a write it took
+//! (decisions.md power-reask): on firmware with no low-power profile,
+//! power-profiles-daemon writes `balanced` to the firmware for
+//! `power-saver` and then reads its own write back as a switch to
+//! `balanced`. So when the daemon reports another profile within
+//! [`SETTLE`] of a write, the written one is asked once more before the
+//! change is shown; if the daemon settles elsewhere again, that is
+//! followed.
 
+use std::time::Duration;
+
+use tokio::time::Instant;
 use zbus::zvariant::{OwnedValue, Str, Value};
 
 use crate::dbus::{self, Daemon, DaemonEvent, Props};
@@ -40,6 +52,11 @@ pub const PPD_PATH: &str = "/org/freedesktop/UPower/PowerProfiles";
 pub const LEGACY: &str = "net.hadess.PowerProfiles";
 /// Its object under [`LEGACY`].
 pub const LEGACY_PATH: &str = "/net/hadess/PowerProfiles";
+
+/// How long after a write the daemon settling on another profile counts
+/// as its quirk, so the written profile is asked once more (the module
+/// docs). A switch made later, by a key or another tool, is followed.
+pub const SETTLE: Duration = Duration::from_secs(2);
 
 /// A power-profiles-daemon profile (`power.profile`).
 #[derive(crate::Data, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -83,7 +100,9 @@ pub struct Power {
     /// `strand set power.profile performance`. Writable: the daemon is asked
     /// to switch (its `ActiveProfile`). A profile it does not offer
     /// (`profiles`), or a write while it is not `available`, leaves the
-    /// profile as it was. `balanced` while no daemon answers.
+    /// profile as it was. A daemon that settles on another profile within
+    /// two seconds of a write it took is asked once more, then followed.
+    /// `balanced` while no daemon answers.
     #[store(rw)]
     pub profile: PowerProfile,
     /// The profiles the machine offers, in the daemon's order: `for p in
@@ -212,6 +231,9 @@ impl Power {
                 return Ok(());
             }
             cx.ready();
+            // The profile a write just set, and until when the daemon
+            // settling on another is asked once more (the module docs).
+            let mut asked: Option<(PowerProfile, Instant)> = None;
             loop {
                 // A signal from either name's owner, and which name.
                 let signal = tokio::select! {
@@ -228,7 +250,9 @@ impl Power {
                     m = cx.recv() => match m {
                         None => return Ok(()),
                         Some(Msg::Write(w)) if w.field == "profile" => {
-                            let now = write(&conn, backend, &mut props, cx.state(), w.value()).await;
+                            let (now, sent) =
+                                write(&conn, backend, &mut props, cx.state(), w.value()).await;
+                            asked = sent.then(|| (now, Instant::now() + SETTLE));
                             if !cx.report(&w, |s| s.profile = now) {
                                 return Ok(());
                             }
@@ -251,7 +275,24 @@ impl Power {
                     continue;
                 }
                 dbus::apply_changed(&conn, from.name(), &mut props, c).await;
-                if !cx.update(|s| *s = Power::from_props(&props)) {
+                let mut state = Power::from_props(&props);
+                if let Some((wanted, by)) = asked
+                    && state.profile != wanted
+                {
+                    // Once only: what the daemon says next is followed.
+                    asked = None;
+                    if Instant::now() < by && state.profiles.contains(&wanted) {
+                        log::info!(
+                            "power: the daemon settled on {} after {} was set; asking once more",
+                            state.profile.ppd_name(),
+                            wanted.ppd_name()
+                        );
+                        if ask(&conn, from, &mut props, wanted).await.is_ok() {
+                            state = Power::from_props(&props);
+                        }
+                    }
+                }
+                if !cx.update(|s| *s = state) {
                     return Ok(());
                 }
             }
@@ -259,21 +300,22 @@ impl Power {
     }
 }
 
-/// A `profile` write: the profile to report. Sent only to a daemon that
-/// answers and offers it; refused, the profile as last read.
+/// A `profile` write: the profile to report, and whether the daemon took
+/// it. Sent only to a daemon that answers and offers it; refused, the
+/// profile as last read.
 async fn write(
     conn: &zbus::Connection,
     backend: Option<Backend>,
     props: &mut Props,
     state: &Power,
     wanted: Result<PowerProfile, crate::DataError>,
-) -> PowerProfile {
+) -> (PowerProfile, bool) {
     let current = state.profile;
     let wanted = match wanted {
         Ok(p) => p,
         Err(e) => {
             log::info!("power: not a profile: {e}");
-            return current;
+            return (current, false);
         }
     };
     let Some(b) = backend else {
@@ -281,7 +323,7 @@ async fn write(
             "power: no power-profiles-daemon to switch to {}",
             wanted.ppd_name()
         );
-        return current;
+        return (current, false);
     };
     if !state.profiles.contains(&wanted) {
         log::info!(
@@ -289,8 +331,22 @@ async fn write(
             wanted.ppd_name(),
             state.profiles
         );
-        return current;
+        return (current, false);
     }
+    match ask(conn, b, props, wanted).await {
+        Ok(()) => (wanted, true),
+        Err(()) => (Power::from_props(props).profile, false),
+    }
+}
+
+/// Set the daemon's `ActiveProfile` to `wanted`, and put it in `props` once
+/// the daemon takes it; a refusal is logged.
+async fn ask(
+    conn: &zbus::Connection,
+    b: Backend,
+    props: &mut Props,
+    wanted: PowerProfile,
+) -> Result<(), ()> {
     let name = wanted.ppd_name();
     match dbus::set(
         conn,
@@ -308,11 +364,11 @@ async fn write(
             if let Ok(v) = OwnedValue::try_from(Value::from(Str::from(name))) {
                 props.insert("ActiveProfile".into(), v);
             }
-            wanted
+            Ok(())
         }
         Err(e) => {
             log::warn!("power: the daemon refused {name}: {e}");
-            Power::from_props(props).profile
+            Err(())
         }
     }
 }
