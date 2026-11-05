@@ -6004,3 +6004,160 @@ fn a_panel_whose_place_may_change_lists_its_places() {
     let boxes = shell.scene.of_kind(NodeKind::Box);
     assert_eq!(shell.scene.prop(boxes[0], Prop::ShadowRoom), None);
 }
+
+/// (panel-change-closed) A panel's own `on change` sees a change made in
+/// the tick that opens it, the first time it opens and every time after,
+/// also when that tick's writes put back the value it had when it last
+/// closed (the launcher's `on hide` sends it home meanwhile), and when
+/// the panel opens through another handler (`open` makes it `shown`).
+#[test]
+fn a_panels_on_change_sees_the_tick_that_opens_it() {
+    let src = "enum View { home, themes, apps }
+export state open = false
+export state themes_key = false
+export state apps_key = false
+state shown = false
+state view: View = home
+state held = false
+state runs = 0
+on change themes_key { view = themes; open = true }
+on change apps_key { view = apps; open = true }
+on change open { shown = open }
+panel Launcher {
+  open: <-> shown
+  on hide { open = false; view = home }
+  on change view { held = view == themes; runs += 1 }
+  text \"x\"
+}
+";
+    let mut shell = boot(&[("l.strand", src)], |_, _| {});
+    let get = |shell: &Shell, n: &str| shell.inst.value_of("l", n).unwrap();
+    // Escape or a click away: the panel writes its `open` false.
+    let close = |shell: &mut Shell| {
+        let panel = shell.scene.of_kind(NodeKind::Panel)[0];
+        shell
+            .inst
+            .write(panel, Prop::Open, PropValue::Bool(false))
+            .unwrap();
+        shell.flush();
+        assert_eq!(get(shell, "open"), Value::Bool(false));
+        shell
+            .inst
+            .set_value("l", "held", Value::Bool(false))
+            .unwrap();
+        shell.flush();
+    };
+    // The first open: the handler is there from boot.
+    shell.inst.set("l.themes_key", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(get(&shell, "held"), Value::Bool(true), "the first open");
+    assert_eq!(get(&shell, "runs"), Value::int(1));
+    // Closed: `on hide` sends it home, which runs nothing.
+    close(&mut shell);
+    assert_eq!(get(&shell, "runs"), Value::int(1), "closed, home");
+    // Opened on the page it closed on: home to themes in that tick.
+    shell.inst.set("l.themes_key", Value::Bool(false)).unwrap();
+    shell.flush();
+    assert_eq!(get(&shell, "held"), Value::Bool(true), "reopened on themes");
+    assert_eq!(get(&shell, "runs"), Value::int(2));
+    close(&mut shell);
+    shell.inst.set("l.apps_key", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(get(&shell, "held"), Value::Bool(false), "on apps");
+    assert_eq!(get(&shell, "runs"), Value::int(3));
+    close(&mut shell);
+    shell.inst.set("l.themes_key", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(get(&shell, "held"), Value::Bool(true), "on themes again");
+    assert_eq!(get(&shell, "runs"), Value::int(4));
+}
+
+/// (panel-change-closed) A closed panel's handlers do not run, and what
+/// changed while it was closed is not run late when it opens: its own
+/// `on change`, its debounced one and one in an element of it (mounted
+/// once it has shown) each take the value as it is. Opening it in a
+/// later tick runs nothing; a change while it is open runs them all.
+#[test]
+fn a_closed_panels_on_change_runs_nothing_late() {
+    let src = "export state open = false
+export state x = 0
+state body = 0
+state later = 0
+state inner = 0
+panel P {
+  open: <-> open
+  on change x { body += 1 }
+  on change x after 1s { later += 1 }
+  box { on change x { inner += 1 } }
+}
+";
+    let mut shell = boot(&[("p.strand", src)], |_, _| {});
+    let runs =
+        |shell: &Shell| ["body", "later", "inner"].map(|n| shell.inst.value_of("p", n).unwrap());
+    let none = [Value::int(0), Value::int(0), Value::int(0)];
+    shell.inst.set("p.x", Value::int(1)).unwrap();
+    shell.at(0.1);
+    shell.at(2.0);
+    assert_eq!(runs(&shell), none, "closed since boot");
+    shell.inst.set("p.open", Value::Bool(true)).unwrap();
+    shell.at(2.1);
+    shell.at(4.0);
+    assert_eq!(runs(&shell), none, "opened later");
+    shell.inst.set("p.open", Value::Bool(false)).unwrap();
+    shell.at(4.1);
+    shell.inst.set("p.x", Value::int(2)).unwrap();
+    shell.at(4.2);
+    shell.inst.set("p.open", Value::Bool(true)).unwrap();
+    shell.at(4.3);
+    shell.at(6.0);
+    assert_eq!(runs(&shell), none, "changed while closed, opened later");
+    shell.inst.set("p.x", Value::int(3)).unwrap();
+    shell.at(6.1);
+    shell.at(8.0);
+    let one = [Value::int(1), Value::int(1), Value::int(1)];
+    assert_eq!(runs(&shell), one, "changed while open");
+}
+
+/// (panel-change-closed) A debounced `on change` of a panel's body, and
+/// one in an element of it once it has shown, see a change made in the
+/// tick that opens it, as its plain `on change` does (that one from the
+/// first open: an element's handler mounts with it, so the first open
+/// is its first value).
+#[test]
+fn a_panels_handlers_see_the_tick_that_opens_it() {
+    let src = "export state open = false
+export state x = 0
+export state go = 0
+state body = 0
+state later = 0
+state inner = 0
+on change go { x = go; open = true }
+panel P {
+  open: <-> open
+  on change x { body += 1 }
+  on change x after 1s { later += 1 }
+  box { on change x { inner += 1 } }
+}
+";
+    let mut shell = boot(&[("p.strand", src)], |_, _| {});
+    let runs = |shell: &Shell| {
+        ["body", "later", "inner"].map(|n| {
+            shell
+                .inst
+                .value_of("p", n)
+                .unwrap()
+                .as_f64()
+                .unwrap_or(-1.0)
+        })
+    };
+    shell.inst.set("p.go", Value::int(1)).unwrap();
+    shell.at(0.1);
+    shell.at(2.0);
+    assert_eq!(runs(&shell), [1.0, 1.0, 0.0], "the first open");
+    shell.inst.set("p.open", Value::Bool(false)).unwrap();
+    shell.at(2.1);
+    shell.inst.set("p.go", Value::int(2)).unwrap();
+    shell.at(2.2);
+    shell.at(4.0);
+    assert_eq!(runs(&shell), [2.0, 2.0, 1.0], "opened again");
+}

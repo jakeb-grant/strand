@@ -1588,6 +1588,12 @@ proof  = "crates/strand-compiler/tests/instantiate.rs::on_change_skips_boot_and_
 
 [[claim]]
 page   = "site/concepts/state.md"
+text   = "A closed panel's handlers wait, and what changed while it was closed is not run late. A change made in the tick that opens it is seen"
+source = ['docs/spec.md "What changed while it was closed is not run late."', 'docs/spec.md "once the surface opens it runs for a change made in the tick that opens it"', "docs/decisions.md#panel-change-closed"]
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_panels_on_change_sees_the_tick_that_opens_it; crates/strand-compiler/tests/instantiate.rs::a_closed_panels_on_change_runs_nothing_late"
+
+[[claim]]
+page   = "site/concepts/state.md"
 text   = "runs once, after its condition has held"
 source = ['docs/spec.md "**`after T while c { … }`** is one-shot:"', 'docs/spec.md "after `c` has held for a total of `T`."']
 proof  = "crates/strand-compiler/tests/instantiate.rs::after_while_pauses_and_expires; crates/strand-core/tests/handlers.rs::after_while_pauses_and_resumes"

@@ -1789,14 +1789,19 @@ impl Ctx {
     }
 
     /// A surface's children. Its own `on show`, `on hide` (and other
-    /// element events) stay live; the rest is mounted the first time the
-    /// surface is shown, and the services its body reads are acquired
-    /// only while it is shown. The instance sends `show` when `open`
-    /// turns true (or at mount for a surface without `open`) and `hide`
-    /// when it turns false.
+    /// element events) stay live; the `on change` handlers written in
+    /// its body are mounted with it, frozen while it is closed; the rest
+    /// is mounted the first time the surface is shown, and the services
+    /// its body reads are acquired only while it is shown. The instance
+    /// sends `show` when `open` turns true (or at mount for a surface
+    /// without `open`) and `hide` when it turns false.
     ///
     /// Hidden, a `bar`'s, `panel`'s or `lock`'s content is frozen (state
-    /// kept, nothing evaluated, its nodes left on the scene). A `popup`'s
+    /// kept, nothing evaluated, its nodes left on the scene), except that
+    /// its `on change` handlers keep up with what they watch without
+    /// running ([`Runtime::suspend_closed`]): a change made while it is
+    /// closed is not run when it opens, and one made in the tick that
+    /// opens it is (decisions.md panel-change-closed). A `popup`'s
     /// is unmounted, as the schema's `on_demand` says: its nodes leave
     /// the scene and its scopes go, but the `state`s of the components
     /// in it are kept ([`Ctx::keep_cells`]) and bound again when it opens
@@ -1836,6 +1841,18 @@ impl Ctx {
                 }
             });
         }
+        // (panel-change-closed) The `on change` handlers of the body
+        // itself are mounted now, frozen while it is closed, so the tick
+        // that first opens it changes what they watch as any later one
+        // does. A popup's content mounts each time it opens, and the
+        // lock's logic is its own (`lock_logic`).
+        let (early, content): (Vec<Node>, Vec<Node>) = if on_demand || is_lock {
+            (Vec::new(), content)
+        } else {
+            content.into_iter().partition(
+                |n| matches!(n, Node::Handler(h) if matches!(h.event, Event::Change { .. })),
+            )
+        };
         let services = services.unwrap_or_default();
         let content = Arc::new(content);
         let inner = self.em.borrow_mut().new_frag(Some(frag), None);
@@ -1847,6 +1864,14 @@ impl Ctx {
         let block = Rc::new(Cell::new(block));
         let keep = on_demand.then(|| rt.scope(|_| ()).0);
         let token = self.hold(rt, services);
+        if !early.is_empty() {
+            let early = Arc::new(early);
+            let _ = rt.with_owner(block.get().id(), |rt| {
+                self.mount_nodes(rt, &early, env, inner, Some(&ec));
+            });
+        }
+        // Whether `block` is suspended as closed (`suspend_closed`).
+        let frozen = Rc::new(Cell::new(false));
         let mounted = Rc::new(Cell::new(false));
         let blocked = Rc::new(Cell::new(false));
         let shown: Rc<Cell<Option<bool>>> = Rc::default();
@@ -1875,15 +1900,21 @@ impl Ctx {
                 if blocked.replace(false) {
                     me.block_services(rt, block.get().id(), false);
                 }
+                if frozen.replace(false) {
+                    rt.resume(block.get().id());
+                }
                 if !mounted.replace(true) {
                     let _ = rt.with_owner(block.get().id(), |rt| {
                         me.mount_nodes(rt, &content, &env, inner, Some(&ec));
                     });
-                } else {
-                    rt.resume(block.get().id());
                 }
                 me.route(rt, ec.scene, "show", Vec::new(), None);
             } else {
+                // Closed before anything else mounted: its body's
+                // `on change` handlers wait, keeping up.
+                if !mounted.get() && keep.is_none() && !is_lock && !frozen.replace(true) {
+                    let _ = rt.suspend_closed(block.get().id());
+                }
                 if mounted.get() {
                     match keep {
                         Some(keep) => {
@@ -1902,7 +1933,14 @@ impl Ctx {
                             }
                         }
                         None => {
-                            let _ = rt.suspend(block.get().id());
+                            // The lock's content is frozen as before: its
+                            // handlers are its logic's (`lock_logic`).
+                            if !frozen.replace(true) {
+                                let _ = match is_lock {
+                                    true => rt.suspend(block.get().id()),
+                                    false => rt.suspend_closed(block.get().id()),
+                                };
+                            }
                             // Components in the content let go of their
                             // services too, and nested surfaces of theirs.
                             if !blocked.replace(true) {
@@ -4503,6 +4541,9 @@ impl Ctx {
                             Ok(())
                         });
                         self.declare_reads(rt, effect.id(), &[d], env, &[]);
+                        // (panel-change-closed) In a closed surface it
+                        // still makes its `on change`, which keeps up.
+                        rt.keep_up_while_closed(effect.id());
                         effect.id()
                     }
                 };

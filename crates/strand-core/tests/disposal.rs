@@ -718,6 +718,81 @@ fn frozen_state_coalesces_to_its_latest_value() {
     );
 }
 
+/// (panel-change-closed) A closed surface's scope (`suspend_closed`):
+/// its effects stay frozen, but an `on change` keeps up with what it
+/// watches, running nothing, so a change made while closed is not run
+/// on resume and one made in the flush that resumes it is; a scope only
+/// suspended (a fault) still runs the held change once on resume.
+#[test]
+fn a_closed_scopes_on_change_keeps_up_and_sees_the_flush_that_opens_it() {
+    let rt = Runtime::new();
+    let x = rt.signal(0);
+    let open = rt.signal(false);
+    let seen = rt.signal(0);
+    let fired = Rc::new(RefCell::new(Vec::new()));
+    let caught = Rc::new(RefCell::new(Vec::new()));
+    let f = fired.clone();
+    let (closed, ()) = rt.scope(|rt| {
+        rt.effect(move |rt| seen.set(rt, x.get(rt)?));
+        rt.on_change(
+            move |rt| x.get(rt),
+            move |_, v| {
+                f.borrow_mut().push(*v);
+                Ok(())
+            },
+        );
+    });
+    let c = caught.clone();
+    let (faulted, ()) = rt.scope(|rt| {
+        rt.on_change(
+            move |rt| x.get(rt),
+            move |_, v| {
+                c.borrow_mut().push(*v);
+                Ok(())
+            },
+        );
+    });
+    rt.flush();
+    rt.suspend_closed(closed.id()).unwrap();
+    rt.suspend(faulted.id()).unwrap();
+    // Changed while closed: nothing runs, the baseline follows.
+    x.set(&rt, 1).unwrap();
+    rt.flush();
+    x.set(&rt, 2).unwrap();
+    rt.flush();
+    assert_eq!(seen.get(&rt), Ok(0), "the rest stays frozen");
+    assert!(fired.borrow().is_empty());
+    // Opened in a later flush: nothing to run.
+    rt.resume(closed.id());
+    rt.flush();
+    assert!(
+        fired.borrow().is_empty(),
+        "not run late: {:?}",
+        fired.borrow()
+    );
+    assert_eq!(seen.get(&rt), Ok(2), "the rest catches up");
+    rt.suspend_closed(closed.id()).unwrap();
+    x.set(&rt, 0).unwrap();
+    rt.flush();
+    // A change in the flush that opens it, back to the value it last ran
+    // with while open: compared with the flush before, it runs.
+    x.set(&rt, 2).unwrap();
+    let opener = rt.effect(move |rt| {
+        if open.get(rt)? {
+            rt.resume(closed.id());
+        }
+        Ok(())
+    });
+    let _ = opener;
+    open.set(&rt, true).unwrap();
+    rt.flush();
+    assert_eq!(*fired.borrow(), vec![2], "the opening flush's change");
+    // The faulted scope's held change runs once on resume, as before.
+    rt.resume(faulted.id());
+    rt.flush();
+    assert_eq!(*caught.borrow(), vec![2], "a fault's freeze catches up");
+}
+
 #[test]
 fn an_effect_moved_out_of_a_suspended_scope_is_not_left_deaf() {
     let rt = Runtime::new();

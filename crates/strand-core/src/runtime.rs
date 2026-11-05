@@ -377,6 +377,16 @@ pub(crate) struct Inner {
     /// (each once, in the order they were held).
     held: RefCell<Vec<NodeId>>,
     held_set: RefCell<HashSet<NodeId>>,
+    /// The suspended scopes that are a closed surface's
+    /// ([`Runtime::suspend_closed`]), a subset of `suspended`.
+    closed: RefCell<HashSet<NodeId>>,
+    /// Sinks that keep up with what they read while only closed scopes
+    /// hold them (`on change` effects, [`Runtime::keep_up_while_closed`]):
+    /// at the end of each flush they run, an `on change` only taking its
+    /// baseline (`keeping_up`).
+    keeps_up: RefCell<HashSet<NodeId>>,
+    /// True while the flush's last pass runs a held `keeps_up` sink.
+    keeping_up: Cell<bool>,
     /// Scheduling ranks (see `order`): absent means 0. A map, not a node
     /// field: only nodes downstream of a handler's writes (and `on change`
     /// handlers) have one, and the node stays small.
@@ -549,6 +559,9 @@ impl Runtime {
                 suspended: RefCell::new(HashSet::new()),
                 held: RefCell::new(Vec::new()),
                 held_set: RefCell::new(HashSet::new()),
+                closed: RefCell::new(HashSet::new()),
+                keeps_up: RefCell::new(HashSet::new()),
+                keeping_up: Cell::new(false),
                 ranks: RefCell::new(foldhash::HashMap::default()),
                 writes: RefCell::new(foldhash::HashMap::default()),
                 learn_queue: RefCell::new(Vec::new()),
@@ -1456,6 +1469,14 @@ impl Runtime {
                 }
             }
         }
+        for set in [&self.inner.closed, &self.inner.keeps_up] {
+            let mut set = set.borrow_mut();
+            if !set.is_empty() {
+                for &n in &order {
+                    set.remove(&n);
+                }
+            }
+        }
         {
             let mut held = self.inner.held.borrow_mut();
             if !held.is_empty() {
@@ -1617,9 +1638,114 @@ impl Runtime {
     /// sleeps). Calls the wake hook when it re-queued work or released a
     /// timer or sleep.
     pub fn resume(&self, id: NodeId) {
+        self.inner.closed.borrow_mut().remove(&id);
         if self.inner.suspended.borrow_mut().remove(&id) {
             self.release_held(true);
         }
+    }
+
+    /// Suspend `id` as a closed surface's content ([`Runtime::suspend`]),
+    /// with one difference: what keeps up while closed (every `on change`
+    /// effect, and sinks marked [`Runtime::keep_up_while_closed`]) is not
+    /// held until [`Runtime::resume`] but runs at the end of each flush
+    /// that dirtied it, an `on change` only taking what it watches as its
+    /// baseline. So a change made while it is closed is never run late,
+    /// and one made in the flush that resumes it is compared with the
+    /// value of the flush before (spec.md 5.1, decisions.md
+    /// panel-change-closed). Under a scope also suspended for a fault (a
+    /// component frozen inside the surface) everything is held, as
+    /// [`Runtime::suspend`] holds it.
+    pub fn suspend_closed(&self, id: NodeId) -> Result<(), Error> {
+        self.suspend(id)?;
+        self.inner.closed.borrow_mut().insert(id);
+        Ok(())
+    }
+
+    /// Mark the sink `id` to keep up while closed scopes hold it (see
+    /// [`Runtime::suspend_closed`]): it runs, at the end of each flush that
+    /// dirtied it, as it would if nothing held it. For an effect that
+    /// makes an `on change` (a debounce following a reactive duration),
+    /// so the `on change` exists before its surface opens.
+    pub fn keep_up_while_closed(&self, id: NodeId) {
+        if self.exists(id) {
+            self.inner.keeps_up.borrow_mut().insert(id);
+        }
+    }
+
+    /// True while a sink that keeps up while closed runs at the end of a
+    /// flush ([`Runtime::suspend_closed`]): an `on change` takes its
+    /// baseline then and runs no handler.
+    pub(crate) fn keeping_up(&self) -> bool {
+        self.inner.keeping_up.get()
+    }
+
+    /// True if `id` is suspended only by closed surfaces' scopes
+    /// ([`Runtime::suspend_closed`]), none suspended otherwise.
+    fn closed_only(&self, id: NodeId) -> bool {
+        let suspended = self.inner.suspended.borrow();
+        let closed = self.inner.closed.borrow();
+        let nodes = self.inner.nodes.borrow();
+        let mut any = false;
+        let mut cur = Some(id);
+        while let Some(c) = cur {
+            if suspended.contains(&c) {
+                if !closed.contains(&c) {
+                    return false;
+                }
+                any = true;
+            }
+            cur = nodes.get(c).and_then(|n| n.owner);
+        }
+        any
+    }
+
+    /// The flush's last pass: run the held sinks that keep up while closed
+    /// (each once per flush, `done`), an `on change` taking its baseline.
+    /// Returns whether one ran (it may have made new work: a debounce's
+    /// `on change`).
+    fn keep_up_closed(
+        &self,
+        done: &mut foldhash::HashSet<NodeId>,
+        errors: &mut Vec<(NodeId, Error)>,
+    ) -> bool {
+        if self.inner.closed.borrow().is_empty() || self.inner.keeps_up.borrow().is_empty() {
+            return false;
+        }
+        let due: Vec<NodeId> = {
+            let keeps = self.inner.keeps_up.borrow();
+            self.inner
+                .held
+                .borrow()
+                .iter()
+                .copied()
+                .filter(|n| keeps.contains(n) && !done.contains(n))
+                .collect()
+        };
+        let due: Vec<NodeId> = due
+            .into_iter()
+            .filter(|&n| self.is_stale(n) && self.closed_only(n))
+            .collect();
+        if due.is_empty() {
+            return false;
+        }
+        {
+            let mut held = self.inner.held.borrow_mut();
+            let mut held_set = self.inner.held_set.borrow_mut();
+            held.retain(|n| !due.contains(n));
+            for n in &due {
+                held_set.remove(n);
+            }
+        }
+        for &n in &due {
+            done.insert(n);
+            self.inner.keeping_up.set(true);
+            let r = self.update_if_necessary(n);
+            self.inner.keeping_up.set(false);
+            if let Err(e) = r {
+                errors.push((n, e));
+            }
+        }
+        true
     }
 
     /// Re-queue held work that is no longer suspended (after a resume, a
@@ -1844,6 +1970,8 @@ impl Runtime {
         // one woken while sinks run waits for the next flush (its write
         // could not be ordered before readers that already ran).
         let mut start = true;
+        // Sinks run by `keep_up_closed` in this flush (each once).
+        let mut kept_up: foldhash::HashSet<NodeId> = foldhash::HashSet::default();
         loop {
             self.learn_queued();
             for id in self.take_ready(start) {
@@ -1868,6 +1996,12 @@ impl Runtime {
             }
             self.queue_pending(&mut queue);
             let Some(Reverse((rank, class, seq, id))) = queue.pop() else {
+                // Settled: what keeps up while its surface is closed takes
+                // the flush's values (a debounce may make an `on change`,
+                // which is queued, held, then taken here too).
+                if self.keep_up_closed(&mut kept_up, &mut errors) {
+                    continue;
+                }
                 break;
             };
             if class != CLASS_SINK {

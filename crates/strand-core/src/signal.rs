@@ -273,6 +273,16 @@ impl Runtime {
             if rt.current_writer().is_some_and(|me| rt.take_rebaseline(me)) {
                 prev = None;
             }
+            // Held by a closed surface (`Runtime::suspend_closed`): keep
+            // up with what it watches, running nothing. A value it cannot
+            // read now keeps the last baseline; the run once it opens
+            // reports it.
+            if rt.keeping_up() {
+                if let Ok(now) = snap(rt) {
+                    prev = Some(now);
+                }
+                return Ok(());
+            }
             let now = snap(rt)?;
             // `None`: the first value (boot or reload).
             let r = if prev.as_ref().is_some_and(|p| fire(p, &now)) {
@@ -299,6 +309,7 @@ impl Runtime {
         // Fires after the tick's other sinks settle: once per outside
         // write, with final values (see `Runtime::flush`).
         self.set_late(effect.id);
+        self.keep_up_while_closed(effect.id);
         effect
     }
 }

@@ -296,6 +296,25 @@ monitor, the keyboard always).
   (on a `window`, only the compositor's close and `w.close()`, below).
   A click on the surface's own buffer where it takes no input (beside a
   panel's box on the output it is stretched across) is a click away.
+- **A closed surface's handlers wait.** While a `bar`, `panel`, `osd`
+  or `window` is closed, only its own events run (`on show`, `on hide`,
+  `on key`, and the other events of the surface itself). Its
+  `on change`, service and timer handlers, and those of its elements,
+  do not run, and its timers pause. What changed while it was closed
+  is not run late. An `on change` keeps up with what it watches, so
+  once the surface opens it runs for a change made in the tick that
+  opens it, compared with the value at the end of the tick before, and
+  not for one made earlier or in the tick that closed it. A handler
+  that sets `view` and `open` together is seen by the panel's
+  `on change view`, the first time it opens too: the `on change`
+  handlers written in a surface's body exist from the start. Its
+  elements and components, and their handlers, mount the first time it
+  opens, so an `on change` in one of them takes the value it mounts
+  with as its first (section 8.4). A service event that comes while
+  the surface is closed, once its body has mounted, is delivered when
+  it opens (the latest 256 per handler). A `popup` mounts its content
+  each time it opens, and the `lock`'s handlers run as below.
+  (decisions.md panel-change-closed)
 - **`popup { … }`** is an element, not a top-level surface: it is
   anchored to its parent element, shows while its `open` is true, nests
   (a popup may hold popups), and has `on dismiss` (Escape or a click
@@ -1813,7 +1832,9 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   runs on a new copy, and `on change audio.sink.volume, x` runs when `x`
   changes in the same tick as a sink switch. The watched expressions
   must be reactive (state, settings, services, or `let`s that read
-  them).
+  them). In a closed surface it does not run, and when the surface
+  opens it runs only for a change made in the tick that opens it
+  (section 5.1).
 - **`on change a after T { … }`** debounces: it runs once, `T` after
   the last change.
 - **`after T while c { … }`** is one-shot: it runs at most once per
