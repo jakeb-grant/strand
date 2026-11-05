@@ -690,8 +690,9 @@ monitor, the keyboard always).
 - `type Pin { app: AppId; label: text }` declares a record. Records are
   built with call syntax and named arguments: `Pin(app: a, label: "x")`.
   An optional field may be left out (it is null), and so may a list
-  field (it is empty), so a record that gains either, builtin or your
-  own, stays buildable as before; every other field is needed. Fields
+  or dictionary field (it is empty), so a record that gains one,
+  builtin or your own, stays buildable as before; every other field is
+  needed. Fields
   are read with `.`.
 
 ### 5.5 Functions
@@ -1207,6 +1208,8 @@ monitor, the keyboard always).
   collection does not hold does nothing, so forgetting an item is safe
   to repeat; `move` and `update` of one are an error of the handler
   (section 8.3), as `push` and `insert` of a key it already holds are.
+  `.filter`, `.map`, `.take`, `.sort_by` and `.fuzzy` on a keyed
+  collection or a service list keep keys and update incrementally.
 - `xs.get(k)` reads the item whose key is `k`, or `null` when there is
   none: `tray.items.get(id)`, `pins.get(app)`. It is for keyed lists: a
   service's (by its items' own key), a `state`'s with `key f`, and a
@@ -1216,8 +1219,6 @@ monitor, the keyboard always).
   load error (`check::missing_key`). `xs[i]` stays a position on every
   list: a key never goes in a list's brackets (decisions.md
   dictionary).
-  `.filter`, `.map`, `.take`, `.sort_by` and `.fuzzy` on a keyed
-  collection or a service list keep keys and update incrementally.
 - A dictionary's `m.entries` is keyed by each entry's `key` (section
   7.1): `for e in m.entries { … }` keeps a row per key across writes. A
   changed value updates its row, a new key mounts at its place in key
@@ -1738,7 +1739,11 @@ monitor, the keyboard always).
     `check::dict_value`, since a missing key already reads `null`.
   - `[k: v, …]` takes its type from the type expected, its keys checked
     as `K` and values as `V`. Without one, its keys and values each
-    join as a list's items do (`[1: "a"]` is an `[int: text]`). `[]`
+    join as a list's items do (`[1: "a"]` is an `[int: text]`), and the
+    dictionary keeps that type: it does not widen as an untyped whole
+    number list does (section 5.3), so writing `0.5` into `state m =
+    ["a": 1]` is a type mismatch whose help declares `state m: [text:
+    float] = ["a": 1]`. `[]`
     is the empty dictionary wherever one is expected; an untyped `state
     m = []` is a list, and indexing one with a `text` key is
     `check::dict_untyped`, whose help declares it: `state m: [text: V]
@@ -1754,7 +1759,10 @@ monitor, the keyboard always).
     since the entry may be missing: write `m[k] = (m[k] ?? 0) + 1`.
     `m[k].f = x` when `k` is absent is an error of the handler (section
     8.3), "no entry for this key", and changes nothing, as `xs[i].f =
-    x` past a list's end is. `m = m.filter(e => …)` replaces it whole.
+    x` past a list's end is. A mutation through `?.` skips a null and
+    writes nothing: `m[k]?.push(x)` on an absent entry never creates it,
+    and `m?.clear()` or `m?.remove(k)` on a null `[K: V]?` leaves it
+    null. `m = m.filter(e => …)` replaces it whole.
   - Its entries are always in key order, whatever order they were
     written in: ints by number, `text`s and paths by Unicode scalar,
     enums in their declaration order, `false` before `true`. `keys`,
@@ -1778,8 +1786,9 @@ monitor, the keyboard always).
     as `Match<T>` can; a config's own `type Entry` takes the name
     instead.
   - Binding a prop two-way to an entry (`value: <-> m[k]`) is
-    `check::dict_two_way`: bind a `state` and write the entry `on
-    change`. A service field, an action's parameter or a command's
+    `check::dict_two_way`: bind a `state` that starts from the entry
+    (`state v = m[k] ?? 0.5`, `value: <-> v`) and write the entry `on
+    change v { m[k] = v }`. A service field, an action's parameter or a command's
     output cannot hold a dictionary yet (`check::dict_service`).
 - A list's members (`len`, `filter`, `find`, `push`, …) are listed in
   docs/reference/functions.md under `[T]`. `xs[i]` counts from 0 and

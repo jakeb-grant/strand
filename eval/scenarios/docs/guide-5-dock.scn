@@ -30,7 +30,7 @@ bar Dock {
   row { grow: 1; justify: center; align: center; gap: $space.2
     on drop(p: Pin, at: int) { pins.move(p.app, at) }
     for p in pins key p.app {
-      let app = apps.all.find(a => a.id == p.app)   // the installed app, or null
+      let app = apps.all.get(p.app)   // the installed app, or null
       image app?.icon ?? "application-x-executable" { size: 44; drag: p; tooltip: p.label
         enter { scale: 0; opacity: 0 }
         when app == null { opacity: 0.4 }

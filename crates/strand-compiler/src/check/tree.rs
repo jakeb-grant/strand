@@ -2322,7 +2322,8 @@ impl<'a> Checker<'a> {
                     "an entry may be missing",
                 )
                 .help = Some(format!(
-                    "bind a `state` and write the entry when it changes: `{name}: <-> v` and \
+                    "bind a `state` that starts from the entry, and write the entry when it \
+                     changes: `state v = {entry} ?? …`, `{name}: <-> v` and \
                      `on change v {{ {entry} = v }}`"
                 ));
             } else if self.widen(&h, &ps.ty) {
@@ -2699,6 +2700,9 @@ impl<'a> Checker<'a> {
                     self.record_value_sources(id, &h);
                 }
                 let untyped = declared.is_none();
+                if untyped && matches!(h.ty, Ty::Dict(..)) {
+                    self.untyped_dicts.insert(id);
+                }
                 let mut final_ty = declared.unwrap_or_else(|| h.ty.clone());
                 // (M6) An untyped `state` whose value is a whole number it
                 // did not get from a literal (`state size = w`, `state cur

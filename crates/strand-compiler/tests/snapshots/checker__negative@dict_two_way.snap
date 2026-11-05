@@ -12,5 +12,5 @@ check::dict_two_way
    ·                              ╰── an entry may be missing
  7 │ }
    ╰────
-  help: bind a `state` and write the entry when it changes: `value: <-> v` and `on change v
-        { levels["main"] = v }`
+  help: bind a `state` that starts from the entry, and write the entry when it changes: `state v =
+        levels["main"] ?? …`, `value: <-> v` and `on change v { levels["main"] = v }`

@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::nullable
+
+  × this assignment expects `text`, but this may be null
+    ╭─[dict_assign_optional.strand:9:35]
+  8 │ component C {
+  9 │   box { on click { last_win[ws] = picked } }
+    ·                                   ───┬──
+    ·                                      ╰── this is `text?`
+ 10 │ }
+    ╰────
+  help: give a fallback: `… ?? default`

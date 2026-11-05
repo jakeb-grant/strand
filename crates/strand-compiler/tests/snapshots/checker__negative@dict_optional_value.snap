@@ -5,22 +5,63 @@ expression: rendered
 check::dict_value
 
   × a dictionary's value cannot be `text?`
-   ╭─[dict_optional_value.strand:4:20]
- 3 │ // help drops the `?`. A literal of only nulls has no value type either.
- 4 │ state names: [int: text?] = []
+   ╭─[dict_optional_value.strand:6:20]
+ 5 │ // that may be null needs a fallback.
+ 6 │ state names: [int: text?] = []
    ·                    ──┬──
    ·                      ╰── may be null
- 5 │ let nothing = [1: null]
+ 7 │ let nothing = [1: null]
    ╰────
   help: a missing key already reads null; drop the `?`: `text`
 
 check::dict_value
 
   × a dictionary's value cannot be `null`
-   ╭─[dict_optional_value.strand:5:19]
- 4 │ state names: [int: text?] = []
- 5 │ let nothing = [1: null]
+   ╭─[dict_optional_value.strand:7:19]
+ 6 │ state names: [int: text?] = []
+ 7 │ let nothing = [1: null]
    ·                   ──┬─
-   ·                     ╰── only null
+   ·                     ╰── null
+ 8 │ let some = [1: null, 2: "a"]
    ╰────
-  help: a missing key already reads null; give the values a type
+  help: leave this entry out: a missing key already reads null; an empty dictionary is `[]` with
+        its type declared, `let m: [K: V] = []`
+
+check::dict_value
+
+  × a dictionary's value cannot be `null`
+   ╭─[dict_optional_value.strand:8:16]
+ 7 │ let nothing = [1: null]
+ 8 │ let some = [1: null, 2: "a"]
+   ·                ──┬─
+   ·                  ╰── null
+ 9 │ let last = [1: "a", 2: null]
+   ╰────
+  help: leave this entry out: a missing key already reads null
+
+check::dict_value
+
+  × a dictionary's value cannot be `null`
+    ╭─[dict_optional_value.strand:9:24]
+  8 │ let some = [1: null, 2: "a"]
+  9 │ let last = [1: "a", 2: null]
+    ·                        ──┬─
+    ·                          ╰── null
+ 10 │ state title: text? = null
+    ╰────
+  help: leave this entry out: a missing key already reads null
+
+check::dict_value
+
+  × a dictionary's value cannot be `text?`
+    ╭─[dict_optional_value.strand:11:17]
+ 10 │ state title: text? = null
+ 11 │ let maybe = [1: title]
+    ·                 ──┬──
+    ·                   ╰── may be null
+    ╰────
+  help: a missing key already reads null; give a fallback, `… ?? default`, or leave the entry out
+        when it is null
+
+fix [check::dict_value] dict_optional_value.strand: `1: null, ` -> `` (Leave the entry out)
+fix [check::dict_value] dict_optional_value.strand: `, 2: null` -> `` (Leave the entry out)

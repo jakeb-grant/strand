@@ -465,6 +465,7 @@ impl Machine {
                     place,
                     method,
                     args,
+                    dict,
                 } => {
                     let a = self.pop_args(&chunk.args[*args as usize]);
                     if a.params
@@ -484,6 +485,7 @@ impl Machine {
                         indices,
                         &self.env,
                         &chunk.names[*method as usize],
+                        *dict,
                         a,
                     )?;
                     self.stack.push(Value::Unit);
@@ -851,8 +853,11 @@ fn key_of(vm: &Vm, item: &Value, path: Option<&[String]>) -> Value {
 }
 
 /// `xs.push(x)`, `xs.remove_key(k)`, `xs.move(k, i)`, … on a writable
-/// list. A keyed `state` is a core keyed collection: each call is one
-/// keyed operation (one `VecDiff`), never a copy of the list.
+/// list, or `m.remove(k)`, `m.clear()` on a dictionary (`dict`, from the
+/// receiver's declared type). A keyed `state` is a core keyed
+/// collection: each call is one keyed operation (one `VecDiff`), never a
+/// copy of the list.
+#[allow(clippy::too_many_arguments)]
 fn mutate(
     vm: &Rc<Vm>,
     rt: &Runtime,
@@ -860,6 +865,7 @@ fn mutate(
     indices: Vec<Value>,
     env: &Rc<Env>,
     method: &str,
+    dict: bool,
     args: Args,
 ) -> Result<(), Error> {
     if let PlaceRoot::Def(d) = &place.root
@@ -868,11 +874,18 @@ fn mutate(
     {
         return mutate_keyed(vm, rt, k, method, args);
     }
-    let current = rt.untrack(|rt| read_place(vm, rt, place, &indices, env))?;
-    if let Value::Dict(d) = &current {
+    let (current, absent) = rt.untrack(|rt| read_place_at(vm, rt, place, &indices, env))?;
+    if dict {
         // (dictionary) `m.remove(k)`, `m.clear()`. Forgetting a key the
         // dictionary does not hold does nothing, and writes nothing
-        // (decisions.md dictionary).
+        // (decisions.md dictionary). A null `[K: V]?` (`m?.clear()`, or
+        // `s?.m.clear()` under a null record) holds no key either: nothing
+        // is written, and the cell never becomes a list.
+        let d = match &current {
+            Value::Dict(d) => d,
+            Value::Null => return Ok(()),
+            _ => return Err(fail(format!("`{method}`: not a dictionary"))),
+        };
         let new = match method {
             "remove" => {
                 let key = dict_key(args.get(0).cloned().unwrap_or(Value::Null));
@@ -889,6 +902,12 @@ fn mutate(
         };
         let value = Value::Dict(Rc::new(new));
         return store(vm, rt, place, indices, env, AssignOp::Set, value);
+    }
+    if absent {
+        // (dictionary) `m[k]?.push(x)` on an entry the dictionary does not
+        // hold: `?.` skips the null, and nothing below an entry creates it
+        // (decisions.md dictionary).
+        return Ok(());
     }
     let mut list: Vec<Value> = current.as_list().map(<[Value]>::to_vec).unwrap_or_default();
     let path = key_path(vm, place, &list);
@@ -1047,6 +1066,19 @@ fn read_place(
     indices: &[Value],
     env: &Rc<Env>,
 ) -> Result<Value, Error> {
+    read_place_at(vm, rt, place, indices, env).map(|(v, _)| v)
+}
+
+/// The current value of a place, and whether the way to it went through
+/// a dictionary entry that is absent (the value is then null).
+fn read_place_at(
+    vm: &Rc<Vm>,
+    rt: &Runtime,
+    place: &Place,
+    indices: &[Value],
+    env: &Rc<Env>,
+) -> Result<(Value, bool), Error> {
+    let mut absent = false;
     let mut idx = indices.iter();
     let (mut v, segs) = match &place.root {
         PlaceRoot::Def(d) => (vm.read_def(rt, *d, env)?, &place.segs[..]),
@@ -1059,10 +1091,14 @@ fn read_place(
     for seg in segs {
         v = match seg {
             PlaceSeg::Field(f) => builtins::field(vm, rt, &v, f)?,
-            PlaceSeg::Index => builtins::index(&v, idx.next().unwrap_or(&Value::Null)),
+            PlaceSeg::Index => {
+                let at = builtins::index(&v, idx.next().unwrap_or(&Value::Null));
+                absent |= matches!(v, Value::Dict(_)) && at.is_null();
+                at
+            }
         };
     }
-    Ok(v)
+    Ok((v, absent))
 }
 
 /// A plain number written where the declared type is `int` or `float`

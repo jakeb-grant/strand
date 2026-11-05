@@ -802,6 +802,80 @@ fn dictionary_writes_insert_replace_remove_and_filter() {
     assert_eq!(get(&inst, "writes"), writes);
 }
 
+/// (dictionary) `?.` on a mutation skips a null: `m?.clear()` and
+/// `m?.remove(k)` on a null `[K: V]?`, or on a dictionary under a null
+/// record, write nothing (the cell never becomes a list), and a list
+/// mutation on an absent entry (`m[k]?.push(x)`) never creates the
+/// entry (decisions.md dictionary).
+#[test]
+fn a_mutation_through_a_null_or_an_absent_entry_writes_nothing() {
+    let src = "type S { m: [int: text] }\n\
+               state m: [int: text]? = null\n\
+               state s: S? = null\n\
+               state lists: [text: [int]] = [\"x\": [5]]\n\
+               let ents = (m ?? []).entries.map(e => e.value).join(\",\")\n\
+               let shown = lists.entries.map(e => join(\"=\", e.key, e.value.len)).join(\",\")\n\
+               bar B {\n\
+                 box { on click { m?.clear() } }\n\
+                 box { on click { m?.remove(3) } }\n\
+                 box { on click { s?.m?.clear(); s?.m?.remove(1) } }\n\
+                 box { on click { lists[\"b\"]?.push(1) } }\n\
+                 box { on click { lists[\"c\"]?.clear() } }\n\
+                 box { on click { lists[\"d\"]?.remove(0) } }\n\
+                 box { on click { lists[\"x\"]?.push(6) } }\n\
+                 box { on click { m = [1: \"a\"]; m?.remove(1) } }\n\
+               }\n";
+    let (rt, host, inst) = run(src);
+    host.set(
+        &rt,
+        "screens.all",
+        Value::list(vec![
+            host.record("Screen", &[("name", Value::text("DP-1"))]),
+        ]),
+    )
+    .unwrap();
+    inst.flush();
+    let boxes = inst.nodes_handling("click");
+    assert_eq!(boxes.len(), 8);
+    let click = |i: usize| {
+        let u = {
+            inst.event(boxes[i], "click", Vec::new());
+            inst.flush()
+        };
+        assert!(u.errors.is_empty(), "click {i}: {:?}", u.errors);
+    };
+    for i in 0..3 {
+        click(i);
+        assert_eq!(get(&inst, "m"), Value::Null, "click {i}");
+        assert_eq!(get(&inst, "s"), Value::Null, "click {i}");
+    }
+    for i in 3..6 {
+        click(i);
+        assert_eq!(get(&inst, "shown"), Value::text("x=1"), "click {i}");
+    }
+    // A present entry still takes the list's mutation.
+    click(6);
+    assert_eq!(get(&inst, "shown"), Value::text("x=2"));
+    // A non-null optional dictionary still takes the dictionary's.
+    click(7);
+    assert_eq!(get(&inst, "ents"), Value::text(""));
+    assert!(matches!(get(&inst, "m"), Value::Dict(_)));
+}
+
+/// (dictionary) A record's dictionary field may be left out when it is
+/// built, as a list field may (spec.md 5.4): it is empty, so a record
+/// that gains one stays buildable.
+#[test]
+fn a_record_built_without_its_dictionary_field_has_an_empty_one() {
+    let src = "type S { name: text; seen: [text: int]; tags: [text] }\n\
+               let s = S(name: \"a\")\n\
+               let n = s.seen.len + s.tags.len\n\
+               let filled = S(name: \"b\", seen: [\"x\": 1]).seen[\"x\"] ?? 0\n";
+    let (_, _, inst) = run(src);
+    assert_eq!(get(&inst, "n"), Value::int(0));
+    assert_eq!(get(&inst, "filled"), Value::int(1));
+}
+
 /// (dictionary) `==` on dictionaries is structural: the same keys with
 /// equal values, however the literals were written (there is no
 /// insertion order to tell them apart); the derived equality agrees, so

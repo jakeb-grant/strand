@@ -48,7 +48,7 @@ check::missing_key
     ·                                      ╰── no key to find items by
  16 │   }
     ╰────
-  help: declare one: `state xs: [T] key field = []`
+  help: declare one: `state notes: [T] key field = []`
 
 fix [check::missing_key] missing_key.strand: `"app"` -> `app` (Use `key app`)
 fix [check::missing_key] missing_key.strand: `"app"` -> `label` (Use `key label`)

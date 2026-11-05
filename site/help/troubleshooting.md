@@ -69,7 +69,11 @@ Each error and its fix:
 - **`syntax::dict_braces`**, "dictionaries use brackets: `[k: v]`"
   (or "`[K: V]`" for a type): a dictionary and its type are written in
   brackets, `[1: "web"]` and `[int: text]`, and an empty one is `[]`.
-  Braces hold a block. On one line, the fix rewrites the braces.
+  Braces hold a block. On one line, the fix rewrites the braces when
+  they can only be a dictionary (quoted or number keys, one `K: V`). A
+  JS object with name keys, `{app: "a", label: "b"}`, or a TS object
+  type, `{x: int, y: int}`, may be a record: build one by its type's
+  name, `Pin(app: "a", label: "b")`, declared `type Pin { … }`.
 - **`syntax::dict_item`**, "every item of a dictionary is `key:
   value`": `[1: "a", 2]` mixes entries with a list's items. Give every
   item a value, or none for a list. `[:]` is the same code, "an empty
@@ -81,18 +85,27 @@ Each error and its fix:
   optional: `[int?: text]` says "cannot be keyed by `int?`".
 - **`check::dict_value`**, "a dictionary's value cannot be `text?`" (or
   another optional type): a missing key already reads `null`, so drop
-  the `?`.
+  the `?`. In a literal, "a dictionary's value cannot be `null`" on
+  `[1: null, 2: "a"]` (Python's `{1: None}`): leave the entry out,
+  which the fix does.
 - **`check::dict_duplicate`**, "`1` is a key twice in this
   dictionary": remove one of the two entries.
 - **`check::dict_untyped`**, "`m` is an untyped `[]`, a list read by
   position": `state m = []` is a list. To key it by text, declare it:
   `state m: [text: int] = []`.
+- **`check::type_mismatch`**, "this assignment expects `int`, found
+  `float`", on `m["b"] = 0.5` into `state m = ["a": 1]`: a dictionary
+  keeps its literal's value type and does not widen as a list of whole
+  numbers does. Declare it, `state m: [text: float] = ["a": 1]`, which
+  the fix does.
 - **`check::type_mismatch`**, "this assignment expects `text`, found
   `null`", on `m[k] = null`: a dictionary's values are never `null`;
   forget an entry with `m.remove(k)`, as the help says.
 - **`check::dict_compound`**, "`+=` cannot change a dictionary entry,
   which may be missing": write it whole with a value for the missing
-  case, `m[k] = (m[k] ?? 0) + 1`.
+  case, `m[k] = (m[k] ?? 0) + 1`, which the fix does. The missing
+  case starts from the value type's zero: `""` for text, `[]` for a
+  list, `0s` for a duration, and 1 for `*=`.
 - **`check::nullable`**, "a key expects `int`, but this may be null":
   `m[windows.focused?.workspace]` keys by a value that may be `null`.
   Give a fallback with `??`, or read it only when it is there.
@@ -102,8 +115,9 @@ Each error and its fix:
 - **`check::dict_keyed`**, "a dictionary is already keyed, by its
   keys": drop the `key …` clause.
 - **`check::dict_two_way`**, "`value` cannot be bound two-way to a
-  dictionary entry": bind a `state` (`value: <-> level`) and write the
-  entry `on change level { m[k] = level }`.
+  dictionary entry": bind a `state` that starts from the entry, `state
+  level = m[k] ?? 0.5`, with `value: <-> level`, and write the entry
+  `on change level { m[k] = level }`.
 - **`check::dict_service`**, "a service field cannot hold a dictionary
   yet" (or an action's parameter, or a command's output): read a list
   of a `type` you declare instead. A plugin's schema that declares one
@@ -111,11 +125,17 @@ Each error and its fix:
   `[K: V]` yet".
 - **`check::unknown_field`**, "dictionaries have no method `get`" (or
   `has`, `set`, `push`): read an entry as `m[k]`, which is `null` when
-  the key is absent, and write one as `m[k] = v`.
+  the key is absent, and write one as `m[k] = v`; `has(k)` is `m[k] !=
+  null`. The other words from Python and JS are named too: `delete(k)`
+  and `pop(k)` are `m.remove(k)`, `items()` is `m.entries`, `size()`
+  and `length` are `m.len`, and a list's method (`m.map(…)`) goes
+  through `m.entries`. Each has a fix where the rewrite is mechanical.
 - **`check::missing_key`**, "`get` needs a keyed collection, and `xs`
   has no key": `xs.get(k)` is a keyed list's, finding an item by its
   key. Declare the key, `state xs: [T] key field = []`, or read the
-  list by position, `xs[i]`, or by a test, `xs.find(x => …)`.
+  list by position, `xs[i]`, or by a test, `xs.find(x => …)`. Only a
+  `state` list of records takes a key: for a `let` or a list of plain
+  values, `xs.find(x => x == k)` or `xs.contains(k)` is the read.
 - **`check::type_mismatch`**, "`key` of `pins.get` expects `text`,
   found `int`": `get` takes the list's key, the type of the field its
   `key` names.

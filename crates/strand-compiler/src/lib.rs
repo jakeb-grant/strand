@@ -112,10 +112,12 @@ pub fn compile_with(map: &SourceMap, schema: &schema::Schema) -> Compiled {
     let modules: Vec<check::Module<'_>> = parses
         .iter()
         .zip(&names)
-        .map(|(p, n)| check::Module {
+        .zip(map.iter())
+        .map(|((p, n), (_, f))| check::Module {
             file: p.file_id,
             name: n,
             ast: &p.file,
+            text: &f.text,
         })
         .collect();
     let checked = check::check(&modules, schema);

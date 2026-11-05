@@ -12,8 +12,8 @@ check::missing_key
     ·               ╰── no key to find items by
  10 │   text labels.get(0) ?? ""
     ╰────
-  help: declare one: `state xs: [T] key field = []`; without one, `xs[i]` reads an item by its
-        position and `xs.find(x => …)` by a test
+  help: declare one: `state notes: [T] key field = []`; without one, `notes[i]` reads an item by
+        its position and `notes.find(x => …)` by a test
 
 check::missing_key
 
@@ -25,8 +25,8 @@ check::missing_key
     ·                ╰── no key to find items by
  11 │ }
     ╰────
-  help: declare one: `state xs: [T] key field = []`; without one, `xs[i]` reads an item by its
-        position and `xs.find(x => …)` by a test
+  help: only a `state` list of records has a key; `labels[i]` reads an item by its position,
+        `labels.find(x => x == k)` by a test, and `labels.contains(k)` says whether it is there
 
 fix [check::missing_key] get_unkeyed.strand@296: + ` key app` (Add `key app`)
 fix [check::missing_key] get_unkeyed.strand@296: + ` key label` (Add `key label`)

@@ -1,0 +1,147 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::unknown_field
+
+  × dictionaries have no method `get`
+   ╭─[dict_foreign_methods.strand:6:16]
+ 5 │ state counts: [text: int] = []
+ 6 │ let a = counts.get("a")
+   ·                ─┬─
+   ·                 ╰── unknown method
+ 7 │ let b = counts.has("a")
+   ╰────
+  help: read an entry by its key: `counts[k]`, null when it is absent
+
+check::unknown_field
+
+  × dictionaries have no method `has`
+   ╭─[dict_foreign_methods.strand:7:16]
+ 6 │ let a = counts.get("a")
+ 7 │ let b = counts.has("a")
+   ·                ─┬─
+   ·                 ╰── unknown method
+ 8 │ let c = counts.items()
+   ╰────
+  help: a missing key reads null: `counts[k] != null` is true when `k` is there
+
+check::unknown_field
+
+  × dictionaries have no method `items`
+   ╭─[dict_foreign_methods.strand:8:16]
+ 7 │ let b = counts.has("a")
+ 8 │ let c = counts.items()
+   ·                ──┬──
+   ·                  ╰── unknown method
+ 9 │ let d = counts.size()
+   ╰────
+  help: its entries are a list, each a `key` and a `value`: `counts.entries`, walked with `for e
+        in counts.entries`
+
+check::unknown_field
+
+  × dictionaries have no method `size`
+    ╭─[dict_foreign_methods.strand:9:16]
+  8 │ let c = counts.items()
+  9 │ let d = counts.size()
+    ·                ──┬─
+    ·                  ╰── unknown method
+ 10 │ let e = counts.length
+    ╰────
+  help: its number of entries is a field: `counts.len`
+
+check::unknown_field
+
+  × `counts` has no field `length`
+    ╭─[dict_foreign_methods.strand:10:16]
+  9 │ let d = counts.size()
+ 10 │ let e = counts.length
+    ·                ───┬──
+    ·                   ╰── unknown field
+ 11 │ let f = counts.map(e => e.value)
+    ╰────
+  help: did you mean `len`?
+
+check::unknown_field
+
+  × dictionaries have no method `map`
+    ╭─[dict_foreign_methods.strand:11:16]
+ 10 │ let e = counts.length
+ 11 │ let f = counts.map(e => e.value)
+    ·                ─┬─
+    ·                 ╰── unknown method
+ 12 │ let g = counts.items
+    ╰────
+  help: its entries are a list, each a `key` and a `value`: `counts.entries.map(…)`
+
+check::unknown_field
+
+  × `counts` has no field `items`
+    ╭─[dict_foreign_methods.strand:12:16]
+ 11 │ let f = counts.map(e => e.value)
+ 12 │ let g = counts.items
+    ·                ──┬──
+    ·                  ╰── unknown field
+ 13 │ component C {
+    ╰────
+  help: did you mean `entries`?
+
+check::unknown_field
+
+  × dictionaries have no method `set`
+    ╭─[dict_foreign_methods.strand:14:27]
+ 13 │ component C {
+ 14 │   box { on click { counts.set("a", 1); counts.delete("a"); counts.pop("b") } }
+    ·                           ─┬─
+    ·                            ╰── unknown method
+ 15 │   box { on click { counts.forEach(e => e.value) } }
+    ╰────
+  help: write an entry by its key, in a handler: `counts[k] = v`
+
+check::unknown_field
+
+  × dictionaries have no method `delete`
+    ╭─[dict_foreign_methods.strand:14:47]
+ 13 │ component C {
+ 14 │   box { on click { counts.set("a", 1); counts.delete("a"); counts.pop("b") } }
+    ·                                               ───┬──
+    ·                                                  ╰── unknown method
+ 15 │   box { on click { counts.forEach(e => e.value) } }
+    ╰────
+  help: forget an entry by its key: `counts.remove(k)`
+
+check::unknown_field
+
+  × dictionaries have no method `pop`
+    ╭─[dict_foreign_methods.strand:14:67]
+ 13 │ component C {
+ 14 │   box { on click { counts.set("a", 1); counts.delete("a"); counts.pop("b") } }
+    ·                                                                   ─┬─
+    ·                                                                    ╰── unknown method
+ 15 │   box { on click { counts.forEach(e => e.value) } }
+    ╰────
+  help: forget an entry by its key: `counts.remove(k)`
+
+check::unknown_field
+
+  × dictionaries have no method `forEach`
+    ╭─[dict_foreign_methods.strand:15:27]
+ 14 │   box { on click { counts.set("a", 1); counts.delete("a"); counts.pop("b") } }
+ 15 │   box { on click { counts.forEach(e => e.value) } }
+    ·                           ───┬───
+    ·                              ╰── unknown method
+ 16 │ }
+    ╰────
+  help: its entries are a list, each a `key` and a `value`: `counts.entries`, walked with `for e
+        in counts.entries`
+
+fix [check::unknown_field] dict_foreign_methods.strand: `.get("a")` -> `["a"]`
+fix [check::unknown_field] dict_foreign_methods.strand: `items()` -> `entries`
+fix [check::unknown_field] dict_foreign_methods.strand: `size()` -> `len`
+fix [check::unknown_field] dict_foreign_methods.strand: `length` -> `len`
+fix [check::unknown_field] dict_foreign_methods.strand@396: + `entries.`
+fix [check::unknown_field] dict_foreign_methods.strand: `items` -> `entries`
+fix [check::unknown_field] dict_foreign_methods.strand: `.set("a", 1)` -> `["a"] = 1`
+fix [check::unknown_field] dict_foreign_methods.strand: `delete` -> `remove`
+fix [check::unknown_field] dict_foreign_methods.strand: `pop` -> `remove`

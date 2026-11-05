@@ -671,20 +671,71 @@ impl Parser<'_> {
     /// with the bracketed form as its fix (decisions.md, dictionary).
     fn braced_dict_literal(&mut self) -> Expr {
         let start = self.cur().span.start;
+        // The fix is offered only for a shape that can only be a
+        // dictionary: every key quoted or a number (`{"a": 1}`, `{}`). A
+        // name key (`{app: "a", label: "b"}`) may be a record meant JS's
+        // way, so the help names both forms.
+        let fits = self.braced_shape(false).plain_keys;
         self.skip_group();
         let span = self.finish(start);
         let d = Diagnostic::error("syntax::dict_braces", "dictionaries use brackets: `[k: v]`")
             .with_label(span, "braces hold a block, not a value");
-        self.push_error(bracketed_fix(
-            d,
-            span,
-            self.src,
-            "write it `[k: v, …]`; an empty one is `[]`",
-        ));
+        let d = if fits {
+            bracketed_fix(
+                d,
+                span,
+                self.src,
+                "write it `[k: v, …]`; an empty one is `[]`",
+            )
+        } else {
+            let inner = braced_inner(span, self.src).unwrap_or("k: v, …");
+            d.with_help(format!(
+                "a record is built by its type's name, `Name({inner})`; a dictionary is \
+                 `[{inner}]`"
+            ))
+        };
+        self.push_error(d);
         Expr {
             kind: ExprKind::Error,
             span,
         }
+    }
+
+    /// (dictionary) What stands directly inside the braces at `{`: how
+    /// many `:` and how many `,` or `;`, and whether every key (the first
+    /// token, and each after a `,` or `;`) is a quoted text or a number.
+    /// In a type (`generic`) `<…>` nests as brackets do.
+    fn braced_shape(&self, generic: bool) -> BracedShape {
+        let mut depth = 0usize;
+        let mut shape = BracedShape {
+            colons: 0,
+            separators: 0,
+            plain_keys: true,
+        };
+        let mut at_key = true;
+        for i in 1..256 {
+            let k = self.nth_kind(i);
+            if depth == 0 && at_key && k != K::RBrace {
+                shape.plain_keys &= matches!(k, K::String | K::Number);
+                at_key = false;
+            }
+            match k {
+                K::LBrace | K::LBracket | K::LParen => depth += 1,
+                K::Lt if generic => depth += 1,
+                K::Gt if generic => depth = depth.saturating_sub(1),
+                K::RBracket | K::RParen => depth = depth.saturating_sub(1),
+                K::RBrace if depth == 0 => return shape,
+                K::RBrace => depth -= 1,
+                K::Eof => return shape,
+                K::Colon if depth == 0 => shape.colons += 1,
+                K::Comma | K::Semi if depth == 0 => {
+                    shape.separators += 1;
+                    at_key = true;
+                }
+                _ => {}
+            }
+        }
+        shape
     }
 
     /// At a `{` where a type starts: does it read as a dictionary type
@@ -926,12 +977,24 @@ impl Parser<'_> {
                 }
             }
             K::LBrace if self.braced_dict_type() => {
+                // `{K: V}` is a dictionary type; more than one field
+                // (`{x: int, y: int}`) is a record type written TS's way,
+                // which `[…]` would not fix.
+                let shape = self.braced_shape(true);
+                let fits = shape.colons == 1 && shape.separators == 0;
                 self.skip_group();
                 let span = self.finish(start);
                 let d =
                     Diagnostic::error("syntax::dict_braces", "dictionaries use brackets: `[K: V]`")
                         .with_label(span, "braces hold a record's fields or a block, not a type");
-                self.push_error(bracketed_fix(d, span, self.src, "write it `[K: V]`"));
+                self.push_error(if fits {
+                    bracketed_fix(d, span, self.src, "write it `[K: V]`")
+                } else {
+                    d.with_help(
+                        "a record type is declared by its name, `type Name { x: int; y: int }`, \
+                         and written `Name`; a dictionary type is `[K: V]`",
+                    )
+                });
                 Type {
                     kind: TypeKind::Error,
                     span,
@@ -1075,18 +1138,29 @@ impl Parser<'_> {
 /// brackets when it is on one line (`{1: "a"}` to `[1: "a"]`), otherwise
 /// `help`.
 fn bracketed_fix(mut d: Diagnostic, span: Span, src: &str, help: &str) -> Diagnostic {
-    let text = span.text(src);
-    let inner = text
-        .strip_prefix('{')
-        .and_then(|t| t.strip_suffix('}'))
-        .filter(|t| !t.contains('\n'));
-    match inner {
+    match braced_inner(span, src) {
         Some(t) => {
-            d.suggest(span, format!("[{}]", t.trim()));
+            d.suggest(span, format!("[{t}]"));
             d
         }
         None => d.with_help(help),
     }
+}
+
+/// What a `{ … }` on one line holds, trimmed.
+fn braced_inner(span: Span, src: &str) -> Option<&str> {
+    span.text(src)
+        .strip_prefix('{')
+        .and_then(|t| t.strip_suffix('}'))
+        .filter(|t| !t.contains('\n'))
+        .map(str::trim)
+}
+
+/// (dictionary) See `Parser::braced_shape`.
+struct BracedShape {
+    colons: usize,
+    separators: usize,
+    plain_keys: bool,
 }
 
 #[cfg(test)]

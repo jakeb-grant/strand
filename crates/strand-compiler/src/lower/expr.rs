@@ -797,9 +797,8 @@ impl Lowerer<'_> {
                 // (dictionary) `m.remove(k)` and `m.clear()` write the
                 // dictionary's place, as a list's mutations do.
                 let dict_recv = matches!(receiver.ty.non_null(), Ty::Dict(..));
-                if (list_recv && MUTATIONS.contains(&name.as_str()))
-                    || (dict_recv && DICT_MUTATIONS.contains(&name.as_str()))
-                {
+                let dict = dict_recv && DICT_MUTATIONS.contains(&name.as_str());
+                if (list_recv && MUTATIONS.contains(&name.as_str())) || dict {
                     let place = self.place(c, receiver);
                     let arity = mutation_arity(name);
                     let map = self.push_args(c, args, arity, None);
@@ -810,6 +809,7 @@ impl Lowerer<'_> {
                             place,
                             method,
                             args: map,
+                            dict,
                         },
                         span,
                     );

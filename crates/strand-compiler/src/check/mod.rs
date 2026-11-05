@@ -73,6 +73,9 @@ pub struct Module<'a> {
     /// `theme.look`).
     pub name: &'a str,
     pub ast: &'a ast::File,
+    /// (dictionary) The file's text, for a fix that keeps what was
+    /// written (`m[k] += f(x)` rewritten whole).
+    pub text: &'a str,
 }
 
 /// What [`check`] returns.
@@ -515,6 +518,10 @@ pub(crate) struct Checker<'a> {
     /// Whole-number declarations earlier passes found fractions written
     /// to: typed `float`.
     pub float_pins: HashSet<(FileId, Span)>,
+    /// (dictionary) `state`s whose dictionary type comes from their
+    /// literal (`state m = ["a": 1]`): a fraction written to an entry is
+    /// helped to a declaration, not rounded.
+    pub untyped_dicts: HashSet<DefId>,
     /// The inferred component parameter whose argument is being checked
     /// (for the help on a bare builtin variant: `Side center`).
     pub infer_arg: Option<String>,
@@ -631,6 +638,7 @@ impl<'a> Checker<'a> {
             whole: HashMap::new(),
             widened: HashSet::new(),
             float_pins: HashSet::new(),
+            untyped_dicts: HashSet::new(),
             infer_arg: None,
             flows: Vec::new(),
             value_sources: HashMap::new(),
@@ -830,6 +838,13 @@ impl<'a> Checker<'a> {
 
     pub fn file(&self) -> FileId {
         self.modules[self.module].file
+    }
+
+    /// (dictionary) The text `span` covers in the file being checked.
+    pub fn text_of(&self, span: Span) -> Option<&'a str> {
+        self.modules[self.module]
+            .text
+            .get(span.start as usize..span.end as usize)
     }
 
     pub fn show(&self, t: &Ty) -> String {

@@ -221,11 +221,14 @@ pub enum Op {
     },
     /// A list mutation on a writable place (`pins.push(p)`): place index,
     /// method name, argument map. Index values of the place are below the
-    /// arguments.
+    /// arguments. `dict` is set when the receiver's type is a dictionary
+    /// (`m.remove(k)`, `m.clear()`), so a null `[K: V]?` is never taken
+    /// for a list.
     Mutate {
         place: u32,
         method: u32,
         args: u32,
+        dict: bool,
     },
     /// Pop n values, push a list / comma value / space-separated value.
     List(u32),

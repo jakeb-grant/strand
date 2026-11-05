@@ -101,7 +101,7 @@ write in an overlay in Strand's state directory instead, with a notice.
   ```toml
   [wallpapers]
   DP-1 = "~/walls/left.jpg"   # the wide one
-  "org.gnome.Nautilus" = "~/walls/files.jpg"
+  HDMI-A-1 = "~/walls/right.jpg"
   ```
 
   A handler sets one entry, `prefs.wallpapers[screen.name] =

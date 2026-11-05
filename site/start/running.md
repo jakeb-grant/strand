@@ -168,7 +168,9 @@ These talk to the running shell:
   field, a service field the service lets you write, or a token. The
   value is read as the target's type. For a service's number, a signed
   number or percentage, such as `+5%`, steps from its current value.
-- `strand toggle <path>` flips an exported `bool` state.
+- `strand toggle <path>` flips an exported `bool` state, a `bool`
+  settings field or a `bool` dictionary entry (an absent entry becomes
+  `true`).
 - `strand get <path>` prints an exported value, a settings field or a
   token.
 - After a [dictionary](../concepts/language.md#dictionaries), the rest

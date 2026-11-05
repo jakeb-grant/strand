@@ -588,7 +588,7 @@ bar Dock {
   row { grow: 1; justify: center; align: center; gap: $space.2
     on drop(p: Pin, at: int) { pins.move(p.app, at) }
     for p in pins key p.app {
-      let app = apps.all.find(a => a.id == p.app)   // the installed app, or null
+      let app = apps.all.get(p.app)   // the installed app, or null
       image app?.icon ?? "application-x-executable" { size: 44; drag: p; tooltip: p.label
         enter { scale: 0; opacity: 0 }
         when app == null { opacity: 0.4 }
@@ -653,11 +653,13 @@ fixed time, `~ ease(out_back, 300ms)` with an easing curve, and
 the icon is 10 px up, at 0% and 100% where it belongs. `play hop` in a
 handler plays it once on the node the handler is on.
 
-**`let app = apps.all.find(a => a.id == p.app)`** finds the installed
-app with the pin's id, or `null` when it is not installed. You need the
-app itself, not its id, to call `launch()`. `app?.icon` is `null` when
-`app` is, and `?? "application-x-executable"` puts the generic icon in
-its place; `app?.launch()` does nothing when `app` is `null`.
+**`let app = apps.all.get(p.app)`** reads the installed app by its
+key, the pin's id, or `null` when it is not installed: `apps.all` is a
+keyed list of `App`s, each known by its `id`, as a pin is by its
+`app`. You need the app itself, not its id, to call `launch()`.
+`app?.icon` is `null` when `app` is, and `?? "application-x-executable"`
+puts the generic icon in its place; `app?.launch()` does nothing when
+`app` is `null`.
 
 Every pin draws exactly one icon, the missing ones included, and that
 matters for drag and drop: the `at` a drop reports counts the icons
@@ -692,7 +694,7 @@ bar Dock {
   row { id: icons; grow: 1; justify: center; align: center; gap: $space.2
     on drop(p: Pin, at: int) { pins.move(p.app, at) }
     for p in pins key p.app {
-      let app = apps.all.find(a => a.id == p.app)
+      let app = apps.all.get(p.app)
       image app?.icon ?? "application-x-executable" { size: 44; drag: p; tooltip: p.label
         cursor: pointer
         // How far the pointer is from this icon's centre, along the row.

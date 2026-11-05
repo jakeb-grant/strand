@@ -1359,6 +1359,19 @@ impl<'a> Checker<'a> {
                             .map(|m| m.name.clone())
                             .collect();
                         self.no_field(t, base_ast, name, &candidates, found.is_some());
+                        // (dictionary) Python's and JS's words for them.
+                        let alias = match n {
+                            "size" | "length" | "count" => Some("len"),
+                            "items" | "pairs" => Some("entries"),
+                            _ => None,
+                        };
+                        if found.is_none()
+                            && let Some(to) = alias
+                            && let Some(d) = self.diags.last_mut()
+                            && d.code == "check::unknown_field"
+                        {
+                            d.suggest(name.span, to);
+                        }
                         Ty::Error
                     }
                 }
@@ -1771,8 +1784,8 @@ impl<'a> Checker<'a> {
 
     /// `Pin(app: a, label: "x")`. An optional field may be left out (it
     /// is null), and (services-round) so may a list field (it is empty),
-    /// so a record that gains either stays buildable as before (spec.md
-    /// 5.4).
+    /// as (dictionary) may a dictionary field, so a record that gains one
+    /// stays buildable as before (spec.md 5.4).
     fn construct(&mut self, r: RecordId, args: &'a [ast::Arg], span: Span) -> hir::Expr {
         let rec = self.types.record(r);
         let sig = FnSig::new(
@@ -1781,7 +1794,7 @@ impl<'a> Checker<'a> {
                 .map(|f| ParamSig {
                     name: f.name.clone(),
                     ty: f.ty.clone(),
-                    has_default: f.ty.is_optional() || matches!(f.ty, Ty::List(..)),
+                    has_default: f.ty.is_optional() || matches!(f.ty, Ty::List(..) | Ty::Dict(..)),
                     default: None,
                     variadic: false,
                 })
@@ -2445,13 +2458,26 @@ impl<'a> Checker<'a> {
                         name.span,
                         "no key to find items by",
                     );
-                    d.help = Some(if n == "get" {
+                    // Only a `state` list of records can declare a key; a
+                    // `let` or a list of plain values is helped to what it
+                    // has instead.
+                    let xs = path_text(recv_ast).unwrap_or_else(|| "xs".into());
+                    d.help = Some(match (n, slot.is_some()) {
                         // (dictionary) `get` is by key only.
-                        "declare one: `state xs: [T] key field = []`; without one, `xs[i]` reads \
-                         an item by its position and `xs.find(x => …)` by a test"
-                            .into()
-                    } else {
-                        "declare one: `state xs: [T] key field = []`".into()
+                        ("get", true) => format!(
+                            "declare one: `state {xs}: [T] key field = []`; without one, \
+                             `{xs}[i]` reads an item by its position and `{xs}.find(x => …)` \
+                             by a test"
+                        ),
+                        ("get", false) => format!(
+                            "only a `state` list of records has a key; `{xs}[i]` reads an item \
+                             by its position, `{xs}.find(x => x == k)` by a test, and \
+                             `{xs}.contains(k)` says whether it is there"
+                        ),
+                        (_, true) => format!("declare one: `state {xs}: [T] key field = []`"),
+                        (_, false) => "only a `state` list of records has a key: \
+                                       `state xs: [T] key field = []`"
+                            .into(),
                     });
                     if let Some((file, at, fields)) = slot {
                         for f in fields {
@@ -2591,22 +2617,17 @@ impl<'a> Checker<'a> {
                     "unknown method"
                 },
             );
-            match (n, is_field) {
-                (_, true) => d.help = Some(format!("read it without `()`: `.{n}`")),
-                ("get" | "has" | "contains", _) => {
-                    d.help =
-                        Some("read an entry by its key: `m[k]`, null when it is absent".into());
-                }
-                ("set" | "insert" | "put" | "push", _) => {
-                    d.help = Some("write an entry by its key, in a handler: `m[k] = v`".into());
-                }
-                _ => {
-                    let fix = Self::closest(n, &candidates);
-                    d.suggest_opt(name.span, fix);
-                }
+            if is_field {
+                d.help = Some(format!("read it without `()`: `.{n}`"));
+            } else {
+                self.foreign_dict_method(recv_ast, &entry, name, args, span, &candidates);
             }
             for a in args {
-                self.expr(&a.value, None);
+                // A lambda (`m.forEach(e => …)`) has no parameter type to
+                // take here: one mistake, one diagnostic.
+                if !matches!(a.value.kind, ast::ExprKind::Lambda { .. }) {
+                    self.expr(&a.value, None);
+                }
             }
             return (Vec::new(), Ty::Error);
         };
@@ -2619,6 +2640,100 @@ impl<'a> Checker<'a> {
             self.not_writable(why, recv.span, "change");
         }
         self.call_args(&sig, args, &format!("`{label}`"), span)
+    }
+
+    /// (dictionary) Help for a method a dictionary does not have, by what
+    /// the name means in Python or JS: `get(k)` and `set(k, v)` are
+    /// `m[k]` and `m[k] = v` (with a fix), `has(k)` is `m[k] != null`,
+    /// `delete(k)` and `pop(k)` are `remove(k)`, `items()` is `.entries`,
+    /// a list method (`map`, `forEach`) goes through `.entries`, and
+    /// `size()` is `.len`. The help names the receiver as written.
+    fn foreign_dict_method(
+        &mut self,
+        recv_ast: &ast::Expr,
+        entry: &Ty,
+        name: &ast::Ident,
+        args: &'a [ast::Arg],
+        span: Span,
+        candidates: &[String],
+    ) {
+        let n = name.name.as_str();
+        let m = path_text(recv_ast).unwrap_or_else(|| "m".into());
+        let arg = |i: usize| -> Option<&'a str> {
+            let a = args.get(i)?;
+            if a.kind != ast::ArgKind::Positional {
+                return None;
+            }
+            self.text_of(a.value.span)
+        };
+        // `m.get(k)` with a plain `.` (not `?.`) and positional
+        // arguments: the call's tail can be rewritten.
+        let plain_dot = self.text_of(Span::new(recv_ast.span.end, name.span.start)) == Some(".");
+        let tail = Span::new(recv_ast.span.end, span.end);
+        let list_method = crate::schema::list_members(entry, true, &Ty::Error)
+            .iter()
+            .any(|x| x.name == n && x.kind == crate::schema::MemberKind::Method && !x.writes);
+        let (a0, a1) = (arg(0), arg(1));
+        let Some(d) = self.diags.last_mut() else {
+            return;
+        };
+        match n {
+            "get" => {
+                d.help = Some(format!(
+                    "read an entry by its key: `{m}[k]`, null when it is absent"
+                ));
+                if let (true, Some(k), 1) = (plain_dot, a0, args.len()) {
+                    d.add_suggestion(tail, format!("[{k}]"));
+                }
+            }
+            "has" | "contains" | "has_key" | "includes" => {
+                d.help = Some(format!(
+                    "a missing key reads null: `{m}[k] != null` is true when `k` is there"
+                ));
+            }
+            "set" | "insert" | "put" | "push" | "add" => {
+                d.help = Some(format!(
+                    "write an entry by its key, in a handler: `{m}[k] = v`"
+                ));
+                if let (true, Some(k), Some(v), 2) = (plain_dot, a0, a1, args.len()) {
+                    d.add_suggestion(tail, format!("[{k}] = {v}"));
+                }
+            }
+            "delete" | "pop" | "del" | "erase" | "discard" | "unset" => {
+                d.help = Some(format!("forget an entry by its key: `{m}.remove(k)`"));
+                d.add_suggestion(name.span, "remove");
+            }
+            "items" | "iter" | "each" | "pairs" | "for_each" | "forEach" => {
+                if list_method {
+                    d.help = Some(format!(
+                        "its entries are a list, each a `key` and a `value`: `{m}.entries.{n}(…)`"
+                    ));
+                    d.add_suggestion(Span::at(name.span.start), "entries.");
+                } else {
+                    d.help = Some(format!(
+                        "its entries are a list, each a `key` and a `value`: `{m}.entries`, \
+                         walked with `for e in {m}.entries`"
+                    ));
+                    if args.is_empty() {
+                        d.add_suggestion(Span::new(name.span.start, span.end), "entries");
+                    }
+                }
+            }
+            "size" | "length" | "count" if args.is_empty() => {
+                d.help = Some(format!("its number of entries is a field: `{m}.len`"));
+                d.add_suggestion(Span::new(name.span.start, span.end), "len");
+            }
+            _ if list_method => {
+                d.help = Some(format!(
+                    "its entries are a list, each a `key` and a `value`: `{m}.entries.{n}(…)`"
+                ));
+                d.add_suggestion(Span::at(name.span.start), "entries.");
+            }
+            _ => {
+                let fix = Self::closest(n, candidates);
+                d.suggest_opt(name.span, fix);
+            }
+        }
     }
 
     /// `m["a"]` where `m` is an untyped `[]` (`state m = []`), a list read
@@ -3221,6 +3336,64 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// (dictionary) An untyped literal whose values may be null (`[1:
+    /// null, 2: "a"]`, `["a": x?.name]`): `check::dict_value` at the
+    /// first such value. A written `null` is an entry to leave out, since
+    /// a missing key already reads null, with a fix that removes it; any
+    /// other value needs a fallback.
+    fn literal_null_value(
+        &mut self,
+        entries: &[(ast::Expr, ast::Expr)],
+        parts: &[(hir::Expr, hir::Expr)],
+    ) {
+        let null_at = entries
+            .iter()
+            .position(|(_, v)| matches!(v.kind, ast::ExprKind::Null));
+        if let Some(i) = null_at {
+            let (k, v) = &entries[i];
+            // The entry and the comma on one side of it.
+            let cut = match (entries.get(i + 1), i.checked_sub(1).map(|p| &entries[p])) {
+                (Some((next, _)), _) => Some(Span::new(k.span.start, next.span.start)),
+                (None, Some((_, prev))) => Some(Span::new(prev.span.end, v.span.end)),
+                (None, None) => None,
+            };
+            let d = self.error(
+                "check::dict_value",
+                "a dictionary's value cannot be `null`",
+                v.span,
+                "null",
+            );
+            d.help = Some(match cut {
+                Some(_) => "leave this entry out: a missing key already reads null".into(),
+                None => "leave this entry out: a missing key already reads null; an empty \
+                         dictionary is `[]` with its type declared, `let m: [K: V] = []`"
+                    .into(),
+            });
+            if let Some(cut) = cut {
+                d.add_suggestion(cut, "");
+                if let Some(s) = d.suggestions.last_mut() {
+                    s.title = Some("Leave the entry out".into());
+                }
+            }
+            return;
+        }
+        let Some((_, v)) = parts.iter().find(|(_, v)| v.ty.is_optional()) else {
+            return;
+        };
+        let shown = self.show(&v.ty);
+        self.error(
+            "check::dict_value",
+            format!("a dictionary's value cannot be `{shown}`"),
+            v.span,
+            "may be null",
+        )
+        .help = Some(
+            "a missing key already reads null; give a fallback, `… ?? default`, \
+             or leave the entry out when it is null"
+                .into(),
+        );
+    }
+
     /// `[k: v, …]`: typed by `expected` when that is a dictionary,
     /// otherwise by its entries as a list literal is by its items (`[1:
     /// "web"]` is `[int: text]`, a whole-number key or value an `int`). A
@@ -3283,11 +3456,18 @@ impl<'a> Checker<'a> {
             None => {
                 let (key, value) = (key_ty.unwrap_or(Ty::Error), value_ty.unwrap_or(Ty::Error));
                 let key_span = entries.first().map_or(span, |(k, _)| k.span);
-                let value_span = entries
-                    .iter()
-                    .find(|(_, v)| matches!(v.kind, ast::ExprKind::Null))
-                    .or(entries.first())
-                    .map_or(span, |(_, v)| v.span);
+                let value_span = entries.first().map_or(span, |(_, v)| v.span);
+                let value = match value {
+                    Ty::Optional(inner) => {
+                        self.literal_null_value(entries, &parts);
+                        *inner
+                    }
+                    Ty::Null => {
+                        self.literal_null_value(entries, &parts);
+                        Ty::Error
+                    }
+                    v => v,
+                };
                 self.dict_type(key, key_span, value, value_span)
             }
         };

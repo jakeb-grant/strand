@@ -37,7 +37,7 @@ bar Dock {
   row { id: icons; grow: 1; justify: center; align: center; gap: $space.2
     on drop(p: Pin, at: int) { pins.move(p.app, at) }
     for p in pins key p.app {
-      let app = apps.all.find(a => a.id == p.app)
+      let app = apps.all.get(p.app)
       image app?.icon ?? "application-x-executable" { size: 44; drag: p; tooltip: p.label
         cursor: pointer
         // How far the pointer is from this icon's centre, along the row.

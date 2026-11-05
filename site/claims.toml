@@ -534,9 +534,15 @@ proof  = "read"
 
 [[claim]]
 page   = "site/start/running.md"
-text   = "- `strand toggle <path>` flips an exported `bool` state."
-source = ['crates/strand/src/ipc/query.rs "`toggle` flips an exported boolean"', 'docs/spec.md "`strand toggle path` flips an exported `bool` state"']
-proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): launcher.open false, then true"
+text   = "- `strand toggle <path>` flips an exported `bool` state, a `bool`"
+source = ['crates/strand/src/ipc/query.rs "`toggle` flips an exported boolean"', 'docs/spec.md "`strand toggle path` flips an exported `bool` state, settings field"']
+proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): launcher.open false, then true; crates/strand-compiler/tests/token_overlay.rs::toggle_flips_booleans_only_and_settings_fields_have_layers (a settings field)"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "settings field or a `bool` dictionary entry (an absent entry becomes"
+source = ['docs/spec.md "or `bool` dictionary entry (an absent one becomes `true`)"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::strand_get_and_set_reach_one_entry_of_a_dictionary (`prefs.shown.clock` toggled from absent to true, then false)"
 
 [[claim]]
 page   = "site/start/running.md"
@@ -3614,9 +3620,21 @@ proof  = "crates/strand-core/src/settings.rs::a_table_is_written_key_by_key; cra
 
 [[claim]]
 page   = "site/how-to/remembering-by-key.md"
-text   = "sorting by it, largest first, puts the latest first. A window never"
+text   = "sorting by it, largest first, puts the latest first. A window not"
 source = ['docs/spec.md "`m[k]` reads a `V?`: `null` when `k` is absent."']
 proof  = "crates/strand-compiler/tests/instantiate.rs::the_how_to_bounds_what_it_remembers_by_liveness_and_by_take (Terminal, then foot, then Web, after focusing 0x2, 0x3 and 0x1)"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "does the one focused at the start until it is focused again, since"
+source = ['docs/spec.md "**never** runs for the first value (at boot or mount), for a value a"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::the_how_to_bounds_what_it_remembers_by_liveness_and_by_take (the first focus is the baseline, not stamped)"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "has focus when the shell starts is remembered once it is focused"
+source = ['docs/spec.md "**never** runs for the first value (at boot or mount), for a value a"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::the_last_window_on_each_workspace_is_remembered_by_key (the first focus is the baseline)"
 
 [[claim]]
 page   = "site/how-to/remembering-by-key.md"

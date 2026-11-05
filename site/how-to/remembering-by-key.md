@@ -41,7 +41,9 @@ bar Workspaces {
   number (an `int`). It starts empty, `[]`, and the type says what kind
   of empty.
 - **`last_win[at] = …`** adds the entry for that workspace, or replaces
-  it. Assigning is for handlers, as with any `state`.
+  it. Assigning is for handlers, as with any `state`. The window that
+  has focus when the shell starts is remembered once it is focused
+  again: `on change` takes its first value as its starting point.
 - **`last_win[ws.id]`** reads it back, or `null` for a workspace you
   have not used yet, so it is unwrapped with `??` like any optional
   value.
@@ -136,8 +138,10 @@ bar Taskbar {
 - **`nick[w.app_id] ?? w.title`** is the app's short name when the
   table has one, and the title when it does not.
 - **`used`** gives each window a number that grows with every focus, so
-  sorting by it, largest first, puts the latest first. A window never
-  focused counts as 0 and goes last.
+  sorting by it, largest first, puts the latest first. A window not
+  focused since the shell started counts as 0 and goes last, and so
+  does the one focused at the start until it is focused again, since
+  `on change` takes that first focus as its starting point.
 - **The filter bounds it** by the windows that are open, as the
   workspaces' was bounded by the workspaces.
 

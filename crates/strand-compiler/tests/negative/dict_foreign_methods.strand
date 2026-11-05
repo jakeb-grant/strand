@@ -1,0 +1,16 @@
+// expect: check::unknown_field
+// Python's and JS's dictionary words: each help names Strand's form for
+// the dictionary as written, with a fix where the rewrite is mechanical
+// (`has` has none: `!m.has(k)` would need parentheses).
+state counts: [text: int] = []
+let a = counts.get("a")
+let b = counts.has("a")
+let c = counts.items()
+let d = counts.size()
+let e = counts.length
+let f = counts.map(e => e.value)
+let g = counts.items
+component C {
+  box { on click { counts.set("a", 1); counts.delete("a"); counts.pop("b") } }
+  box { on click { counts.forEach(e => e.value) } }
+}
