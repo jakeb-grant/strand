@@ -634,6 +634,8 @@ workspace number. `last_win[3]` reads one, `null` when there is none,
 so it is written `last_win[ws.id] ?? ""`; in a handler,
 `last_win[3] = id` sets it and `last_win.remove(3)` forgets it. Walk it
 with `for e in last_win.entries`, each entry a `key` and a `value`.
+[Remembering things by key](../../site/how-to/remembering-by-key.md)
+builds it whole, with the other cases a shell keeps by key.
 
 **Drag and drop.** `drag: p` makes the icon draggable, carrying its
 pin. `on drop(p: Pin, at: int)` on the row receives it with the index

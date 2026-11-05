@@ -550,8 +550,8 @@ fn types(s: &Schema) -> String {
         "# Types\n\n\
          The records, enums, aliases and opaque types of the builtin schema. The \
          language's own types (`int`, `float`, `bool`, `text`, `color`, `length`, \
-         `duration`, `T?`, `[T]`, `Async<T>` and the rest) are in spec.md, \
-         section 7.1.\n\n## Records\n\n",
+         `duration`, `T?`, `[T]`, `[K: V]`, `Async<T>` and the rest) are in \
+         spec.md, section 7.1.\n\n## Records\n\n",
     );
     let mut records: Vec<&RecordDef> = s
         .types

@@ -3518,13 +3518,13 @@ proof  = "crates/strand-compiler/tests/negative/dict_untyped_empty_is_a_list.str
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
-text   = "the entry may be missing, so write it whole with a value for that"
+text   = "which may be missing\": write it whole with a value for the missing"
 source = ['crates/strand-compiler/src/check/stmt.rs "cannot change a dictionary entry, which may be missing"']
 proof  = "crates/strand-compiler/tests/negative/dict_compound_assign.strand (its help: `hits[\"a\"] = (hits[\"a\"] ?? 0) + …`)"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
-text   = "dictionary\": walk its entries, `for e in m.entries { … e.key …"
+text   = "`[int: text]`\": walk its entries, `for e in m.entries { … e.key …"
 source = ['crates/strand-compiler/src/check/stmt.rs "walk its entries, each a `key` and a `value`"']
 proof  = "crates/strand-compiler/tests/negative/dict_for_without_entries.strand (fix: `.entries`)"
 
@@ -3569,3 +3569,237 @@ page   = "site/start/running.md"
 text   = "of the path is one key: `strand get island.last_win.3` prints one"
 source = ['docs/spec.md "(dictionary) after a dictionary, the rest of the path is one key,"', 'crates/strand-compiler/src/instantiate/mod.rs "let key = rest[i..].join("']
 proof  = "crates/strand-compiler/tests/instantiate.rs::strand_get_and_set_reach_one_entry_of_a_dictionary; crates/strand/src/run/tests.rs::strand_get_and_set_reach_one_dictionary_entry"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "**`last_win[at] = …`** adds the entry for that workspace, or replaces"
+source = ['docs/spec.md "In a handler, `m[k] = v` adds the entry or replaces its value, and"']
+proof  = "crates/strand-compiler/tests/vm.rs::dictionary_writes_insert_replace_remove_and_filter; crates/strand-compiler/tests/instantiate.rs::the_last_window_on_each_workspace_is_remembered_by_key"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "**`last_win[ws.id]`** reads it back, or `null` for a workspace you"
+source = ['docs/spec.md "`m[k]` reads a `V?`: `null` when `k` is absent."']
+proof  = "crates/strand-compiler/tests/vm.rs::dictionaries_read_by_key_in_key_order (a hit and a miss)"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "**`windows.all.get(id)`** finds the window with that id, or `null`"
+source = ['crates/strand-compiler/src/schema/members.rs "The item with `key`, or null (keyed lists: `tray.items.get(id)`)."', 'docs/spec.md "none: `tray.items.get(id)`, `pins.get(app)`."']
+proof  = "crates/strand-compiler/tests/instantiate.rs::get_on_a_service_list_and_a_view_tracks_the_collection; crates/strand-compiler/tests/checker.rs::keyed_get_reads_by_the_collections_key"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "Nothing caps a dictionary's size. The line after the write drops the"
+source = ['docs/design.md "Neither has a capacity: a config bounds a dictionary by filtering out what has gone"', 'docs/spec.md "written. A dictionary is pruned by liveness, in the handler that"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::the_how_to_bounds_what_it_remembers_by_liveness_and_by_take (a closed window's stamp goes at the next write)"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "`on change` takes a value's first report as its starting point, and a"
+source = ['docs/spec.md "**never** runs for the first value (at boot or mount), for a value a"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::the_how_to_bounds_what_it_remembers_by_liveness_and_by_take (the first focus is not stamped); crates/strand-compiler/tests/instantiate.rs::the_last_window_on_each_workspace_is_remembered_by_key (the first focus is the baseline)"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "The dictionary is a table in the file, one line per monitor. A monitor"
+source = ['docs/spec.md "**A dictionary field** (`wallpapers: [text: path] = []`) is a TOML"', 'crates/strand-compiler/src/vm/persist.rs "A dictionary is a table: a `[name]` section or an inline"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_settings_dictionary_reads_a_table_and_keeps_its_last_good_value"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "Strand writes back only the line that changed, keeping your comments"
+source = ['docs/spec.md "spacing and order. A dictionary is written key by key into the table"', 'crates/strand-core/src/settings.rs "fn merge_table(old: &mut toml_edit::Table, new: &toml_edit::Table) {"']
+proof  = "crates/strand-core/src/settings.rs::a_table_is_written_key_by_key; crates/strand-compiler/tests/instantiate.rs::a_settings_dictionary_writes_back_key_by_key"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "sorting by it, largest first, puts the latest first. A window never"
+source = ['docs/spec.md "`m[k]` reads a `V?`: `null` when `k` is absent."']
+proof  = "crates/strand-compiler/tests/instantiate.rs::the_how_to_bounds_what_it_remembers_by_liveness_and_by_take (Terminal, then foot, then Web, after focusing 0x2, 0x3 and 0x1)"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "**The filter bounds it** by the windows that are open, as the"
+source = ['docs/spec.md "written. A dictionary is pruned by liveness, in the handler that"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::the_how_to_bounds_what_it_remembers_by_liveness_and_by_take"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "enum key is written bare, so a table of how long each kind of"
+source = ['docs/spec.md "critical: 0s]`; dictionaries, one `V` per key"']
+proof  = "crates/strand-compiler/tests/checker.rs::dictionaries_check_by_their_key_and_value_types (`waits[critical] ?? 6s`)"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "which a dictionary does not keep: its entries are always in key order."
+source = ['docs/spec.md "Its entries are always in key order, whatever order they were"']
+proof  = "crates/strand-compiler/tests/vm.rs::dictionaries_read_by_key_in_key_order"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "and keeps five. A launcher's recently picked themes are the same line"
+source = ['docs/design.md "and a recency list by `take(n)`, at write time."']
+proof  = "crates/strand-compiler/tests/instantiate.rs::the_how_to_bounds_what_it_remembers_by_liveness_and_by_take (eight focuses keep five, newest first, each once)"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "Each is one `state`, so `persist` keeps any of them across restarts."
+source = ['docs/spec.md "(lists, dictionaries and records of it): not functions, `Async`"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_persisted_dictionary_survives_a_restart"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "`{\"kitty\": \"Terminal\"}` is an error whose fix rewrites it in brackets."
+source = ['crates/strand-compiler/src/syntax/parser/expr.rs "dictionaries use brackets: `[k: v]`"']
+proof  = "crates/strand-compiler/tests/diagnostics.rs::dictionary_mistakes_are_one_error_and_recover; tests/negative/dict_braces.strand (its fix rewrites the braces)"
+
+[[claim]]
+page   = "site/how-to/remembering-by-key.md"
+text   = "There is no `get`, `set` or `has`: `m[k]` reads, `m[k] = v` writes,"
+source = ['crates/strand-compiler/src/check/expr.rs "dictionaries have no method `{n}`"']
+proof  = "crates/strand-compiler/tests/checker.rs::dictionary_reads_and_writes_keep_to_their_rules"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "**`syntax::dict_braces`**, \"dictionaries use brackets: `[k: v]`\""
+source = ['crates/strand-compiler/src/syntax/parser/expr.rs "dictionaries use brackets: `[k: v]`"', 'crates/strand-compiler/src/syntax/parser/expr.rs "dictionaries use brackets: `[K: V]`"']
+proof  = "crates/strand-compiler/tests/negative/dict_braces.strand (its snapshot pins the messages and fixes)"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "**`syntax::dict_item`**, \"every item of a dictionary is `key: value`\""
+source = ['crates/strand-compiler/src/syntax/parser/expr.rs "every item of a dictionary is `key: value`"', 'crates/strand-compiler/src/syntax/parser/expr.rs "an empty dictionary is `[]`"']
+proof  = "crates/strand-compiler/tests/negative/dict_item.strand (its snapshot)"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "**`check::dict_key`**, \"a dictionary cannot be keyed by `float`\" (or"
+source = ['crates/strand-compiler/src/check/mod.rs "a dictionary cannot be keyed by `{shown}`"']
+proof  = "crates/strand-compiler/tests/negative/dict_key_float.strand, dict_key_record.strand (their snapshots, `int?` among them)"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "**`check::dict_value`**, \"a dictionary's value cannot be `text?`\" (or"
+source = ['''crates/strand-compiler/src/check/mod.rs "a dictionary's value cannot be `{shown}`"''']
+proof  = "crates/strand-compiler/tests/negative/dict_optional_value.strand (its snapshot)"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "**`check::dict_duplicate`**, \"`1` is a key twice in this"
+source = ['crates/strand-compiler/src/check/expr.rs "is a key twice in this dictionary"']
+proof  = "crates/strand-compiler/tests/negative/dict_duplicate_key.strand (its snapshot)"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "**`check::dict_untyped`**, \"`m` is an untyped `[]`, a list read by"
+source = ['crates/strand-compiler/src/check/expr.rs "is an untyped `[]`, a list read by position"']
+proof  = "crates/strand-compiler/tests/negative/dict_untyped_empty_is_a_list.strand (its snapshot)"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "`null`\", on `m[k] = null`: a dictionary's values are never `null`;"
+source = ['''crates/strand-compiler/src/check/stmt.rs "a dictionary's values are never null; to remove the entry"''']
+proof  = "crates/strand-compiler/tests/negative/dict_assign_null.strand (its snapshot: this assignment expects `text`, found `null`)"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "**`check::nullable`**, \"a key expects `int`, but this may be null\":"
+source = ['crates/strand-compiler/src/check/expr.rs "expects `{want}`, but this may be null"']
+proof  = "crates/strand-compiler/tests/negative/dict_nullable_key.strand (its snapshot)"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "**`check::dict_keyed`**, \"a dictionary is already keyed, by its"
+source = ['crates/strand-compiler/src/check/tree.rs "a dictionary is already keyed, by its keys"']
+proof  = "crates/strand-compiler/tests/negative/dict_key_clause.strand (its snapshot)"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "**`check::dict_two_way`**, \"`value` cannot be bound two-way to a"
+source = ['crates/strand-compiler/src/check/tree.rs "cannot be bound two-way to a dictionary entry"']
+proof  = "crates/strand-compiler/tests/negative/dict_two_way.strand (its snapshot)"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "**`check::dict_service`**, \"a service field cannot hold a dictionary"
+source = ['crates/strand-compiler/src/check/tree.rs "cannot hold a dictionary yet: `{shown}`"', '''crates/strand-compiler/src/schema/parse.rs "a schema's type cannot be a dictionary `[K: V]` yet"''']
+proof  = "crates/strand-compiler/tests/negative/dict_in_service_field.strand (its snapshot: a service field, an action's parameter, a command's output); crates/strand-compiler/src/schema/mod.rs::a_schema_dictionary_is_not_yet"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "**`check::unknown_field`**, \"dictionaries have no method `get`\" (or"
+source = ['crates/strand-compiler/src/check/expr.rs "dictionaries have no method `{n}`"']
+proof  = "crates/strand-compiler/tests/checker.rs::dictionary_reads_and_writes_keep_to_their_rules"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "**`check::missing_key`**, \"`get` needs a keyed collection, and `xs`"
+source = ['crates/strand-compiler/src/check/expr.rs "needs a keyed collection, and {owner} has no key"']
+proof  = "crates/strand-compiler/tests/negative/get_unkeyed.strand (its snapshot)"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "**`check::type_mismatch`**, \"`key` of `pins.get` expects `text`,"
+source = ['docs/spec.md "none: `tray.items.get(id)`, `pins.get(app)`."']
+proof  = "crates/strand-compiler/tests/negative/get_key_type.strand (its snapshot)"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "**\"no entry for this key\"**: `m[k].f = x` writes a field of an entry"
+source = ['crates/strand-compiler/src/vm/exec.rs "no entry for this key"', 'docs/spec.md "8.3), "no entry for this key", and changes nothing, as `xs[i].f ="']
+proof  = "crates/strand-compiler/tests/vm.rs::dictionary_writes_insert_replace_remove_and_filter (an absent entry's field is an error and changes nothing)"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "**\"a service cannot take a dictionary yet\"**: a value holding a"
+source = ['crates/strand/src/services/convert.rs "a service cannot take a dictionary yet"']
+proof  = "crates/strand/src/services/convert.rs::values_and_data_convert_both_ways"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "is the tray item with that id, or `null` when there is none. A"
+source = ['crates/strand-compiler/src/schema/members.rs "The item with `key`, or null (keyed lists: `tray.items.get(id)`)."']
+proof  = "crates/strand-compiler/tests/instantiate.rs::get_reads_by_key_and_is_null_on_a_miss; crates/strand-compiler/tests/instantiate.rs::get_on_a_service_list_and_a_view_tracks_the_collection"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "needs no `key` and keeps each entry's copy as values change."
+source = ['docs/spec.md "keyed by `key`, so `for e in m.entries { … }` needs no `key` clause"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::rows_of_entries_keep_state_across_writes"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "`last_win[ws.id] = id`, since it may not be there yet, and forgotten"
+source = ['crates/strand-compiler/src/check/stmt.rs "cannot change a dictionary entry, which may be missing"']
+proof  = "crates/strand-compiler/tests/negative/dict_compound_assign.strand; crates/strand-compiler/tests/vm.rs::dictionary_writes_insert_replace_remove_and_filter"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "changed: `on change last_win[ws.id]` runs only when that entry does."
+source = ['docs/spec.md "value changed (section 8.1), so `on change m[k]` runs only when"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::on_change_an_entry_fires_only_for_that_key; crates/strand-compiler/tests/instantiate.rs::a_let_over_one_entry_does_not_rerun_its_dependents_when_another_changes"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "value is plain data: numbers, texts, colours and the like, and lists,"
+source = ['docs/spec.md "(lists, dictionaries and records of it): not functions, `Async`"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_persisted_dictionary_survives_a_restart"
+
+[[claim]]
+page   = "site/concepts/services.md"
+text   = "changes, and `get` finds one by it: `windows.all.get(id)` is the"
+source = ['crates/strand-compiler/src/schema/members.rs "The item with `key`, or null (keyed lists: `tray.items.get(id)`)."']
+proof  = "crates/strand-compiler/tests/instantiate.rs::get_on_a_service_list_and_a_view_tracks_the_collection"
+
+[[claim]]
+page   = "site/concepts/services.md"
+text   = "Their fields are checked like the built-ins'. A field cannot be a"
+source = ['crates/strand-compiler/src/check/tree.rs "cannot hold a dictionary yet: `{shown}`"']
+proof  = "crates/strand-compiler/tests/negative/dict_in_service_field.strand"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "`key=value` lines. A result cannot be a dictionary yet"
+source = ['crates/strand-compiler/src/check/tree.rs "cannot hold a dictionary yet: `{shown}`"']
+proof  = "crates/strand-compiler/tests/negative/dict_in_service_field.strand (a command's output)"

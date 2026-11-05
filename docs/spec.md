@@ -1958,9 +1958,10 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   action call such as `ws.focus()`, or of a declared action, section
   5.7) and assignments.
 - **Assignment** (`=`, `+=`, `-=`, `*=`, `/=`) writes a place: a
-  `state`, a field or item of one, an `rw` service field (including one
-  on an item of a service's keyed list), or a settings field (written
-  field by field). `x op= e` is `x = x op e`. Assigning to a `let`, a
+  `state`, a field or item of one, an entry of a dictionary one (`m[k]
+  = v`, with `=` alone: section 7.1), an `rw` service field (including
+  one on an item of a service's keyed list), or a settings field
+  (written field by field). `x op= e` is `x = x op e`. Assigning to a `let`, a
   prop (directly or through an `id`), a parameter or a read-only service
   field is a load error with a fix. Assignment is a statement, never an
   expression.
@@ -2023,7 +2024,9 @@ is expected is a load error whose help suggests rounding it (`.round()`,
 - `prop: <-> target` binds a widget's prop to a writable place: a
   `state`, an `rw` service field, or a settings field. The prop shows
   the target, and when the widget changes the value (a slider dragged, a
-  popup dismissed, text typed) it writes the target.
+  popup dismissed, text typed) it writes the target. An entry of a
+  dictionary is not such a place, since it may be missing
+  (`check::dict_two_way`, section 7.1).
 - The prop must be one the schema marks two-way (`value`, `text`,
   `open`, …), and the target must be writable; otherwise it is a load
   error. `<->` takes one expression, a place.

@@ -140,6 +140,8 @@ are declared. `.keys` and `for e in m.entries` walk them in that order,
 and two dictionaries with the same entries are equal (`==`). Nothing
 caps a dictionary's size: a handler that adds entries also drops the
 ones it no longer needs, `m = m.filter(e => …)`.
+[Remembering things by key](../how-to/remembering-by-key.md) builds
+the common cases.
 
 **Coming from Python or JS.** A dictionary is written with brackets,
 not braces: `[k: v]`, and `[]` when it is empty. Braces hold a block
@@ -164,7 +166,9 @@ workspace by its id, a notification by its id. When the list changes,
 copies whose key stays keep their state and slide to their new place.
 A list of plain values names its key, `for p in pins key p.app`.
 A keyed list reads one item by its key with `get`: `tray.items.get(id)`
-is the tray item with that id, or `null` when there is none.
+is the tray item with that id, or `null` when there is none. A
+dictionary's entries are keyed by their keys, so `for e in m.entries`
+needs no `key` and keeps each entry's copy as values change.
 
 ## Handlers
 

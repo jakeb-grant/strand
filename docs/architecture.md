@@ -1704,9 +1704,9 @@ Public interfaces:
   shared re-keys nothing (decisions.md m6-w2-language).
 - **Types** (`strand_compiler::ty`): `Ty` is `Error` (already reported,
   accepted everywhere), `Any`, `Null`, `Unit`, `Prim`, `Opaque`,
-  `Enum`, `EnumType`, `Record`, `List(T, keyed)`, `Optional`, `Async`,
-  `Fn`, `Tuple` and `Union` (schema props only), with records and enums
-  in a `TypeTable`.
+  `Enum`, `EnumType`, `Record`, `List(T, keyed)`, `Dict(K, V)`,
+  `Optional`, `Async`, `Fn`, `Tuple` and `Union` (schema props only),
+  with records and enums in a `TypeTable`.
 - **Checking**: `strand_compiler::compile(&SourceMap) -> Compiled`
   checks every file as one program. It never panics and always returns
   a program: an unresolved name or ill-typed expression becomes

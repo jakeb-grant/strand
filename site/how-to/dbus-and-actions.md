@@ -117,7 +117,9 @@ an `Async<text>`, as `apps.search(query)` is:
 A `text` result is what the program printed, trimmed. A number, a
 `bool`, a colour or an enum is read from the printed text; a record
 `type` of your own or a list is read from JSON, and a record also from
-`key=value` lines. In a handler, `let r = await calc(q)` waits for it.
+`key=value` lines. A result cannot be a dictionary yet
+(`check::dict_service`). In a handler, `let r = await calc(q)` waits
+for it.
 
 ## An action you can stop
 

@@ -65,7 +65,8 @@ second.
 - **Fields** are read anywhere: `battery.percent`, `audio.sink.volume`.
   Items in a list, such as each workspace or notification, carry their
   own key, so a `for` over them keeps each copy's state as the list
-  changes.
+  changes, and `get` finds one by it: `windows.all.get(id)` is the
+  window with that id, or `null` once it has closed.
 - **Writable fields**, marked `rw` in the reference, are assigned in a
   handler or bound with `<->`: `audio.sink.volume = 0.5`,
   `slider { value: <-> audio.sink.volume }`.
@@ -217,7 +218,10 @@ permit exec "sensors"
 | `from listen` | The lines a command prints, as they come |
 | `from poll … every T` | A command's output, or a file, every `T` while a reader is shown |
 
-Their fields are checked like the built-ins'. A `from dbus` service is
+Their fields are checked like the built-ins'. A field cannot be a
+[dictionary](language.md#dictionaries) yet: declare a `type` for an
+object or a D-Bus map with known keys, and a list of one for many. A
+`from dbus` service is
 checked against the object's introspection, so a misspelt property is
 an error with a did-you-mean. Running a command needs `permit exec`,
 naming the programs allowed. A custom service starts and stops as the

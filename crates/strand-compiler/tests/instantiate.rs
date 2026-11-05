@@ -6715,6 +6715,98 @@ fn the_last_window_on_each_workspace_is_remembered_by_key() {
     assert_eq!(actions, ["Window(0x22).focus(0)"]);
 }
 
+/// (dictionary) The how-to "Remembering things by key"
+/// (site/how-to/remembering-by-key.md): its taskbar, a dictionary of
+/// focus stamps ordering the windows by their last use, each shown by
+/// its app's nickname from a constant table, the stamps of closed
+/// windows pruned at the write; and its recency list, kept as a list and
+/// capped by `take`. The sources are the page's files, with a `text` of
+/// the stamps' keys added to watch the pruning.
+#[test]
+fn the_how_to_bounds_what_it_remembers_by_liveness_and_by_take() {
+    let taskbar = "let nick: [text: text] = [\"org.gnome.Nautilus\": \"Files\", \"kitty\": \"Terminal\", \"firefox\": \"Web\"]\nstate stamp = 0\nstate used: [text: int] = []\non change windows.focused?.id {\n  let id = windows.focused?.id ?? \"\"\n  if id != \"\" {\n    stamp += 1\n    used[id] = stamp\n    used = used.filter(e => windows.all.any(w => w.id == e.key))\n  }\n}\nbar Taskbar {\n  text used.keys.join(\",\")\n  row {\n    for w in windows.all.sort_by(w => -(used[w.id] ?? 0)) {\n      text nick[w.app_id] ?? w.title { on click { w.focus() } }\n    }\n  }\n}\n";
+    let mut shell = boot(&[("taskbar.strand", taskbar)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+    });
+    let win = |id: &str, app: &str| {
+        shell.host.record(
+            "Window",
+            &[
+                ("id", Value::text(id)),
+                ("app_id", Value::text(app)),
+                ("title", Value::text(format!("{app} window").as_str())),
+            ],
+        )
+    };
+    let (w1, w2, w3) = (
+        win("0x1", "kitty"),
+        win("0x2", "firefox"),
+        win("0x3", "foot"),
+    );
+    let all = |ws: &[&Value]| Value::list(ws.iter().map(|w| (*w).clone()).collect());
+    shell
+        .host
+        .set(&shell.rt, "windows.all", all(&[&w1, &w2, &w3]))
+        .unwrap();
+    shell.flush();
+    // The first focus is `on change`'s baseline; the others are stamped.
+    for w in [&w1, &w2, &w3, &w1] {
+        shell
+            .host
+            .set(&shell.rt, "windows.focused", w.clone())
+            .unwrap();
+        let u = shell.flush();
+        assert!(u.errors.is_empty(), "{:?}", u.errors);
+    }
+    assert_eq!(
+        shell.scene.texts(),
+        ["0x1,0x2,0x3", "Terminal", "foot window", "Web"]
+    );
+    // 0x3 closes: its stamp goes at the next write, not before.
+    shell
+        .host
+        .set(&shell.rt, "windows.all", all(&[&w1, &w2]))
+        .unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["0x1,0x2,0x3", "Terminal", "Web"]);
+    shell
+        .host
+        .set(&shell.rt, "windows.focused", w2.clone())
+        .unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["0x1,0x2", "Web", "Terminal"]);
+
+    let recent = "state recent: [int] = [] persist\non change workspaces.all.find(w => w.focused)?.id {\n  let id = workspaces.all.find(w => w.focused)?.id ?? -1\n  if id >= 0 { recent = ([id] + recent.filter(x => x != id)).take(5) }\n}\nbar Recent {\n  col {\n    for id in recent key id {\n      text workspaces.all.get(id)?.name ?? \"\" { on click { workspaces.all.get(id)?.focus() } }\n    }\n  }\n}\n";
+    let mut shell = boot(&[("recent.strand", recent)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+    });
+    let focus_on = |shell: &mut Shell, on: i64| {
+        let ws = (1..=7)
+            .map(|id| {
+                shell.host.record(
+                    "Workspace",
+                    &[
+                        ("id", Value::int(id)),
+                        ("name", Value::text(id.to_string().as_str())),
+                        ("focused", Value::Bool(id == on)),
+                    ],
+                )
+            })
+            .collect();
+        shell
+            .host
+            .set(&shell.rt, "workspaces.all", Value::list(ws))
+            .unwrap();
+        let u = shell.flush();
+        assert!(u.errors.is_empty(), "{:?}", u.errors);
+    };
+    for on in [1, 2, 3, 4, 5, 6, 7, 3] {
+        focus_on(&mut shell, on);
+    }
+    // Most recent first, each once, five at most.
+    assert_eq!(shell.scene.texts(), ["3", "7", "6", "5", "4"]);
+}
+
 /// (dictionary) A persisted dictionary's source: an `int`-keyed and an
 /// enum-keyed one, shown in key order, with a box writing both.
 const PERSISTED_DICTS: &str = "enum Level { low, high }\nstate seen: [int: text] = [] persist\nstate by: [Level: int] = [] persist\nbar B {\n  text seen.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  text by.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  box { on click { seen[3] = \"c\"; seen[1] = \"a\"; by[high] = 2; by[low] = 1 } }\n}\n";

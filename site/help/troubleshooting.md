@@ -66,50 +66,70 @@ state last_win: {int: text} = []
 
 Each error and its fix:
 
-- **`syntax::dict_braces`**, "dictionaries use brackets": a dictionary
-  or its type is written in brackets, `[1: "web"]` and `[int: text]`,
-  and an empty one is `[]`. Braces hold a block.
+- **`syntax::dict_braces`**, "dictionaries use brackets: `[k: v]`"
+  (or "`[K: V]`" for a type): a dictionary and its type are written in
+  brackets, `[1: "web"]` and `[int: text]`, and an empty one is `[]`.
+  Braces hold a block. On one line, the fix rewrites the braces.
 - **`syntax::dict_item`**, "every item of a dictionary is `key:
   value`": `[1: "a", 2]` mixes entries with a list's items. Give every
-  item a value, or none for a list. `[:]` is this error too; an empty
-  dictionary is `[]`.
-- **`check::dict_key`**, "a dictionary cannot be keyed by …": a key is
-  an `int`, `text`, `path`, `bool` or an enum. Key by a whole number
-  (`x.round()`) instead of a `float` or a length, and by a record's
-  `id` instead of the record. A key type is never optional.
-- **`check::dict_value`**, "a dictionary's value cannot be `T?`": a
-  missing key already reads `null`, so drop the `?`.
-- **`check::dict_duplicate`**, "… is a key twice in this dictionary":
-  remove one of the two entries.
-- **`check::dict_untyped`**, "… is an untyped `[]`, a list read by
+  item a value, or none for a list. `[:]` is the same code, "an empty
+  dictionary is `[]`".
+- **`check::dict_key`**, "a dictionary cannot be keyed by `float`" (or
+  another type): a key is an `int`, `text`, `path`, `bool` or an enum.
+  Key by a whole number (`x.round()`) instead of a `float` or a length,
+  and by a record's `id` instead of the record. A key type is never
+  optional: `[int?: text]` says "cannot be keyed by `int?`".
+- **`check::dict_value`**, "a dictionary's value cannot be `text?`" (or
+  another optional type): a missing key already reads `null`, so drop
+  the `?`.
+- **`check::dict_duplicate`**, "`1` is a key twice in this
+  dictionary": remove one of the two entries.
+- **`check::dict_untyped`**, "`m` is an untyped `[]`, a list read by
   position": `state m = []` is a list. To key it by text, declare it:
   `state m: [text: int] = []`.
-- **`check::type_mismatch`** on `m[k] = null`: a dictionary's values
-  are never `null`; forget an entry with `m.remove(k)`.
-- **`check::dict_compound`**, "`+=` cannot change a dictionary entry":
-  the entry may be missing, so write it whole with a value for that
-  case: `m[k] = (m[k] ?? 0) + 1`.
-- **`check::nullable`** on a key: `m[windows.focused?.workspace]`
-  keys by a value that may be `null`. Give a fallback with `??`, or
-  read it only when it is there.
-- **`check::dict_for`**, "`for` walks a list, and this is a
-  dictionary": walk its entries, `for e in m.entries { … e.key …
+- **`check::type_mismatch`**, "this assignment expects `text`, found
+  `null`", on `m[k] = null`: a dictionary's values are never `null`;
+  forget an entry with `m.remove(k)`, as the help says.
+- **`check::dict_compound`**, "`+=` cannot change a dictionary entry,
+  which may be missing": write it whole with a value for the missing
+  case, `m[k] = (m[k] ?? 0) + 1`.
+- **`check::nullable`**, "a key expects `int`, but this may be null":
+  `m[windows.focused?.workspace]` keys by a value that may be `null`.
+  Give a fallback with `??`, or read it only when it is there.
+- **`check::dict_for`**, "`for` walks a list, and this is a dictionary,
+  `[int: text]`": walk its entries, `for e in m.entries { … e.key …
   e.value }`.
-- **`check::dict_keyed`**, "a dictionary is already keyed": drop the
-  `key …` clause; `[K: V]` is keyed by its keys.
-- **`check::dict_two_way`**, "… cannot be bound two-way to a dictionary
-  entry": bind a `state` (`value: <-> level`) and write the entry
-  `on change level { m[k] = level }`.
-- **`check::dict_service`**, "… cannot hold a dictionary yet": a
-  service field, an action's parameter or a command's output reads a
-  list of a `type` you declare instead. A plugin's schema that declares
-  a dictionary is skipped with a warning saying the same.
-- **`check::unknown_field`**, "dictionaries have no method `get`": read
-  an entry as `m[k]`, which is `null` when the key is absent.
-- **`check::missing_key`**, "`get` needs a keyed collection, and … has
-  no key": `xs.get(k)` is a keyed list's, finding an item by its key.
-  Declare the key, `state xs: [T] key field = []`, or read the list by
-  position, `xs[i]`, or by a test, `xs.find(x => …)`.
+- **`check::dict_keyed`**, "a dictionary is already keyed, by its
+  keys": drop the `key …` clause.
+- **`check::dict_two_way`**, "`value` cannot be bound two-way to a
+  dictionary entry": bind a `state` (`value: <-> level`) and write the
+  entry `on change level { m[k] = level }`.
+- **`check::dict_service`**, "a service field cannot hold a dictionary
+  yet" (or an action's parameter, or a command's output): read a list
+  of a `type` you declare instead. A plugin's schema that declares one
+  is skipped with a warning, "a schema's type cannot be a dictionary
+  `[K: V]` yet".
+- **`check::unknown_field`**, "dictionaries have no method `get`" (or
+  `has`, `set`, `push`): read an entry as `m[k]`, which is `null` when
+  the key is absent, and write one as `m[k] = v`.
+- **`check::missing_key`**, "`get` needs a keyed collection, and `xs`
+  has no key": `xs.get(k)` is a keyed list's, finding an item by its
+  key. Declare the key, `state xs: [T] key field = []`, or read the
+  list by position, `xs[i]`, or by a test, `xs.find(x => …)`.
+- **`check::type_mismatch`**, "`key` of `pins.get` expects `text`,
+  found `int`": `get` takes the list's key, the type of the field its
+  `key` names.
+
+Two mistakes show only when the shell runs, as a
+[runtime error](#part-of-the-shell-stopped-responding) that `strand
+watch` prints:
+
+- **"no entry for this key"**: `m[k].f = x` writes a field of an entry
+  that is not there, and changes nothing. Write the whole entry,
+  `m[k] = …`, when it may be missing.
+- **"a service cannot take a dictionary yet"**: a value holding a
+  dictionary was on its way to a service's field or action, which
+  `strand check` could not see. Pass a list of a `type` you declare.
 
 ## A settings dictionary keeps its last good value
 

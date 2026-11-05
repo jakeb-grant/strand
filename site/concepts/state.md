@@ -56,12 +56,20 @@ Writes made together count as one change. Every binding sees a
 consistent set of values, never a mix of old and new, and the screen
 gets one set of changes for them.
 
+A [dictionary](language.md#dictionaries) in a `state` is one value.
+A binding that reads one entry, `last_win[ws.id]`, runs again
+when any entry is written, and stops there unless its own entry
+changed: `on change last_win[ws.id]` runs only when that entry does.
+
 ## Where writes happen
 
 Values are written only in **handlers**: the bodies of `on`, `after`
 and `every`. A handler assigns with `=`, `+=`, `-=`, `*=` and `/=` to a
 `state`, a field of one, a service's `rw` field or a field of a
-settings file. Assigning to a `let`, a prop or a component's parameter
+settings file. An entry of a
+[dictionary](language.md#dictionaries) is written with `=` alone,
+`last_win[ws.id] = id`, since it may not be there yet, and forgotten
+with `last_win.remove(ws.id)`. Assigning to a `let`, a prop or a component's parameter
 is a load error with a fix.
 
 ## Where state lives
@@ -135,7 +143,9 @@ are `Async`.
 
 ## Keeping state across restarts
 
-- **`persist`** on a `state` keeps its value across restarts.
+- **`persist`** on a `state` keeps its value across restarts. The
+  value is plain data: numbers, texts, colours and the like, and lists,
+  dictionaries and records of them.
 - **`export`** on a top-level `state` or `let` makes it readable from
   other files and from the command line: `strand toggle launcher.open`
   flips `export state open = false` in `launcher.strand`.
