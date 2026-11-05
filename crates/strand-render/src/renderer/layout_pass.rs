@@ -287,8 +287,9 @@ impl Renderer {
     /// The curve every FLIP glide on surface root `root` plays, if one
     /// curve does: (growth) while its box springs over a step, the step's
     /// (its height's where that steps, else its width's), so what the step
-    /// moves in its box glides with it. Otherwise `None`: each node glides
-    /// on its own `$motion.spatial` ([`glide_curve`]).
+    /// moves in its box glides with it, the glides the passes before the
+    /// step gave since the frame included. Otherwise `None`: each node
+    /// glides on its own `$motion.spatial` ([`glide_curve`]).
     fn flip_curve(&self, root: NodeId) -> Option<Curve> {
         let axes = self.anim.step_axes(root);
         [1, 0]
@@ -1504,6 +1505,14 @@ pub(super) fn glide_moved(
                 g.axes.1 |= total.1.abs() > 0.5;
                 total
             } else {
+                // (glide-curve) The pass that starts a step: what the
+                // passes before it gave this node since the frame, not yet
+                // begun, rides the box on the step's curve too.
+                if let Some(curve) = curve
+                    && big(given)
+                {
+                    anim.glide(*c, [0.0, 0.0], curve);
+                }
                 given
             };
             let (mut acc_c, real_c) = (add(acc, glided), add(real, glided));

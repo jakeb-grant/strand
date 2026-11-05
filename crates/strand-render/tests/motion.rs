@@ -3681,6 +3681,70 @@ fn wheel_steps_spring_the_offset() {
     assert!(!st.r.wants_frame(S));
 }
 
+/// (glide-curve) A wheel step springs the offset on the
+/// `$motion.spatial` in effect at the list (spec.md 6.6, 9.4): two lists
+/// side by side take the same 45 px step, the one in a column under
+/// `set { $motion.spatial: 100ms linear }` evenly over 100 ms and never
+/// past it, the one beside it on the default spring. (The wheel took the
+/// global `$motion.spatial`, the set's ignored.)
+#[test]
+fn a_wheel_step_follows_the_spatial_token_in_effect_at_the_list() {
+    let mut lists = Vec::new();
+    let mut st = Stage::new(120, 200, |b, root| {
+        let row = b.node(NodeKind::Row, Some(root), vec![]);
+        for set in [true, false] {
+            let mut props = vec![(Prop::Width, num(60.0))];
+            if set {
+                props.push(spatial_over(Duration::from_millis(100)));
+            }
+            let col = b.node(NodeKind::Col, Some(row), props);
+            let l = b.node(NodeKind::List, Some(col), vec![(Prop::Height, num(200.0))]);
+            for _ in 0..40 {
+                b.node(
+                    NodeKind::Box,
+                    Some(l),
+                    vec![(Prop::Height, num(30.0)), (Prop::Bg, color("#ff0000"))],
+                );
+            }
+            lists.push(l);
+        }
+    });
+    let (under, outside) = (lists[0], lists[1]);
+    for (x, l) in [(30.0, under), (90.0, outside)] {
+        let at = LogicalPoint::new(x, 100.0);
+        assert_eq!(st.r.scroll_input(S, at, wheel(45.0, 0)), Some(l));
+    }
+    let (mut set, mut beside) = (Vec::new(), Vec::new());
+    let mut k = 1;
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        set.push(st.r.scroll_offset(under).unwrap());
+        beside.push(st.r.scroll_offset(outside).unwrap());
+        k += 1;
+        assert!(k < 400, "never settled");
+    }
+    assert_eq!((set.last(), beside.last()), (Some(&45.0), Some(&45.0)));
+    // Linear over 100 ms at 60 Hz: 7.5 px a frame.
+    let moving: Vec<f32> = std::iter::once(set[0])
+        .chain(set.windows(2).map(|w| w[1] - w[0]))
+        .filter(|d| *d > 0.01)
+        .collect();
+    assert!(
+        (5..=7).contains(&moving.len()) && moving.iter().all(|d| (6.0..=9.0).contains(d)),
+        "linear over 100 ms: {set:?}"
+    );
+    assert!(
+        set.iter().all(|t| *t <= 45.0),
+        "never past its step: {set:?}"
+    );
+    // The default spring is quicker off the mark and settles later.
+    let settled = |v: &[f32]| v.iter().position(|t| (*t - 45.0).abs() < 0.01);
+    assert!(
+        beside[0] > set[0] + 1.0 && settled(&beside) > settled(&set).map(|i| i + 2),
+        "the default spring beside it: {beside:?} beside {set:?}"
+    );
+}
+
 /// A touchpad moves the offset with the fingers, and lifting them while
 /// moving flings it: the velocity decays (`FLING_DECAY`), each frame
 /// moves less than the one before, and it stops by itself, about

@@ -1071,10 +1071,11 @@ is being saved, so the idle-wakeup windows hold.
   `width`/`height`/`size` spring the laid-out size. Other layout lengths
   snap and the boxes they move glide (FLIP), as do siblings of created,
   removed and moved nodes and every box after a `SetTokens`; text changes
-  never glide. A glide takes the `$motion.spatial` in scope at its node
-  (`flatten::scope_tables`, so a `set` reaches it), or, while its
-  surface's box springs over a step, the step's curve (decisions.md
-  glide-curve). A target changed by tokens or inheritance snaps at rest and
+  never glide. A glide, and a wheel step of a `scroll` or `list`, takes
+  the `$motion.spatial` in scope at its node (`flatten::scope_tables`,
+  so a `set` reaches it), or, while its surface's box springs over a
+  step, the step's curve, the glides of the pass that starts the step
+  included (decisions.md glide-curve). A target changed by tokens or inheritance snaps at rest and
   steers a motion in flight.
 
   `enter` plays for a node created on a shown surface or in the diff that

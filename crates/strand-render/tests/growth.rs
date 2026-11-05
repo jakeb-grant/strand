@@ -848,6 +848,47 @@ fn a_glide_mid_growth_takes_the_steps_curve_under_a_set() {
     assert_eq!(under, plain, "the set's curve moved what the growth moves");
 }
 
+/// (glide-curve) The usual growth: a row mounted above the red one in a
+/// centred panel is laid out before the box's step begins (the pass
+/// awaiting the configure), so the glide that pass gives the red row
+/// rides the box too once the step starts. With its column under
+/// `set { $motion.spatial: 1s linear }` the red row is drawn on screen
+/// frame for frame where it is drawn with no set. (On the set's curve it
+/// went 13 px up with the box, then crawled back down over a second.)
+#[test]
+fn a_mount_that_starts_the_growth_glides_on_the_steps_curve_under_a_set() {
+    let path = |set: bool| {
+        let (mut diff, root, col, _) = centred_panel(vec![]);
+        if set {
+            let mut t = TokenTable::default();
+            t.insert(
+                "motion.spatial",
+                PropValue::Transition(Transition::Duration {
+                    duration: Duration::from_secs(1),
+                    easing: Easing::Linear,
+                }),
+            );
+            diff.set(col, Prop::Tokens, PropValue::Tokens(Box::new(t)));
+        }
+        let mut h = Host::new(diff, root);
+        h.run();
+        let (d, _) = mount(col, 60, 0);
+        h.apply(d);
+        h.shots()
+            .iter()
+            .map(|s| s.red_on_screen(CENTRE))
+            .collect::<Vec<_>>()
+    };
+    let (plain, under) = (path(false), path(true));
+    assert!(plain.len() >= 4, "it moves: {plain:?}");
+    // With no set it only ever goes down, as the row above it opens.
+    assert!(
+        plain.windows(2).all(|w| w[1][1] >= w[0][1] - 1),
+        "{plain:?}"
+    );
+    assert_eq!(under, plain, "the set's curve moved what the growth moves");
+}
+
 /// Under reduced motion growth and shrink are immediate.
 #[test]
 fn reduced_motion_makes_growth_immediate() {

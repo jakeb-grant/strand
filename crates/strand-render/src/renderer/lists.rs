@@ -211,14 +211,16 @@ impl Renderer {
         }
     }
 
-    /// The spring a wheel step (or a snap) moves an offset along: the
-    /// default spatial transition, at once under `reduced_motion`.
-    fn scroll_curve(&self) -> Curve {
+    /// The spring a wheel step (or a snap) moves the offset of `id`
+    /// along: the default spatial transition, `$motion.spatial` as the
+    /// tokens in effect at `id` give it (a `set` reaches it, spec.md 9.4;
+    /// decisions.md glide-curve), at once under `reduced_motion`.
+    fn scroll_curve(&self, id: NodeId) -> Curve {
         if self.anim.reduced() {
             Curve::Instant
         } else {
-            let tables = [&self.tree.tokens];
-            Curve::of(&TokenScope::new(&tables).transition(&Transition::Default, Prop::Y))
+            let scopes = crate::flatten::scope_tables(&self.tree, id);
+            Curve::of(&TokenScope::new(&scopes).transition(&Transition::Default, Prop::Y))
         }
     }
 
@@ -239,7 +241,7 @@ impl Renderer {
                 let (id, x) = self.lists.touching.remove(&surface)?;
                 let last = self.last_frame(surface);
                 self.lists.revealing.remove(&id);
-                let curve = self.scroll_curve();
+                let curve = self.scroll_curve(id);
                 let st = self.axis_state(id, x);
                 // (flex) `snap: true`: it settles on a child, flung or not.
                 let moved = if st.snaps.is_some() {
@@ -283,7 +285,7 @@ impl Renderer {
                     .scrollable_at(surface, point, (input.dx, input.dy), true)
                     .or_else(|| self.sideways_wheel_at(surface, point, (input.dx, input.dy)))?;
                 self.lists.revealing.remove(&id);
-                let curve = self.scroll_curve();
+                let curve = self.scroll_curve(id);
                 let last = self.last_frame(surface);
                 self.axis_state(id, x).wheel(d, curve, last);
                 self.scrolled(id);
@@ -542,7 +544,7 @@ impl Renderer {
         } else {
             (y, x)
         };
-        let curve = self.scroll_curve();
+        let curve = self.scroll_curve(id);
         let last = self.laid_surface(id).and_then(|s| self.last_frame(s));
         let mut moved = false;
         for (along_x, value) in [
