@@ -318,7 +318,10 @@ monitor, the keyboard always).
   the first time it opens, so an `on change` in one of them takes the
   value it mounts with as its first (section 8.4) and does not see the
   tick that first opens it; written in the surface's body, it does.
-  The handlers of one tick run in the order written, wherever they are.
+  A surface's handlers that mount together run in the order written,
+  whether it starts open or closed; a handler in an `if` or `match`
+  branch, a `for` row or a `popup` that mounts later may run after one
+  written below it.
   A `popup` mounts its content each time it opens, and the `lock`'s
   handlers run as below. (decisions.md panel-change-closed)
 - **`popup { … }`** is an element, not a top-level surface: it is
