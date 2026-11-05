@@ -2204,7 +2204,8 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   by `x`, then `y`, an unknown one as 0, 0, the lowest global at one
   place, an output with no monitor yet last), the key logic's
   `run::layout_order` sorts `screens.all` by, so the instance shows on
-  the monitor whose `screen` logic gave it. `State::lock_instance_failed(node)` puts an
+  the monitor whose `screen` logic gave it, also after a monitor moves
+  while locked (`update_output` places the lock's surfaces again). `State::lock_instance_failed(node)` puts an
   instance's output back on the solid for the session; the binary calls
   it for a faulted, unmounted or never-drawn instance (not drawn
   `INSTANCE_FIRST_FRAME`, 3 s, after its configure while another has).
