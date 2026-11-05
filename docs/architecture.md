@@ -1360,6 +1360,17 @@ is being saved, so the idle-wakeup windows hold.
     global index, mounted or not; a row not mounted is revealed with
     `InputScene::reveal_index` and the selection lands in
     `Router::settle` once logic mounts it.
+  - A list's start (decisions.md list-selection): `selected_index:` on
+    a `list` is lowered to `Prop::SelectedIndex` (a `Number`, unset when
+    null). `Router::observe` notes each list it is set on (mounts
+    included), and `Router::settle` selects that row unless the user
+    moved the selection since; the first-row rule of a `nav:` list
+    starts on it too. A start past the rows waits for its own row (an
+    `Away` marked `exact`, never clamped to the last row). A selected row
+    a `Remove` without `window` takes out leaves the selection at its
+    global index, landed as a row on its way, while rows the same diff
+    did not `Create` stay in the list; with none left, the list starts
+    again.
   - Submenus: Right opens the first closed two-way `popup` under the
     selected row (else the hovered chain); Left in a nested popup closes
     it as Escape does (decisions.md m4-lists-w1).

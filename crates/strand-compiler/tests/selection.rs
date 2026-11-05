@@ -898,3 +898,352 @@ fn a_component_rooted_in_a_list_moves_from_code() {
     press(&mut sh, "n");
     assert_eq!(index(&sh), Some(1));
 }
+
+/// (list-selection) A panel whose list starts on `at` (`selected_index:
+/// at`), its rows `items` (keyed, 20 tall, 5 show), steered from an
+/// `input` with `nav:` when `nav`, else focused itself. `zero` turns true
+/// if `selected_index` is ever told 0; `activated` is the row Return ran.
+/// Ctrl+E empties the rows and starts at 0, Ctrl+T brings six rows with
+/// their start at 3 in one change (another page whose rows load), Ctrl+W
+/// scrolls the list to 200.
+fn started(items: &[i64], at: &str, nav: bool) -> Shell {
+    let items = items
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (input, focus) = if nav {
+        (
+            "input { height: 30; text: <-> q; focus: true; nav: results }",
+            "",
+        )
+    } else {
+        ("", "focus: true; ")
+    };
+    let mut sh = Shell::new(&format!(
+        "state items: [int] = [{items}]\n\
+         state at: int? = {at}\n\
+         state q = \"\"\n\
+         state activated = -1\n\
+         state zero = false\n\
+         panel L {{ anchor: top_left; width: 300; height: 130; keyboard: exclusive\n\
+           on key \"ctrl+l\" {{ results.last() }}\n\
+           on key \"ctrl+s\" {{ results.select(1500) }}\n\
+           on key \"ctrl+e\" {{ items = []; at = 0 }}\n\
+           on key \"ctrl+t\" {{ items = [0, 1, 2, 3, 4, 5]; at = 3 }}\n\
+           on key \"ctrl+w\" {{ results.scroll_to(200) }}\n\
+           on change results.selected_index {{ if (results.selected_index ?? -1) == 0 {{ zero = true }} }}\n\
+           col {{\n\
+             {input}\n\
+             list {{ id: results; height: 100; {focus}selected_index: at\n\
+               for i in items key i {{ box {{ height: 20; on activate {{ activated = i }} }} }}\n\
+             }}\n\
+           }}\n\
+         }}\n"
+    ));
+    sh.keyboard_to("L");
+    sh.settle();
+    sh
+}
+
+fn ints(items: impl IntoIterator<Item = i64>) -> Value {
+    Value::list(items.into_iter().map(Value::int).collect())
+}
+
+/// One press of `name` with `ctrl` held or not, not a repeat (Return
+/// activates once a press).
+fn tap(sh: &mut Shell, name: &str, ctrl: bool) {
+    let surface = sh.keyboard.unwrap();
+    sh.send(InputEvent::Key {
+        surface,
+        key: KeyInput {
+            name: name.into(),
+            text: String::new(),
+            state: ButtonState::Pressed,
+            repeat: false,
+            modifiers: Modifiers {
+                ctrl,
+                ..Modifiers::default()
+            },
+            time: 0,
+            latin: None,
+        },
+    });
+    sh.run(4);
+}
+
+/// What Return activates now: the selected row's item.
+fn activated(sh: &mut Shell) -> f64 {
+    tap(sh, "Return", false);
+    sh.num("activated")
+}
+
+/// (list-selection) A list starts on the row its `selected_index:` names,
+/// steered by an input or focused itself, and null starts as a list
+/// without it does: the first row with `nav:`, none without.
+#[test]
+fn a_list_starts_on_its_selected_index() {
+    for nav in [true, false] {
+        let mut sh = started(&[10, 11, 12, 13, 14, 15], "3", nav);
+        assert_eq!(index(&sh), Some(3), "nav {nav}");
+        let row3 = sh.r.tree().get(list(&sh)).unwrap().children[3];
+        assert_eq!(sh.router.selected(list(&sh)), Some(row3), "nav {nav}");
+        assert!(!sh.get("zero").truthy(), "never on the first row");
+        assert_eq!(activated(&mut sh), 13.0, "nav {nav}");
+        // A start below 0 is the first row, as `select` keeps within them.
+        let sh = started(&[10, 11, 12], "-4", nav);
+        assert_eq!(index(&sh), Some(0), "nav {nav}");
+    }
+    assert_eq!(index(&started(&[10, 11, 12], "null", true)), Some(0));
+    assert_eq!(index(&started(&[10, 11, 12], "null", false)), None);
+}
+
+/// (list-selection) A start the rows have not reached waits for its own
+/// row: nothing selected, `selected_index` reading it, and no first row
+/// meanwhile (the first-row rule of `nav:` waits too); it lands when the
+/// row arrives.
+#[test]
+fn a_start_past_the_rows_waits_for_its_row() {
+    for nav in [true, false] {
+        let mut sh = started(&[], "5", nav);
+        assert_eq!(index(&sh), Some(5), "nav {nav}");
+        assert_eq!(sh.router.selected(list(&sh)), None, "nav {nav}");
+        sh.set("items", ints(0..3));
+        assert_eq!(index(&sh), Some(5), "nav {nav}: not there yet");
+        assert_eq!(sh.router.selected(list(&sh)), None, "nav {nav}");
+        sh.set("items", ints(0..10));
+        let row5 = sh.r.tree().get(list(&sh)).unwrap().children[5];
+        assert_eq!(sh.router.selected(list(&sh)), Some(row5), "nav {nav}");
+        assert!(!sh.get("zero").truthy(), "nav {nav}: the first row never");
+        assert_eq!(activated(&mut sh), 5.0, "nav {nav}");
+    }
+}
+
+/// (list-selection) The launcher's Themes page: the list mounts empty, and
+/// the rows and the start (the place of the theme in use among them)
+/// arrive in one change. The selection goes straight to that row, with no
+/// handler and the first row never selected on the way.
+#[test]
+fn rows_and_their_start_arriving_together_land_on_it() {
+    let mut sh = Shell::new(
+        "state names: [text] = []\n\
+         state current = \"mocha\"\n\
+         state q = \"\"\n\
+         state zero = false\n\
+         panel L { anchor: top_left; width: 300; height: 130; keyboard: exclusive\n\
+           on change results.selected_index { if (results.selected_index ?? -1) == 0 { zero = true } }\n\
+           col {\n\
+             input { height: 30; text: <-> q; focus: true; nav: results }\n\
+             list { id: results; height: 100; selected_index: names.index_of(n => n == current)\n\
+               for n in names key n { box { height: 20 } }\n\
+             }\n\
+           }\n\
+         }\n",
+    );
+    sh.keyboard_to("L");
+    sh.settle();
+    assert_eq!(index(&sh), None, "no rows, no start");
+    let names = ["latte", "frappe", "macchiato", "mocha", "nord", "gruvbox"];
+    sh.set(
+        "names",
+        Value::list(names.iter().map(|n| Value::text(*n)).collect()),
+    );
+    assert_eq!(index(&sh), Some(3));
+    let row3 = sh.r.tree().get(list(&sh)).unwrap().children[3];
+    assert_eq!(sh.router.selected(list(&sh)), Some(row3));
+    assert!(!sh.get("zero").truthy(), "the first theme never showed");
+}
+
+/// (list-selection) A start that changes moves the selection while the
+/// user has not moved it; after an arrow it stays where the user put it,
+/// until a new query in its `nav:` input starts the list again, on the
+/// start.
+#[test]
+fn a_changed_start_moves_the_selection_until_the_user_moves_it() {
+    for nav in [true, false] {
+        let mut sh = started(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "3", nav);
+        sh.set("at", Value::int(6));
+        assert_eq!(index(&sh), Some(6), "nav {nav}");
+        sh.set("at", Value::Null);
+        assert_eq!(index(&sh), Some(6), "nav {nav}: null leaves it");
+        sh.set("at", Value::int(1));
+        assert_eq!(index(&sh), Some(1), "nav {nav}");
+        press(&mut sh, "Down");
+        assert_eq!(index(&sh), Some(2), "nav {nav}");
+        sh.set("at", Value::int(8));
+        assert_eq!(index(&sh), Some(2), "nav {nav}: the user's place stays");
+        if nav {
+            sh.set("q", Value::text("x"));
+            assert_eq!(index(&sh), Some(8), "a new query starts on the start");
+            sh.set("at", Value::int(4));
+            assert_eq!(index(&sh), Some(4), "and follows it again");
+        }
+    }
+}
+
+/// (list-selection) Return while the start waits for a row the list does
+/// not have goes where `select(n)` would, the last row, and activates it.
+#[test]
+fn return_while_the_start_waits_activates_where_select_would() {
+    for nav in [true, false] {
+        let mut sh = started(&[0, 1, 2], "5", nav);
+        assert_eq!(sh.router.selected(list(&sh)), None, "nav {nav}");
+        assert_eq!(activated(&mut sh), 2.0, "nav {nav}");
+        assert_eq!(index(&sh), Some(2), "nav {nav}");
+        // With no rows at all, Return does nothing, as `select(n)` does,
+        // and nothing is activated when the rows come later.
+        let mut sh = started(&[], "2", nav);
+        assert_eq!(activated(&mut sh), -1.0, "nav {nav}");
+        sh.set("items", ints(0..5));
+        assert_eq!(index(&sh), Some(2), "nav {nav}");
+        assert_eq!(sh.num("activated"), -1.0, "nav {nav}: nothing ran");
+    }
+}
+
+/// (list-selection) A start past a virtualised list's mounted window is
+/// scrolled to and lands, as `select(n)` does.
+#[test]
+fn a_start_beyond_the_window_is_scrolled_to() {
+    let mut sh = started(&(0..2000i64).collect::<Vec<_>>(), "1500", true);
+    sh.settle();
+    assert_eq!(index(&sh), Some(1500));
+    assert!(sh.router.selected(list(&sh)).is_some(), "it landed");
+    let offset = sh.r.scroll_offset(list(&sh)).unwrap();
+    assert!(
+        offset <= 1500.0 * 20.0 && offset + 100.0 >= 1501.0 * 20.0,
+        "row 1500 shows: {offset}"
+    );
+    assert_eq!(activated(&mut sh), 1500.0);
+}
+
+/// (list-selection) The selected row leaving while the others stay (a
+/// notification cleared) leaves the selection at its place: on the row
+/// that takes it, or the new last row when it was the last. A row leaving
+/// elsewhere keeps the selection on its row.
+#[test]
+fn a_selected_row_that_leaves_leaves_the_selection_at_its_place() {
+    for nav in [true, false] {
+        let mut sh = started(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "null", nav);
+        for _ in 0..(if nav { 3 } else { 4 }) {
+            press(&mut sh, "Down");
+        }
+        assert_eq!(index(&sh), Some(3), "nav {nav}");
+        sh.set("items", ints([0, 1, 2, 4, 5, 6, 7, 8, 9]));
+        assert_eq!(index(&sh), Some(3), "nav {nav}");
+        assert_eq!(activated(&mut sh), 4.0, "nav {nav}: the row that took it");
+        sh.set("items", ints([1, 2, 4, 5, 6, 7, 8, 9]));
+        assert_eq!(index(&sh), Some(2), "nav {nav}: still on its row");
+        assert_eq!(activated(&mut sh), 4.0, "nav {nav}");
+        tap(&mut sh, "l", true);
+        assert_eq!(index(&sh), Some(7), "nav {nav}");
+        sh.set("items", ints([1, 2, 4, 5, 6, 7, 8]));
+        assert_eq!(index(&sh), Some(6), "nav {nav}: the new last row");
+        assert_eq!(activated(&mut sh), 8.0, "nav {nav}");
+    }
+}
+
+/// (list-selection) Every row replaced (another page of the list) starts
+/// the selection again: on the start, else the first row with `nav:` and
+/// none without. With no row left there is none, or the start waiting.
+#[test]
+fn rows_replaced_whole_start_the_selection_again() {
+    for (nav, at, then) in [
+        (true, "null", Some(0)),
+        (true, "2", Some(2)),
+        (false, "null", None),
+        (false, "2", Some(2)),
+    ] {
+        let mut sh = started(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], at, nav);
+        tap(&mut sh, "l", true);
+        assert_eq!(index(&sh), Some(9), "nav {nav} at {at}");
+        sh.set("items", ints(100..106));
+        assert_eq!(index(&sh), then, "nav {nav} at {at}");
+        sh.set("items", ints([]));
+        let waiting = (at == "2").then_some(2);
+        assert_eq!(index(&sh), waiting, "nav {nav} at {at}");
+        assert_eq!(sh.router.selected(list(&sh)), None, "nav {nav} at {at}");
+    }
+}
+
+/// (list-selection) In a virtualised list the selected row leaving keeps
+/// its place too, the row after it taking it.
+#[test]
+fn a_selected_row_leaving_a_windowed_list_keeps_its_place() {
+    let mut sh = started(&(0..2000i64).collect::<Vec<_>>(), "null", false);
+    tap(&mut sh, "s", true);
+    sh.settle();
+    assert_eq!(index(&sh), Some(1500));
+    sh.set("items", ints((0..2000).filter(|i| *i != 1500)));
+    assert_eq!(index(&sh), Some(1500));
+    assert!(sh.router.selected(list(&sh)).is_some());
+    assert_eq!(activated(&mut sh), 1501.0);
+}
+
+/// (list-selection) The user moved on one page; the next page replaces
+/// every row, its start waiting with no rows, and then its rows and start
+/// arrive together (the launcher's Themes page opened from another). The
+/// list started again, so it follows the start to its row.
+#[test]
+fn a_start_after_the_rows_are_replaced_is_followed_again() {
+    for nav in [true, false] {
+        let mut sh = started(&[100, 101, 102, 103, 104, 105], "null", nav);
+        for _ in 0..(if nav { 2 } else { 3 }) {
+            press(&mut sh, "Down");
+        }
+        assert_eq!(index(&sh), Some(2), "nav {nav}");
+        tap(&mut sh, "e", true);
+        assert_eq!(sh.router.selected(list(&sh)), None, "nav {nav}");
+        tap(&mut sh, "t", true);
+        assert_eq!(index(&sh), Some(3), "nav {nav}");
+        let row3 = sh.r.tree().get(list(&sh)).unwrap().children[3];
+        assert_eq!(sh.router.selected(list(&sh)), Some(row3), "nav {nav}");
+        assert_eq!(activated(&mut sh), 3.0, "nav {nav}");
+    }
+}
+
+/// (list-selection) A `nav:` list starts on its start again when its
+/// surface opens again, after the user had moved, and follows it after.
+#[test]
+fn a_surface_opening_again_starts_on_the_start() {
+    let mut sh = started(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "3", true);
+    press(&mut sh, "Down");
+    assert_eq!(index(&sh), Some(4));
+    let surface = sh.keyboard.unwrap();
+    sh.send(InputEvent::KeyboardLeave { surface });
+    sh.run(2);
+    sh.keyboard_to("L");
+    sh.settle();
+    assert_eq!(index(&sh), Some(3));
+    sh.set("at", Value::int(5));
+    assert_eq!(index(&sh), Some(5), "followed again");
+}
+
+/// (list-selection) A `nav:` list whose rows change under the same text,
+/// the user not having moved, goes to its start among the new rows, not
+/// with the row that was there.
+#[test]
+fn rows_changing_under_the_same_text_go_to_the_start() {
+    let mut sh = started(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "3", true);
+    assert_eq!(activated(&mut sh), 3.0);
+    sh.set("items", ints([20, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+    assert_eq!(index(&sh), Some(3));
+    assert_eq!(activated(&mut sh), 2.0, "the row now at the start");
+}
+
+/// (list-selection) The first row of a `nav:` list the user has not moved
+/// leaving, the list scrolled down meanwhile, selects the new first row
+/// scrolled into view, as the first-row rule always did.
+#[test]
+fn the_first_row_rule_still_shows_its_row_after_one_leaves() {
+    let mut sh = started(&(0..20i64).collect::<Vec<_>>(), "null", true);
+    assert_eq!(index(&sh), Some(0));
+    tap(&mut sh, "w", true);
+    sh.settle();
+    assert!(sh.r.scroll_offset(list(&sh)).unwrap() > 100.0, "scrolled");
+    sh.set("items", ints(1..20));
+    sh.settle();
+    assert_eq!(index(&sh), Some(0));
+    assert_eq!(activated(&mut sh), 1.0);
+    let offset = sh.r.scroll_offset(list(&sh)).unwrap();
+    assert!(offset < 1.0, "the new first row shows: {offset}");
+}

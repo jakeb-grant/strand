@@ -440,6 +440,22 @@ struct Away {
     /// Scrolled into view when it lands (moved by a key, not left
     /// behind by a scroll).
     reveal: bool,
+    /// (list-selection) The list's start (`selected_index:`) past the
+    /// rows it has: it waits for that row itself, where a move lands on
+    /// the last row.
+    exact: bool,
+}
+
+/// (list-selection) A selected row logic removed (not one the list's
+/// window unmounted): the selection stays at its place if rows that were
+/// there before stay too.
+#[derive(Debug)]
+struct LeftRow {
+    list: NodeId,
+    /// The global index the row had.
+    index: u32,
+    /// The rows created in the list by the same diff.
+    arrived: HashSet<NodeId>,
 }
 
 /// An `input`'s writes logic has not answered yet.
@@ -512,6 +528,12 @@ pub struct Router {
     sel_index: HashMap<NodeId, u32>,
     /// Lists whose selection is a row not mounted now.
     away: HashMap<NodeId, Away>,
+    /// (list-selection) Selected rows logic's diff removed, until the
+    /// selection is settled on what stays.
+    left: Vec<LeftRow>,
+    /// (list-selection) Lists whose `selected_index:` logic's diff set
+    /// (as they mount too), followed when routing settles.
+    starts: Vec<NodeId>,
     /// (keyboard) What logic's last diff asked of nodes (`results.next()`,
     /// `node.focus()`), in order, until it is applied ([`Router::settle`]).
     asks: Vec<(NodeId, NodeAsk)>,
@@ -788,7 +810,50 @@ impl Router {
                     index,
                     activate: false,
                     reveal: false,
+                    exact: false,
                 });
+            }
+        }
+        // (list-selection) A selected row logic removed, and the rows the
+        // same diff brought into its list: `settle` keeps the selection's
+        // place when rows that were there before stay.
+        let before = self.left.len();
+        for op in &diff.ops {
+            match op {
+                SceneOp::Remove { id, window: false } => {
+                    if let Some(list) = self
+                        .selected
+                        .iter()
+                        .find_map(|(l, r)| (*r == *id).then_some(*l))
+                        && let Some(&index) = self.sel_index.get(&list)
+                    {
+                        self.left.push(LeftRow {
+                            list,
+                            index,
+                            arrived: HashSet::new(),
+                        });
+                    }
+                }
+                SceneOp::SetProp {
+                    id,
+                    prop: Prop::SelectedIndex,
+                    ..
+                } => self.starts.push(*id),
+                _ => {}
+            }
+        }
+        if self.left.len() > before {
+            for op in &diff.ops {
+                if let SceneOp::Create {
+                    id,
+                    parent: Some(p),
+                    window: false,
+                    ..
+                } = op
+                    && let Some(l) = self.left[before..].iter_mut().find(|l| l.list == *p)
+                {
+                    l.arrived.insert(*id);
+                }
             }
         }
         // (keyboard) A `value` a key wrote coming back, or logic's own.
@@ -1302,11 +1367,19 @@ impl Router {
     /// text (an `Async` search's late or re-ranked results) select the
     /// first too, unless the user moved the selection (an arrow, a
     /// click) to a row that is still there. Returns what logic hears of
+    /// it. (list-selection) "Its first" is the row its `selected_index:`
+    /// names when it has one, waited for while the rows have not reached
     /// it.
     ///
     /// A selection moved past a virtualised list's mounted rows lands on
     /// its row once logic mounts it (and Return pressed meanwhile
     /// activates it then).
+    ///
+    /// (list-selection) A selected row logic removed, while rows that
+    /// were there before stay, leaves the selection at its place: on the
+    /// row that takes it, or the new last row. A list's `selected_index:`
+    /// is where the first-row rule starts it, and where its selection goes
+    /// when logic changes it, unless the user moved the selection since.
     ///
     /// (keyboard) Then what the diff asked of lists, in order, each from
     /// where the one before left the selection: after the first-row rule,
@@ -1315,7 +1388,9 @@ impl Router {
     /// the same order: what asks after a `focus()` finds it there.
     pub fn settle(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
         self.prune(scene.tree());
+        self.keep_places(scene);
         self.refocus(scene);
+        self.follow_starts(scene);
         self.land(scene);
         self.select_first_rows(scene);
         let mut refocused = false;
@@ -1546,14 +1621,31 @@ impl Router {
         };
         self.away.retain(|l, _| tree.contains_live(*l));
         let mut landed = Vec::new();
+        let mut arrived = Vec::new();
         for (&list, a) in &self.away {
             let w = window_rows(tree, list);
             if w.count == 0 {
                 continue;
             }
+            // (list-selection) A start waits for its own row; once the
+            // list has it, it is a row on its way as any other.
+            if a.exact {
+                if a.index >= w.count {
+                    continue;
+                }
+                arrived.push(list);
+            }
             let index = a.index.min(w.count - 1);
             if let Some(row) = w.row(index) {
                 landed.push((list, row, *a));
+            }
+        }
+        for list in arrived {
+            if let Some(a) = self.away.get_mut(&list) {
+                a.exact = false;
+                if !landed.iter().any(|(l, _, _)| *l == list) {
+                    scene.reveal_index(list, a.index);
+                }
             }
         }
         landed.sort_by_key(|(l, _, _)| *l);
@@ -1564,6 +1656,122 @@ impl Router {
                 self.event(row, NodeEvent::Activate);
             }
         }
+    }
+
+    /// (list-selection) A selected row logic removed leaves the selection
+    /// at its place, on its way there for [`Router::land`] (the row that
+    /// takes it, or the new last row), when rows that were in the list
+    /// before stay in it. When none does (every row replaced: another
+    /// page, or no rows left) the list starts its selection again: on its
+    /// `selected_index:` if it has one, else as the first-row rule of a
+    /// `nav:` list does, a list without one keeping none.
+    ///
+    /// The kept place is not scrolled to (a row leaving moves no view),
+    /// except on a focused input's `nav:` list the user has not moved:
+    /// its first-row rule selects that row next, scrolled into view as it
+    /// always was, and finds it selected already.
+    fn keep_places(&mut self, scene: &mut dyn InputScene) {
+        let left = std::mem::take(&mut self.left);
+        for l in left {
+            let Some(tree) = scene.tree() else {
+                return;
+            };
+            if self.selected.contains_key(&l.list)
+                || self.away.contains_key(&l.list)
+                || !tree.contains_live(l.list)
+            {
+                continue;
+            }
+            let w = window_rows(tree, l.list);
+            if w.rows.iter().any(|r| !l.arrived.contains(r)) {
+                let first_row_rule = !self.moved.contains(&l.list)
+                    && self.focus.values().any(|f| {
+                        tree.get(*f).is_some_and(|n| {
+                            n.kind == NodeKind::Input
+                                && matches!(n.get(Prop::Nav), Some(PropValue::Node(x)) if *x == l.list)
+                        })
+                    });
+                self.away.insert(
+                    l.list,
+                    Away {
+                        index: l.index,
+                        activate: false,
+                        reveal: first_row_rule,
+                        exact: false,
+                    },
+                );
+            } else if let Some(n) = tree.get(l.list).and_then(start_of) {
+                self.start_at(scene, l.list, &w, n);
+            }
+        }
+    }
+
+    /// (list-selection) Lists whose `selected_index:` logic set (as one
+    /// mounts too) go to that row, unless the user moved their selection
+    /// since: an arrow, a click or a list action from a handler.
+    fn follow_starts(&mut self, scene: &mut dyn InputScene) {
+        let mut lists = std::mem::take(&mut self.starts);
+        lists.sort();
+        lists.dedup();
+        for list in lists {
+            if self.moved.contains(&list) {
+                continue;
+            }
+            let Some(tree) = scene.tree() else {
+                return;
+            };
+            let Some(n) = tree
+                .get(list)
+                .filter(|n| n.kind == NodeKind::List && tree.contains_live(list))
+                .and_then(start_of)
+            else {
+                continue;
+            };
+            let w = window_rows(tree, list);
+            self.start_at(scene, list, &w, n);
+        }
+    }
+
+    /// (list-selection) Starts `list`'s selection: on the row its
+    /// `selected_index:` names, else on its first mounted row.
+    fn start(&mut self, scene: &mut dyn InputScene, list: NodeId) {
+        let Some(tree) = scene.tree() else {
+            return;
+        };
+        let w = window_rows(tree, list);
+        let n = tree.get(list).and_then(start_of);
+        match n {
+            Some(n) => self.start_at(scene, list, &w, n),
+            None => {
+                if let Some(&row) = w.rows.first() {
+                    self.select(scene, list, Some(row));
+                }
+            }
+        }
+    }
+
+    /// (list-selection) `list`'s selection goes to row `n`, as `select(n)`
+    /// would while the list has it; past its rows, it waits for that row,
+    /// nothing selected, and lands when the row arrives. Starting again
+    /// forgets a move the user made before (on rows gone, or another
+    /// query's), so the start is followed again when it changes.
+    fn start_at(&mut self, scene: &mut dyn InputScene, list: NodeId, w: &WindowRows, n: u32) {
+        self.moved.remove(&list);
+        if n < w.count {
+            self.go_to(scene, list, w, n);
+            return;
+        }
+        let activate = self.away.get(&list).is_some_and(|a| a.activate);
+        self.select(scene, list, None);
+        self.away.insert(
+            list,
+            Away {
+                index: n,
+                activate,
+                reveal: true,
+                exact: true,
+            },
+        );
     }
 
     /// Remembers each selected row's global index (a window that
@@ -1624,6 +1832,19 @@ impl Router {
     /// What Return does to `list`: activates its selected row, or the first
     /// mounted row with none; a selection on its way when it lands.
     fn activate_selected(&mut self, scene: &mut dyn InputScene, list: NodeId, w: &WindowRows) {
+        // (list-selection) A start waiting for a row the list does not
+        // have: Return goes where `select(n)` would, and activates that;
+        // with no rows at all, nothing, as `select(n)` does nothing.
+        if let Some(a) = self.away.get(&list)
+            && a.exact
+        {
+            if w.count == 0 {
+                return;
+            }
+            if a.index >= w.count {
+                self.go_to(scene, list, w, w.count - 1);
+            }
+        }
         if let Some(a) = self.away.get_mut(&list) {
             a.activate = true;
             if !a.reveal {
@@ -1757,13 +1978,16 @@ impl Router {
                     }
                 }
             }
-            if let Some(&row) = rows.first() {
-                want.push((*list, row));
+            // (list-selection) Its start: the row `selected_index:` names
+            // (waited for), else the first.
+            let start = tree.get(*list).and_then(start_of);
+            if start.is_some() || !rows.is_empty() {
+                want.push(*list);
             }
             self.nav_rows.insert(*list, (text, rows));
         }
-        for (list, row) in want {
-            self.select(scene, list, Some(row));
+        for list in want {
+            self.start(scene, list);
         }
     }
 
@@ -2481,6 +2705,7 @@ impl Router {
         self.nav_rows.retain(|list, _| live(*list));
         self.moved.retain(|list| live(*list));
         self.away.retain(|list, _| live(*list));
+        self.starts.retain(|list| live(*list));
         self.selected.retain(|list, row| {
             live(*list) && live(*row) && tree.get(*row).is_some_and(|r| r.parent == Some(*list))
         });
@@ -3212,6 +3437,7 @@ impl Router {
                 index: to,
                 activate: false,
                 reveal: true,
+                exact: false,
             },
         );
         scene.reveal_index(list, to);
@@ -3641,6 +3867,17 @@ impl WindowRows {
     fn index_of(&self, row: NodeId) -> Option<u32> {
         let j = self.rows.iter().position(|r| *r == row)?;
         Some(self.first + j as u32)
+    }
+}
+
+/// (list-selection) The row a `list` starts its selection on
+/// (`selected_index:`), from 0; none when it is null.
+fn start_of(node: &crate::tree::Node) -> Option<u32> {
+    match node.get(Prop::SelectedIndex) {
+        // Below 0 is the first row, as `select(i)` keeps within the rows
+        // (the cast saturates).
+        Some(PropValue::Number(f)) if f.is_finite() => Some(*f as u32),
+        _ => None,
     }
 }
 

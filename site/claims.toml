@@ -3144,6 +3144,24 @@ proof  = "crates/strand-surface/tests/compose.rs::dead_keys_and_compose_type_the
 # --- keys ---
 [[claim]]
 page   = "site/how-to/keys.md"
+text   = "A row that has not arrived yet is waited for, so a list whose rows come in after it opens lands on its row with no handler."
+source = ['docs/spec.md "A row the list does not have yet is waited for, never put on the last"', 'docs/spec.md "so a page whose rows and start come in after it opens lands on its row with no handler"', 'crates/strand-render/src/input.rs "(list-selection) A start waits for its own row; once the"']
+proof  = "crates/strand-compiler/tests/selection.rs::a_start_past_the_rows_waits_for_its_row; crates/strand-compiler/tests/selection.rs::rows_and_their_start_arriving_together_land_on_it"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "The selection follows the value until someone moves it."
+source = ['docs/spec.md "and any list selects it when it mounts and again whenever the value changes, while the user has not moved the selection since"', 'crates/strand-render/src/input.rs "mounts too) go to that row, unless the user moved their selection"']
+proof  = "crates/strand-compiler/tests/selection.rs::a_changed_start_moves_the_selection_until_the_user_moves_it"
+
+[[claim]]
+page   = "site/how-to/keys.md"
+text   = "When the selected row leaves and others stay, as when a notification is cleared, the selection stays at its place, on the row that takes it."
+source = ['docs/spec.md "other rows that were there stay, the selection stays at its place: on the row that takes it"', 'crates/strand-render/src/input.rs "at its place, on its way there for [`Router::land`] (the row that"']
+proof  = "crates/strand-compiler/tests/selection.rs::a_selected_row_that_leaves_leaves_the_selection_at_its_place"
+
+[[claim]]
+page   = "site/how-to/keys.md"
 text   = "its `on activate` if it has one, else `on click`"
 source = ['docs/spec.md "Return or space on a focused node runs its own `on activate` if it has an active one, else `on click`"']
 proof  = "crates/strand-compiler/tests/focus.rs::return_prefers_activate_over_click"
