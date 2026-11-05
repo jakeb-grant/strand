@@ -361,7 +361,8 @@ impl Renderer {
     /// never released at rest and is forgotten on a reload
     /// ([`Renderer::forget_kept_sizes`]). Anything else (a bar, whose
     /// zone and layer follow its overhang; a popup or window, placed by
-    /// the compositor) holds and releases ([`Renderer::hold_shadow_reach`]).
+    /// the compositor) holds and releases ([`Renderer::hold_shadow_reach`]);
+    /// a lock asks for none.
     pub(super) fn reserve_reach(
         &mut self,
         root: NodeId,
@@ -370,6 +371,11 @@ impl Renderer {
         any_edge: Insets,
         size: LogicalSize,
     ) -> Insets {
+        // (lock-polish) A lock covers its output, which sizes it: its
+        // shadows are paint cut at its edge, as past any output's edge.
+        if kind == NodeKind::Lock {
+            return Insets::default();
+        }
         if !matches!(kind, NodeKind::Panel | NodeKind::Osd) {
             return self.hold_shadow_reach(root, positional);
         }
@@ -791,6 +797,10 @@ impl Renderer {
             let bar = spec.kind == NodeKind::Bar;
             let vertical = matches!(spec.edge, Some(Edge::Left | Edge::Right));
             let axes = match (bar, vertical) {
+                // (lock-polish) The compositor sizes a lock surface to its
+                // output: its content sizes nothing, and no frame waits
+                // for a configure at its content's size, which never comes.
+                _ if spec.kind == NodeKind::Lock => (false, false),
                 (true, true) => (spec.width.is_none(), false),
                 (true, false) => (false, spec.height.is_none()),
                 _ => (spec.width.is_none(), spec.height.is_none()),

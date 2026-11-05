@@ -3020,7 +3020,10 @@ fn the_locks_thumbnail_is_a_still_from_before_the_lock() {
     let mut vm = Vm::with(test, "", &still_config());
     let second = vm.sway.plug();
     vm.until(&second, "the desktop on the second output", Shot::desktop);
-    vm.lock();
+    // (lock-polish) Its still shows the desktop's bar from its first
+    // frame: locked is the lock's colour, not the bar gone.
+    vm.strand.cli(&["set", "lock.locked", "true"]);
+    vm.until("HEADLESS-1", "locked", |s| near(s.corner(), LOCK_BG));
     for o in ["HEADLESS-1", second.as_str()] {
         let deadline = Instant::now() + WAIT;
         loop {
@@ -3106,4 +3109,137 @@ fn the_locks_thumbnail_is_a_still_from_before_the_lock() {
     vm.keys.enter("");
     vm.until("HEADLESS-1", "unlocked", Shot::desktop);
     assert!(vm.sway.shot("HEADLESS-1").desktop_in_row(10) > 1200);
+}
+
+/// (lock-polish) The lock's first frame already shows its still, so a
+/// lock can open on the desktop exactly as it was: grim grabs HEADLESS-1
+/// back to back from the lock request on, and the first shot that shows
+/// the lock at all shows the desktop's bar in its thumbnail, as do the
+/// shots after it (before, a few frames showed the lock's own colour
+/// there and then cut to the still). strand's log says the still was fed
+/// before that frame was drawn, which holds however the shots fall.
+#[test]
+fn the_locks_first_frame_shows_its_still() {
+    let test = "lock_first_still";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::with(test, "", &still_config());
+    vm.strand.cli(&["set", "lock.locked", "true"]);
+    // The bar is 36 px of 720: 9 rows of 320 in the still; the real bar,
+    // across the output, is hidden.
+    let still = |s: &Shot| s.desktop_pixels() >= 320 * 6 && s.desktop_in_row(10) < s.w / 2;
+    let deadline = Instant::now() + WAIT;
+    let mut before = 0;
+    let first = loop {
+        let s = vm.sway.shot("HEADLESS-1");
+        if near(s.corner(), LOCK_BG) {
+            break s;
+        }
+        before += 1;
+        assert!(
+            Instant::now() < deadline,
+            "never the lock: {}\n{}",
+            s.describe(),
+            vm.strand.log_text()
+        );
+    };
+    assert!(
+        still(&first),
+        "the first shot of the lock ({before} shots before it) shows no still \
+         ({} pixels of the desktop's colour): {}\n{}",
+        first.desktop_pixels(),
+        first.describe(),
+        vm.strand.log_text()
+    );
+    for i in 0..8 {
+        let s = vm.sway.shot("HEADLESS-1");
+        assert!(
+            still(&s) && near(s.corner(), LOCK_BG),
+            "shot {i} after the first of the lock shows no still: {}\n{}",
+            s.describe(),
+            vm.strand.log_text()
+        );
+    }
+    let log = vm.strand.log_text();
+    let fed = log.find("first frame shows 1 of 1 screen stills");
+    let drawn = log.find("lock: first frame after");
+    assert!(
+        matches!((fed, drawn), (Some(f), Some(d)) if f < d),
+        "the still was not fed before the lock's first frame was drawn:\n{log}"
+    );
+    vm.log_has("1 of 1 screen stills before the lock");
+    let took = log
+        .lines()
+        .find(|l| l.contains("screen stills before the lock in"))
+        .unwrap_or_default();
+    eprintln!(
+        "lock first frame with a still: {:?} ms, {before} shots before the first of the lock \
+         ({took})",
+        vm.first_frames()
+    );
+    vm.keys.type_text(PASSWORD);
+    vm.until("HEADLESS-1", "the typed password", |s| {
+        near(s.corner(), LOCK_TYPED)
+    });
+    vm.keys.enter("");
+    vm.until("HEADLESS-1", "unlocked", Shot::desktop);
+}
+
+/// (lock-polish) A `shadow:` inside the lock is paint: the lock fills its
+/// output and the shadow is cut at its edge. Before, the shadows' room a
+/// panel keeps outside its box inset the whole lock (black around it: 73
+/// px left and right and 91 px top and bottom with the owner's card), and
+/// the lock's first frame waited 500 ms (the first-frame wait) for a
+/// configure at its content's size plus that room, which never comes.
+#[test]
+fn a_shadow_inside_the_lock_is_cut_at_its_edge() {
+    let test = "lock_shadow";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let source = CONFIG.replace(
+        "  text pct(10 / zero)\n",
+        "  text pct(10 / zero)\n  \
+         box { width: 420; height: 268; bg: #e0e0e0; shadow: 0 8px 32px #00000080 }\n",
+    );
+    let mut vm = Vm::with(test, "", &source);
+    vm.lock();
+    vm.content();
+    // Its last row and column, and its corners, are the lock's: nothing
+    // of it is inset, and no black shows around it.
+    let filled = |s: &Shot| {
+        let (w, h) = (s.w, s.h);
+        (0..w).all(|x| near(s.px(x, h - 1), LOCK_BG))
+            && (0..h).all(|y| near(s.px(w - 1, y), LOCK_BG))
+            && near(s.px(w - 1, 0), LOCK_BG)
+            && near(s.px(0, h - 1), LOCK_BG)
+    };
+    let s = vm.sway.shot("HEADLESS-1");
+    assert!(
+        filled(&s),
+        "the lock does not fill its output: {}, its bottom-left {:02x?}, top-right {:02x?}\n{}",
+        s.describe(),
+        s.px(0, s.h - 1),
+        s.px(s.w - 1, 0),
+        vm.strand.log_text()
+    );
+    // The card and its shadow show.
+    assert!(
+        s.pixels_of([0xe0, 0xe0, 0xe0]) >= 400 * 250,
+        "no card: {}",
+        s.describe()
+    );
+    vm.lock_passwords();
+    let frames = vm.first_frames();
+    eprintln!("lock first frame with a shadow: {frames:?} ms");
+    // The wall clock last (CLAUDE.md): the first-frame wait the size
+    // hold took was 500 ms.
+    if frames.first().is_none_or(|ms| *ms >= 500) {
+        panic!(
+            "GATE_MISS lock first frame with a shadow: {frames:?} ms (under 500 ms: \
+             no hold for a configure)\n{}",
+            vm.strand.log_text()
+        );
+    }
 }

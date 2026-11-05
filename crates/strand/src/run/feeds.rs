@@ -30,7 +30,13 @@
 //!   bounded by [`LOCK_STILL_WAIT`]), and the lock's thumbnails show only
 //!   those: never a frame taken while locked (it would show the lock).
 //!   A monitor with none (plugged in while locked, or no frame in time)
-//!   shows an empty thumbnail. They are dropped when the lock ends, and
+//!   shows an empty thumbnail. (lock-polish) A lock surface's first frame
+//!   shows them: they are fed to the thumbnails that frame draws as soon
+//!   as its scene is laid out, before it paints
+//!   ([`Feeds::feed_first_lock_frame`]), not once a painted frame has
+//!   shown them visible, so a lock can open on the desktop exactly as it
+//!   was. Taken before the lock was asked for, they hold that frame no
+//!   longer. They are dropped when the lock ends, and
 //!   (oi-lock) one is dropped when its monitor goes or changes connector
 //!   during the lock, so a monitor plugged in while locked never shows
 //!   a still of another (or of itself from before it was unplugged).
@@ -144,6 +150,10 @@ pub(crate) struct Feeds {
     /// (lockmon review) The thumbnails fed a lock's still, cleared when
     /// the lock ends.
     lock_fed: HashSet<NodeId>,
+    /// (lock-polish) Of those, the ones fed before their surface's first
+    /// frame ([`Feeds::feed_first_lock_frame`]) that no demand has named
+    /// yet: their taps stand until one does.
+    lock_early: HashSet<NodeId>,
     /// (lockmon) Stills taken before a surface mapped, by connector, with
     /// when they came; the shots still taking them, numbered; and the
     /// surfaces whose first frame waits for them, until when.
@@ -185,6 +195,7 @@ impl Feeds {
             lock_nodes: HashSet::new(),
             lock_stills: HashMap::new(),
             lock_fed: HashSet::new(),
+            lock_early: HashSet::new(),
             stills: HashMap::new(),
             shooting: HashMap::new(),
             held: HashMap::new(),
@@ -288,11 +299,69 @@ impl Feeds {
     /// the thumbnails that showed them, so no later lock shows one.
     pub(crate) fn lock_ended(&mut self, renderer: &mut strand_render::Renderer) {
         self.lock_stills.clear();
+        self.lock_early.clear();
         for node in std::mem::take(&mut self.lock_fed) {
             renderer.feed_frame(node, None);
         }
         self.taps
             .retain(|_, (w, ..)| !matches!(w, Want::LockStill(..)));
+    }
+
+    /// (lock-polish) Lock surface `surface` is laid out for its first
+    /// frame: each `thumbnail screen` that frame draws is fed its
+    /// screen's still from before the lock now, scaled as its demand will
+    /// ask (or nothing, for a screen with none), so the frame shows it.
+    /// Nothing waits: the stills were taken before the lock was asked
+    /// for ([`Feeds::take_lock_stills`], bounded by [`LOCK_STILL_WAIT`]),
+    /// and a lock with no thumbnail feeds nothing. The tap stands for the
+    /// demand that names the thumbnail once the frame is painted, so the
+    /// still is not sent again. Returns the thumbnails fed, each with
+    /// whether it is `blank`, for logic.
+    pub(crate) fn feed_first_lock_frame(
+        &mut self,
+        renderer: &mut strand_render::Renderer,
+        surface: SurfaceId,
+    ) -> Vec<(NodeId, bool)> {
+        let mut fed = Vec::new();
+        let (mut thumbnails, mut shown) = (0, 0);
+        for d in renderer.first_feed_demand(surface) {
+            let FeedKind::Thumbnail { window, max } = d.kind else {
+                continue;
+            };
+            let Some(connector) = self.screens.get(&window) else {
+                continue;
+            };
+            let want = Want::LockStill(connector.clone(), max);
+            if self.taps.get(&d.node).is_some_and(|(w, ..)| *w == want) {
+                continue;
+            }
+            let frame = self.lock_stills.get(connector).map(|f| scaled(f, max));
+            thumbnails += 1;
+            shown += usize::from(frame.is_some());
+            log::debug!(
+                "thumbnail {:?}: screen {connector}'s still from before the lock, \
+                 before the lock's first frame: {}",
+                d.node,
+                if frame.is_some() { "shown" } else { "none" }
+            );
+            let blank = frame.is_none();
+            renderer.feed_frame(d.node, frame);
+            self.next += 1;
+            self.taps.insert(d.node, (want, self.next, Tap::Still));
+            self.lock_fed.insert(d.node);
+            self.lock_early.insert(d.node);
+            if self.blank_changed(d.node, blank) {
+                fed.push((d.node, blank));
+            }
+        }
+        if thumbnails > 0 {
+            // The VM's first-frame test reads this.
+            log::info!(
+                "lock: surface {}'s first frame shows {shown} of {thumbnails} screen stills",
+                surface.0
+            );
+        }
+        fed
     }
 
     /// (lockmon review) Lets go of the stills taken before a surface
@@ -461,10 +530,15 @@ impl Feeds {
             }
         }
         let mut lost = Vec::new();
+        // (lock-polish) A thumbnail fed before its surface's first frame
+        // keeps its tap until a demand names it (the painted frame's).
+        let early = &mut self.lock_early;
+        early.retain(|node| !want.contains_key(node));
         // (oi-lock) A thumbnail hidden or gone is told again when next fed.
-        self.blank.retain(|node, _| want.contains_key(node));
+        self.blank
+            .retain(|node, _| want.contains_key(node) || early.contains(node));
         self.taps.retain(|node, (had, ..)| {
-            let keep = want.get(node) == Some(had);
+            let keep = want.get(node) == Some(had) || early.contains(node);
             if !keep && !want.contains_key(node) && matches!(had, Want::Spectrum(_)) {
                 lost.push(*node);
             }
@@ -547,6 +621,13 @@ impl Feeds {
     /// current).
     fn current(&self, node: NodeId, tap: u64) -> bool {
         self.taps.get(&node).is_some_and(|(_, n, _)| *n == tap)
+    }
+
+    /// (lock-polish) Holds `frame` as `connector`'s still from before the
+    /// lock (tests: no compositor took it).
+    #[cfg(test)]
+    pub(crate) fn hold_lock_still(&mut self, connector: &str, frame: CaptureFrame) {
+        self.lock_stills.insert(connector.to_string(), frame);
     }
 
     /// What each tapped node is fed by (tests).

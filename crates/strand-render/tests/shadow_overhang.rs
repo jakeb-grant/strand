@@ -445,3 +445,71 @@ fn a_panel_reserves_the_shadows_it_may_take_once() {
     let o = r.surface_spec(slid).unwrap().overhang;
     assert_eq!((o.bottom, o.right), (80.0, 40.0), "{o:?}");
 }
+
+/// (lock-polish) A shadow inside a `lock` is paint, cut at the lock's
+/// edge: the compositor sizes a lock surface to its output, so it asks
+/// for no overhang and is not sized by its content. Before, a lock was
+/// content-sized like a panel: its shadows' room inset the whole lock
+/// inside its buffer (black around it), and its first frame waited the
+/// first-frame wait for a configure at its content's size plus that room,
+/// which never comes (530 ms on the owner's lock).
+#[test]
+fn a_shadow_inside_a_lock_is_cut_at_its_edge() {
+    const LOCK: SurfaceId = SurfaceId(4);
+    let mut b = Builder::default();
+    let lock = b.node(
+        NodeKind::Lock,
+        None,
+        vec![
+            (Prop::Open, PropValue::Bool(true)),
+            (Prop::Bg, color("#2050d0")),
+        ],
+    );
+    let col = b.node(
+        NodeKind::Col,
+        Some(lock),
+        vec![
+            (Prop::Width, num(640.0)),
+            (Prop::Height, num(360.0)),
+            (Prop::Align, PropValue::Keyword("center".into())),
+            (Prop::Justify, PropValue::Keyword("center".into())),
+        ],
+    );
+    b.node(
+        NodeKind::Box,
+        Some(col),
+        vec![
+            (Prop::Width, num(560.0)),
+            (Prop::Height, num(200.0)),
+            (Prop::Bg, color("#e0e0e0")),
+            (Prop::Shadow, shadow(60.0, 48.0)),
+        ],
+    );
+    let mut r = renderer();
+    r.set_resize_wait(strand_render::RESIZE_WAIT);
+    r.set_first_frame_wait(Duration::from_millis(500));
+    assert!(r.apply(b.diff).is_empty());
+    r.take_surface_changes();
+    r.set_surface_bounds(LOCK, Some(LogicalSize::new(640.0, 360.0)));
+    r.attach_surface(LOCK, lock);
+    r.configure_surface(LOCK, Size::new(640, 360), Scale::ONE);
+    let spec = r.surface_spec(lock).cloned().unwrap();
+    assert_eq!(spec.overhang, Insets::default(), "a lock asks for no room");
+    assert_eq!((spec.width, spec.height), (None, None), "nor a size");
+    assert!(r.wants_frame(LOCK), "its first frame is not held");
+    assert_eq!(r.frame_deadline(LOCK), None, "nor waits for a configure");
+    let mut buf = Buffer::new(640, 360, Scale::ONE);
+    buf.paint_at(&mut r, LOCK, 0, frame(0));
+    let bg = [0xd0, 0x50, 0x20, 0xff];
+    for (x, y) in [(0, 0), (639, 0), (0, 40), (639, 40), (320, 2)] {
+        assert_eq!(buf.px(x, y), bg, "the lock fills its output at {x},{y}");
+    }
+    // The shadow reaches the bottom edge, and is cut there.
+    assert_ne!(buf.px(320, 358), bg, "the shadow is drawn up to the edge");
+    assert_eq!(r.surface_spec(lock).unwrap().overhang, Insets::default());
+    assert!(
+        r.take_surface_changes().is_empty(),
+        "the frame asks for nothing"
+    );
+    assert_matches_ref("lock_shadow_cut", &buf, 2);
+}

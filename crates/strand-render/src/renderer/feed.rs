@@ -118,33 +118,12 @@ impl Renderer {
                     drawn = Some((w.max(r.bounds.w), h.max(r.bounds.h)));
                 }
             }
-            let Some((dw, dh)) = drawn else {
+            let Some(drawn) = drawn else {
                 continue;
             };
-            let kind = match src {
-                Source::Spectrum(_) if reduced => continue,
-                Source::Spectrum(_) => {
-                    let device = match self.tree.get(*id).and_then(|n| n.get(Prop::Source)) {
-                        Some(PropValue::Text(t) | PropValue::Keyword(t)) => t.clone(),
-                        Some(PropValue::Number(n)) => format!("{n}"),
-                        _ => String::new(),
-                    };
-                    FeedKind::Spectrum { device }
-                }
-                Source::Thumbnail(_) => {
-                    match self.tree.get(*id).and_then(|n| n.get(Prop::Source)) {
-                        Some(PropValue::Text(t) | PropValue::Keyword(t)) if !t.is_empty() => {
-                            FeedKind::Thumbnail {
-                                window: t.clone(),
-                                max: (step_up(dw), step_up(dh)),
-                            }
-                        }
-                        _ => continue,
-                    }
-                }
-                Source::Graph(_) | Source::Svg(_) | Source::Lottie(_) => continue,
-            };
-            now.push(FeedDemand { node: *id, kind });
+            if let Some(kind) = self.feed_kind(*id, src, drawn, reduced) {
+                now.push(FeedDemand { node: *id, kind });
+            }
         }
         now.sort_by_key(|d| d.node);
         if now == self.extras.media.demand {
@@ -152,6 +131,68 @@ impl Renderer {
         }
         self.extras.media.demand = now.clone();
         Some(now)
+    }
+
+    /// (lock-polish) The fed nodes `surface`'s first frame will draw, as
+    /// the scene [`Renderer::update`] flattened for it has them: what
+    /// [`Renderer::take_feed_demand`] asks for once that frame is
+    /// painted, known before it is, so the binary can feed a lock's
+    /// thumbnails the stills it already holds in time for its first
+    /// frame. Empty once the surface has painted, or before its scene is
+    /// flattened (it is configured, and laid out, before it paints).
+    pub fn first_feed_demand(&self, surface: strand_scene::SurfaceId) -> Vec<FeedDemand> {
+        let Some(s) = self.surfaces.get(&surface).filter(|s| !s.painted) else {
+            return Vec::new();
+        };
+        let Some(scene) = &s.cache else {
+            return Vec::new();
+        };
+        let reduced = self.reduced_motion();
+        let mut out: Vec<FeedDemand> = self
+            .extras
+            .media
+            .sources
+            .iter()
+            .filter_map(|(id, src)| {
+                let r = scene.records.get(id).filter(|r| !r.bounds.is_empty())?;
+                let kind = self.feed_kind(*id, src, (r.bounds.w, r.bounds.h), reduced)?;
+                Some(FeedDemand { node: *id, kind })
+            })
+            .collect();
+        out.sort_by_key(|d| d.node);
+        out
+    }
+
+    /// What media node `id`, its source `src`, drawn at most `(dw, dh)`
+    /// physical pixels, is fed; `None` for one fed nothing.
+    fn feed_kind(
+        &self,
+        id: NodeId,
+        src: &Source,
+        (dw, dh): (u32, u32),
+        reduced: bool,
+    ) -> Option<FeedKind> {
+        match src {
+            Source::Spectrum(_) if reduced => None,
+            Source::Spectrum(_) => {
+                let device = match self.tree.get(id).and_then(|n| n.get(Prop::Source)) {
+                    Some(PropValue::Text(t) | PropValue::Keyword(t)) => t.clone(),
+                    Some(PropValue::Number(n)) => format!("{n}"),
+                    _ => String::new(),
+                };
+                Some(FeedKind::Spectrum { device })
+            }
+            Source::Thumbnail(_) => match self.tree.get(id).and_then(|n| n.get(Prop::Source)) {
+                Some(PropValue::Text(t) | PropValue::Keyword(t)) if !t.is_empty() => {
+                    Some(FeedKind::Thumbnail {
+                        window: t.clone(),
+                        max: (step_up(dw), step_up(dh)),
+                    })
+                }
+                _ => None,
+            },
+            Source::Graph(_) | Source::Svg(_) | Source::Lottie(_) => None,
+        }
     }
 }
 

@@ -1433,6 +1433,20 @@ impl SurfaceHost for Host {
         // first layout's sizes: a container query answers before the
         // first frame (the renderer holds it for that).
         let Ok(()) = host_loop::configured(self, surface, size, scale);
+        // (lock-polish) A lock's first frame shows its stills from before
+        // the lock: fed now that it is laid out (`run/feeds.rs`).
+        let lock = self
+            .roots
+            .get(&surface)
+            .and_then(|n| self.renderer.tree().get(*n))
+            .is_some_and(|n| n.kind == strand_scene::NodeKind::Lock);
+        let fed = match &mut self.feeds {
+            Some(feeds) if lock => feeds.feed_first_lock_frame(&mut self.renderer, surface),
+            _ => Vec::new(),
+        };
+        for (node, blank) in fed {
+            self.thumbnail_blank(node, blank);
+        }
         self.recorder.configured(
             strand_core::flight::now_ns(),
             surface,
@@ -2963,6 +2977,96 @@ mod tests {
             "the resting dots are unchanged: no frame follows"
         );
         assert_eq!(tapped(&host), [(spectrum, Want::Spectrum(42))]);
+    }
+
+    /// (lock-polish) A lock's first frame shows its thumbnail's still
+    /// from before the lock: fed once the lock surface is laid out, not a
+    /// frame later once a painted frame has shown the thumbnail visible.
+    /// The demand after that frame keeps the tap, so the still is not
+    /// sent again; a screen with no still is `blank` from the first frame
+    /// on, and holds nothing.
+    #[test]
+    fn a_locks_first_frame_shows_its_still() {
+        use crate::run::feeds::{Feeds, Want};
+        use std::time::Duration;
+        use strand_scene::{NodeKind, PropValue};
+        use strand_services::wm::capture::CaptureFrame;
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(font),
+        ]));
+        let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let mut host = Host::new(renderer, false);
+        let (tx, rx) = calloop::channel::channel();
+        let mut feeds = Feeds::new(tx);
+        // The desktop's still: orange, as premultiplied BGRA.
+        let orange: Vec<u8> = [0x00, 0x80, 0xff, 0xff].repeat(64 * 36);
+        feeds.hold_lock_still(
+            "DP-1",
+            CaptureFrame {
+                width: 64,
+                height: 36,
+                pixels: orange.into(),
+            },
+        );
+        host.feeds = Some(feeds);
+        let (dp1, dp2) = (monitor("A", "DP-1"), monitor("B", "DP-2"));
+        host.monitor_added(&dp1, false);
+        host.monitor_added(&dp2, false);
+        let (size, w) = (Size::new(640, 360), 640usize);
+        let first = |host: &mut Host, lock: u32, screen: &Monitor, s: SurfaceId, between: &[_]| {
+            let (root, thumb) = (NodeId::new(lock, 0), NodeId::new(lock + 1, 0));
+            let mut d = SceneDiff::new();
+            d.create(root, NodeKind::Lock, None, 0)
+                .set(root, Prop::Bg, PropValue::Color(strand_scene::Color::BLACK))
+                .create(thumb, NodeKind::Thumbnail, Some(root), 0)
+                .set(thumb, Prop::Source, PropValue::Text(screen.id.to_string()))
+                .set(thumb, Prop::Width, PropValue::Number(320.0))
+                .set(thumb, Prop::Height, PropValue::Number(180.0));
+            apply(host, d);
+            host.surface_attached(s, root, Some(screen));
+            host.surface_configured(s, size, Scale::ONE);
+            // Another surface's paint asks for what it shows meanwhile.
+            if !between.is_empty() {
+                host.feeds.as_mut().unwrap().demand(between.to_vec());
+            }
+            assert!(host.wants_frame(s), "the first frame waits for nothing");
+            let mut px = vec![0u8; w * 360 * 4];
+            let t = PaintTarget::new(&mut px, size, 640 * 4, Scale::ONE, 0).unwrap();
+            let mut t = t.at(Duration::from_secs(1));
+            assert!(!host.paint(s, &mut t).is_empty());
+            let Ok(()) = host_loop::painted(host, s);
+            (thumb, px)
+        };
+        let (thumb, px) = first(&mut host, 0, &dp1, SurfaceId(1), &[]);
+        let at = |px: &[u8], x: usize, y: usize| px[(y * w + x) * 4..][..4].to_vec();
+        assert_eq!(at(&px, 160, 90), [0x00, 0x80, 0xff, 0xff], "the still");
+        assert_eq!(at(&px, 480, 270), [0x00, 0x00, 0x00, 0xff], "the lock");
+        let tapped = |host: &Host| host.feeds.as_ref().unwrap().tapped();
+        let want = Want::LockStill("DP-1".into(), (320, 192));
+        assert_eq!(tapped(&host), [(thumb, want.clone())]);
+        assert!(rx.try_recv().is_err(), "the still is not sent again");
+        // DP-2 has no still: its thumbnail is fed nothing from the first
+        // frame on, and the first frame waits for nothing either. A demand
+        // that does not name it yet (DP-1's lock painting meanwhile) keeps
+        // its tap.
+        let dp1_shows = strand_render::FeedDemand {
+            node: thumb,
+            kind: strand_render::FeedKind::Thumbnail {
+                window: dp1.id.to_string(),
+                max: (320, 192),
+            },
+        };
+        let (other, px) = first(&mut host, 2, &dp2, SurfaceId(2), &[dp1_shows]);
+        assert_eq!(at(&px, 160, 90), [0x00, 0x00, 0x00, 0xff], "no still");
+        assert_eq!(
+            tapped(&host),
+            [
+                (thumb, want),
+                (other, Want::LockStill("DP-2".into(), (320, 192)))
+            ]
+        );
+        assert!(rx.try_recv().is_err());
     }
 
     /// (M5, S-inspect; inspect-r1-7) Pick mode follows the pointer from
