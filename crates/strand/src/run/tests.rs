@@ -14,6 +14,8 @@ pub(crate) fn screen(id: &str, name: &str) -> ScreenInfo {
         scale: 1.0,
         width: 1920.0,
         height: 1080.0,
+        x: 0.0,
+        y: 0.0,
     }
 }
 

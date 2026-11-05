@@ -1478,6 +1478,38 @@ rest
     );
 }
 
+/// (screen-position) Each screen of a scenario (a replay's: each live
+/// output) is a `Screen` at its place in the layout, `x` and `y` as the
+/// header gives them, as `strand run` gives each monitor's.
+#[test]
+fn each_screen_has_its_place_in_the_layout() {
+    let t = go(r##"id = "screen-place"
+screens = [
+  { width = 300, height = 200, scale = 1.0, name = "DP-1", x = 0, y = 0 },
+  { width = 300, height = 200, scale = 1.0, name = "DP-2", x = 1280, y = 40 },
+]
+main_screen = "DP-2"
+
+=== shell.strand
+bar Top {
+  height: 30
+  row {
+    if screens.all.any(s => s.name == "DP-2" && s.x == 1280 && s.y == 40) {
+      box { id: placed; width: 10; height: 10; bg: #00ff00 }
+    }
+    if screen.name == "DP-1" && (screen.x != 0 || screen.y != 0) {
+      box { id: wrong; width: 10; height: 10; bg: #ff0000 }
+    }
+  }
+}
+
+=== steps
+rest
+"##);
+    assert!(drawn_last(&t, "placed"), "DP-2 at 1280, 40");
+    assert!(!drawn_last(&t, "wrong"), "DP-1 at 0, 0");
+}
+
 /// (report) The keyboard steps type into the input of the surface with
 /// the keyboard: a press on an `on_demand` panel gives it the keyboard
 /// (the compositor's rule), `type` types placeholder `x`s at once or over

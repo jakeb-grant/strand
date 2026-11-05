@@ -673,6 +673,8 @@ Keyed by `id`.
 | `scale` | `float` | Its scale factor. |
 | `width` | `float` | Its width in logical pixels. |
 | `height` | `float` | Its height in logical pixels. |
+| `x` | `float` | Where its left edge is in the compositor's layout, in logical pixels (xdg-output's logical position; 0 while the compositor has not said). `screens.all` is in layout order by it. |
+| `y` | `float` | Where its top edge is in the compositor's layout, in logical pixels (0 while the compositor has not said). |
 | `focused` | `bool` | It has keyboard focus: it is `screens.focused`. |
 
 ### `TrayItem`

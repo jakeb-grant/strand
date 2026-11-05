@@ -380,6 +380,13 @@ provisional record Screen key id {
   width: float
   /// Its height in logical pixels.
   height: float
+  /// Where its left edge is in the compositor's layout, in logical
+  /// pixels (xdg-output's logical position; 0 while the compositor has
+  /// not said). `screens.all` is in layout order by it.
+  x: float
+  /// Where its top edge is in the compositor's layout, in logical
+  /// pixels (0 while the compositor has not said).
+  y: float
   /// It has keyboard focus: it is `screens.focused`.
   focused: bool
 }
@@ -1146,10 +1153,12 @@ provisional service memory {
 
 /// Monitors.
 provisional service screens {
-  /// Every monitor, keyed by `name`.
+  /// Every monitor, keyed by `name`, in layout order: left to right by
+  /// `x`, monitors at the same `x` top to bottom by `y`, then in the
+  /// order they were plugged in.
   all: [Screen]
   /// The monitor with keyboard focus, as the compositor says (Hyprland,
-  /// sway, niri); the first monitor while it says none.
+  /// sway, niri); the first monitor (the leftmost) while it says none.
   focused: Screen?
 }
 

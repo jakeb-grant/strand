@@ -2040,6 +2040,15 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   order); `Screens::Named` matches it or the connector. `SurfaceId`s are
   stable per (node, monitor) while the monitor is remembered. The binary
   forwards the `monitor_*` hooks to logic as the `screens` service.
+  (screen-position) `ScreenInfo` carries the monitor's
+  `Monitor::position` (xdg-output's logical position, 0 while unknown)
+  as `Screen.x` and `Screen.y`; `run/focus.rs` puts the list main sends
+  in layout order (`run::layout_order`: by `x`, then `y`, a stable sort
+  so plug order breaks ties), so `screens.all` and the first-monitor
+  fallback of `screens.focused` follow it. A monitor moved is a
+  `monitor_changed`, so the order follows the layout. The eval
+  sandbox's screens take their place from the scenario's `x` and `y`
+  (a replay's: each live output's position).
   `screens: focused` is one layer surface created without an output.
   (screens-focus) `SurfaceSpec::follows_focus` (`Prop::Screens` is the
   compiler's `FOLLOW_FOCUS` keyword, given to an instance of a `screens:`
@@ -2193,7 +2202,13 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   manager-painted solid in `set_lock_color`'s colour, outputs plugged in
   while locked included. `State::lock_contents()`,
   `lock_content_on(output)` and `lock_content()` (the focused output's,
-  else the first) name them. `State::lock_instance_failed(node)` puts an
+  else the first) name them. (screen-position) "The first" output, where
+  the lock's single instance shows while no monitor is focused, is the
+  leftmost in the layout (`first_in_layout`: least `Monitor::position`
+  by `x`, then `y`, an unknown one as 0, 0, the lowest global at one
+  place, an output with no monitor yet last), the key logic's
+  `run::layout_order` sorts `screens.all` by, so the instance shows on
+  the monitor whose `screen` logic gave it. `State::lock_instance_failed(node)` puts an
   instance's output back on the solid for the session; the binary calls
   it for a faulted, unmounted or never-drawn instance (not drawn
   `INSTANCE_FIRST_FRAME`, 3 s, after its configure while another has).

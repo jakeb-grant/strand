@@ -273,7 +273,13 @@ monitor, the keyboard always).
   monitor plugged in later gets an instance; an unplugged monitor's
   instance is parked with its state for 30 seconds and comes back with
   it if the monitor returns (monitors are matched by make, model and
-  description).
+  description). A `Screen` says where the monitor is in the
+  compositor's layout (`x`, `y`, logical pixels, as `width` and
+  `height`), and `screens.all` lists the monitors in that layout's
+  order: left to right by `x`, those at one `x` top to bottom by `y`,
+  so `screens.all.first` is the leftmost and a wallpaper per monitor
+  goes left to right with `for s in screens.all` (decisions.md
+  screen-position).
 - **`panel Name { … }`** is a layer-shell surface for launchers,
   notification stacks and dashboards. **`osd Name { … }`** defaults to
   the focused monitor, the overlay layer, and click-through (an empty
@@ -474,7 +480,9 @@ monitor, the keyboard always).
   (`on key`, `on activate`) run on that monitor's instance. Every monitor not picked
   shows a solid in the lock's colour (its `bg`). `screens: focused`, or
   a pick that names no plugged monitor, keeps one instance on the
-  focused monitor (else the first), whose `screen` changes in place
+  focused monitor (else the first of `screens.all`, the leftmost: the
+  monitor it shows on is the one its `screen` is; decisions.md
+  screen-position), whose `screen` changes in place
   when focus moves the content to another (nothing is mounted again, so
   what was typed stays; decisions.md flex, 2026-10-24, and lockmon,
   2026-10-25). A `thumbnail screen` in a lock shows a still of that
