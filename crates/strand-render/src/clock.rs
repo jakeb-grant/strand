@@ -131,14 +131,29 @@ pub(crate) struct Clock {
 }
 
 /// One surface's running clocks.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Running {
+    /// Its last fresh frame drew a clock ([`Clocks::running`]).
+    clocked: bool,
     /// A clock runs at refresh.
     every_frame: bool,
     /// The earliest tick of its capped clocks.
     next: Option<Duration>,
+    /// (caret) Its last frame's next caret turn ([`Clocks::turn`]): a
+    /// tick as a capped clock's, which leaves its scene reusable.
+    turn: Option<Duration>,
     /// The loop was woken for that tick: the next frame draws it.
     woken: bool,
+}
+
+impl Running {
+    /// The earliest tick, a clock's or a caret's.
+    fn next(&self) -> Option<Duration> {
+        match (self.next, self.turn) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
 }
 
 /// A surface's frames: its period estimate, the frame gaps it is the
@@ -166,7 +181,8 @@ pub(crate) struct Clocks {
 impl Clocks {
     /// The clocks `surface`'s fresh frame drew (none: its loop may stop).
     pub(crate) fn drawn(&mut self, surface: SurfaceId, clocks: &[Clock]) {
-        if clocks.is_empty() {
+        let turn = self.surfaces.get(&surface).and_then(|r| r.turn);
+        if clocks.is_empty() && turn.is_none() {
             self.surfaces.remove(&surface);
             return;
         }
@@ -175,11 +191,40 @@ impl Clocks {
         self.surfaces.insert(
             surface,
             Running {
+                clocked: !clocks.is_empty(),
                 every_frame,
                 next,
+                turn,
                 woken: false,
             },
         );
+    }
+
+    /// (caret) The next caret turn `surface`'s frame drew (`None`: no
+    /// caret blinks there). Painted by every frame, the scene it reuses
+    /// included: it does not count as [`Clocks::running`], so a scene
+    /// whose only change in time is a caret's is reused (the frame shows
+    /// or hides the caret in it, `Flattened::turn_carets`).
+    pub(crate) fn turn(&mut self, surface: SurfaceId, turn: Option<Duration>) {
+        match (self.surfaces.get_mut(&surface), turn) {
+            (Some(r), _) if r.clocked || turn.is_some() => {
+                r.turn = turn;
+                r.woken = false;
+            }
+            (Some(_), _) => {
+                self.surfaces.remove(&surface);
+            }
+            (None, Some(_)) => {
+                self.surfaces.insert(
+                    surface,
+                    Running {
+                        turn,
+                        ..Running::default()
+                    },
+                );
+            }
+            (None, None) => {}
+        }
     }
 
     /// `surface` is drawn at `time` (presentation) at `now` (wall clock):
@@ -242,9 +287,17 @@ impl Clocks {
         }
     }
 
-    /// True while `surface` drew a clocked node in its last fresh frame.
+    /// True while `surface` drew a clocked node in its last fresh frame
+    /// (a caret's blink is not one: [`Clocks::turn`]).
     pub(crate) fn running(&self, surface: SurfaceId) -> bool {
-        self.surfaces.contains_key(&surface)
+        self.surfaces.get(&surface).is_some_and(|r| r.clocked)
+    }
+
+    /// (caret) True while a caret blinks on `surface`.
+    pub(crate) fn turning(&self, surface: SurfaceId) -> bool {
+        self.surfaces
+            .get(&surface)
+            .is_some_and(|r| r.turn.is_some())
     }
 
     /// True if `surface`'s clocks need its next frame: one runs at
@@ -257,7 +310,7 @@ impl Clocks {
         if r.every_frame || r.woken {
             return true;
         }
-        match (r.next, self.frames.get(&surface)) {
+        match (r.next(), self.frames.get(&surface)) {
             (Some(next), Some(f)) => next <= f.last + f.period + f.period / 2,
             (Some(_), None) => true,
             (None, _) => false,
@@ -272,7 +325,7 @@ impl Clocks {
         if self.wants(surface) {
             return None;
         }
-        let next = self.surfaces.get(&surface)?.next?;
+        let next = self.surfaces.get(&surface)?.next()?;
         let f = self.frames.get(&surface)?;
         let due = next.saturating_sub(f.period / 2);
         Some(f.at + due.saturating_sub(f.last))
@@ -332,6 +385,35 @@ mod tests {
     }
 
     const S: SurfaceId = SurfaceId(1);
+
+    /// (caret) A caret's turn wakes the loop as a capped clock's tick
+    /// does, but is not a running clock (its scene stays reusable), and
+    /// outlives the clocks a fresh frame draws, and they it.
+    #[test]
+    fn a_caret_turn_wakes_the_loop_without_running() {
+        let mut c = Clocks::default();
+        let now = Instant::now();
+        c.frame(S, ms(1000), now);
+        c.turn(S, Some(ms(1600)));
+        assert!(!c.running(S) && c.turning(S));
+        assert!(!c.wants(S));
+        assert_eq!(c.wake(S), now.checked_add(ms(600) - DEFAULT_PERIOD / 2));
+        c.drawn(S, &[Clock { next: None }]);
+        assert!(c.running(S) && c.turning(S) && c.wants(S));
+        c.drawn(S, &[]);
+        assert!(!c.running(S) && c.turning(S));
+        c.turn(S, None);
+        assert!(!c.turning(S) && c.next_wake().is_none());
+        c.drawn(
+            S,
+            &[Clock {
+                next: Some(ms(1500)),
+            }],
+        );
+        c.turn(S, Some(ms(1200)));
+        c.turn(S, None);
+        assert!(c.running(S) && !c.turning(S));
+    }
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)

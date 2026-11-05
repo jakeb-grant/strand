@@ -1563,40 +1563,56 @@ impl<'a> Flattener<'a> {
         }
         self.shift_fillet_fill(content_start, self.out.items.len() - before_light);
         let mut blinking = None;
+        let mut caret_cell = None;
+        let mut caret_item = None;
         // An input's caret, over its text, blinking (caret): shown or
-        // hidden by its phase, its next turn a clock of the surface's, and
-        // with the glyphs it is one more cell, so a turn damages only the
-        // caret.
+        // hidden by its phase (transparent, in its place), hashed apart
+        // in its record, so a turn damages only the caret, and kept in
+        // the scene's carets, so a frame that reuses the scene turns it
+        // in place (`Flattened::turn_carets`).
         if has_area && let (Some(c), Some(at)) = (caret, &caret_at) {
             let mut key = DefaultHasher::new();
             (own_text, c.pos, c.anchor).hash(&mut key);
-            let phase = self.anim.caret(node.id, key.finish());
+            let key = key.finish();
+            let phase = self.anim.caret(node.id, key);
             self.out.caret_restarted |= phase.restarted;
-            if phase.next.is_some() && self.drawn.is_some() {
-                blinking = super::widget::caret_rect(frame, at, mask_map(c.pos), &font, s);
-            }
-            self.out
-                .clocks
-                .extend(phase.next.map(|n| crate::clock::Clock { next: Some(n) }));
-            let drawn = phase.shown.then(|| {
-                self.caret(
-                    frame,
-                    at,
-                    mask_map(c.pos),
-                    &scope,
-                    text_color,
-                    &font,
-                    &mut sig,
-                    &mut ink,
-                )
-            });
-            if let (Some((_, cells)), Some(Some(b))) = (glyph_cells.as_mut(), drawn) {
-                let mut h = DefaultHasher::new();
-                if let Some(last) = self.out.items.last() {
-                    hash_item(&mut h, &last.item);
+            let drawn = self.caret(
+                frame,
+                at,
+                mask_map(c.pos),
+                &scope,
+                text_color,
+                &font,
+                phase.shown,
+                &mut ink,
+            );
+            if let Some((item, rect, covers, color)) = drawn {
+                if phase.next.is_some() && self.drawn.is_some() {
+                    blinking = Some(rect);
                 }
-                let cell = b.inflate(1).intersect(self.surface).unwrap_or_default();
-                cells.push((cell, h.finish()));
+                let mut look = DefaultHasher::new();
+                hash_color(&mut look, &color);
+                covers.hash(&mut look);
+                // Grown by its antialiasing and by how far effects on
+                // it and above it spread its pixels.
+                caret_cell = Some(super::CaretCell {
+                    cell: covers
+                        .inflate(reach.saturating_add(1))
+                        .intersect(self.surface)
+                        .unwrap_or_default(),
+                    shown: phase.shown,
+                    look: look.finish(),
+                });
+                caret_item = Some(item);
+                self.out.carets.push(super::CaretSlot {
+                    node: node.id,
+                    key,
+                    item,
+                    rect,
+                    color,
+                    shown: phase.shown,
+                    next: phase.next,
+                });
             }
         }
 
@@ -1647,22 +1663,27 @@ impl<'a> Flattener<'a> {
             (inh.ctx, node.kind, node.epoch).hash(&mut h);
             hash_f32(&mut h, opacity);
             format!("{:?}{:?}", get(Prop::Border), get(Prop::Rim)).hash(&mut h);
-            let plain = self.out.items[own_start..].iter().all(|i| {
-                let (tag, paint) = match &i.item {
-                    Item::Fill { paint, .. } => (0u8, Some(paint)),
-                    Item::Border { paint, .. } => (1, Some(paint)),
-                    Item::PushClip(_) => (2, None),
-                    Item::PopClip => (3, None),
-                    _ => return false,
-                };
-                tag.hash(&mut h);
-                match paint {
-                    Some(Paint::Solid(c)) => hash_color(&mut h, c),
-                    Some(_) => return false,
-                    None => {}
-                }
-                true
-            });
+            // (caret) Its caret is hashed apart (`NodeRecord::caret`).
+            let plain = self.out.items[own_start..]
+                .iter()
+                .enumerate()
+                .filter(|(k, _)| caret_item != Some(own_start + k))
+                .all(|(_, i)| {
+                    let (tag, paint) = match &i.item {
+                        Item::Fill { paint, .. } => (0u8, Some(paint)),
+                        Item::Border { paint, .. } => (1, Some(paint)),
+                        Item::PushClip(_) => (2, None),
+                        Item::PopClip => (3, None),
+                        _ => return false,
+                    };
+                    tag.hash(&mut h);
+                    match paint {
+                        Some(Paint::Solid(c)) => hash_color(&mut h, c),
+                        Some(_) => return false,
+                        None => {}
+                    }
+                    true
+                });
             let border = match get(Prop::Border) {
                 Some(PropValue::Border(Border { width, .. })) => finite(*width)
                     .filter(|w| *w > 0.0)
@@ -1719,6 +1740,7 @@ impl<'a> Flattener<'a> {
                     own: own.map(|(b, _)| b),
                     clips: inh.clips.clone(),
                 })),
+                caret: caret_cell,
             },
         );
         #[cfg(feature = "eval-hooks")]

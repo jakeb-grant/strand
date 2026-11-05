@@ -431,8 +431,12 @@ impl Flattener<'_> {
     }
 
     /// A focused `input`'s caret: `$accent` (the text colour without
-    /// it), [`caret_rect`]. Returns the pixels it covers (`None`: it drew
-    /// nothing).
+    /// it), [`caret_rect`]; (caret) transparent while its blink hides it,
+    /// so a frame that shows it again changes its paint alone. Hashed
+    /// apart from the node's signature, into its record's
+    /// [`super::CaretCell`]; its pixels count in `ink` shown or hidden.
+    /// Returns its item's index, rect, the pixels it covers and its
+    /// colour (`None`: it drew nothing).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn caret(
         &mut self,
@@ -442,9 +446,9 @@ impl Flattener<'_> {
         scope: &TokenScope<'_>,
         color: Color,
         font: &Font,
-        sig: &mut DefaultHasher,
+        shown: bool,
         ink: &mut Rect,
-    ) -> Option<Rect> {
+    ) -> Option<(usize, kurbo::Rect, Rect, Color)> {
         let r = caret_rect(f, at, byte, font, self.scale.as_f64())?;
         let accent = match scope.lookup("accent") {
             Some(PropValue::Color(c)) => c,
@@ -453,14 +457,15 @@ impl Flattener<'_> {
         self.push(
             Item::Fill {
                 shape: FillShape::Rect(r),
-                paint: Paint::Solid(accent),
+                paint: Paint::Solid(super::caret_color(accent, shown)),
                 frame: r,
             },
             cover(r),
-            sig,
+            &mut DefaultHasher::new(),
             ink,
         );
-        self.out.items.last().map(|i| i.bounds)
+        let i = self.out.items.len() - 1;
+        Some((i, r, self.out.items[i].bounds, accent))
     }
 
     /// A `segmented` control: its options in equal segments, the chosen

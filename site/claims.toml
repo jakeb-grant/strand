@@ -1380,7 +1380,7 @@ proof  = "crates/strand-render/tests/motion.rs::snap_rules_and_reduced_motion; c
 page   = "site/concepts/motion.md"
 text   = "A focused `input`'s caret blinks on its own, 600 ms shown and 600 ms hidden, shows again at once on every key, and stays shown once 10 s pass without one."
 source = ['docs/spec.md "shown for 600 ms, hidden for 600 ms"', 'crates/strand-render/src/widgets.rs "pub const CARET_BLINK_HALF: Duration = Duration::from_millis(600);"', 'crates/strand-render/src/widgets.rs "pub const CARET_BLINK_TIMEOUT: Duration = Duration::from_secs(10);"']
-proof  = "crates/strand-render/tests/caret.rs::the_loop_paints_once_per_turn_then_stops; crates/strand-render/tests/caret.rs::a_key_a_move_or_new_text_shows_the_caret_and_restarts_the_blink"
+proof  = "crates/strand-render/tests/caret.rs::the_loop_paints_once_per_turn_then_stops; crates/strand-render/tests/caret.rs::a_key_a_move_or_new_text_shows_the_caret_and_restarts_the_blink; crates/strand-render/tests/caret.rs::a_key_that_edits_nothing_still_shows_the_caret"
 
 [[claim]]
 page   = "site/concepts/motion.md"

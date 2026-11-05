@@ -176,11 +176,11 @@ pub struct NodeRecord {
     pub bounds: Rect,
     pub sig: u64,
     /// A text node drawn untransformed at its own scale, with nothing
-    /// after its glyphs (no underline; an input's caret is a cell of its
-    /// own): what it draws besides its glyphs, and each glyph's box, so
-    /// a text change damages only the glyphs that changed (a clock tick
-    /// repaints its last digit, design.md: "a clock tick repaints about
-    /// 60×20 px"), and a caret's blink only the caret.
+    /// after its glyphs (no underline; an input's caret is apart,
+    /// [`NodeRecord::caret`]): what it draws besides its glyphs, and each
+    /// glyph's box, so a text change damages only the glyphs that changed
+    /// (a clock tick repaints its last digit, design.md: "a clock tick
+    /// repaints about 60×20 px").
     pub glyphs: Option<Arc<GlyphCells>>,
     /// A node with a border along its box: what it draws besides the
     /// border, and the ring's four strips (buffer pixels), so a change of
@@ -192,9 +192,62 @@ pub struct NodeRecord {
     /// that only moves or resizes (a card swelling) damages the pixels
     /// along its edges and corners, and what it clips damages no more.
     pub geom: Option<Arc<Geometry>>,
+    /// (caret) A focused `input`'s caret, hashed apart from the rest
+    /// (`sig`, the glyphs, the box) and always within `bounds`: a
+    /// blink's turn changes this alone and damages the caret's pixels
+    /// alone, whatever else the input draws (its own background, no
+    /// text).
+    pub caret: Option<CaretCell>,
+}
+
+/// (caret) Where a caret is drawn (buffer pixels, grown by one for its
+/// antialiasing), whether it shows in this frame, and its look (colour
+/// and rect) hashed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaretCell {
+    pub cell: Rect,
+    pub shown: bool,
+    pub look: u64,
+}
+
+/// (caret) A caret in a flattened scene: its item (an `$accent` fill
+/// while it shows, a transparent one while it hides), so a frame that
+/// reuses the scene shows or hides it in place
+/// ([`Flattened::turn_carets`]) and a blink's turn costs no flatten.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CaretSlot {
+    pub node: NodeId,
+    /// Its text, position and anchor, hashed (`widgets::Blinks`).
+    pub key: u64,
+    /// Its fill in [`Flattened::items`] (resolved once the scene is
+    /// flattened, items inserted under it since its push counted).
+    pub item: usize,
+    /// Its rect, which finds the fill.
+    pub rect: kurbo::Rect,
+    pub color: Color,
+    pub shown: bool,
+    /// When it next turns on the frame clock (`None`: steady).
+    pub next: Option<std::time::Duration>,
 }
 
 impl NodeRecord {
+    /// (caret) Equal but for the caret.
+    pub(crate) fn same_but_caret(&self, o: &NodeRecord) -> bool {
+        let NodeRecord {
+            bounds,
+            sig,
+            glyphs,
+            ring,
+            geom,
+            caret: _,
+        } = self;
+        *bounds == o.bounds
+            && *sig == o.sig
+            && *glyphs == o.glyphs
+            && *ring == o.ring
+            && *geom == o.geom
+    }
+
     /// For what is drawn into a node after its record is made (a merge's
     /// goo, a GPU pass's pixels): its geometry no longer tells what it
     /// draws, so any change to it, its clips' included, damages its whole
@@ -345,6 +398,11 @@ pub struct Flattened {
     /// `wave(…)`, `noise(t)`) or draw a CPU raster source:
     /// they repaint on every tick of their clock while drawn.
     pub(crate) clocks: Vec<crate::clock::Clock>,
+    /// (caret) The focused `input`s' carets it draws: each frame that
+    /// paints the scene, reused or not, shows or hides them in place and
+    /// takes their next turn ([`Flattened::turn_carets`]); a scene they
+    /// alone change in time is reused.
+    pub(crate) carets: Vec<CaretSlot>,
     /// (caret) A caret's blink restarted in this scene, which is only a
     /// preview: a painted frame must start it (its surface stays dirty).
     pub(crate) caret_restarted: bool,
@@ -381,6 +439,74 @@ pub struct Flattened {
     /// (`crate::probe`).
     #[cfg(feature = "eval-hooks")]
     pub trace: Option<Arc<[crate::probe::NodeTrace]>>,
+}
+
+impl Flattened {
+    /// (caret) Shows or hides each caret as `phase` (its node and key)
+    /// has it in the frame painting this scene, in its fill and its
+    /// record; returns the earliest next turn (`None`: none blinks).
+    pub(crate) fn turn_carets(
+        &mut self,
+        mut phase: impl FnMut(NodeId, u64) -> crate::widgets::CaretPhase,
+    ) -> Option<std::time::Duration> {
+        let mut next: Option<std::time::Duration> = None;
+        for c in &mut self.carets {
+            let p = phase(c.node, c.key);
+            if p.shown != c.shown {
+                c.shown = p.shown;
+                if let Some(Item::Fill { paint, .. }) =
+                    self.items.get_mut(c.item).map(|i| &mut i.item)
+                {
+                    *paint = Paint::Solid(caret_color(c.color, p.shown));
+                }
+                if let Some(cell) = self.records.get_mut(&c.node).and_then(|r| r.caret.as_mut()) {
+                    cell.shown = p.shown;
+                }
+            }
+            c.next = p.next;
+            next = match (next, p.next) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+        }
+        self.caret_restarted = false;
+        next
+    }
+
+    /// (caret) Finds each caret's fill where items inserted under it
+    /// since its push moved it. A caret whose fill is not found (nothing
+    /// known moves one so) turns as any clock does instead: the scene is
+    /// never reused.
+    fn resolve_carets(&mut self) {
+        let items = &self.items;
+        let mut lost = Vec::new();
+        self.carets.retain_mut(|c| {
+            let found = items.iter().enumerate().skip(c.item).find_map(|(i, d)| {
+                matches!(&d.item, Item::Fill { shape: FillShape::Rect(r), frame, .. }
+                    if *r == c.rect && *frame == c.rect)
+                .then_some(i)
+            });
+            match found {
+                Some(i) => {
+                    c.item = i;
+                    true
+                }
+                None => {
+                    lost.push(crate::clock::Clock { next: c.next });
+                    false
+                }
+            }
+        });
+        // A steady caret lost is no clock at all.
+        self.clocks
+            .extend(lost.into_iter().filter(|c| c.next.is_some()));
+    }
+}
+
+/// (caret) A caret's fill colour: `color` shown, transparent hidden (it
+/// draws nothing, and keeps its place in the scene).
+pub(crate) fn caret_color(color: Color, shown: bool) -> Color {
+    if shown { color } else { Color::TRANSPARENT }
 }
 
 /// A node's hit shape: its rounded box in physical pixels, grown by
@@ -710,6 +836,7 @@ fn flatten_with(
         out.trace = trace.map(Arc::from);
     }
     out.drawn = drawn;
+    out.resolve_carets();
     out
 }
 

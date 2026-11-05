@@ -1203,11 +1203,15 @@ is being saved, so the idle-wakeup windows hold.
   slider's value) lives in render (`strand_render::widgets::Widgets`),
   written through `InputScene`, so widgets answer on the frame the input
   arrives; logic still gets flags and two-way writes. (caret) A focused
-  `input`'s caret blinks on a clock of its surface's
-  (`widgets::caret_blink`: 600 ms shown, 600 ms hidden, steady 10.8 s
-  after its blink restarted), restarted by `Renderer::set_caret`, focus
-  gained or a change of its text; a turn is one glyph cell of the
-  input's record, so it damages the caret alone.
+  `input`'s caret blinks on its surface's turns (`Clocks::turn`;
+  `widgets::caret_blink`: 600 ms shown, 600 ms hidden, steady 10.8 s
+  after its blink restarted), restarted by `Renderer::set_caret`,
+  `InputScene::restart_caret_blink` (every key its surface takes, the
+  keyboard back), focus gained or a change of its text. A scene keeps
+  its carets apart (`Flattened::carets`, `NodeRecord::caret`): every
+  frame turns them in place, the scene it reuses included
+  (`Flattened::turn_carets`), so a turn flattens nothing and damages
+  the caret alone.
   `Renderer::set_caret_blink(false)` holds every caret steady (the
   evaluation sandbox, `strand run` under `STRAND_MOCK`), as
   `reduced_motion` and a frame at time zero do.

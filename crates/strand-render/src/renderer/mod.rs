@@ -991,12 +991,21 @@ impl Renderer {
             Some(c) => w.carets.insert(node, c),
             None => w.carets.remove(&node),
         };
-        self.anim.blinks.restart(node);
-        // A caret that stayed put asks for a frame only while carets
-        // blink: a hidden one shows again in it.
-        let blinks = !self.anim.blinks.steady() && !self.anim.reduced();
-        if old != caret || blinks {
+        if old != caret {
             self.mark_node_dirty(node);
+        }
+        self.restart_caret_blink(node);
+    }
+
+    /// (caret) `input`'s caret shows again at once and its blink starts
+    /// anew: a key its surface took (one that edits or moves nothing
+    /// too: an arrow through a `nav:` list, a copy), a caret move, the
+    /// keyboard back on its surface. Asks for a frame only while carets
+    /// blink: a hidden caret shows in it, and it starts the blink.
+    pub fn restart_caret_blink(&mut self, input: NodeId) {
+        self.anim.blinks.restart(input);
+        if !self.anim.blinks.steady() && !self.anim.reduced() {
+            self.mark_node_dirty(input);
         }
     }
 

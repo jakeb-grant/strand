@@ -46,6 +46,33 @@ struct Field {
 }
 
 fn field(scale: f64) -> Field {
+    field_with(scale, &Shape::default())
+}
+
+/// What a field holds besides the owner's prompt.
+struct Shape {
+    /// The input's `text` (`None`: no `text` prop).
+    text: Option<&'static str>,
+    /// The input's own `bg`.
+    bg: Option<&'static str>,
+    /// The panel's size, logical px.
+    size: (f32, f32),
+    /// Rows of 40 text cells under the field (a real surface's content).
+    rows: usize,
+}
+
+impl Default for Shape {
+    fn default() -> Self {
+        Shape {
+            text: Some("hunter2"),
+            bg: None,
+            size: (240.0, 40.0),
+            rows: 0,
+        }
+    }
+}
+
+fn field_with(scale: f64, shape: &Shape) -> Field {
     let mut r = renderer();
     let mut b = Builder::default();
     let mut tokens = TokenTable::default();
@@ -57,8 +84,8 @@ fn field(scale: f64) -> Field {
         NodeKind::Panel,
         None,
         vec![
-            (Prop::Width, num(240.0)),
-            (Prop::Height, num(40.0)),
+            (Prop::Width, num(shape.size.0)),
+            (Prop::Height, num(shape.size.1)),
             (Prop::Bg, color("#000000")),
             (Prop::Color, color("#ffffff")),
             (Prop::Font, PropValue::Font(f)),
@@ -69,18 +96,29 @@ fn field(scale: f64) -> Field {
         Some(root),
         vec![(Prop::Height, num(24.0)), (Prop::Pad, num(8.0))],
     );
-    let input = b.node(
-        NodeKind::Input,
-        Some(row),
-        vec![
-            (Prop::Width, num(200.0)),
-            (Prop::Text, text("hunter2")),
-            (Prop::InputType, PropValue::Keyword("password".into())),
-        ],
-    );
+    let mut props = vec![
+        (Prop::Width, num(200.0)),
+        (Prop::InputType, PropValue::Keyword("password".into())),
+    ];
+    props.extend(shape.text.map(|t| (Prop::Text, text(t))));
+    props.extend(shape.bg.map(|c| (Prop::Bg, color(c))));
+    let input = b.node(NodeKind::Input, Some(row), props);
+    for i in 0..shape.rows {
+        let cells = b.node(NodeKind::Row, Some(root), vec![(Prop::Gap, num(4.0))]);
+        for j in 0..40 {
+            b.node(
+                NodeKind::Text,
+                Some(cells),
+                vec![(Prop::Text, text(&format!("c{i}.{j}")))],
+            );
+        }
+    }
     assert!(r.apply(b.diff).is_empty());
     let sc = Scale::from_f64(scale).unwrap();
-    let size = Size::new((240.0 * scale) as u32, (40.0 * scale) as u32);
+    let size = Size::new(
+        (shape.size.0 as f64 * scale) as u32,
+        (shape.size.1 as f64 * scale) as u32,
+    );
     r.attach_surface(S, root);
     r.configure_surface(S, size, sc);
     let i0 = Instant::now();
@@ -420,11 +458,31 @@ fn a_host_may_hold_the_caret_steady() {
 /// A turn damages the caret alone (its pixels grown by one, not the
 /// field), and the partial redraw leaves the buffer as a full paint of
 /// the field draws it: hidden, as the field unfocused; shown, as the
-/// frame at focus. Prints what a turn costs.
+/// frame at focus. So in an empty field that draws its own background
+/// (a password prompt just opened: no text, so no glyphs to stand
+/// among). Prints what a turn costs.
 #[test]
 fn a_turn_damages_only_the_caret() {
-    for scale in [1.0, 1.5] {
-        let mut f = field(scale);
+    let shapes = [
+        Shape::default(),
+        Shape {
+            bg: Some("#202020"),
+            ..Shape::default()
+        },
+        Shape {
+            text: Some(""),
+            bg: Some("#202020"),
+            ..Shape::default()
+        },
+        Shape {
+            text: None,
+            bg: Some("#202020"),
+            ..Shape::default()
+        },
+    ];
+    for (shape, scale) in shapes.iter().flat_map(|s| [1.0, 1.5].map(|k| (s, k))) {
+        let what = format!("{:?} with bg {:?} at {scale}", shape.text, shape.bg);
+        let mut f = field_with(scale, shape);
         let blank = f.buf.pixels.clone();
         let t1 = f.focus();
         let shown = f.buf.pixels.clone();
@@ -438,24 +496,24 @@ fn a_turn_damages_only_the_caret() {
             let d = f.paint(t);
             spent += start.elapsed();
             let hidden = k % 2 == 1;
-            assert_eq!(f.shown(), !hidden, "turn {k} at {scale}");
+            assert_eq!(f.shown(), !hidden, "turn {k}, {what}");
             let caret_w = (1.5 * scale).ceil() as u64 + 4;
             let line = (13.0 * 1.4 * scale).ceil() as u64 + 4;
             assert!(
                 d.area() <= caret_w * line,
-                "turn {k} at {scale}: damage {d:?} past the caret ({caret_w}×{line})"
+                "turn {k}, {what}: damage {d:?} past the caret ({caret_w}×{line})"
             );
             assert!(d.area() > 0, "turn {k} damages the caret");
             assert!(d.area() * 20 < u64::from(w * h), "far under the field");
             let want = if hidden { &blank } else { &shown };
             assert!(
                 f.buf.pixels == *want,
-                "turn {k} at {scale}: the partial redraw differs from a full paint"
+                "turn {k}, {what}: the partial redraw differs from a full paint"
             );
             areas.push(d.area());
         }
         eprintln!(
-            "caret turn at scale {scale}: {:?} per frame (CPU paint), damage {areas:?} px",
+            "caret turn, {what}: {:?} per frame (CPU paint), damage {areas:?} px",
             spent / frames
         );
     }
@@ -490,4 +548,168 @@ fn a_reports_drawn_input_carries_its_blinking_caret() {
     assert_eq!(caret(&mut f), Some(shown), "hidden, the same box");
     f.paint(t1 + Duration::from_secs(11));
     assert_eq!(caret(&mut f), None, "steady after the timeout");
+}
+
+/// A turn reuses the frame's scene, flattening nothing, so it costs the
+/// same on a surface full of other content as on the field alone; and a
+/// key flattens as often as it does with the caret held steady (the
+/// frame reuses the key's preview). Prints what a turn and a key cost,
+/// on the field alone and on an 800 × 600 panel at scale 1.5 holding
+/// 400 text cells besides it.
+#[test]
+fn a_turn_flattens_nothing_and_a_key_no_more_than_a_steady_caret() {
+    let big = || Shape {
+        size: (800.0, 600.0),
+        rows: 10,
+        ..Shape::default()
+    };
+    for (shape, scale) in [(Shape::default(), 1.0), (big(), 1.5)] {
+        let mut f = field_with(scale, &shape);
+        let t1 = f.focus();
+        let before = f.r.flattens();
+        let start = Instant::now();
+        let frames = f.run(t1 + ms(3700));
+        let spent = start.elapsed();
+        assert_eq!(frames.len(), 6, "a frame per turn: {frames:?}");
+        assert_eq!(f.r.flattens(), before, "a turn flattens nothing");
+        let per_turn = spent / frames.len() as u32;
+        let (blinking, per_key) = typing(&mut f);
+        let mut steady = field_with(scale, &shape);
+        steady.r.set_caret_blink(false);
+        steady.focus();
+        let (held, held_per_key) = typing(&mut steady);
+        assert_eq!(
+            blinking, held,
+            "a key flattens no more with the caret blinking than held steady"
+        );
+        eprintln!(
+            "caret on {:?} at {scale}: a turn {per_turn:?} (the loop's update and paint); \
+             a key {per_key:?} blinking, {held_per_key:?} steady (apply, update, paint), \
+             {blinking} flattens in 30 keys",
+            shape.size
+        );
+    }
+}
+
+/// Types 30 characters into `f`'s field, a frame 100 ms after each:
+/// the scenes flattened, and the time a key took.
+fn typing(f: &mut Field) -> (u64, Duration) {
+    let keys = 30u32;
+    let mut t = f.last;
+    let before = f.r.flattens();
+    let start = Instant::now();
+    for k in 0..keys {
+        let mut d = SceneDiff::new();
+        let typed = "x".repeat(k as usize + 1);
+        d.set(f.input, Prop::Text, text(&typed));
+        assert!(f.r.apply(d).is_empty());
+        f.r.set_caret(f.input, Some(Caret::at(typed.len())));
+        f.r.update();
+        t += ms(100);
+        f.paint(t);
+        assert!(f.shown(), "key {k}: shown");
+    }
+    (f.r.flattens() - before, start.elapsed() / keys)
+}
+
+/// A key that edits and moves nothing (one the input does not take, a
+/// copy, an arrow through its `nav:` list) shows a hidden caret and
+/// starts the blink anew, as every key does.
+#[test]
+fn a_key_that_edits_nothing_still_shows_the_caret() {
+    let mut f = field(1.0);
+    let mut router = Router::new();
+    router.attached(S, f.root);
+    let b = f.r.boxes(S).unwrap().rects[&f.input];
+    let at = LogicalPoint::new(b.x + b.w - 1.0, b.y + b.h / 2.0);
+    for state in [ButtonState::Pressed, ButtonState::Released] {
+        router.handle(
+            &InputEvent::PointerButton {
+                surface: S,
+                position: at,
+                button: button::LEFT,
+                state,
+                time: 0,
+            },
+            &mut f.r,
+        );
+    }
+    let mut from = f.last + HZ60;
+    f.paint(from);
+    assert!(f.shown(), "focused by the click");
+    for (name, modifiers) in [
+        ("F5", Modifiers::default()),
+        (
+            "c",
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        ),
+    ] {
+        let t = from + ms(700);
+        f.paint(t);
+        assert!(!f.shown(), "{name}: hidden before the key");
+        router.handle(&key(name, modifiers), &mut f.r);
+        f.r.update();
+        assert!(f.r.wants_frame(S), "{name} asks for a frame");
+        from = t + HZ60;
+        f.paint(from);
+        assert!(f.shown(), "{name}: shown at the key");
+        f.paint(from + ms(590));
+        assert!(f.shown(), "{name}: the blink restarted at the key");
+    }
+}
+
+/// The keyboard back on the surface (from a popup that grabbed it, no
+/// leave between) keeps the input focused, and its caret shows again
+/// and blinks anew, as on focus gained.
+#[test]
+fn the_keyboard_back_shows_the_caret_and_restarts_the_blink() {
+    let mut f = field(1.0);
+    let mut router = Router::new();
+    router.attached(S, f.root);
+    router.handle(&InputEvent::KeyboardEnter { surface: S }, &mut f.r);
+    let b = f.r.boxes(S).unwrap().rects[&f.input];
+    let at = LogicalPoint::new(b.x + 1.0, b.y + b.h / 2.0);
+    for state in [ButtonState::Pressed, ButtonState::Released] {
+        router.handle(
+            &InputEvent::PointerButton {
+                surface: S,
+                position: at,
+                button: button::LEFT,
+                state,
+                time: 0,
+            },
+            &mut f.r,
+        );
+    }
+    let t1 = f.last + HZ60;
+    f.paint(t1);
+    assert!(f.shown());
+    f.paint(t1 + ms(700));
+    assert!(!f.shown(), "hidden before the keyboard comes back");
+    router.handle(&InputEvent::KeyboardEnter { surface: S }, &mut f.r);
+    f.r.update();
+    assert!(f.r.wants_frame(S), "the keyboard back asks for a frame");
+    let t2 = t1 + ms(717);
+    f.paint(t2);
+    assert!(f.shown(), "shown with the keyboard back");
+    f.paint(t2 + ms(590));
+    assert!(f.shown(), "the blink restarted there");
+}
+
+fn key(name: &str, modifiers: Modifiers) -> InputEvent {
+    InputEvent::Key {
+        surface: S,
+        key: KeyInput {
+            name: name.into(),
+            text: String::new(),
+            state: ButtonState::Pressed,
+            repeat: false,
+            modifiers,
+            time: 0,
+            latin: None,
+        },
+    }
 }
