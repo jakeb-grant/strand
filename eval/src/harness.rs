@@ -1333,6 +1333,10 @@ impl Harness {
             r.set_tooltip_delay(Duration::from_millis(ms));
         }
         r.set_promotion(false);
+        // (caret) A focused input's caret held steady: a recording, a
+        // `rest` and the site's media do not depend on the blink's phase
+        // (strand-render's tests/caret.rs hold the blink itself).
+        r.set_caret_blink(false);
         r.set_frame_trace(true);
         r.set_keep_frames(opts.redraw);
         r.set_damage_inset(opts.damage_inset);

@@ -249,6 +249,11 @@ pub trait InputScene {
     fn set_caret(&mut self, node: NodeId, caret: Option<Caret>) {
         let _ = (node, caret);
     }
+    /// (caret) `input`'s caret shows again and blinks anew (a key its
+    /// surface took, the keyboard back on it).
+    fn restart_caret_blink(&mut self, input: NodeId) {
+        let _ = input;
+    }
     /// The byte offset in `input`'s text nearest to `at` (a click placing
     /// the caret).
     fn caret_at(&self, surface: SurfaceId, input: NodeId, at: LogicalPoint) -> Option<usize> {
@@ -332,6 +337,9 @@ impl InputScene for Renderer {
     }
     fn set_caret(&mut self, node: NodeId, caret: Option<Caret>) {
         Renderer::set_caret(self, node, caret);
+    }
+    fn restart_caret_blink(&mut self, input: NodeId) {
+        Renderer::restart_caret_blink(self, input);
     }
     fn caret_at(&self, surface: SurfaceId, input: NodeId, at: LogicalPoint) -> Option<usize> {
         Renderer::caret_at(self, surface, input, at)
@@ -2322,6 +2330,10 @@ impl Router {
                     });
                 if self.focus.contains_key(&surface) && !beaten {
                     self.keyboard.insert(surface);
+                    // (caret) Its focused input's caret shows again and
+                    // blinks anew, as on focus gained (the flag did not
+                    // change, so that restart does not run).
+                    self.restart_blink(scene, surface);
                     return;
                 }
                 self.keyboard.insert(surface);
@@ -2409,6 +2421,11 @@ impl Router {
                         self.cancel_drag(scene);
                         return;
                     }
+                    // (caret) Every key pressed shows the focused input's
+                    // caret and starts its blink anew, one that edits or
+                    // moves nothing too (an arrow through its `nav:`
+                    // list, Ctrl+C, Return), as GTK's does.
+                    self.restart_blink(scene, surface);
                     self.key(surface, root, key, scene);
                 } else {
                     // (keyboard) Heard as a press is, and claims nothing.
@@ -2880,6 +2897,21 @@ impl Router {
         }
         if let Some(n) = node {
             self.flag(n, Flag::Focused, true);
+        }
+    }
+
+    /// (caret) The input focused on `surface`, if one is: its caret
+    /// shows again and blinks anew.
+    fn restart_blink(&self, scene: &mut dyn InputScene, surface: SurfaceId) {
+        let Some(&focus) = self.focus.get(&surface) else {
+            return;
+        };
+        let input = scene
+            .tree()
+            .and_then(|t| t.get(focus))
+            .is_some_and(|n| n.kind == NodeKind::Input);
+        if input {
+            scene.restart_caret_blink(focus);
         }
     }
 

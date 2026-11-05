@@ -36,6 +36,32 @@ pub(super) fn caret_x(l: &TextLayout, byte: usize) -> f32 {
     best.map_or(0.0, |(_, x)| x)
 }
 
+/// Where a focused `input`'s caret is drawn, physical px: `CARET_WIDTH`
+/// wide, as tall as its line, at byte `byte` of the shown text, kept
+/// inside the box `f` (`None`: no height left in it). `s` is the scale.
+pub(super) fn caret_rect(
+    f: kurbo::Rect,
+    at: &CaretAt,
+    byte: usize,
+    font: &Font,
+    s: f64,
+) -> Option<kurbo::Rect> {
+    let (l, dx, dy) = at;
+    let (x, h) = match l {
+        Some(l) => (caret_x(l, byte), l.size.h),
+        None => (0.0, (font.size * 1.2).ceil()),
+    };
+    let cw = crate::widgets::CARET_WIDTH as f64 * s;
+    let x = (f.x0 + (*dx + x) as f64 * s).clamp(f.x0, (f.x1 - cw).max(f.x0));
+    let r = kurbo::Rect::new(
+        x,
+        f.y0 + *dy as f64 * s,
+        x + cw,
+        (f.y0 + (*dy + h) as f64 * s).min(f.y1),
+    );
+    (r.height() > 0.0).then_some(r)
+}
+
 /// The byte offset of the caret stop nearest to `x` (logical pixels in
 /// `l`'s first line).
 pub(crate) fn caret_index(l: &TextLayout, x: f32) -> usize {
@@ -405,8 +431,12 @@ impl Flattener<'_> {
     }
 
     /// A focused `input`'s caret: `$accent` (the text colour without
-    /// it), `CARET_WIDTH` wide, as tall as its line, at byte `at` of the
-    /// shown text, kept inside the box.
+    /// it), [`caret_rect`]; (caret) transparent while its blink hides it,
+    /// so a frame that shows it again changes its paint alone. Hashed
+    /// apart from the node's signature, into its record's
+    /// [`super::CaretCell`]; its pixels count in `ink` shown or hidden.
+    /// Returns its item's index, rect, the pixels it covers and its
+    /// colour (`None`: it drew nothing).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn caret(
         &mut self,
@@ -416,39 +446,26 @@ impl Flattener<'_> {
         scope: &TokenScope<'_>,
         color: Color,
         font: &Font,
-        sig: &mut DefaultHasher,
+        shown: bool,
         ink: &mut Rect,
-    ) {
-        let s = self.scale.as_f64();
-        let (l, dx, dy) = at;
-        let (x, h) = match l {
-            Some(l) => (caret_x(l, byte), l.size.h),
-            None => (0.0, (font.size * 1.2).ceil()),
-        };
+    ) -> Option<(usize, kurbo::Rect, Rect, Color)> {
+        let r = caret_rect(f, at, byte, font, self.scale.as_f64())?;
         let accent = match scope.lookup("accent") {
             Some(PropValue::Color(c)) => c,
             _ => color,
         };
-        let cw = crate::widgets::CARET_WIDTH as f64 * s;
-        let x = (f.x0 + (*dx + x) as f64 * s).clamp(f.x0, (f.x1 - cw).max(f.x0));
-        let r = kurbo::Rect::new(
-            x,
-            f.y0 + *dy as f64 * s,
-            x + cw,
-            (f.y0 + (*dy + h) as f64 * s).min(f.y1),
+        self.push(
+            Item::Fill {
+                shape: FillShape::Rect(r),
+                paint: Paint::Solid(super::caret_color(accent, shown)),
+                frame: r,
+            },
+            cover(r),
+            &mut DefaultHasher::new(),
+            ink,
         );
-        if r.height() > 0.0 {
-            self.push(
-                Item::Fill {
-                    shape: FillShape::Rect(r),
-                    paint: Paint::Solid(accent),
-                    frame: r,
-                },
-                cover(r),
-                sig,
-                ink,
-            );
-        }
+        let i = self.out.items.len() - 1;
+        Some((i, r, self.out.items[i].bounds, accent))
     }
 
     /// A `segmented` control: its options in equal segments, the chosen

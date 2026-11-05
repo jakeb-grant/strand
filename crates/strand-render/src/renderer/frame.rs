@@ -200,7 +200,19 @@ pub(super) fn diff_records(
     for (id, n) in new {
         match old.get(id) {
             Some(o) if o == n => {}
+            // (caret) Only its caret changed (a blink's turn): the caret,
+            // where it was and where it is.
+            Some(o) if o.same_but_caret(n) => {
+                for c in [o.caret, n.caret].into_iter().flatten() {
+                    d.add(c.cell);
+                }
+            }
             Some(o) => {
+                if o.caret != n.caret {
+                    for c in [o.caret, n.caret].into_iter().flatten() {
+                        d.add(c.cell);
+                    }
+                }
                 // Glyphs and rings are compared under the same clips.
                 let clipped_alike =
                     o.geom.as_ref().map(|g| &g.clips) == n.geom.as_ref().map(|g| &g.clips);
@@ -728,6 +740,12 @@ impl Renderer {
             Some(f) => f,
             None => self.flatten_surface(surface),
         };
+        // (caret) Its carets as this frame has them, shown or hidden in
+        // place in a scene reused (a blink's turn flattens nothing), and
+        // their next turn.
+        let anim = &mut self.anim;
+        let turn = f.turn_carets(|id, key| anim.caret(id, key));
+        self.clocks.turn(surface, turn);
         // (shared-morph-on) Where each `morph` name is on screen now, the
         // scene flattened for this frame or reused: a node at rest on a
         // surface that only reuses scenes is still a morph's start.
@@ -1123,6 +1141,7 @@ impl Renderer {
                 .as_ref()
                 .is_some_and(|f| !f.moving && f.clocks.is_empty())
             && !self.clocks.running(surface)
+            && !self.clocks.turning(surface)
             && !self.swap_moving(surface)
             && !self.scrolling(surface)
             && self.anim.sizes_alone(&self.tree, root);

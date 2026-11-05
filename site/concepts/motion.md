@@ -120,6 +120,10 @@ list of shadows is padded to the same length, then springs.
 With the desktop's reduced-motion setting on, every transition is
 instant, and looping animations and effects stop.
 
+A focused `input`'s caret blinks on its own, 600 ms shown and 600 ms
+hidden, shows again at once on every key, and stays shown once 10 s
+pass without one. With reduced motion on it does not blink.
+
 ## What moves without relayout
 
 `x`, `y`, `scale`, `rotate` and `opacity` are paint-only: animating

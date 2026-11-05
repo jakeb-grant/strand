@@ -1425,9 +1425,9 @@ impl<'a> Flattener<'a> {
                     .filter_map(|r| Some((r.underline?, slot_color(r.color, &span_colors, color))))
                     .collect();
                 // Glyph cells, when the glyphs are the last thing drawn
-                // and land on buffer pixels as they are.
+                // (but an input's caret, a cell of its own: caret) and land
+                // on buffer pixels as they are.
                 if lines.is_empty()
-                    && caret.is_none()
                     && k == 1.0
                     && self.xform == kurbo::Affine::IDENTITY
                     && text_fill.is_none()
@@ -1562,18 +1562,58 @@ impl<'a> Flattener<'a> {
             ink = ink.union(bounds);
         }
         self.shift_fillet_fill(content_start, self.out.items.len() - before_light);
-        // An input's caret, over its text.
+        let mut blinking = None;
+        let mut caret_cell = None;
+        let mut caret_item = None;
+        // An input's caret, over its text, blinking (caret): shown or
+        // hidden by its phase (transparent, in its place), hashed apart
+        // in its record, so a turn damages only the caret, and kept in
+        // the scene's carets, so a frame that reuses the scene turns it
+        // in place (`Flattened::turn_carets`).
         if has_area && let (Some(c), Some(at)) = (caret, &caret_at) {
-            self.caret(
+            let mut key = DefaultHasher::new();
+            (own_text, c.pos, c.anchor).hash(&mut key);
+            let key = key.finish();
+            let phase = self.anim.caret(node.id, key);
+            self.out.caret_restarted |= phase.restarted;
+            let drawn = self.caret(
                 frame,
                 at,
                 mask_map(c.pos),
                 &scope,
                 text_color,
                 &font,
-                &mut sig,
+                phase.shown,
                 &mut ink,
             );
+            if let Some((item, rect, covers, color)) = drawn {
+                if phase.next.is_some() && self.drawn.is_some() {
+                    blinking = Some(rect);
+                }
+                let mut look = DefaultHasher::new();
+                hash_color(&mut look, &color);
+                covers.hash(&mut look);
+                // Grown by its antialiasing and by how far effects on
+                // it and above it spread its pixels.
+                caret_cell = Some(super::CaretCell {
+                    cell: covers
+                        .inflate(reach.saturating_add(1))
+                        .intersect(self.surface)
+                        .unwrap_or_default(),
+                    shown: phase.shown,
+                    look: look.finish(),
+                });
+                caret_item = Some(item);
+                self.out.carets.push(super::CaretSlot {
+                    node: node.id,
+                    key,
+                    item,
+                    rect,
+                    color,
+                    shown: phase.shown,
+                    next: phase.next,
+                });
+            }
         }
 
         let mut bounds = ink
@@ -1623,22 +1663,27 @@ impl<'a> Flattener<'a> {
             (inh.ctx, node.kind, node.epoch).hash(&mut h);
             hash_f32(&mut h, opacity);
             format!("{:?}{:?}", get(Prop::Border), get(Prop::Rim)).hash(&mut h);
-            let plain = self.out.items[own_start..].iter().all(|i| {
-                let (tag, paint) = match &i.item {
-                    Item::Fill { paint, .. } => (0u8, Some(paint)),
-                    Item::Border { paint, .. } => (1, Some(paint)),
-                    Item::PushClip(_) => (2, None),
-                    Item::PopClip => (3, None),
-                    _ => return false,
-                };
-                tag.hash(&mut h);
-                match paint {
-                    Some(Paint::Solid(c)) => hash_color(&mut h, c),
-                    Some(_) => return false,
-                    None => {}
-                }
-                true
-            });
+            // (caret) Its caret is hashed apart (`NodeRecord::caret`).
+            let plain = self.out.items[own_start..]
+                .iter()
+                .enumerate()
+                .filter(|(k, _)| caret_item != Some(own_start + k))
+                .all(|(_, i)| {
+                    let (tag, paint) = match &i.item {
+                        Item::Fill { paint, .. } => (0u8, Some(paint)),
+                        Item::Border { paint, .. } => (1, Some(paint)),
+                        Item::PushClip(_) => (2, None),
+                        Item::PopClip => (3, None),
+                        _ => return false,
+                    };
+                    tag.hash(&mut h);
+                    match paint {
+                        Some(Paint::Solid(c)) => hash_color(&mut h, c),
+                        Some(_) => return false,
+                        None => {}
+                    }
+                    true
+                });
             let border = match get(Prop::Border) {
                 Some(PropValue::Border(Border { width, .. })) => finite(*width)
                     .filter(|w| *w > 0.0)
@@ -1695,6 +1740,7 @@ impl<'a> Flattener<'a> {
                     own: own.map(|(b, _)| b),
                     clips: inh.clips.clone(),
                 })),
+                caret: caret_cell,
             },
         );
         #[cfg(feature = "eval-hooks")]
@@ -1728,6 +1774,9 @@ impl<'a> Flattener<'a> {
             );
         }
         self.drawn_push(node.id, opacity, frame);
+        if let Some(r) = blinking {
+            self.drawn_caret(r);
+        }
 
         // Hit shape: the rounded box, grown by `hit: grow(n)`; none with
         // `hit: none`.
@@ -2571,7 +2620,23 @@ impl<'a> Flattener<'a> {
             opacity,
             travel: 0.0,
             fade: 0.0,
+            caret: None,
         });
+    }
+
+    /// (caret) The node [`Flattener::drawn_push`] pushed last blinks its
+    /// caret at `r` (physical px, under the node's transform).
+    fn drawn_caret(&mut self, r: kurbo::Rect) {
+        let s = self.scale.as_f64();
+        let v = self.xform.transform_rect_bbox(r);
+        if let Some(d) = self.drawn.as_mut().and_then(|d| d.last_mut()) {
+            d.caret = Some(LogicalRect::new(
+                (v.x0 / s) as f32,
+                (v.y0 / s) as f32,
+                (v.width() / s) as f32,
+                (v.height() / s) as f32,
+            ));
+        }
     }
 
     /// True if a part of `svg` reads time: the `svg` then has a clock.

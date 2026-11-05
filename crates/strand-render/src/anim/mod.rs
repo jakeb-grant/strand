@@ -375,6 +375,8 @@ pub(crate) struct Animator {
     /// props' springs, sizes and glides (`crate::probe::SpringTrace`).
     #[cfg(feature = "eval-hooks")]
     pub(crate) springs: Vec<crate::probe::SpringTrace>,
+    /// (caret) Focused `input`s' caret blinks.
+    pub(crate) blinks: crate::widgets::Blinks,
 }
 
 /// (M4) A node's lift and glide, held aside by [`Animator::hold_still`].
@@ -544,6 +546,15 @@ impl Animator {
         if self.commit && !self.snapping() {
             self.times.begin(id, self.time);
         }
+    }
+
+    /// (caret) `id`'s caret in the frame being drawn, its text, position
+    /// and anchor hashed in `key`: blinking from the painted frame that
+    /// first drew it so (steady while everything snaps).
+    pub(crate) fn caret(&mut self, id: NodeId, key: u64) -> crate::widgets::CaretPhase {
+        let still = self.snapping();
+        self.blinks
+            .phase(id, key, self.time, self.slack, self.commit, still)
     }
 
     /// Everything snaps: `reduced_motion`, or a frame at time zero (no
@@ -1134,6 +1145,7 @@ impl Animator {
     /// Drops every motion of `id` (its id now names another node).
     pub fn forget(&mut self, id: NodeId) {
         self.times.forget(id);
+        self.blinks.restart(id);
         self.ranges.remove(&id);
         self.shapes.forget(id);
         self.rolls.forget(id);
@@ -1287,6 +1299,7 @@ impl Animator {
         self.step_fills.retain(|id, _| keep(*id));
         self.ranges.retain(|id, _| keep(*id));
         self.times.retain(&mut keep);
+        self.blinks.retain(&mut keep);
         self.shapes.retain(&mut keep);
         self.rolls.retain(&mut keep);
         self.plays.retain(&mut keep);

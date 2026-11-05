@@ -55,6 +55,11 @@ pub struct DrawnNode {
     pub travel: f32,
     /// How far its own opacity changes over that period. 0 at rest.
     pub fade: f32,
+    /// (caret) A focused `input`'s caret while it blinks, shown or not
+    /// in this frame: where it is drawn when shown, through the same
+    /// transforms, surface logical px. A replay holds the caret steady,
+    /// so its pixels there say nothing of a glitch.
+    pub caret: Option<LogicalRect>,
 }
 
 /// (replay-owner) A surface's last painted frame as it drew its nodes
