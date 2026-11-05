@@ -2122,6 +2122,12 @@ proof  = "crates/strand-services/tests/power.rs (power_follows_power_profiles_da
 
 [[claim]]
 page   = "site/concepts/services.md"
+text   = "If the daemon settles on another profile right after, Strand asks once more."
+source = ['crates/strand-services-schema/src/power.schema "two seconds of a write it took is asked once more, then followed"', "docs/decisions.md#power-reask"]
+proof  = "crates/strand-services/tests/power.rs (a_profile_the_daemon_settles_away_from_is_asked_once_more, a_daemon_that_settles_elsewhere_again_is_followed)"
+
+[[claim]]
+page   = "site/concepts/services.md"
 text   = "where it stays when the default output changes"
 source = ['crates/strand-services-schema/src/audio.schema "pavucontrol do), where it stays when the"']
 proof  = "crates/strand-services/tests/audio_routing.rs::a_stream_moves_and_follows_the_default_again"

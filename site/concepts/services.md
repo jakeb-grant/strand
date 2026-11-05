@@ -142,7 +142,8 @@ panel Controls {
 ```
 
 - **`power.profile = p`** asks power-profiles-daemon to switch. Only
-  the profiles the machine offers are in `power.profiles`.
+  the profiles the machine offers are in `power.profiles`. If the daemon
+  settles on another profile right after, Strand asks once more.
 - **`st.move_to(dev)`** sends one app's sound to `dev`, where it stays
   when the default output changes; `st.device` is the output it plays
   to now.
