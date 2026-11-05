@@ -668,7 +668,7 @@ Crate: raw inotify through [`rustix`](https://docs.rs/rustix/latest/rustix/fs/in
 
 ### The pipeline
 
-1. **Coalesce.** Wait 15 ms after the last completed write, so "save all" is one batch. When the latest event removed a watched file the wait is 50 ms, so delete-then-create is one edit; a file a batch finds gone before it has heard the removal (a save landing as an earlier batch is cut) waits those 50 ms from that removal too, never read as deleted, in a directory watched with inotify (a polled one, on NFS, has no queue to show the removal: its listing decides; `docs/decisions.md`, save-blank); a batch never stays open more than 500 ms.
+1. **Coalesce.** Wait 15 ms after the last completed write, so "save all" is one batch. When the latest event removed a watched file the wait is 50 ms, so delete-then-create is one edit; a file is never read as deleted within those 50 ms of its removal, whichever batch finds it gone, one cut early or one that finds it gone before it has heard the removal (a save landing as an earlier batch is cut), in a directory watched with inotify (a polled one, on NFS, has no queue to show the removal: its listing decides; `docs/decisions.md`, save-blank); a batch never stays open more than 500 ms.
 2. **Skip no-ops.** Hash each file with BLAKE3. Unchanged content stops here, including Strand's own writes, whose hashes are pre-registered.
 3. **Compile off-thread.** A worker parses, type-checks and lowers only changed modules and their dependents. Rendering continues.
 4. **Commit atomically.** Commit the largest changed set that type-checks with everything that references it, and hold back the rest. One tick, no blank frame, no teardown.

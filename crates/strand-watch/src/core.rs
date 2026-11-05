@@ -531,6 +531,11 @@ pub(crate) struct Core<B> {
     /// nobody wrote. Back to completed writes at the first flush
     /// `CHURN_QUIET` after the last touch.
     churning: HashMap<PathBuf, Instant>,
+    /// Paths (as events name them) whose latest event was a removal, each
+    /// with when it was heard, kept until its removal grace has run out:
+    /// a watched file or module they reach is not reported `Removed`
+    /// before then, whichever flush finds it gone (save-blank).
+    removals: HashMap<PathBuf, Instant>,
     pending: Pending,
     /// How many times the watches were brought up to date.
     #[cfg(test)]
@@ -763,6 +768,7 @@ impl<B: Backend> Core<B> {
             held: BTreeMap::new(),
             deferred: HashMap::new(),
             churning: HashMap::new(),
+            removals: HashMap::new(),
             pending: Pending::default(),
             #[cfg(test)]
             syncs: 0,
@@ -1008,6 +1014,38 @@ impl<B: Backend> Core<B> {
             .or_insert(Deferred { since, retry });
     }
 
+    /// The path (`f`, the file it resolves to or a link or directory on
+    /// the way) whose removal was heard less than the removal grace
+    /// before `now`, if any: until that grace runs out, `f` missing is a
+    /// delete-then-create save in its gap, not a removal (save-blank).
+    fn removal_in_grace(&self, f: &Path, now: Instant) -> Option<PathBuf> {
+        let grace = self.opts.removal_grace;
+        let heard = |p: &Path| self.removals.get(p).is_some_and(|t| now < *t + grace);
+        if heard(f) {
+            return Some(f.to_path_buf());
+        }
+        let r = &self.files.get(f)?.resolved;
+        std::iter::once(&r.path)
+            .chain(&r.hops)
+            .find(|p| heard(p))
+            .cloned()
+    }
+
+    /// Put `f` back in the open batch unread, with the times of the
+    /// events behind it, to wait for its removal grace (or with the module
+    /// set): not as a deferred read, whose bound (`max_delay` after the
+    /// first event behind it) can come before that grace is over. The
+    /// next flush comes a grace after the removal it waits for.
+    fn wait_for_grace(&mut self, f: PathBuf, events: (Instant, Instant), now: Instant) {
+        if let Some(g) = self.removal_in_grace(&f, now) {
+            self.pending.gone.insert(g);
+        }
+        self.deferred.remove(&f);
+        self.pending.files.insert(f);
+        self.schedule(now);
+        self.add_events(events.0, events.1);
+    }
+
     /// When the open batch should be cut, if one is open, when a file held
     /// back because it was being written is due to be read anyway, or when
     /// a churning directory goes quiet.
@@ -1182,8 +1220,10 @@ impl<B: Backend> Core<B> {
         }
         if what == What::Gone {
             self.pending.gone.insert(p.clone());
+            self.removals.insert(p.clone(), now);
         } else {
             self.pending.gone.remove(&p);
+            self.removals.remove(&p);
         }
         if self.rescan_paths.contains(&p) {
             self.pending.config = true;
@@ -1247,6 +1287,7 @@ impl<B: Backend> Core<B> {
             self.mark(now);
         } else {
             self.pending.gone.remove(&p);
+            self.removals.remove(&p);
         }
     }
 
@@ -1410,39 +1451,22 @@ impl<B: Backend> Core<B> {
         let was_held = std::mem::take(&mut self.held);
         touched.extend(was_held.keys().cloned());
         // The watched files a drained event shows a write in progress on,
-        // or a removal of, heard during this flush (`drain`): a removal
-        // among them has not had its grace yet.
+        // a creation of or a removal of, heard during this flush
+        // (`drain`); a removal among them is in `removals` too, its grace
+        // just begun.
         let mut unsettled = HashSet::new();
-        let waiting = if p.full.is_some() || p.config {
+        if p.full.is_some() {
+            touched.extend(self.files.keys().cloned());
+        }
+        if p.full.is_some() || p.config {
             self.rescan_config(
                 &mut touched,
                 &mut changes,
                 &mut notices,
                 &mut unsettled,
+                p.events.unwrap_or((now, now)),
                 now,
-            )
-        } else {
-            Vec::new()
-        };
-        if p.full.is_some() {
-            touched.extend(self.files.keys().cloned());
-        }
-        // The modules waiting with the set go back to the open batch
-        // unread, with its event times but not as a deferred read: a
-        // deferred read keeps the bound of the batch it was first due in,
-        // which for a batch cut at `max_delay` is 15 ms away, and the
-        // next flush would then list the set inside the grace of the
-        // removal it waits for, that removal's event already drained, and
-        // report it (save-blank).
-        if !waiting.is_empty() {
-            if let Some((first, last)) = p.events {
-                self.add_events(first, last);
-            }
-            for path in waiting {
-                touched.remove(&path);
-                self.deferred.remove(&path);
-                self.pending.files.insert(path);
-            }
+            );
         }
         let mut cache = p.cache;
         if p.trees || p.full.is_some() {
@@ -1535,13 +1559,19 @@ impl<B: Backend> Core<B> {
         }
         let lost = self.pending.full.is_some();
         for (path, read, stalled) in reads {
+            // Gone with its removal heard, now (the drain above) or
+            // earlier, and its grace not over: a delete-then-create save
+            // in its gap, never a removal yet (save-blank).
+            if read.is_err() && self.removal_in_grace(&path, now).is_some() {
+                self.wait_for_grace(path, p.events.unwrap_or((now, now)), now);
+                continue;
+            }
             let busy = self.busy_since(&path).is_some();
             let torn = match &read {
                 Ok(r) => self.maybe_torn(&path, r, &unsettled, p.first, now),
-                // Gone (or unreadable) with its removal or re-creation
-                // queued behind the read: a delete-then-create save in
-                // its gap, which the removal grace covers once the
-                // event is heard, never a removal yet (save-blank).
+                // Gone (or unreadable) with its re-creation queued behind
+                // the read (its removal heard too, then superseded): the
+                // new file may be half written.
                 Err(_) => unsettled.contains(&path),
             };
             if lost || torn || busy {
@@ -1587,6 +1617,8 @@ impl<B: Backend> Core<B> {
         }
         let files = &self.files;
         self.deferred.retain(|f, _| files.contains_key(f));
+        let grace = self.opts.removal_grace;
+        self.removals.retain(|_, t| now < *t + grace);
         // Forget writes nobody closed (a lost `CLOSE_WRITE`) once stale.
         let stalled = self.opts.stalled_write;
         self.writing
@@ -1672,26 +1704,28 @@ impl<B: Backend> Core<B> {
     }
 
     /// List the module set again and bring `self.files` and `touched` up
-    /// to date with it. Returns the modules the listing left out when the
-    /// set waits for a queued event (save-blank): the set is unchanged and
-    /// they are not to be read this flush.
+    /// to date with it, unless the set waits for a module's removal grace
+    /// (save-blank): then it is unchanged, and the modules the listing
+    /// left out go back to the open batch unread, with `events`, the
+    /// times of the events behind this batch.
     fn rescan_config(
         &mut self,
         touched: &mut BTreeSet<PathBuf>,
         changes: &mut Vec<FileChange>,
         notices: &mut Vec<Notice>,
         unsettled: &mut HashSet<PathBuf>,
+        events: (Instant, Instant),
         now: Instant,
-    ) -> Vec<PathBuf> {
+    ) {
         let Some(cfg) = self.config.as_mut() else {
-            return Vec::new();
+            return;
         };
         self.config_root = Some(paths::resolve(&cfg.root));
         let mut set = match (cfg.rescan)() {
             Ok(set) => set,
             Err(e) => {
                 notices.push(Notice::RescanFailed(e.to_string()));
-                return Vec::new();
+                return;
             }
         };
         // A listing can miss a file being saved: on btrfs a rename over it
@@ -1712,7 +1746,7 @@ impl<B: Backend> Core<B> {
                 Ok(set) => set,
                 Err(e) => {
                     notices.push(Notice::RescanFailed(e.to_string()));
-                    return Vec::new();
+                    return;
                 }
             };
         }
@@ -1729,49 +1763,58 @@ impl<B: Backend> Core<B> {
         }
         let new: BTreeSet<PathBuf> = set.files.iter().map(|f| paths::absolute(f)).collect();
         // A module the listing left out may be a delete-then-create save
-        // in its gap, removed after this flush began and before the
-        // watcher heard it: its removal grace has not started. The
-        // `DELETE` is queued by the time the listing misses the file
+        // in its gap. Whose removal was heard less than the removal grace
+        // ago (by this flush or any before it, whatever cut the batch
+        // early: `max_delay`, a deferred read's bound) is no removal yet.
+        // One removed after this flush began may not be heard yet, but
+        // its `DELETE` is queued by the time the listing misses the file
         // (inotify queues it inside the `unlink`), so take the queue
         // whenever the listing leaves a module out, without looking at
         // the disk again (the file may be back by then, its removal
-        // still unheard). When the queue shows such a module removed (or
-        // created, or being written), the module set stays as it was
-        // this flush, no module leaving or joining it, and the next
-        // flush, a removal grace after that event, lists it once more: a
-        // re-created file is then one edit, and a rename in the gap
-        // (`mv bar.strand panel.strand`) one batch, as when its events
-        // are heard first. Without this a save made while an earlier
-        // one's batch was due was reported as the file removed, and the
-        // shell went blank until the file was back (save-blank). A
-        // polled directory has no queue: there the listing decides.
+        // still unheard). When such a module's removal is in its grace,
+        // or the queue shows it created or being written, the module set
+        // stays as it was this flush, no module leaving or joining it,
+        // and the next flush, a removal grace after that event, lists it
+        // once more: a re-created file is then one edit, and a rename in
+        // the gap (`mv bar.strand panel.strand`) one batch, as when its
+        // events are heard first. Without this a save made while an
+        // earlier one's batch was due was reported as the file removed,
+        // and the shell went blank until the file was back (save-blank).
+        // A polled directory has no queue: a removal no poll has seen yet
+        // is its listing's to decide.
         if self
             .files
             .iter()
             .any(|(path, e)| e.module && !new.contains(path))
         {
             unsettled.extend(self.drain(now));
-            let wait = self
-                .files
-                .iter()
-                .any(|(path, e)| e.module && !new.contains(path) && unsettled.contains(path));
+            let wait = self.files.iter().any(|(path, e)| {
+                e.module
+                    && !new.contains(path)
+                    && (unsettled.contains(path) || self.removal_in_grace(path, now).is_some())
+            });
             if wait {
                 self.pending.config = true;
                 self.schedule(now);
-                // Every module the listing left out waits with it: one
-                // whose removal was heard before this flush (the old name
-                // of a rename) would otherwise go out `Removed` from its
-                // read, a grace before the new name joins.
-                return self
+                // Every module the listing left out waits with it, unread:
+                // one whose removal was heard long before (the old name of
+                // a rename) would otherwise go out `Removed` from its read,
+                // a grace before the new name joins.
+                let left: Vec<PathBuf> = self
                     .files
                     .iter()
                     .filter(|(path, e)| e.module && !new.contains(*path))
                     .map(|(path, _)| path.clone())
                     .collect();
+                for path in left {
+                    touched.remove(&path);
+                    self.wait_for_grace(path, events, now);
+                }
+                return;
             }
         }
         let Some(cfg) = self.config.as_mut() else {
-            return Vec::new();
+            return;
         };
         cfg.modules.files = set.files;
         for (path, e) in self.files.iter_mut() {
@@ -1827,7 +1870,6 @@ impl<B: Backend> Core<B> {
                 }
             }
         }
-        Vec::new()
     }
 
     /// Compare `path` with its last known state and push one change per
@@ -3197,6 +3239,126 @@ mod tests {
         );
         assert_eq!(b.first_event, t0, "the rename's event times are kept");
         assert!(core.deadline().is_none());
+    }
+
+    /// A module whose removal was heard is never reported `Removed` by a
+    /// listing inside its removal grace, whatever brought that listing
+    /// about. Here the set waits for `colors.strand`'s drained `DELETE` at
+    /// a batch cut at `max_delay`, and `theme.strand`, written during that
+    /// flush, reads as torn: its deferred read keeps its batch's bound, so
+    /// the next flush comes 15 ms later, inside `colors.strand`'s gap,
+    /// with nothing left in the queue. It lists the set without it, and
+    /// the module still waits: the re-created file is one `Modified`, and
+    /// had it stayed gone it is `Removed` once the grace is over
+    /// (decisions.md save-blank).
+    #[test]
+    fn a_torn_read_while_the_set_waits_keeps_the_grace() {
+        for again in [true, false] {
+            let (_tmp, root) = cfg_dir();
+            let colors = root.join("colors.strand");
+            let theme = root.join("theme.strand");
+            std::fs::write(&colors, "colors").unwrap();
+            std::fs::write(&theme, "theme").unwrap();
+            let queue = Queued::default();
+            let opts = Options::default();
+            let mut core = Core::new(queue.clone(), opts.clone(), Some(config(&root)));
+            settle(&mut core);
+            // theme.strand renamed away and back, its batch kept open
+            // until `max_delay` by events that kept coming.
+            let t0 = Instant::now();
+            core.on_raw(Raw::Gone(theme.clone()), t0);
+            core.on_raw(Raw::Written(theme.clone()), t0);
+            let cut = t0 + opts.max_delay;
+            // As it is cut, colors.strand is deleted and theme.strand
+            // written again: the drained `MODIFY` makes its read torn.
+            std::fs::remove_file(&colors).unwrap();
+            std::fs::write(&theme, "theme 2").unwrap();
+            queue.push(Raw::Gone(colors.clone()));
+            queue.push(Raw::Busy(theme.clone()));
+            queue.push(Raw::Written(theme.clone()));
+            assert!(core.flush(cut).is_none(), "colors.strand is not removed");
+            // The torn read's bound: 15 ms on, inside colors.strand's gap.
+            let next = core.deadline().unwrap();
+            assert_eq!(next, cut + opts.coalesce);
+            let b = core.flush(next);
+            let got: Vec<_> = b
+                .iter()
+                .flat_map(|b| &b.changes)
+                .map(|c| (&c.path, c.kind))
+                .collect();
+            assert_eq!(
+                got,
+                [(&theme, ChangeKind::Modified)],
+                "colors.strand is removed inside its grace"
+            );
+            assert!(core.files[&colors].module);
+            let b = if again {
+                let t1 = cut + Duration::from_millis(30);
+                std::fs::write(&colors, "colors 2").unwrap();
+                core.on_raw(Raw::Written(colors.clone()), t1);
+                core.flush(core.deadline().unwrap()).unwrap()
+            } else {
+                let end = core.deadline().unwrap();
+                assert!(end >= cut + opts.removal_grace, "{:?}", end - cut);
+                core.flush(end).unwrap()
+            };
+            let got: Vec<_> = b.changes.iter().map(|c| (&c.path, c.kind)).collect();
+            let kind = if again {
+                ChangeKind::Modified
+            } else {
+                ChangeKind::Removed
+            };
+            assert_eq!(got, [(&colors, kind)], "{b:#?}");
+            assert!(core.deadline().is_none());
+        }
+    }
+
+    /// The same for a watched file no listing looks at (a settings file):
+    /// its batch cut at `max_delay` finds it gone in a delete-then-create
+    /// save's gap and drains its `DELETE`, and a flush 15 ms later (the
+    /// bound that batch's deferred reads keep) finds it still gone, with
+    /// nothing left in the queue. It is not `Removed` inside the grace:
+    /// the re-created file is one `Modified`, and had it stayed gone it
+    /// is `Removed` once the grace is over (decisions.md save-blank).
+    #[test]
+    fn a_file_read_in_a_save_gap_at_max_delay_keeps_the_grace() {
+        for again in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = std::fs::canonicalize(tmp.path()).unwrap();
+            let prefs = root.join("prefs.toml");
+            std::fs::write(&prefs, "a = 1").unwrap();
+            let queue = Queued::default();
+            let opts = Options::default();
+            let mut core = Core::new(queue.clone(), opts.clone(), None);
+            core.add_file(&prefs, Role::Settings, None);
+            assert!(core.deadline().is_none());
+            let t0 = Instant::now();
+            core.on_raw(Raw::Written(prefs.clone()), t0);
+            let cut = t0 + opts.max_delay;
+            std::fs::remove_file(&prefs).unwrap();
+            queue.push(Raw::Gone(prefs.clone()));
+            assert!(core.flush(cut).is_none(), "prefs.toml is not removed yet");
+            assert!(core.flush(cut + opts.coalesce).is_none(), "nor 15 ms on");
+            let b = if again {
+                let t1 = cut + Duration::from_millis(30);
+                std::fs::write(&prefs, "a = 2").unwrap();
+                core.on_raw(Raw::Written(prefs.clone()), t1);
+                core.flush(core.deadline().unwrap()).unwrap()
+            } else {
+                let end = core.deadline().unwrap();
+                assert!(end >= cut + opts.removal_grace, "{:?}", end - cut);
+                core.flush(end).unwrap()
+            };
+            assert_eq!(b.changes.len(), 1, "{b:#?}");
+            assert_eq!(b.changes[0].path, prefs);
+            if again {
+                assert_eq!(b.changes[0].kind, ChangeKind::Modified);
+                assert_eq!(b.changes[0].hash, Some(blake3::hash(b"a = 2")));
+            } else {
+                assert_eq!(b.changes[0].kind, ChangeKind::Removed);
+            }
+            assert!(core.deadline().is_none());
+        }
     }
 
     /// A listing that misses a module in a save gap is judged by the
