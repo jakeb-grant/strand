@@ -711,13 +711,12 @@ impl Machine {
                 let i = arg.as_f64().filter(|i| *i >= 0.0);
                 k.with(rt, |v| item(i.and_then(|i| v.items().get(i as usize))))
             }
-            KeyedQuery::Contains => {
-                let key = k.with_untracked(rt, |v| (v.key_fn())(&arg))?;
-                let found = k.get_key(rt, &key)?;
-                Ok(Value::Bool(
-                    found.is_some_and(|x| builtins::equal(&x, &arg)),
-                ))
-            }
+            // Read through `with`, so a binding over `xs.contains(x)`
+            // follows the collection (core's `get_key` is untracked).
+            KeyedQuery::Contains => k.with(rt, |v| {
+                let key = (v.key_fn())(&arg);
+                Value::Bool(v.get(&key).is_some_and(|x| builtins::equal(x, &arg)))
+            }),
         }
     }
 

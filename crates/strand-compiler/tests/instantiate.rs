@@ -3144,6 +3144,53 @@ fn keyed_reads_do_not_copy_the_list() {
     assert_eq!(shell.rt.stats().computations - before, 1);
 }
 
+/// The texts a binding over `rows.contains(…)` shows as the keyed
+/// collection is pushed to, updated and removed from, one box per write.
+fn contains_follows(src: &str) -> Vec<String> {
+    let mut shell = boot(&[("contains.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let mut seen = vec![shell.scene.texts().join(" ")];
+    for b in shell.scene.of_kind(NodeKind::Box) {
+        shell.inst.event(b, "click", Vec::new());
+        let u = shell.flush();
+        assert!(u.errors.is_empty(), "{:?}", u.errors);
+        seen.push(shell.scene.texts().join(" "));
+    }
+    seen
+}
+
+const CONTAINS_WRITES: &str = "  box { on click { rows.push(Row(id: 1, label: \"a\")) } }\n  box { on click { rows.update(1, r => Row(id: r.id, label: \"b\")) } }\n  box { on click { rows.update(1, r => Row(id: r.id, label: \"a\")) } }\n  box { on click { rows.remove_key(1) } }\n}\n";
+
+/// A binding that reads a keyed `state` only through `.contains(x)`
+/// re-runs when the collection changes: the query reads the item by its
+/// key through the tracked accessor (decisions.md dictionary; before, it
+/// read through core's untracked `get_key`, so the text stayed `false`
+/// after the push).
+#[test]
+fn a_binding_over_contains_reruns_when_the_keyed_state_changes() {
+    let src = format!(
+        "type Row {{ id: int; label: text }}\nstate rows: [Row] key id = []\nbar B {{\n  text join(\" \", rows.contains(Row(id: 1, label: \"a\")))\n{CONTAINS_WRITES}"
+    );
+    assert_eq!(
+        contains_follows(&src),
+        ["false", "true", "false", "true", "false"]
+    );
+}
+
+/// The same through a view `let` over the keyed `state`: `.contains`
+/// on the view follows the view.
+#[test]
+fn a_binding_over_contains_on_a_view_reruns_when_the_keyed_state_changes() {
+    let src = format!(
+        "type Row {{ id: int; label: text }}\nstate rows: [Row] key id = []\nlet shown = rows.filter(r => r.id > 0)\nbar B {{\n  text join(\" \", shown.contains(Row(id: 1, label: \"a\")))\n{CONTAINS_WRITES}"
+    );
+    assert_eq!(
+        contains_follows(&src),
+        ["false", "true", "false", "true", "false"]
+    );
+}
+
 /// Service actions are writes too: a handler calling `n.expire()` (on an
 /// item of `notifications.popups`) or `notifications.clear()` declares a
 /// write of what the service's actions can change, so readers of the
