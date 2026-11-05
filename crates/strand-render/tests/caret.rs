@@ -455,7 +455,7 @@ fn a_turn_damages_only_the_caret() {
             areas.push(d.area());
         }
         eprintln!(
-            "caret turn at scale {scale}: {:?} per frame (CPU, debug build), damage {areas:?} px",
+            "caret turn at scale {scale}: {:?} per frame (CPU paint), damage {areas:?} px",
             spent / frames
         );
     }
