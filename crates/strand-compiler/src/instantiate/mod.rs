@@ -1514,11 +1514,34 @@ impl Instance {
         let mut left: Vec<(Rc<str>, reload::CellRec)> = carry.old.cells.drain().collect();
         left.sort_by(|a, b| a.0.cmp(&b.0));
         let parked = |key: &str| ctx.parked.borrow().iter().any(|p| key.starts_with(&**p));
+        // A file renamed in this load is one owner under both names: the
+        // cells of the modules gone pair with those of the modules new
+        // (decisions.md 2026-10-05, the edit table as the fuzzer reads
+        // it: a module renamed in one load resets as `renamed`).
+        let modules = |p: &Program| {
+            p.files
+                .iter()
+                .map(|f| f.module.clone())
+                .collect::<std::collections::HashSet<String>>()
+        };
+        let (old_modules, new_modules) = (modules(&carry.old_prog), modules(&ctx.vm.prog));
+        let group = |owner: &str| -> String {
+            match owner.rsplit_once('#') {
+                Some((scope, who)) if old_modules.contains(who) != new_modules.contains(who) => {
+                    format!("{scope}#\u{0}renamed module")
+                }
+                _ => owner.to_string(),
+            }
+        };
         // How many cells each owner lost: more than it gained, and some of
         // them were removed (decisions.md, removed-state-notice).
         let mut lost: HashMap<String, usize> = HashMap::new();
         for (key, _) in left.iter().filter(|(k, _)| !parked(k)) {
-            *lost.entry(reload::cell_owner(key).to_string()).or_default() += 1;
+            *lost.entry(group(reload::cell_owner(key))).or_default() += 1;
+        }
+        let mut gained: HashMap<String, usize> = HashMap::new();
+        for owner in &carry.fresh {
+            *gained.entry(group(owner)).or_default() += 1;
         }
         for (key, rec) in left {
             if parked(&key) {
@@ -1533,10 +1556,10 @@ impl Instance {
             // A rename is a cell its owner (the same file or component,
             // in the same place) lost while gaining another; a cell whose
             // owner gained none was removed, and goes without a word.
-            let owner = reload::cell_owner(&key);
-            let gained = carry.fresh.iter().filter(|o| &***o == owner).count();
+            let owner = group(reload::cell_owner(&key));
+            let gained = gained.get(&owner).copied().unwrap_or(0);
             if gained > 0 {
-                let why = if lost.get(owner).copied().unwrap_or(0) > gained {
+                let why = if lost.get(&owner).copied().unwrap_or(0) > gained {
                     "renamed or removed"
                 } else {
                     "renamed"

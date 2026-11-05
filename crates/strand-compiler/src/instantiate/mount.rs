@@ -784,9 +784,7 @@ impl Ctx {
                                 keep = Some(rec);
                             }
                             None => self.report(|r| {
-                                r.class(EditClass::StateReset);
-                                r.reset
-                                    .push((path.clone(), "value does not fit".to_string()));
+                                r.reset_cell(path.clone(), "value does not fit".to_string())
                             }),
                         }
                     }

@@ -2180,10 +2180,12 @@ new program with the running one.
 - (removed-state-notice) A `state` is renamed when its file or
   component (in the same place of the tree) loses a cell and gains
   another in the same save; the old cell resets with a warning,
-  `launcher.wide: reset (renamed)`. A cell removed while its owner gains
-  none is gone without a word, and when an owner loses more cells than it
-  gains, Strand cannot tell which were renamed: each says `renamed or
-  removed`. The warning, like every row the reload overlay lists for a
+  `launcher.wide: reset (renamed)`. A file renamed in one save is one
+  owner under both names, so its cells reset as renamed. A cell removed
+  while its owner gains none is gone without a word, unless its whole
+  file went while it held a value you set (`removed with its module`);
+  when an owner loses more cells than it gains, Strand cannot tell which
+  were renamed: each says `renamed or removed`. The warning, like every row the reload overlay lists for a
   reload, is one of the `reload` event's `notices` in `strand watch`;
   the cell is also under its `reset`.
 - A handler counts as changed when its code or anything it reaches
