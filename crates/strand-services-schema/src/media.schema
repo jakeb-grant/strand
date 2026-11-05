@@ -51,7 +51,9 @@ record Player key id {
   /// too.
   can_seek_by: bool
   /// An icon name for its app, as `media.icon` names the active one's:
-  /// the name itself when no entry matches.
+  /// the name itself when no entry matches, so `p.app?.icon ??
+  /// "audio-x-generic"` falls back there, giving up an icon the theme has
+  /// for that name, which `image p.icon` keeps.
   icon: text
   /// The installed app it belongs to, found from its MPRIS
   /// `DesktopEntry` as a window's app is: `p.app?.name`. Null when no
@@ -159,10 +161,13 @@ service media {
   /// is, the app named by the player's MPRIS `DesktopEntry` (else by its
   /// bus name: `vlc` for `org.mpris.MediaPlayer2.vlc.instance42`) in
   /// place of an app id: its desktop entry's icon, else that name
-  /// (lowercased when only that is in the icon theme). So when no entry
-  /// matches it is the name itself, which the theme may lack; `image
-  /// media.app?.icon ?? "audio-x-generic"` falls back then. Null when no
-  /// player runs.
+  /// (lowercased when only that is in the icon theme), else the name as
+  /// it is, which the theme lacks. Null when no player runs.
+  /// Never null while one runs, so a fallback chooses: `image media.icon`
+  /// keeps the theme's icon for an app with no entry and shows nothing
+  /// for one neither knows; `image media.app?.icon ?? "audio-x-generic"`
+  /// always shows one, the generic one whenever no entry matches, even
+  /// where the theme has the app's name.
   icon: text?
   /// The installed app the active player belongs to, found as `icon`'s
   /// entry is: `media.app?.name`. Null when no player runs or no entry

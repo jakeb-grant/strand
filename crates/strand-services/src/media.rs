@@ -288,10 +288,13 @@ pub struct Media {
     /// is, the app named by the player's MPRIS `DesktopEntry` (else by its
     /// bus name: `vlc` for `org.mpris.MediaPlayer2.vlc.instance42`) in
     /// place of an app id: its desktop entry's icon, else that name
-    /// (lowercased when only that is in the icon theme). So when no entry
-    /// matches it is the name itself, which the theme may lack; `image
-    /// media.app?.icon ?? "audio-x-generic"` falls back then. Null when no
-    /// player runs.
+    /// (lowercased when only that is in the icon theme), else the name as
+    /// it is, which the theme lacks. Null when no player runs.
+    /// Never null while one runs, so a fallback chooses: `image media.icon`
+    /// keeps the theme's icon for an app with no entry and shows nothing
+    /// for one neither knows; `image media.app?.icon ?? "audio-x-generic"`
+    /// always shows one, the generic one whenever no entry matches, even
+    /// where the theme has the app's name.
     pub icon: Option<String>,
     /// The installed app the active player belongs to, found as `icon`'s
     /// entry is: `media.app?.name`. Null when no player runs or no entry
@@ -2908,6 +2911,13 @@ mod tests {
             !players.linked(vec![("p".into(), ("p".into(), None))]),
             "the name itself: nothing changes"
         );
+        // An unmatched name (one the theme may have): `icon` is the name
+        // and `app` null, so `media.app?.icon ?? "audio-x-generic"` gives
+        // it up and `image media.icon` keeps it (player-raise-seek).
+        let s = players.state(t0);
+        assert_eq!((s.icon.as_deref(), s.app.as_ref()), (Some("p"), None));
+        let item = &players.items(t0)[0];
+        assert_eq!((item.icon.as_str(), item.app.as_ref()), ("p", None));
         assert!(players.linked(vec![
             ("p".into(), ("multimedia-player".into(), Some(app.clone()))),
             ("gone".into(), ("gone".into(), None)),
