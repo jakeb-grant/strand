@@ -2782,6 +2782,18 @@ proof  = "crates/strand-compiler/tests/instantiate.rs::a_declared_action_asks_fo
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
+text   = "A `path` parameter's `~/…` is your home folder, as everywhere Strand takes a path"
+source = ['docs/spec.md "starts with `~/` reaches the program with the home folder"', 'crates/strand-compiler/src/instantiate/mod.rs "file.strip_prefix("~/")"', 'crates/strand-compiler/src/check/paths.rs "path.strip_prefix("~/")"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_path_argument_reaches_the_program_with_the_home_folder; crates/strand-compiler/src/vm/mod.rs::tests::a_path_argument_takes_the_home_folder_for_its_tilde"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "a `text` parameter is passed as written"
+source = ['docs/spec.md "`~user/…` and a `text` parameter are passed as written"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_path_argument_reaches_the_program_with_the_home_folder"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
 text   = "lists every action with its command"
 source = ['''docs/spec.md "`strand check` lists every action's command"''', 'crates/strand/src/check.rs ""  {}({params}) runs: {}{}","']
 proof  = "crates/strand/src/check.rs::actions_are_listed_and_checked_against_permit_exec"

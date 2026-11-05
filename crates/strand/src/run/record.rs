@@ -1130,6 +1130,25 @@ impl ChangeRecorder {
         self.program.is_text_literal(s)
     }
 
+    /// (path-tilde) Whether a command's argument `a` is a text of the
+    /// program: a literal, or a literal `~/…` a `path` parameter reached
+    /// the program as, `home` (`$HOME`, absolute) in place of its `~`
+    /// (`vm::Vm::request`). A typed path that names the same file as a
+    /// written `~/…` counts as it: the answer is the one the written path
+    /// would give.
+    fn argument_literal(&self, a: &str, home: Option<&str>) -> bool {
+        if self.literal(a) {
+            return true;
+        }
+        let Some(home) = home.filter(|h| h.starts_with('/')) else {
+            return false;
+        };
+        match a.strip_prefix(home.trim_end_matches('/')) {
+            Some(rest) if rest.starts_with('/') => self.literal(&format!("~{rest}")),
+            _ => false,
+        }
+    }
+
     /// A service's patch, from `Services::tap`.
     pub(crate) fn service(&mut self, t: u64, ev: &TapEvent<'_>) {
         if strand_services::secret(ev.service) {
@@ -1367,7 +1386,11 @@ impl ChangeRecorder {
         argv: &[String],
         answer: &Result<Value, String>,
     ) {
-        let tainted = argv.iter().skip(1).any(|a| !self.literal(a));
+        let home = std::env::var_os("HOME").and_then(|h| h.into_string().ok());
+        let tainted = argv
+            .iter()
+            .skip(1)
+            .any(|a| !self.argument_literal(a, home.as_deref()));
         if self.ring.as_ref().is_none_or(Ring::paused) {
             return;
         }
@@ -3336,6 +3359,26 @@ mod tests {
         assert_eq!(value_of(&e[0]), serde_json::json!({"ok": {"~text": 7}}));
         assert_eq!(value_of(&e[1]), serde_json::json!({"err": "`qalc` failed"}));
         assert!(!contains(&c.dump().unwrap(), b"hunter"));
+    }
+
+    /// (path-tilde) A `path` argument written as `~/…` reaches the
+    /// command with the home folder in place of its `~`: it is still the
+    /// config's text, so the answer is kept; a path under the home folder
+    /// no literal names is held as typed text is.
+    #[test]
+    fn a_written_home_path_keeps_its_actions_answer() {
+        let home = std::env::var("HOME").unwrap();
+        assert!(home.starts_with('/'), "an absolute $HOME: {home:?}");
+        let home = home.trim_end_matches('/');
+        let mut c = ChangeRecorder::new(true, program("let d = \"~/Pictures\""));
+        let argv = |d: &str| vec!["ls".to_string(), format!("{home}{d}")];
+        c.exec_answered(5, "ls", &argv("/Pictures"), &Ok(Value::text("a.png")));
+        c.exec_answered(6, "ls", &argv("/Secret"), &Ok(Value::text("b.png")));
+        c.exec_answered(7, "ls", &argv("/Pictures/x"), &Ok(Value::text("c.png")));
+        let e = entries(c.ring().unwrap());
+        assert_eq!(value_of(&e[0]), serde_json::json!({"ok": "a.png"}));
+        assert_eq!(value_of(&e[1]), serde_json::json!({"ok": {"~text": 5}}));
+        assert_eq!(value_of(&e[2]), serde_json::json!({"ok": {"~text": 5}}));
     }
 
     #[test]

@@ -5063,11 +5063,11 @@ fn a_declared_action_asks_for_its_command_with_whole_arguments() {
     assert_eq!(held, [("hold", vec![Value::text("performance")])]);
 }
 
-/// (path-tilde) A `path` parameter's `~` or `~/…` reaches the program
-/// with the home folder in its place, as every other path Strand takes
+/// (path-tilde) A `path` parameter's `~/…` reaches the program with the
+/// home folder in place of the `~`, as every other path Strand takes
 /// does, in an action with a result too; a `text` parameter given the
-/// same value, and a `path` that only holds a `~` further in or names
-/// another user's home, stay as written.
+/// same value, and a `path` that is a bare `~`, only holds a `~` further
+/// in or names another user's home, stay as written.
 #[test]
 fn a_path_argument_reaches_the_program_with_the_home_folder() {
     use strand_compiler::vm::ExecRequest;
@@ -5115,7 +5115,7 @@ fn a_path_argument_reaches_the_program_with_the_home_folder() {
         argv(&mut shell, 1),
         [(
             "rec".to_string(),
-            owned(&["wf-recorder", "-f", "/tmp/~/a.mp4", "~", home])
+            owned(&["wf-recorder", "-f", "/tmp/~/a.mp4", "~", "~"])
         )]
     );
     assert_eq!(
