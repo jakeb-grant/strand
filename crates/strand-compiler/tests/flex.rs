@@ -592,6 +592,33 @@ fn an_action_with_a_result_is_loaded_and_awaited() {
     assert_eq!(text(&inst, "out"), "3");
 }
 
+/// (panel-change-closed) The `on change` handlers written in the body of
+/// a surface that starts closed exist from the start and read what they
+/// watch while it is closed (spec.md 5.1): one watching a value from an
+/// action with a result runs that action before the panel first opens,
+/// and again when its arguments change. Nothing else in the closed body
+/// reads it.
+#[test]
+fn a_closed_panels_body_on_change_reads_what_it_watches() {
+    let src = "permit exec \"qalc\"\n\
+        action calc(q: text) -> text [\"qalc\", \"-t\", q]\n\
+        export state query = \"1+1\"\n\
+        export state open = false\n\
+        state sel = 0\n\
+        let r = calc(query)\n\
+        let answer = r ?? \"\"\n\
+        panel P {\n  open: <-> open\n  on change answer { sel = 0 }\n  text answer\n}\n";
+    let (_rt, _host, inst) = run(src);
+    inst.flush();
+    let argv = |inst: &Instance| -> Vec<Vec<String>> {
+        inst.take_execs().into_iter().map(|r| r.argv).collect()
+    };
+    assert_eq!(argv(&inst), [["qalc", "-t", "1+1"]], "read at boot");
+    inst.set("flex.query", Value::text("2*3")).unwrap();
+    inst.flush();
+    assert_eq!(argv(&inst), [["qalc", "-t", "2*3"]], "and while closed");
+}
+
 /// (lockmon) An action's name reads as its run: `rec.running` (`bool`),
 /// `rec.started` (`Date?`) in a binding, `rec.stop()` an action of a
 /// handler; the bare name is still no value, the run is not written, and

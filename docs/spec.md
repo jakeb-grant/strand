@@ -302,6 +302,31 @@ monitor, the keyboard always).
   (on a `window`, only the compositor's close and `w.close()`, below).
   A click on the surface's own buffer where it takes no input (beside a
   panel's box on the output it is stretched across) is a click away.
+- **A closed surface's handlers wait.** While a `bar`, `panel`, `osd`
+  or `window` is closed, only its own events run (`on show`, `on hide`,
+  `on key`, and the other events of the surface itself). Its
+  `on change`, service and timer handlers, and those of its elements,
+  do not run, and its timers pause. When it opens, what they missed
+  runs once. An `on change` runs if what it watches differs from what
+  it last saw while the surface was open, and also for a change made
+  in the tick that opens it, compared with the value at the end of the
+  tick before, even one that puts back what it last saw. So a handler
+  that sets `view` and `open` together is seen by the panel's
+  `on change view`. A service event that comes while the surface is
+  closed, once its body has mounted, is delivered when it opens (the
+  latest 256 per handler). In a surface that starts closed, the
+  `on change` handlers written in its body exist from the start, so
+  the tick that first opens it is seen too. Before then they have seen
+  nothing open, so a change made earlier does not run them, and they
+  read what they watch from the start: watching a value from an action
+  with a result (`let r = calc(q)`) runs the action while the surface
+  is closed. Its elements and components, and their handlers, mount
+  the first time it opens, so an `on change` in one of them takes the
+  value it mounts with as its first (section 8.4) and does not see the
+  tick that first opens it; written in the surface's body, it does.
+  The handlers of one tick run in the order written, wherever they are.
+  A `popup` mounts its content each time it opens, and the `lock`'s
+  handlers run as below. (decisions.md panel-change-closed)
 - **`popup { … }`** is an element, not a top-level surface: it is
   anchored to its parent element, shows while its `open` is true, nests
   (a popup may hold popups), and has `on dismiss` (Escape or a click
@@ -1863,7 +1888,11 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   runs on a new copy, and `on change audio.sink.volume, x` runs when `x`
   changes in the same tick as a sink switch. The watched expressions
   must be reactive (state, settings, services, or `let`s that read
-  them).
+  them). In a closed `bar`, `panel`, `osd` or `window` it waits, and
+  when the surface opens runs once for what it missed and for a change
+  made in the tick that opens it (section 5.1, which also says where
+  the first opening is not seen, and how a `popup` and the `lock`
+  differ).
 - **`on change a after T { … }`** debounces: it runs once, `T` after
   the last change.
 - **`after T while c { … }`** is one-shot: it runs at most once per

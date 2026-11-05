@@ -197,6 +197,13 @@ impl Runtime {
     /// tracks does not make it fire twice with an intermediate value. `handler` runs
     /// untracked, as a handler of the current owner: nodes it creates (a
     /// load it starts) belong to the component, not to this effect.
+    ///
+    /// Under a suspended scope it waits, and on resume runs once if the
+    /// value differs from what it last saw. Marked
+    /// [`Runtime::keep_up_while_closed`] under a scope suspended with
+    /// [`Runtime::suspend_closed`], it also runs then for a change made in
+    /// the flush that resumes it, compared with the flush before, even one
+    /// that puts back what it last saw.
     pub fn on_change<T, F, H>(&self, track: F, handler: H) -> Effect
     where
         T: PartialEq + 'static,
@@ -266,16 +273,36 @@ impl Runtime {
         H: FnMut(&Runtime, &P) -> Result<(), Error> + 'static,
     {
         let mut prev: Option<P> = None;
+        // The value at the end of the last tick it kept up in while a
+        // closed surface held it (`Runtime::suspend_closed`).
+        let mut kept: Option<P> = None;
         let effect = self.effect(move |rt| {
             // A reload write upstream (`Signal::set_reloaded`): the next
             // value read is a baseline, also when this run fails to read
             // it (the mark only lasts this flush).
             if rt.current_writer().is_some_and(|me| rt.take_rebaseline(me)) {
                 prev = None;
+                kept = None;
+            }
+            // Held by a closed surface: note the tick's value, running
+            // nothing. `prev` stays what it last saw open. A value it
+            // cannot read now keeps the last one; the run once it opens
+            // reports it.
+            if rt.keeping_up() {
+                if let Ok(now) = snap(rt) {
+                    kept = Some(now);
+                }
+                return Ok(());
             }
             let now = snap(rt)?;
-            // `None`: the first value (boot or reload).
-            let r = if prev.as_ref().is_some_and(|p| fire(p, &now)) {
+            // `None`: the first value (boot or reload). Once a closed
+            // surface opens, it runs for what it missed (`prev`) and for a
+            // change in the tick that opens it (`kept`, the tick before),
+            // which may put back what it last saw open.
+            let tick_before = kept.take();
+            let changed = prev.as_ref().is_some_and(|p| fire(p, &now))
+                || tick_before.is_some_and(|k| fire(&k, &now));
+            let r = if changed {
                 let writer = rt.current_writer().unwrap_or_default();
                 // Its component as of now: the effect may have been moved
                 // (`reparent`) since it was created.

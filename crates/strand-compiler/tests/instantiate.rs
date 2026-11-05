@@ -6068,3 +6068,275 @@ fn a_panel_whose_place_may_change_lists_its_places() {
     let boxes = shell.scene.of_kind(NodeKind::Box);
     assert_eq!(shell.scene.prop(boxes[0], Prop::ShadowRoom), None);
 }
+
+/// (panel-change-closed) A panel's own `on change` sees a change made in
+/// the tick that opens it, the first time it opens and every time after,
+/// also when that tick's writes put back the value it had when it last
+/// closed (the launcher's `on hide` sends it home meanwhile), and when
+/// the panel opens through another handler (`open` makes it `shown`).
+#[test]
+fn a_panels_on_change_sees_the_tick_that_opens_it() {
+    let src = "enum View { home, themes, apps }
+export state open = false
+export state themes_key = false
+export state apps_key = false
+state shown = false
+state view: View = home
+state held = false
+state runs = 0
+on change themes_key { view = themes; open = true }
+on change apps_key { view = apps; open = true }
+on change open { shown = open }
+panel Launcher {
+  open: <-> shown
+  on hide { open = false; view = home }
+  on change view { held = view == themes; runs += 1 }
+  text \"x\"
+}
+";
+    let mut shell = boot(&[("l.strand", src)], |_, _| {});
+    let get = |shell: &Shell, n: &str| shell.inst.value_of("l", n).unwrap();
+    // Escape or a click away: the panel writes its `open` false.
+    let close = |shell: &mut Shell| {
+        let panel = shell.scene.of_kind(NodeKind::Panel)[0];
+        shell
+            .inst
+            .write(panel, Prop::Open, PropValue::Bool(false))
+            .unwrap();
+        shell.flush();
+        assert_eq!(get(shell, "open"), Value::Bool(false));
+        shell
+            .inst
+            .set_value("l", "held", Value::Bool(false))
+            .unwrap();
+        shell.flush();
+    };
+    // The first open: the handler is there from boot.
+    shell.inst.set("l.themes_key", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(get(&shell, "held"), Value::Bool(true), "the first open");
+    assert_eq!(get(&shell, "runs"), Value::int(1));
+    // Closed: `on hide` sends it home, which runs nothing.
+    close(&mut shell);
+    assert_eq!(get(&shell, "runs"), Value::int(1), "closed, home");
+    // Opened on the page it closed on: home to themes in that tick.
+    shell.inst.set("l.themes_key", Value::Bool(false)).unwrap();
+    shell.flush();
+    assert_eq!(get(&shell, "held"), Value::Bool(true), "reopened on themes");
+    assert_eq!(get(&shell, "runs"), Value::int(2));
+    close(&mut shell);
+    shell.inst.set("l.apps_key", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(get(&shell, "held"), Value::Bool(false), "on apps");
+    assert_eq!(get(&shell, "runs"), Value::int(3));
+    close(&mut shell);
+    shell.inst.set("l.themes_key", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(get(&shell, "held"), Value::Bool(true), "on themes again");
+    assert_eq!(get(&shell, "runs"), Value::int(4));
+}
+
+/// (panel-change-closed) A closed panel's handlers do not run; when it
+/// opens, its own `on change`, its debounced one and one in an element of
+/// it (mounted once it has shown) each run once for what they missed while
+/// it was closed, as before. Before it first opens they have seen nothing:
+/// a change then is not run when it opens in a later tick.
+#[test]
+fn a_closed_panels_on_change_runs_once_for_what_it_missed() {
+    let src = "export state open = false
+export state x = 0
+state body = 0
+state later = 0
+state inner = 0
+panel P {
+  open: <-> open
+  on change x { body += 1 }
+  on change x after 1s { later += 1 }
+  box { on change x { inner += 1 } }
+}
+";
+    let mut shell = boot(&[("p.strand", src)], |_, _| {});
+    let runs =
+        |shell: &Shell| ["body", "later", "inner"].map(|n| shell.inst.value_of("p", n).unwrap());
+    let none = [Value::int(0), Value::int(0), Value::int(0)];
+    shell.inst.set("p.x", Value::int(1)).unwrap();
+    shell.at(0.1);
+    shell.at(2.0);
+    assert_eq!(runs(&shell), none, "closed since boot");
+    shell.inst.set("p.open", Value::Bool(true)).unwrap();
+    shell.at(2.1);
+    shell.at(4.0);
+    assert_eq!(runs(&shell), none, "opened later, first time");
+    shell.inst.set("p.open", Value::Bool(false)).unwrap();
+    shell.at(4.1);
+    shell.inst.set("p.x", Value::int(2)).unwrap();
+    shell.at(4.2);
+    shell.at(5.0);
+    assert_eq!(runs(&shell), none, "changed while closed");
+    shell.inst.set("p.open", Value::Bool(true)).unwrap();
+    shell.at(5.1);
+    shell.at(7.0);
+    let one = [Value::int(1), Value::int(1), Value::int(1)];
+    assert_eq!(runs(&shell), one, "opened later: what it missed, once");
+    shell.inst.set("p.x", Value::int(3)).unwrap();
+    shell.at(7.1);
+    shell.at(9.0);
+    let two = [Value::int(2), Value::int(2), Value::int(2)];
+    assert_eq!(runs(&shell), two, "changed while open");
+}
+
+/// (panel-change-closed) A handler that keeps a component's state in step
+/// with something outside (`on change src { mine = src }`) catches up when
+/// the panel it is in opens again, in the component and in the panel's
+/// body alike.
+#[test]
+fn a_reopened_panels_handlers_catch_up() {
+    let src = "export state open = true
+export state src = 0
+state nested = 0
+state body = 0
+component Mirror {
+  on change src { nested = src }
+  box { }
+}
+panel P {
+  open: <-> open
+  on change src { body = src }
+  Mirror
+}
+";
+    let mut shell = boot(&[("m.strand", src)], |_, _| {});
+    let get = |shell: &Shell, n: &str| shell.inst.value_of("m", n).unwrap();
+    shell.inst.set("m.open", Value::Bool(false)).unwrap();
+    shell.flush();
+    shell.inst.set("m.src", Value::int(5)).unwrap();
+    shell.flush();
+    assert_eq!(get(&shell, "nested"), Value::int(0), "closed");
+    shell.inst.set("m.open", Value::Bool(true)).unwrap();
+    shell.flush();
+    shell.flush();
+    assert_eq!(get(&shell, "nested"), Value::int(5), "the component's");
+    assert_eq!(get(&shell, "body"), Value::int(5), "the body's");
+}
+
+/// (panel-change-closed) The `on change` handlers of one tick run in the
+/// order written, those of a surface's body and of its elements alike: in
+/// a bar, and in a panel that starts closed, whose body handlers mount
+/// before the rest of it and take their place when it first opens.
+#[test]
+fn a_surfaces_handlers_run_in_the_order_written() {
+    for (surface, open) in [
+        ("bar B {", "true"),
+        ("panel P {\n  open: <-> open", "false"),
+    ] {
+        for (first, second, last) in [
+            ("box { on change x { y = 1 } }", "on change x { y = 2 }", 2),
+            ("on change x { y = 2 }", "box { on change x { y = 1 } }", 1),
+        ] {
+            let src = format!(
+                "export state open = {open}\nexport state x = 0\nstate y = 0\n\
+                 {surface}\n  {first}\n  {second}\n}}\n"
+            );
+            let mut shell = boot(&[("o.strand", &src)], |rt, host| {
+                screens(rt, host, &["DP-1"])
+            });
+            shell.inst.set("o.open", Value::Bool(true)).unwrap();
+            shell.flush();
+            shell.inst.set("o.x", Value::int(1)).unwrap();
+            shell.flush();
+            assert_eq!(
+                shell.inst.value_of("o", "y").unwrap(),
+                Value::int(last),
+                "{src}"
+            );
+        }
+    }
+}
+
+/// (panel-change-closed) A `persist`ed state in a component of a panel,
+/// written in the tick that closes the panel, is saved once the panel
+/// opens again: a closed surface holds its save tracker as before, and
+/// only its `on change` handlers note each tick's value.
+#[test]
+fn a_persisted_state_written_as_its_panel_closes_is_saved() {
+    let dir = temp_dir("persist-closing");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let src = "export state open = true
+component C {
+  state picked = \"\" persist
+  box { on click { picked = \"a\"; open = false } }
+}
+panel P {
+  open: <-> open
+  C
+}
+";
+    let mut shell = boot_with(&[("s.strand", src)], |_, _| {}, storage.clone());
+    let pick = shell.inst.nodes_handling("click")[0];
+    assert!(shell.inst.event(pick, "click", Vec::new()));
+    shell.at(0.1);
+    assert_eq!(shell.inst.get("s.open").unwrap(), Value::Bool(false));
+    shell.inst.set("s.open", Value::Bool(true)).unwrap();
+    shell.at(0.2);
+    shell.at(1.0);
+    shell.at(1.5);
+    let p = storage.persist.clone().unwrap();
+    assert!(p.sync(Duration::from_secs(5)));
+    let saved: Vec<String> = std::fs::read_dir(p.dir())
+        .map(|d| {
+            d.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        saved.iter().any(|f| f.contains("picked")),
+        "saved before shutdown: {saved:?}"
+    );
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (panel-change-closed) A debounced `on change` of a panel's body, and
+/// one in an element of it once it has shown, see a change made in the
+/// tick that opens it, as its plain `on change` does (that one from the
+/// first open: an element's handler mounts with it, so the first open
+/// is its first value).
+#[test]
+fn a_panels_handlers_see_the_tick_that_opens_it() {
+    let src = "export state open = false
+export state x = 0
+export state go = 0
+state body = 0
+state later = 0
+state inner = 0
+on change go { x = go; open = true }
+panel P {
+  open: <-> open
+  on change x { body += 1 }
+  on change x after 1s { later += 1 }
+  box { on change x { inner += 1 } }
+}
+";
+    let mut shell = boot(&[("p.strand", src)], |_, _| {});
+    let runs = |shell: &Shell| {
+        ["body", "later", "inner"].map(|n| {
+            shell
+                .inst
+                .value_of("p", n)
+                .unwrap()
+                .as_f64()
+                .unwrap_or(-1.0)
+        })
+    };
+    shell.inst.set("p.go", Value::int(1)).unwrap();
+    shell.at(0.1);
+    shell.at(2.0);
+    assert_eq!(runs(&shell), [1.0, 1.0, 0.0], "the first open");
+    shell.inst.set("p.open", Value::Bool(false)).unwrap();
+    shell.at(2.1);
+    shell.inst.set("p.go", Value::int(2)).unwrap();
+    shell.at(2.2);
+    shell.at(4.0);
+    assert_eq!(runs(&shell), [2.0, 2.0, 1.0], "opened again");
+}
