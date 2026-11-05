@@ -61,6 +61,21 @@
 //! `Set` with nothing waiting reads the player again, so its real value
 //! comes back. A volume written is held to 0 to 1; one read is shown as
 //! the player reports it, never below 0.
+//!
+//! (player-raise-seek) The root interface (`org.mpris.MediaPlayer2`) is
+//! read whole when a player arrives (`Identity`, `CanRaise`,
+//! `DesktopEntry`) and again on each of its `PropertiesChanged`, the
+//! latest question's answer standing. `raise()` calls its `Raise`, unless
+//! `CanRaise` is false. `seek(by)` calls `Seek` with the offset (back when
+//! negative: a [`crate::Offset`]), so it needs no track length, only that
+//! the player can seek; the time shows the target at once, as a
+//! `position` write's does. `icon` and `app` are found from the player's
+//! `DesktopEntry` (else its bus name's app part) as a window's are from
+//! its app id ([`crate::apps::AppIndex::window`]): the desktop entries are
+//! read on the blocking pool for the names not yet looked up, and for
+//! every name again when the apps service's sources change
+//! ([`crate::apps::changes`]); only the answers are kept. Until its
+//! lookup lands a player shows its name as its icon and no app.
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
@@ -100,12 +115,25 @@ pub enum MediaAction {
     PreviousOf { item: MediaPlayer },
     /// `p.select()`: `media.*` follows `p`.
     Select { item: MediaPlayer },
+    /// (player-raise-seek) `p.raise()`.
+    #[call(name = "raise")]
+    RaiseOf { item: MediaPlayer },
+    /// (player-raise-seek) `p.seek(by)`.
+    #[call(name = "seek")]
+    SeekOf {
+        item: MediaPlayer,
+        by: crate::Offset,
+    },
     /// `media.play_pause()`.
     PlayPause,
     /// `media.next()`.
     Next,
     /// `media.previous()`.
     Previous,
+    /// (player-raise-seek) `media.raise()`.
+    Raise,
+    /// (player-raise-seek) `media.seek(by)`.
+    Seek { by: crate::Offset },
 }
 
 /// (power-media-kbd) What a player repeats (`media.loop`): MPRIS
@@ -168,6 +196,9 @@ pub struct MediaPlayer {
     pub can_shuffle: bool,
     pub can_loop: bool,
     pub can_volume: bool,
+    pub can_raise: bool,
+    pub icon: String,
+    pub app: Option<crate::apps::App>,
 }
 
 /// See the module docs.
@@ -240,6 +271,21 @@ pub struct Media {
     pub can_loop: bool,
     /// Writing `volume` changes it (`Volume`, as `can_shuffle`).
     pub can_volume: bool,
+    /// `media.raise()` brings the active player forward: its MPRIS
+    /// `CanRaise` (a player that does not say counts as able). False when
+    /// no player runs.
+    pub can_raise: bool,
+    /// An icon name for the active player's app: `image media.icon ??
+    /// "audio-x-generic"`. Found as a window's `icon` is, the app named by
+    /// the player's MPRIS `DesktopEntry` (else by its bus name: `vlc` for
+    /// `org.mpris.MediaPlayer2.vlc.instance42`) in place of an app id: its
+    /// desktop entry's icon, else that name when the icon theme has it.
+    /// Null when no player runs.
+    pub icon: Option<String>,
+    /// The installed app the active player belongs to, found as `icon`'s
+    /// entry is: `media.app?.name`. Null when no player runs or no entry
+    /// matches.
+    pub app: Option<crate::apps::App>,
     /// Every player running, keyed by its bus name (`for p in
     /// media.players key p.id { … }`): a switcher, a card per player. The
     /// one `media.*` follows is `active`; `p.select()` picks another. Read
@@ -260,7 +306,11 @@ const RATES: (f64, f64) = (1e-3, 1e3);
 struct Player {
     /// Its unique bus name (signals come from it).
     owner: String,
-    identity: Option<String>,
+    /// (player-raise-seek) Its root interface's properties (`Identity`,
+    /// `CanRaise`, `DesktopEntry`), as the latest read answered.
+    root: Props,
+    /// Which root read is the latest (an older answer is dropped).
+    root_asked: u64,
     props: Props,
     /// Its position when last asked, and when.
     at: Option<(Duration, Instant)>,
@@ -340,6 +390,37 @@ fn artist(meta: &Props) -> Option<String> {
 }
 
 impl Player {
+    /// Its MPRIS `Identity`.
+    fn identity(&self) -> Option<String> {
+        dbus::text(&self.root, "Identity")
+    }
+
+    /// (player-raise-seek) `Raise` does something: its `CanRaise`, a
+    /// player that does not say counting as able (as [`Player::can`]).
+    fn can_raise(&self) -> bool {
+        dbus::boolean(&self.root, "CanRaise") != Some(false)
+    }
+
+    /// (player-raise-seek) The app it names, for its icon and desktop
+    /// entry: its `DesktopEntry`, else its bus name `name` without the
+    /// MPRIS prefix and an `.instance…` part (`vlc` for
+    /// `org.mpris.MediaPlayer2.vlc.instance42`).
+    fn app_id(&self, name: &str) -> String {
+        if let Some(entry) = dbus::text(&self.root, "DesktopEntry")
+            .map(|e| e.trim().trim_end_matches(".desktop").to_string())
+            .filter(|e| !e.is_empty())
+        {
+            return entry;
+        }
+        let rest = name.strip_prefix(PREFIX).unwrap_or(name);
+        match rest.rsplit_once('.') {
+            Some((head, last)) if last.starts_with("instance") && !head.is_empty() => {
+                head.to_string()
+            }
+            _ => rest.to_string(),
+        }
+    }
+
     fn status(&self) -> String {
         dbus::text(&self.props, "PlaybackStatus").unwrap_or_default()
     }
@@ -441,7 +522,14 @@ struct Players {
     /// it stays the active one while it is listed and no other player
     /// started playing since.
     selected: Option<(String, u64)>,
+    /// (player-raise-seek) Each app name's icon and app, as its lookup
+    /// in the desktop entries answered ([`Link`]).
+    links: HashMap<String, Link>,
 }
+
+/// (player-raise-seek) An app name's icon and installed app
+/// ([`crate::apps::AppIndex::window`]).
+type Link = (String, Option<crate::apps::App>);
 
 /// What a player shows, the active one's fields and an item's alike.
 struct Shown {
@@ -462,14 +550,21 @@ struct Shown {
     can_shuffle: bool,
     can_loop: bool,
     can_volume: bool,
+    can_raise: bool,
+    icon: String,
+    app: Option<crate::apps::App>,
 }
 
 impl Shown {
-    fn of(p: &Player, now: Instant) -> Shown {
+    /// `p`, listed as `name`, at `now`; its icon and app from `links`.
+    fn of(p: &Player, name: &str, links: &HashMap<String, Link>, now: Instant) -> Shown {
         let meta = p.metadata();
         let length = meta.get("mpris:length").and_then(micros);
         let elapsed = p.elapsed(now, length);
         let text = |k: &str| dbus::text(&meta, k).filter(|s| !s.is_empty());
+        // Not looked up yet: the name itself, as a window shows its app id.
+        let app_id = p.app_id(name);
+        let (icon, app) = links.get(&app_id).cloned().unwrap_or((app_id, None));
         Shown {
             playing: p.playing(),
             title: text("xesam:title"),
@@ -495,6 +590,9 @@ impl Shown {
             can_shuffle: p.can_set("Shuffle"),
             can_loop: p.can_set("LoopStatus"),
             can_volume: p.can_set("Volume"),
+            can_raise: p.can_raise(),
+            icon,
+            app,
         }
     }
 }
@@ -530,12 +628,11 @@ impl Players {
             .iter()
             .filter(|(_, p)| p.known)
             .map(|(name, p)| {
-                let v = Shown::of(p, now);
+                let v = Shown::of(p, name, &self.links, now);
                 MediaPlayer {
                     id: name.clone(),
                     name: p
-                        .identity
-                        .clone()
+                        .identity()
                         .unwrap_or_else(|| name.trim_start_matches(PREFIX).to_string()),
                     active: active.as_deref() == Some(name.as_str()),
                     playing: v.playing,
@@ -555,6 +652,9 @@ impl Players {
                     can_shuffle: v.can_shuffle,
                     can_loop: v.can_loop,
                     can_volume: v.can_volume,
+                    can_raise: v.can_raise,
+                    icon: v.icon,
+                    app: v.app,
                 }
             })
             .collect()
@@ -569,10 +669,13 @@ impl Players {
     }
 
     fn state(&self, now: Instant) -> Media {
-        let Some(p) = self.active() else {
+        let Some((name, p)) = self
+            .active_name()
+            .and_then(|n| self.by_name.get_key_value(&n))
+        else {
             return Media::default();
         };
-        let v = Shown::of(p, now);
+        let v = Shown::of(p, name, &self.links, now);
         Media {
             playing: v.playing,
             title: v.title,
@@ -582,7 +685,7 @@ impl Players {
             position: v.position,
             elapsed: v.elapsed,
             length: v.length,
-            player: p.identity.clone(),
+            player: p.identity(),
             can_next: v.can_next,
             can_previous: v.can_previous,
             can_seek: v.can_seek,
@@ -592,8 +695,107 @@ impl Players {
             can_shuffle: v.can_shuffle,
             can_loop: v.can_loop,
             can_volume: v.can_volume,
+            can_raise: v.can_raise,
+            icon: Some(v.icon),
+            app: v.app,
             players: Vec::new(),
         }
+    }
+
+    /// (player-raise-seek) `seek(by)` of the player `name`: `Seek` by
+    /// `by` seconds (back when negative) from where it is at `now`, the
+    /// call to make, its position fixed at the target meanwhile (never
+    /// below 0, nor past a known length). Unlike a `position` write it
+    /// needs no length. `None` when the player is not listed, cannot seek
+    /// ([`Player::can`] of `CanSeek`), or `by` is not a number.
+    fn seek_by(&mut self, name: &str, by: f64, now: Instant) -> Option<Seek> {
+        let p = self.by_name.get_mut(name).filter(|p| p.known)?;
+        if !by.is_finite() || !p.can("CanSeek") {
+            return None;
+        }
+        let length = p.metadata().get("mpris:length").and_then(micros);
+        let from = p.elapsed(now, length);
+        let size = Duration::try_from_secs_f64(by.abs()).unwrap_or(Duration::MAX);
+        let target = if by < 0.0 {
+            from.saturating_sub(size)
+        } else {
+            from.saturating_add(size)
+        };
+        let target = match length {
+            Some(l) if target > l => l,
+            _ => target,
+        };
+        p.asked += 1;
+        p.at = Some((target, now));
+        Some(Seek {
+            name: name.to_string(),
+            owner: p.owner.clone(),
+            // Saturating: a seek past either end is the end (MPRIS).
+            call: SeekCall::Seek((by * 1e6).round() as i64),
+            asked: p.asked,
+        })
+    }
+
+    /// (player-raise-seek) `name` while it is listed and `Raise` does
+    /// something ([`Player::can_raise`]).
+    fn raisable(&self, name: String) -> Option<String> {
+        self.by_name
+            .get(&name)
+            .is_some_and(|p| p.known && p.can_raise())
+            .then_some(name)
+    }
+
+    /// (player-raise-seek) The app names to look up in the desktop
+    /// entries: every listed player's, or (`all` false) only those not
+    /// looked up yet. Each once, in order.
+    fn to_link(&self, all: bool) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .by_name
+            .iter()
+            .filter(|(_, p)| p.known)
+            .map(|(name, p)| p.app_id(name))
+            .filter(|n| all || !self.links.contains_key(n))
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// (player-raise-seek) A lookup's answers: kept, with the names no
+    /// listed player uses any more dropped. Whether a player shows another
+    /// icon or app for them (an answer that is the name itself, with no
+    /// app, changes nothing: a player shows that until its answer lands).
+    fn linked(&mut self, found: Vec<(String, Link)>) -> bool {
+        let mut changed = false;
+        for (name, link) in found {
+            let shown = self.links.get(&name).cloned();
+            changed |= shown.unwrap_or_else(|| (name.clone(), None)) != link;
+            self.links.insert(name, link);
+        }
+        let used: std::collections::HashSet<String> = self
+            .by_name
+            .iter()
+            .map(|(name, p)| p.app_id(name))
+            .collect();
+        self.links.retain(|n, _| used.contains(n));
+        changed
+    }
+
+    /// (player-raise-seek) Apply a `PropertiesChanged` of `name`'s root
+    /// interface: the changes now, and the root read whole again (its
+    /// answer then stands over any read asked before).
+    fn root_changed(&mut self, name: &str, changed: Props, invalidated: &[String]) -> Option<Ask> {
+        let p = self.by_name.get_mut(name)?;
+        p.root.extend(changed);
+        for i in invalidated {
+            p.root.remove(i);
+        }
+        p.root_asked += 1;
+        Some(Ask {
+            root: Some(p.root_asked),
+            asked: p.asked,
+            ..Ask::default()
+        })
     }
 
     /// Seeks the active player to `fraction` of its track at `now`: the
@@ -726,8 +928,14 @@ impl Players {
         if p.owner != r.owner {
             return false;
         }
-        if let Some(identity) = r.identity {
-            p.identity = identity;
+        if let Some((asked, root)) = r.root
+            && asked == p.root_asked
+        {
+            match root {
+                Ok(root) => p.root = root,
+                // A player whose root does not answer: no name, raisable.
+                Err(e) => log::debug!("media: {}'s root not read: {e}", r.name),
+            }
         }
         let first = !p.known;
         if let Some(props) = r.props {
@@ -787,7 +995,8 @@ struct Read {
     /// The player's latest position question when this was asked (a newer
     /// one, or a seek, means a newer position fix may stand).
     asked: u64,
-    identity: Option<Option<String>>,
+    /// (player-raise-seek) The root question's number and its answer.
+    root: Option<(u64, zbus::Result<Props>)>,
     props: Option<zbus::Result<Props>>,
     /// The position question's number, its answer and when it came.
     position: Option<(u64, Option<Duration>, Instant)>,
@@ -796,7 +1005,9 @@ struct Read {
 /// What to ask a player.
 #[derive(Debug, Clone, Copy, Default)]
 struct Ask {
-    identity: bool,
+    /// (player-raise-seek) Read the root interface whole, as question
+    /// this number.
+    root: Option<u64>,
     props: bool,
     position: Option<u64>,
     /// The player's latest position question as this is asked.
@@ -806,16 +1017,12 @@ struct Ask {
 /// Ask `name` (owned by `owner`) what `ask` says, each call bounded by
 /// [`dbus::CALL_TIMEOUT`] and all at once.
 async fn read(conn: zbus::Connection, name: String, owner: String, ask: Ask) -> Read {
-    let identity = async {
-        if !ask.identity {
-            return None;
-        }
-        Some(
-            dbus::timed(dbus::get(&conn, &name, PATH, ROOT_IFACE, "Identity"))
-                .await
-                .ok()
-                .and_then(|v| v.downcast_ref::<&str>().ok().map(str::to_string)),
-        )
+    let root = async {
+        let asked = ask.root?;
+        Some((
+            asked,
+            dbus::timed(dbus::get_all(&conn, &name, PATH, ROOT_IFACE)).await,
+        ))
     };
     let props = async {
         if !ask.props {
@@ -831,12 +1038,12 @@ async fn read(conn: zbus::Connection, name: String, owner: String, ask: Ask) -> 
             .and_then(|v| micros(&v));
         Some((asked, pos, Instant::now()))
     };
-    let (identity, props, position) = tokio::join!(identity, props, position);
+    let (root, props, position) = tokio::join!(root, props, position);
     Read {
         name,
         owner,
         asked: ask.asked,
-        identity,
+        root,
         props,
         position,
     }
@@ -1156,6 +1363,7 @@ fn arrived(
 ) {
     let p = Player {
         owner: owner.clone(),
+        root_asked: 1,
         pending: Some(Props::new()),
         reading: 1,
         asked: 1,
@@ -1163,7 +1371,7 @@ fn arrived(
     };
     players.by_name.insert(name.clone(), p);
     let ask = Ask {
-        identity: true,
+        root: Some(1),
         props: true,
         position: Some(1),
         asked: 1,
@@ -1225,6 +1433,17 @@ impl Media {
         // property.
         let mut setting = Setting::default();
         let mut sets: tokio::task::JoinSet<SetDone> = tokio::task::JoinSet::new();
+        // (player-raise-seek) The players' apps, looked up in the desktop
+        // entries on the blocking pool, one batch at a time: the names
+        // asked, and the answers to come. `relook`: the entries changed,
+        // so every name is looked up again (the older answers standing
+        // until then).
+        let apps_config = crate::apps::Config::current();
+        let mut apps_changes = crate::apps::changes();
+        let mut apps_open = true;
+        let mut relook = false;
+        type Found = Vec<(String, Link)>;
+        let mut looking: Option<(Vec<String>, tokio::task::JoinHandle<Found>)> = None;
         for name in dbus_proxy.list_names().await? {
             let name = name.to_string();
             if !name.starts_with(PREFIX) {
@@ -1255,6 +1474,26 @@ impl Media {
         }
         cx.ready();
         loop {
+            if looking.is_none() {
+                let names = players.to_link(std::mem::take(&mut relook));
+                if !names.is_empty() {
+                    let config = apps_config.clone();
+                    let asked = names.clone();
+                    looking = Some((
+                        asked,
+                        tokio::task::spawn_blocking(move || {
+                            let index = crate::apps::AppIndex::load(&config);
+                            names
+                                .into_iter()
+                                .map(|n| {
+                                    let link = index.window(&n);
+                                    (n, link)
+                                })
+                                .collect()
+                        }),
+                    ));
+                }
+            }
             let listing = cx.watched("players");
             let ticking = cx.watched("elapsed") || cx.watched("position");
             let tick = if ticking || listing {
@@ -1282,6 +1521,28 @@ impl Media {
                     }
                     Err(_) => false,
                 },
+                found = async {
+                    match looking.as_mut() {
+                        Some((_, j)) => j.await,
+                        None => std::future::pending().await,
+                    }
+                }, if looking.is_some() => {
+                    let asked = looking.take().map(|(asked, _)| asked).unwrap_or_default();
+                    let found = found.unwrap_or_else(|e| {
+                        // Not asked again until the entries change: as
+                        // if none matched.
+                        log::warn!("media: finding the players' apps: {e}");
+                        asked.into_iter().map(|n| (n.clone(), (n, None))).collect()
+                    });
+                    players.linked(found)
+                }
+                r = apps_changes.changed(), if apps_open => {
+                    match r {
+                        Ok(()) => relook = true,
+                        Err(_) => apps_open = false,
+                    }
+                    false
+                }
                 // Never closed: `kept` holds a sender.
                 Some(done) = kept.ended() => {
                     kept.done(done, Instant::now());
@@ -1319,15 +1580,35 @@ impl Media {
                 m = cx.recv() => match m {
                     None => return Ok(()),
                     Some(Msg::Action(a)) => {
-                        let (method, name) = match a {
-                            MediaAction::PlayPause => ("PlayPause", players.active_name()),
-                            MediaAction::Next => ("Next", players.active_name()),
-                            MediaAction::Previous => ("Previous", players.active_name()),
+                        let (iface, method, name) = match a {
+                            MediaAction::PlayPause => (PLAYER, "PlayPause", players.active_name()),
+                            MediaAction::Next => (PLAYER, "Next", players.active_name()),
+                            MediaAction::Previous => (PLAYER, "Previous", players.active_name()),
                             // (services-round) An item's: that player,
                             // while it is listed.
-                            MediaAction::PlayPauseOf { item } => ("PlayPause", players.listed(item.id)),
-                            MediaAction::NextOf { item } => ("Next", players.listed(item.id)),
-                            MediaAction::PreviousOf { item } => ("Previous", players.listed(item.id)),
+                            MediaAction::PlayPauseOf { item } => (PLAYER, "PlayPause", players.listed(item.id)),
+                            MediaAction::NextOf { item } => (PLAYER, "Next", players.listed(item.id)),
+                            MediaAction::PreviousOf { item } => (PLAYER, "Previous", players.listed(item.id)),
+                            // (player-raise-seek) Not asked when it says
+                            // it cannot.
+                            MediaAction::Raise => {
+                                (ROOT_IFACE, "Raise", players.active_name().and_then(|n| players.raisable(n)))
+                            }
+                            MediaAction::RaiseOf { item } => (ROOT_IFACE, "Raise", players.raisable(item.id)),
+                            MediaAction::Seek { by } | MediaAction::SeekOf { by, .. } => {
+                                let name = match a {
+                                    MediaAction::SeekOf { item, .. } => players.listed(item.id),
+                                    _ => players.active_name(),
+                                };
+                                if seek_by(&conn, &mut players, &mut tasks, name, by) {
+                                    // The time shows the target now.
+                                    let state = shown(&players, &mut kept, Instant::now(), listing);
+                                    if !cx.update(|s| *s = state) {
+                                        return Ok(());
+                                    }
+                                }
+                                continue;
+                            }
                             MediaAction::Select { item } => {
                                 if !players.select(&item.id) {
                                     log::info!("media: no player {} to select", item.id);
@@ -1345,7 +1626,7 @@ impl Media {
                         if let Some(name) = name {
                             let conn = conn.clone();
                             tasks.spawn(async move {
-                                let r = dbus::timed(conn.call_method(Some(name.as_str()), PATH, Some(PLAYER), method, &())).await;
+                                let r = dbus::timed(conn.call_method(Some(name.as_str()), PATH, Some(iface), method, &())).await;
                                 if let Err(e) = r {
                                     log::warn!("media: {method} on {name}: {e}");
                                 }
@@ -1430,6 +1711,28 @@ impl Media {
     }
 }
 
+/// (player-raise-seek) `seek(by)` of the player `name` (`by` seconds,
+/// back when negative): the `Seek` sent in a task, the time fixed at its
+/// target ([`Players::seek_by`]). Whether anything changed.
+fn seek_by(
+    conn: &zbus::Connection,
+    players: &mut Players,
+    tasks: &mut Tasks,
+    name: Option<String>,
+    crate::Offset(by): crate::Offset,
+) -> bool {
+    match name.and_then(|n| players.seek_by(&n, by, Instant::now())) {
+        Some(seek) => {
+            tasks.spawn(seek.run(conn.clone()));
+            true
+        }
+        None => {
+            log::info!("media: no player can seek by {by} s");
+            false
+        }
+    }
+}
+
 /// (power-media-kbd) The player field an item write's `path` names, when
 /// it is `shuffle`, `loop` or `volume` (`p.volume = 0.5`).
 fn player_mode(path: &[crate::Step]) -> Option<&'static str> {
@@ -1467,6 +1770,14 @@ fn signal(
     let Some(c) = dbus::properties_changed(m) else {
         return false;
     };
+    if c.iface == ROOT_IFACE {
+        let Some(ask) = players.root_changed(&name, c.changed, &c.invalidated) else {
+            return false;
+        };
+        let conn = conn.clone();
+        tasks.spawn(async move { Some(read(conn, name, owner, ask).await) });
+        return true;
+    }
     if c.iface != PLAYER {
         return false;
     }
@@ -1680,7 +1991,7 @@ mod tests {
             name: "org.mpris.MediaPlayer2.p".into(),
             owner: ":1.5".into(),
             asked: 0,
-            identity: None,
+            root: None,
             props: Some(Ok(props)),
             position: None,
         };
@@ -1786,7 +2097,7 @@ mod tests {
             name: P.into(),
             owner: p.owner.clone(),
             asked: 2,
-            identity: None,
+            root: None,
             props: None,
             position: Some((2, Some(Duration::from_millis(1500)), t2)),
         };
@@ -1959,7 +2270,7 @@ mod tests {
             name: P.into(),
             owner: ":1.5".into(),
             asked,
-            identity: None,
+            root: None,
             props: None,
             position: Some((asked, Some(pos), at)),
         };
@@ -2034,7 +2345,7 @@ mod tests {
             name: P.into(),
             owner: ":1.5".into(),
             asked,
-            identity: None,
+            root: None,
             props: Some(Ok(props)),
             position,
         }
@@ -2071,7 +2382,7 @@ mod tests {
             name: P.into(),
             owner: ":1.5".into(),
             asked: ask.asked,
-            identity: None,
+            root: None,
             props: None,
             position: Some((ask.position.unwrap(), Some(Duration::from_secs(3)), t2)),
         };
@@ -2081,7 +2392,7 @@ mod tests {
             owner: ":1.5".into(),
             // Asked before the track change (question 2).
             asked: 1,
-            identity: None,
+            root: None,
             props: Some(Ok(Props::from([
                 (
                     "PlaybackStatus".to_string(),
@@ -2290,7 +2601,7 @@ mod tests {
             name: P.into(),
             owner: ":1.5".into(),
             asked: 1,
-            identity: None,
+            root: None,
             props: Some(Ok(before)),
             position: None,
         };
@@ -2351,7 +2662,7 @@ mod tests {
                 name: P.into(),
                 owner: ":1.5".into(),
                 asked,
-                identity: None,
+                root: None,
                 props: Some(Ok(props)),
                 position: None,
             }
@@ -2399,5 +2710,188 @@ mod tests {
         players.answer(whole(1, 0.3), t0);
         players.answer(whole(1, 0.3), t0);
         assert_eq!(players.state(t0).volume, 0.9, "the newer write holds");
+    }
+
+    /// (player-raise-seek) `seek(by)` sends `Seek` with the offset in
+    /// microseconds, back when negative, and fixes the time at its target
+    /// at once: never below 0, never past a known length, and with no
+    /// length known at all (a stream), which a `position` write cannot
+    /// seek. A player that cannot seek, or takes no control, is not asked,
+    /// nor is one not listed; an offset that is no number is no seek.
+    #[test]
+    fn seeking_by_an_offset_moves_from_where_it_is() {
+        let t0 = Instant::now();
+        let mut players = playing(meta(&[("xesam:title", text("First"))]), t0);
+        let seek = players.seek_by(P, -15.0, t0).unwrap();
+        assert_eq!(seek.call, SeekCall::Seek(-15_000_000));
+        assert_eq!((seek.name.as_str(), seek.owner.as_str()), (P, ":1.5"));
+        assert_eq!(seek.asked, players.by_name[P].asked, "a newer fix");
+        assert_eq!(players.state(t0).elapsed, Duration::from_secs(105));
+        let seek = players.seek_by(P, 30.5, t0).unwrap();
+        assert_eq!(seek.call, SeekCall::Seek(30_500_000));
+        assert_eq!(players.state(t0).elapsed, Duration::from_millis(135_500));
+        // Past either end: the end.
+        players.seek_by(P, -500.0, t0).unwrap();
+        assert_eq!(players.state(t0).elapsed, Duration::ZERO);
+        let seek = players.seek_by(P, 1e6, t0).unwrap();
+        assert_eq!(seek.call, SeekCall::Seek(1_000_000_000_000));
+        assert_eq!(players.state(t0).elapsed, Duration::from_secs(200));
+        // A stream of unknown length: sought all the same.
+        let mut players = playing(meta(&[("xesam:title", text("Live"))]), t0);
+        let p = players.by_name.get_mut(P).unwrap();
+        p.props.insert(
+            "Metadata".into(),
+            OwnedValue::try_from(zbus::zvariant::Value::from(
+                std::collections::HashMap::from([(
+                    "xesam:title".to_string(),
+                    zbus::zvariant::Value::from("Live"),
+                )]),
+            ))
+            .unwrap(),
+        );
+        assert!(!players.state(t0).can_seek, "no position write");
+        let seek = players.seek_by(P, 15.0, t0).unwrap();
+        assert_eq!(seek.call, SeekCall::Seek(15_000_000));
+        assert_eq!(players.state(t0).elapsed, Duration::from_secs(135));
+        // Not asked.
+        assert!(players.seek_by(P, f64::NAN, t0).is_none());
+        assert!(
+            players
+                .seek_by("org.mpris.MediaPlayer2.gone", 5.0, t0)
+                .is_none()
+        );
+        put(&mut players, "CanSeek", flag(false));
+        assert!(players.seek_by(P, 5.0, t0).is_none(), "cannot seek");
+        put(&mut players, "CanSeek", flag(true));
+        put(&mut players, "CanControl", flag(false));
+        assert!(players.seek_by(P, 5.0, t0).is_none(), "no control");
+        assert_eq!(players.state(t0).elapsed, Duration::from_secs(135));
+    }
+
+    /// (player-raise-seek) The root interface says the player's name,
+    /// whether `Raise` does anything (a player that does not say counts
+    /// as able; no player cannot) and its desktop entry; an older root
+    /// read answering after a newer one asked is dropped, and a root
+    /// signal's change shows at once.
+    #[test]
+    fn the_root_names_the_player_and_whether_it_raises() {
+        let t0 = Instant::now();
+        assert!(!Players::default().state(t0).can_raise, "no player");
+        assert_eq!(Players::default().state(t0).icon, None);
+        let mut players = playing(meta(&[("xesam:title", text("First"))]), t0);
+        assert!(players.state(t0).can_raise, "absent: able");
+        assert_eq!(players.raisable(P.into()).as_deref(), Some(P));
+        let root = |entries: &[(&str, OwnedValue)], asked: u64| Read {
+            name: P.into(),
+            owner: ":1.5".into(),
+            asked: 1,
+            root: Some((
+                asked,
+                Ok(entries
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.try_clone().unwrap()))
+                    .collect()),
+            )),
+            props: None,
+            position: None,
+        };
+        let name = |s: &str| OwnedValue::try_from(zbus::zvariant::Value::from(s)).unwrap();
+        players.by_name.get_mut(P).unwrap().root_asked = 1;
+        players.answer(
+            root(
+                &[
+                    ("Identity", name("Firefox")),
+                    ("CanRaise", flag(false)),
+                    ("DesktopEntry", name("firefox")),
+                ],
+                1,
+            ),
+            t0,
+        );
+        let s = players.state(t0);
+        assert_eq!(s.player.as_deref(), Some("Firefox"));
+        assert!(!s.can_raise);
+        assert_eq!(players.raisable(P.into()), None, "not asked");
+        assert_eq!(s.icon.as_deref(), Some("firefox"), "not looked up yet");
+        assert_eq!(players.to_link(false), ["firefox"]);
+        // A root signal: shown now, and read again as question 2.
+        let ask = players
+            .root_changed(P, Props::from([("CanRaise".to_string(), flag(true))]), &[])
+            .unwrap();
+        assert_eq!(ask.root, Some(2));
+        assert!(!ask.props && ask.position.is_none());
+        assert!(players.state(t0).can_raise);
+        // Question 1's answer, landing late, is dropped; question 2's
+        // stands.
+        players.answer(root(&[("CanRaise", flag(false))], 1), t0);
+        assert!(players.state(t0).can_raise, "a stale root read");
+        players.answer(
+            root(
+                &[
+                    ("Identity", name("Firefox")),
+                    ("CanRaise", flag(true)),
+                    ("DesktopEntry", name("org.mozilla.firefox.desktop")),
+                ],
+                2,
+            ),
+            t0,
+        );
+        let s = players.state(t0);
+        assert!(s.can_raise);
+        assert_eq!(s.icon.as_deref(), Some("org.mozilla.firefox"));
+        assert_eq!(players.to_link(false), ["org.mozilla.firefox"]);
+    }
+
+    /// (player-raise-seek) A player's app name is its `DesktopEntry`, else
+    /// its bus name without the prefix and an `.instance…` part; its icon
+    /// and app are the lookup's answer for that name once it lands (the
+    /// name itself until then), on `media` and on its item alike; a name
+    /// looked up is not looked up again unless every name is, and the
+    /// answers for names no player uses any more are dropped.
+    #[test]
+    fn a_players_icon_and_app_come_from_its_desktop_entry() {
+        let t0 = Instant::now();
+        let p = Player::default();
+        assert_eq!(p.app_id("org.mpris.MediaPlayer2.vlc"), "vlc");
+        assert_eq!(
+            p.app_id("org.mpris.MediaPlayer2.chromium.instance12345"),
+            "chromium"
+        );
+        assert_eq!(
+            p.app_id("org.mpris.MediaPlayer2.firefox.instance_1_42"),
+            "firefox"
+        );
+        assert_eq!(
+            p.app_id("org.mpris.MediaPlayer2.kdeconnect.mpris_x"),
+            "kdeconnect.mpris_x"
+        );
+        let mut players = playing(meta(&[("xesam:title", text("First"))]), t0);
+        assert_eq!(players.state(t0).icon.as_deref(), Some("p"));
+        assert_eq!(players.to_link(false), ["p"]);
+        let app = crate::apps::App {
+            id: "p".into(),
+            name: "Player P".into(),
+            icon: "multimedia-player".into(),
+            ..Default::default()
+        };
+        assert!(
+            !players.linked(vec![("p".into(), ("p".into(), None))]),
+            "the name itself: nothing changes"
+        );
+        assert!(players.linked(vec![
+            ("p".into(), ("multimedia-player".into(), Some(app.clone()))),
+            ("gone".into(), ("gone".into(), None)),
+        ]));
+        let s = players.state(t0);
+        assert_eq!(s.icon.as_deref(), Some("multimedia-player"));
+        assert_eq!(s.app.as_ref(), Some(&app));
+        let item = &players.items(t0)[0];
+        assert_eq!(
+            (item.icon.as_str(), item.app.as_ref()),
+            ("multimedia-player", Some(&app))
+        );
+        assert!(players.to_link(false).is_empty(), "looked up");
+        assert_eq!(players.to_link(true), ["p"], "all again");
+        assert!(!players.links.contains_key("gone"), "unused, dropped");
     }
 }

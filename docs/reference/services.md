@@ -296,6 +296,9 @@ and only while a visible reader shows it.
 | `can_shuffle` | `bool` | Writing `shuffle` changes it: the active player has MPRIS `Shuffle` and takes control (`CanControl` not false). False when no player runs. |
 | `can_loop` | `bool` | Writing `loop` changes it (`LoopStatus`, as `can_shuffle`). |
 | `can_volume` | `bool` | Writing `volume` changes it (`Volume`, as `can_shuffle`). |
+| `can_raise` | `bool` | `media.raise()` brings the active player forward: its MPRIS `CanRaise` (a player that does not say counts as able). False when no player runs. |
+| `icon` | `text?` | An icon name for the active player's app: `image media.icon ?? "audio-x-generic"`. Found as a window's `icon` is, the app named by the player's MPRIS `DesktopEntry` (else by its bus name: `vlc` for `org.mpris.MediaPlayer2.vlc.instance42`) in place of an app id: its desktop entry's icon, else that name when the icon theme has it. Null when no player runs. |
+| `app` | `App?` | The installed app the active player belongs to, found as `icon`'s entry is: `media.app?.name`. Null when no player runs or no entry matches. |
 | `players` | `[Player]` | Every player running, keyed by its bus name (`for p in media.players key p.id { … }`): a switcher, a card per player. The one `media.*` follows is `active`; `p.select()` picks another. Read only while a visible reader reads it; its playing players' times tick once a second then. |
 
 | Method | |
@@ -303,6 +306,8 @@ and only while a visible reader shows it.
 | `action play_pause()` | Plays or pauses. |
 | `action next()` | Skips to the next track. |
 | `action previous()` | Goes back to the previous track. |
+| `action raise()` | Brings the active player's window forward (MPRIS `Raise`), such as the browser tab that plays: `on click { media.raise() }`. Not asked when `can_raise` is false. |
+| `action seek(by: duration)` | Seeks the active player by `by` from where it is, back when `by` is negative: `media.seek(by: -15s)`. MPRIS `Seek`, so it works on a track of unknown length too; the time shows the target at once and the player's `Seeked` corrects it. Not asked when the player cannot seek (`CanSeek` or `CanControl` false). |
 
 ## `memory`
 

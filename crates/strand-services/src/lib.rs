@@ -100,7 +100,9 @@ pub use client::{
     Tap, TapEvent, catch_refusals,
 };
 pub use cx::{Cx, Envelope, Msg, Reply, Ticker, Write};
-pub use data::{Data, DataError, FromData, Name, Rgba, SchemaType, Step, ToData, record_field};
+pub use data::{
+    Data, DataError, FromData, Name, Offset, Rgba, SchemaType, Step, ToData, record_field,
+};
 pub use service::{CallSig, FromCall, LocalFuture, NoCall, Service, ServiceError, Start};
 pub use store::{
     Applied, Cells, Event, EventInfo, FieldInfo, How, Keyed, Patch, SendItemWrite, SendWrite,

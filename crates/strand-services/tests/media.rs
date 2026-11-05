@@ -45,6 +45,9 @@ struct Track {
     volume: f64,
     /// It refuses a property written (its `Set` fails).
     refuse: bool,
+    /// Its root's `CanRaise` and `DesktopEntry` ("" for none).
+    can_raise: bool,
+    desktop_entry: String,
 }
 
 impl Track {
@@ -232,13 +235,27 @@ impl Player {
     async fn seeked(e: &SignalEmitter<'_>, position: i64) -> zbus::Result<()>;
 }
 
-struct Root(String);
+struct Root(String, Arc<Mutex<Track>>);
 
 #[zbus::interface(name = "org.mpris.MediaPlayer2")]
 impl Root {
+    async fn raise(&self) {
+        self.1.lock().unwrap().calls.push("Raise".into());
+    }
+
     #[zbus(property)]
     fn identity(&self) -> String {
         self.0.clone()
+    }
+
+    #[zbus(property)]
+    fn can_raise(&self) -> bool {
+        self.1.lock().unwrap().can_raise
+    }
+
+    #[zbus(property)]
+    fn desktop_entry(&self) -> String {
+        self.1.lock().unwrap().desktop_entry.clone()
     }
 }
 
@@ -281,6 +298,8 @@ fn player_with(
         loop_status: "None".into(),
         volume: 0.8,
         refuse: false,
+        can_raise: true,
+        desktop_entry: String::new(),
     };
     f(&mut t);
     let track = Arc::new(Mutex::new(t));
@@ -291,7 +310,7 @@ fn player_with(
             .unwrap()
             .serve_at(media::PATH, Player(track.clone()))
             .unwrap()
-            .serve_at(media::PATH, Root(name.to_string()))
+            .serve_at(media::PATH, Root(name.to_string(), track.clone()))
             .unwrap()
             .build()
             .await
@@ -1242,4 +1261,214 @@ fn media_sets_shuffle_loop_and_volume_on_the_player() {
     assert_eq!(can(), (true, true, true));
     b.media.release_field(players);
     s.shutdown();
+}
+
+/// (player-raise-seek) `media.raise()` and `p.raise()` call the player's
+/// MPRIS `Raise`, not asked of one whose `CanRaise` is false, which its
+/// root's `PropertiesChanged` brings; `media.seek(by: -15s)` and
+/// `p.seek(by)` call `Seek` with the offset on a stream of unknown length
+/// (which a `position` write cannot seek), the time showing the target
+/// at once; and `media.icon`, `media.app` and each item's come from the
+/// player's `DesktopEntry` (else its bus name's app part) looked up in
+/// the desktop entries, again when they change.
+#[test]
+fn players_raise_seek_by_an_offset_and_name_their_app() {
+    use strand_services::{Data, Step, ToData, apps};
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let root = std::env::temp_dir().join(format!("strand-media-apps-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("applications");
+    std::fs::create_dir_all(&dir).unwrap();
+    let icon = root.join("mpv-icon.png");
+    std::fs::write(&icon, "png").unwrap();
+    let icon = icon.to_string_lossy().into_owned();
+    apps::set_config(Some(apps::Config {
+        dirs: vec![dir.clone()],
+        ..apps::Config::default()
+    }));
+    let tokio = tokio();
+    let (a_conn, a) = player_with(
+        &tokio,
+        &bus.address,
+        "mpv",
+        "Paused",
+        "Live",
+        60_000_000,
+        |t| {
+            t.length_us = None;
+            t.desktop_entry = "io.mpv.Mpv".into();
+        },
+    );
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.media.cells();
+    b.media.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert_eq!(cells.can_raise.get_untracked(&rt), Ok(true));
+    // No entry yet: the name itself, and no app.
+    until(&rt, &s, "the unmatched name", || {
+        cells.icon.get_untracked(&rt) == Ok(Some("io.mpv.Mpv".into()))
+    });
+    assert_eq!(cells.app.get_untracked(&rt), Ok(None));
+    // Installed: looked up again.
+    std::fs::write(
+        dir.join("io.mpv.Mpv.desktop"),
+        format!(
+            "[Desktop Entry]\nType=Application\nName=mpv Media Player\nExec=mpv\nIcon={icon}\n"
+        ),
+    )
+    .unwrap();
+    apps::changed();
+    until(&rt, &s, "its entry's icon", || {
+        cells.icon.get_untracked(&rt) == Ok(Some(icon.clone()))
+    });
+    let app = cells.app.get_untracked(&rt).unwrap().unwrap();
+    assert_eq!(
+        (app.id.as_str(), app.name.as_str()),
+        ("io.mpv.Mpv", "mpv Media Player")
+    );
+
+    // Back 15 s on a stream of unknown length: `Seek`, the time at once.
+    assert_eq!(
+        cells.can_seek.get_untracked(&rt),
+        Ok(false),
+        "no position write"
+    );
+    b.media
+        .dynamic()
+        .action(
+            &rt,
+            "seek",
+            None,
+            &[Data::NegDuration(Duration::from_secs(15))],
+            Default::default(),
+        )
+        .unwrap();
+    rt.flush();
+    s.pump(&rt);
+    rt.flush();
+    until(&rt, &s, "the Seek", || {
+        a.lock().unwrap().calls == ["Seek -15000000"]
+    });
+    until(&rt, &s, "the time back", || {
+        cells.elapsed.get_untracked(&rt) == Ok(Duration::from_secs(45))
+    });
+    assert_eq!(a.lock().unwrap().position_us, 45_000_000);
+
+    // Raised.
+    b.media
+        .dynamic()
+        .action(&rt, "raise", None, &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "the Raise", || {
+        a.lock().unwrap().calls.last().map(String::as_str) == Some("Raise")
+    });
+    // It says it cannot (its root's signal): not asked.
+    a.lock().unwrap().can_raise = false;
+    tokio.block_on(async {
+        let i = a_conn
+            .object_server()
+            .interface::<_, Root>(media::PATH)
+            .await
+            .unwrap();
+        i.get()
+            .await
+            .can_raise_changed(i.signal_emitter())
+            .await
+            .unwrap();
+    });
+    until(&rt, &s, "no raising", || {
+        cells.can_raise.get_untracked(&rt) == Ok(false)
+    });
+    b.media
+        .dynamic()
+        .action(&rt, "raise", None, &[], Default::default())
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    assert_eq!(a.lock().unwrap().calls.len(), 2, "not asked");
+
+    // Another player, with no desktop entry and no raising: its item's
+    // app name is its bus name's, and its actions reach it alone.
+    let (_v_conn, v) = player_with(
+        &tokio,
+        &bus.address,
+        "vlc.instance42",
+        "Paused",
+        "Other",
+        30_000_000,
+        |t| t.can_raise = false,
+    );
+    let players = media::Media::FIELDS
+        .iter()
+        .position(|f| f.name == "players")
+        .unwrap();
+    b.media.acquire_field(players);
+    let list = || -> Vec<media::MediaPlayer> {
+        cells
+            .players
+            .get_untracked(&rt)
+            .unwrap()
+            .items()
+            .iter()
+            .map(|(_, p)| p.clone())
+            .collect()
+    };
+    until(&rt, &s, "two players listed", || list().len() == 2);
+    let vlc = list()
+        .into_iter()
+        .find(|p| p.name == "vlc.instance42")
+        .unwrap();
+    assert_eq!((vlc.icon.as_str(), vlc.app.as_ref()), ("vlc", None));
+    assert!(!vlc.can_raise);
+    let mpv = list().into_iter().find(|p| p.name == "mpv").unwrap();
+    assert_eq!(mpv.icon, icon);
+    assert_eq!(mpv.app.as_ref().map(|a| a.id.as_str()), Some("io.mpv.Mpv"));
+    b.media
+        .dynamic()
+        .action(&rt, "raise", Some(&vlc.to_data()), &[], Default::default())
+        .unwrap();
+    b.media
+        .dynamic()
+        .action(
+            &rt,
+            "seek",
+            Some(&vlc.to_data()),
+            &[Data::Duration(Duration::from_secs(10))],
+            Default::default(),
+        )
+        .unwrap();
+    until(&rt, &s, "vlc sought", || {
+        v.lock().unwrap().calls == ["Seek 10000000"]
+    });
+    until(&rt, &s, "vlc's time", || {
+        list()
+            .iter()
+            .any(|p| p.name == "vlc.instance42" && p.elapsed == Duration::from_secs(40))
+    });
+    assert_eq!(a.lock().unwrap().calls.len(), 2, "mpv was not asked");
+    // An item's position write still needs a length: mpv's is unknown.
+    b.media
+        .dynamic()
+        .write_item(
+            &rt,
+            "Player",
+            &mpv.to_data(),
+            &[Step::Field("position".into())],
+            Data::Float(0.5),
+        )
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    s.pump(&rt);
+    assert_eq!(
+        a.lock().unwrap().calls.len(),
+        2,
+        "no length, no position write"
+    );
+    b.media.release_field(players);
+    s.shutdown();
+    apps::set_config(None);
+    let _ = std::fs::remove_dir_all(&root);
 }

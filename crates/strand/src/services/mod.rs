@@ -976,6 +976,59 @@ osd Playing { inhibit_idle: true; text \"x\" }
         }
     }
 
+    /// (player-raise-seek) A player card raises its player, skips 15 s
+    /// either way by an offset (a negative duration seeks back) and shows
+    /// its app's icon and name, the active one's and an item's alike,
+    /// against the served schema and the builtin stubs. `seek` takes a
+    /// duration, and `can_raise` is read only.
+    #[test]
+    fn the_players_raise_seek_and_app_check() {
+        let src = "let step = 15s
+bar Top {
+  row {
+    image media.icon ?? \"audio-x-generic\" { size: 16 }
+    text media.app?.name ?? media.player ?? \"\"
+    box { when media.can_raise { opacity: 1 }; on click { media.raise() } }
+    box { on click { media.seek(by: -step) } }
+    box { on click { media.seek(by: step) } }
+    for p in media.players key p.id {
+      row {
+        image p.icon { size: 16 }
+        text p.app?.name ?? p.name
+        box { when p.can_raise { opacity: 1 }; on click { p.raise() } }
+        box { on click { p.seek(by: -15s) } }
+        box { on click { p.seek(by: 15s) } }
+      }
+    }
+  }
+}
+";
+        for (which, schema) in [("served", schema()), ("builtin", Schema::builtin())] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", src);
+            let errors: Vec<_> = strand_compiler::compile_with(&map, schema)
+                .diagnostics
+                .into_iter()
+                .filter(|d| d.is_error())
+                .collect();
+            assert!(errors.is_empty(), "{which}: {errors:#?}");
+        }
+        for bad in [
+            "bar B { box { on click { media.seek(by: 15) } } }\n",
+            "bar B { box { on click { media.seek(by: 0.5) } } }\n",
+            "bar B { box { on click { media.can_raise = true } } }\n",
+            "bar B { box { on click { media.icon = \"x\" } } }\n",
+        ] {
+            let (map, _) = strand_compiler::source::SourceMap::single("bar.strand", bad);
+            assert!(
+                strand_compiler::compile_with(&map, schema())
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.is_error()),
+                "{bad}"
+            );
+        }
+    }
+
     /// (services-round, S2) The battery's history, the media players
     /// and the saved network connections check against the served schema
     /// and the builtin stubs alike, as the gap review's battery chart,

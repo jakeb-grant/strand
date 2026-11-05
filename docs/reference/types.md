@@ -584,6 +584,9 @@ Keyed by `id`.
 | `can_shuffle` | `bool` | Writing `shuffle` changes it. |
 | `can_loop` | `bool` | Writing `loop` changes it. |
 | `can_volume` | `bool` | Writing `volume` changes it. |
+| `can_raise` | `bool` | `raise()` brings it forward (its MPRIS `CanRaise`). |
+| `icon` | `text` | An icon name for its app, as `media.icon` names the active one's. |
+| `app` | `App?` | The installed app it belongs to, found from its MPRIS `DesktopEntry` as a window's app is: `p.app?.name`. Null when no entry matches. |
 
 | Method | |
 | --- | --- |
@@ -591,6 +594,8 @@ Keyed by `id`.
 | `action next()` | Skips it to the next track. |
 | `action previous()` | Takes it back to the previous track. |
 | `action select()` | Makes it the player `media.*` follows, until it leaves or another player starts playing: `on click { p.select() }`. |
+| `action raise()` | Brings its window forward (MPRIS `Raise`): `on click { p.raise() }`. Not asked when `can_raise` is false. |
+| `action seek(by: duration)` | Seeks it by `by` from where it is, back when `by` is negative (MPRIS `Seek`), as `media.seek(by)` seeks the active one. |
 
 ### `Point`
 

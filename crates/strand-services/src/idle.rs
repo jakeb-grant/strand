@@ -194,12 +194,16 @@ fn idle_fns(
 ) -> Option<Result<Data, strand_core::Error>> {
     match method {
         "after" => {
-            let Some(Data::Duration(timeout)) = args.first() else {
+            // A duration below zero is none (`Duration`'s `FromData`).
+            let Some(timeout) = args
+                .first()
+                .and_then(|d| <Duration as crate::FromData>::from_data(d).ok())
+            else {
                 return Some(Err(strand_core::Error::failed(
                     "idle.after takes a duration".to_string(),
                 )));
             };
-            let timeout = clamp(*timeout);
+            let timeout = clamp(timeout);
             // Read until this evaluation re-runs or its scope goes.
             want(timeout);
             rt.on_cleanup(move || unwant(timeout));

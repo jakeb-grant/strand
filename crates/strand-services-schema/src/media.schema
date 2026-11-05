@@ -45,6 +45,14 @@ record Player key id {
   can_loop: bool
   /// Writing `volume` changes it.
   can_volume: bool
+  /// `raise()` brings it forward (its MPRIS `CanRaise`).
+  can_raise: bool
+  /// An icon name for its app, as `media.icon` names the active one's.
+  icon: text
+  /// The installed app it belongs to, found from its MPRIS
+  /// `DesktopEntry` as a window's app is: `p.app?.name`. Null when no
+  /// entry matches.
+  app: App?
   /// Plays or pauses it.
   action play_pause()
   /// Skips it to the next track.
@@ -54,6 +62,12 @@ record Player key id {
   /// Makes it the player `media.*` follows, until it leaves or another
   /// player starts playing: `on click { p.select() }`.
   action select()
+  /// Brings its window forward (MPRIS `Raise`): `on click { p.raise() }`.
+  /// Not asked when `can_raise` is false.
+  action raise()
+  /// Seeks it by `by` from where it is, back when `by` is negative
+  /// (MPRIS `Seek`), as `media.seek(by)` seeks the active one.
+  action seek(by: duration)
 }
 
 /// The active media player, over MPRIS: every `org.mpris.MediaPlayer2.*`
@@ -125,6 +139,21 @@ service media {
   can_loop: bool
   /// Writing `volume` changes it (`Volume`, as `can_shuffle`).
   can_volume: bool
+  /// `media.raise()` brings the active player forward: its MPRIS
+  /// `CanRaise` (a player that does not say counts as able). False when
+  /// no player runs.
+  can_raise: bool
+  /// An icon name for the active player's app: `image media.icon ??
+  /// "audio-x-generic"`. Found as a window's `icon` is, the app named by
+  /// the player's MPRIS `DesktopEntry` (else by its bus name: `vlc` for
+  /// `org.mpris.MediaPlayer2.vlc.instance42`) in place of an app id: its
+  /// desktop entry's icon, else that name when the icon theme has it.
+  /// Null when no player runs.
+  icon: text?
+  /// The installed app the active player belongs to, found as `icon`'s
+  /// entry is: `media.app?.name`. Null when no player runs or no entry
+  /// matches.
+  app: App?
   /// Every player running, keyed by its bus name (`for p in
   /// media.players key p.id { … }`): a switcher, a card per player. The
   /// one `media.*` follows is `active`; `p.select()` picks another. Read
@@ -137,4 +166,14 @@ service media {
   action next()
   /// Goes back to the previous track.
   action previous()
+  /// Brings the active player's window forward (MPRIS `Raise`), such as
+  /// the browser tab that plays: `on click { media.raise() }`. Not asked
+  /// when `can_raise` is false.
+  action raise()
+  /// Seeks the active player by `by` from where it is, back when `by` is
+  /// negative: `media.seek(by: -15s)`. MPRIS `Seek`, so it works on a
+  /// track of unknown length too; the time shows the target at once and
+  /// the player's `Seeked` corrects it. Not asked when the player cannot
+  /// seek (`CanSeek` or `CanControl` false).
+  action seek(by: duration)
 }
