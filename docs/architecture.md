@@ -3047,7 +3047,15 @@ writes. It depends on neither `strand-compiler` nor `strand-core`.
 - **`FileBatch { changes, rescan, notices, first_event, last_event }`.**
   One batch per quiet period: 15 ms after the last completed write
   (50 ms when the latest event removed a watched file; at most 500 ms
-  after the first event). `changes` is sorted by path then role, one
+  after the first event). A flush whose read finds a watched file gone,
+  or whose module-set listing leaves a module out, takes the inotify
+  queue first: a removal (or write) of that file queued there is not
+  reported yet, the file stays pending (the module set unchanged that
+  flush, nothing leaving or joining it) and waits the removal grace from
+  that event, so a delete-then-create save made as an earlier batch is
+  cut is still one `Modified`, and a rename then one batch (decisions.md
+  save-blank; a polled directory has no queue, its listing decides).
+  `changes` is sorted by path then role, one
   `FileChange { path, canonical, kind, hash, role, error }` per role;
   unchanged hashes and own writes are dropped, so every change is real.
   A `Modified` with an unchanged hash means a link now resolves
