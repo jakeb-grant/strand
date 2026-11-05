@@ -29,7 +29,8 @@ named_enum! {
     /// aberration being two spellings of one): `filter: bloom(r) | crt()
     /// | chromatic(px) | wobble(amp)`, `backdrop: glass()`, and the GPU
     /// versions of `particles` above 1,000, 3-D `tilt`, `effect aurora`
-    /// and large backdrop blur. Their WGSL lives in `strand-gpu`; the
+    /// and backdrop blur (lock-blur: no longer an effect of its own, the
+    /// blur a GPU frame draws at the CPU's scale). Their WGSL lives in `strand-gpu`; the
     /// stream that builds each one records its knobs (decisions.md).
     pub enum Bundled {
         Bloom = "bloom",

@@ -255,8 +255,8 @@ fn texture(scene: &mut Scene, d: DrawnPass, bounds: Rect, smooth: bool) {
 
 /// (perf-gpu-retain review) Fills `bounds` with texture `d` scaled up
 /// by `k` from its corner, sampled bilinearly from pixel centres, the
-/// edge pixels repeated: as `backdrop::upscale` in strand-render draws a
-/// small backdrop blur back to its size.
+/// edge pixels repeated: as `offscreen::upscale` in strand-render draws
+/// a backdrop blur back to its size.
 fn texture_scaled(scene: &mut Scene, d: DrawnPass, bounds: Rect, k: f64) {
     if !(bounds.width() > 0.0 && bounds.height() > 0.0) {
         return;

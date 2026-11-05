@@ -2577,13 +2577,15 @@ the CPU frame, holding up to `GPU_WAIT` (8 ms), else the previous
 result. On a promoted surface a node's own pass runs in the GPU frame;
 a layer's bundled passes are `Pass` requests attached to the layer
 (`strand_render::layers::Layer::gpu`), except backdrops a GPU frame
-draws itself (`Op::Backdrop`). Render asks for a bundled pass only
-while its node shows.
+draws itself (`Op::Backdrop`). A backdrop blur is never a pass of its
+own: a GPU frame draws it at the CPU's reduction (`Op::Backdrop`'s
+`reduce`), and any other frame is the CPU's (lock-blur). Render asks
+for a bundled pass only while its node shows.
 
 **CPU fallback** (no device yet, none, lost, or a build without `gpu`):
 bundled effects use CPU versions (bloom → glow, glass → blur and tint,
-particles capped at 1,000, tilt 2D, aurora static, backdrop blur at
-quarter scale; CRT, chromatic and wobble draw unfiltered); a `shader`
+particles capped at 1,000, tilt 2D, aurora static; CRT, chromatic and
+wobble draw unfiltered); a `shader`
 node keeps its box and draws nothing. A first frame never waits for
 the device. `Renderer::gpu_status() -> GpuStatus` (`Unused`,
 `Starting`, `Up`, `Unavailable { reason }`) goes to logic as

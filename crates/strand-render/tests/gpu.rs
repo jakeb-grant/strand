@@ -2512,6 +2512,23 @@ fn backdrop_by_readback(opts: GpuOptions, scene: SceneDiff, (w, h): (u32, u32)) 
     panic!("passes kept being asked for");
 }
 
+/// `scene` on a CPU surface that asks the GPU for nothing: its frame.
+fn backdrop_on_cpu(scene: SceneDiff, (w, h): (u32, u32)) -> Buffer {
+    let mut r = renderer();
+    r.set_promotion(false);
+    assert!(r.apply(scene).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(w, h, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, Duration::from_secs(1));
+    assert!(
+        !r.take_gpu_requests()
+            .iter()
+            .any(|q| matches!(q, GpuRequest::Pass(_))),
+        "no pass asked for"
+    );
+    buf
+}
+
 /// `scene` presented: painted once on the CPU, promoted, and a GPU
 /// thread attached for readback (the test sees its pixels).
 fn backdrop_presented(
@@ -2572,26 +2589,31 @@ fn backdrops_in(f: &strand_gpu::Frame) -> Vec<&strand_gpu::Op> {
 #[test]
 fn a_presented_surface_draws_its_backdrops_in_its_frames() {
     let Some(opts) = device() else { return };
+    // (lock-blur) A large blur is no pass of its own on a CPU surface:
+    // the CPU draws it, and a presented frame draws it as the CPU does.
     let cases = [
         (
             "glass",
             (240, 60),
             (40.0, 10.0, 120.0, 40.0),
             backdrop_call("glass", vec![]),
+            true,
         ),
         (
             "blur",
             (640, 400),
             (20.0, 20.0, 560.0, 360.0),
             backdrop_call("blur", vec![num(8.0)]),
+            false,
         ),
     ];
-    for (name, size, at, backdrop) in cases {
-        let want = backdrop_by_readback(
-            opts,
-            backdrop_scene(size, at, backdrop.clone(), vec![], vec![]),
-            size,
-        );
+    for (name, size, at, backdrop, readback) in cases {
+        let scene = backdrop_scene(size, at, backdrop.clone(), vec![], vec![]);
+        let want = if readback {
+            backdrop_by_readback(opts, scene, size)
+        } else {
+            backdrop_on_cpu(scene, size)
+        };
         let (mut r, mut gpu, pings) = backdrop_presented(
             opts,
             backdrop_scene(size, at, backdrop, vec![], vec![]),
@@ -3126,20 +3148,25 @@ fn a_backdrops_pixels_follow_a_fade_or_a_move_behind_it() {
     }
 }
 
-/// A small `backdrop: blur()` (under about 0.2 Mpx) looks the same
-/// whoever draws it: a presented surface draws it in its frame at the
-/// CPU's reduction (a quarter for sigma 8 and up), so the frame matches
-/// the CPU surface's, at scale 1 and 1.5, within the GPU tolerance. At
-/// full resolution it was 99.8% of the card past the tolerance (worst
-/// 11 at sigma 8, 19 at 16): the look changed at every promotion.
+/// A `backdrop: blur()` looks the same whoever draws it: a presented
+/// surface draws it in its frame at the CPU's reduction (a quarter for
+/// sigma 8 and up, an eighth from 64), so the frame matches the CPU
+/// surface's, at scale 1 and 1.5, within the GPU tolerance. At full
+/// resolution it was 99.8% of the card past the tolerance (worst 11 at
+/// sigma 8, 19 at 16): the look changed at every promotion.
+/// (lock-blur) A full-screen one too, the lock's `blur(36)`, which the
+/// GPU drew at full resolution and the CPU let fade to what is under it
+/// at the screen's edges: both now repeat what is behind past the edge.
 #[test]
-fn a_small_backdrop_blur_looks_the_same_on_either_backend() {
+fn a_backdrop_blur_looks_the_same_on_either_backend() {
     let Some(opts) = device() else { return };
     let logical = (640u32, 400u32);
-    let at = (100.0, 60.0, 240.0, 240.0);
+    let small = (100.0, 60.0, 240.0, 240.0);
+    let whole = (0.0, 0.0, 640.0, 400.0);
+    let cases = [(small, 2.0f32), (small, 8.0), (small, 16.0), (whole, 36.0)];
     for scale in [Scale::ONE, Scale::new(180).unwrap()] {
         let size = scale.physical_size(LogicalSize::new(logical.0 as f32, logical.1 as f32));
-        for sigma in [2.0f32, 8.0, 16.0] {
+        for (at, sigma) in cases {
             let scene = || blur_scene(logical, at, sigma, false);
             let mut c = renderer();
             c.set_promotion(false);
@@ -3152,7 +3179,7 @@ fn a_small_backdrop_blur_looks_the_same_on_either_backend() {
                 !c.take_gpu_requests()
                     .iter()
                     .any(|q| matches!(q, GpuRequest::Pass(_))),
-                "a small blur is the CPU's on a CPU surface"
+                "a blur is the CPU's on a CPU surface"
             );
             let mut r = renderer();
             assert!(r.apply(scene()).is_empty());
@@ -3189,7 +3216,9 @@ fn a_small_backdrop_blur_looks_the_same_on_either_backend() {
                 })
                 .collect();
             let sigma_px = sigma * scale.as_f32();
-            let want = if sigma_px >= 8.0 {
+            let want = if sigma_px >= 64.0 {
+                8
+            } else if sigma_px >= 8.0 {
                 4
             } else if sigma_px >= 2.0 {
                 2

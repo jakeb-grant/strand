@@ -335,35 +335,25 @@ fn glass_is_drawn_by_the_gpu_and_follows_the_pointer() {
     );
 }
 
-/// A large `backdrop: blur(r)` (over about 0.2 Mpx) is the GPU's, at
-/// full resolution; a smaller one stays the CPU's and starts nothing.
+/// (lock-blur) A `backdrop: blur(r)` is the CPU's on a surface the CPU
+/// draws, however large (it was the GPU's at full resolution over about
+/// 0.2 Mpx, read back, which did not match the CPU's): it asks for no
+/// pass, starts nothing, and is smooth across the stripes.
 #[test]
-fn a_large_backdrop_blur_is_the_gpus() {
-    for (w, h, gpu) in [(560.0, 360.0, true), (300.0, 300.0, false)] {
-        let mut nodes = stripes(640, 400.0);
-        let mut p = at_xy(20.0, 20.0, w, h);
-        p.push((Prop::Backdrop, call("blur", vec![num(8.0)])));
-        nodes.push((NodeKind::Box, p, vec![]));
-        let Some(mut run) = run(nodes, (640, 400)) else {
-            return;
-        };
-        let passes = run.frame(1000);
-        if !gpu {
-            assert!(passes.is_empty(), "{w}×{h}: the CPU's");
-            assert_eq!(run.r.gpu_status(), GpuStatus::Unused);
-            continue;
-        }
-        assert_eq!(passes.len(), 1);
-        // Read past the box by 3σ (24 px), within the surface.
-        assert_eq!(passes[0].size, Size::new(604, 400));
-        let cpu = run.buf.pixels.clone();
-        run.settle(1000);
-        assert_ne!(run.buf.pixels, cpu, "the GPU's blur");
-        // Smooth across the stripes: neighbours differ little.
-        let row: Vec<i32> = (100..200).map(|x| run.rgb(x, 200)[1] as i32).collect();
-        let step = row.windows(2).map(|p| (p[1] - p[0]).abs()).max();
-        assert!(step.unwrap_or(0) <= 6, "{row:?}");
-    }
+fn a_large_backdrop_blur_is_the_cpus_on_a_cpu_surface() {
+    let mut nodes = stripes(640, 400.0);
+    let mut p = at_xy(20.0, 20.0, 560.0, 360.0);
+    p.push((Prop::Backdrop, call("blur", vec![num(8.0)])));
+    nodes.push((NodeKind::Box, p, vec![]));
+    let Some(mut run) = run(nodes, (640, 400)) else {
+        return;
+    };
+    assert!(run.frame(1000).is_empty(), "no pass");
+    assert_eq!(run.r.gpu_status(), GpuStatus::Unused);
+    // Smooth across the stripes: neighbours differ little.
+    let row: Vec<i32> = (100..200).map(|x| run.rgb(x, 200)[1] as i32).collect();
+    let step = row.windows(2).map(|p| (p[1] - p[0]).abs()).max();
+    assert!(step.unwrap_or(0) <= 6, "{row:?}");
 }
 
 /// `effect aurora` animated on the GPU (its CPU fallback is a still
@@ -436,8 +426,8 @@ fn noise_code() -> Arc<ShaderCode> {
     })
 }
 
-/// Each bundled effect, a large backdrop blur and the 3-D tilt among
-/// them, and a `.wgsl` noise field, starts the device only while it is
+/// Each bundled effect, the 3-D tilt among them, and a `.wgsl` noise
+/// field, starts the device only while it is
 /// visible, and render holds its pixels only then. Hidden, either off
 /// the bar or clipped out by an ancestor's `clip` while on the bar (the
 /// pointer over the bar, so a tilt leans), it asks for nothing; in view
@@ -472,12 +462,6 @@ fn bundled_effects_start_the_gpu_only_while_visible() {
             NodeKind::Box,
             vec![(Prop::Backdrop, call("glass", vec![]))],
             small,
-        ),
-        (
-            "large blur",
-            NodeKind::Box,
-            vec![(Prop::Backdrop, call("blur", vec![num(8.0)]))],
-            (1300, 400, 560.0, 360.0),
         ),
         (
             "aurora",
@@ -621,17 +605,6 @@ fn a_failed_bundled_pass_draws_its_cpu_version() {
                 40.0,
             ),
             (240, 60),
-        ),
-        (
-            "large blur",
-            over_stripes(
-                640,
-                400.0,
-                vec![(Prop::Backdrop, call("blur", vec![num(8.0)]))],
-                560.0,
-                360.0,
-            ),
-            (640, 400),
         ),
         (
             "aurora",

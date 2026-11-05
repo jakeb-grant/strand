@@ -411,9 +411,34 @@ pub(crate) fn render_group(
     groups: &HashMap<usize, Drawn>,
     bundled: bool,
 ) -> Option<Drawn> {
-    let mut pm = rasterise(items, layer.xform, region, atlas, cache, scale, groups)?;
-    let (w, h) = (pm.width(), pm.height());
     let s = scale.as_f32();
+    // (lock-blur) A large blur is drawn at its reduction ([`filter_reduction`],
+    // the smallest of its blurs'), filtered there and scaled back up: a
+    // full-screen still under `blur(36)` took over a second at full size.
+    // Not under a mosaic, nor when a colour matrix reshapes the blur
+    // after (a glow's doubled coverage, a stroke's edge), which would
+    // sharpen what the scaling up smoothed.
+    let reshaped = layer
+        .effects
+        .iter()
+        .skip_while(|e| !matches!(e, Effect::Blur { .. }))
+        .any(|e| matches!(e, Effect::ColorMatrix(_)));
+    let k = if layer.mosaic.is_some() || reshaped {
+        1
+    } else {
+        layer
+            .effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::Blur { radius } => Some(filter_reduction(radius * s)),
+                _ => None,
+            })
+            .min()
+            .unwrap_or(1)
+    };
+    let mut pm = rasterise_at(items, layer.xform, region, k, atlas, cache, scale, groups)?;
+    let (w, h) = (pm.width(), pm.height());
+    let kf = k as f32;
     let bytes = pm.data_as_u8_slice_mut();
     if let Some(cell) = layer.mosaic {
         // The cells start at the box's corner on the surface.
@@ -426,17 +451,32 @@ pub(crate) fn render_group(
     }
     for e in layer.effects.iter() {
         match e {
-            Effect::Blur { radius } => blur(bytes, w as usize, h as usize, radius * s),
+            Effect::Blur { radius } => blur(bytes, w as usize, h as usize, radius * s / kf),
             Effect::ColorMatrix(m) => color_matrix(bytes, m),
             // `bloom(r)` without a GPU: a glow of the group's own pixels,
             // reaching its radius (3σ; the uniform is in buffer pixels).
             Effect::Shader(pass) if bundled && crate::layers::cpu_glow(e) => {
                 let r = pass.uniforms.first().copied().unwrap_or(0.0);
-                crate::effects::glow::glow_under(bytes, w as usize, h as usize, r / 3.0, None);
+                crate::effects::glow::glow_under(bytes, w as usize, h as usize, r / 3.0 / kf, None);
             }
             _ => {}
         }
     }
+    let pm = if k > 1 {
+        let (w16, h16) = (u16::try_from(region.w).ok()?, u16::try_from(region.h).ok()?);
+        let mut out = Pixmap::new(w16, h16);
+        upscale(
+            pm.data_as_u8_slice(),
+            (w as usize, h as usize),
+            out.data_as_u8_slice_mut(),
+            (region.w as usize, region.h as usize),
+            (0.0, 0.0),
+            f64::from(k),
+        );
+        out
+    } else {
+        pm
+    };
     Some(Drawn {
         pixmap: Arc::new(pm),
         x: region.x,
@@ -456,13 +496,34 @@ pub(crate) fn rasterise(
     scale: Scale,
     groups: &HashMap<usize, Drawn>,
 ) -> Option<Pixmap> {
-    let (w, h) = (u16::try_from(region.w).ok()?, u16::try_from(region.h).ok()?);
+    rasterise_at(items, xform, region, 1, atlas, cache, scale, groups)
+}
+
+/// [`rasterise`] at `1 / k` of the region's size (rounded up), its
+/// origin at the region's corner.
+#[allow(clippy::too_many_arguments)]
+fn rasterise_at(
+    items: &[DisplayItem],
+    xform: Affine,
+    region: Rect,
+    k: u32,
+    atlas: &AtlasMirror,
+    cache: &PaintCache,
+    scale: Scale,
+    groups: &HashMap<usize, Drawn>,
+) -> Option<Pixmap> {
+    let k = k.max(1);
+    let (w, h) = (
+        u16::try_from(region.w.div_ceil(k)).ok()?,
+        u16::try_from(region.h.div_ceil(k)).ok()?,
+    );
     let settings = RenderSettings {
         num_threads: 0,
         ..RenderSettings::default()
     };
     let mut ctx = RenderContext::new_with(w, h, settings);
-    let base = Affine::translate((-(region.x as f64), -(region.y as f64)));
+    let base = Affine::scale(1.0 / f64::from(k))
+        * Affine::translate((-(region.x as f64), -(region.y as f64)));
     ctx.set_transform(base * xform);
     crate::raster::draw_group(
         &mut ctx,
@@ -535,10 +596,25 @@ pub fn mosaic(px: &mut [u8], w: usize, h: usize, cell: usize, phase: (i64, i64))
     }
 }
 
+/// What a blur reads past the pixels it has.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Edge {
+    /// Nothing: a group fades out past its edge (`filter: blur`).
+    Transparent,
+    /// The edge pixels, repeated: what is behind a backdrop goes on past
+    /// what was read of it, as the GPU's pass samples it (lock-blur).
+    Repeat,
+}
+
 /// A Gaussian blur of standard deviation `sigma` pixels over premultiplied
 /// pixels (separable, out to 3σ; transparent past the edges).
 pub fn blur(px: &mut [u8], w: usize, h: usize, sigma: f32) {
-    if !(sigma.is_finite() && sigma > 0.0) || w == 0 || h == 0 {
+    blur_edge(px, w, h, sigma, Edge::Transparent);
+}
+
+/// [`blur`], reading `edge` past the pixels' edges.
+pub(crate) fn blur_edge(px: &mut [u8], w: usize, h: usize, sigma: f32, edge: Edge) {
+    if !(sigma.is_finite() && sigma > 0.0) || w == 0 || h == 0 || px.len() < w * h * 4 {
         return;
     }
     let r = (3.0 * sigma).ceil() as usize;
@@ -561,25 +637,35 @@ pub fn blur(px: &mut [u8], w: usize, h: usize, sigma: f32) {
     let stride = w * 4;
     let mut ring = vec![0f32; ring_rows * stride];
     let mut out = vec![0f32; stride];
+    // (lock-blur) A row padded by `r` pixels each side (zero, or its edge
+    // pixel repeated), so the row pass runs tap by tap over whole rows,
+    // which the compiler vectorises: the same sums in the same order as
+    // one pixel at a time (a tap past a transparent edge adds zero).
+    let mut padded = vec![0f32; stride + 2 * r * 4];
     let mut next = 0;
     for y in 0..h {
         let last = (y + r).min(h - 1);
         while next <= last {
             let row = &px[next * stride..(next + 1) * stride];
-            let slot = &mut ring[(next % ring_rows) * stride..(next % ring_rows + 1) * stride];
-            for x in 0..w {
-                let mut acc = [0f32; 4];
-                for (i, k) in kernel.iter().enumerate() {
-                    let sx = x as isize + i as isize - r as isize;
-                    if sx < 0 || sx >= w as isize {
-                        continue;
-                    }
-                    let o = sx as usize * 4;
+            for (d, s) in padded[r * 4..r * 4 + stride].iter_mut().zip(row) {
+                *d = *s as f32;
+            }
+            if edge == Edge::Repeat {
+                let (first, end) = (&row[..4], &row[stride - 4..]);
+                for x in 0..r {
                     for c in 0..4 {
-                        acc[c] += k * row[o + c] as f32;
+                        padded[x * 4 + c] = first[c] as f32;
+                        padded[(r + w + x) * 4 + c] = end[c] as f32;
                     }
                 }
-                slot[x * 4..x * 4 + 4].copy_from_slice(&acc);
+            }
+            let slot = &mut ring[(next % ring_rows) * stride..(next % ring_rows + 1) * stride];
+            slot.fill(0.0);
+            for (i, k) in kernel.iter().enumerate() {
+                let src = &padded[i * 4..i * 4 + stride];
+                for (o, v) in slot.iter_mut().zip(src) {
+                    *o += k * v;
+                }
             }
             next += 1;
         }
@@ -588,10 +674,12 @@ pub fn blur(px: &mut [u8], w: usize, h: usize, sigma: f32) {
         out.fill(0.0);
         for (i, k) in kernel.iter().enumerate() {
             let sy = y as isize + i as isize - r as isize;
-            if sy < 0 || sy >= h as isize {
-                continue;
-            }
-            let slot = sy as usize % ring_rows;
+            let sy = match edge {
+                Edge::Transparent if sy < 0 || sy >= h as isize => continue,
+                Edge::Transparent => sy as usize,
+                Edge::Repeat => sy.clamp(0, h as isize - 1) as usize,
+            };
+            let slot = sy % ring_rows;
             let src = &ring[slot * stride..(slot + 1) * stride];
             for (o, v) in out.iter_mut().zip(src) {
                 *o += k * v;
@@ -605,6 +693,99 @@ pub fn blur(px: &mut [u8], w: usize, h: usize, sigma: f32) {
                 // Premultiplied: a channel never exceeds its alpha.
                 d[c] = acc[c].round().clamp(0.0, a) as u8;
             }
+        }
+    }
+}
+
+/// The scale a backdrop blur of standard deviation `sigma` device pixels
+/// is drawn at (its reduction: drawn at `1 / k`, blurred there, scaled
+/// back up), on either backend: a quarter, as design.md has it, half or
+/// full size for a blur under 8 or 2 device pixels, which a quarter-scale
+/// pass would turn into blocks, and (lock-blur) an eighth from 64, where
+/// it is still 8 of its pixels wide.
+pub(crate) fn reduction(sigma: f32) -> u32 {
+    if sigma >= 64.0 {
+        8
+    } else if sigma >= 8.0 {
+        4
+    } else if sigma >= 2.0 {
+        2
+    } else {
+        1
+    }
+}
+
+/// The reduction a `filter: blur` of `sigma` device pixels is drawn at:
+/// half size from 8 device pixels, a quarter from 32 and an eighth from
+/// 64, so the blur is at least 4 of its pixels wide at half size and 8
+/// at a quarter or less. A group is drawn at reduced scale by sampling,
+/// not averaging: an image under a blur 4 of its pixels wide at a quarter
+/// came out up to 9 levels off a full-size blur, and 2 at 8 wide
+/// (lock-blur).
+pub(crate) fn filter_reduction(sigma: f32) -> u32 {
+    if sigma >= 64.0 {
+        8
+    } else if sigma >= 32.0 {
+        4
+    } else if sigma >= 8.0 {
+        2
+    } else {
+        1
+    }
+}
+
+/// Bilinear upscaling by `k` of `src` (premultiplied, `sw × sh`) into
+/// `dst` (`dw × dh`), whose origin is at `origin` in `src`'s pixels,
+/// sampled from pixel centres with the edge pixels repeated, as the
+/// GPU draws a reduced backdrop back up (`Op::Backdrop`'s `reduce`).
+/// (lock-blur) Each source row is interpolated across once, and each
+/// destination row is a blend of two of those.
+pub(crate) fn upscale(
+    src: &[u8],
+    (sw, sh): (usize, usize),
+    dst: &mut [u8],
+    (dw, dh): (usize, usize),
+    origin: (f64, f64),
+    k: f64,
+) {
+    if sw == 0 || sh == 0 || src.len() < sw * sh * 4 || dst.len() < dw * dh * 4 {
+        return;
+    }
+    // A pixel centre's place in `src`: its two neighbours and the share
+    // of the second.
+    let place = |o: f64, i: usize, n: usize| {
+        let f = (o + (i as f64 + 0.5) / k - 0.5).max(0.0);
+        let a = (f.floor() as usize).min(n - 1);
+        (a, (a + 1).min(n - 1), f.fract() as f32)
+    };
+    let cols: Vec<(usize, usize, f32)> = (0..dw).map(|x| place(origin.0, x, sw)).collect();
+    let across = |j: usize, out: &mut Vec<f32>| {
+        let row = &src[j * sw * 4..(j + 1) * sw * 4];
+        out.clear();
+        for &(a, b, t) in &cols {
+            for c in 0..4 {
+                let (p, q) = (row[a * 4 + c] as f32, row[b * 4 + c] as f32);
+                out.push(p + (q - p) * t);
+            }
+        }
+    };
+    // The two source rows the last destination row read, across.
+    let (mut top, mut bottom) = (Vec::with_capacity(dw * 4), Vec::with_capacity(dw * 4));
+    let mut have: Option<(usize, usize)> = None;
+    for y in 0..dh {
+        let (a, b, t) = place(origin.1, y, sh);
+        if have != Some((a, b)) {
+            match have {
+                // Moving down a row: the old bottom is the new top.
+                Some((_, ob)) if ob == a => std::mem::swap(&mut top, &mut bottom),
+                _ => across(a, &mut top),
+            }
+            across(b, &mut bottom);
+            have = Some((a, b));
+        }
+        let out = &mut dst[y * dw * 4..(y + 1) * dw * 4];
+        for ((d, p), q) in out.iter_mut().zip(&top).zip(&bottom) {
+            *d = (p + (q - p) * t).round().clamp(0.0, 255.0) as u8;
         }
     }
 }

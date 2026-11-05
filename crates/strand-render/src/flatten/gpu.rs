@@ -14,7 +14,7 @@ use vello_cpu::kurbo;
 use super::{Flattener, Item, hash_item};
 use crate::backdrop::GLASS_REFRACTION;
 use crate::effects::builtin::{Builtin, Kind};
-use crate::effects::gpu::{LARGE_BLUR, aurora_uniforms, glass_uniforms};
+use crate::effects::gpu::{aurora_uniforms, glass_uniforms};
 use crate::effects::raster::Built;
 use crate::offscreen::Drawn;
 use crate::renderer::backend::{PassId, PassInput, Slot, bundled_want, gpu_filter};
@@ -237,7 +237,7 @@ impl Flattener<'_> {
     /// The GPU's pixels for backdrop `e` of `node` over its box `boxed`
     /// (surface buffer pixels; `read` with the CPU's reach), the backdrop
     /// layer to be pushed at item `layer` with corners of `radius`:
-    /// glass, or a blur over a large box. `None` while the CPU draws it.
+    /// glass, or a blur a GPU frame draws. `None` while the CPU draws it.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn backdrop_pass(
         &mut self,
@@ -262,10 +262,12 @@ impl Flattener<'_> {
             return None;
         };
         let scale = self.scale.as_f32();
-        // (perf-gpu-retain review) A blur under about 0.2 Mpx has the
-        // CPU's look, whoever draws it: a GPU frame draws it at the
+        // (perf-gpu-retain review, lock-blur) A blur has the CPU's look,
+        // whoever draws it and however large: a GPU frame draws it at the
         // CPU's reduction (`Op::Backdrop`'s `reduce`), and where none
-        // does the CPU draws it.
+        // does the CPU draws it. The GPU's full-resolution blur, read
+        // back onto a surface the CPU draws, did not match the CPU's, so
+        // a surface promoted mid-animation jumped.
         let mut reduce = 1;
         let mut inframe_only = false;
         let (pass, region, pointer) = match b {
@@ -284,22 +286,18 @@ impl Flattener<'_> {
             }
             // (perf-gpu-retain) Any blur on a surface the GPU draws is
             // drawn in its frame, cheaper than the CPU's pass and its
-            // upload; a small one at the CPU's reduction, its sigma in
-            // the reduced pixels.
-            Bundled::BackdropBlur
-                if self.gpu_frame || u64::from(boxed.w) * u64::from(boxed.h) >= LARGE_BLUR =>
-            {
+            // upload, at the CPU's reduction, its sigma in the reduced
+            // pixels.
+            Bundled::BackdropBlur if self.gpu_frame => {
                 let mut uniforms = uniforms.to_vec();
-                if u64::from(boxed.w) * u64::from(boxed.h) < LARGE_BLUR {
-                    let sigma = uniforms.first().copied().filter(|v| v.is_finite())?;
-                    reduce = crate::backdrop::Pass {
-                        sigma: sigma.max(0.0),
-                        tint: None,
-                    }
-                    .reduction();
-                    uniforms[0] = sigma / reduce as f32;
-                    inframe_only = true;
+                let sigma = uniforms.first().copied().filter(|v| v.is_finite())?;
+                reduce = crate::backdrop::Pass {
+                    sigma: sigma.max(0.0),
+                    tint: None,
                 }
+                .reduction();
+                uniforms[0] = sigma / reduce as f32;
+                inframe_only = true;
                 let pass = ShaderPass {
                     code: ShaderRef::Bundled(Bundled::BackdropBlur),
                     uniforms: uniforms.into(),

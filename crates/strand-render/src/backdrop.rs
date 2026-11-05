@@ -1,8 +1,8 @@
 //! (M4) `backdrop:`: a filter over the surface's own content behind a
 //! node (design.md, "Filters and compositing": `backdrop: blur(16)`
-//! "inside a surface", "drawn at quarter scale, promoted to GPU above
-//! about 0.2 Mpx"; "Bundled GPU effects": `backdrop: glass()` "without a
-//! usable GPU … glass becomes blur and tint").
+//! "inside a surface", "drawn at quarter scale … on either backend";
+//! "Bundled GPU effects": `backdrop: glass()` "without a usable GPU …
+//! glass becomes blur and tint").
 //!
 //! The flattener puts an empty effect layer, clipped to the node's
 //! outline, just under its background: its one effect is a shader pass
@@ -10,10 +10,13 @@
 //! `Bundled::Glass`). On the CPU the layer is an offscreen group
 //! ([`crate::offscreen`]) whose pixels are not its own items but what the
 //! display list drew before it ([`behind`]): drawn at reduced scale
-//! (a quarter; half or full for blurs too small to survive it), blurred
-//! there, scaled back up, and tinted for glass. The group is cached by
-//! the hash of what is behind it, and the node's damage signature hashes
-//! the same items ([`hash_behind`]), so a change behind it repaints it.
+//! (a quarter; an eighth for the largest; half or full for blurs too
+//! small to survive it), blurred there with what is behind repeated past
+//! what was read, scaled back up, and tinted for glass; a GPU frame draws
+//! it at the same scale, so the two look the same (lock-blur). The group
+//! is cached by the hash of what is behind it, and the node's damage
+//! signature hashes the same items ([`hash_behind`]), so a change behind
+//! it repaints it.
 //!
 //! What is behind is the earlier items over the node's box grown by the
 //! blur's reach. Groups still open at the node (its ancestors' clips,
@@ -104,17 +107,13 @@ impl Pass {
         (3.0 * self.sigma).ceil().clamp(0.0, 10_000.0) as u32
     }
 
-    /// The scale it is drawn at: a quarter (design.md), or half or full
-    /// size for a blur under 8 or 2 device pixels, which a quarter-scale
-    /// pass would turn into blocks.
+    /// The scale it is drawn at ([`crate::offscreen::reduction`]): a
+    /// quarter (design.md), an eighth from 64 device pixels, or half or
+    /// full size for a blur under 8 or 2 device pixels, which a
+    /// quarter-scale pass would turn into blocks. The GPU draws it at the
+    /// same scale, whatever its size (lock-blur).
     pub(crate) fn reduction(self) -> u32 {
-        if self.sigma >= 8.0 {
-            4
-        } else if self.sigma >= 2.0 {
-            2
-        } else {
-            1
-        }
+        crate::offscreen::reduction(self.sigma)
     }
 }
 
@@ -380,18 +379,22 @@ pub(crate) fn render(
         },
     );
     drop(ctx);
-    crate::offscreen::blur(
+    // (lock-blur) What is behind goes on past what was read of it (the
+    // surface's edge, mostly), as the GPU's pass reads it: a full-screen
+    // backdrop does not fade to what is under it at the screen's edges.
+    crate::offscreen::blur_edge(
         small.data_as_u8_slice_mut(),
         sw as usize,
         sh as usize,
         pass.sigma / k as f32,
+        crate::offscreen::Edge::Repeat,
     );
     let (w16, h16) = (u16::try_from(region.w).ok()?, u16::try_from(region.h).ok()?);
     if w16 == 0 || h16 == 0 {
         return None;
     }
     let mut out = Pixmap::new(w16, h16);
-    upscale(
+    crate::offscreen::upscale(
         small.data_as_u8_slice(),
         (sw as usize, sh as usize),
         out.data_as_u8_slice_mut(),
@@ -410,38 +413,6 @@ pub(crate) fn render(
         x: region.x,
         y: region.y,
     })
-}
-
-/// Bilinear upscaling by `k` of `src` (premultiplied, `sw × sh`) into
-/// `dst` (`dw × dh`), whose origin is at `origin` in `src`'s pixels.
-fn upscale(
-    src: &[u8],
-    (sw, sh): (usize, usize),
-    dst: &mut [u8],
-    (dw, dh): (usize, usize),
-    origin: (f64, f64),
-    k: f64,
-) {
-    if sw == 0 || sh == 0 {
-        return;
-    }
-    let px =
-        |x: usize, y: usize, c: usize| src[(y.min(sh - 1) * sw + x.min(sw - 1)) * 4 + c] as f64;
-    for y in 0..dh {
-        // Pixel centres.
-        let fy = (origin.1 + (y as f64 + 0.5) / k - 0.5).max(0.0);
-        let (y0, ty) = (fy.floor() as usize, fy.fract());
-        for x in 0..dw {
-            let fx = (origin.0 + (x as f64 + 0.5) / k - 0.5).max(0.0);
-            let (x0, tx) = (fx.floor() as usize, fx.fract());
-            let o = (y * dw + x) * 4;
-            for c in 0..4 {
-                let top = px(x0, y0, c) * (1.0 - tx) + px(x0 + 1, y0, c) * tx;
-                let bottom = px(x0, y0 + 1, c) * (1.0 - tx) + px(x0 + 1, y0 + 1, c) * tx;
-                dst[o + c] = (top * (1.0 - ty) + bottom * ty).round().clamp(0.0, 255.0) as u8;
-            }
-        }
-    }
 }
 
 /// Draws `c` over every pixel of `px` (premultiplied BGRA).
@@ -530,6 +501,15 @@ mod tests {
             .reduction(),
             1
         );
+        // (lock-blur) An eighth for the largest.
+        assert_eq!(
+            Pass {
+                sigma: 72.0,
+                tint: None
+            }
+            .reduction(),
+            8
+        );
     }
 
     #[test]
@@ -557,7 +537,7 @@ mod tests {
         // are between.
         let src = [0, 0, 0, 255, 255, 255, 255, 255];
         let mut dst = [0u8; 16];
-        upscale(&src, (2, 1), &mut dst, (4, 1), (0.0, 0.0), 2.0);
+        crate::offscreen::upscale(&src, (2, 1), &mut dst, (4, 1), (0.0, 0.0), 2.0);
         let v: Vec<u8> = dst.chunks(4).map(|p| p[0]).collect();
         assert_eq!(v[0], 0);
         assert_eq!(v[3], 255);
