@@ -522,6 +522,10 @@ pub(crate) struct Checker<'a> {
     /// literal (`state m = ["a": 1]`): a fraction written to an entry is
     /// helped to a declaration, not rounded.
     pub untyped_dicts: HashSet<DefId>,
+    /// (dictionary) The span of the expression statement being checked,
+    /// a call standing alone: only there can a foreign method's fix turn
+    /// it into a write (`m.set(k, v)` to `m[k] = v`).
+    pub stmt_expr: Option<Span>,
     /// The inferred component parameter whose argument is being checked
     /// (for the help on a bare builtin variant: `Side center`).
     pub infer_arg: Option<String>,
@@ -639,6 +643,7 @@ impl<'a> Checker<'a> {
             widened: HashSet::new(),
             float_pins: HashSet::new(),
             untyped_dicts: HashSet::new(),
+            stmt_expr: None,
             infer_arg: None,
             flows: Vec::new(),
             value_sources: HashMap::new(),

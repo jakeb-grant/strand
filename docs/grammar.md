@@ -680,8 +680,9 @@ Notes:
   fix that rewrites the braces as brackets when the literal is on one line
   and every key is quoted or a number. A name key (`{app: "a", label:
   "b"}`) may be a record meant JS's way, so its help names both forms,
-  `Name(app: …)` and `[app: …]`, with no fix. In a prop value a name then `:` in braces is a sub-block's prop, so only a
-  quoted or number key reads as a dictionary there.
+  `Name(app: …)` and `[app: …]`, with no fix. In a prop value a name
+  then `:` in braces is a sub-block's prop, so only a quoted or number
+  key reads as a dictionary there.
 
 ### Literals
 
@@ -714,9 +715,10 @@ A negative pattern on its own line (`-1 => …`) is a new arm, by rule 3.
 
 A type in braces with a `:` in it (`{int: text}`) is `syntax::dict_braces`
 ("dictionaries use brackets: `[K: V]`"), fixed to `[int: text]` when it
-holds one `K: V`; a record's fields are declared with `type`, not written
-inline, so a TS object type (`{x: int, y: int}`) gets that help and no
-fix.
+holds one `K: V` whose key names a type (`int`, `text`, `path`, `bool`
+or a capitalised name); a record's fields are declared with `type`, not
+written inline, so a TS object type (`{x: int, y: int}`, `{name: text}`)
+gets that help and no fix.
 
 `_` is the wildcard pattern.
 

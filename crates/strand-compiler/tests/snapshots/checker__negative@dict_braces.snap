@@ -1,5 +1,6 @@
 ---
 source: crates/strand-compiler/tests/checker.rs
+assertion_line: 165
 expression: rendered
 ---
 syntax::dict_braces
@@ -59,6 +60,19 @@ syntax::dict_braces
  11 │ state at: {x: int, y: int} = []
     ·           ────────┬───────
     ·                   ╰── braces hold a record's fields or a block, not a type
+ 12 │ state one: {name: text} = []
+    ╰────
+  help: a record type is declared by its name, `type Name { x: int; y: int }`, and written `Name`;
+        a dictionary type is `[K: V]`
+
+syntax::dict_braces
+
+  × dictionaries use brackets: `[K: V]`
+    ╭─[dict_braces.strand:12:12]
+ 11 │ state at: {x: int, y: int} = []
+ 12 │ state one: {name: text} = []
+    ·            ──────┬─────
+    ·                  ╰── braces hold a record's fields or a block, not a type
     ╰────
   help: a record type is declared by its name, `type Name { x: int; y: int }`, and written `Name`;
         a dictionary type is `[K: V]`

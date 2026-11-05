@@ -134,8 +134,9 @@ Each error and its fix:
   has no key": `xs.get(k)` is a keyed list's, finding an item by its
   key. Declare the key, `state xs: [T] key field = []`, or read the
   list by position, `xs[i]`, or by a test, `xs.find(x => …)`. Only a
-  `state` list of records takes a key: for a `let` or a list of plain
-  values, `xs.find(x => x == k)` or `xs.contains(k)` is the read.
+  `state` list of records takes a key: for a `let` of records,
+  `xs.find(x => x.field == k)` is the read, and for a list of plain
+  values `xs.find(x => x == k)` or `xs.contains(k)`.
 - **`check::type_mismatch`**, "`key` of `pins.get` expects `text`,
   found `int`": `get` takes the list's key, the type of the field its
   `key` names.

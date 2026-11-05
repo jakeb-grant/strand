@@ -45,7 +45,9 @@ impl<'a> Checker<'a> {
             ast::StmtKind::Let(l) => self.stmt_let(l),
             ast::StmtKind::Assign { target, op, value } => self.assign(target, *op, value),
             ast::StmtKind::Expr(e) => {
+                let outer = self.stmt_expr.replace(e.span);
                 let h = self.expr(e, None);
+                self.stmt_expr = outer;
                 if self.ctx.handler && matches!(h.ty, Ty::Async(_)) {
                     // `on click { sleep(1s) }` almost always meant to wait.
                     let shown = self.show(&h.ty);

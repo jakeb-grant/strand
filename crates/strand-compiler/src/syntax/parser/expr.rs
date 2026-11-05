@@ -711,11 +711,17 @@ impl Parser<'_> {
             colons: 0,
             separators: 0,
             plain_keys: true,
+            type_key: false,
         };
         let mut at_key = true;
         for i in 1..256 {
             let k = self.nth_kind(i);
             if depth == 0 && at_key && k != K::RBrace {
+                if i == 1 && k == K::Ident {
+                    let name = self.text(self.nth(i));
+                    shape.type_key = matches!(name, "int" | "text" | "path" | "bool")
+                        || name.starts_with(char::is_uppercase);
+                }
                 shape.plain_keys &= matches!(k, K::String | K::Number);
                 at_key = false;
             }
@@ -978,10 +984,11 @@ impl Parser<'_> {
             }
             K::LBrace if self.braced_dict_type() => {
                 // `{K: V}` is a dictionary type; more than one field
-                // (`{x: int, y: int}`) is a record type written TS's way,
+                // (`{x: int, y: int}`), or one named as a field
+                // (`{name: text}`), is a record type written TS's way,
                 // which `[…]` would not fix.
                 let shape = self.braced_shape(true);
-                let fits = shape.colons == 1 && shape.separators == 0;
+                let fits = shape.colons == 1 && shape.separators == 0 && shape.type_key;
                 self.skip_group();
                 let span = self.finish(start);
                 let d =
@@ -1161,6 +1168,9 @@ struct BracedShape {
     colons: usize,
     separators: usize,
     plain_keys: bool,
+    /// The first key names a type: a builtin key type or a capitalised
+    /// name (`{int: text}`, `{Urgency: int}`), not a field (`{name: text}`).
+    type_key: bool,
 }
 
 #[cfg(test)]

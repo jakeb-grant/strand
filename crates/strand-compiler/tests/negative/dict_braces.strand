@@ -9,3 +9,4 @@ let more: [int: text] = {1: "web", 2: "code"}
 let none: [text: int] = {}
 let pin: Pin = {app: "a", label: "b"}
 state at: {x: int, y: int} = []
+state one: {name: text} = []

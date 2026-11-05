@@ -2469,15 +2469,22 @@ impl<'a> Checker<'a> {
                              `{xs}[i]` reads an item by its position and `{xs}.find(x => …)` \
                              by a test"
                         ),
+                        // A list of records is searched by one of its
+                        // fields; a list of plain values by the value.
+                        ("get", false) if matches!(elem, Ty::Record(_)) => format!(
+                            "only a `state` list of records has a key; `{xs}[i]` reads an item \
+                             by its position and `{xs}.find(x => x.field == k)` by a test"
+                        ),
                         ("get", false) => format!(
                             "only a `state` list of records has a key; `{xs}[i]` reads an item \
                              by its position, `{xs}.find(x => x == k)` by a test, and \
                              `{xs}.contains(k)` says whether it is there"
                         ),
                         (_, true) => format!("declare one: `state {xs}: [T] key field = []`"),
-                        (_, false) => "only a `state` list of records has a key: \
-                                       `state xs: [T] key field = []`"
-                            .into(),
+                        (_, false) => format!(
+                            "only a `state` list of records has a key: \
+                             `state {xs}: [T] key field = []`"
+                        ),
                     });
                     if let Some((file, at, fields)) = slot {
                         for f in fields {
@@ -2669,6 +2676,9 @@ impl<'a> Checker<'a> {
         // `m.get(k)` with a plain `.` (not `?.`) and positional
         // arguments: the call's tail can be rewritten.
         let plain_dot = self.text_of(Span::new(recv_ast.span.end, name.span.start)) == Some(".");
+        // A write's fix only for a call standing as its own statement:
+        // `let x = m.set(k, v)` would become `let x = m[k] = v`.
+        let alone = self.stmt_expr == Some(span);
         let tail = Span::new(recv_ast.span.end, span.end);
         let list_method = crate::schema::list_members(entry, true, &Ty::Error)
             .iter()
@@ -2695,13 +2705,16 @@ impl<'a> Checker<'a> {
                 d.help = Some(format!(
                     "write an entry by its key, in a handler: `{m}[k] = v`"
                 ));
-                if let (true, Some(k), Some(v), 2) = (plain_dot, a0, a1, args.len()) {
+                if let (true, true, Some(k), Some(v), 2) = (alone, plain_dot, a0, a1, args.len()) {
                     d.add_suggestion(tail, format!("[{k}] = {v}"));
                 }
             }
             "delete" | "pop" | "del" | "erase" | "discard" | "unset" => {
                 d.help = Some(format!("forget an entry by its key: `{m}.remove(k)`"));
-                d.add_suggestion(name.span, "remove");
+                // Python's `pop` returns the value; `remove` returns nothing.
+                if alone && args.len() == 1 {
+                    d.add_suggestion(name.span, "remove");
+                }
             }
             "items" | "iter" | "each" | "pairs" | "for_each" | "forEach" => {
                 if list_method {
