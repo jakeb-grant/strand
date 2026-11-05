@@ -93,3 +93,19 @@ write in an overlay in Strand's state directory instead, with a notice.
   prefs.level }` the same way.
 - **Several files.** Each `state … from` is its own file; give them
   different names (`prefs`, `layout`).
+- **One value per key.** A [dictionary](../concepts/language.md#dictionaries)
+  field, `wallpapers: [text: path] = []`, is a table in the file, one
+  line per key; Strand writes back only the keys that changed, keeping
+  the rest as you wrote them:
+
+  ```toml
+  [wallpapers]
+  DP-1 = "~/walls/left.jpg"   # the wide one
+  "org.gnome.Nautilus" = "~/walls/files.jpg"
+  ```
+
+  A handler sets one entry, `prefs.wallpapers[screen.name] =
+  picked.file`, and so does a terminal: `strand set
+  prefs.wallpapers.DP-1 ~/walls/new.jpg`. `strand get prefs.wallpapers`
+  prints them all. A bad entry keeps the whole field's last good value,
+  with a notice naming its key.

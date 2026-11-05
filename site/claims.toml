@@ -535,7 +535,7 @@ proof  = "read"
 [[claim]]
 page   = "site/start/running.md"
 text   = "- `strand toggle <path>` flips an exported `bool` state."
-source = ['crates/strand/src/ipc/query.rs "`toggle` flips an exported boolean"', 'docs/spec.md "`strand toggle path` flips an exported `bool` state;"']
+source = ['crates/strand/src/ipc/query.rs "`toggle` flips an exported boolean"', 'docs/spec.md "`strand toggle path` flips an exported `bool` state"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): launcher.open false, then true"
 
 [[claim]]
@@ -3545,3 +3545,27 @@ page   = "site/concepts/live-reload.md"
 text   = "it keyed and keeps the rest, and the overlay says so:"
 source = ['docs/spec.md "reorders the entries. A variant removed drops the entries it keyed"', 'crates/strand-compiler/src/vm/value.rs "dropped {} entr{} (key no longer in {})"']
 proof  = "crates/strand-compiler/tests/reload.rs::an_enum_key_variant_removed_drops_its_entries_with_a_note (plain and persisted); crates/strand-compiler/tests/instantiate.rs::a_stored_entry_whose_enum_key_is_gone_is_dropped_with_a_note (at a start)"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "field, `wallpapers: [text: path] = []`, is a table in the file, one"
+source = ['docs/spec.md "**A dictionary field** (`wallpapers: [text: path] = []`) is a TOML"', 'crates/strand-compiler/src/vm/persist.rs "A dictionary is a table: a `[name]` section or an inline"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_settings_dictionary_reads_a_table_and_keeps_its_last_good_value; crates/strand-compiler/src/vm/persist.rs::settings_dictionaries_are_tables"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "line per key; Strand writes back only the keys that changed, keeping"
+source = ['docs/spec.md "spacing and order. A dictionary is written key by key into the table"', 'crates/strand-core/src/settings.rs "fn merge_table(old: &mut toml_edit::Table, new: &toml_edit::Table) {"']
+proof  = "crates/strand-core/src/settings.rs::a_table_is_written_key_by_key; crates/strand-compiler/tests/instantiate.rs::a_settings_dictionary_writes_back_key_by_key"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
+text   = "TOML table, and one bad entry keeps the whole field as it was, with a"
+source = ['docs/spec.md "that does not fit) keeps the whole field"', 'crates/strand-compiler/src/vm/persist.rs "the same key as {:?}"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_settings_dictionary_reads_a_table_and_keeps_its_last_good_value (each notice pinned)"
+
+[[claim]]
+page   = "site/start/running.md"
+text   = "of the path is one key: `strand get island.last_win.3` prints one"
+source = ['docs/spec.md "(dictionary) after a dictionary, the rest of the path is one key,"', 'crates/strand-compiler/src/instantiate/mod.rs "let key = rest[i..].join("']
+proof  = "crates/strand-compiler/tests/instantiate.rs::strand_get_and_set_reach_one_entry_of_a_dictionary; crates/strand/src/run/tests.rs::strand_get_and_set_reach_one_dictionary_entry"

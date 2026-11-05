@@ -173,6 +173,7 @@ impl SettingsStore {
 
 type Decode<V> = Box<dyn Fn(&Item) -> Result<V, String>>;
 type Encode<V> = Box<dyn Fn(&V) -> Item>;
+type Carry<V> = Box<dyn Fn(&V) -> Option<V>>;
 
 /// One typed field of a settings file, from the compiler's schema.
 pub struct FieldSpec<V> {
@@ -181,6 +182,7 @@ pub struct FieldSpec<V> {
     default: V,
     decode: Decode<V>,
     encode: Encode<V>,
+    carry: Option<Carry<V>>,
 }
 
 impl<V> FieldSpec<V> {
@@ -199,6 +201,7 @@ impl<V> FieldSpec<V> {
             default,
             decode: Box::new(decode),
             encode: Box::new(encode),
+            carry: None,
         }
     }
 
@@ -209,6 +212,20 @@ impl<V> FieldSpec<V> {
         self.ty = ty.into();
         self
     }
+
+    /// (dictionary) How a value the handle holds becomes a value of the
+    /// redeclared program, for a [`Settings::redeclare`] that keeps the
+    /// field's type (the compiler's `translate`: an enum by its variant's
+    /// name, a record by field names, a dictionary's entries whose key is
+    /// gone dropped); `None` when it no longer fits. Each layer and the
+    /// field's cell are carried through it; a field one of them no longer
+    /// fits is read again from its files. Without it, values are kept as
+    /// they are.
+    #[must_use]
+    pub fn with_carry(mut self, carry: impl Fn(&V) -> Option<V> + 'static) -> Self {
+        self.carry = Some(Box::new(carry));
+        self
+    }
 }
 
 impl<V: fmt::Debug> fmt::Debug for FieldSpec<V> {
@@ -217,6 +234,7 @@ impl<V: fmt::Debug> fmt::Debug for FieldSpec<V> {
             .field("name", &self.name)
             .field("ty", &self.ty)
             .field("default", &self.default)
+            .field("carry", &self.carry.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -487,7 +505,9 @@ fn probe_read_only(target: &Path) -> bool {
 
 /// Apply `edits` to `doc` in place: a replaced value keeps its decor
 /// (spacing and trailing comment), keys keep their order and comments; a
-/// new key is appended.
+/// new key is appended. (dictionary) A table written over a table (a
+/// `[section]`, or an inline `{ … }` the user wrote) is merged key by
+/// key ([`merge_item`]), so its comments, spacing and order stay too.
 fn apply_edits(doc: &mut DocumentMut, edits: &[Edit]) {
     for (name, item) in edits {
         match item {
@@ -495,27 +515,107 @@ fn apply_edits(doc: &mut DocumentMut, edits: &[Edit]) {
                 doc.remove(name);
             }
             Some(new) => match doc.get_mut(name) {
-                Some(old) if old.is_value() => {
-                    let decor = old.as_value().map(|v| v.decor().clone());
-                    match (decor, new.clone()) {
-                        (Some(decor), Item::Value(mut v)) => {
-                            *v.decor_mut() = decor;
-                            *old = Item::Value(v);
-                        }
-                        (_, new) => *old = new,
+                Some(old) => {
+                    // Anything else the user wrote under that name (a
+                    // table where a value goes now, an array of tables):
+                    // replaced as a new key, with the key's default
+                    // spacing (its own decor belongs to a `[header]`).
+                    if !merge_item(old, new) {
+                        doc.remove(name);
+                        doc.insert(name, new.clone());
                     }
-                }
-                // A table (or array of tables) the user wrote under that
-                // name: replaced as a new key, with the key's default
-                // spacing (its own decor belongs to a `[header]`).
-                Some(_) => {
-                    doc.remove(name);
-                    doc.insert(name, new.clone());
                 }
                 None => {
                     doc.insert(name, new.clone());
                 }
             },
+        }
+    }
+}
+
+/// Write `new` over `old` in place, keeping what the user wrote around
+/// it: a value keeps its decor (spacing and trailing comment); a table
+/// written over a table, or over an inline table, is merged key by key
+/// ([`merge_table`], [`merge_value`]). `false` when `old` cannot take
+/// `new` in place (a table where a value goes, or a value where a
+/// section was) and is to be replaced as a new key.
+fn merge_item(old: &mut Item, new: &Item) -> bool {
+    match (old, new) {
+        (Item::Value(o), Item::Value(n)) => {
+            merge_value(o, n);
+            true
+        }
+        (Item::Table(o), Item::Table(n)) => {
+            merge_table(o, n);
+            true
+        }
+        // A section's entries into the inline table the user wrote: it
+        // stays inline.
+        (Item::Value(toml_edit::Value::InlineTable(o)), Item::Table(n)) => {
+            let n = n.clone().into_inline_table();
+            merge_inline(o, &n);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// [`merge_item`] for a section: a key `new` no longer has is removed
+/// (with its comment), one both have is written in place, a new one is
+/// appended at the section's end.
+fn merge_table(old: &mut toml_edit::Table, new: &toml_edit::Table) {
+    let gone: Vec<String> = old
+        .iter()
+        .map(|(k, _)| k.to_string())
+        .filter(|k| !new.contains_key(k))
+        .collect();
+    for k in gone {
+        old.remove(&k);
+    }
+    for (k, n) in new.iter() {
+        match old.get_mut(k) {
+            Some(o) => {
+                if !merge_item(o, n) {
+                    old.remove(k);
+                    old.insert(k, n.clone());
+                }
+            }
+            None => {
+                old.insert(k, n.clone());
+            }
+        }
+    }
+}
+
+/// [`merge_item`] for two values: two inline tables merge key by key
+/// ([`merge_inline`]); anything else is replaced, keeping `old`'s decor.
+fn merge_value(old: &mut toml_edit::Value, new: &toml_edit::Value) {
+    match (&mut *old, new) {
+        (toml_edit::Value::InlineTable(o), toml_edit::Value::InlineTable(n)) => merge_inline(o, n),
+        _ => {
+            let decor = old.decor().clone();
+            *old = new.clone();
+            *old.decor_mut() = decor;
+        }
+    }
+}
+
+/// [`merge_table`] for an inline table.
+fn merge_inline(old: &mut toml_edit::InlineTable, new: &toml_edit::InlineTable) {
+    let gone: Vec<String> = old
+        .iter()
+        .map(|(k, _)| k.to_string())
+        .filter(|k| !new.contains_key(k))
+        .collect();
+    for k in gone {
+        old.remove(&k);
+    }
+    for (k, n) in new.iter() {
+        match old.get_mut(k) {
+            Some(o) => merge_value(o, n),
+            None => {
+                old.insert(k, n.clone());
+            }
         }
     }
 }
@@ -1068,6 +1168,55 @@ impl<V: Clone + PartialEq + 'static> Inner<V> {
         }
     }
 
+    /// (dictionary) A redeclare keeping `f`'s type: carry its layers and
+    /// its cell into the new program through `carry`
+    /// ([`FieldSpec::with_carry`]). `false`, with nothing changed, when
+    /// one of them no longer fits (the field is then read again). The
+    /// cell's new value is a reload write ([`Signal::set_reloaded`]), so
+    /// `on change` takes it as its baseline.
+    fn carry(&self, rt: &Runtime, f: &Field<V>, carry: &dyn Fn(&V) -> Option<V>) -> bool {
+        let layer = |cell: &RefCell<Option<V>>| -> Option<Option<V>> {
+            match &*cell.borrow() {
+                Some(v) => carry(v).map(Some),
+                None => Some(None),
+            }
+        };
+        let Ok(cur) = f.signal.get_untracked(rt) else {
+            return false;
+        };
+        let (
+            Some(file),
+            Some(seen),
+            Some(overlay),
+            Some(snapped),
+            Some(shown),
+            Some(live),
+            Some(now),
+        ) = (
+            layer(&f.file),
+            layer(&f.seen),
+            layer(&f.overlay),
+            layer(&f.snapped),
+            carry(&f.shown.borrow()),
+            carry(&f.live.borrow()),
+            carry(&cur),
+        )
+        else {
+            return false;
+        };
+        f.file.replace(file);
+        f.seen.replace(seen);
+        f.overlay.replace(overlay);
+        f.snapped.replace(snapped);
+        f.shown.replace(shown);
+        f.live.replace(live);
+        if now != cur && rt.check_write_allowed(f.signal.id()).is_ok() {
+            rt.note_write(f.signal.id());
+            let _ = f.signal.set_reloaded(rt, now);
+        }
+        true
+    }
+
     /// The other live handles on this file.
     fn siblings(&self, rt: &Runtime) -> Vec<Rc<dyn Sibling>> {
         let me = std::ptr::from_ref(self).cast::<()>();
@@ -1407,7 +1556,8 @@ impl<V: Clone + PartialEq + 'static> Settings<V> {
                 continue;
             };
             let old_ty = f.spec.borrow().ty.clone();
-            if old_ty != s.ty {
+            let changed = old_ty != s.ty;
+            if changed {
                 inner.notice(
                     rt,
                     Some(&f.name),
@@ -1416,6 +1566,15 @@ impl<V: Clone + PartialEq + 'static> Settings<V> {
                         to: s.ty.clone(),
                     },
                 );
+            }
+            // (dictionary) The same type in the new program: each layer
+            // and the cell carried into it; one that no longer fits reads
+            // the field again from its files.
+            let carried = changed
+                || s.carry
+                    .as_ref()
+                    .is_none_or(|c| inner.carry(rt, f, c.as_ref()));
+            if changed || !carried {
                 f.file.replace(None);
                 f.seen.replace(None);
                 f.overlay.replace(None);
@@ -1609,6 +1768,81 @@ mod tests {
             &[(Arc::from("a"), Some(toml_edit::value(9)))],
         );
         assert_eq!(out, "b = 5\na = 9\n");
+    }
+
+    fn section(entries: &[(&str, Item)]) -> Item {
+        let mut t = toml_edit::Table::new();
+        for (k, v) in entries {
+            t.insert(k, v.clone());
+        }
+        Item::Table(t)
+    }
+
+    /// (dictionary) A table written over the section the file has merges
+    /// key by key: a changed key keeps its place, spacing and comment, a
+    /// key no longer there is removed (with its own comment), a new key
+    /// goes at the section's end, and the rest of the file is untouched.
+    #[test]
+    fn a_table_is_written_key_by_key() {
+        let doc = "# prefs\ngap = 4\n\n# per screen\n[wallpapers]\n# the left one\nDP-1   = \"~/a.jpg\"   # left\n# gone soon\nHDMI-A-1 = \"~/b.jpg\"\neDP-1 = \"~/c.jpg\" # laptop\n\n[other]\nx = 1\n";
+        let new = section(&[
+            ("DP-1", toml_edit::value("~/new.jpg")),
+            ("eDP-1", toml_edit::value("~/c.jpg")),
+            ("org.gnome.Nautilus", toml_edit::value("~/d.jpg")),
+        ]);
+        assert_eq!(
+            edit(doc, &[(Arc::from("wallpapers"), Some(new))]),
+            "# prefs\ngap = 4\n\n# per screen\n[wallpapers]\n# the left one\nDP-1   = \"~/new.jpg\"   # left\neDP-1 = \"~/c.jpg\" # laptop\n\"org.gnome.Nautilus\" = \"~/d.jpg\"\n\n[other]\nx = 1\n"
+        );
+        // An inline table the user wrote stays inline, merged the same way.
+        let doc = "wallpapers = { DP-1 = \"~/a.jpg\", HDMI-A-1 = \"~/b.jpg\" } # mine\n";
+        let new = section(&[
+            ("DP-1", toml_edit::value("~/a.jpg")),
+            ("eDP-1", toml_edit::value("~/c.jpg")),
+        ]);
+        assert_eq!(
+            edit(doc, &[(Arc::from("wallpapers"), Some(new))]),
+            "wallpapers = { DP-1 = \"~/a.jpg\", eDP-1 = \"~/c.jpg\" } # mine\n"
+        );
+        // A field the file does not have yet is a section of its own,
+        // after the file's keys; an empty one is just its header.
+        let new = section(&[("DP-1", toml_edit::value("~/a.jpg"))]);
+        assert_eq!(
+            edit(
+                "gap = 4\n",
+                &[
+                    (Arc::from("wallpapers"), Some(new)),
+                    (Arc::from("seen"), Some(section(&[]))),
+                    (Arc::from("compact"), Some(toml_edit::value(true))),
+                ]
+            ),
+            "gap = 4\ncompact = true\n\n[wallpapers]\nDP-1 = \"~/a.jpg\"\n\n[seen]\n"
+        );
+        // A bad value where the table goes is replaced by the section.
+        let new = section(&[("DP-1", toml_edit::value("~/a.jpg"))]);
+        assert_eq!(
+            edit(
+                "wallpapers = 3 # oops\ngap = 4\n",
+                &[(Arc::from("wallpapers"), Some(new))]
+            ),
+            "gap = 4\n\n[wallpapers]\nDP-1 = \"~/a.jpg\"\n"
+        );
+    }
+
+    /// (dictionary) A record written as an inline table keeps the
+    /// spacing of the fields the user wrote, as a top-level value does.
+    #[test]
+    fn an_inline_table_keeps_its_spacing_field_by_field() {
+        let mut t = toml_edit::InlineTable::new();
+        t.insert("w", 3.into());
+        t.insert("h", 4.into());
+        assert_eq!(
+            edit(
+                "size = {  h = 2,   w = 1  } # cells\n",
+                &[(Arc::from("size"), Some(toml_edit::value(t)))]
+            ),
+            "size = {  h = 4,   w = 3  } # cells\n"
+        );
     }
 
     #[test]

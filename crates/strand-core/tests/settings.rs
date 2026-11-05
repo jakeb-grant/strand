@@ -1096,6 +1096,76 @@ fn redeclare_keeps_cells_by_name_and_resets_a_changed_type() {
     assert!(text.contains("accent = \"#00ff00\""), "{text}");
 }
 
+/// (dictionary) A redeclare that keeps a field's type carries what the
+/// handle holds into the new program through the field's carry
+/// (`FieldSpec::with_carry`, the compiler's `translate`): the file's
+/// layer, the cell and a write not saved yet, which is then saved as
+/// carried; the cell keeps its identity and no notice is given. A carry
+/// that refuses a value reads the field again from its file.
+#[test]
+fn redeclare_carries_each_layer_through_its_carry() {
+    let tmp = TempDir::new("redeclare-carry");
+    let file = tmp.config("prefs.toml");
+    fs::write(&file, "accent = \"#00ff00\" # mine\n").unwrap();
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let s = prefs(&rt, &store, &file);
+    rt.flush();
+    let accent = s.signal("accent").unwrap();
+    let upper = |v: &V| match v {
+        V::Color(c) => Some(V::Color(c.to_uppercase())),
+        V::Bool(b) => Some(V::Bool(*b)),
+    };
+    s.redeclare(
+        &rt,
+        vec![
+            color("accent", "#7aa2f7").with_carry(upper),
+            flag("compact", false).with_carry(upper),
+        ],
+    );
+    let d = rt.flush().diagnostics;
+    assert!(d.is_empty(), "{d:?}");
+    assert_eq!(s.signal("accent"), Some(accent), "same cell");
+    assert_eq!(get(&rt, &s, "accent"), V::Color("#00FF00".into()));
+    assert_eq!(s.layer("accent"), Some(SettingsLayer::File));
+    // A write not saved yet (its tick ended, its debounce running) is
+    // carried, then saved as carried.
+    s.set(&rt, "accent", V::Color("#abcdef".into())).unwrap();
+    rt.tick(Duration::from_millis(500));
+    s.redeclare(
+        &rt,
+        vec![
+            color("accent", "#7aa2f7").with_carry(upper),
+            flag("compact", false),
+        ],
+    );
+    assert_eq!(get(&rt, &s, "accent"), V::Color("#ABCDEF".into()));
+    let mut d = rt.tick(Duration::from_secs(1)).diagnostics;
+    d.extend(
+        rt.tick(Duration::from_secs(1) + PERSIST_DEBOUNCE)
+            .diagnostics,
+    );
+    assert!(store.sync(Duration::from_secs(5)));
+    d.extend(rt.flush().diagnostics);
+    assert!(d.is_empty(), "{d:?}");
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "accent = \"#ABCDEF\" # mine\n"
+    );
+    // A carry that refuses: the field is read again from its file.
+    fs::write(&file, "accent = \"#123abc\"\n").unwrap();
+    s.redeclare(
+        &rt,
+        vec![
+            color("accent", "#7aa2f7").with_carry(|_| None),
+            flag("compact", false),
+        ],
+    );
+    let d = rt.flush().diagnostics;
+    assert!(d.is_empty(), "{d:?}");
+    assert_eq!(get(&rt, &s, "accent"), V::Color("#123abc".into()));
+}
+
 #[test]
 fn redeclare_keeps_a_live_value_the_broken_file_could_not_take() {
     let tmp = TempDir::new("redeclare-broken");

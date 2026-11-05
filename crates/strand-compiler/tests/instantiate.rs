@@ -6814,3 +6814,255 @@ fn a_stored_entry_whose_enum_key_is_gone_is_dropped_with_a_note() {
     drop(shell);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// (dictionary) A settings file with dictionary fields: per-screen
+/// wallpapers in a `[wallpapers]` section, per-app scales and urgency
+/// timeouts, a `bool` per clock, each shown in key order.
+const SETTINGS_DICTS: &str = "state prefs from \"prefs.toml\" {\n  gap: int = 4\n  wallpapers: [text: path] = []\n  scale: [text: float] = [\"kitty\": 0.9]\n  after: [Urgency: duration] = []\n  shown: [text: bool] = []\n}\nbar B {\n  text prefs.wallpapers.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  text prefs.scale.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  box { on click { prefs.wallpapers[\"eDP-1\"] = \"~/c.jpg\"; prefs.wallpapers.remove(\"HDMI-A-1\") } }\n}\n";
+
+/// The text of every settings notice in `diagnostics`, its file named
+/// from the config directory `config`.
+fn settings_notices(
+    diagnostics: &[strand_core::Diagnostic],
+    config: &std::path::Path,
+) -> Vec<String> {
+    let dir = format!("{}/", config.display());
+    diagnostics
+        .iter()
+        .filter_map(|d| match d {
+            strand_core::Diagnostic::Settings(n) => Some(n.to_string().replace(&dir, "")),
+            _ => None,
+        })
+        .collect()
+}
+
+/// (dictionary) A settings dictionary is a TOML table: a `[section]` or
+/// an inline `{ … }`, its keys read by the key type (an enum's by variant
+/// name). One bad entry, a key that does not read or a value that does
+/// not fit, keeps the field's last good value with a notice naming the
+/// key; the other fields still apply; a deleted table springs back to
+/// its default.
+#[test]
+fn a_settings_dictionary_reads_a_table_and_keeps_its_last_good_value() {
+    let dir = temp_dir("settings-dict-read");
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let file = config.join("prefs.toml");
+    std::fs::write(
+        &file,
+        "gap = 4\n\n[wallpapers]\nHDMI-A-1 = \"~/b.jpg\"\nDP-1 = \"~/a.jpg\" # left\n",
+    )
+    .unwrap();
+    let storage = Storage::in_dirs(dir.join("state"), &config);
+    let mut shell = boot_with(&[("t.strand", SETTINGS_DICTS)], dp1, storage);
+    assert_eq!(
+        shell.scene.texts(),
+        ["DP-1=~/a.jpg,HDMI-A-1=~/b.jpg", "kitty=0.9"]
+    );
+    assert!(settings_notices(&shell.boot_diagnostics, &config).is_empty());
+    let reload = |shell: &mut Shell, text: &str| {
+        std::fs::write(&file, text).unwrap();
+        assert!(shell.inst.reload_settings(&file));
+        settings_notices(&shell.flush().diagnostics, &config)
+    };
+    // Inline tables; an enum's keys by variant name, in declaration order.
+    let notes = reload(
+        &mut shell,
+        "gap = 5\nwallpapers = { \"DP-1\" = \"~/i.jpg\" }\nafter = { critical = \"0s\", low = \"3s\" }\nscale = { \"org.gnome.Nautilus\" = 0.5 }\n",
+    );
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(
+        shell.scene.texts(),
+        ["DP-1=~/i.jpg", "org.gnome.Nautilus=0.5"]
+    );
+    assert_eq!(
+        shell.inst.get("prefs.after.low").unwrap(),
+        Value::Num(3000.0, Num::Ms)
+    );
+    let Value::Dict(after) = shell.inst.get("prefs.after").unwrap() else {
+        panic!("a dictionary")
+    };
+    assert_eq!(after.len(), 2);
+    // One bad entry: the field keeps its last good value, the notice
+    // names the key, and the other fields still apply.
+    let wallpapers = "wallpapers = { \"DP-1\" = \"~/i.jpg\" }\n";
+    let after = "after = { critical = \"0s\", low = \"3s\" }\n";
+    for (text, said) in [
+        (
+            format!("gap = 6\n{after}\n[wallpapers]\nDP-1 = 3\n"),
+            "prefs.toml: wallpapers: \"DP-1\": expected path; keeping its last good value",
+        ),
+        (
+            format!("gap = 6\n{wallpapers}after = {{ urgent = \"1s\" }}\n"),
+            "prefs.toml: after: key \"urgent\": expected one of low, normal, critical; keeping its last good value",
+        ),
+        (
+            format!("gap = 6\n{wallpapers}after = {{ low = \"soon\" }}\n"),
+            "prefs.toml: after: \"low\": expected a duration like \"200ms\" or \"6s\"; keeping its last good value",
+        ),
+    ] {
+        let notes = reload(&mut shell, &text);
+        assert_eq!(notes, [said], "{text}");
+        assert_eq!(
+            shell.inst.get("prefs.gap").unwrap(),
+            Value::int(6),
+            "{text}"
+        );
+        assert_eq!(shell.scene.texts()[0], "DP-1=~/i.jpg", "{text}");
+        assert_eq!(
+            shell.inst.get("prefs.after.low").unwrap(),
+            Value::Num(3000.0, Num::Ms),
+            "{text}"
+        );
+    }
+    // Two keys that read as one `int` are one bad entry too.
+    let ints = "state p from \"ints.toml\" { names: [int: text] = [] }\nbar B { text p.names.entries.map(e => join(\"=\", e.key, e.value)).join(\",\") }\n";
+    std::fs::write(config.join("ints.toml"), "[names]\n3 = \"c\"\n1 = \"a\"\n").unwrap();
+    let ints_storage = Storage::in_dirs(dir.join("state2"), &config);
+    let mut other = boot_with(&[("i.strand", ints)], dp1, ints_storage);
+    assert_eq!(other.scene.texts(), ["1=a,3=c"]);
+    std::fs::write(config.join("ints.toml"), "[names]\n3 = \"c\"\n03 = \"x\"\n").unwrap();
+    assert!(other.inst.reload_settings(&config.join("ints.toml")));
+    assert_eq!(
+        settings_notices(&other.flush().diagnostics, &config),
+        ["ints.toml: names: key \"03\": the same key as \"3\"; keeping its last good value"]
+    );
+    std::fs::write(config.join("ints.toml"), "[names]\nthree = \"c\"\n").unwrap();
+    assert!(other.inst.reload_settings(&config.join("ints.toml")));
+    assert_eq!(
+        settings_notices(&other.flush().diagnostics, &config),
+        ["ints.toml: names: key \"three\": expected int; keeping its last good value"]
+    );
+    assert_eq!(other.scene.texts(), ["1=a,3=c"]);
+    drop(other);
+    // A deleted table springs back to its default.
+    let notes = reload(&mut shell, "gap = 6\n");
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(shell.scene.texts(), ["", "kitty=0.9"]);
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (dictionary) A write to a settings dictionary is saved key by key in
+/// the table the file has: a changed entry keeps its place and comment, a
+/// removed one goes, a new one is added at the table's end, and the rest
+/// of the file is untouched; a dictionary the file does not have yet is
+/// written as its own `[section]`. The written file reads back the same.
+#[test]
+fn a_settings_dictionary_writes_back_key_by_key() {
+    let dir = temp_dir("settings-dict-write");
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let file = config.join("prefs.toml");
+    std::fs::write(
+        &file,
+        "# my prefs\ngap = 4\n\n# per screen\n[wallpapers]\n# the left one\nDP-1   = \"~/a.jpg\"   # left\nHDMI-A-1 = \"~/b.jpg\"\n",
+    )
+    .unwrap();
+    let storage = Storage::in_dirs(dir.join("state"), &config);
+    let mut shell = boot_with(&[("t.strand", SETTINGS_DICTS)], dp1, storage.clone());
+    let saved = |shell: &mut Shell, at: f64| {
+        shell.at(at);
+        assert!(
+            storage
+                .settings
+                .as_ref()
+                .unwrap()
+                .sync(Duration::from_secs(5))
+        );
+        std::fs::read_to_string(&file).unwrap()
+    };
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    assert_eq!(shell.scene.texts()[0], "DP-1=~/a.jpg,eDP-1=~/c.jpg");
+    assert_eq!(
+        saved(&mut shell, 1.0),
+        "# my prefs\ngap = 4\n\n# per screen\n[wallpapers]\n# the left one\nDP-1   = \"~/a.jpg\"   # left\neDP-1 = \"~/c.jpg\"\n"
+    );
+    // `strand set` of one entry: a dotted app id is one key, and a field
+    // the file does not have is written as a section after the others.
+    shell
+        .inst
+        .set_text("prefs.wallpapers.DP-1", "~/new.jpg")
+        .unwrap();
+    shell
+        .inst
+        .set_text("prefs.scale.org.gnome.Nautilus", "0.5")
+        .unwrap();
+    shell.flush();
+    assert_eq!(
+        saved(&mut shell, 2.0),
+        "# my prefs\ngap = 4\n\n# per screen\n[wallpapers]\n# the left one\nDP-1   = \"~/new.jpg\"   # left\neDP-1 = \"~/c.jpg\"\n\n[scale]\nkitty = 0.9\n\"org.gnome.Nautilus\" = 0.5\n"
+    );
+    // An entry is in its field's layer (`strand get --json`).
+    assert_eq!(
+        shell.inst.layer("prefs.wallpapers.DP-1"),
+        Some(strand_core::SettingsLayer::File)
+    );
+    assert_eq!(
+        shell.inst.layer("prefs.scale.nope"),
+        Some(strand_core::SettingsLayer::File)
+    );
+    // What was written reads back as it was.
+    assert!(shell.inst.reload_settings(&file));
+    let u = shell.flush();
+    assert!(settings_notices(&u.diagnostics, &config).is_empty());
+    assert_eq!(
+        shell.scene.texts(),
+        [
+            "DP-1=~/new.jpg,eDP-1=~/c.jpg",
+            "kitty=0.9,org.gnome.Nautilus=0.5"
+        ]
+    );
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (dictionary) `strand get` and `strand set` reach one entry by a key
+/// path segment: the rest of the path after the dictionary is one key,
+/// read by the key type. `get` of an absent entry is null; `set` inserts
+/// or replaces; `toggle` flips a `bool` entry. A whole dictionary is not
+/// set from text, an entry is not removed (`null`), and a key or value
+/// that does not read is refused: each says why.
+#[test]
+fn strand_get_and_set_reach_one_entry_of_a_dictionary() {
+    let src = "enum Level { low, high }\nexport state names: [int: text] = [1: \"web\"]\nexport state by: [Level: int] = []\nstate prefs from \"prefs.toml\" { shown: [text: bool] = [] }\nbar B { text names.entries.map(e => join(\"=\", e.key, e.value)).join(\",\") }\n";
+    let mut shell = boot(&[("dicts.strand", src)], dp1);
+    let inst = &shell.inst;
+    assert_eq!(inst.get("dicts.names.1").unwrap(), Value::text("web"));
+    assert_eq!(inst.get("dicts.names.2").unwrap(), Value::Null);
+    inst.set_text("dicts.names.3", "chat").unwrap();
+    inst.set_text("dicts.names.1", "mail").unwrap();
+    inst.set("dicts.names.2", Value::text("code")).unwrap();
+    inst.set_text("dicts.by.high", "2").unwrap();
+    assert_eq!(inst.get("dicts.by.high").unwrap(), Value::int(2));
+    assert!(inst.toggle("prefs.shown.clock").unwrap());
+    assert!(!inst.toggle("prefs.shown.clock").unwrap());
+    assert_eq!(inst.get("prefs.shown.clock").unwrap(), Value::Bool(false));
+    let err = |path: &str, text: &str| inst.set_text(path, text).unwrap_err().to_string();
+    assert_eq!(
+        err("dicts.names", "x"),
+        "`dicts.names` is a dictionary, `[int: text]`: `strand set` writes one entry, `strand set dicts.names.<key> <value>`"
+    );
+    assert_eq!(
+        err("dicts.names.1", "null"),
+        "`dicts.names.1`: `strand set` does not remove an entry (a dictionary's values are never `null`); a handler removes it with `names.remove(k)`"
+    );
+    assert_eq!(
+        err("prefs.shown.clock", "null"),
+        "`prefs.shown.clock`: `strand set` does not remove an entry (a dictionary's values are never `null`); a handler removes it with `prefs.shown.remove(k)`"
+    );
+    assert_eq!(
+        err("dicts.names.three", "x"),
+        "`three` is not a key of `dicts.names`, a [int: text]: its keys are int"
+    );
+    assert_eq!(
+        err("dicts.by.mid", "1"),
+        "`mid` is not a key of `dicts.by`, a [Level: int]: its keys are Level"
+    );
+    assert_eq!(err("dicts.by.low", "many"), "`many` is not a int");
+    assert!(inst.get("dicts.names.x.y").is_err());
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["1=mail,2=code,3=chat"]);
+}

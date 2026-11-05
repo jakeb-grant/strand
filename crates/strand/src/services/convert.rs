@@ -8,6 +8,7 @@ use strand_compiler::ty::{EnumId, TypeTable};
 use strand_compiler::vm::host::PathSeg;
 use strand_compiler::vm::schema_host::default_value;
 use strand_compiler::vm::{Num, Value};
+use strand_core::Error;
 use strand_scene::Color;
 use strand_services::{Data, Rgba, Step};
 
@@ -114,6 +115,35 @@ pub fn to_data(types: &TypeTable, v: &Value) -> Data {
     }
 }
 
+/// (dictionary) What a service is told when it would be handed a
+/// dictionary: [`Data`] has no map until D-Bus and JSON maps land
+/// (decisions.md, dictionary, phase 2).
+pub const DICT_NOT_YET: &str = "a service cannot take a dictionary yet: pass a list of a \
+     `type` you declare (`type Pair { key: text; value: int }`)";
+
+/// (dictionary) [`to_data`] for what goes to a service (a field write, an
+/// action's argument or item, a method's argument): a value holding a
+/// dictionary anywhere is the typed "not yet" error, never a silent
+/// null. The checker refuses one where it can see it
+/// (`check::dict_service`); this holds where it cannot.
+pub fn to_service_data(types: &TypeTable, v: &Value) -> Result<Data, Error> {
+    if holds_dict(v) {
+        return Err(Error::failed(DICT_NOT_YET));
+    }
+    Ok(to_data(types, v))
+}
+
+fn holds_dict(v: &Value) -> bool {
+    match v {
+        Value::Dict(_) => true,
+        Value::List(items) | Value::Commas(items) | Value::Spaced(items) => {
+            items.iter().any(holds_dict)
+        }
+        Value::Record(r) => r.fields.iter().any(holds_dict),
+        _ => false,
+    }
+}
+
 /// A written path below a service field, as services see it.
 pub fn steps(path: &[PathSeg]) -> Vec<Step> {
     path.iter()
@@ -182,6 +212,30 @@ mod tests {
             fields: vec![],
         };
         assert_eq!(to_value(types, &unknown), Value::Null);
+        // (dictionary) A dictionary, or a value holding one, is the typed
+        // "not yet" error for a service; anything else converts.
+        let dict = Value::Dict(Rc::new(strand_compiler::vm::Dict::from_entries(vec![(
+            Value::int(1),
+            Value::text("a"),
+        )])));
+        for v in [
+            dict.clone(),
+            Value::list(vec![Value::int(1), dict.clone()]),
+            Value::record(
+                types.find_record("Range").unwrap(),
+                vec![Value::int(0), dict],
+            ),
+        ] {
+            assert_eq!(
+                to_service_data(types, &v).unwrap_err().to_string(),
+                DICT_NOT_YET,
+                "{v:?}"
+            );
+        }
+        assert_eq!(
+            to_service_data(types, &Value::int(4)).unwrap(),
+            Data::Int(4)
+        );
         assert_eq!(
             steps(&[PathSeg::Field("sink".into()), PathSeg::Index(2)]),
             [Step::Field("sink".into()), Step::Index(2)]

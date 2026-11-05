@@ -102,7 +102,27 @@ Each error and its fix:
   `on change level { m[k] = level }`.
 - **`check::dict_service`**, "… cannot hold a dictionary yet": a
   service field, an action's parameter or a command's output reads a
-  list of a `type` you declare instead.
+  list of a `type` you declare instead. A plugin's schema that declares
+  a dictionary is skipped with a warning saying the same.
+
+## A settings dictionary keeps its last good value
+
+A dictionary in a [settings file](../how-to/settings-file.md) is a
+TOML table, and one bad entry keeps the whole field as it was, with a
+notice naming the key:
+
+- **`"DP-1": expected path`**: that entry's value does not have the
+  value type. Quote a text or a path; write a duration as `"200ms"`.
+- **`key "three": expected int`**, or **`expected one of low, normal,
+  critical`**: the key does not read as the key type. An `int` key is
+  written in decimal, an enum key by its variant's name.
+- **`key "03": the same key as "3"`**: two keys read as one; remove
+  one.
+
+From a terminal, `strand set` writes one entry, `strand set
+prefs.wallpapers.DP-1 ~/walls/a.jpg`. It refuses a whole dictionary
+("`strand set` writes one entry") and `null` ("`strand set` does not
+remove an entry"): a handler removes one with `m.remove(k)`.
 
 ## A file named like a built-in service stops loading
 

@@ -766,7 +766,14 @@ monitor, the keyboard always).
   (decisions.md flex, 2026-10-24). When
   the running binary does not serve a service a file declares, reads
   give its schema defaults and writes, calls and actions are refused,
-  with a notice naming the file while the program reads it.
+  with a notice naming the file while the program reads it. A schema
+  cannot declare a dictionary `[K: V]` yet (a field, an action's
+  parameter, a result): such a file does not apply, its warning saying
+  to use a list of a `record`. A value holding a dictionary that would
+  reach a service any other way (a write, an action's argument) is the
+  action's error "a service cannot take a dictionary yet", never a
+  silent null (decisions.md dictionary: D-Bus and JSON maps are phase
+  2).
 
 ### 5.7 Actions
 
@@ -2474,14 +2481,35 @@ people can edit by hand.
   exist yet, and its missing directories. A file that does not exist
   yet gives every field its default, and reading it creates nothing.
 - Edits to the file apply live, as per-field writes.
+- **A dictionary field** (`wallpapers: [text: path] = []`) is a TOML
+  table: a `[wallpapers]` section or an inline `{ "DP-1" = "…" }`. Each
+  key is read by the key type: an `int` in decimal, an enum's variant by
+  name, `true` or `false`, a `text` or `path` as written (a dotted app id
+  quoted, `"org.gnome.Nautilus" = 0.5`). One bad entry (a key that does
+  not read, two keys that read as one such as `3` and `03`, or a value
+  that does not fit) keeps the whole field's last good value, with a
+  diagnostic naming the key: `prefs.toml: wallpapers: "DP-1": expected
+  path; keeping its last good value`. A deleted table springs back to
+  its default, as a deleted key does.
 - **Writes** (`<->`, handler assignments, `strand set prefs.compact
   true`) are saved after 250 ms of quiet and keep the file's comments,
-  spacing and order. They follow
+  spacing and order. A dictionary is written key by key into the table
+  the file has, a section or an inline one: a changed entry keeps its
+  place and comment, a removed one is deleted, a new one goes at the
+  table's end; a field the file does not have yet is written as its own
+  `[name]` section, after the file's other keys. A record written as an
+  inline table keeps the spacing of each field the same way. They follow
   symbolic links and replace the file through a temporary file and a
   rename. A read-only target (such as a file in `/nix/store`) gets the
   write in an overlay in the state directory instead, with a
   notice.
 - Who wins between the overlay, the file and the default: section 8.8.
+- A live reload keeps each field whose type is the same, carrying its
+  values into the new program by name (section 10.1): an enum field or
+  key follows its variant, and a dictionary's entries whose key variant
+  is gone are dropped with one overlay line, as a kept `state`'s are.
+  The file may still name the old variant; its next read says so and
+  keeps the field's last good value.
 
 ## 12. Errors and faults
 
@@ -2533,7 +2561,19 @@ people can edit by hand.
     with its unit, `#rrggbb`, `null` for an optional. For a service
     field, a signed number or percentage (`+5%`) is a step from the
     current value, never below 0;
-  - `strand toggle path` flips an exported `bool` state;
+  - (dictionary) after a dictionary, the rest of the path is one key,
+    read by the key type, so a dotted app id is one key: `strand get
+    island.last_win.3` prints that entry, or `null` when it is absent,
+    and `strand set prefs.scale.org.gnome.Nautilus 0.5` writes one entry,
+    inserting or replacing it, its value read by the value type. `strand
+    get` of a whole dictionary prints an object keyed by each key's text
+    (`{"3": "0x55"}`) for `--json`, and its entries in key order as text.
+    A whole dictionary is not set from text, and an entry is not removed
+    (`null` is never a dictionary's value): both are refused, naming what
+    does it (`strand set path.<key> value`, a handler's `m.remove(k)`). A
+    key that does not read as the key type is refused, naming it;
+  - `strand toggle path` flips an exported `bool` state, settings field
+    or `bool` dictionary entry (an absent one becomes `true`);
   - `strand call target args…` calls a service-level action; the
     actions of the builtin services that take passwords (`auth`,
     `polkit`, `greetd`) are refused, since a password is typed into the

@@ -504,7 +504,10 @@ name them.
   hears "`reset` needs a `path`". A command a transport does not
   serve is answered as unknown (`not_served`).
 - `get` reads what `set` writes (exported values, settings fields, token
-  overlays). `call` reaches service-level actions only. `toggle` is bool
+  overlays, and (dictionary) one dictionary entry, the rest of the path
+  after a dictionary one key: `Instance::get`/`set`/`set_text`/`toggle`
+  share `Instance::path_to`; a dictionary is an object in `get`'s
+  answer). `call` reaches service-level actions only. `toggle` is bool
   only. Token paths are spelled `$accent`.
 - `MAX_LINE` (64 KiB) bounds requests; an answer is bounded by the
   connection's 1 MiB queue.
@@ -1594,11 +1597,15 @@ by `strand-compiler`, not here. See `crates/strand-core/src/lib.rs`.
   path, fields)` (`strand_core::settings`), one `FieldSpec` per field
   over `toml_edit::Item` (re-exported). The `Settings<V>` handle gives
   each field a `Signal` whose writes are saved after 250 ms of quiet,
-  keeping comments and order; `reload(rt)` when the file changes (a
+  keeping comments and order (a table written over a table, a
+  dictionary's section or an inline table, is merged key by key); `reload(rt)` when the file changes (a
   syntax error keeps the last good values; unsaved writes never undone);
   `set_overlay`/`clear_overlay` (overlay over file over default; a
   read-only target's writes go to the overlay); a last-good snapshot
-  per file; `redeclare(rt, fields)` for a changed declaration. Reports
+  per file; `redeclare(rt, fields)` for a changed declaration, a field
+  keeping its type carried into the new program through
+  `FieldSpec::with_carry` (the compiler's `value::translate`), each
+  layer and the cell, one that no longer fits read again. Reports
   are `Diagnostic::Settings(SettingsNotice)`. Watcher hand-off: see
   `strand-watch`.
 

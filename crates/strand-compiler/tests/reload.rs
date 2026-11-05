@@ -2105,6 +2105,39 @@ fn an_enum_key_variant_removed_drops_its_entries_with_a_note() {
     }
 }
 
+/// (dictionary) A settings dictionary with no settings store (its fields
+/// plain cells, as in `strand check`'s run) keeps its entries through a
+/// reload, dropping those whose enum key the reload removed with the same
+/// line a kept `state` gives.
+#[test]
+fn a_settings_dictionary_without_a_store_drops_entries_with_a_note() {
+    let src = |variants: &str| {
+        let writes = variants
+            .split(", ")
+            .map(|v| format!("prefs.m[{v}] = {}", v.len()))
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(
+            "enum U {{ {variants} }}\nstate prefs from \"p.toml\" {{ m: [U: int] = [] }}\nbar Top {{\n  text prefs.m.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  box {{ on click {{ {writes} }} }}\n}}\n"
+        )
+    };
+    let mut shell = boot(&[("t.strand", &src("low, mid, high"))]);
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    assert!(shell.scene.find_text("low=3,mid=3,high=4").is_some());
+    let (report, _) = shell.reload(&[("t.strand", &src("high, low"))]);
+    assert_eq!(
+        report.notices,
+        ["t.prefs.m: dropped 1 entry (key no longer in U)"]
+    );
+    assert!(
+        shell.scene.find_text("high=4,low=3").is_some(),
+        "{}",
+        shell.scene.render()
+    );
+}
+
 /// (dictionary) An entry a reload changes (an adopted default) is a
 /// reload write: `on change m[k]` takes it as its baseline and does not
 /// fire; a handler's write after it does.
@@ -2133,4 +2166,60 @@ fn a_reload_write_is_the_baseline_for_on_change_of_an_entry() {
         "{}",
         shell.scene.render()
     );
+}
+
+/// (dictionary) A settings file's fields keep their values through a
+/// reload that changes a config enum: each value the handle holds (the
+/// file's layer, the cell) is carried into the new program by name, so an
+/// enum field and an enum key follow their variant to its new place, and
+/// an entry whose variant is gone is dropped with the reload's note. The
+/// file still names the old variant, so its next read says so and keeps
+/// the field's last good value.
+#[test]
+fn a_settings_file_keeps_its_enums_by_name_through_a_reload() {
+    let dir = std::env::temp_dir().join(format!(
+        "strand-reload-settings-enum-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("config")).unwrap();
+    let file = dir.join("config/p.toml");
+    std::fs::write(&file, "e = \"high\"\n[m]\nlow = 3\nmid = 3\nhigh = 4\n").unwrap();
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let src = |variants: &str| {
+        format!(
+            "enum U {{ {variants} }}\nstate prefs from \"p.toml\" {{ m: [U: int] = []; e: U = low }}\nbar Top {{\n  text prefs.m.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  text join(\"=\", prefs.e)\n}}\n"
+        )
+    };
+    let mut shell = boot_with(&[("t.strand", &src("low, mid, high"))], storage, &["DP-1"]);
+    assert_eq!(shell.scene.texts(), ["low=3,mid=3,high=4", "high"]);
+    let (report, _) = shell.reload(&[("t.strand", &src("high, low"))]);
+    assert_eq!(
+        report.notices,
+        ["t.prefs.m: dropped 1 entry (key no longer in U)"]
+    );
+    assert_eq!(shell.scene.texts(), ["high=4,low=3", "high"]);
+    let u = shell.at(1.0);
+    assert!(u.diagnostics.is_empty(), "{:?}", u.diagnostics);
+    // The file is read again (the user saved it): `mid` is no `U` now.
+    assert!(shell.inst.reload_settings(&file));
+    let u = shell.flush();
+    let said: Vec<String> = u
+        .diagnostics
+        .iter()
+        .filter_map(|d| match d {
+            strand_core::Diagnostic::Settings(n) => Some(n.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].ends_with(
+            "p.toml: m: key \"mid\": expected one of high, low; keeping its last good value"
+        ),
+        "{said:?}"
+    );
+    assert_eq!(shell.scene.texts(), ["high=4,low=3", "high"]);
+    drop(shell);
+    let _ = std::fs::remove_dir_all(&dir);
 }

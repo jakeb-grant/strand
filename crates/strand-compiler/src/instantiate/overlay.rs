@@ -840,7 +840,17 @@ impl Instance {
     /// overlay, file or default: `strand get --json`); `None` for a path
     /// that is not a mounted settings field.
     pub fn layer(&self, path: &str) -> Option<SettingsLayer> {
-        let (d, field) = self.settings_field(path)?;
+        // (dictionary) An entry (`prefs.wallpapers.DP-1`) is in its
+        // field's layer.
+        let (d, field) = self.settings_field(path).or_else(|| {
+            let at = self.path_to(path).ok()?;
+            match (&self.ctx.vm.prog.def(at.def).kind, at.steps.first()) {
+                (DefKind::Settings, Some(super::PathStep::Field(f))) if at.dict.is_some() => {
+                    Some((at.def, f.clone()))
+                }
+                _ => None,
+            }
+        })?;
         let slot = self.ctx.vm.root.settings(d)?;
         slot.handle.as_ref()?.layer(&field)
     }
@@ -866,25 +876,12 @@ impl Instance {
     }
 
     /// `strand toggle <path>`: flip an exported boolean `state` or
-    /// settings field (a null `bool?` becomes `true`). Its new value; any
-    /// other type is refused, naming it.
+    /// settings field (a null `bool?` becomes `true`), or (dictionary) a
+    /// `bool` entry by its key (an absent one becomes `true`). Its new
+    /// value; any other type is refused, naming it.
     pub fn toggle(&self, path: &str) -> Result<bool, Error> {
-        let (d, rest) = self.export(path)?;
         let prog = self.ctx.vm.prog.clone();
-        let mut ty = prog.def(d).ty.clone();
-        for f in &rest {
-            ty = match ty.non_null() {
-                Ty::Record(r) => prog
-                    .types
-                    .record(*r)
-                    .fields
-                    .iter()
-                    .find(|x| x.name == *f)
-                    .map(|x| x.ty.clone()),
-                _ => None,
-            }
-            .ok_or_else(|| Error::failed(format!("`{path}` has no field `{f}`")))?;
-        }
+        let ty = self.path_to(path)?.ty;
         if !matches!(ty.non_null(), Ty::Prim(Prim::Bool)) {
             return Err(Error::failed(format!(
                 "`{path}` is a {}, not a bool: `toggle` flips booleans only",

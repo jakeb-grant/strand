@@ -171,6 +171,9 @@ These talk to the running shell:
 - `strand toggle <path>` flips an exported `bool` state.
 - `strand get <path>` prints an exported value, a settings field or a
   token.
+- After a [dictionary](../concepts/language.md#dictionaries), the rest
+  of the path is one key: `strand get island.last_win.3` prints one
+  entry, and `strand set prefs.scale.org.gnome.Nautilus 0.5` writes one.
 
 A path is `file.name` for a value a file exports (`launcher.open` is
 the `export state open` of `launcher.strand`), `service.field` for a

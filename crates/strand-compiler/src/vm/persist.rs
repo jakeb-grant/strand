@@ -44,12 +44,58 @@ pub fn decode_bytes_dropping(types: &TypeTable, ty: &Ty, bytes: &[u8]) -> Option
 }
 
 /// A settings field's TOML item as a `ty`, or why it does not fit.
+/// (dictionary) A dictionary is a table: a `[name]` section or an inline
+/// `{ … }`, each key read as `K` (one bad entry fails the field, the
+/// message naming its key).
 pub fn decode_item(types: &TypeTable, ty: &Ty, item: &toml_edit::Item) -> Result<Value, String> {
+    if let (Ty::Dict(k, v), Some(t)) = (ty.non_null(), item.as_table()) {
+        return decode_entries(
+            types,
+            k,
+            t.iter().map(|(key, i)| (key, decode_item(types, v, i))),
+        );
+    }
     match item.as_value() {
         Some(v) => decode_toml(types, ty, v),
         None if matches!(ty, Ty::Optional(_)) => Ok(Value::Null),
         None => Err(format!("expected {}", types.show(ty))),
     }
+}
+
+/// (dictionary) A TOML table's entries as a dictionary keyed by `k`:
+/// each key's text read as a `K` (a decimal `int`, `true` or `false`, an
+/// enum's variant by name, a `text` or `path` as it is). A key that does
+/// not read, a value that does not fit, or two keys that read as one
+/// (`3` and `03`) fail the whole value, naming the key.
+fn decode_entries<'a>(
+    types: &TypeTable,
+    k: &Ty,
+    entries: impl Iterator<Item = (&'a str, Result<Value, String>)>,
+) -> Result<Value, String> {
+    let mut out: Vec<(Value, Value)> = Vec::new();
+    let mut texts: Vec<&str> = Vec::new();
+    for (text, value) in entries {
+        let key = match key_text(types, k, text, &mut Dropped::default()) {
+            Some(Some(key)) => key,
+            _ => {
+                let want = match k {
+                    Ty::Enum(e) => format!("one of {}", types.enum_(*e).variants.join(", ")),
+                    k => types.show(k).to_string(),
+                };
+                return Err(format!("key {text:?}: expected {want}"));
+            }
+        };
+        let value = value.map_err(|m| format!("{text:?}: {m}"))?;
+        if let Some(i) = out
+            .iter()
+            .position(|(o, _)| super::value::key_cmp(o, &key).is_eq())
+        {
+            return Err(format!("key {text:?}: the same key as {:?}", texts[i]));
+        }
+        out.push((key, value));
+        texts.push(text);
+    }
+    Ok(Value::Dict(std::rc::Rc::new(Dict::from_entries(out))))
 }
 
 fn decode_toml(types: &TypeTable, ty: &Ty, v: &toml_edit::Value) -> Result<Value, String> {
@@ -96,6 +142,12 @@ fn decode_toml(types: &TypeTable, ty: &Ty, v: &toml_edit::Value) -> Result<Value
             }
             Value::record(*r, fields)
         }
+        // (dictionary) An inline table, `{ "DP-1" = "…" }`.
+        (Ty::Dict(k, t), T::InlineTable(table)) => decode_entries(
+            types,
+            k,
+            table.iter().map(|(key, x)| (key, decode_toml(types, t, x))),
+        )?,
         _ => return Err(want()),
     })
 }
@@ -125,11 +177,39 @@ fn duration_text(s: &str) -> Option<Value> {
 }
 
 /// A settings field's value as the TOML item written back.
+/// (dictionary) A dictionary is a `[name]` section of its entries in key
+/// order (strand-core merges it into the table the file has, key by
+/// key); one inside a list or a record is an inline table.
 pub fn encode_item(types: &TypeTable, ty: &Ty, v: &Value) -> toml_edit::Item {
+    if let (Ty::Dict(k, t), Value::Dict(d)) = (ty.non_null(), v) {
+        let mut table = toml_edit::Table::new();
+        for (key, x) in d.entries() {
+            let (Some(key), Some(x)) = (key_string(types, k, key), encode_toml(types, t, x)) else {
+                return toml_edit::Item::None;
+            };
+            table.insert(&key, toml_edit::Item::Value(x));
+        }
+        return toml_edit::Item::Table(table);
+    }
     match encode_toml(types, ty, v) {
         Some(v) => toml_edit::Item::Value(v),
         None => toml_edit::Item::None,
     }
+}
+
+/// (dictionary) A dictionary key as a TOML key's text, which
+/// [`key_text`] reads back: an `int` in decimal, a `bool` as `true` or
+/// `false`, an enum by variant name, a `text` or `path` as it is.
+fn key_string(types: &TypeTable, ty: &Ty, k: &Value) -> Option<String> {
+    Some(match k {
+        Value::Num(n, _) if matches!(ty, Ty::Prim(Prim::Int)) && n.fract() == 0.0 => {
+            format!("{}", *n as i64)
+        }
+        Value::Bool(b) => b.to_string(),
+        Value::Text(t) => t.to_string(),
+        Value::Enum(e, i) => types.enum_(*e).variants.get(*i as usize)?.clone(),
+        _ => return None,
+    })
 }
 
 fn encode_toml(types: &TypeTable, ty: &Ty, v: &Value) -> Option<toml_edit::Value> {
@@ -165,6 +245,17 @@ fn encode_toml(types: &TypeTable, ty: &Ty, v: &Value) -> Option<toml_edit::Value
                 if let Some(v) = encode_toml(types, &f.ty, fv) {
                     t.insert(&f.name, v);
                 }
+            }
+            t.into()
+        }
+        // (dictionary) Inside a list or a record: an inline table.
+        Value::Dict(d) => {
+            let Ty::Dict(k, vt) = ty else {
+                return None;
+            };
+            let mut t = toml_edit::InlineTable::new();
+            for (key, x) in d.entries() {
+                t.insert(&key_string(types, k, key)?, encode_toml(types, vt, x)?);
             }
             t.into()
         }
@@ -486,6 +577,97 @@ mod tests {
         assert_eq!(rec.fields[at], Value::list(Vec::new()));
         let bad = serde_json::json!({"id": "firefox", "name": 3});
         assert_eq!(decode(&t, &app, &bad), None);
+    }
+
+    /// (dictionary) A settings dictionary is written as a section of its
+    /// entries in key order (an `int` key in decimal, an enum key its
+    /// variant's name, a dotted text key quoted), one inside a list as an
+    /// inline table, and reads back from either form; a key or value that
+    /// does not read fails the whole value, naming the key.
+    #[test]
+    fn settings_dictionaries_are_tables() {
+        let t = types();
+        let urgency =
+            crate::ty::EnumId(t.enums.iter().position(|e| e.name == "Urgency").unwrap() as u32);
+        let dict = |entries: Vec<(Value, Value)>| {
+            Value::Dict(std::rc::Rc::new(Dict::from_entries(entries)))
+        };
+        let doc_of = |name: &str, item: toml_edit::Item| {
+            let mut doc = toml_edit::DocumentMut::new();
+            doc.insert(name, item);
+            doc.to_string()
+        };
+        let item = |s: &str, name: &str| {
+            let doc: toml_edit::DocumentMut = s.parse().unwrap();
+            doc[name].clone()
+        };
+        let ty = Ty::dict(Ty::TEXT, Ty::FLOAT);
+        let v = dict(vec![
+            (Value::text("org.gnome.Nautilus"), Value::float(0.5)),
+            (Value::text("kitty"), Value::float(0.9)),
+        ]);
+        let written = doc_of("scale", encode_item(&t, &ty, &v));
+        assert_eq!(
+            written,
+            "[scale]\nkitty = 0.9\n\"org.gnome.Nautilus\" = 0.5\n"
+        );
+        assert_eq!(
+            decode_item(&t, &ty, &item(&written, "scale")),
+            Ok(v.clone())
+        );
+        assert_eq!(
+            decode_item(
+                &t,
+                &ty,
+                &item(
+                    "scale = { kitty = 0.9, \"org.gnome.Nautilus\" = 0.5 }",
+                    "scale"
+                )
+            ),
+            Ok(v.clone())
+        );
+        let by = Ty::dict(Ty::Enum(urgency), Ty::INT);
+        let v = dict(vec![
+            (Value::Enum(urgency, 2), Value::int(0)),
+            (Value::Enum(urgency, 0), Value::int(3)),
+        ]);
+        let written = doc_of("after", encode_item(&t, &by, &v));
+        assert_eq!(written, "[after]\nlow = 3\ncritical = 0\n");
+        assert_eq!(decode_item(&t, &by, &item(&written, "after")), Ok(v));
+        let ints = Ty::dict(Ty::INT, Ty::TEXT);
+        let v = dict(vec![(Value::float(3.0), Value::text("c"))]);
+        let written = doc_of("names", encode_item(&t, &ints, &v));
+        assert_eq!(written, "[names]\n3 = \"c\"\n");
+        // Nested: a list of dictionaries is inline tables.
+        let list = Ty::list(ints.clone());
+        let v = Value::list(vec![v]);
+        let written = doc_of("all", encode_item(&t, &list, &v));
+        assert_eq!(written, "all = [{ 3 = \"c\" }]\n");
+        assert_eq!(decode_item(&t, &list, &item(&written, "all")), Ok(v));
+        // An empty one is an empty section, not the field left out.
+        let empty = dict(Vec::new());
+        let written = doc_of("names", encode_item(&t, &ints, &empty));
+        assert_eq!(written, "[names]\n");
+        assert_eq!(decode_item(&t, &ints, &item(&written, "names")), Ok(empty));
+        for (bad, said) in [
+            ("names = { three = \"c\" }", "key \"three\": expected int"),
+            ("names = { 3 = 4 }", "\"3\": expected text"),
+            (
+                "[names]\n3 = \"c\"\n\"+3\" = \"d\"",
+                "key \"+3\": the same key as \"3\"",
+            ),
+            ("names = \"3\"", "expected [int: text]"),
+        ] {
+            assert_eq!(
+                decode_item(&t, &ints, &item(bad, "names")),
+                Err(said.to_string()),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            decode_item(&t, &by, &item("after = { urgent = 1 }", "after")),
+            Err("key \"urgent\": expected one of low, normal, critical".to_string())
+        );
     }
 
     #[test]

@@ -41,7 +41,7 @@ use strand_services::custom::{
 };
 use strand_services::{Client, Data, ServiceDiagnostic, Services, Step, ToData};
 
-use super::convert::{to_data, to_value};
+use super::convert::{to_service_data, to_value};
 
 /// One declared service.
 struct Entry {
@@ -743,10 +743,10 @@ impl ServiceHost for CustomHost {
             let steps: Vec<Step> = super::convert::steps(&path[1..]);
             current
                 .value
-                .with_path(&steps, to_data(&table, &value))
+                .with_path(&steps, to_service_data(&table, &value)?)
                 .map_err(|e| Error::failed(e.to_string()))?
         } else {
-            to_data(&table, &value)
+            to_service_data(&table, &value)?
         };
         client.dynamic().write_item(
             rt,
@@ -783,7 +783,10 @@ impl ServiceHost for CustomHost {
                 .ok_or_else(|| Error::failed(format!("`{service}` has no action `{name}`")))?;
             (e.client.clone(), index, e.typing.borrow().table.clone())
         };
-        let args = args.iter().map(|v| to_data(&table, v)).collect();
+        let args = args
+            .iter()
+            .map(|v| to_service_data(&table, v))
+            .collect::<Result<_, _>>()?;
         client.act_with(rt, CustomAction { index, args }, ctx, false)
     }
 

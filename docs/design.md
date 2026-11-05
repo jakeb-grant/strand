@@ -705,6 +705,7 @@ Crate: raw inotify through [`rustix`](https://docs.rs/rustix/latest/rustix/fs/in
 - Each field is checked on its own. A bad value keeps that field's last good value with a diagnostic; other fields still apply.
 - A TOML syntax error keeps every last good value. A deleted key springs back to its default.
 - UI writes and `strand set prefs.compact true` go through `toml_edit`, which keeps comments, spacing and order.
+- A dictionary field (`wallpapers: [text: path] = []`) is a TOML table, read key by key and written back key by key into the table the file has; `strand set prefs.wallpapers.DP-1 ~/walls/a.jpg` writes one entry.
 - Writes follow symlinks and replace via temp file plus rename. Read-only targets such as `/nix/store` go to an overlay in `$XDG_STATE_HOME`, with a notice.
 
 ### Errors
