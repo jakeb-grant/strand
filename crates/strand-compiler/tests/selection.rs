@@ -1198,24 +1198,85 @@ fn a_start_after_the_rows_are_replaced_is_followed_again() {
         let row3 = sh.r.tree().get(list(&sh)).unwrap().children[3];
         assert_eq!(sh.router.selected(list(&sh)), Some(row3), "nav {nav}");
         assert_eq!(activated(&mut sh), 3.0, "nav {nav}");
+        // The empty page with no start forgets the move too: its start
+        // coming after its rows is followed.
+        let mut sh = started(&[100, 101, 102, 103, 104, 105], "null", nav);
+        for _ in 0..3 {
+            press(&mut sh, "Down");
+        }
+        sh.set("items", ints([]));
+        sh.set("items", ints(0..6));
+        sh.set("at", Value::int(3));
+        assert_eq!(index(&sh), Some(3), "nav {nav}: a later start");
+        assert_eq!(activated(&mut sh), 3.0, "nav {nav}");
+    }
+}
+
+/// (list-selection) The user moved in a virtualised list and scrolled the
+/// selection out of its window, so it is away, not on a row; the rows
+/// replaced whole still start the list again: on the next page's start,
+/// arriving with its rows a change later, else the first row with `nav:`
+/// and none without.
+#[test]
+fn rows_replaced_whole_start_an_away_selection_again() {
+    let away = |nav: bool, at: &str| {
+        let mut sh = started(&(0..2000i64).collect::<Vec<_>>(), at, nav);
+        tap(&mut sh, "s", true);
+        sh.settle();
+        assert_eq!(index(&sh), Some(1500), "nav {nav} at {at}");
+        tap(&mut sh, "w", true);
+        sh.settle();
+        assert_eq!(sh.router.selected(list(&sh)), None, "nav {nav}: away");
+        assert_eq!(index(&sh), Some(1500), "nav {nav} at {at}");
+        sh
+    };
+    for nav in [true, false] {
+        let mut sh = away(nav, "null");
+        tap(&mut sh, "e", true);
+        assert_eq!(sh.router.selected(list(&sh)), None, "nav {nav}");
+        tap(&mut sh, "t", true);
+        assert_eq!(index(&sh), Some(3), "nav {nav}");
+        let row3 = sh.r.tree().get(list(&sh)).unwrap().children[3];
+        assert_eq!(sh.router.selected(list(&sh)), Some(row3), "nav {nav}");
+        assert_eq!(activated(&mut sh), 3.0, "nav {nav}");
+        for (at, then) in [("null", nav.then_some(0)), ("2", Some(2))] {
+            let mut sh = away(nav, at);
+            sh.set("items", ints(5000..5006));
+            sh.settle();
+            assert_eq!(index(&sh), then, "nav {nav} at {at}");
+        }
     }
 }
 
 /// (list-selection) A `nav:` list starts on its start again when its
-/// surface opens again, after the user had moved, and follows it after.
+/// surface opens again, after the user had moved, and follows it after;
+/// so does one whose selection a scroll had left out of its window.
 #[test]
 fn a_surface_opening_again_starts_on_the_start() {
+    let reopen = |sh: &mut Shell| {
+        let surface = sh.keyboard.unwrap();
+        sh.send(InputEvent::KeyboardLeave { surface });
+        sh.run(2);
+        sh.keyboard_to("L");
+        sh.settle();
+    };
     let mut sh = started(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "3", true);
     press(&mut sh, "Down");
     assert_eq!(index(&sh), Some(4));
-    let surface = sh.keyboard.unwrap();
-    sh.send(InputEvent::KeyboardLeave { surface });
-    sh.run(2);
-    sh.keyboard_to("L");
-    sh.settle();
+    reopen(&mut sh);
     assert_eq!(index(&sh), Some(3));
     sh.set("at", Value::int(5));
     assert_eq!(index(&sh), Some(5), "followed again");
+    let mut sh = started(&(0..2000i64).collect::<Vec<_>>(), "3", true);
+    tap(&mut sh, "s", true);
+    sh.settle();
+    tap(&mut sh, "w", true);
+    sh.settle();
+    assert_eq!(sh.router.selected(list(&sh)), None, "away");
+    reopen(&mut sh);
+    sh.settle();
+    assert_eq!(index(&sh), Some(3), "a windowed list");
+    assert_eq!(activated(&mut sh), 3.0);
 }
 
 /// (list-selection) A `nav:` list whose rows change under the same text,

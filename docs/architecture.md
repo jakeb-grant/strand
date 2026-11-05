@@ -1366,7 +1366,10 @@ is being saved, so the idle-wakeup windows hold.
     a `Remove` without `window` takes out leaves the selection at its
     global index, landed as a row on its way, while rows the same diff
     did not `Create` stay in the list; with none left, the list starts
-    again.
+    again, and forgets the user's move. A list whose selection is
+    `away` starts again the same way when a diff removes rows of it and
+    none from before stays: the router notes the rows of such lists at
+    the end of each routing, since a `Remove` names only its row.
   - Submenus: Right opens the first closed two-way `popup` under the
     selected row (else the hovered chain); Left in a nested popup closes
     it as Escape does (decisions.md m4-lists-w1).

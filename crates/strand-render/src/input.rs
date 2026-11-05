@@ -448,7 +448,9 @@ struct Away {
 
 /// (list-selection) A selected row logic removed (not one the list's
 /// window unmounted): the selection stays at its place if rows that were
-/// there before stay too.
+/// there before stay too. Or a row logic removed from a list whose
+/// selection is away (`away`): it stays on its way if rows from before
+/// stay, and starts again if none does.
 #[derive(Debug)]
 struct LeftRow {
     list: NodeId,
@@ -456,6 +458,8 @@ struct LeftRow {
     index: u32,
     /// The rows created in the list by the same diff.
     arrived: HashSet<NodeId>,
+    /// The list's selection was away, not on the row removed.
+    away: bool,
 }
 
 /// An `input`'s writes logic has not answered yet.
@@ -531,6 +535,10 @@ pub struct Router {
     /// (list-selection) Selected rows logic's diff removed, until the
     /// selection is settled on what stays.
     left: Vec<LeftRow>,
+    /// (list-selection) The rows of each list in `away` as routing last
+    /// left them, by row: a diff removing one is seen as removed from
+    /// that list (the diff names only the row).
+    away_rows: HashMap<NodeId, NodeId>,
     /// (list-selection) Lists whose `selected_index:` logic's diff set
     /// (as they mount too), followed when routing settles.
     starts: Vec<NodeId>,
@@ -831,6 +839,17 @@ impl Router {
                             list,
                             index,
                             arrived: HashSet::new(),
+                            away: false,
+                        });
+                    } else if let Some(&list) = self.away_rows.get(id)
+                        && let Some(a) = self.away.get(&list)
+                        && !self.left[before..].iter().any(|l| l.list == list)
+                    {
+                        self.left.push(LeftRow {
+                            list,
+                            index: a.index,
+                            arrived: HashSet::new(),
+                            away: true,
                         });
                     }
                 }
@@ -1664,7 +1683,13 @@ impl Router {
     /// before stay in it. When none does (every row replaced: another
     /// page, or no rows left) the list starts its selection again: on its
     /// `selected_index:` if it has one, else as the first-row rule of a
-    /// `nav:` list does, a list without one keeping none.
+    /// `nav:` list does, a list without one keeping none. Starting again
+    /// forgets the user's move whether or not there is a start, so a
+    /// start that comes later is followed. The same holds for a list
+    /// whose selection was away (a scroll had unmounted its row, or a key
+    /// moved it past the mounted rows) when logic removes its rows: it
+    /// stays on its way while rows from before stay, and starts again
+    /// when none does.
     ///
     /// The kept place is not scrolled to (a row leaving moves no view),
     /// except on a focused input's `nav:` list the user has not moved:
@@ -1677,13 +1702,16 @@ impl Router {
                 return;
             };
             if self.selected.contains_key(&l.list)
-                || self.away.contains_key(&l.list)
+                || self.away.contains_key(&l.list) != l.away
                 || !tree.contains_live(l.list)
             {
                 continue;
             }
             let w = window_rows(tree, l.list);
             if w.rows.iter().any(|r| !l.arrived.contains(r)) {
+                if l.away {
+                    continue;
+                }
                 let first_row_rule = !self.moved.contains(&l.list)
                     && self.focus.values().any(|f| {
                         tree.get(*f).is_some_and(|n| {
@@ -1700,8 +1728,13 @@ impl Router {
                         exact: false,
                     },
                 );
-            } else if let Some(n) = tree.get(l.list).and_then(start_of) {
-                self.start_at(scene, l.list, &w, n);
+            } else {
+                let start = tree.get(l.list).and_then(start_of);
+                self.away.remove(&l.list);
+                self.moved.remove(&l.list);
+                if let Some(n) = start {
+                    self.start_at(scene, l.list, &w, n);
+                }
             }
         }
     }
@@ -1772,6 +1805,25 @@ impl Router {
                 exact: true,
             },
         );
+    }
+
+    /// (list-selection) Remembers the rows of each list whose selection
+    /// is away, so [`Router::observe`] knows the list of a row logic
+    /// removes. Nothing is kept while no selection is away.
+    fn note_away_rows(&mut self, tree: Option<&SceneTree>) {
+        self.away_rows.clear();
+        let Some(tree) = tree else {
+            return;
+        };
+        for &list in self.away.keys() {
+            if let Some(n) = tree.get(list) {
+                for &r in &n.children {
+                    if tree.contains_live(r) {
+                        self.away_rows.insert(r, list);
+                    }
+                }
+            }
+        }
     }
 
     /// Remembers each selected row's global index (a window that
@@ -1901,6 +1953,7 @@ impl Router {
     fn flush(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
         self.hover_popups(scene.tree(), self.now());
         self.tell_indexes();
+        self.note_away_rows(scene.tree());
         // (window) A window root's `focused` is the compositor's focus
         // (`activated`), which the host tells from its configure: the
         // keyboard's focus moving to a button in it, or to a popup of
@@ -2228,6 +2281,7 @@ impl Router {
                 });
                 if let Some(list) = nav {
                     self.moved.remove(&list);
+                    self.away.remove(&list);
                     self.select(scene, list, None);
                 }
             }

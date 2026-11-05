@@ -1509,9 +1509,12 @@ monitor, the keyboard always).
   row that takes it (`selected_index` unchanged), or the new last row when
   it was the last. When no row stays (every row replaced, a page
   of the list changed, or none left) the list starts again: on its start,
-  else as above. A list started again on its start, as one opening again or
-  given a new text, follows its start again, whatever the user moved on the
-  rows before. The place a selected row leaves is not scrolled to, except
+  else as above. So does a list whose selection was on its way to a row not
+  mounted (moved past a virtualised list's window, or left out of it by a
+  scroll) when no row from before stays; while one does, it stays on its
+  way. A list started again, as one opening again or given a new text,
+  follows its start again, whatever the user moved on the rows before, and
+  with a null start follows one that comes later. The place a selected row leaves is not scrolled to, except
   that a `nav:` list the user has not moved shows its first row as it
   always does. (decisions.md list-selection)
 - **`wrap: true` on a `list`** takes the arrows and `next()` and `prev()`
