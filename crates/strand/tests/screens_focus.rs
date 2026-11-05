@@ -8,7 +8,9 @@
 //! focused monitor, sized from that monitor, and move with the focus,
 //! while a panel with no `screens:` stays where sway put it.
 //! Without sway's IPC (no compositor adapter) the first monitor is the
-//! focused one, wherever sway's focus is.
+//! focused one, wherever sway's focus is. (screen-position) Each
+//! `Screen` has its place in the layout, and `screens.all` follows the
+//! layout as sway moves the monitors.
 //!
 //! Skipped, loudly, without sway, swaymsg or grim (CI sets
 //! `STRAND_REQUIRE_SWAY`).
@@ -423,6 +425,77 @@ fn the_compositor_runs_for_the_focus_only_while_it_is_read() {
             Ok(())
         }
     });
+}
+
+/// (screen-position) A shell that exports `screens.all` as the monitors
+/// in its order, each with its place, and a bar on each showing it.
+const PLACES: &str = r#"
+export let n = 3
+export let order = screens.all.map(s => join(" ", s.name, s.x, s.y)).join(", ")
+export let first = screens.focused?.name ?? "none"
+bar Top { height: 30
+  text join(" ", screen.name, screen.x, screen.y)
+}
+"#;
+
+/// (screen-position) Each `Screen` has its place in sway's layout and
+/// `screens.all` lists them in layout order as sway moves them: left to
+/// right first (HEADLESS-2 moved left of HEADLESS-1, then raised to its
+/// right: it stays after it), then top to bottom at one `x`; with no
+/// compositor adapter the first of that order is `screens.focused`.
+#[test]
+fn screens_all_follows_the_layout_as_the_monitors_move() {
+    let Some(mut desk) = start("place", PLACES, "HEADLESS-1", false) else {
+        return;
+    };
+    let layout = |desk: &mut Desk, cmd: Option<&str>, want: &str, first: &str| {
+        if let Some(cmd) = cmd {
+            swaymsg(&desk.sock, &[cmd]);
+        }
+        desk.until(&format!("screens.all {want}"), |d| {
+            match (d.get("order"), d.get("first")) {
+                (Some(o), Some(f)) if o == want && f == first => Ok(()),
+                got => Err(format!("{got:?}")),
+            }
+        });
+    };
+    layout(
+        &mut desk,
+        None,
+        "HEADLESS-1 0 0, HEADLESS-2 1280 0",
+        "HEADLESS-1",
+    );
+    // HEADLESS-2 left of HEADLESS-1: it comes first, and is the focused
+    // one while nothing names another.
+    layout(
+        &mut desk,
+        Some("output HEADLESS-2 position 0 0, output HEADLESS-1 position 1600 0"),
+        "HEADLESS-2 0 0, HEADLESS-1 1600 0",
+        "HEADLESS-2",
+    );
+    // HEADLESS-2 to the right again but raised above HEADLESS-1's top:
+    // left to right still decides.
+    layout(
+        &mut desk,
+        Some("output HEADLESS-1 position 0 200, output HEADLESS-2 position 1280 0"),
+        "HEADLESS-1 0 200, HEADLESS-2 1280 0",
+        "HEADLESS-1",
+    );
+    // One above the other: top to bottom.
+    layout(
+        &mut desk,
+        Some("output HEADLESS-2 position 0 0, output HEADLESS-1 position 0 900"),
+        "HEADLESS-2 0 0, HEADLESS-1 0 900",
+        "HEADLESS-2",
+    );
+    // A reload keeps it.
+    desk.reload(&PLACES.replace("let n = 3", "let n = 4"), "4");
+    layout(
+        &mut desk,
+        None,
+        "HEADLESS-2 0 0, HEADLESS-1 0 900",
+        "HEADLESS-2",
+    );
 }
 
 /// (output-change) A panel centred on one axis, with a shadow: it takes

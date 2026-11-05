@@ -2036,6 +2036,15 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   order); `Screens::Named` matches it or the connector. `SurfaceId`s are
   stable per (node, monitor) while the monitor is remembered. The binary
   forwards the `monitor_*` hooks to logic as the `screens` service.
+  (screen-position) `ScreenInfo` carries the monitor's
+  `Monitor::position` (xdg-output's logical position, 0 while unknown)
+  as `Screen.x` and `Screen.y`; `run/focus.rs` puts the list main sends
+  in layout order (`run::layout_order`: by `x`, then `y`, a stable sort
+  so plug order breaks ties), so `screens.all` and the first-monitor
+  fallback of `screens.focused` follow it. A monitor moved is a
+  `monitor_changed`, so the order follows the layout. The eval
+  sandbox's screens take their place from the scenario's `x` and `y`
+  (a replay's: each live output's position).
   `screens: focused` is one layer surface created without an output.
   (screens-focus) `SurfaceSpec::follows_focus` (`Prop::Screens` is the
   compiler's `FOLLOW_FOCUS` keyword, given to an instance of a `screens:`

@@ -33,7 +33,8 @@ type Report = Arc<Mutex<Option<Option<String>>>>;
 
 /// The `screens` service's facts on the logic thread.
 pub(super) struct Focus {
-    /// The monitors, in plug order, as main last reported them.
+    /// The monitors main last reported, in layout order
+    /// ([`layout_order`]).
     list: Vec<ScreenInfo>,
     /// The compositor's focused screen while followed (`None`: it names
     /// none, or is not followed).
@@ -73,6 +74,7 @@ impl Focus {
         to_main: Option<&Sender<ToMain>>,
     ) {
         self.list = list;
+        layout_order(&mut self.list);
         self.publish(rt, host, to_main);
     }
 
@@ -309,6 +311,91 @@ mod tests {
         assert_eq!(fields(&rt, &host), (vec![true, false], "DP-1".into()));
         drop(tx);
         assert_eq!(told(rx), [Some("B".into()), None, Some("B".into()), None]);
+    }
+
+    /// [`screen`] placed at (`x`, `y`) in the layout.
+    fn placed(id: &str, name: &str, x: f64, y: f64) -> ScreenInfo {
+        ScreenInfo {
+            x,
+            y,
+            ..screen(id, name)
+        }
+    }
+
+    /// The connector names in the order given.
+    fn names(screens: &[ScreenInfo]) -> Vec<&str> {
+        screens.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    /// (screen-position) Left to right by `x` first, so a monitor raised
+    /// to the right of another still comes after it; at one `x`, top to
+    /// bottom; at one place (or none known: 0, 0), as they came.
+    #[test]
+    fn screens_are_in_layout_order() {
+        let mut row = vec![
+            placed("C", "HDMI-A-1", 3840.0, 0.0),
+            placed("A", "DP-1", 0.0, 0.0),
+            placed("B", "DP-2", 1920.0, -200.0),
+        ];
+        layout_order(&mut row);
+        assert_eq!(names(&row), ["DP-1", "DP-2", "HDMI-A-1"]);
+        let mut column = vec![
+            placed("A", "DP-1", 0.0, 1080.0),
+            placed("B", "DP-2", 0.0, -1440.0),
+            placed("C", "eDP-1", 0.0, 0.0),
+        ];
+        layout_order(&mut column);
+        assert_eq!(names(&column), ["DP-2", "eDP-1", "DP-1"]);
+        let mut unknown = vec![screen("B", "DP-2"), screen("A", "DP-1")];
+        layout_order(&mut unknown);
+        assert_eq!(names(&unknown), ["DP-2", "DP-1"], "plug order kept");
+        let mut negative = vec![
+            placed("A", "DP-1", 0.0, 0.0),
+            placed("B", "DP-2", -2560.0, 0.0),
+        ];
+        layout_order(&mut negative);
+        assert_eq!(names(&negative), ["DP-2", "DP-1"]);
+    }
+
+    /// (screen-position) `screens.all` holds each monitor's place and
+    /// lists them in layout order whatever order main reported them in;
+    /// with nothing named the first of that order (the leftmost) is
+    /// `screens.focused`.
+    #[test]
+    fn screens_all_has_each_place_in_layout_order() {
+        let rt = Runtime::new();
+        let host = host(&rt);
+        let (ping, _source) = calloop::ping::make_ping().unwrap();
+        let mut f = Focus::new(ping);
+        f.screens(
+            &rt,
+            &host,
+            vec![
+                placed("A", "DP-1", 1280.0, 0.0),
+                placed("B", "HDMI-A-1", 0.0, 360.0),
+            ],
+            None,
+        );
+        let types = &crate::services::schema().types;
+        let all = host.read(&rt, "screens", "all").unwrap();
+        let got: Vec<(String, f64, f64)> = all
+            .as_list()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                let f = |n: &str| s.field(types, n).and_then(Value::as_f64).unwrap();
+                let name = s.field(types, "name").and_then(Value::as_text).unwrap();
+                (name.to_string(), f("x"), f("y"))
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("HDMI-A-1".to_string(), 0.0, 360.0),
+                ("DP-1".to_string(), 1280.0, 0.0)
+            ]
+        );
+        assert_eq!(fields(&rt, &host), (vec![true, false], "HDMI-A-1".into()));
     }
 
     /// Without services (the mock) nothing is followed: the first stays.

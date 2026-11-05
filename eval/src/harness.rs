@@ -1865,6 +1865,9 @@ impl Harness {
                         ("scale", Value::float(s.scale)),
                         ("width", Value::float(f64::from(s.width))),
                         ("height", Value::float(f64::from(s.height))),
+                        // (screen-position) Its place in the layout.
+                        ("x", Value::float(f64::from(d.at[0]))),
+                        ("y", Value::float(f64::from(d.at[1]))),
                         ("focused", Value::Bool(i == 0)),
                     ],
                 )

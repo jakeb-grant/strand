@@ -273,7 +273,13 @@ monitor, the keyboard always).
   monitor plugged in later gets an instance; an unplugged monitor's
   instance is parked with its state for 30 seconds and comes back with
   it if the monitor returns (monitors are matched by make, model and
-  description).
+  description). A `Screen` says where the monitor is in the
+  compositor's layout (`x`, `y`, logical pixels, as `width` and
+  `height`), and `screens.all` lists the monitors in that layout's
+  order: left to right by `x`, those at one `x` top to bottom by `y`,
+  so `screens.all.first` is the leftmost and a wallpaper per monitor
+  goes left to right with `for s in screens.all` (decisions.md
+  screen-position).
 - **`panel Name { … }`** is a layer-shell surface for launchers,
   notification stacks and dashboards. **`osd Name { … }`** defaults to
   the focused monitor, the overlay layer, and click-through (an empty

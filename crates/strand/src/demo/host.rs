@@ -208,6 +208,8 @@ impl Forward {
                 scale: m.scale.as_f64(),
                 width: m.logical_size.map_or(0.0, |s| s.0 as f64),
                 height: m.logical_size.map_or(0.0, |s| s.1 as f64),
+                x: m.position.map_or(0.0, |p| p.0 as f64),
+                y: m.position.map_or(0.0, |p| p.1 as f64),
             })
             .collect();
         self.send(ToLogic::Screens(list));

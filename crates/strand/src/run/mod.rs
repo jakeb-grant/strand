@@ -122,6 +122,17 @@ pub struct ScreenInfo {
     /// Logical size, when known.
     pub width: f64,
     pub height: f64,
+    /// (screen-position) Its place in the compositor's layout, logical
+    /// pixels (xdg-output's logical position), 0 while unknown.
+    pub x: f64,
+    pub y: f64,
+}
+
+/// (screen-position) `screens.all`'s order: left to right by `x`, the
+/// screens at one `x` top to bottom by `y`, and screens at one place
+/// (or none known) as they came (a stable sort: plug order).
+pub(crate) fn layout_order(screens: &mut [ScreenInfo]) {
+    screens.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
 }
 
 /// An input event on a node, as render resolved it (the node under the
@@ -529,6 +540,8 @@ pub(crate) fn set_screens(
                     ("scale", Value::float(s.scale)),
                     ("width", Value::float(s.width)),
                     ("height", Value::float(s.height)),
+                    ("x", Value::float(s.x)),
+                    ("y", Value::float(s.y)),
                     ("focused", Value::Bool(Some(i) == at)),
                 ],
             )

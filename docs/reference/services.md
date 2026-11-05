@@ -453,8 +453,8 @@ Monitors.
 
 | Field | Type | |
 | --- | --- | --- |
-| `all` | `[Screen]` | Every monitor, keyed by `name`. |
-| `focused` | `Screen?` | The monitor with keyboard focus, as the compositor says (Hyprland, sway, niri); the first monitor while it says none. |
+| `all` | `[Screen]` | Every monitor, keyed by `name`, in layout order: left to right by `x`, monitors at the same `x` top to bottom by `y`, then in the order they were plugged in. |
+| `focused` | `Screen?` | The monitor with keyboard focus, as the compositor says (Hyprland, sway, niri); the first monitor (the leftmost) while it says none. |
 
 ## `session`
 

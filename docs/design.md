@@ -645,7 +645,7 @@ Every source ends up as a write into the same reactive graph.
 | Settings TOML, wallpaper | Same watcher | Per-field writes; palette re-quantised |
 | Template files (`file { template: }`) | Same watcher | That `file` re-rendered |
 | Colour scheme, accent, contrast | Portal `SettingChanged(namespace, key, value)`; `ReadOne` at boot | `system.dark`, `system.accent`, `system.contrast` |
-| Monitors | `wl_registry` global add/remove; `wl_output` v4 `done`; layer-surface `closed` | `screens` |
+| Monitors | `wl_registry` global add/remove; `wl_output` v4 `done` with xdg-output's logical size and position; layer-surface `closed` | `screens`: each `Screen` with its logical size and place (`x`, `y`), `screens.all` in layout order, left to right then top to bottom (decisions.md screen-position) |
 | Compositor reload | Hyprland socket2 `configreloaded`; niri `ConfigLoaded { failed }` | `wm.config_reloaded` |
 | Apps, icons, fonts | `applications/`, `index.theme`, fontconfig dirs | Cache invalidation |
 | CLI and IPC | Unix socket and D-Bus | State writes and overlays |
