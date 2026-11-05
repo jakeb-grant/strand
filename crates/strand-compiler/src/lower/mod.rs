@@ -130,8 +130,9 @@ pub struct ExecAction {
     pub name: String,
     /// The program first, then its arguments; each parameter is one.
     pub argv: Vec<crate::hir::ArgvPart>,
-    /// (path-tilde) The parameters typed `path`, by index: a value `~`
-    /// or `~/…` reaches the program with the home folder in its place.
+    /// (path-tilde) The parameters typed `path`, by index: a value
+    /// starting with `~/` reaches the program with the home folder in
+    /// place of the `~`; a bare `~` stays as written.
     pub paths: Vec<usize>,
     /// (flex) `-> T`: what its output is read as; the call is then an
     /// `Async<T>` the host answers ([`crate::vm::ExecReply`]).
