@@ -2246,8 +2246,9 @@ new program with the running one.
 
 1. **Coalesce.** A reload waits 15 ms after the last completed write, so
    "save all" is one batch (50 ms when the latest event removed a
-   watched file, so delete-then-create is one edit; never more than
-   500 ms in all).
+   watched file, so delete-then-create is one edit, also when an
+   earlier save's batch is cut while the file is missing; never more
+   than 500 ms in all).
 2. **Skip no-ops.** A file whose content is unchanged stops here,
    including Strand's own writes.
 3. **Check.** The changed modules are parsed and the program is
