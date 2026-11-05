@@ -159,13 +159,15 @@ pub struct Report {
     /// State cells kept (instance-qualified paths: `Clock.open`,
     /// `TopBar[<monitor>].expanded`).
     pub kept: Vec<String>,
-    /// State cells reset, with why (`renamed`, `type changed (bool →
-    /// int)`, `@reset`).
+    /// State cells reset, with why (`renamed`, `renamed or removed`,
+    /// `type changed (bool → int)`, `@reset`).
     pub reset: Vec<(String, String)>,
-    /// Lines for the overlay and `strand watch`: kept over a changed
-    /// default (`launcher.query: kept "fir" (default changed) [reset]`),
-    /// ambiguous identities, handlers restarted with an `await` in flight.
-    /// The first two are also in [`Report::kept_over_default`] and
+    /// Lines for the overlay and `strand watch`, every row the overlay
+    /// shows for the reload: kept over a changed default
+    /// (`launcher.query: kept "fir" (default changed) [reset]`), cells
+    /// reset (`t.b: reset (renamed)`), ambiguous identities, handlers
+    /// restarted with an `await` in flight. The first three are also in
+    /// [`Report::kept_over_default`], [`Report::reset`] and
     /// [`Report::ambiguous`], for readers that want the cells, not prose.
     pub notices: Vec<String>,
     /// Cells kept although their default changed, with their value as
@@ -213,6 +215,28 @@ impl Report {
     pub fn notice(&mut self, line: String) {
         if !self.notices.contains(&line) {
             self.notices.push(line);
+        }
+    }
+
+    /// A cell reset, and why: recorded in [`Report::reset`] and noticed
+    /// (`t.b: reset (renamed)`), so the overlay's row is also in the
+    /// `reload` event's `notices` (decisions.md, removed-state-notice).
+    pub fn reset_cell(&mut self, path: String, why: String) {
+        self.class(EditClass::StateReset);
+        self.notice(format!("{path}: reset ({why})"));
+        self.reset.push((path, why));
+    }
+
+    /// The reload is done: handlers restarted with an `await` in flight
+    /// are noticed once, with the counts.
+    pub fn finish(&mut self) {
+        if self.cancelled > 0 {
+            self.notice(format!(
+                "{} handler{} restarted: {} in-flight `await` cancelled",
+                self.restarted,
+                if self.restarted == 1 { "" } else { "s" },
+                self.cancelled
+            ));
         }
     }
 

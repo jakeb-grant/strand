@@ -1311,6 +1311,104 @@ fn saves_reload_live_with_state_kept() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (removed-state-notice) The owner's save: `notify.strand` dropped
+/// cells while `launcher.strand` gained one. The removed cells are no
+/// rename (their file gained nothing), so the reload resets nothing and
+/// opens no overlay. A rename then resets its cell with a warning, and
+/// the overlay lists exactly the `reload` event's `notices`, the rows
+/// `strand watch --json` reports.
+#[test]
+fn a_removed_cell_opens_no_overlay_and_the_overlay_lists_what_watch_says() {
+    let dir = temp_dir("removed-state");
+    let notify = "export state open_key = false\nexport state shown = false\n\
+                  export state grown = false\n";
+    let launcher = |cells: &[&str]| -> String {
+        cells
+            .iter()
+            .map(|c| format!("export state {c} = false\n"))
+            .collect()
+    };
+    let bar = |cells: &str| format!("bar Top {{ text join(\" \", \"b\", {cells}) }}\n");
+    std::fs::write(dir.join("notify.strand"), notify).unwrap();
+    std::fs::write(dir.join("launcher.strand"), launcher(&["wide"])).unwrap();
+    std::fs::write(
+        dir.join("bar.strand"),
+        bar("launcher.wide, notify.open_key, notify.shown, notify.grown"),
+    )
+    .unwrap();
+    let socket = dir.join("ipc.sock");
+    let (compiler, to_logic, t, mut m) = spawn_live(&dir, Some(socket.clone()));
+    m.until("the bar", |s| s.texts() == ["b false false false false"]);
+    let mut events =
+        std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+    let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+    assert_eq!(ok["ok"], true);
+    // The next reload that committed (a save split across two loads
+    // holds the first).
+    let mut committed = || loop {
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut events, &mut line).unwrap();
+        let ev = serde_json::from_str::<Json>(&line).unwrap();
+        if ev["event"] == "reload"
+            && ev["held"].as_array().is_some_and(Vec::is_empty)
+            && ev["committed"].as_array().is_some_and(|c| !c.is_empty())
+        {
+            return ev;
+        }
+    };
+    let notices = |ev: &Json| -> Vec<String> {
+        ev["notices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n.as_str().unwrap().to_string())
+            .collect()
+    };
+    // Cells removed from one file, one added to another: nothing reset,
+    // and no overlay through its quiet period (250 ms) and well past it.
+    m.steady = true;
+    std::fs::write(dir.join("notify.strand"), "export state open_key = false\n").unwrap();
+    std::fs::write(dir.join("launcher.strand"), launcher(&["wide", "out"])).unwrap();
+    std::fs::write(
+        dir.join("bar.strand"),
+        bar("launcher.wide, launcher.out, notify.open_key"),
+    )
+    .unwrap();
+    let ev = committed();
+    assert_eq!(ev["reset"], json!([]), "{ev}");
+    assert_eq!(ev["notices"], json!([]), "{ev}");
+    m.until("the saved bar", |s| s.texts() == ["b false false false"]);
+    m.settle("after the save", Duration::from_millis(1000));
+    m.steady = false;
+    // A rename: its cell reset, with a warning in both.
+    std::fs::write(dir.join("launcher.strand"), launcher(&["wider", "out"])).unwrap();
+    std::fs::write(
+        dir.join("bar.strand"),
+        bar("launcher.wider, launcher.out, notify.open_key, \"r\""),
+    )
+    .unwrap();
+    let ev = committed();
+    assert_eq!(
+        ev["reset"],
+        json!([{"cell": "launcher.wide", "why": "renamed"}]),
+        "{ev}"
+    );
+    assert_eq!(notices(&ev), ["launcher.wide: reset (renamed)"], "{ev}");
+    m.until("the overlay", |s| {
+        s.of_kind(strand_scene::NodeKind::Panel).len() == 1
+    });
+    let rows: Vec<String> = m
+        .texts()
+        .into_iter()
+        .filter(|t| !t.starts_with("strand: ") && t != "×" && !t.starts_with("b "))
+        .collect();
+    assert_eq!(rows, notices(&ev), "the overlay's rows are watch's notices");
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    drop(compiler);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// The live pipeline on `dir` (no cache): the compiler worker, the
 /// logic thread with one monitor, a mirror of its scene.
 fn spawn_live(

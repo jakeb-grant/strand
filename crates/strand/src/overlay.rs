@@ -198,30 +198,20 @@ pub fn kept_and_notices(kept: &[KeptCell], notices: &[String]) -> Vec<Line> {
     out
 }
 
-/// The overlay rows of a reload's report: its notices (kept over a
-/// changed default, ambiguous identities, an `await` cancelled by a
-/// handler restart), the cells it reset and why.
+/// The overlay rows of a reload's report: its notices and nothing else
+/// (kept over a changed default, cells reset and why, ambiguous
+/// identities, an `await` cancelled by a handler restart), so the box
+/// lists what the `reload` event's `notices` say (decisions.md,
+/// removed-state-notice). A kept cell's row carries its `[reset]`, and a
+/// reset cell's row is keyed by the cell.
 pub fn report_lines(r: &Report) -> Vec<Line> {
     let mut out = kept_and_notices(&r.kept_over_default, &r.notices);
-    for (cell, why) in &r.reset {
-        out.push(Line {
-            text: format!("{cell}: reset ({why})"),
-            notice: true,
-            cell: Some(cell.clone()),
-            ..Line::default()
-        });
-    }
-    if r.cancelled > 0 {
-        out.push(Line {
-            text: format!(
-                "{} handler{} restarted: {} in-flight `await` cancelled",
-                r.restarted,
-                if r.restarted == 1 { "" } else { "s" },
-                r.cancelled
-            ),
-            notice: true,
-            ..Line::default()
-        });
+    for l in out.iter_mut().filter(|l| l.cell.is_none()) {
+        l.cell = r
+            .reset
+            .iter()
+            .find(|(cell, why)| l.text == format!("{cell}: reset ({why})"))
+            .map(|(cell, _)| cell.clone());
     }
     out
 }
@@ -1026,20 +1016,19 @@ mod tests {
         let (_rt, inst) = instance();
         let mut o = Overlay::default();
         let t0 = Instant::now();
-        let mut report = Report {
-            reset: vec![("t.b".into(), "renamed".into())],
-            ..Report::default()
-        };
+        let mut report = Report::default();
         report.kept_over(KeptCell {
             path: "launcher.query".into(),
             shown: "\"fi\"".into(),
         });
         report.notice("x: ambiguous".into());
+        report.reset_cell("t.b".into(), "renamed".into());
         let rows = report_lines(&report);
         assert_eq!(rows.len(), 3, "{rows:?}");
         assert_eq!(rows[0].reset.as_deref(), Some("launcher.query"));
         assert_eq!(rows[1].text, "x: ambiguous");
         assert_eq!(rows[2].text, "t.b: reset (renamed)");
+        assert_eq!(rows[2].cell.as_deref(), Some("t.b"));
         assert!(rows[1].reset.is_none() && rows[2].reset.is_none());
         assert!(rows.iter().all(|l| l.notice));
         o.note(rows, t0, &inst);

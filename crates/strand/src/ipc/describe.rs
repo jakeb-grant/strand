@@ -40,12 +40,19 @@ pub fn describe(ev: &Json) -> String {
             if !kept.is_empty() {
                 out.push_str(&format!("  kept: {}\n", kept.join(", ")));
             }
+            // A reset cell's line is among the notices (as the overlay
+            // lists it); an event from a strand before 2026-11-04 has it
+            // only under `reset` (decisions.md, removed-state-notice).
+            let notices = list("notices");
             if let Some(reset) = ev.get("reset").and_then(Json::as_array) {
                 for r in reset {
-                    out.push_str(&format!("  reset: {} ({})\n", s(&r["cell"]), s(&r["why"])));
+                    let line = format!("{}: reset ({})", s(&r["cell"]), s(&r["why"]));
+                    if !notices.contains(&line) {
+                        out.push_str(&format!("  {line}\n"));
+                    }
                 }
             }
-            for n in list("notices") {
+            for n in notices {
                 out.push_str(&format!("  {n}\n"));
             }
             if let Some(ds) = ev.get("diagnostics").and_then(Json::as_array) {
@@ -92,13 +99,22 @@ mod tests {
             "held": [],
             "kept": ["Clock.open"],
             "reset": [{"cell": "t.b", "why": "renamed"}],
-            "notices": ["launcher.query: kept \"fir\" (default changed) [reset]"],
+            "notices": ["launcher.query: kept \"fir\" (default changed) [reset]", "t.b: reset (renamed)"],
             "timing": {"total_ms": 12.25},
             "diagnostics": [{"short": "bar.strand:3:1: error[x]: y"}],
         });
+        let text = "reload (12.2 ms): prop, node-added\n  committed: bar.strand\n  kept: Clock.open\n  launcher.query: kept \"fir\" (default changed) [reset]\n  t.b: reset (renamed)\n  bar.strand:3:1: error[x]: y\n";
         assert_eq!(
             describe(&ev),
-            "reload (12.2 ms): prop, node-added\n  committed: bar.strand\n  kept: Clock.open\n  reset: t.b (renamed)\n  launcher.query: kept \"fir\" (default changed) [reset]\n  bar.strand:3:1: error[x]: y\n"
+            text,
+            "each line once, as the overlay lists it"
+        );
+        // An older strand's event: the reset cell only under `reset`.
+        let mut old = ev.clone();
+        old["notices"] = json!(["launcher.query: kept \"fir\" (default changed) [reset]"]);
+        assert_eq!(
+            describe(&old),
+            "reload (12.2 ms): prop, node-added\n  committed: bar.strand\n  kept: Clock.open\n  t.b: reset (renamed)\n  launcher.query: kept \"fir\" (default changed) [reset]\n  bar.strand:3:1: error[x]: y\n"
         );
     }
 }

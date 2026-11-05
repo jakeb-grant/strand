@@ -2177,6 +2177,15 @@ new program with the running one.
 | Custom service declaration | Only that service restarts; built-ins never do | Yes |
 | Anything inside `lock` | Deferred until unlock | Yes |
 
+- (removed-state-notice) A `state` is renamed when its file or
+  component (in the same place of the tree) loses a cell and gains
+  another in the same save; the old cell resets with a warning,
+  `launcher.wide: reset (renamed)`. A cell removed while its owner gains
+  none is gone without a word, and when an owner loses more cells than it
+  gains, Strand cannot tell which were renamed: each says `renamed or
+  removed`. The warning, like every row the reload overlay lists for a
+  reload, is one of the `reload` event's `notices` in `strand watch`;
+  the cell is also under its `reset`.
 - A handler counts as changed when its code or anything it reaches
   (the `fn`s and `let`s it calls or reads) changed; an unchanged handler
   keeps its in-flight work.
