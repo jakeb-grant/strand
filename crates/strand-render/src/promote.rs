@@ -25,6 +25,9 @@
 //!   paints nothing asks for nothing, no wake and no frame. Only a real
 //!   failure does ([`Promotion::force_cpu`]: a frame that cannot be
 //!   drawn, a lost device).
+//! - (lock-gpu) A surface the host cannot present and must not read back
+//!   (a lock surface: decisions.md lock-gpu) is kept on the CPU for the
+//!   rest of its life ([`Promotion::pin_cpu`]): nothing promotes it again.
 //! - The device ([`Device`]) is kept up for the whole process once
 //!   started: the binary starts it when the shell starts
 //!   (`Renderer::warm_gpu`), off the frame path, so an animation never
@@ -76,6 +79,8 @@ pub struct Promotion {
     run: u32,
     /// The last frame had springs in flight.
     sprung: bool,
+    /// (lock-gpu) Kept on the CPU: never promoted ([`Promotion::pin_cpu`]).
+    pinned: bool,
 }
 
 impl Promotion {
@@ -107,7 +112,7 @@ impl Promotion {
             (true, false) => 1,
         };
         self.last = Some(now);
-        if self.gpu {
+        if self.gpu || self.pinned {
             return false;
         }
         let animates = springs || (self.run >= CLOCK_RUN && !settling);
@@ -125,6 +130,18 @@ impl Promotion {
     /// for.
     pub fn force_cpu(&mut self) {
         self.gpu = false;
+    }
+
+    /// (lock-gpu) On the CPU for the rest of its life: the host cannot
+    /// present it and must not read it back (a lock surface).
+    pub fn pin_cpu(&mut self) {
+        self.gpu = false;
+        self.pinned = true;
+    }
+
+    /// Kept on the CPU ([`Promotion::pin_cpu`]).
+    pub fn pinned(&self) -> bool {
+        self.pinned
     }
 }
 
@@ -454,6 +471,26 @@ mod tests {
 
     /// A failure takes a surface back at once, with no frame waited for,
     /// and a later animation may promote it again (a device up by then).
+    /// (lock-gpu) A pinned surface is never promoted, whatever animates
+    /// on it; a promotion pending when it was pinned is undone.
+    #[test]
+    fn a_pinned_surface_is_never_promoted() {
+        let mut p = Promotion::default();
+        let mut t = Instant::now();
+        assert!(p.frame(t, LARGE_DAMAGE, true), "promoted at first");
+        p.pin_cpu();
+        assert!(!p.on_gpu() && p.pinned());
+        for _ in 0..10 {
+            t += Duration::from_millis(16);
+            assert!(!p.frame(t, LARGE_DAMAGE * 10, true));
+        }
+        assert_eq!(
+            run(&mut p, &mut t, Duration::from_secs(2), LARGE_DAMAGE, false),
+            0
+        );
+        assert!(!p.on_gpu());
+    }
+
     #[test]
     fn a_failure_takes_a_surface_back_at_once() {
         let mut p = Promotion::default();

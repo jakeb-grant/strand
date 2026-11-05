@@ -705,8 +705,11 @@ jobs:
               - 'crates/strand-surface/src/manager/pose.rs'
               - 'crates/strand-surface/src/selection.rs'
               - 'crates/strand-surface/src/caps.rs'
-              # No GPU hand-off or lent handles for a lock surface.
+              # (lock-gpu) A lock surface's hand-off to the GPU thread, its
+              # renewal on the CPU, and the binary's side of both (the
+              # bound, the `gpu_stall` fault).
               - 'crates/strand-surface/src/gpu_handoff.rs'
+              - 'crates/strand/src/run/gpu.rs'
               - 'crates/**/*lock_fallback*'
               # The glob stops at a directory's name: the fallback's font.
               - 'crates/strand-render/src/lock_fallback/**'

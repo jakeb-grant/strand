@@ -324,6 +324,10 @@ impl<H: SurfaceHost + 'static> State<H> {
         if let Some(a) = s.alpha.take() {
             a.destroy();
         }
+        // (lock-gpu) A lock surface is its output's no more, kept or not.
+        if let Role::Lock(l) = &mut s.role {
+            l.drop_role();
+        }
         // Dropping the layer surface destroys it and its wl_surface; (M4)
         // a handed-off one is kept until the GPU thread let go of it.
         match self.gpu.keep(s) {

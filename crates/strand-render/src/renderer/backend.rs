@@ -763,6 +763,16 @@ impl Renderer {
         }
     }
 
+    /// (lock-gpu) `surface` stays on the CPU for the rest of its life:
+    /// the host cannot present it and must not read it back (a lock
+    /// surface: decisions.md lock-gpu). A promotion it asked for is
+    /// undone (an `Attached` for it still to come is answered with a
+    /// `Demote`, as for any promotion undone), and nothing promotes it
+    /// again.
+    pub fn keep_on_cpu(&mut self, surface: SurfaceId) {
+        self.gpu.surf(surface).promo.pin_cpu();
+    }
+
     /// (gpu-first) Starts the device now, before anything needs it, and
     /// keeps it for the process (decisions.md gpu-first): the binary calls
     /// it as the shell starts, so the first animation is drawn by a device

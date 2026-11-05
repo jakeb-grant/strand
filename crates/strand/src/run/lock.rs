@@ -1544,6 +1544,31 @@ pub(crate) mod faults {
         on("lock_no_frame")
     }
 
+    /// (lock-gpu) The GPU thread stops at its next reply, for good.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    static GPU_STALL: AtomicBool = AtomicBool::new(false);
+
+    /// (lock-gpu) A lock surface's frame was presented by the GPU
+    /// thread: `gpu_stall` stops that thread for good at its next reply
+    /// ([`gpu_waker`]), a GPU that hangs under a presented lock.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub(crate) fn lock_presented() {
+        if on("gpu_stall") && !GPU_STALL.swap(true, Ordering::AcqRel) {
+            log::warn!("STRAND_FAULT gpu_stall");
+        }
+    }
+
+    /// (lock-gpu) On the GPU thread, after each reply: once `gpu_stall`
+    /// is armed it never returns.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub(crate) fn gpu_waker() {
+        if GPU_STALL.load(Ordering::Acquire) {
+            loop {
+                std::thread::sleep(Duration::from_secs(3600));
+            }
+        }
+    }
+
     /// The restart marker was just written: `abort_before_locked` aborts
     /// the process there if the compositor has not said `locked` yet (a
     /// strand dying while its lock is pending, as on its first frame).
@@ -1653,6 +1678,12 @@ pub(crate) mod faults {
     }
     #[inline(always)]
     pub(crate) fn marked(_: bool) {}
+    #[inline(always)]
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub(crate) fn lock_presented() {}
+    #[inline(always)]
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    pub(crate) fn gpu_waker() {}
     #[inline(always)]
     pub(crate) fn unmount_lock(_: &mut super::State<super::Host>) {}
     #[inline(always)]

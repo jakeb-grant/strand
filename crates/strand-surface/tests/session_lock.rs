@@ -935,14 +935,133 @@ fn a_remounted_lock_takes_over() {
     assert!(lock.state_mut().unlock(token()));
 }
 
-/// (M4) A lock surface is never lent to or handed off to the GPU thread
-/// (docs/architecture.md, "Surface hand-off"): its handles are refused,
-/// so a promoted lock is read back (bounded by `HUNG_AFTER`), and the
-/// manager keeps committing it, so the lock's own commits never wait on
-/// the GPU.
+/// (lock-gpu) A lock surface is lent and handed off to the GPU thread
+/// like a panel's, but only after its first frame, the CPU's (the
+/// compositor counts the session locked once every output has a lock
+/// frame). Given up on, it is renewed: its output gets a fresh lock
+/// surface (a new id, drawn on the CPU for the rest of the lock, its
+/// handles never lent), made after the old one's lock-surface role went
+/// though its `wl_surface` is still kept for the GPU thread (sway would
+/// end the connection for a second lock surface on one output,
+/// `duplicate_output`). The keyboard follows it, the session stays
+/// locked, and the old `wl_surface` goes once the GPU thread lets go of
+/// it (`take_back`). No GPU runs here: the manager's side alone.
 #[test]
-fn a_lock_surface_is_never_handed_to_the_gpu() {
-    let test = "a_lock_surface_is_never_handed_to_the_gpu";
+fn a_lock_surface_is_handed_off_after_its_first_frame_and_renewed_on_the_cpu() {
+    let test = "a_lock_surface_is_handed_off_after_its_first_frame_and_renewed_on_the_cpu";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let mut desk = desktop(&sway, 1);
+    let mut lock = locker(&sway);
+    let _input = lock.take_input().unwrap();
+    lock.state_mut()
+        .apply_surface_change(LOCK, SurfaceChange::Created(lock_spec(true)));
+    // Before its first frame nothing is lent.
+    let made = lock
+        .dispatch_until(WAIT, |s| s.lock_content().is_some())
+        .unwrap();
+    assert!(made, "a content surface");
+    let content = lock.state().lock_content().unwrap();
+    if lock
+        .state()
+        .surface(content)
+        .is_none_or(|i| i.stats.commits == 0)
+    {
+        #[cfg(feature = "gpu")]
+        assert!(
+            lock.state_mut().raw_handles(content).is_none(),
+            "lent before its first frame"
+        );
+    }
+    wait_lock(&mut lock, LockState::Locked);
+    let painted = lock
+        .dispatch_until(WAIT, |s| {
+            s.surface(content).is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(painted, "the content is painted");
+    let mut keyboard = VirtualKeyboard::new(&sway);
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    keyboard.tap();
+    assert!(
+        key_reached(&mut lock, 0, content),
+        "the content has the keys"
+    );
+    #[cfg(feature = "gpu")]
+    assert!(
+        lock.state_mut().raw_handles(content).is_some(),
+        "a lock surface's handles are lent after its first frame"
+    );
+    assert!(lock.state_mut().hand_off(content), "handed off");
+    assert!(lock.state().is_handed_off(content));
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    assert_eq!(
+        shot(&sway, "HEADLESS-1"),
+        [BLUE, BLUE],
+        "its last frame shows while presented"
+    );
+    let commits = lock.state().surface(content).unwrap().stats.commits;
+    // Renewed: a fresh surface on the same output, the old one destroyed
+    // (kept for the GPU thread, its role gone).
+    let new = lock
+        .state_mut()
+        .renew_lock_content(content)
+        .expect("renewed");
+    assert_ne!(new, content);
+    assert_eq!(lock.state().lock_contents(), [new]);
+    assert!(lock.state().host().detached.contains(&content));
+    assert!(lock.state().host().attached.contains(&(new, LOCK)));
+    assert_eq!(
+        lock.state().keyboard_focus(),
+        Some(new),
+        "the keyboard follows the renewed content"
+    );
+    let painted = lock
+        .dispatch_until(WAIT, |s| {
+            s.surface(new).is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(painted, "the renewed content is painted on the CPU");
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    assert_eq!(shot(&sway, "HEADLESS-1"), [BLUE, BLUE], "still locked");
+    let from = lock.state().host().input.len();
+    keyboard.tap();
+    assert!(
+        key_reached(&mut lock, from, new),
+        "keys reach the renewed content (focus {:?}): {:?}",
+        lock.state().keyboard_focus(),
+        &lock.state().host().input[from..]
+    );
+    // On the CPU for the rest of the lock.
+    #[cfg(feature = "gpu")]
+    assert!(
+        lock.state_mut().raw_handles(new).is_none(),
+        "a renewed content is never lent"
+    );
+    assert!(!lock.state_mut().hand_off(new));
+    // The GPU thread lets go of the old one: its wl_surface goes, and
+    // nothing the manager sent ended the connection.
+    lock.state_mut().take_back(content);
+    assert!(lock.state().surface(content).is_none());
+    assert_eq!(commits, 1, "the handed-off content took no commit of ours");
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    assert_eq!(shot(&sway, "HEADLESS-1"), [BLUE, BLUE], "still locked");
+    assert!(lock.state_mut().unlock(token()));
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    assert!(lock.state().lock_contents().is_empty());
+}
+
+/// (lock-gpu) A presented lock surface whose output changes size is
+/// renewed at the new size, never resized under the GPU thread's commits
+/// (a commit at the old size after the ack would end the connection): the
+/// session stays locked and the new content fills the output.
+#[test]
+fn a_presented_lock_surface_given_a_new_size_is_renewed() {
+    let test = "a_presented_lock_surface_given_a_new_size_is_renewed";
     if !in_lock_vm(test) {
         return;
     }
@@ -962,21 +1081,31 @@ fn a_lock_surface_is_never_handed_to_the_gpu() {
         .unwrap();
     assert!(painted, "the content is painted");
     #[cfg(feature = "gpu")]
+    assert!(lock.state_mut().raw_handles(content).is_some());
+    assert!(lock.state_mut().hand_off(content));
+    sway.msg(&["output", "HEADLESS-1", "mode", "1024x768"]);
+    let renewed = lock
+        .dispatch_until(WAIT, |s| {
+            s.lock_content().is_some_and(|c| {
+                c != content
+                    && s.surface(c).is_some_and(|i| {
+                        i.stats.commits > 0 && i.buffer_size == Size::new(1024, 768)
+                    })
+            })
+        })
+        .unwrap();
     assert!(
-        lock.state_mut().raw_handles(content).is_none(),
-        "a lock surface's handles are never lent"
+        renewed,
+        "renewed at the new size: {:?}",
+        lock.state()
+            .lock_content()
+            .and_then(|c| lock.state().surface(c))
     );
-    assert!(
-        !lock.state_mut().hand_off(content),
-        "a lock surface is never handed off"
-    );
-    assert!(!lock.state().is_handed_off(content));
     settle(&mut lock, &mut desk, Duration::from_millis(300));
-    assert_eq!(
-        shot(&sway, "HEADLESS-1"),
-        [BLUE, BLUE],
-        "the manager still draws the lock"
-    );
+    let img = sway.grim("HEADLESS-1");
+    assert_eq!((img.width, img.height), (1024, 768));
+    assert_eq!(shot(&sway, "HEADLESS-1"), [BLUE, BLUE], "still locked");
+    lock.state_mut().take_back(content);
     assert!(lock.state_mut().unlock(token()));
 }
 

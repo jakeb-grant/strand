@@ -31,7 +31,17 @@
 //! - A lent or handed-off surface the manager has to destroy is kept
 //!   alive (its `wl_surface` with it), [`SurfaceHost::gpu_release`] is
 //!   called, and it is destroyed at `take_back`, so the swapchain always
-//!   goes first.
+//!   goes first. A lock surface gives up its lock-surface role at once
+//!   (`LockSurface::drop_role`), so its output may get a new one.
+//! - (lock-gpu, OWNER RULING) A lock's content surface is lent and handed
+//!   off like any other, once it has committed its first frame (the
+//!   CPU's) and unless its output's content was renewed in this lock
+//!   (`State::renew_lock_content`). Once the GPU thread may have
+//!   presented to it, it is never taken back: the host renews it instead,
+//!   so a lock surface never goes from the GPU thread's commits back to
+//!   `wl_shm` on one `wl_surface`. (Lent and answered `Readback`, no
+//!   swapchain was made, so it is taken back and stays on the CPU.)
+//!   Presented, a new size or scale renews it too (`draw_handed_off`).
 //!
 //! Mounted inside the manager (it reads the surface records).
 
@@ -109,12 +119,19 @@ impl<H: SurfaceHost + 'static> State<H> {
             RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
         };
         use wayland_client::Proxy;
-        // A lock surface is never presented by the GPU thread: the lock's
-        // own commits must not wait on it.
-        let s = self
-            .surfaces
-            .get(&surface)
-            .filter(|s| s.configured && !matches!(s.role, Role::Lock(_)))?;
+        // (lock-gpu) A lock surface after its first frame, the CPU's, and
+        // with no configure pending at another size than its frames'.
+        let s = self.surfaces.get_mut(&surface).filter(|s| s.configured)?;
+        if let Role::Lock(l) = &s.role
+            && (l.cpu_only() || !s.mapped() || s.geometry_changed())
+        {
+            return None;
+        }
+        if let Role::Lock(l) = &mut s.role {
+            // Its configure, if one is pending, is at its frames' size.
+            l.ack();
+        }
+        let s = &*s;
         let display = std::ptr::NonNull::new(self.conn.backend().display_ptr().cast())?;
         let window = std::ptr::NonNull::new(s.wl().id().as_ptr().cast())?;
         if !self.gpu.on.contains(&surface) {
@@ -135,7 +152,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         let Some(s) = self
             .surfaces
             .get_mut(&surface)
-            .filter(|s| !matches!(s.role, Role::Lock(_)))
+            .filter(|s| !matches!(&s.role, Role::Lock(l) if l.cpu_only()))
         else {
             return false;
         };
@@ -318,7 +335,20 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// and set as pending state (buffer scale or viewport destination, a
     /// popup's window geometry), so the next present commits it with the
     /// new buffer.
+    ///
+    /// (lock-gpu) A lock surface's new size or scale is never applied
+    /// under the GPU thread's commits (one at the old size after the ack
+    /// or the new buffer scale would be a protocol error): it is renewed
+    /// on the CPU ([`State::renew_lock_content`]).
     pub(super) fn draw_handed_off(&mut self, id: SurfaceId) {
+        if self
+            .surfaces
+            .get(&id)
+            .is_some_and(|s| matches!(s.role, Role::Lock(_)) && s.geometry_changed())
+        {
+            self.renew_lock_content(id);
+            return;
+        }
         if !self.update_geometry(id) {
             return;
         }

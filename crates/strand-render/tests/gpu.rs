@@ -1833,12 +1833,12 @@ fn until_the_clock_keeps_up(attempt: fn() -> bool) {
     );
 }
 
-/// (m4-audit) Why a GPU stall cannot freeze a lock (features.md, the
-/// lock exit): a lock surface is never handed to the GPU thread, so a
-/// promoted one is read back, and a readback frame the GPU never answers
-/// holds the surface at most [`strand_render::GPU_WAIT`]; the CPU then
-/// draws it, and while that frame stays unanswered no later frame waits
-/// at all. Needs no device: the GPU is "up" and never replies.
+/// (m4-audit) A readback frame the GPU never answers holds the surface
+/// at most [`strand_render::GPU_WAIT`]; the CPU then draws it, and while
+/// that frame stays unanswered no later frame waits at all. (Since
+/// lock-gpu a lock surface is presented, never read back, and the binary
+/// renews it on the CPU at `LOCK_GPU_BOUND`; this bounds every other
+/// readback surface.) Needs no device: the GPU is "up" and never replies.
 #[test]
 fn a_readback_frame_the_gpu_never_answers_holds_at_most_gpu_wait() {
     until_the_clock_keeps_up(readback_frame_hold);

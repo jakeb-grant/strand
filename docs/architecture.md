@@ -2319,6 +2319,16 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   protocol (`session_lock_supported()` false) an open spec gets
   `LockError::Unsupported` and the host hears `Finished`. Session-lock
   tests run only in the lock VM (`scripts/lockvm/scenarios/`).
+  (lock-gpu, OWNER RULING) A content surface is drawn by the GPU thread
+  like a panel's once render promotes it, never read back
+  ("Surface hand-off" below). `State::renew_lock_content(surface) ->
+  Option<SurfaceId>` gives up on the GPU for one: the old surface is
+  destroyed as any held surface is (`gpu_release`), its
+  `ext_session_lock_surface_v1` at once and its `wl_surface` once the GPU
+  thread lets go, and its output gets a fresh content surface with a new
+  id, drawn on the CPU until the lock ends (its handles never lent), the
+  keyboard focus moved to it; the session stays locked.
+  `State::is_lock_content(surface)` names a content surface.
 - *Drag and drop* (`src/dnd.rs`, as `manager::dnd`): a
   `wl_data_device` per seat yields `InputEvent::Drag*` (external
   payloads read through calloop without blocking, at most
@@ -2479,13 +2489,16 @@ runs), and hands every reply to `Renderer::deliver_gpu(GpuReply)`.
   opaque) and a non-sRGB `Bgra8Unorm`/`Rgba8Unorm` format; `Fifo`, full
   damage.
 - `GpuReadback`: rendered offscreen and copied into the shm buffer by
-  the main thread, committed as a CPU frame; for lock surfaces, a
-  surface an ending thread holds, and compositors the WSI cannot present
-  to (a pixman sway with ANV).
+  the main thread, committed as a CPU frame; for a surface an ending
+  thread holds, and compositors the WSI cannot present to (a pixman sway
+  with ANV). Never for a lock surface (decisions.md lock-gpu).
 
 Negotiation: render reports `Promote(surface)`; the binary sends
-`Attach` with `State::raw_handles` (none for readback-only and lock
-surfaces); the reply's `GpuMode` becomes the backend. A surface's frames wait from
+`Attach` with `State::raw_handles` (none for readback-only surfaces);
+the reply's `GpuMode` becomes the backend. A lock's content surface with
+no handles, or answered `Readback`, is not attached (or is released at
+once) and stays on the CPU: `Renderer::keep_on_cpu(surface)` pins it
+there (`Promotion::pin_cpu`). A surface's frames wait from
 `Attach` until the reply, since its handles are lent to a WSI that may own
 its buffers by then (decisions.md syncobj-lend): attaching costs about 2 to
 28 ms on the GPU thread, once per surface.
@@ -2517,11 +2530,15 @@ the binary still runs the frame's reaction and gives the next one a wake
 (decisions.md presented-quiet).
 
 **Surface hand-off** (`strand-surface/src/gpu_handoff.rs`). One
-`wl_surface` moves between shm and the WSI; it is never recreated.
+`wl_surface` moves between shm and the WSI; it is never recreated, but
+for a lock's content surface, renewed instead of taken back (below).
 
 - `State::raw_handles(surface) -> Option<RawHandles>` lends the
-  display and `wl_surface` (none for a lock surface, which is never
-  handed off). From then until `take_back`, a destroy goes through
+  display and `wl_surface`. A lock's content surface is lent only after
+  its first frame, the CPU's (the compositor counts the session locked
+  once every output has one), with no configure pending at another size
+  than its frames', and never once its output's content was renewed in
+  this lock. From then until `take_back`, a destroy goes through
   `gpu_release` and the manager attaches no buffer (bare configure acks
   still go), since a WSI with explicit sync owns its buffers
   (decisions.md syncobj-lend). Needs `wayland-backend`'s
@@ -2543,7 +2560,23 @@ the binary still runs the frame's reaction and gives the next one a wake
   that commit nothing commits the surface.
 - A handed-off surface the manager must destroy goes through
   `SurfaceHost::gpu_release`; the `wl_surface` lives until `take_back`,
-  so the swapchain is always dropped first.
+  so the swapchain is always dropped first. A lock surface's
+  `ext_session_lock_surface_v1` goes at once, so its output may get a new
+  one (one per output, `duplicate_output`).
+- (lock-gpu) A lent or presented lock content surface is never taken
+  back for `wl_shm` once the GPU thread may have presented to it
+  (decisions.md gpu-stay): it is renewed (`State::renew_lock_content`).
+  The manager renews it itself for a configure at a new size or a new
+  scale (a commit of the old size after the ack would be a protocol
+  error), and acks a configure at its size at once. The binary
+  (`GpuHost`) renews it when its `Attach` or a frame of it goes
+  unanswered for `LOCK_GPU_BOUND` (500 ms; the loop wakes for it, since a
+  stalled thread sends nothing), on `GpuReply::Failed` (render's
+  `Demote`), when the thread ends (`Exited`, the old `wl_surface` then
+  goes at once), and when the built-in fallback shows on it (the
+  fallback is painted by the main thread only). An `Attached { Readback
+  }` for a lock (no swapchain was made) is taken back, released and
+  pinned to the CPU.
 - The binary's side is `strand/src/run/gpu.rs` (`GpuHost::pump` after
   every dispatch). A new `Gpu` starts only once every dropped thread has
   ended; then the binary calls `malloc_trim(0)` and mimalloc's collect.

@@ -8,6 +8,17 @@
 //! surface manager's loop: render's requests and changes are made while
 //! the manager calls in (a paint, `update`), and the GPU thread's replies
 //! wake the loop through a ping. Nothing here waits on the GPU thread.
+//!
+//! (lock-gpu, OWNER RULING) A lock's content surface is presented like a
+//! panel's once render promotes it, after its first frame (the CPU's), and
+//! never read back: where it cannot be presented (no handles, a readback
+//! answer) it stays on the CPU (`Renderer::keep_on_cpu`). Its progress
+//! never waits on the GPU thread: an attach or a frame of it unanswered
+//! for [`LOCK_GPU_BOUND`], a failure, a lost device, the thread's end, or
+//! the built-in fallback showing on it renews it
+//! (`State::renew_lock_content`): its output gets a fresh lock surface
+//! drawn on the CPU until the lock ends, and the session stays locked.
+//! A presented lock surface is never taken back for `wl_shm`.
 
 use strand_render::Renderer;
 use strand_scene::GpuStatus;
@@ -46,6 +57,17 @@ impl StatusForward {
 
 #[cfg(feature = "gpu")]
 pub(crate) use host::GpuHost;
+
+/// (lock-gpu) How long a lock surface's attach, or a frame of it sent to
+/// the GPU thread, may go unanswered before the lock stops waiting for
+/// the GPU and renews it on the CPU (decisions.md lock-gpu): above the
+/// slowest answer a working GPU gave (the owner's Arc B390 took 217 ms
+/// for a lock's first frame, its pipelines and swapchain new), under the
+/// lock's own first-frame bound (`lock::FIRST_FRAME`, 1 s) and far under
+/// the GPU thread's `HUNG_AFTER` (10 s), so the lock moves again within
+/// half a second of a stall, before the device is given up on.
+#[cfg(feature = "gpu")]
+pub(crate) const LOCK_GPU_BOUND: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// (gpu-first) The renderer asks for the device as the shell starts
 /// (decisions.md gpu-first): the first pump starts the `Gpu` thread
@@ -105,6 +127,8 @@ mod host {
         /// (gpu-pace) The present in flight is a `Commit` that
         /// `State::pace_commit` paced, so its answer ends `in_flight`.
         commit_paced: bool,
+        /// (lock-gpu) When what is in flight was sent.
+        sent_at: Option<std::time::Instant>,
     }
 
     /// A surface attached (asked or answered).
@@ -120,6 +144,11 @@ mod host {
         /// answer it for a surface no longer attached), and an `Attached`
         /// still to come hands nothing off.
         releasing: bool,
+        /// (lock-gpu) A lock's content surface: presented or kept on the
+        /// CPU, never read back, and renewed when the GPU fails it.
+        lock: bool,
+        /// (lock-gpu) When its `Attach` was sent, until answered.
+        asked: Option<std::time::Instant>,
     }
 
     /// The `Gpu` and what the main thread knows of the surfaces it draws.
@@ -186,8 +215,15 @@ mod host {
 
         fn spawn(&mut self) -> &Gpu {
             let ping = self.ping.clone();
-            self.gpu
-                .insert(Gpu::spawn(Box::new(move || ping.ping()), self.opts))
+            self.gpu.insert(Gpu::spawn(
+                Box::new(move || {
+                    // (lock-gpu) The lock VM's `gpu_stall`: the thread
+                    // stops here for good once armed.
+                    super::super::lock::faults::gpu_waker();
+                    ping.ping();
+                }),
+                self.opts,
+            ))
         }
 
         /// Starts a `Gpu` with nothing to send it (the warm start), unless
@@ -232,16 +268,7 @@ mod host {
                 // renderer's timer happened to fire.
                 crate::demo::text_ready(state);
             }
-            for id in std::mem::take(&mut state.host_mut().gpu_released) {
-                let held = self.exiting.iter().map(|(_, held)| held.as_slice());
-                match release_route(id, self.running(), held) {
-                    Release::Send => self.release(id),
-                    // Taken back (and so destroyed) once that thread has
-                    // ended: its swapchain goes first.
-                    Release::Defer => {}
-                    Release::TakeBack => state.take_back(id),
-                }
-            }
+            self.released(state);
             for change in state.host_mut().renderer.take_backend_changes() {
                 self.change(state, change);
             }
@@ -258,6 +285,7 @@ mod host {
                 self.send(r);
             }
             self.present(state);
+            self.lock_safety(state);
             let mut back = Vec::new();
             let mut ended = false;
             self.exiting.retain_mut(|(g, surfaces)| {
@@ -284,6 +312,59 @@ mod host {
                     self.send(r);
                 }
             }
+        }
+
+        /// Surfaces the manager destroyed while the GPU thread held them
+        /// (`SurfaceHost::gpu_release`): their swapchains go first.
+        fn released(&mut self, state: &mut State<Host>) {
+            for id in std::mem::take(&mut state.host_mut().gpu_released) {
+                let held = self.exiting.iter().map(|(_, held)| held.as_slice());
+                match release_route(id, self.running(), held) {
+                    Release::Send => self.release(id),
+                    // Taken back (and so destroyed) once that thread has
+                    // ended: its swapchain goes first.
+                    Release::Defer => {}
+                    Release::TakeBack => state.take_back(id),
+                }
+            }
+        }
+
+        /// (lock-gpu) Lock surfaces the GPU thread holds whose attach or
+        /// frame went unanswered for [`super::LOCK_GPU_BOUND`], or on which
+        /// the built-in fallback shows (drawn by the main thread only),
+        /// are renewed on the CPU.
+        fn lock_safety(&mut self, state: &mut State<Host>) {
+            let now = std::time::Instant::now();
+            let renew: Vec<(SurfaceId, &'static str)> = self
+                .attached
+                .iter()
+                .filter_map(|(id, a)| {
+                    let fallback = state.host().lock.shown_on(*id);
+                    let why = lock_gives_up(a, self.presented.get(id), fallback, now)?;
+                    Some((*id, why))
+                })
+                .collect();
+            for (id, why) in renew {
+                self.renew_lock(state, id, why);
+            }
+        }
+
+        /// (lock-gpu) Lock content `id` goes from the GPU thread to a fresh
+        /// lock surface on the CPU (`State::renew_lock_content`); the old
+        /// one's swapchain is released (a stalled thread may never answer:
+        /// its `wl_surface` is kept until it does or ends).
+        fn renew_lock(&mut self, state: &mut State<Host>, id: SurfaceId, why: &str) {
+            log::warn!("lock: the GPU failed surface {} ({why})", id.0);
+            // No frame of it goes again, whatever the thread answers.
+            self.presented.remove(&id);
+            let renewed = state.renew_lock_content(id).is_some();
+            if let Some(a) = self.attached.get_mut(&id) {
+                a.asked = None;
+                // Not a lock's content any more (the lock ended): its
+                // destroy releases it, as any surface's.
+                a.lock &= renewed;
+            }
+            self.released(state);
         }
 
         /// Ends every GPU thread, the running one and those still ending,
@@ -355,7 +436,15 @@ mod host {
                     }))
                 })
                 .min();
-            [poll, held, due].into_iter().flatten().min()
+            // (lock-gpu) A lock surface's unanswered attach or frame, at
+            // its bound.
+            let lock = self
+                .attached
+                .iter()
+                .filter_map(|(id, a)| lock_deadline(a, self.presented.get(id)))
+                .min()
+                .map(|t| t.saturating_duration_since(std::time::Instant::now()));
+            [poll, held, due, lock].into_iter().flatten().min()
         }
 
         /// Delivers the thread's replies to render; true when one may
@@ -368,6 +457,27 @@ mod host {
                     GpuReply::Attached { surface, mode } => {
                         let id = *surface;
                         let presenting = *mode == GpuMode::Present;
+                        if let Some(a) = self.attached.get_mut(&id) {
+                            a.asked = None;
+                        }
+                        if !presenting
+                            && self
+                                .attached
+                                .get(&id)
+                                .is_some_and(|a| a.lock && !a.releasing)
+                        {
+                            // (lock-gpu) A lock is never read back: the thread
+                            // made no swapchain, so the manager takes it back
+                            // and it stays on the CPU.
+                            log::info!("GPU: lock surface {} cannot be presented", id.0);
+                            state.take_back(id);
+                            if let Some(a) = self.attached.get_mut(&id) {
+                                a.lent = false;
+                            }
+                            self.release(id);
+                            state.host_mut().renderer.keep_on_cpu(id);
+                            continue;
+                        }
                         match on_attached(self.attached.get(&id), presenting) {
                             OnAttached::Release => {
                                 // Not asked for by this host: let go of it.
@@ -412,6 +522,7 @@ mod host {
                                     paced: false,
                                     commit_owed: false,
                                     commit_paced: false,
+                                    sent_at: None,
                                 },
                             );
                         }
@@ -427,8 +538,12 @@ mod host {
                         state.take_back(id);
                     }
                     GpuReply::Presented { surface, .. } => {
+                        if self.attached.get(surface).is_some_and(|a| a.lock) {
+                            super::super::lock::faults::lock_presented();
+                        }
                         if let Some(p) = self.presented.get_mut(surface) {
                             p.in_flight = false;
+                            p.sent_at = None;
                             // Shown now: its `damage` line, as a CPU
                             // frame's at its commit (a presented frame
                             // is whole).
@@ -439,6 +554,7 @@ mod host {
                                     size,
                                     scale,
                                     0,
+                                    true,
                                 );
                             }
                         }
@@ -448,6 +564,7 @@ mod host {
                             && std::mem::take(&mut p.commit_paced)
                         {
                             p.in_flight = false;
+                            p.sent_at = None;
                             if !*committed {
                                 state.forget_present_callback(*surface);
                             }
@@ -465,6 +582,7 @@ mod host {
                             p.in_flight = false;
                             p.commit_paced = false;
                             p.sent = None;
+                            p.sent_at = None;
                         }
                         state.forget_present_callback(*surface);
                     }
@@ -473,8 +591,17 @@ mod host {
                         // manager commits its surfaces again and no
                         // longer keeps the lent ones for it.
                         self.presented.clear();
-                        for id in lent(&std::mem::take(&mut self.attached)) {
+                        let attached = std::mem::take(&mut self.attached);
+                        for id in lent(&attached) {
                             state.take_back(id);
+                            // (lock-gpu) A lock surface the thread held is
+                            // never committed to with `wl_shm`: it is
+                            // renewed before any paint, so its old
+                            // `wl_surface`, no longer held, goes at once.
+                            if attached.get(&id).is_some_and(|a| a.lock) {
+                                log::warn!("lock: the GPU thread ended under surface {}", id.0);
+                                state.renew_lock_content(id);
+                            }
                         }
                         if let Some(g) = self.gpu.take() {
                             self.exiting.push((g, Vec::new()));
@@ -506,11 +633,21 @@ mod host {
                                 display: h.display,
                                 window: h.window,
                             });
+                    let lock = state.is_lock_content(id);
+                    if lock && handles.is_none() {
+                        // (lock-gpu) A lock is presented or drawn on the
+                        // CPU, never read back: readback buys it nothing.
+                        log::info!("GPU: lock surface {} stays on the CPU", id.0);
+                        state.host_mut().renderer.keep_on_cpu(id);
+                        return;
+                    }
                     let (size, scale) = geometry(state, id);
                     self.attached.insert(
                         id,
                         Attachment {
                             lent: handles.is_some(),
+                            lock,
+                            asked: lock.then(std::time::Instant::now),
                             ..Attachment::default()
                         },
                     );
@@ -523,7 +660,15 @@ mod host {
                     });
                 }
                 BackendChange::Demote(id) => {
-                    if self.attached.contains_key(&id) && self.running() {
+                    if self
+                        .attached
+                        .get(&id)
+                        .is_some_and(|a| a.lock && !a.releasing)
+                    {
+                        // (lock-gpu) The GPU failed a lock surface: renewed,
+                        // never taken back.
+                        self.renew_lock(state, id, "a frame failed");
+                    } else if self.attached.contains_key(&id) && self.running() {
                         // Its swapchain goes first; `Released` takes the
                         // surface back.
                         self.release(id);
@@ -566,6 +711,7 @@ mod host {
                     if paced {
                         p.commit_paced = true;
                         p.in_flight = true;
+                        p.sent_at = Some(std::time::Instant::now());
                         continue;
                     }
                 }
@@ -589,6 +735,7 @@ mod host {
                     state.ask_present_callback(*id);
                     gpu.send(GpuRequest::Frame(frame));
                     p.in_flight = true;
+                    p.sent_at = Some(std::time::Instant::now());
                     p.sent = Some((size, scale));
                     p.drew_nothing = None;
                     state.host_mut().painted(*id, &Damage::full(size));
@@ -611,6 +758,7 @@ mod host {
                         gpu.send(GpuRequest::Commit(*id));
                         p.commit_paced = paced;
                         p.in_flight = paced;
+                        p.sent_at = paced.then(std::time::Instant::now);
                     }
                 }
             }
@@ -672,6 +820,46 @@ mod host {
             .filter(|(_, a)| a.lent)
             .map(|(id, _)| *id)
             .collect()
+    }
+
+    /// (lock-gpu) When lock surface `a` (presented as `p`, if it is) is
+    /// given up on unless an answer comes: its attach's or its frame's
+    /// [`super::LOCK_GPU_BOUND`]. `None` for any other surface, one being
+    /// released, or one with nothing unanswered.
+    fn lock_deadline(a: &Attachment, p: Option<&Presented>) -> Option<std::time::Instant> {
+        if !a.lock || a.releasing {
+            return None;
+        }
+        let frame = p.filter(|p| p.in_flight).and_then(|p| p.sent_at);
+        [a.asked, frame]
+            .into_iter()
+            .flatten()
+            .min()
+            .map(|t| t + super::LOCK_GPU_BOUND)
+    }
+
+    /// (lock-gpu) Why the host gives up on the GPU for lock surface `a`
+    /// at `now`, if it does: its attach or a frame unanswered past its
+    /// bound, or the built-in fallback showing on it (`fallback`), which
+    /// only the main thread draws.
+    fn lock_gives_up(
+        a: &Attachment,
+        p: Option<&Presented>,
+        fallback: bool,
+        now: std::time::Instant,
+    ) -> Option<&'static str> {
+        if !a.lock || a.releasing {
+            return None;
+        }
+        if fallback {
+            return Some("the built-in password field shows");
+        }
+        lock_deadline(a, p)
+            .filter(|t| now >= *t)
+            .map(|_| match a.asked {
+                Some(_) => "its attach went unanswered",
+                None => "a frame was not presented in time",
+            })
     }
 
     /// What to do with a surface the manager must destroy while handed
@@ -751,6 +939,7 @@ mod host {
                 mode: None,
                 lent: true,
                 releasing,
+                ..Attachment::default()
             };
             assert_eq!(on_attached(None, true), OnAttached::Release);
             assert_eq!(on_attached(Some(&lent_to(true)), true), OnAttached::Wait);
@@ -847,6 +1036,7 @@ mod host {
                     paced: false,
                     commit_owed: false,
                     commit_paced: false,
+                    sent_at: None,
                 },
             );
             let w = host.wait(&r).expect("woken at the hold's end");
@@ -901,6 +1091,7 @@ mod host {
                     paced: false,
                     commit_owed: false,
                     commit_paced: false,
+                    sent_at: None,
                 },
             );
             assert_eq!(
@@ -929,6 +1120,107 @@ mod host {
                 None,
                 "going: no frame is sent after `Release`"
             );
+        }
+
+        /// (lock-gpu) A lock surface's attach or frame unanswered for
+        /// `LOCK_GPU_BOUND` gives the lock up on the GPU (it is renewed on
+        /// the CPU); an answered one, a frame waiting for its compositor's
+        /// callback (nothing in flight: an output turned off), one being
+        /// released, or a surface no lock's never does. The built-in
+        /// fallback showing on it does at once.
+        #[test]
+        fn a_lock_surface_is_given_up_on_at_its_bound() {
+            use std::time::Instant;
+            let bound = super::super::LOCK_GPU_BOUND;
+            let t0 = Instant::now();
+            let asked = Attachment {
+                lent: true,
+                lock: true,
+                asked: Some(t0),
+                ..Attachment::default()
+            };
+            assert_eq!(lock_deadline(&asked, None), Some(t0 + bound));
+            assert_eq!(lock_gives_up(&asked, None, false, t0 + bound / 2), None);
+            assert_eq!(
+                lock_gives_up(&asked, None, false, t0 + bound),
+                Some("its attach went unanswered")
+            );
+            // A panel's attach is never bounded.
+            let panel = Attachment {
+                lock: false,
+                ..asked
+            };
+            assert_eq!(lock_deadline(&panel, None), None);
+            assert_eq!(lock_gives_up(&panel, None, true, t0 + bound * 10), None);
+            // Presented: only a frame in flight counts, from when it went.
+            let shown = Attachment {
+                mode: Some(GpuMode::Present),
+                lent: true,
+                lock: true,
+                ..Attachment::default()
+            };
+            let mut p = Presented {
+                size: Size::new(100, 100),
+                scale: Scale::ONE,
+                in_flight: false,
+                sent: None,
+                drew_nothing: None,
+                paced: true,
+                commit_owed: false,
+                commit_paced: false,
+                sent_at: Some(t0),
+            };
+            assert_eq!(
+                lock_gives_up(&shown, Some(&p), false, t0 + bound * 100),
+                None,
+                "waiting for its callback is no stall"
+            );
+            p.in_flight = true;
+            assert_eq!(lock_deadline(&shown, Some(&p)), Some(t0 + bound));
+            assert_eq!(lock_gives_up(&shown, Some(&p), false, t0 + bound / 2), None);
+            assert_eq!(
+                lock_gives_up(&shown, Some(&p), false, t0 + bound),
+                Some("a frame was not presented in time")
+            );
+            assert_eq!(
+                lock_gives_up(&shown, Some(&p), true, t0),
+                Some("the built-in password field shows")
+            );
+            // Released already (renewed): nothing more.
+            let going = Attachment {
+                releasing: true,
+                ..shown
+            };
+            assert_eq!(lock_deadline(&going, Some(&p)), None);
+            assert_eq!(lock_gives_up(&going, Some(&p), true, t0 + bound * 10), None);
+        }
+
+        /// (lock-gpu) The loop wakes at a lock surface's bound with nothing
+        /// else to wake it: a stalled GPU thread sends no reply.
+        #[test]
+        fn a_lock_surface_in_flight_wakes_the_loop_at_its_bound() {
+            let (ping, _source) = calloop::ping::make_ping().unwrap();
+            let mut host = GpuHost::new(ping);
+            let font = std::fs::read(strand_text::test_font_path()).unwrap();
+            let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+                std::sync::Arc::new(font),
+            ]));
+            let r = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+            let s = SurfaceId(5);
+            assert_eq!(host.wait(&r), None);
+            host.attached.insert(
+                s,
+                Attachment {
+                    lent: true,
+                    lock: true,
+                    asked: Some(std::time::Instant::now()),
+                    ..Attachment::default()
+                },
+            );
+            let w = host.wait(&r).expect("woken at the bound");
+            assert!(w <= super::super::LOCK_GPU_BOUND, "{w:?}");
+            host.attached.get_mut(&s).unwrap().releasing = true;
+            assert_eq!(host.wait(&r), None, "released: nothing to wait for");
         }
 
         /// The run's exit ends the GPU thread before the surface manager

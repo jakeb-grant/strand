@@ -3107,3 +3107,271 @@ fn the_locks_thumbnail_is_a_still_from_before_the_lock() {
     vm.until("HEADLESS-1", "unlocked", Shot::desktop);
     assert!(vm.sway.shot("HEADLESS-1").desktop_in_row(10) > 1200);
 }
+
+// ---- (lock-gpu) a lock presented by the GPU ----------------------------------------
+
+/// (lock-gpu) A lock whose whole background springs between two colours
+/// (`glow`), a large animation render promotes to the GPU. Its password
+/// shows nothing, so its colour is only ever `glow`'s or a refusal's.
+const GLOW_CONFIG: &str = r#"export state locked = false
+export state zero = 1
+export state glow = false
+lock Gate {
+  state secret = ""
+  open: <-> locked
+  bg: glow ? #d05020 : #2050d0 ~ 250ms
+  when auth.failed { bg: #a02040 }
+  input { type: password; text: <-> secret; focus: true
+    on activate { if secret != "" { auth.submit(secret) }; secret = "" }
+  }
+  text pct(10 / zero)
+}
+"#;
+/// [`GLOW_CONFIG`]'s lock with `glow` on.
+const GLOW: [u8; 3] = [0xd0, 0x50, 0x20];
+
+impl Vm {
+    /// (lock-gpu) [`Vm::with`] with lavapipe, the lock VM's only Vulkan
+    /// driver, accepted (`STRAND_GPU_SOFTWARE=1`) and each frame's
+    /// `damage` line logged; the device up before the test goes on.
+    fn gpu(tag: &str, faults: &str, source: &str) -> Vm {
+        let sway = Sway::start(tag);
+        let desktop = Desktop::start(&sway);
+        let keys = Keyboard::new(&sway);
+        let mut strand = Strand::prepare(&sway, &sway.display.clone(), faults, source);
+        strand.env.retain(|(k, _)| k != "STRAND_LOG");
+        strand.env.push(("STRAND_LOG".into(), "info,damage".into()));
+        strand.env.push(("STRAND_GPU_SOFTWARE".into(), "1".into()));
+        strand.run();
+        let vm = Vm {
+            sway,
+            _desktop: desktop,
+            keys,
+            strand,
+        };
+        vm.until("HEADLESS-1", "the desktop", Shot::desktop);
+        vm.until_log("GPU: the device is up");
+        vm
+    }
+
+    /// (lock-gpu) Springs `glow` to `on` and waits for its colour, the
+    /// session locked throughout.
+    fn glow(&self, on: bool) {
+        self.strand
+            .cli(&["set", "lock.glow", if on { "true" } else { "false" }]);
+        let want = if on { GLOW } else { LOCK_BG };
+        self.until_locked("HEADLESS-1", "the lock's glow", true, |s| {
+            near(s.corner(), want)
+        });
+    }
+
+    /// (lock-gpu) The surface strand's log says it attached for the GPU,
+    /// and in which mode, once it has.
+    fn gpu_attached(&self) -> Option<(u32, String)> {
+        self.strand.log_text().lines().find_map(|l| {
+            let rest = l.split("GPU: surface ").nth(1)?;
+            let (id, mode) = rest.split_once(" attached (")?;
+            Some((id.parse().ok()?, mode.trim_end_matches(')').to_string()))
+        })
+    }
+}
+
+/// (lock-gpu) The `damage` lines of `surface` in `log`, in order: whether
+/// the GPU thread presented each (`gpu=1`), and the CPU's paint (its
+/// flatten and raster ms).
+fn frames_of(log: &str, surface: u32) -> Vec<(bool, f64)> {
+    let tag = format!("strand: damage surface={surface} ");
+    log.lines()
+        .filter_map(|l| l.split(&tag).nth(1))
+        .map(|l| {
+            let field = |k: &str| {
+                l.split_whitespace()
+                    .find_map(|f| f.strip_prefix(k))
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0)
+            };
+            (field("gpu=") == 1.0, field("flatten=") + field("raster="))
+        })
+        .collect()
+}
+
+/// (lock-gpu) The GPU thread's times of `surface`'s presented frames in
+/// `log` (`gpu-frame` lines): their CPU part plus their GPU run, in ms.
+fn gpu_frames_of(log: &str, surface: u32) -> Vec<f64> {
+    let tag = format!("strand: gpu-frame surface={surface} ");
+    log.lines()
+        .filter_map(|l| l.split(&tag).nth(1))
+        .map(|l| {
+            l.split_whitespace()
+                .filter_map(|f| f.split_once('='))
+                .filter_map(|(_, v)| v.parse::<f64>().ok())
+                .sum()
+        })
+        .collect()
+}
+
+/// Median and p95 of `v`, in its order of size.
+fn spread(mut v: Vec<f64>) -> (f64, f64, usize) {
+    if v.is_empty() {
+        return (0.0, 0.0, 0);
+    }
+    v.sort_by(f64::total_cmp);
+    let at = |q: f64| v[((v.len() - 1) as f64 * q).round() as usize];
+    (at(0.5), at(0.95), v.len())
+}
+
+/// (lock-gpu, OWNER RULING) A lock that animates its whole output is
+/// presented by the GPU thread like a panel, never read back: its first
+/// frame is the CPU's (the session counts as locked from it), and once the
+/// GPU thread presents it, every frame of it is the GPU's (no CPU frame
+/// in between: nothing alternates). The session stays locked throughout
+/// and the password unlocks it. Prints the first frame's latency and the
+/// frame times on each side.
+#[test]
+fn a_lock_that_animates_is_presented_and_never_alternates() {
+    let test = "lock_presented";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::gpu(test, "", GLOW_CONFIG);
+    vm.lock();
+    vm.until_locked("HEADLESS-1", "the config's lock", true, |s| {
+        near(s.corner(), LOCK_BG)
+    });
+    let mut on = false;
+    let deadline = Instant::now() + WAIT;
+    let surface = loop {
+        on = !on;
+        vm.glow(on);
+        if let Some(a) = vm.gpu_attached() {
+            break a;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the lock was never promoted:\n{}",
+            vm.strand.log_text()
+        );
+    };
+    assert_eq!(
+        surface.1,
+        "Present",
+        "a lock is presented, never read back:\n{}",
+        vm.strand.log_text()
+    );
+    let id = surface.0;
+    for _ in 0..6 {
+        on = !on;
+        vm.glow(on);
+    }
+    let log = vm.strand.log_text();
+    assert!(!log.contains("lock: the GPU failed"), "{log}");
+    assert!(!log.contains("stays on the CPU"), "{log}");
+    let frames = frames_of(&log, id);
+    let first_gpu = frames
+        .iter()
+        .position(|(gpu, _)| *gpu)
+        .unwrap_or_else(|| panic!("no frame of surface {id} was presented:\n{log}"));
+    assert!(first_gpu > 0, "the first frame is the CPU's:\n{log}");
+    let after = &frames[first_gpu..];
+    assert!(
+        after.iter().all(|(gpu, _)| *gpu),
+        "a CPU frame of surface {id} after it was presented: {:?}\n{log}",
+        frames.iter().map(|(g, _)| u8::from(*g)).collect::<Vec<_>>()
+    );
+    assert!(after.len() >= 6, "{} presented frames:\n{log}", after.len());
+    let cpu = spread(frames[..first_gpu].iter().map(|(_, ms)| *ms).collect());
+    let gpu = spread(gpu_frames_of(&log, id));
+    eprintln!(
+        "lock presented: first frames {:?} ms; CPU paints before it median {:.2} p95 {:.2} ms \
+         ({} frames); presented frames median {:.2} p95 {:.2} ms ({} timed, {} presented)",
+        vm.first_frames(),
+        cpu.0,
+        cpu.1,
+        cpu.2,
+        gpu.0,
+        gpu.1,
+        gpu.2,
+        after.len()
+    );
+    vm.keys.enter(PASSWORD);
+    vm.until(
+        "HEADLESS-1",
+        "unlocked by the right password",
+        Shot::desktop,
+    );
+}
+
+/// (lock-gpu, OWNER RULING) The GPU thread stalls under a presented lock
+/// (`gpu_stall`: it stops for good after the lock's first presented
+/// frame). The lock never waits on it: within its bound the lock's
+/// content is renewed, a fresh lock surface on its output drawn on the
+/// CPU from then on, and the lock goes on animating. The session stays
+/// locked throughout, the keyboard follows, and the password typed half
+/// before the stall and half after unlocks it.
+#[test]
+fn a_lock_whose_gpu_stalls_goes_on_on_the_cpu() {
+    let test = "lock_gpu_stall";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::gpu(test, "gpu_stall", GLOW_CONFIG);
+    vm.lock();
+    vm.until_locked("HEADLESS-1", "the config's lock", true, |s| {
+        near(s.corner(), LOCK_BG)
+    });
+    let (head, tail) = PASSWORD.split_at(7);
+    vm.keys.type_text(head);
+    let mut on = false;
+    let deadline = Instant::now() + WAIT;
+    while !vm
+        .strand
+        .log_text()
+        .contains("is drawn on the CPU from now on")
+    {
+        on = !on;
+        vm.glow(on);
+        assert!(
+            Instant::now() < deadline,
+            "the stalled lock was never renewed:\n{}",
+            vm.strand.log_text()
+        );
+    }
+    let log = vm.strand.log_text();
+    assert!(log.contains("STRAND_FAULT gpu_stall"), "{log}");
+    let (old, new) = log
+        .lines()
+        .find_map(|l| {
+            let rest = l.split("lock: surface ").nth(1)?;
+            let (old, rest) = rest.split_once(" is drawn on the CPU from now on, as surface ")?;
+            Some((old.parse::<u32>().ok()?, rest.trim().parse::<u32>().ok()?))
+        })
+        .expect("the renewal names both surfaces");
+    assert!(
+        log.contains(&format!("lock: the GPU failed surface {old} (")),
+        "{log}"
+    );
+    assert_eq!(
+        vm.gpu_attached(),
+        Some((old, "Present".to_string())),
+        "{log}"
+    );
+    // The lock goes on, on the CPU.
+    for _ in 0..4 {
+        on = !on;
+        vm.glow(on);
+    }
+    let log = vm.strand.log_text();
+    let frames = frames_of(&log, new);
+    assert!(!frames.is_empty(), "the renewed surface drew:\n{log}");
+    assert!(
+        frames.iter().all(|(gpu, _)| !*gpu),
+        "the renewed surface is the CPU's:\n{log}"
+    );
+    assert!(
+        !log.contains(&format!("GPU: surface {new} attached")),
+        "the renewed surface is never attached:\n{log}"
+    );
+    // The rest of the password, on the renewed surface.
+    vm.keys.enter(tail);
+    vm.until("HEADLESS-1", "unlocked by the password", Shot::desktop);
+}

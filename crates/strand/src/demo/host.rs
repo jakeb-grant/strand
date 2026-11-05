@@ -1027,7 +1027,8 @@ impl Host {
         }
     }
 
-    /// The `damage` log line of a frame shown (with `--log-damage`).
+    /// The `damage` log line of a frame shown (with `--log-damage`);
+    /// `gpu` for one the GPU thread presented.
     pub(crate) fn log_frame(
         &self,
         surface: SurfaceId,
@@ -1035,6 +1036,7 @@ impl Host {
         size: Size,
         scale: Scale,
         age: u8,
+        gpu: bool,
     ) {
         if !damage.is_empty() && self.log_damage {
             let rects: Vec<String> = damage
@@ -1053,7 +1055,8 @@ impl Host {
             // paints another frame); `flatten=`, `wait=` and `raster=`:
             // the last CPU paint's milliseconds laying out and flattening
             // (0 when it reused its scene), of that waiting for the text
-            // worker, and drawing.
+            // worker, and drawing; (lock-gpu) `gpu=1`: the GPU thread
+            // presented it (a frame the CPU drew, read back or not, is 0).
             let lists = self.renderer.list_frames();
             let times = self.renderer.last_paint_times();
             let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
@@ -1062,7 +1065,7 @@ impl Host {
             // saw `strand: damage surface=` as a surface (decisions.md
             // robustness).
             let line = format!(
-                "strand: damage surface={} buffer={}x{} scale={} age={} area={} rects={} gaps={} stalls={} top={} pending={} flatten={:.2} wait={:.2} raster={:.2}\n",
+                "strand: damage surface={} buffer={}x{} scale={} age={} area={} rects={} gaps={} stalls={} top={} pending={} flatten={:.2} wait={:.2} raster={:.2} gpu={}\n",
                 surface.0,
                 size.w,
                 size.h,
@@ -1077,6 +1080,7 @@ impl Host {
                 ms(times.flatten),
                 ms(times.text_wait),
                 ms(times.raster),
+                u8::from(gpu),
             );
             let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
         }
@@ -1145,7 +1149,14 @@ impl Painter for Host {
                 p.0.frame(surface, target);
             }
         }
-        self.log_frame(surface, &damage, target.size, target.scale, target.age);
+        self.log_frame(
+            surface,
+            &damage,
+            target.size,
+            target.scale,
+            target.age,
+            false,
+        );
         damage
     }
 

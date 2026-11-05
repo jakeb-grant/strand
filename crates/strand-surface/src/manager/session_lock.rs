@@ -62,6 +62,22 @@
 //!   size other than the acked one: the content surface acks a configure
 //!   only right before the buffer commit at that size, and never makes a
 //!   bare commit before its first buffer.
+//!
+//! (lock-gpu, OWNER RULING) A content surface is drawn by the GPU thread
+//! like a panel's once render promotes it (`gpu_handoff.rs`), after its
+//! first frame, which the CPU draws and commits (the compositor counts
+//! the session locked once every output has a lock frame). Lent or
+//! presented, a configure at its size is acked at once (the GPU thread's
+//! next present carries a buffer at that size), and a new size or scale
+//! is never applied under the GPU thread's commits: the content is
+//! renewed instead ([`State::renew_lock_content`]), as it is when the
+//! host gives up on the GPU (a frame not presented in time, a lost
+//! device, the thread's end, the fallback showing). Renewed, its output
+//! gets a fresh lock surface with a new id, drawn on the CPU until the
+//! lock ends, and the old one's lock-surface role goes at once (one per
+//! output), its `wl_surface` kept until the GPU thread lets go of it. A
+//! live swapchain is never taken back for `wl_shm` (decisions.md
+//! gpu-stay).
 
 use super::scrim::{ScrimObject, shm_solid};
 use crate::solid::{SolidBuffer, solid_buffer};
@@ -160,6 +176,10 @@ pub(super) struct SessionLock {
     /// A lock was asked for again after `finished` followed `locked`, in
     /// this lock session (until an unlock or the spec closing).
     asked_again: bool,
+    /// (lock-gpu) Outputs (by global) whose content was renewed in this
+    /// lock session ([`State::renew_lock_content`]): drawn on the CPU
+    /// until the lock ends, whatever content they show.
+    cpu_outputs: BTreeSet<u32>,
 }
 
 impl SessionLock {
@@ -177,6 +197,7 @@ impl SessionLock {
             warned_disabled: false,
             deferred: None,
             asked_again: false,
+            cpu_outputs: BTreeSet::new(),
         }
     }
 }
@@ -184,11 +205,16 @@ impl SessionLock {
 /// A lock surface's protocol objects, destroyed (lock surface first) when
 /// dropped.
 pub(super) struct LockSurface {
-    lock_surface: ExtSessionLockSurfaceV1,
+    /// `None` once given up while its `wl_surface` is kept for the GPU
+    /// thread ([`LockSurface::drop_role`]).
+    lock_surface: Option<ExtSessionLockSurfaceV1>,
     wl: wl_surface::WlSurface,
     /// The last configure not acked yet: acked right before the buffer
     /// commit at its size.
     serial: Option<u32>,
+    /// (lock-gpu) Drawn on the CPU until the lock ends: its handles are
+    /// never lent to the GPU thread (its output's content was renewed).
+    cpu_only: bool,
 }
 
 impl LockSurface {
@@ -196,17 +222,33 @@ impl LockSurface {
         &self.wl
     }
 
+    /// (lock-gpu) Drawn on the CPU until the lock ends.
+    pub(super) fn cpu_only(&self) -> bool {
+        self.cpu_only
+    }
+
     /// Acks the pending configure (before a buffer commit at its size).
     pub(super) fn ack(&mut self) {
-        if let Some(serial) = self.serial.take() {
-            self.lock_surface.ack_configure(serial);
+        if let (Some(serial), Some(l)) = (self.serial.take(), &self.lock_surface) {
+            l.ack_configure(serial);
+        }
+    }
+
+    /// (lock-gpu) Destroys the lock-surface role object now, before its
+    /// `wl_surface`: a surface kept for the GPU thread's swapchain is no
+    /// longer its output's lock surface, so a new one may be made there
+    /// (one per output, `duplicate_output`). Commits the GPU thread may
+    /// still make go to a surface the compositor no longer shows.
+    pub(super) fn drop_role(&mut self) {
+        if let Some(l) = self.lock_surface.take() {
+            l.destroy();
         }
     }
 }
 
 impl Drop for LockSurface {
     fn drop(&mut self) {
-        self.lock_surface.destroy();
+        self.drop_role();
         self.wl.destroy();
     }
 }
@@ -409,6 +451,60 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.session_lock.contents.values().copied().collect()
     }
 
+    /// (lock-gpu) `surface` shows the lock's content (a config's
+    /// instance, or where the built-in fallback is painted).
+    pub fn is_lock_content(&self, surface: SurfaceId) -> bool {
+        self.session_lock.contents.values().any(|s| *s == surface)
+    }
+
+    /// (lock-gpu) Gives up on the GPU thread for lock content `surface`
+    /// (lent to it or presented by it: a frame not presented in time, a
+    /// lost device, the thread's end, a new size, the fallback showing).
+    /// Its output gets a fresh lock surface, a new id, drawn on the CPU
+    /// until the lock ends; the old one is destroyed as any surface the
+    /// GPU thread holds is ([`SurfaceHost::gpu_release`]), its lock-surface
+    /// role at once, so the output is never without one for longer than
+    /// the new one's first frame takes. Keyboard focus moves to the new
+    /// one with it. The session stays locked throughout. Returns the new
+    /// surface, `None` when `surface` is no lock content or no lock is
+    /// asked for or held.
+    pub fn renew_lock_content(&mut self, surface: SurfaceId) -> Option<SurfaceId> {
+        let lock = self.session_lock.phase.lock().cloned()?;
+        let global = self
+            .session_lock
+            .contents
+            .iter()
+            .find_map(|(g, s)| (*s == surface).then_some(*g))?;
+        let (node, placement) = {
+            let s = self.surfaces.get(&surface)?;
+            (s.node, s.placement.clone())
+        };
+        let focused = self.keyboard_focus == Some(surface);
+        self.session_lock.cpu_outputs.insert(global);
+        self.session_lock.contents.remove(&global);
+        self.destroy_surface(surface);
+        // A new id: the GPU thread's, render's and the host's state of
+        // the old one is the old surface's alone, released with it.
+        self.ids.remove(&(node, placement));
+        self.create_lock_content(&lock, global, node);
+        let Some(new) = self.session_lock.contents.get(&global).copied() else {
+            // Its output went meanwhile: the others are as they should be.
+            self.sync_lock_surfaces();
+            return None;
+        };
+        log::warn!(
+            "lock: surface {} is drawn on the CPU from now on, as surface {}",
+            surface.0,
+            new.0
+        );
+        if focused {
+            self.keyboard_focus = Some(new);
+            self.send_input(crate::InputEvent::KeyboardEnter { surface: new });
+            self.report_keyboard();
+        }
+        Some(new)
+    }
+
     /// (lockmon) The surface showing the lock's content on output
     /// `output` (connector name, else monitor id).
     pub fn lock_content_on(&self, output: &str) -> Option<SurfaceId> {
@@ -482,6 +578,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         let specs = &self.specs;
         self.session_lock.nodes.retain(|n| specs.contains_key(n));
         self.session_lock.failed.clear();
+        self.session_lock.cpu_outputs.clear();
     }
 
     /// Takes a change of a `lock` spec (or of the lock's node) off the
@@ -790,9 +887,10 @@ impl<H: SurfaceHost + 'static> State<H> {
             output: Some(global),
             requested_output: Some(global),
             role: Role::Lock(LockSurface {
-                lock_surface,
+                lock_surface: Some(lock_surface),
                 wl,
                 serial: None,
+                cpu_only: self.session_lock.cpu_outputs.contains(&global),
             }),
             config: lock_config(),
             viewport,
@@ -1008,13 +1106,26 @@ impl<H: SurfaceHost + 'static> State<H> {
     fn lock_surface_configure(&mut self, tag: LockSurfaceTag, serial: u32, (w, h): (u32, u32)) {
         match tag {
             LockSurfaceTag::Content(id) => {
+                let gpu = self.gpu.has(id) || self.gpu.is_lent(id);
                 let Some(s) = self.surfaces.get_mut(&id) else {
                     return;
                 };
+                let same = s.logical == (w.max(1), h.max(1));
                 let Role::Lock(l) = &mut s.role else {
                     return;
                 };
                 l.serial = Some(serial);
+                if gpu {
+                    if !same {
+                        // (lock-gpu) A new size is never applied under the
+                        // GPU thread's commits: one at the old size after
+                        // the ack would be a protocol error.
+                        self.renew_lock_content(id);
+                        return;
+                    }
+                    // The GPU thread's next present is at this size.
+                    l.ack();
+                }
                 self.configured(id, (w.max(1), h.max(1)));
             }
             LockSurfaceTag::Solid(global) => {
