@@ -586,7 +586,7 @@ Keyed by `id`.
 | `can_volume` | `bool` | Writing `volume` changes it. |
 | `can_raise` | `bool` | `raise()` brings it forward (its MPRIS `CanRaise`). |
 | `can_seek_by` | `bool` | `seek(by)` seeks it (its MPRIS `CanSeek`), a track of unknown length too. |
-| `icon` | `text` | An icon name for its app, as `media.icon` names the active one's: the name itself when no entry matches. |
+| `icon` | `text` | An icon name for its app, as `media.icon` names the active one's: the name itself when no entry matches, so `p.app?.icon ?? "audio-x-generic"` falls back there, giving up an icon the theme has for that name, which `image p.icon` keeps. |
 | `app` | `App?` | The installed app it belongs to, found from its MPRIS `DesktopEntry` as a window's app is: `p.app?.name`. Null when no entry matches. |
 
 | Method | |
