@@ -177,8 +177,8 @@ pub(crate) trait Backend {
     fn unwatch(&mut self, dir: &Path);
     /// Take every event queued so far without waiting. A flush calls it
     /// after hashing, to see whether a file was written while it was read,
-    /// and when its listing of the module set misses a module that is
-    /// gone, to see whether that removal was heard yet.
+    /// and when its listing of the module set misses a module, to see
+    /// whether that module's removal is queued but not yet heard.
     /// A backend with no queue (polling, most tests) has nothing.
     fn drain(&mut self, _out: &mut Vec<Raw>) -> io::Result<()> {
         Ok(())
@@ -1705,26 +1705,45 @@ impl<B: Backend> Core<B> {
             cfg.modules.too_deep = set.too_deep;
         }
         let new: BTreeSet<PathBuf> = set.files.iter().map(|f| paths::absolute(f)).collect();
-        cfg.modules.files = set.files;
-        // A module the listing left out that is gone from disk may be a
-        // delete-then-create save in its gap, removed after this flush
-        // began and before the watcher heard it: its removal grace has
-        // not started. The `DELETE` is queued by the time the listing
-        // misses the file (inotify queues it inside the `unlink`), so
-        // take the queue: a module it shows removed (or created, or
-        // being written) stays in the set, pending again, and the next
-        // flush, a removal grace after that event, lists it once more.
-        // Without this a save made while an earlier one's batch was due
-        // was reported as the file removed, and the shell went blank
-        // until the file was back (save-blank).
-        let vanished = self.files.iter().any(|(path, e)| {
-            e.module && !new.contains(path) && std::fs::symlink_metadata(path).is_err()
-        });
-        if vanished {
+        // A module the listing left out may be a delete-then-create save
+        // in its gap, removed after this flush began and before the
+        // watcher heard it: its removal grace has not started. The
+        // `DELETE` is queued by the time the listing misses the file
+        // (inotify queues it inside the `unlink`), so take the queue
+        // whenever the listing leaves a module out, without looking at
+        // the disk again (the file may be back by then, its removal
+        // still unheard). When the queue shows such a module removed (or
+        // created, or being written), the module set stays as it was
+        // this flush, no module leaving or joining it, and the next
+        // flush, a removal grace after that event, lists it once more: a
+        // re-created file is then one edit, and a rename in the gap
+        // (`mv bar.strand panel.strand`) one batch, as when its events
+        // are heard first. Without this a save made while an earlier
+        // one's batch was due was reported as the file removed, and the
+        // shell went blank until the file was back (save-blank). A
+        // polled directory has no queue: there the listing decides.
+        if self
+            .files
+            .iter()
+            .any(|(path, e)| e.module && !new.contains(path))
+        {
             unsettled.extend(self.drain(now));
+            let wait = self
+                .files
+                .iter()
+                .any(|(path, e)| e.module && !new.contains(path) && unsettled.contains(path));
+            if wait {
+                self.pending.config = true;
+                self.schedule(now);
+                return;
+            }
         }
+        let Some(cfg) = self.config.as_mut() else {
+            return;
+        };
+        cfg.modules.files = set.files;
         for (path, e) in self.files.iter_mut() {
-            if !e.module || new.contains(path) || unsettled.contains(path) {
+            if !e.module || new.contains(path) {
                 continue;
             }
             e.module = false;
@@ -3002,6 +3021,103 @@ mod tests {
             }
             assert!(core.deadline().is_none());
         }
+    }
+
+    /// A rename (`mv bar.strand panel.strand`) made as the batch of an
+    /// earlier save that lists the module set is cut: the listing shows
+    /// the new name before the watcher has read the move. The module set
+    /// stays as it was until the removal grace, and the rename is one
+    /// batch, the old name removed and the new one created, as when its
+    /// events are heard first; never the new name a grace before the old
+    /// one leaves, when the loader would see every declaration twice
+    /// (decisions.md save-blank).
+    #[test]
+    fn a_rename_made_as_a_listing_batch_is_cut_is_one_batch() {
+        let (_tmp, root) = cfg_dir();
+        let bar = root.join("bar.strand");
+        let panel = root.join("panel.strand");
+        let theme = root.join("theme.strand");
+        std::fs::write(&bar, "bar").unwrap();
+        std::fs::write(&theme, "theme").unwrap();
+        let queue = Queued::default();
+        let opts = Options::default();
+        let mut core = Core::new(queue.clone(), opts.clone(), Some(config(&root)));
+        settle(&mut core);
+        let t0 = Instant::now();
+        core.on_raw(Raw::Gone(theme.clone()), t0);
+        core.on_raw(Raw::Written(theme.clone()), t0);
+        let cut = core.deadline().unwrap();
+        std::fs::rename(&bar, &panel).unwrap();
+        queue.push(Raw::Gone(bar.clone()));
+        queue.push(Raw::Written(panel.clone()));
+        assert!(core.flush(cut).is_none(), "the rename waits for its grace");
+        assert_eq!(core.deadline(), Some(cut + opts.removal_grace));
+        let b = core.flush(cut + opts.removal_grace).unwrap();
+        let got: Vec<_> = b.changes.iter().map(|c| (&c.path, c.kind)).collect();
+        assert_eq!(
+            got,
+            [(&bar, ChangeKind::Removed), (&panel, ChangeKind::Created)],
+            "{b:#?}"
+        );
+        assert!(core.deadline().is_none());
+    }
+
+    /// A listing that misses a module in a save gap is judged by the
+    /// queue, never by a second look at the disk after it: here each
+    /// listing (the first and every one taken again) passes while
+    /// `bar.strand` is deleted, and the file is back before the flush
+    /// looks for it. Its removal is queued, so the module stays and the
+    /// re-created file is one `Modified` a grace later; read from the
+    /// disk instead, it went out as `Removed` and blanked the shell
+    /// (decisions.md save-blank).
+    #[test]
+    fn a_module_back_on_disk_after_a_listing_missed_it_waits_for_the_grace() {
+        let (_tmp, root) = cfg_dir();
+        let bar = root.join("bar.strand");
+        let theme = root.join("theme.strand");
+        std::fs::write(&bar, "bar").unwrap();
+        std::fs::write(&theme, "theme").unwrap();
+        let queue = Queued::default();
+        // How many listings still fall in a save gap of bar.strand.
+        let gaps = Arc::new(Mutex::new(0usize));
+        let (d, q, g, b) = (root.clone(), queue.clone(), gaps.clone(), bar.clone());
+        let cfg = ConfigWatch {
+            root: root.clone(),
+            modules: strand_files(&root),
+            rescan: Box::new(move || {
+                let mut gaps = g.lock().unwrap();
+                if *gaps == 0 {
+                    return Ok(strand_files(&d));
+                }
+                *gaps -= 1;
+                std::fs::remove_file(&b).unwrap();
+                q.push(Raw::Gone(b.clone()));
+                let set = strand_files(&d);
+                std::fs::write(&b, "bar 2").unwrap();
+                q.push(Raw::Created(b.clone()));
+                q.push(Raw::Written(b.clone()));
+                Ok(set)
+            }),
+        };
+        let opts = Options::default();
+        let mut core = Core::new(queue.clone(), opts.clone(), Some(cfg));
+        settle(&mut core);
+        let t0 = Instant::now();
+        core.on_raw(Raw::Gone(theme.clone()), t0);
+        core.on_raw(Raw::Written(theme.clone()), t0);
+        let cut = core.deadline().unwrap();
+        *gaps.lock().unwrap() = 1 + RELISTS;
+        assert!(core.flush(cut).is_none(), "bar.strand is not removed");
+        assert_eq!(*gaps.lock().unwrap(), 0, "every listing missed it");
+        assert!(core.files[&bar].module);
+        // Its re-creation was heard too: the quiet period of a write.
+        assert_eq!(core.deadline(), Some(cut + opts.coalesce));
+        let b = core.flush(cut + opts.removal_grace).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].path, bar);
+        assert_eq!(b.changes[0].kind, ChangeKind::Modified);
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"bar 2")));
+        assert!(core.deadline().is_none());
     }
 
     /// The same save gap met by a batch's read of the file: an earlier
