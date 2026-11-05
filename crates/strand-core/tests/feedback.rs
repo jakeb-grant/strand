@@ -502,6 +502,46 @@ fn a_graph_triggered_writer_is_still_throttled() {
     assert_eq!(volume.get(&rt), Ok(120), "latest value lands");
 }
 
+/// The same 60 Hz `on change` writing through `rt.as_input` (a sink that
+/// mirrors what the host takes as input) is neither warned of nor held;
+/// once out of it, the same handler's writes count again.
+#[test]
+fn writes_run_as_input_are_not_counted() {
+    let rt = Runtime::new();
+    let reported = rt.signal(0i32);
+    let volume = rt.signal(0i32);
+    let input = rt.signal(true);
+    rt.on_change(
+        move |rt| reported.get(rt),
+        move |rt, v| {
+            let v = *v;
+            if input.get_untracked(rt)? {
+                rt.as_input(|rt| volume.set(rt, v))
+            } else {
+                volume.set(rt, v)
+            }
+        },
+    );
+    rt.flush();
+    let mut diags = Vec::new();
+    let mut t = Duration::ZERO;
+    for i in 1..=120 {
+        reported.set(&rt, i).unwrap();
+        t += Duration::from_nanos(16_666_667);
+        let tick = rt.tick(t);
+        assert!(tick.written.contains(&volume.id()), "step {i} held");
+        diags.extend(tick.diagnostics);
+    }
+    assert_eq!(rate_warnings(&diags), 0, "{diags:?}");
+    input.set(&rt, false).unwrap();
+    for i in 121..=240 {
+        reported.set(&rt, i).unwrap();
+        t += Duration::from_nanos(16_666_667);
+        diags.extend(rt.tick(t).diagnostics);
+    }
+    assert_eq!(rate_warnings(&diags), 1, "counted again outside it");
+}
+
 /// A held write of a handler that is then disposed (unmount, or a reload
 /// cancelling it) never lands.
 #[test]

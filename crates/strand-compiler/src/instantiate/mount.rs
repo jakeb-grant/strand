@@ -1665,6 +1665,7 @@ impl Ctx {
             {
                 let _ = state.selected_index(rt).set(rt, v);
             }
+            state.list_moved.set(was.list_moved.get());
             // (keyboard) A scroll keeps its place, which render says again
             // only on a change.
             for (a, b) in [
@@ -2679,6 +2680,12 @@ impl Ctx {
             );
             if let Some(entry) = em.nodes.get_mut(&id) {
                 entry.bindings.push(memo.id());
+            }
+        }
+        if prop == SceneProp::SelectedIndex && kind == NodeKind::List {
+            let state = self.em.borrow().nodes.get(&id).map(|e| e.state.clone());
+            if let Some(state) = state {
+                read_start(rt, memo, &state);
             }
         }
     }
@@ -5189,6 +5196,49 @@ pub(crate) fn hold_services(
             }
         }
     }
+}
+
+/// (list-start) A `list`'s changed start is its `results.selected_index`
+/// in the flush that changes it, before the `on change` handlers and what
+/// reads it run, while the user has not moved the selection since it last
+/// started: the router takes it as it settles that diff (decisions.md
+/// list-start). Below 0 is the first row, as render reads it. Its write is
+/// run as input (`Runtime::as_input`), uncounted by the write-rate guard,
+/// as the router's own report of the place is. Its first
+/// value is left to the end of the tick (`Instance::read_starts`), so an
+/// `on change` mounted with the list hears it as it did, rather than
+/// taking it for its first value.
+fn read_start(rt: &Runtime, memo: strand_core::Memo<PropOut>, state: &Rc<NodeState>) {
+    let index = state.selected_index(rt);
+    let st = state.clone();
+    let mut first = true;
+    let effect = rt.effect(move |rt| {
+        let out = memo.get(rt);
+        rt.untrack(|rt| {
+            let first = std::mem::replace(&mut first, false);
+            let Ok(PropOut {
+                value: PropValue::Number(f),
+                ..
+            }) = out
+            else {
+                return Ok(());
+            };
+            if !f.is_finite() {
+                return Ok(());
+            }
+            // The router takes the start as the list's place, as it would
+            // a key: the write is input's, not counted by the write-rate
+            // guard, so a start that changes every frame (a search a key
+            // repeats) is neither a feedback loop nor held.
+            if !first && !st.list_moved.get() {
+                rt.as_input(|rt| index.set(rt, Value::int(i64::from(f as u32))))?;
+            }
+            Ok(())
+        })
+    });
+    let _ = rt.reads_from(effect.id(), &[memo.id()]);
+    let _ = rt.writes_to(effect.id(), index.id());
+    rt.set_name(effect.id(), "list start");
 }
 
 #[cfg(test)]

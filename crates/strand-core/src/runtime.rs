@@ -889,6 +889,20 @@ impl Runtime {
         r
     }
 
+    /// Run `f` as input: the write-rate guard does not count its writes,
+    /// as it counts none of an input handler's before its first `await`
+    /// ([`Runtime::input_events`]), and a task it spawns is an input task.
+    /// For a sink whose write mirrors what the host takes as the user's
+    /// (the compiler's read of a `list`'s start, the place the router takes
+    /// as it would a key), never a loop through the graph, so a value it
+    /// mirrors that changes every frame is neither warned of nor held.
+    pub fn as_input<R>(&self, f: impl FnOnce(&Runtime) -> R) -> R {
+        let prev = self.inner.input.replace(true);
+        let r = f(self);
+        self.inner.input.set(prev);
+        r
+    }
+
     /// Run `f` with `owner` as the owner of new nodes.
     pub fn with_owner<R>(&self, owner: NodeId, f: impl FnOnce(&Runtime) -> R) -> Result<R, Error> {
         if !self.exists(owner) {

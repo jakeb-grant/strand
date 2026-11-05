@@ -337,6 +337,10 @@ pub struct NodeState {
     /// none: the router says so as it moves. Made on first use
     /// ([`NodeState::selected_index`]): only lists are ever told it.
     pub selected_index_cell: std::cell::OnceCell<Signal<Value>>,
+    /// (list-start) Whether the user moved a `list`'s selection since it
+    /// last started, as the router last said: logic reads a changed
+    /// `selected_index:` as the list's place only while this is false.
+    pub list_moved: std::cell::Cell<bool>,
     /// (keyboard) A `scroll`'s or `list`'s position, `Null` until render
     /// says so, which it does only once one is read ([`NodeState::WATCH_SCROLL`]).
     pub scroll_x_cell: std::cell::OnceCell<Signal<Value>>,

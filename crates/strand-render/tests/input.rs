@@ -433,7 +433,8 @@ fn keys_go_to_the_focused_input_and_its_list() {
             flag(rows[0], Flag::Selected, true),
             Intent::SelectedIndex {
                 list,
-                index: Some(0)
+                index: Some(0),
+                moved: true,
             }
         ]
     );
@@ -4342,7 +4343,7 @@ fn list_asks_build_on_a_selection_on_its_way() {
     let told = |out: &[Intent]| {
         out.iter()
             .filter_map(|i| match i {
-                Intent::SelectedIndex { list: l, index } if *l == list => Some(*index),
+                Intent::SelectedIndex { list: l, index, .. } if *l == list => Some(*index),
                 _ => None,
             })
             .collect::<Vec<_>>()
