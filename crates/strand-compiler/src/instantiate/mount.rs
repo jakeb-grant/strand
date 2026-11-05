@@ -937,13 +937,31 @@ impl Ctx {
                 }
                 let (pe, pd) = (prog.clone(), prog.clone());
                 let (te, td) = (info.ty.clone(), info.ty.clone());
+                // (dictionary) Stored entries whose key the program no
+                // longer declares (an enum variant removed while the
+                // shell was not running) are dropped as the store is read.
+                let dropped = Rc::new(RefCell::new(crate::vm::value::Dropped::default()));
+                let dd = dropped.clone();
                 let cell = Rc::new(rt.persisted(
                     store,
                     &path,
                     default.clone(),
                     move |v| crate::vm::persist::encode_bytes(&pe.types, &te, v),
-                    move |b| crate::vm::persist::decode_bytes(&pd.types, &td, b),
+                    move |b| {
+                        let (v, d) = crate::vm::persist::decode_bytes_dropping(&pd.types, &td, b)?;
+                        dd.borrow_mut().merge(&d);
+                        Some(v)
+                    },
                 ));
+                // Noted at its first read (the store keeps them until
+                // the cell is next written, so each start says so); a
+                // reload's own translation notes what it drops from a
+                // kept cell.
+                if from.is_none()
+                    && let Some(line) = dropped.borrow().notice(&path)
+                {
+                    self.notices.borrow_mut().push(line);
+                }
                 if let strand_core::Restore::KeptOverNewDefault(_) = &cell.restored
                     && let Ok(v) = cell.signal.get_untracked(rt)
                 {

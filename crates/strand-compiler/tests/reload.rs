@@ -2035,3 +2035,102 @@ fn a_reload_keeps_a_dictionary_in_the_new_key_order() {
         shell.scene.render()
     );
 }
+
+/// (dictionary) A reload that removes a variant of a dictionary's key
+/// enum drops the entries it keyed and keeps the rest, with one line on
+/// the overlay naming the cell; nothing resets. A persisted dictionary
+/// keeps the same entries in its store, so a restart has them too.
+#[test]
+fn an_enum_key_variant_removed_drops_its_entries_with_a_note() {
+    let src = |variants: &str, persist: &str| {
+        let writes = variants
+            .split(", ")
+            .map(|v| format!("m[{v}] = {}", v.len()))
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(
+            "enum U {{ {variants} }}\nstate m: [U: int] = []{persist}\nbar Top {{\n  text m.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  box {{ on click {{ {writes} }} }}\n}}\n"
+        )
+    };
+    for persist in ["", " persist"] {
+        let dir = std::env::temp_dir().join(format!(
+            "strand-reload-dict-{}-{}",
+            std::process::id(),
+            persist.len()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+        let first = src("low, mid, high", persist);
+        let mut shell = boot_with(&[("t.strand", &first)], storage.clone(), &["DP-1"]);
+        let b = shell.inst.nodes_handling("click")[0];
+        shell.inst.event(b, "click", Vec::new());
+        shell.flush();
+        // Past the persist debounce: the store holds the three entries.
+        shell.at(1.0);
+        assert!(shell.scene.find_text("low=3,mid=3,high=4").is_some());
+        let second = src("high, low", persist);
+        let (report, _) = shell.reload(&[("t.strand", &second)]);
+        assert_eq!(
+            report.notices,
+            ["t.m: dropped 1 entry (key no longer in U)"],
+            "{persist}"
+        );
+        assert!(report.reset.is_empty(), "{persist}: {report:?}");
+        assert!(
+            shell.scene.find_text("high=4,low=3").is_some(),
+            "{persist}: {}",
+            shell.scene.render()
+        );
+        let u = shell.at(2.0);
+        assert!(
+            u.notices.is_empty(),
+            "{persist}: said once: {:?}",
+            u.notices
+        );
+        assert!(
+            shell.scene.find_text("high=4,low=3").is_some(),
+            "{persist}: after the old cell went: {}",
+            shell.scene.render()
+        );
+        drop(shell);
+        if !persist.is_empty() {
+            let shell = boot_with(&[("t.strand", &second)], storage.clone(), &["DP-1"]);
+            assert!(
+                shell.scene.find_text("high=4,low=3").is_some(),
+                "after a restart: {}",
+                shell.scene.render()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// (dictionary) An entry a reload changes (an adopted default) is a
+/// reload write: `on change m[k]` takes it as its baseline and does not
+/// fire; a handler's write after it does.
+#[test]
+fn a_reload_write_is_the_baseline_for_on_change_of_an_entry() {
+    let src = |d: i64| {
+        format!(
+            "state m: [text: int] = [\"a\": {d}]\nstate fired = 0\non change m[\"a\"] {{ fired += 1 }}\nbar Top {{\n  text join(\" \", m[\"a\"] ?? 0, fired)\n  box {{ on click {{ m[\"a\"] = 7 }} }}\n}}\n"
+        )
+    };
+    let mut shell = boot(&[("t.strand", &src(1))]);
+    assert!(shell.scene.find_text("1 0").is_some());
+    let (report, _) = shell.reload(&[("t.strand", &src(2))]);
+    assert!(report.classes.contains(&EditClass::StateDefault));
+    shell.flush();
+    assert!(
+        shell.scene.find_text("2 0").is_some(),
+        "{}",
+        shell.scene.render()
+    );
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    assert!(
+        shell.scene.find_text("7 1").is_some(),
+        "{}",
+        shell.scene.render()
+    );
+}

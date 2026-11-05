@@ -2357,6 +2357,12 @@ new program with the running one.
   were renamed: each says `renamed or removed`. The warning, like every row the reload overlay lists for a
   reload, is one of the `reload` event's `notices` in `strand watch`;
   the cell is also under its `reset`.
+- (dictionary) A dictionary keeps its entries through a reload by key:
+  an enum key follows its variant by name, so reordering the enum
+  reorders the entries. A variant removed drops the entries it keyed
+  and keeps the rest, and one line says so, `island.used: dropped 2
+  entries (key no longer in Urgency)`; a value that no longer fits
+  resets the cell, as a list's item does.
 - A handler counts as changed when its code or anything it reaches
   (the `fn`s and `let`s it calls or reads) changed; an unchanged handler
   keeps its in-flight work.
@@ -2401,6 +2407,17 @@ new program with the running one.
   default hash matches is used; when the default changed, an unchanged
   stored value adopts the new default and a changed one is kept and
   reported once. A corrupt store gives the default and a warning.
+- (dictionary) A persisted dictionary is stored as `[key, value]`
+  pairs in key order, `[[3,"0x55"],[5,"0x7a"]]` (an `int` key a
+  number, an enum key its variant's name), so the same entries are the
+  same stored value and the same default however a literal ordered
+  them. A store edited by hand may hold pairs in any order (of two with
+  one key the later wins) or an object of key texts, `{"3": "0x55"}`.
+  An entry whose enum key the config no longer declares is dropped as
+  the store is read, with the line a reload gives (10.1), at each start
+  until the cell is next written; anything else that does not read as the type, a list of
+  records turned into a dictionary among them, gives the default and a
+  warning: there is no migration.
 - Builtin services keep their own state beside `persist`, in the same
   directory (readable only by you): `apps`' frecency, and, while
   `notifications.remember` is on (the default), `notifications.all`,

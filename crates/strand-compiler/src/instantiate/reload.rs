@@ -604,7 +604,13 @@ impl Ctx {
         from: &Program,
     ) -> Option<Value> {
         let to = self.vm.prog.clone();
-        let (cur, _) = crate::vm::value::translate(current, &from.types, &to.types)?;
+        let (cur, _, dropped) =
+            crate::vm::value::translate_dropping(current, &from.types, &to.types)?;
+        // (dictionary) Entries whose key is gone (an enum variant
+        // removed) are dropped, the rest kept: one line says so.
+        if let Some(line) = dropped.notice(path) {
+            self.report(|r| r.notice(line));
+        }
         let od = crate::vm::value::translate(old_default, &from.types, &to.types).map(|v| v.0);
         if od.as_ref() == Some(new_default) {
             return Some(cur);

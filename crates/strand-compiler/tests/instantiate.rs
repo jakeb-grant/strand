@@ -19,6 +19,9 @@ struct Shell {
     scene: SceneMirror,
     /// The boot diff's ops.
     boot: Vec<SceneOp>,
+    /// The boot tick's notices and diagnostics.
+    boot_notices: Vec<String>,
+    boot_diagnostics: Vec<strand_core::Diagnostic>,
 }
 
 impl Shell {
@@ -71,10 +74,14 @@ fn boot_with(
         inst,
         scene: SceneMirror::new(),
         boot: Vec::new(),
+        boot_notices: Vec::new(),
+        boot_diagnostics: Vec::new(),
     };
     let u = shell.flush();
     assert!(u.errors.is_empty(), "{:?}", u.errors);
     shell.boot = u.diff.ops;
+    shell.boot_notices = u.notices;
+    shell.boot_diagnostics = u.diagnostics;
     shell
 }
 
@@ -3091,6 +3098,8 @@ fn sinks_run_once_after_the_handlers_that_feed_them() {
         inst,
         scene,
         boot: Vec::new(),
+        boot_notices: Vec::new(),
+        boot_diagnostics: Vec::new(),
     };
     assert_eq!(shell.scene.texts(), ["ok", "ok", "ok", "0 0 0 0"]);
     let runs = |shell: &Shell| shell.rt.stats().effect_runs;
@@ -4300,6 +4309,8 @@ fn boot_bounded(
                 inst,
                 scene: SceneMirror::new(),
                 boot: Vec::new(),
+                boot_notices: Vec::new(),
+                boot_diagnostics: Vec::new(),
             };
             let u = shell.flush();
             let boot: Vec<String> = u.errors.iter().map(|e| e.to_string()).collect();
@@ -6594,4 +6605,212 @@ fn the_last_window_on_each_workspace_is_remembered_by_key() {
         .map(|a| a.to_string())
         .collect();
     assert_eq!(actions, ["Window(0x22).focus(0)"]);
+}
+
+/// (dictionary) A persisted dictionary's source: an `int`-keyed and an
+/// enum-keyed one, shown in key order, with a box writing both.
+const PERSISTED_DICTS: &str = "enum Level { low, high }\nstate seen: [int: text] = [] persist\nstate by: [Level: int] = [] persist\nbar B {\n  text seen.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  text by.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  box { on click { seen[3] = \"c\"; seen[1] = \"a\"; by[high] = 2; by[low] = 1 } }\n}\n";
+
+/// One monitor, DP-1.
+fn dp1(rt: &Runtime, host: &SchemaHost) {
+    screens(rt, host, &["DP-1"]);
+}
+
+/// The value cell `path` of `storage` holds on disk, once its writes
+/// have landed.
+fn stored(storage: &Storage, path: &str) -> String {
+    let p = storage.persist.as_ref().unwrap();
+    assert!(p.sync(Duration::from_secs(5)));
+    let s = p.load(path).unwrap().expect("a stored value");
+    String::from_utf8(s.value).unwrap()
+}
+
+/// (dictionary) A persisted dictionary is stored as `[key, value]` pairs
+/// in key order (an `int` key a JSON integer, an enum key its variant's
+/// name) and comes back after a restart in key order; a store edited by
+/// hand reads too: an object of key texts, or pairs out of order with a
+/// key twice (the later wins).
+#[test]
+fn a_persisted_dictionary_survives_a_restart() {
+    let dir = temp_dir("persist-dict");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let files = [("t.strand", PERSISTED_DICTS)];
+    let mut shell = boot_with(&files, dp1, storage.clone());
+    assert_eq!(shell.scene.texts(), ["", ""]);
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["1=a,3=c", "low=1,high=2"]);
+    drop(shell);
+    assert_eq!(stored(&storage, "t.seen"), r#"[[1,"a"],[3,"c"]]"#);
+    assert_eq!(stored(&storage, "t.by"), r#"[["low",1.0],["high",2.0]]"#);
+    let shell = boot_with(&files, dp1, storage.clone());
+    assert_eq!(shell.scene.texts(), ["1=a,3=c", "low=1,high=2"]);
+    assert!(shell.boot_notices.is_empty(), "{:?}", shell.boot_notices);
+    drop(shell);
+    // By hand: an object, and pairs out of order with `5` twice.
+    let p = storage.persist.clone().unwrap();
+    p.save("t.seen", b"[]", br#"{"7": "g", "2": "b"}"#).unwrap();
+    p.save("t.by", b"[]", br#"[["high", 2], ["low", 1], ["high", 3]]"#)
+        .unwrap();
+    let shell = boot_with(&files, dp1, storage.clone());
+    assert_eq!(shell.scene.texts(), ["2=b,7=g", "low=1,high=3"]);
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (dictionary) A persisted dictionary's default follows 10.3's rule at
+/// a restart: a stored value that is still the old default adopts the
+/// new one; one written since is kept and said once. The order is the
+/// key order whatever the literal's, so the same entries written in
+/// another order are the same default.
+#[test]
+fn a_changed_default_follows_the_adopt_rule() {
+    let dir = temp_dir("persist-dict-default");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let src = |d: &str| {
+        format!(
+            "state m: [int: text] = {d} persist\nbar B {{\n  text m.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  box {{ on click {{ m[3] = \"c\" }} }}\n}}\n"
+        )
+    };
+    let boot_on = |d: &str| boot_with(&[("t.strand", &src(d))], dp1, storage.clone());
+    // Stored, and still the old default: the new default is adopted.
+    let p = storage.persist.clone().unwrap();
+    p.save("t.m", br#"[[1,"a"]]"#, br#"[[1,"a"]]"#).unwrap();
+    let shell = boot_on("[2: \"B\"]");
+    assert_eq!(shell.scene.texts(), ["2=B"]);
+    assert!(shell.boot_notices.is_empty(), "{:?}", shell.boot_notices);
+    drop(shell);
+    let mut shell = boot_on("[1: \"a\", 2: \"b\"]");
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    drop(shell);
+    // The same entries in another order: the same default, so the
+    // written value is used and nothing is said.
+    let shell = boot_on("[2: \"b\", 1: \"a\"]");
+    assert_eq!(shell.scene.texts(), ["1=a,2=b,3=c"]);
+    assert!(shell.boot_notices.is_empty(), "{:?}", shell.boot_notices);
+    drop(shell);
+    // Written since, and a new default: kept over it, and said.
+    let shell = boot_on("[4: \"d\"]");
+    assert_eq!(shell.scene.texts(), ["1=a,2=b,3=c"]);
+    assert_eq!(
+        shell.boot_notices,
+        ["t.m: kept 1: a, 2: b, 3: c (default changed) [reset]"]
+    );
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Whether `diagnostics` has core's warning that `path`'s store did not
+/// read back.
+fn persist_failed(diagnostics: &[strand_core::Diagnostic], path: &str) -> bool {
+    diagnostics.iter().any(
+        |d| matches!(d, strand_core::Diagnostic::PersistFailed { path: p, .. } if &**p == path),
+    )
+}
+
+/// (dictionary) A persisted list of records turned into a dictionary is
+/// a type change: what was stored does not read as the new type, so the
+/// cell starts from its default with core's warning (no migration).
+#[test]
+fn a_type_change_resets_with_a_warning() {
+    let dir = temp_dir("persist-dict-type");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let before = "type Seen { ws: int; win: text }\nstate last: [Seen] = [Seen(ws: 3, win: \"0x55\")] persist\nbar B {\n  text join(\" \", last.len)\n  box { on click { last = last + [Seen(ws: 5, win: \"0x7a\")] } }\n}\n";
+    let mut shell = boot_with(&[("t.strand", before)], dp1, storage.clone());
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["2"]);
+    drop(shell);
+    let after = "state last: [int: text] = [3: \"0x55\"] persist\nbar B {\n  text last.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n}\n";
+    let shell = boot_with(&[("t.strand", after)], dp1, storage.clone());
+    assert_eq!(shell.scene.texts(), ["3=0x55"]);
+    assert!(
+        persist_failed(&shell.boot_diagnostics, "t.last"),
+        "{:?}",
+        shell.boot_diagnostics
+    );
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (dictionary) A store whose dictionary does not read (a pair without
+/// its value, a key of the wrong type, a value that does not fit) gives
+/// the default and core's warning; the next start reads what was
+/// written since.
+#[test]
+fn a_corrupt_store_gives_the_default() {
+    let dir = temp_dir("persist-dict-corrupt");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let files = [(
+        "t.strand",
+        "state m: [int: text] = [7: \"g\"] persist\nbar B {\n  text m.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  box { on click { m[1] = \"a\" } }\n}\n",
+    )];
+    let p = storage.persist.clone().unwrap();
+    let default = br#"[[7,"g"]]"#;
+    for bad in [
+        &br#"[[1]]"#[..],
+        br#"[["one","a"]]"#,
+        br#"[[1.5,"a"]]"#,
+        br#"[[1,2]]"#,
+        br#"{"one":"a"}"#,
+        b"not json",
+    ] {
+        p.save("t.m", default, bad).unwrap();
+        let shell = boot_with(&files, dp1, storage.clone());
+        let shown = String::from_utf8_lossy(bad);
+        assert_eq!(shell.scene.texts(), ["7=g"], "{shown}");
+        assert!(
+            persist_failed(&shell.boot_diagnostics, "t.m"),
+            "{shown}: {:?}",
+            shell.boot_diagnostics
+        );
+        drop(shell);
+    }
+    let mut shell = boot_with(&files, dp1, storage.clone());
+    assert!(
+        shell.boot_diagnostics.is_empty(),
+        "moved aside, not read again"
+    );
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    drop(shell);
+    let shell = boot_with(&files, dp1, storage.clone());
+    assert_eq!(shell.scene.texts(), ["1=a,7=g"]);
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (dictionary) A stored entry whose enum key the program no longer
+/// declares (a variant removed while the shell was not running) is
+/// dropped as the store is read, the rest kept, and the start says so
+/// once.
+#[test]
+fn a_stored_entry_whose_enum_key_is_gone_is_dropped_with_a_note() {
+    let dir = temp_dir("persist-dict-gone");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let p = storage.persist.clone().unwrap();
+    p.save(
+        "t.by",
+        b"[]",
+        br#"[["low",1],["mid",5],["gone",6],["high",2]]"#,
+    )
+    .unwrap();
+    let shell = boot_with(&[("t.strand", PERSISTED_DICTS)], dp1, storage.clone());
+    assert_eq!(shell.scene.texts(), ["", "low=1,high=2"]);
+    assert_eq!(
+        shell.boot_notices,
+        ["t.by: dropped 2 entries (key no longer in Level)"]
+    );
+    assert!(
+        shell.boot_diagnostics.is_empty(),
+        "{:?}",
+        shell.boot_diagnostics
+    );
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
 }

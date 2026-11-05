@@ -7,14 +7,15 @@
 //! write-back, per-field validation, overlays). Values are the VM's
 //! [`Value`]s, so the codecs live here: persisted values are JSON shaped by
 //! the declared type ([`encode_bytes`], [`decode_bytes`]: enums by variant
-//! name, records by field name), settings fields TOML items
+//! name, records by field name, (dictionary) a dictionary an array of
+//! `[key, value]` pairs in key order), settings fields TOML items
 //! ([`decode_item`], [`encode_item`]).
 
 use serde_json::{Map, Value as Json};
 use strand_core::settings::toml_edit;
 use strand_scene::Color;
 
-use super::value::{Num, Value};
+use super::value::{Dict, Dropped, Num, Value};
 use crate::ty::{Prim, Ty, TypeTable};
 
 /// A persisted value's bytes: its JSON by declared type. A value the
@@ -29,8 +30,17 @@ pub fn encode_bytes(types: &TypeTable, ty: &Ty, v: &Value) -> Vec<u8> {
 /// The value stored bytes hold as a `ty`; `None` if they no longer fit
 /// (core then starts the cell from its default and reports it).
 pub fn decode_bytes(types: &TypeTable, ty: &Ty, bytes: &[u8]) -> Option<Value> {
+    decode_bytes_dropping(types, ty, bytes).map(|(v, _)| v)
+}
+
+/// (dictionary) [`decode_bytes`], with the dictionary entries it dropped
+/// because their key no longer names anything (an enum key whose variant
+/// the program no longer declares), which the mount notes.
+pub fn decode_bytes_dropping(types: &TypeTable, ty: &Ty, bytes: &[u8]) -> Option<(Value, Dropped)> {
     let j: Json = serde_json::from_slice(bytes).ok()?;
-    decode(types, ty, &j)
+    let mut dropped = Dropped::default();
+    let v = decode_in(types, ty, &j, &mut dropped)?;
+    Some((v, dropped))
 }
 
 /// A settings field's TOML item as a `ty`, or why it does not fit.
@@ -186,15 +196,47 @@ pub fn encode(types: &TypeTable, ty: &Ty, v: &Value) -> Option<Json> {
                 .map(|i| encode(types, t, i))
                 .collect::<Option<_>>()?,
         ),
+        // (dictionary) `[[key, value], …]` in key order: a JSON object's
+        // keys are only texts, and a pair keeps an `int` key a number
+        // and an enum key its variant's name.
+        (Ty::Dict(k, t), Value::Dict(d)) => Json::Array(
+            d.entries()
+                .iter()
+                .map(|(key, x)| {
+                    Some(Json::Array(vec![
+                        encode_key(types, k, key)?,
+                        encode(types, t, x)?,
+                    ]))
+                })
+                .collect::<Option<_>>()?,
+        ),
         _ => return None,
     })
 }
 
-/// The value JSON `j` holds as a `ty`; `None` if it does not fit.
+/// (dictionary) A dictionary key's JSON: an `int` key as a JSON integer
+/// (`3`, not `3.0`), any other by its type.
+fn encode_key(types: &TypeTable, ty: &Ty, k: &Value) -> Option<Json> {
+    match (ty, k) {
+        (Ty::Prim(Prim::Int), Value::Num(n, _)) if n.fract() == 0.0 && n.abs() < 9.0e15 => {
+            Some(Json::from(*n as i64))
+        }
+        _ => encode(types, ty, k),
+    }
+}
+
+/// The value JSON `j` holds as a `ty`; `None` if it does not fit. A
+/// dictionary entry whose key no longer names anything is left out
+/// ([`decode_bytes_dropping`]).
 pub fn decode(types: &TypeTable, ty: &Ty, j: &Json) -> Option<Value> {
+    decode_in(types, ty, j, &mut Dropped::default())
+}
+
+fn decode_in(types: &TypeTable, ty: &Ty, j: &Json, dropped: &mut Dropped) -> Option<Value> {
+    let decode = |ty: &Ty, j: &Json, dropped: &mut Dropped| decode_in(types, ty, j, dropped);
     Some(match (ty, j) {
         (Ty::Optional(_), Json::Null) => Value::Null,
-        (Ty::Optional(t), j) => decode(types, t, j)?,
+        (Ty::Optional(t), j) => decode(t, j, dropped)?,
         (Ty::Prim(p), j) => match (p, j) {
             (Prim::Bool, Json::Bool(b)) => Value::Bool(*b),
             (Prim::Text | Prim::Path, Json::String(s)) => Value::text(s.as_str()),
@@ -228,7 +270,7 @@ pub fn decode(types: &TypeTable, ty: &Ty, j: &Json) -> Option<Value> {
                 .fields
                 .iter()
                 .map(|f| match m.get(&f.name) {
-                    Some(v) => decode(types, &f.ty, v),
+                    Some(v) => decode(&f.ty, v, dropped),
                     None => Some(super::builtins::default_of(types, &f.ty)),
                 })
                 .collect::<Option<Vec<_>>>()?;
@@ -237,11 +279,83 @@ pub fn decode(types: &TypeTable, ty: &Ty, j: &Json) -> Option<Value> {
         (Ty::List(t, _), Json::Array(items)) => Value::list(
             items
                 .iter()
-                .map(|i| decode(types, t, i))
+                .map(|i| decode(t, i, dropped))
                 .collect::<Option<_>>()?,
         ),
+        // (dictionary) Pairs, as `encode` writes them, in any order: put
+        // in key order, and of two with one key the later wins, so a store
+        // edited by hand cannot break the order rule.
+        (Ty::Dict(k, t), Json::Array(pairs)) => {
+            let mut entries = Vec::with_capacity(pairs.len());
+            for p in pairs {
+                let [key, value] = p.as_array().map(Vec::as_slice)? else {
+                    return None;
+                };
+                let Some(key) = decode_key(types, k, key, dropped)? else {
+                    continue;
+                };
+                entries.push((key, decode(t, value, dropped)?));
+            }
+            Value::Dict(std::rc::Rc::new(Dict::from_entries(entries)))
+        }
+        // (dictionary) An object, as a hand-written store or `strand get`
+        // has it (`{"3": "0x55"}`): each key's text read as a `K`.
+        (Ty::Dict(k, t), Json::Object(m)) => {
+            let mut entries = Vec::with_capacity(m.len());
+            for (key, value) in m {
+                let Some(key) = key_text(types, k, key, dropped)? else {
+                    continue;
+                };
+                entries.push((key, decode(t, value, dropped)?));
+            }
+            Value::Dict(std::rc::Rc::new(Dict::from_entries(entries)))
+        }
         _ => return None,
     })
+}
+
+/// (dictionary) A pair's key as a `ty`: `Some(None)` when it is an enum
+/// variant the program no longer declares (its entry is dropped and
+/// counted), `None` when it does not fit at all (the whole value fails).
+fn decode_key(
+    types: &TypeTable,
+    ty: &Ty,
+    j: &Json,
+    dropped: &mut Dropped,
+) -> Option<Option<Value>> {
+    match (ty, j) {
+        (Ty::Enum(e), Json::String(s)) => Some(enum_key(types, *e, s, dropped)),
+        _ => decode_in(types, ty, j, dropped).map(Some),
+    }
+}
+
+/// (dictionary) An object's key text as a `ty`: an `int` in decimal, a
+/// `bool` as `true` or `false`, an enum by variant name (one no longer
+/// declared: `Some(None)`, dropped), a `text` or `path` as it is.
+fn key_text(types: &TypeTable, ty: &Ty, s: &str, dropped: &mut Dropped) -> Option<Option<Value>> {
+    Some(Some(match ty {
+        Ty::Prim(Prim::Int) => Value::int(s.trim().parse::<i64>().ok()?),
+        Ty::Prim(Prim::Bool) => Value::Bool(s.parse().ok()?),
+        Ty::Prim(Prim::Text | Prim::Path) => Value::text(s),
+        Ty::Enum(e) => return Some(enum_key(types, *e, s, dropped)),
+        _ => return None,
+    }))
+}
+
+fn enum_key(
+    types: &TypeTable,
+    e: crate::ty::EnumId,
+    s: &str,
+    dropped: &mut Dropped,
+) -> Option<Value> {
+    let def = types.enum_(e);
+    match def.variant(s) {
+        Some(i) => Some(Value::Enum(e, i)),
+        None => {
+            dropped.add(&def.name);
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -273,6 +387,86 @@ mod tests {
         // default).
         assert_eq!(decode_bytes(&t, &Ty::BOOL, b"\"x\""), None);
         assert_eq!(decode_bytes(&t, &Ty::BOOL, b"not json"), None);
+    }
+
+    /// (dictionary) A dictionary is stored as `[key, value]` pairs in key
+    /// order, an `int` key a JSON integer and an enum key its variant's
+    /// name; it reads back from pairs in any order (of two with one key
+    /// the later wins) or from an object of key texts. A stored entry
+    /// whose enum key the program no longer declares is dropped and
+    /// counted; anything else that does not fit refuses the whole value.
+    #[test]
+    fn dictionaries_store_as_pairs_in_key_order() {
+        let t = types();
+        let urgency =
+            crate::ty::EnumId(t.enums.iter().position(|e| e.name == "Urgency").unwrap() as u32);
+        let dict = |entries: Vec<(Value, Value)>| {
+            Value::Dict(std::rc::Rc::new(Dict::from_entries(entries)))
+        };
+        let ty = Ty::dict(Ty::INT, Ty::TEXT);
+        let v = dict(vec![
+            (Value::int(5), Value::text("0x7a")),
+            (Value::float(3.0), Value::text("0x55")),
+        ]);
+        let bytes = encode_bytes(&t, &ty, &v);
+        assert_eq!(
+            String::from_utf8_lossy(&bytes),
+            r#"[[3,"0x55"],[5,"0x7a"]]"#
+        );
+        assert_eq!(decode_bytes(&t, &ty, &bytes), Some(v.clone()));
+        // By hand: unsorted with a key twice, or an object.
+        let read = |s: &str| decode_bytes(&t, &ty, s.as_bytes());
+        assert_eq!(
+            read(r#"[[5,"old"],[3,"0x55"],[5,"0x7a"]]"#),
+            Some(v.clone())
+        );
+        assert_eq!(read(r#"{"5":"0x7a","3":"0x55"}"#), Some(v.clone()));
+        assert_eq!(read("[]"), Some(dict(Vec::new())));
+        for bad in [
+            r#"[[3]]"#,
+            r#"[[3,"a",1]]"#,
+            r#"[["3","a"]]"#,
+            r#"[[3.5,"a"]]"#,
+            r#"[[3,4]]"#,
+            r#"{"three":"a"}"#,
+            r#"{"3.5":"a"}"#,
+            r#""3""#,
+        ] {
+            assert_eq!(read(bad), None, "{bad}");
+        }
+        // Enum keys by variant name, in declaration order.
+        let by = Ty::dict(Ty::Enum(urgency), Ty::INT);
+        let v = dict(vec![
+            (Value::Enum(urgency, 2), Value::int(0)),
+            (Value::Enum(urgency, 0), Value::int(3)),
+        ]);
+        let bytes = encode_bytes(&t, &by, &v);
+        assert_eq!(
+            String::from_utf8_lossy(&bytes),
+            r#"[["low",3.0],["critical",0.0]]"#
+        );
+        assert_eq!(decode_bytes(&t, &by, &bytes), Some(v.clone()));
+        let (back, dropped) =
+            decode_bytes_dropping(&t, &by, br#"{"critical":0,"urgent":1,"low":3,"gone":2}"#)
+                .unwrap();
+        assert_eq!(back, v);
+        assert_eq!(dropped.entries, 2);
+        assert_eq!(
+            dropped.notice("toasts.after").as_deref(),
+            Some("toasts.after: dropped 2 entries (key no longer in Urgency)")
+        );
+        let (_, none) = decode_bytes_dropping(&t, &by, &bytes).unwrap();
+        assert_eq!(none.notice("toasts.after"), None);
+        // Bool keys, and an optional dictionary's null.
+        let flags = Ty::dict(Ty::BOOL, Ty::TEXT);
+        assert_eq!(
+            decode_bytes(&t, &flags, br#"{"true":"on","false":"off"}"#),
+            decode_bytes(&t, &flags, br#"[[false,"off"],[true,"on"]]"#)
+        );
+        assert_eq!(
+            decode_bytes(&t, &Ty::Optional(Box::new(ty)), b"null"),
+            Some(Value::Null)
+        );
     }
 
     /// (services-round) A record's missing field is its default; a field

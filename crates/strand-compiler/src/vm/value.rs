@@ -1134,9 +1134,79 @@ pub fn keyed_vec<H: 'static>(
 /// and variant name, records by name and field name. `None` when the new
 /// program has no such type, variant or field, or for values that only
 /// mean something in the program that made them (closures, element
-/// handles, pending loads, token sets). Returns the value and whether
+/// handles, pending loads, token sets). A dictionary entry whose key no
+/// longer translates is dropped, not the whole value
+/// ([`translate_dropping`] counts them). Returns the value and whether
 /// anything changed.
 pub fn translate(v: &Value, from: &TypeTable, to: &TypeTable) -> Option<(Value, bool)> {
+    translate_in(v, from, to, &mut Dropped::default())
+}
+
+/// (dictionary) [`translate`], with the dictionary entries it dropped
+/// because their key no longer names anything in the new program (an
+/// enum key whose variant is gone): a reload's overlay notes them once
+/// per cell ([`Dropped::notice`]).
+pub fn translate_dropping(
+    v: &Value,
+    from: &TypeTable,
+    to: &TypeTable,
+) -> Option<(Value, bool, Dropped)> {
+    let mut dropped = Dropped::default();
+    let (nv, changed) = translate_in(v, from, to, &mut dropped)?;
+    Some((nv, changed, dropped))
+}
+
+/// (dictionary) Dictionary entries a value lost because their key no
+/// longer names anything: an enum key whose variant a reload removed, or
+/// one a stored value names that the program no longer declares
+/// (`persist::decode_bytes_dropping`). Only a key drops its entry; a
+/// value that no longer fits fails the whole value, as a list item does.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Dropped {
+    /// How many entries were dropped.
+    pub entries: usize,
+    /// The key type they no longer are (the first one met), by name.
+    pub key: String,
+}
+
+impl Dropped {
+    /// One entry dropped, its key of type `key`.
+    pub fn add(&mut self, key: &str) {
+        self.entries += 1;
+        if self.key.is_empty() {
+            self.key = key.to_string();
+        }
+    }
+
+    /// Those `other` counted too.
+    pub fn merge(&mut self, other: &Dropped) {
+        if self.key.is_empty() {
+            self.key.clone_from(&other.key);
+        }
+        self.entries += other.entries;
+    }
+
+    /// The overlay's line for cell `path`, when any entry was dropped:
+    /// `island.used: dropped 2 entries (key no longer in Urgency)`.
+    pub fn notice(&self, path: &str) -> Option<String> {
+        if self.entries == 0 {
+            return None;
+        }
+        Some(format!(
+            "{path}: dropped {} entr{} (key no longer in {})",
+            self.entries,
+            if self.entries == 1 { "y" } else { "ies" },
+            self.key
+        ))
+    }
+}
+
+fn translate_in(
+    v: &Value,
+    from: &TypeTable,
+    to: &TypeTable,
+    dropped: &mut Dropped,
+) -> Option<(Value, bool)> {
     Some(match v {
         Value::Null
         | Value::Unit
@@ -1170,7 +1240,7 @@ pub fn translate(v: &Value, from: &TypeTable, to: &TypeTable) -> Option<(Value, 
             for f in &ndef.fields {
                 let i = def.fields.iter().position(|x| x.name == f.name);
                 let (fv, c) = match i.and_then(|i| r.fields.get(i)) {
-                    Some(old) => translate(old, from, to)?,
+                    Some(old) => translate_in(old, from, to, dropped)?,
                     // A new field: its type's default.
                     None => (crate::vm::schema_host::default_value(to, &f.ty), true),
                 };
@@ -1186,7 +1256,7 @@ pub fn translate(v: &Value, from: &TypeTable, to: &TypeTable) -> Option<(Value, 
             let mut changed = false;
             let mut out = Vec::with_capacity(xs.len());
             for x in xs.iter() {
-                let (nx, c) = translate(x, from, to)?;
+                let (nx, c) = translate_in(x, from, to, dropped)?;
                 changed |= c;
                 out.push(nx);
             }
@@ -1199,14 +1269,20 @@ pub fn translate(v: &Value, from: &TypeTable, to: &TypeTable) -> Option<(Value, 
             (nv, changed)
         }
         // (dictionary) Keys and values each translated, then put back in
-        // key order (an enum key's variants may have moved). One that no
-        // longer translates drops the whole value, as a list item does.
+        // key order (an enum key's variants may have moved). A key that
+        // no longer translates (its variant is gone) drops its entry,
+        // counted in `dropped`; a value that no longer translates drops
+        // the whole value, as a list item does.
         Value::Dict(d) => {
             let mut changed = false;
             let mut out = Vec::with_capacity(d.len());
             for (k, x) in d.entries() {
-                let (nk, ck) = translate(k, from, to)?;
-                let (nx, cx) = translate(x, from, to)?;
+                let Some((nk, ck)) = translate_in(k, from, to, dropped) else {
+                    dropped.add(&key_type_name(from, k));
+                    changed = true;
+                    continue;
+                };
+                let (nx, cx) = translate_in(x, from, to, dropped)?;
                 changed |= ck || cx;
                 out.push((nk, nx));
             }
@@ -1216,7 +1292,7 @@ pub fn translate(v: &Value, from: &TypeTable, to: &TypeTable) -> Option<(Value, 
             let mut changed = false;
             let mut out = Vec::with_capacity(ps.len());
             for (n, x) in ps.iter() {
-                let (nx, c) = translate(x, from, to)?;
+                let (nx, c) = translate_in(x, from, to, dropped)?;
                 changed |= c;
                 out.push((n.clone(), nx));
             }
@@ -1231,6 +1307,19 @@ pub fn translate(v: &Value, from: &TypeTable, to: &TypeTable) -> Option<(Value, 
             return None;
         }
     })
+}
+
+/// (dictionary) The name of a dropped key's type in table `types`, for
+/// [`Dropped::notice`]: an enum's name (only an enum key can stop naming
+/// anything).
+pub(crate) fn key_type_name(types: &TypeTable, k: &Value) -> String {
+    match k {
+        Value::Enum(e, _) => types
+            .enums
+            .get(e.0 as usize)
+            .map_or_else(|| "enum".to_string(), |d| d.name.clone()),
+        _ => "its type".to_string(),
+    }
 }
 
 #[cfg(test)]

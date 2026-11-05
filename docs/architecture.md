@@ -802,7 +802,9 @@ and marked truncated), `named_value`, `push_named`, `pause`/`resume`
   lapped, so a dump holds a suffix with every value in it.
 - **Values** are compact JSON typed by the schema or program; a field
   change is `[old, new]` or shorter `{"e": …}` edits, a keyed one
-  `{"d", "r"}` or `{"patch": …}`; a held-back text is `{"~text": N}`.
+  `{"d", "r"}` or `{"patch": …}`; a held-back text is `{"~text": N}`;
+  (dictionary) a dictionary is an array of `[key, value]` pairs in key
+  order, a text key held back as any text is.
 - **Coalescing.** A motion merges into a newest same-surface motion
   under one refresh period old; a text key into newest same-surface
   text.

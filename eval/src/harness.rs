@@ -292,6 +292,11 @@ pub struct ReplayLog {
     pub drawn: Vec<String>,
     /// How many painted frames were held so.
     pub drawn_frames: usize,
+    /// (dictionary) Each `[seed]` cell whose dictionary lost entries as it
+    /// was read back: two held-back keys of one length are the same
+    /// placeholder `x`s, and the later entry is kept. The cell's path and
+    /// how many were lost (`vm::json::keys_read_as_one`).
+    pub keys_read_as_one: Vec<(String, usize)>,
 }
 
 /// A painted surface's image, PNG-encoded as it is collected (a run's
@@ -1593,6 +1598,10 @@ impl Harness {
             let prog = &self.inst.vm().prog;
             let v = strand_compiler::vm::json::from_json(&prog.types, &ty, &j)
                 .map_err(|m| Error::Config(format!("[seed] `{path}`: {m}")))?;
+            let lost = strand_compiler::vm::json::keys_read_as_one(&prog.types, &ty, &j);
+            if lost > 0 {
+                self.log.keys_read_as_one.push((path.clone(), lost));
+            }
             if self.opts.log {
                 let mut text = String::new();
                 let _ = strand_compiler::vm::json::to_json(&prog.types, &v, &mut text, &mut |t| {

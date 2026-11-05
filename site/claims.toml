@@ -3539,3 +3539,9 @@ page   = "site/concepts/language.md"
 text   = "and two dictionaries with the same entries are equal (`==`). Nothing"
 source = ['docs/spec.md "`==` on two dictionaries is true when they hold the same keys, each"']
 proof  = "crates/strand-compiler/tests/vm.rs::dictionaries_compare_by_their_entries"
+
+[[claim]]
+page   = "site/concepts/live-reload.md"
+text   = "it keyed and keeps the rest, and the overlay says so:"
+source = ['docs/spec.md "reorders the entries. A variant removed drops the entries it keyed"', 'crates/strand-compiler/src/vm/value.rs "dropped {} entr{} (key no longer in {})"']
+proof  = "crates/strand-compiler/tests/reload.rs::an_enum_key_variant_removed_drops_its_entries_with_a_note (plain and persisted); crates/strand-compiler/tests/instantiate.rs::a_stored_entry_whose_enum_key_is_gone_is_dropped_with_a_note (at a start)"

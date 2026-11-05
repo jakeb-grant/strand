@@ -612,6 +612,53 @@ fn values_round_trip_through_report_json() {
     assert!(from_json(&prog.types, &ty, &serde_json::json!(3)).is_err());
 }
 
+/// (dictionary) A dictionary in a glitch report is `[key, value]` pairs
+/// in key order, read back by its type; a key `keep` refuses is held
+/// back as a value is, `{"~text": N}`. Two held keys of one length read
+/// back as the same placeholders, so the later entry is kept and
+/// `keys_read_as_one` counts the one lost (the replay's fidelity note).
+#[test]
+fn dictionaries_round_trip_through_report_json_with_held_keys() {
+    use strand_compiler::vm::json::{from_json, keys_read_as_one, to_json, to_json_string};
+    let src = "enum Level { low, high }\nstate used: [text: int] = [\"kitty\": 1, \"ab\": 2, \"cd\": 3]\nstate by: [Level: [int: text]] = [high: [2: \"b\"], low: [1: \"a\"]]\nbar B { height: 10 }\n";
+    let (_rt, _host, inst) = run(src);
+    let prog = inst.vm().prog.clone();
+    let used = get(&inst, "used");
+    assert_eq!(
+        to_json_string(&prog.types, &used),
+        r#"[["ab",2],["cd",3],["kitty",1]]"#
+    );
+    let ty = inst.cell_type("t.used").unwrap();
+    let j: serde_json::Value = serde_json::from_str(&to_json_string(&prog.types, &used)).unwrap();
+    assert_eq!(from_json(&prog.types, &ty, &j).unwrap(), used);
+    assert_eq!(keys_read_as_one(&prog.types, &ty, &j), 0);
+    // An object reads too, as a hand-written seed has it.
+    let o = serde_json::json!({"kitty": 1, "cd": 3, "ab": 2});
+    assert_eq!(from_json(&prog.types, &ty, &o).unwrap(), used);
+    let mut held = String::new();
+    to_json(&prog.types, &used, &mut held, &mut |t| t == "kitty").unwrap();
+    assert_eq!(held, r#"[[{"~text":2},2],[{"~text":2},3],["kitty",1]]"#);
+    let j: serde_json::Value = serde_json::from_str(&held).unwrap();
+    let back = from_json(&prog.types, &ty, &j).unwrap();
+    assert_eq!(back.show(&prog.types), "kitty: 1, xx: 3");
+    assert_eq!(keys_read_as_one(&prog.types, &ty, &j), 1);
+    // Nested: enum keys by name, a dictionary as a value.
+    let by = get(&inst, "by");
+    assert_eq!(
+        to_json_string(&prog.types, &by),
+        r#"[["low",[[1,"a"]]],["high",[[2,"b"]]]]"#
+    );
+    let ty = inst.cell_type("t.by").unwrap();
+    let j: serde_json::Value = serde_json::from_str(&to_json_string(&prog.types, &by)).unwrap();
+    assert_eq!(from_json(&prog.types, &ty, &j).unwrap(), by);
+    let nested = serde_json::json!([["low", [[{"~text": 1}, "a"], [{"~text": 1}, "b"]]]]);
+    let ty = strand_compiler::ty::Ty::dict(
+        strand_compiler::ty::Ty::TEXT,
+        strand_compiler::ty::Ty::dict(strand_compiler::ty::Ty::TEXT, strand_compiler::ty::Ty::TEXT),
+    );
+    assert_eq!(keys_read_as_one(&prog.types, &ty, &nested), 1);
+}
+
 /// (dictionary) `[K: V]` at run time: `m[k]` reads the value for a key or
 /// null; `len`, `keys`, `values` and `entries` follow key order (ints
 /// numerically, texts by Unicode scalar, enums in declaration order,

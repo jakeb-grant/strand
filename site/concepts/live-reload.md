@@ -53,6 +53,17 @@ launcher.query: kept "fir" (default changed) [reset]
 A value a reload writes never fires `on change`, so an OSD does not
 flash on save.
 
+A dictionary keeps its entries by key. Reordering an enum its keys
+come from reorders the entries; removing a variant drops the entries
+it keyed and keeps the rest, and the overlay says so:
+
+```text
+island.used: dropped 2 entries (key no longer in Urgency)
+```
+
+A `persist`ed dictionary does the same when Strand starts after such
+an edit.
+
 ## When a save has errors
 
 A save is checked before anything changes:

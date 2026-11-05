@@ -442,6 +442,17 @@ pub fn compare(b: &Bundle, plan: &Plan, run: &RunOutput) -> Fidelity {
         }
     }
 
+    // (dictionary) A dictionary seeded with fewer entries than it held:
+    // keys held back as their length that read back as one.
+    for (path, n) in &run.log.keys_read_as_one {
+        f.notes.push(format!(
+            "`{path}`: {n} of its entries {} keyed by a text held back as its length, read back \
+             as the same `x`s as another key of that length, so the replay starts the cell \
+             with the later of each and without {}",
+            if *n == 1 { "was" } else { "were" },
+            if *n == 1 { "it" } else { "them" }
+        ));
+    }
     service_writes(&mut f, plan, run, traced_at);
 
     // The frame at the report against each bundle PNG, (fidelity) on

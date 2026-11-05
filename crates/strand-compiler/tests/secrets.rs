@@ -516,4 +516,18 @@ fn a_persisted_dictionary_keyed_or_filled_by_a_secret() {
         ))),
         Vec::<String>::new()
     );
+    // (dictionary) A literal's key, and an entry moved from one
+    // dictionary into another, carry the password too.
+    assert_eq!(
+        flows(&field(&format!(
+            "{kept}  box {{ on click {{ seen = [pw: 1] }} }}"
+        ))),
+        ["seen"]
+    );
+    assert_eq!(
+        flows(&field(&format!(
+            "{held}  state typed: [int: text] = []\n  box {{ on click {{ typed[1] = pw; held[2] = typed[1] ?? \"\" }} }}"
+        ))),
+        ["held"]
+    );
 }
