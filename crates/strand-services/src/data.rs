@@ -48,6 +48,11 @@ pub enum Data {
     Float(f64),
     Text(Arc<str>),
     Duration(Duration),
+    /// (player-raise-seek) A `duration` below zero, by its size: `-15s`
+    /// as the language computes it, so an action that moves by a time
+    /// (`media.seek(by: -15s)`) hears the sign. [`Duration`]'s `FromData`
+    /// reads it as zero, as a timeout or a span cannot be negative.
+    NegDuration(Duration),
     Color(Rgba),
     List(Vec<Data>),
     /// A record value: its schema type and its fields by name.
@@ -91,6 +96,7 @@ impl Data {
                 }
             }
             Data::Duration(d) => json_number(w, d.as_secs_f64() * 1000.0),
+            Data::NegDuration(d) => json_number(w, -d.as_secs_f64() * 1000.0),
             Data::Color(c) => json_color(w, [c.r, c.g, c.b, c.a]),
             Data::List(items) => {
                 w.write_char('[')?;
@@ -126,7 +132,7 @@ impl Data {
             Data::Int(_) => "int",
             Data::Float(_) => "float",
             Data::Text(_) => "text",
-            Data::Duration(_) => "duration",
+            Data::Duration(_) | Data::NegDuration(_) => "duration",
             Data::Color(_) => "color",
             Data::List(_) => "list",
             Data::Record { .. } => "record",
@@ -385,9 +391,44 @@ prim!(
     |t: &Duration| Data::Duration(*t),
     |d: &Data| match d {
         Data::Duration(t) => Some(*t),
+        // Below zero: none at all, as before the sign crossed.
+        Data::NegDuration(_) => Some(Duration::ZERO),
         _ => None,
     }
 );
+
+/// (player-raise-seek) A `duration` that may be below zero, in seconds:
+/// what an action that moves by a time takes (`media.seek(by: -15s)`
+/// seeks back). Read from [`Data::Duration`] and [`Data::NegDuration`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Offset(pub f64);
+
+impl ToData for Offset {
+    fn to_data(&self) -> Data {
+        let size = Duration::try_from_secs_f64(self.0.abs()).unwrap_or(Duration::MAX);
+        if self.0 < 0.0 {
+            Data::NegDuration(size)
+        } else {
+            Data::Duration(size)
+        }
+    }
+}
+
+impl FromData for Offset {
+    fn from_data(d: &Data) -> Result<Self, DataError> {
+        match d {
+            Data::Duration(t) => Ok(Offset(t.as_secs_f64())),
+            Data::NegDuration(t) => Ok(Offset(-t.as_secs_f64())),
+            _ => Err(DataError::expected("duration", d)),
+        }
+    }
+}
+
+impl SchemaType for Offset {
+    fn schema_type() -> String {
+        "duration".to_string()
+    }
+}
 prim!(
     Rgba,
     "color",
@@ -490,6 +531,7 @@ mod tests {
                 variant: "critical".into(),
             },
             Data::Duration(Duration::from_millis(1500)),
+            Data::NegDuration(Duration::from_millis(250)),
             Data::Color(Rgba::rgb(1.0, 0.0, 0.0)),
             Data::Int(-3),
             Data::text("secret \"x\""),
@@ -498,7 +540,7 @@ mod tests {
         d.write_json(&mut s, &mut |t| t != "secret \"x\"").unwrap();
         assert_eq!(
             s,
-            r##"[{"name":"Speakers","volume":0.5,"muted":false,"port":null},"critical",1500,"#ff0000ff",-3,{"~text":10}]"##
+            r##"[{"name":"Speakers","volume":0.5,"muted":false,"port":null},"critical",1500,-250,"#ff0000ff",-3,{"~text":10}]"##
         );
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v[0]["name"], "Speakers");
@@ -516,6 +558,27 @@ mod tests {
         assert!(bool::from_data(&Data::Int(1)).is_err());
         assert_eq!(<Vec<Option<f64>>>::schema_type(), "[float?]");
         assert_eq!(<Option<Duration>>::schema_type(), "duration?");
+    }
+
+    /// (player-raise-seek) A duration below zero keeps its sign as an
+    /// [`Offset`], and reads as zero where a plain [`Duration`] is taken.
+    #[test]
+    fn a_negative_duration_keeps_its_sign_as_an_offset() {
+        let back = Data::NegDuration(Duration::from_millis(15_000));
+        assert_eq!(Offset::from_data(&back), Ok(Offset(-15.0)));
+        assert_eq!(Offset(-15.0).to_data(), back);
+        assert_eq!(
+            Offset::from_data(&Data::Duration(Duration::from_secs(5))),
+            Ok(Offset(5.0))
+        );
+        assert_eq!(
+            Offset(5.0).to_data(),
+            Data::Duration(Duration::from_secs(5))
+        );
+        assert!(Offset::from_data(&Data::Float(-15.0)).is_err());
+        assert_eq!(Duration::from_data(&back), Ok(Duration::ZERO));
+        assert_eq!(back.kind(), "duration");
+        assert_eq!(Offset::schema_type(), "duration");
     }
 
     #[test]

@@ -307,6 +307,7 @@ pub fn coerce(types: &TypeTable, ty: &Ty, d: &Data) -> Option<Value> {
             .and_then(|s| std::time::Duration::try_from_secs_f64(s).ok())
             .map(Value::from),
         (Ty::Prim(Prim::Duration), Data::Duration(t)) => Some(Value::from(*t)),
+        (Ty::Prim(Prim::Duration), Data::NegDuration(_)) => Some(to_value(types, d)),
         (Ty::Prim(Prim::Color), Data::Color(_)) => Some(to_value(types, d)),
         (Ty::Prim(Prim::Text | Prim::Path), d) => match d {
             Data::Text(t) => Some(Value::text(&**t)),

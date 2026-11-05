@@ -22,6 +22,7 @@ pub fn to_value(types: &TypeTable, d: &Data) -> Value {
         Data::Float(n) => Value::float(*n),
         Data::Text(t) => Value::Text(Rc::from(&**t)),
         Data::Duration(t) => Value::from(*t),
+        Data::NegDuration(t) => Value::Num(-t.as_secs_f64() * 1000.0, Num::Ms),
         Data::Color(c) => Value::Color(Color::new(c.r, c.g, c.b, c.a)),
         Data::List(items) => Value::list(items.iter().map(|d| to_value(types, d)).collect()),
         Data::Record { ty, fields } => {
@@ -60,8 +61,16 @@ pub fn to_data(types: &TypeTable, v: &Value) -> Data {
         Value::Null | Value::Unit => Data::Null,
         Value::Bool(b) => Data::Bool(*b),
         Value::Num(n, Num::Int) => Data::Int(*n as i64),
+        // (player-raise-seek) A duration below zero keeps its sign
+        // (`media.seek(by: -15s)`); one no `Duration` holds is zero.
         Value::Num(ms, Num::Ms) => {
-            Data::Duration(std::time::Duration::try_from_secs_f64(ms / 1000.0).unwrap_or_default())
+            let size =
+                std::time::Duration::try_from_secs_f64(ms.abs() / 1000.0).unwrap_or_default();
+            if *ms < 0.0 && !size.is_zero() {
+                Data::NegDuration(size)
+            } else {
+                Data::Duration(size)
+            }
         }
         Value::Num(n, Num::Percent) => Data::Float(n / 100.0),
         Value::Num(n, _) => Data::Float(*n),
@@ -130,11 +139,22 @@ mod tests {
             Value::float(0.25),
             Value::text("hi"),
             Value::from(std::time::Duration::from_millis(1500)),
+            Value::Num(-15_000.0, Num::Ms),
             Value::Color(Color::new(0.5, 0.25, 1.0, 1.0)),
             Value::list(vec![Value::float(0.1), Value::float(0.2)]),
         ] {
             assert_eq!(to_value(types, &to_data(types, &v)), v, "{v:?}");
         }
+        // (player-raise-seek) A duration below zero keeps its sign, as
+        // `media.seek(by: -15s)` needs; one no duration holds is zero.
+        assert_eq!(
+            to_data(types, &Value::Num(-15_000.0, Num::Ms)),
+            Data::NegDuration(std::time::Duration::from_secs(15))
+        );
+        assert_eq!(
+            to_data(types, &Value::Num(f64::NAN, Num::Ms)),
+            Data::Duration(std::time::Duration::ZERO)
+        );
         // A record by field names; a missing field takes its default.
         let d = Data::Record {
             ty: "Range".into(),

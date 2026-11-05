@@ -2596,7 +2596,11 @@ constant there). It never depends on `strand-compiler` and never sees
 `Value`. Service state is typed Rust; where something is handled by
 name it is `strand_services::Data` (`src/data.rs`), with `ToData` /
 `FromData` / `SchemaType` for primitives, `Option`, `Vec` and derived
-types.
+types. A `duration` below zero crosses as `Data::NegDuration` (its
+size): `strand_services::Offset` reads it with its sign, for an action
+that moves by a time (`media.seek(by: -15s)`), and `Duration` reads it
+as zero, as every duration below zero read before the sign crossed
+(decisions.md player-raise-seek).
 
 `strand_services::child` is the spawn contract: every program Strand
 starts, in any crate, must run `child::restore_in_child()` as its
@@ -2699,7 +2703,9 @@ itself.
   `dbus::properties_rule`), `notifications` (our own server;
   history in the persist store), `apps`, `idle`, `polkit` (our own
   authentication agent), `greetd`, `auth`, `media` (MPRIS; remote art
-  through `art`), `tray`, `session` (logind), `outputs`, `clipboard`,
+  through `art`; a player's icon and app from its `DesktopEntry`
+  through `apps::AppIndex`, looked up on the blocking pool and again on
+  `apps::changes()`), `tray`, `session` (logind), `outputs`, `clipboard`,
   `workspaces`/`windows`/`wm`, `audio`, `video` and `power`
   (power-profiles-daemon under either bus name, never D-Bus-activated).
   `auth`, `polkit` and

@@ -289,13 +289,17 @@ and only while a visible reader shows it.
 | `player` | `text?` | The active player's name, such as `Firefox` or `mpv`; null when no player runs. |
 | `can_next` | `bool` | The active player can skip to the next track (MPRIS `CanGoNext`): `opacity: media.can_next ? 1 : 0.4`. False when no player runs or it takes no control (`CanControl` false). |
 | `can_previous` | `bool` | The active player can go back to the previous track (`CanGoPrevious`, as `can_next`). |
-| `can_seek` | `bool` | Writing `position` seeks: the active player can seek (`CanSeek`, as `can_next`) and the track's length is known. |
+| `can_seek` | `bool` | Writing `position` seeks: the active player can seek (`CanSeek`, as `can_next`) and the track's length is known. A scrubber's flag; a skip by a time needs only `can_seek_by`. |
 | `shuffle` | `bool rw` | The active player shuffles: `on click { media.shuffle = !media.shuffle }`. Writable: MPRIS `Shuffle`. False when no player runs or it has no shuffle. A write it cannot take (`can_shuffle` false) leaves the value as it was. |
 | `loop` | `Loop rw` | What the active player repeats: `media.loop = playlist`. Writable: MPRIS `LoopStatus`. `none` when no player runs or it has no loop setting. A write it cannot take (`can_loop` false) leaves the value as it was. |
 | `volume` | `float rw` | The active player's own volume, apart from the system's (`audio.sink.volume`): `slider { value: <-> media.volume }`. 0 to 1, as MPRIS `Volume` reports it (above 1 when the player amplifies). Writable: a write is held to 0 to 1, and one it cannot take (`can_volume` false) leaves the value as it was. 0 when no player runs or it has no volume. |
 | `can_shuffle` | `bool` | Writing `shuffle` changes it: the active player has MPRIS `Shuffle` and takes control (`CanControl` not false). False when no player runs. |
 | `can_loop` | `bool` | Writing `loop` changes it (`LoopStatus`, as `can_shuffle`). |
 | `can_volume` | `bool` | Writing `volume` changes it (`Volume`, as `can_shuffle`). |
+| `can_raise` | `bool` | `media.raise()` brings the active player forward: its MPRIS `CanRaise` (a player that does not say counts as able). False when no player runs. |
+| `can_seek_by` | `bool` | `media.seek(by)` seeks the active player: its MPRIS `CanSeek` (as `can_next`), whether or not the track's length is known, so a skip button that works on a stream is `if media.can_seek_by { … }`. Unlike `can_seek` (writing `position`), it needs no length. False when no player runs. |
+| `icon` | `text?` | An icon name for the active player's app. Found as a window's `icon` is, the app named by the player's MPRIS `DesktopEntry` (else by its bus name: `vlc` for `org.mpris.MediaPlayer2.vlc.instance42`) in place of an app id: its desktop entry's icon, else that name (lowercased when only that is in the icon theme). So when no entry matches it is the name itself, which the theme may lack; `image media.app?.icon ?? "audio-x-generic"` falls back then. Null when no player runs. |
+| `app` | `App?` | The installed app the active player belongs to, found as `icon`'s entry is: `media.app?.name`. Null when no player runs or no entry matches. |
 | `players` | `[Player]` | Every player running, keyed by its bus name (`for p in media.players key p.id { … }`): a switcher, a card per player. The one `media.*` follows is `active`; `p.select()` picks another. Read only while a visible reader reads it; its playing players' times tick once a second then. |
 
 | Method | |
@@ -303,6 +307,8 @@ and only while a visible reader shows it.
 | `action play_pause()` | Plays or pauses. |
 | `action next()` | Skips to the next track. |
 | `action previous()` | Goes back to the previous track. |
+| `action raise()` | Brings the active player's window forward (MPRIS `Raise`), such as the browser tab that plays: `on click { media.raise() }`. Not asked when `can_raise` is false. |
+| `action seek(by: duration)` | Seeks the active player by `by` from where it is, back when `by` is negative: `media.seek(by: -15s)`. MPRIS `Seek`, so it works on a track of unknown length too; the time shows the target at once and the player's `Seeked` corrects it. Not asked when `can_seek_by` is false. |
 
 ## `memory`
 

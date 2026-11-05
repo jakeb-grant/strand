@@ -1039,6 +1039,14 @@ provisional record Player key id {
   can_loop: bool
   /// Writing `volume` changes it.
   can_volume: bool
+  /// `raise()` brings it forward.
+  can_raise: bool
+  /// `seek(by)` seeks it.
+  can_seek_by: bool
+  /// An icon name for its app.
+  icon: text
+  /// The installed app it belongs to, when an entry matches.
+  app: App?
   /// Plays or pauses it.
   action play_pause()
   /// Skips it to the next track.
@@ -1047,6 +1055,10 @@ provisional record Player key id {
   action previous()
   /// Makes it the player `media.*` follows.
   action select()
+  /// Brings its window forward.
+  action raise()
+  /// Seeks it by `by` from where it is, back when negative.
+  action seek(by: duration)
 }
 
 /// The active media player, over MPRIS.
@@ -1090,6 +1102,15 @@ provisional service media {
   can_loop: bool
   /// Writing `volume` changes it.
   can_volume: bool
+  /// `media.raise()` brings the active player forward.
+  can_raise: bool
+  /// `media.seek(by)` seeks the active player.
+  can_seek_by: bool
+  /// An icon name for the active player's app; null when no player runs.
+  icon: text?
+  /// The installed app the active player belongs to, when an entry
+  /// matches.
+  app: App?
   /// Every player running, keyed by its bus name.
   players: [Player]
   /// Plays or pauses.
@@ -1098,6 +1119,11 @@ provisional service media {
   action next()
   /// Goes back to the previous track.
   action previous()
+  /// Brings the active player's window forward.
+  action raise()
+  /// Seeks the active player by `by` from where it is, back when
+  /// negative.
+  action seek(by: duration)
 }
 
 /// Portal settings.
