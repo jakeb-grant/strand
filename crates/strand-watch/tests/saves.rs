@@ -1491,9 +1491,10 @@ fn rewritten_every_5_ms(fx: &Fx, path: &Path, style: Style) {
     let last = seen.iter().flat_map(|b| &b.changes).last().unwrap();
     assert_modified(last, path, &body(n));
     // `max_delay` (500 ms) after the first write, with slack for a
-    // loaded machine; it used to be never while the writes went on.
+    // loaded runner (GitHub's took up to 1.01 s, decisions.md
+    // inplace-gate); it used to be never while the writes went on.
     let mut gates = strand_test_support::gate::Gates::default();
-    gates.check(first < Duration::from_millis(800), || {
+    gates.check(first < Duration::from_millis(2000), || {
         format!("{style:?}: read first at {first:?}")
     });
     gates.hold();
