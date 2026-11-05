@@ -419,6 +419,89 @@ fn keyed_reorder_glides_to_new_slots() {
     assert_eq!(st.red_top(10), Some(48));
 }
 
+/// A `set` (spec.md 9.4) making `$motion.spatial` a linear `duration`,
+/// as a node's tokens (render takes any transition there).
+fn spatial_over(duration: Duration) -> (Prop, PropValue) {
+    let mut t = TokenTable::default();
+    t.insert(
+        "motion.spatial",
+        PropValue::Transition(Transition::Duration {
+            duration,
+            easing: Easing::Linear,
+        }),
+    );
+    (Prop::Tokens, PropValue::Tokens(Box::new(t)))
+}
+
+/// (glide-curve) Siblings glide to their new places on the
+/// `$motion.spatial` in effect where they are (spec.md 6.6): two columns
+/// side by side reorder alike, the red box moved from the top to the
+/// end. In the one under `set { $motion.spatial: 100ms linear }` it
+/// glides its 48 px evenly over 100 ms, never past its slot; in the one
+/// beside it, outside the set, along the default spring. (Every glide
+/// took the global `$motion.spatial`, the set's ignored.)
+#[test]
+fn a_glide_follows_the_spatial_token_in_effect_where_it_is() {
+    let mut reds = Vec::new();
+    let mut st = Stage::new(80, 80, |b, root| {
+        let row = b.node(NodeKind::Row, Some(root), vec![(Prop::Gap, num(20.0))]);
+        for set in [true, false] {
+            let mut props = vec![(Prop::Gap, num(4.0))];
+            if set {
+                props.push(spatial_over(Duration::from_millis(100)));
+            }
+            let col = b.node(NodeKind::Col, Some(row), props);
+            reds.push(red_box(b, col, vec![]));
+            for c in ["#00ff00", "#0000ff"] {
+                b.node(
+                    NodeKind::Box,
+                    Some(col),
+                    vec![(Prop::Size, num(20.0)), (Prop::Bg, color(c))],
+                );
+            }
+        }
+    });
+    // Each column's top (the row centres them in the panel).
+    let base = st.red_top(10).unwrap() as i32;
+    assert_eq!(st.red_top(50), Some(base as u32));
+    let mut d = SceneDiff::new();
+    for red in &reds {
+        let col = st.r.tree().get(*red).unwrap().parent.unwrap();
+        d.push(SceneOp::Move {
+            id: *red,
+            parent: Some(col),
+            index: 2,
+        });
+    }
+    st.apply(d);
+    let (mut set, mut outside) = (Vec::new(), Vec::new());
+    let mut k = 1;
+    while st.r.wants_frame(S) {
+        st.paint(frame(k));
+        set.push(st.red_top(10).unwrap() as i32 - base);
+        outside.push(st.red_top(50).unwrap() as i32 - base);
+        k += 1;
+        assert!(k < 400, "never settled");
+    }
+    assert_eq!((set.last(), outside.last()), (Some(&48), Some(&48)));
+    // Linear over 100 ms at 60 Hz: 8 px a frame (whole pixels), its
+    // first frame one refresh along.
+    let moving: Vec<i32> = std::iter::once(set[0])
+        .chain(set.windows(2).map(|w| w[1] - w[0]))
+        .filter(|d| *d != 0)
+        .collect();
+    assert!(
+        (5..=7).contains(&moving.len()) && moving.iter().all(|d| (7..=9).contains(d)),
+        "linear over 100 ms: {set:?}"
+    );
+    assert!(set.iter().all(|t| *t <= 48), "never past its slot: {set:?}");
+    assert_springs_to(&outside, 0, 48);
+    assert!(
+        outside.iter().any(|t| *t > 48),
+        "the default spring overshoots: {outside:?}"
+    );
+}
+
 /// (decisions.md first-frame-lead) A change starts one refresh of its
 /// surface before the first frame that shows it: on a 144 Hz surface
 /// that sat idle, a glide's first frame shows one 144 Hz frame of

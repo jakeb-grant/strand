@@ -1187,7 +1187,12 @@ monitor, the keyboard always).
   where it animates to before it unmounts; without one, `exit` mirrors
   `enter`. Poses apply to surfaces, `if` branches, `for` copies, list
   items and pages. Siblings of a node that is added, removed or moved
-  glide to their new places.
+  glide to their new places. Each glides on the `$motion.spatial` in
+  effect where it is, so `set { $motion.spatial: spring(520, 0.78) }` in
+  a row (section 9.4) gives its children's glides that spring, and a
+  `drag:` source let go springs back on the same; while a content-sized
+  surface's box springs over a step of its content, what moves in it
+  glides with the box, on the box's curve (decisions.md glide-curve).
   A `popup`'s contents mount each time it opens, so their `enter`
   poses play at every open, which a stagger on open relies on. A popup
   that starts out looking like something already on screen would

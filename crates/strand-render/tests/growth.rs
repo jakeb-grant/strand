@@ -802,6 +802,52 @@ fn the_spatial_token_reaches_the_growth() {
     assert_eq!(*hs.last().unwrap(), 54.0);
 }
 
+/// (glide-curve) While the box springs over a step, what a change moves
+/// in it glides with the box, on the step's curve, whatever
+/// `$motion.spatial` is in effect where it lies: a centred panel growing
+/// a row below its red row has a row mounted above the red one two
+/// frames in, which pushes it 24 px down, and the red row is drawn on
+/// screen frame for frame where it is drawn with no set, its column
+/// under `set { $motion.spatial: 1s linear }` (on the set's slower curve
+/// it would lag the box it rides in). At rest the set's curve is the one
+/// its rows glide on (motion.rs,
+/// `a_glide_follows_the_spatial_token_in_effect_where_it_is`).
+#[test]
+fn a_glide_mid_growth_takes_the_steps_curve_under_a_set() {
+    let path = |set: bool| {
+        let (mut diff, root, col, _) = centred_panel(vec![]);
+        if set {
+            let mut t = TokenTable::default();
+            t.insert(
+                "motion.spatial",
+                PropValue::Transition(Transition::Duration {
+                    duration: Duration::from_secs(1),
+                    easing: Easing::Linear,
+                }),
+            );
+            diff.set(col, Prop::Tokens, PropValue::Tokens(Box::new(t)));
+        }
+        let mut h = Host::new(diff, root);
+        h.run();
+        let (d, _) = mount(col, 60, 1);
+        h.apply(d);
+        let mut shots = Vec::new();
+        for _ in 0..2 {
+            shots.push(h.frame().expect("moving").expect("painted"));
+        }
+        let (d, _) = mount(col, 61, 0);
+        h.apply(d);
+        shots.extend(h.shots());
+        shots
+            .iter()
+            .map(|s| s.red_on_screen(CENTRE))
+            .collect::<Vec<_>>()
+    };
+    let (plain, under) = (path(false), path(true));
+    assert!(plain.len() >= 4, "it moves: {plain:?}");
+    assert_eq!(under, plain, "the set's curve moved what the growth moves");
+}
+
 /// Under reduced motion growth and shrink are immediate.
 #[test]
 fn reduced_motion_makes_growth_immediate() {

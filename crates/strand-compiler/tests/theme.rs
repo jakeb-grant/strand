@@ -443,6 +443,35 @@ fn subtree_overrides_inherit_and_stay_readable() {
     assert!(fg.to_oklch().l > shell.color("fg").to_oklch().l);
 }
 
+/// (glide-curve) `set { $motion.spatial: spring(520, 0.78) }` loads and
+/// hands render the spring as the subtree's `$motion.spatial`, the curve
+/// its siblings glide on (spec.md 6.6, 9.4); so does a `let` naming the
+/// spring (the curve the row's own `~` uses).
+#[test]
+fn a_set_overrides_the_spatial_motion_with_a_spring() {
+    let spring = |t: &Transition| {
+        *t == Transition::Spring {
+            stiffness: 520.0,
+            damping: 0.78,
+        }
+    };
+    for value in ["spring(520, 0.78)", "glide"] {
+        let src = format!(
+            "let glide = spring(520, 0.78)\nbar B {{\n  row {{\n    set {{ $motion.spatial: {value} }}\n    box {{ width: 8 ~ glide }}\n  }}\n}}\n"
+        );
+        let shell = boot(&[("t.strand", src)], Storage::none());
+        let rows = shell.scene.of_kind(strand_scene::NodeKind::Row);
+        let Some(PropValue::Tokens(set)) = shell.scene.prop(rows[0], strand_scene::Prop::Tokens)
+        else {
+            panic!("{value}: no set")
+        };
+        let levels = [shell.tokens(), set.as_ref()];
+        let scope = strand_scene::TokenScope::new(&levels);
+        let got = scope.transition(&Transition::Default, strand_scene::Prop::X);
+        assert!(spring(&got), "{value}: {got:?}");
+    }
+}
+
 /// A palette file broken at boot or on a later save: the error is
 /// reported and the last good palette holds (this run's, or the one the
 /// last run persisted), never the built-in colours.

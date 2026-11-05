@@ -15,7 +15,7 @@ use strand_scene::{
 };
 
 use super::Renderer;
-use super::layout_pass::TextInfo;
+use super::layout_pass::{TextInfo, glide_curve};
 use crate::anim::{exit_pose, is_pose, page_slide};
 use crate::layout::{
     keep_in_view, layout_margin, list_columns, list_horizontal, relayout_list, row_span,
@@ -173,15 +173,15 @@ impl Renderer {
 
     /// (M4) Drag and drop: draws `node` (a `drag:` source) `offset` away
     /// from its box, above its siblings, as the pointer drags it; `None`
-    /// lets it go, and it springs (`$motion.spatial`, as a FLIP) from
-    /// where it was held to its box, or to the box a drop moved it to.
+    /// lets it go, and it springs (`$motion.spatial` as the tokens in
+    /// effect at `node` give it, as a FLIP: [`glide_curve`]) from where it
+    /// was held to its box, or to the box a drop moved it to.
     /// Under `reduced_motion` it is back at once.
     pub fn lift(&mut self, node: NodeId, offset: Option<LogicalPoint>) {
         let curve = if self.anim.reduced() {
             Curve::Instant
         } else {
-            let tables = [&self.tree.tokens];
-            Curve::of(&TokenScope::new(&tables).transition(&Transition::Default, Prop::X))
+            glide_curve(&self.tree, node)
         };
         self.anim.lift(node, offset.map(|p| [p.x, p.y]), curve);
         self.mark_node_dirty(node);

@@ -284,17 +284,17 @@ impl Renderer {
         boxes
     }
 
-    /// The curve a FLIP glide on surface root `root` plays: the default
-    /// transition's, or (growth) while its box springs over a step, the
-    /// step's (its height's where that steps, else its width's), so what
-    /// the step moves in its box glides with it.
-    fn flip_curve(&self, root: NodeId) -> Curve {
+    /// The curve every FLIP glide on surface root `root` plays, if one
+    /// curve does: (growth) while its box springs over a step, the step's
+    /// (its height's where that steps, else its width's), so what the step
+    /// moves in its box glides with it. Otherwise `None`: each node glides
+    /// on its own `$motion.spatial` ([`glide_curve`]).
+    fn flip_curve(&self, root: NodeId) -> Option<Curve> {
         let axes = self.anim.step_axes(root);
-        if let Some(axis) = [1, 0].into_iter().find(|a| axes[*a]) {
-            return self.step_curve(root, axis);
-        }
-        let tables = [&self.tree.tokens];
-        Curve::of(&TokenScope::new(&tables).transition(&strand_scene::Transition::Default, Prop::X))
+        [1, 0]
+            .into_iter()
+            .find(|a| axes[*a])
+            .map(|axis| self.step_curve(root, axis))
     }
 
     /// (popup-shrink) How the surface node `root` is laid out in `frame`,
@@ -1385,6 +1385,15 @@ pub(super) struct Compare<'a> {
     pub glided_only: bool,
 }
 
+/// (glide-curve) The curve `id` glides on: the default spatial
+/// transition, `$motion.spatial`, as the tokens in effect at `id` give it,
+/// so a `set { $motion.spatial: … }` in a row gives its children's glides
+/// that spring (spec.md 6.6, 9.4).
+pub(super) fn glide_curve(tree: &SceneTree, id: NodeId) -> Curve {
+    let scopes = crate::flatten::scope_tables(tree, id);
+    Curve::of(&TokenScope::new(&scopes).transition(&strand_scene::Transition::Default, Prop::X))
+}
+
 /// FLIP: every node whose parent is in `parents` (all with `all`) and
 /// whose box moved starts where it was and glides to its new place;
 /// one never drawn (`unpainted`) has no place it was.
@@ -1416,7 +1425,7 @@ pub(super) fn glide_moved(
     all: bool,
     unpainted: &HashSet<NodeId>,
     shifts: &mut HashMap<NodeId, Glided>,
-    curve: Curve,
+    curve: Option<Curve>,
 ) {
     let Compare {
         old,
@@ -1487,6 +1496,7 @@ pub(super) fn glide_moved(
             }
             let delta = (total.0 - given.0, total.1 - given.1);
             let glided = if big(delta) {
+                let curve = curve.unwrap_or_else(|| glide_curve(tree, *c));
                 anim.glide(*c, [delta.0, delta.1], curve);
                 let g = shifts.entry(*c).or_default();
                 g.by = total;
