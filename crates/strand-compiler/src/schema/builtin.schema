@@ -2277,12 +2277,23 @@ element scroll: node {
 ///
 /// Focused, arrows move its selection, Return activates the selected row, once
 /// a press however long it is held, and Right (Down on a horizontal list) opens
-/// a popup the row holds (a menu's submenu).
+/// a popup the row holds (a menu's submenu). When the selected row leaves
+/// and other rows stay, the selection stays at its place: on the row that
+/// takes it, or on the new last row when it was the last.
 element list: node {
   /// A wheel step or a touchpad's lift settles with a row's start at the
   /// view's start, as a `scroll`'s `snap`, rows not mounted yet
   /// included.
   snap: bool
+  /// The row its selection starts on, from 0, in place of the first:
+  /// `selected_index: names.index_of(n => n == current)`. It is selected
+  /// where the list would start on its first row (it mounts, its page
+  /// comes back, its `nav:` input's text changes), and again whenever the
+  /// value changes, until the user moves the selection. A row not there
+  /// yet is waited for: nothing is selected meanwhile, `selected_index`
+  /// reads the row, and it is selected when the row arrives. Null starts
+  /// as a list without it does.
+  selected_index: int?
   /// Arrows and `next()` and `prev()` go round from one end to the other.
   /// Page keys, Home and End stop at the ends.
   wrap: bool

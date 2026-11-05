@@ -1485,6 +1485,30 @@ monitor, the keyboard always).
   `results.selected_index` (`int?`) is the selected row's place among all the
   rows, null with none and on other elements: reactive, it follows a tick
   behind the keys, and an `on change` of it is input, as of `selected`.
+- **Where a `list`'s selection starts, and where it goes.** `selected_index:
+  n` on a `list` (`int?`) is the row its selection starts on, in place of the
+  first: a `nav:` list selects it wherever it would select its first row (it
+  mounts or comes back, its rows arrive, its input's text changes, its
+  surface opens again, its rows change under the same text while the user
+  has not moved the selection), and any list selects it when it mounts and
+  again whenever the value changes, while the user has not moved the
+  selection since (an arrow, a click, or a list action from a handler); a
+  new text in its `nav:` input lets it follow again. Below 0 is the first
+  row. A row the list does not have yet is waited for, never put on the last
+  row: nothing is selected, `selected_index` reads `n`, and the row is
+  selected (and scrolled into view) when it arrives, so a page whose rows
+  and start come in after it opens lands on its row with no handler and
+  never shows its first row on the way. An arrow meanwhile moves from `n`'s
+  place among the rows there; Return goes where `select(n)` would, the last
+  row, and activates it. Null starts as a list without it does: a `nav:`
+  list on its first row, another with no selection, and a turn to null
+  leaves the selection where it is. When the selected row leaves (logic
+  removes it: a keyed item gone, not the window scrolling past it) while
+  other rows that were there stay, the selection stays at its place: on the
+  row that takes it (`selected_index` unchanged), or the new last row when
+  it was the last. When no row stays (every row replaced, a page
+  of the list changed, or none left) the list starts again: on its start,
+  else as above. (decisions.md list-selection)
 - **`wrap: true` on a `list`** takes the arrows and `next()` and `prev()`
   round from one end to the other; Page keys, Home and End, and `select`
   stop at the ends.

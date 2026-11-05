@@ -342,6 +342,12 @@ props! {
     /// step and a touchpad's lift settle with a child's start at the
     /// view's start.
     Snap = "snap": Snap,
+    /// (list-selection) `selected_index: n` on a `list` (`Number`; unset
+    /// when null): the row its selection starts on, in place of its first,
+    /// waited for while the list has fewer rows. The router selects it
+    /// when the list starts its selection and when it changes, unless the
+    /// user moved the selection since (spec.md 6.7).
+    SelectedIndex = "selected_index": Snap,
     /// (graph-follow) A `graph`'s line width, or each bar's under
     /// `style: bars`.
     LineWidth = "line_width": Snap,

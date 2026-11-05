@@ -121,6 +121,14 @@ do nothing. `results.selected_index` is the selected row's place, from 0, or
 null with none. `wrap: true` takes the arrows, `next()` and `prev()` round from
 one end to the other.
 
+To start somewhere other than the first row, name the row with
+`selected_index:` on the list: `selected_index: names.index_of(n => n ==
+current)` opens on `current`. A row that has not arrived yet is waited for, so
+a list whose rows come in after it opens lands on its row with no handler. The
+selection follows the value until someone moves it. When the selected row
+leaves and others stay, as when a notification is cleared, the selection
+stays at its place, on the row that takes it.
+
 ## A strip or a grid
 
 `axis: horizontal` lays a list out in a line, and `columns: 4` as a grid. It is
