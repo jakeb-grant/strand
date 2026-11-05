@@ -2333,9 +2333,7 @@ impl<'a> Checker<'a> {
 
     /// The key type of a keyed list value.
     fn key_ty(&mut self, recv: &hir::Expr, elem: &Ty) -> Option<Ty> {
-        if let ExprKind::Def(d) = recv.kind
-            && let Some(path) = self.state_keys.get(&d).cloned()
-        {
+        if let Some(path) = self.key_path_of(recv, 0) {
             return match elem {
                 Ty::Record(r) => self.types.field_path(*r, &path),
                 _ => Some(elem.clone()),
@@ -2347,6 +2345,46 @@ impl<'a> Checker<'a> {
             return self.types.field_path(*r, &path);
         }
         None
+    }
+
+    /// (dictionary) The path of the field the items of a list expression
+    /// are known by, when it is not their own identity: the `key` of the
+    /// keyed `state` it derives from, through `let`s (`view_keys`)
+    /// and the steps that keep items (`filter`, `take`, `skip`, `sort_by`,
+    /// `reverse`; `fuzzy`'s `Match<T>` by `item.<key>`). Lowering finds
+    /// `xs.get(k)`'s item by the same path (`Lowerer::get_key`).
+    pub(super) fn key_path_of(&self, e: &hir::Expr, depth: usize) -> Option<Vec<String>> {
+        if depth > 64 {
+            return None;
+        }
+        match &e.kind {
+            ExprKind::Def(d) => self
+                .state_keys
+                .get(d)
+                .or_else(|| self.view_keys.get(d))
+                .cloned(),
+            ExprKind::Call {
+                callee: hir::Callee::Method { receiver, name, .. },
+                ..
+            } if matches!(
+                name.as_str(),
+                "filter" | "take" | "skip" | "sort_by" | "reverse"
+            ) =>
+            {
+                self.key_path_of(receiver, depth + 1)
+            }
+            ExprKind::Call {
+                callee: hir::Callee::Method { receiver, name, .. },
+                ..
+            } if name == "fuzzy" => self
+                .key_path_of(receiver, depth + 1)
+                .or_else(|| match receiver.ty.non_null().list_elem() {
+                    Some((Ty::Record(r), _)) => self.types.record(*r).key.clone(),
+                    _ => None,
+                })
+                .map(|path| std::iter::once("item".to_string()).chain(path).collect()),
+            _ => None,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2407,7 +2445,14 @@ impl<'a> Checker<'a> {
                         name.span,
                         "no key to find items by",
                     );
-                    d.help = Some("declare one: `state xs: [T] key field = []`".into());
+                    d.help = Some(if n == "get" {
+                        // (dictionary) `get` is by key only.
+                        "declare one: `state xs: [T] key field = []`; without one, `xs[i]` reads \
+                         an item by its position and `xs.find(x => …)` by a test"
+                            .into()
+                    } else {
+                        "declare one: `state xs: [T] key field = []`".into()
+                    });
                     if let Some((file, at, fields)) = slot {
                         for f in fields {
                             super::tree::add_key(

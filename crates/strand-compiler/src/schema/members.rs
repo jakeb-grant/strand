@@ -223,6 +223,13 @@ pub fn list_members(elem: &Ty, keyed: bool, key: &Ty) -> Vec<MemberInfo> {
             "Whether `item` is in the list.",
         ),
         m(
+            "get",
+            vec![param("key", key.clone())],
+            t.clone().optional(),
+            false,
+            "The item with `key`, or null (keyed lists: `tray.items.get(id)`).",
+        ),
+        m(
             "any",
             vec![param("test", pred.clone())],
             Ty::BOOL,

@@ -113,7 +113,7 @@ Builtin functions and values, every name in scope in every file, and the methods
 
 ### `[T]`
 
-A list of `T` items. `remove_key`, `move` and `update` are a keyed list's (`[T] key field`, or a keyed record's), `K` its key's type.
+A list of `T` items. `get`, `remove_key`, `move` and `update` are a keyed list's (`[T] key field`, or a keyed record's), `K` its key's type.
 
 | Member | |
 | --- | --- |
@@ -132,6 +132,7 @@ A list of `T` items. `remove_key`, `move` and `update` are a keyed list's (`[T] 
 | `fn reduce(init: U, f: fn(U, T) -> U) -> U` | `init` carried through every item in order by `f`, which takes what it gave last and the item: `xs.reduce(0, (sum, x) => sum + x)`, `init` for no items. Its type is `init`'s. |
 | `fn join(sep: text) -> text` | The text items joined with `sep`. |
 | `fn contains(item: T) -> bool` | Whether `item` is in the list. |
+| `fn get(key: K) -> T?` | The item with `key`, or null (keyed lists: `tray.items.get(id)`). |
 | `fn any(test: fn(T) -> bool) -> bool` | Whether `test` is true for some item. |
 | `fn all(test: fn(T) -> bool) -> bool` | Whether `test` is true for every item. |
 | `fn count(test: fn(T) -> bool) -> int` | How many items `test` is true for. |

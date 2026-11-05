@@ -10,7 +10,8 @@ use strand_scene::{BinOp, Color, Oklch, TokenExpr, TokenMethod};
 use super::Vm;
 use super::exec::{Args, EventCtx};
 use super::value::{
-    AsyncValue, CallValue, Dict, NodeState, Num, PendingOp, Value, dict_key, key_cmp, time_in_logic,
+    AsyncValue, CallValue, Dict, NodeState, Num, PendingOp, Value, ValueKey, dict_key, item_key,
+    key_cmp, time_in_logic,
 };
 use crate::hir::{BinaryOp, UnaryOp};
 use crate::ty::{Prim, RecordId, Ty, TypeTable};
@@ -313,6 +314,28 @@ pub(crate) fn entries(m: &Value, entry: RecordId) -> Value {
 /// One `Entry<K, V>`: its `key` and `value` fields in the schema's order.
 fn entry_of(entry: RecordId, k: &Value, v: &Value) -> Value {
     Value::record(entry, vec![k.clone(), v.clone()])
+}
+
+/// (dictionary) `xs.get(k)`: the item of `items` known by `key`, or
+/// null. An item is known by its field at `path` (the text `a.b` lowering
+/// gives for a `state`'s `key`), else by its own identity (a keyed
+/// record's `key`); keys compare as identities (`ValueKey`: `3` and `3.0`
+/// one key, `2px` and `2ch` two).
+pub(crate) fn get_by_key<'a>(
+    types: &TypeTable,
+    items: impl IntoIterator<Item = &'a Value>,
+    key: &Value,
+    path: &Value,
+) -> Value {
+    let path: Option<Vec<String>> = path
+        .as_text()
+        .map(|p| p.split('.').map(str::to_string).collect());
+    let key = ValueKey(key.clone());
+    items
+        .into_iter()
+        .find(|v| ValueKey(item_key(v, types, path.as_deref())) == key)
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 /// `base[index]`: a list's item at a position, a dictionary's value for a
@@ -1545,6 +1568,13 @@ fn list_method(
             )
         }
         "contains" => Value::Bool(items.iter().any(|v| equal(v, &f))),
+        // (dictionary) Lowering passes the key path after the key.
+        "get" => get_by_key(
+            types,
+            items,
+            &f,
+            &args.get(1).cloned().unwrap_or(Value::Null),
+        ),
         "any" => {
             for v in items {
                 if test(v)? {

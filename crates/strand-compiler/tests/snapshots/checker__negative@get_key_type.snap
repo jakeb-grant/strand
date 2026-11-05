@@ -1,0 +1,25 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::type_mismatch
+
+  × `key` of `pins.get` expects `text`, found `int`
+   ╭─[get_key_type.strand:7:17]
+ 6 │ bar B {
+ 7 │   text pins.get(3)?.label ?? ""
+   ·                 ┬
+   ·                 ╰── this is `int`
+ 8 │   text workspaces.all.get("one")?.name ?? ""
+   ╰────
+
+check::type_mismatch
+
+  × `key` of `workspaces.all.get` expects `int`, found `text`
+   ╭─[get_key_type.strand:8:27]
+ 7 │   text pins.get(3)?.label ?? ""
+ 8 │   text workspaces.all.get("one")?.name ?? ""
+   ·                           ──┬──
+   ·                             ╰── this is `text`
+ 9 │ }
+   ╰────

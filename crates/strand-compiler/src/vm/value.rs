@@ -1120,13 +1120,17 @@ pub fn keyed_vec<H: 'static>(
     types: fn(&H) -> &TypeTable,
     path: Option<Vec<String>>,
 ) -> KeyedVec<ValueKey, Value> {
-    KeyedVec::new(move |v: &Value| {
-        let t = types(&holder);
-        ValueKey(match &path {
-            Some(p) => v.key_path(t, p).cloned().unwrap_or(Value::Null),
-            None => v.identity(t),
-        })
-    })
+    KeyedVec::new(move |v: &Value| ValueKey(item_key(v, types(&holder), path.as_deref())))
+}
+
+/// The key an item of a keyed collection is known by: its field at
+/// `path` (a `state`'s `key`; null when it has none), else its own
+/// identity (a keyed record's `key`, else the item).
+pub fn item_key(v: &Value, types: &TypeTable, path: Option<&[String]>) -> Value {
+    match path {
+        Some(p) => v.key_path(types, p).cloned().unwrap_or(Value::Null),
+        None => v.identity(types),
+    }
 }
 
 /// `v`, a value of a program with type table `from`, as a value of a

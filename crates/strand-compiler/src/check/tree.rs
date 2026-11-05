@@ -2994,6 +2994,10 @@ impl<'a> Checker<'a> {
         }
         let ty = declared.unwrap_or_else(|| value.ty.clone());
         self.defs[id.0 as usize].ty = ty;
+        // (dictionary) A `let` over a keyed `state` is known by its key.
+        if let Some(path) = self.key_path_of(&value, 0) {
+            self.view_keys.insert(id, path);
+        }
         if !self.is_reactive(&value) {
             self.constant_lets.insert(id);
         }

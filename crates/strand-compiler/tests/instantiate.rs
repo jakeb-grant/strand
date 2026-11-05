@@ -1057,6 +1057,114 @@ fn remove_key_finds_a_key_whatever_its_number_tag() {
     }
 }
 
+/// (dictionary) `xs.get(k)` reads the item with key `k`, or `null`, on a
+/// keyed `state` (core's collection: one lookup through the tracked
+/// accessor), a persisted one (a plain list cell, found by its `key`), a
+/// view `let` over it (a scan of the view's items) and a chain written in
+/// place (`rows.take(9).get(k)`, found by the `state`'s `key` that
+/// lowering passes). Each binding follows the collection and the key:
+/// a push, an update, a remove and a new key each show at once.
+#[test]
+fn get_reads_by_key_and_is_null_on_a_miss() {
+    for persist in ["", " persist"] {
+        let src = format!(
+            "type Row {{ id: int; label: text }}\nstate rows: [Row] key id = [Row(id: 1, label: \"a\")]{persist}\nstate at = 2\nlet shown = rows.filter(r => r.id > 0)\nbar B {{\n  text rows.get(1)?.label ?? \"-\"\n  text rows.get(at)?.label ?? \"-\"\n  text shown.get(at)?.label ?? \"-\"\n  text rows.take(9).get(at)?.label ?? \"-\"\n  box {{ on click {{ rows.push(Row(id: 2, label: \"b\")) }} }}\n  box {{ on click {{ rows.update(2, r => Row(id: r.id, label: \"c\")) }} }}\n  box {{ on click {{ rows.remove_key(1) }} }}\n  box {{ on click {{ at = 3 }} }}\n  box {{ on click {{ rows.push(Row(id: 3, label: \"d\")) }} }}\n}}\n"
+        );
+        let seen = click_each_box(&src);
+        let none: Vec<String> = Vec::new();
+        let texts: Vec<&str> = seen.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "a - - -", "a b b b", "a c c c", "- c c c", "- - - -", "- d d d"
+            ],
+            "{persist}"
+        );
+        for (i, (_, errors)) in seen.iter().enumerate() {
+            assert_eq!(errors, &none, "{persist} {i}");
+        }
+    }
+}
+
+/// (dictionary) `xs.get(k)` on a service's keyed list (core's keyed
+/// signal), on a view `let` over it, and on a list reached through an
+/// item's field (`n.actions`, found by its records' own `key`): each
+/// follows the service's changes.
+#[test]
+fn get_on_a_service_list_and_a_view_tracks_the_collection() {
+    let src = "let mail = notifications.popups.filter(n => n.app.name == \"mail\")\nbar B {\n  text notifications.popups.get(1)?.summary ?? \"-\"\n  text mail.get(1)?.summary ?? \"-\"\n  text notifications.popups.get(1)?.actions?.get(\"reply\")?.label ?? \"-\"\n}\n";
+    let mut shell = boot(&[("get.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert_eq!(shell.scene.texts().join(" "), "- - -");
+    let popups = |host: &SchemaHost, summary: &str, actions: &[(&str, &str)]| {
+        let actions = actions
+            .iter()
+            .map(|(id, label)| {
+                host.record(
+                    "NotificationAction",
+                    &[("id", Value::text(*id)), ("label", Value::text(*label))],
+                )
+            })
+            .collect();
+        let mail = host.record(
+            "Notification",
+            &[
+                ("id", Value::int(1)),
+                (
+                    "app",
+                    host.record("NotificationApp", &[("name", Value::text("mail"))]),
+                ),
+                ("summary", Value::text(summary)),
+                ("urgency", host.variant("Urgency", "normal")),
+                ("actions", Value::list(actions)),
+            ],
+        );
+        Value::list(vec![notification(host, 2, "chat", "other", "normal"), mail])
+    };
+    type Step<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
+    let steps: [Step; 3] = [
+        ("hi", &[("reply", "Reply")], "hi hi Reply"),
+        (
+            "bye",
+            &[("open", "Open"), ("reply", "Answer")],
+            "bye bye Answer",
+        ),
+        ("bye", &[("open", "Open")], "bye bye -"),
+    ];
+    for (summary, actions, want) in steps {
+        let v = popups(&shell.host, summary, actions);
+        shell
+            .host
+            .set(&shell.rt, "notifications.popups", v)
+            .unwrap();
+        let u = shell.flush();
+        assert!(u.errors.is_empty(), "{:?}", u.errors);
+        assert_eq!(shell.scene.texts().join(" "), want);
+    }
+    shell
+        .host
+        .set(&shell.rt, "notifications.popups", Value::list(Vec::new()))
+        .unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts().join(" "), "- - -");
+}
+
+/// (dictionary) `xs.get(k)` finds an item whatever its number key's tag,
+/// as `remove_key` does: items whose `float` key was written `3` (held as
+/// `3.0`) are found by an `int` state holding 3, on a keyed `state`, a
+/// persisted one, a view and a chain in place.
+#[test]
+fn get_finds_a_key_whatever_its_number_tag() {
+    for persist in ["", " persist"] {
+        let src = format!(
+            "type Row {{ at: float; label: text }}\nstate rows: [Row] key at = [Row(at: 3, label: \"a\"), Row(at: 4, label: \"b\")]{persist}\nstate three = 3\nlet shown = rows.filter(r => r.at > 0)\nbar B {{\n  text rows.get(three)?.label ?? \"-\"\n  text shown.get(three)?.label ?? \"-\"\n  text rows.take(9).get(three)?.label ?? \"-\"\n  text rows.get(3.5)?.label ?? \"-\"\n}}\n"
+        );
+        let seen = click_each_box(&src);
+        assert_eq!(seen[0].0, "a a a -", "{persist}");
+    }
+}
+
 /// Events go to the innermost handler; `propagate()` passes one on.
 #[test]
 fn events_bubble_and_propagate() {
@@ -3211,24 +3319,24 @@ fn keyed_chains_update_incrementally() {
     assert_eq!(shell.scene.texts(), ["r6", "r8", "r10", "r12", "r14"]);
 }
 
-/// `.len`, `.first`, `[i]` and `.contains` on a keyed collection go
-/// through core's accessors: a change never copies the list.
+/// `.len`, `.first`, `[i]`, `.contains` and `.get` on a keyed collection
+/// go through core's accessors: a change never copies the list.
 #[test]
 fn keyed_reads_do_not_copy_the_list() {
     let mut src = String::from("type Row { id: int; label: text }\nstate rows: [Row] key id = [");
     for i in 0..2000 {
         src.push_str(&format!("Row(id: {i}, label: \"r{i}\"), "));
     }
-    src.push_str("]\nstate next = 5000\nbar B {\n  text join(\" \", rows.len, rows.first?.label, rows[1]?.label, rows.contains(Row(id: 3, label: \"r3\")))\n  button { on click { rows.push(Row(id: next, label: \"new\")); next += 1 } }\n}\n");
+    src.push_str("]\nstate next = 5000\nbar B {\n  text join(\" \", rows.len, rows.first?.label, rows[1]?.label, rows.contains(Row(id: 3, label: \"r3\")), rows.get(3)?.label)\n  button { on click { rows.push(Row(id: next, label: \"new\")); next += 1 } }\n}\n");
     let mut shell = boot(&[("len.strand", &src)], |rt, host| {
         screens(rt, host, &["DP-1"])
     });
-    assert_eq!(shell.scene.texts(), ["2000 r0 r1 true"]);
+    assert_eq!(shell.scene.texts(), ["2000 r0 r1 true r3"]);
     let button = shell.inst.nodes_handling("click")[0];
     let before = shell.rt.stats().computations;
     shell.inst.event(button, "click", Vec::new());
     shell.flush();
-    assert_eq!(shell.scene.texts(), ["2001 r0 r1 true"]);
+    assert_eq!(shell.scene.texts(), ["2001 r0 r1 true r3"]);
     // The text's binding only: no list value is rebuilt.
     assert_eq!(shell.rt.stats().computations - before, 1);
 }

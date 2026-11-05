@@ -1,0 +1,32 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::missing_key
+
+  × `get` needs a keyed collection, and `notes` has no key
+    ╭─[get_unkeyed.strand:9:14]
+  8 │ bar B {
+  9 │   text notes.get("a")?.label ?? ""
+    ·              ─┬─
+    ·               ╰── no key to find items by
+ 10 │   text labels.get(0) ?? ""
+    ╰────
+  help: declare one: `state xs: [T] key field = []`; without one, `xs[i]` reads an item by its
+        position and `xs.find(x => …)` by a test
+
+check::missing_key
+
+  × `get` needs a keyed collection, and `labels` has no key
+    ╭─[get_unkeyed.strand:10:15]
+  9 │   text notes.get("a")?.label ?? ""
+ 10 │   text labels.get(0) ?? ""
+    ·               ─┬─
+    ·                ╰── no key to find items by
+ 11 │ }
+    ╰────
+  help: declare one: `state xs: [T] key field = []`; without one, `xs[i]` reads an item by its
+        position and `xs.find(x => …)` by a test
+
+fix [check::missing_key] get_unkeyed.strand@296: + ` key app` (Add `key app`)
+fix [check::missing_key] get_unkeyed.strand@296: + ` key label` (Add `key label`)

@@ -628,9 +628,14 @@ impl Machine {
                 }
                 Op::Fail(n) => return Err(fail(chunk.names[*n as usize].clone())),
                 Op::Keyed { root, query } => {
-                    let arg = matches!(query, KeyedQuery::Index | KeyedQuery::Contains)
-                        .then(|| self.pop());
-                    let v = self.keyed(vm, rt, chunk, root, *query, arg)?;
+                    // `get`'s key path is above its key.
+                    let path = (*query == KeyedQuery::Get).then(|| self.pop());
+                    let arg = matches!(
+                        query,
+                        KeyedQuery::Index | KeyedQuery::Contains | KeyedQuery::Get
+                    )
+                    .then(|| self.pop());
+                    let v = self.keyed(vm, rt, chunk, root, *query, arg, path)?;
                     self.stack.push(v);
                 }
             }
@@ -668,7 +673,9 @@ impl Machine {
 
     /// [`Op::Keyed`]: a keyed collection answered through core's
     /// accessors (tracked on the collection, no copy of the list); any
-    /// other list value is read and queried as usual.
+    /// other list value is read and queried as usual. `path` is `get`'s
+    /// key path (see [`KeyedQuery::Get`]).
+    #[allow(clippy::too_many_arguments)]
     fn keyed(
         &self,
         vm: &Rc<Vm>,
@@ -677,11 +684,15 @@ impl Machine {
         root: &KeyedRoot,
         query: KeyedQuery,
         arg: Option<Value>,
+        path: Option<Value>,
     ) -> Result<Value, Error> {
+        let path = path.unwrap_or(Value::Null);
         let cell = match root {
             KeyedRoot::Def(d) => match self.env.def(*d) {
                 Some(super::Slot::Keyed(k, _)) => Some(k),
-                Some(super::Slot::View(v, _)) => return view_query(rt, v, query, arg),
+                Some(super::Slot::View(v, _)) => {
+                    return view_query(rt, vm.types(), v, query, arg, &path);
+                }
                 _ => None,
             },
             KeyedRoot::Service { service, field } => vm.host.read_keyed(
@@ -715,6 +726,11 @@ impl Machine {
                         rest: Vec::new(),
                     },
                 ),
+                // (dictionary) A persisted keyed `state` is a plain cell:
+                // found by its `key` in the list read (tracked) above.
+                KeyedQuery::Get => Ok(base.as_list().map_or(Value::Null, |xs| {
+                    builtins::get_by_key(vm.types(), xs, &arg, &path)
+                })),
             };
         };
         let item = |v: Option<&(ValueKey, Value)>| v.map_or(Value::Null, |(_, x)| x.clone());
@@ -731,6 +747,16 @@ impl Machine {
             KeyedQuery::Contains => k.with(rt, |v| {
                 let key = (v.key_fn())(&arg);
                 Value::Bool(v.get(&key).is_some_and(|x| builtins::equal(x, &arg)))
+            }),
+            // (dictionary) One lookup by key, read through `with` so a
+            // binding over `xs.get(k)` follows the collection. The
+            // collection's own key is the one `get` finds by (a `state`'s
+            // `key`, a service item's identity), so the key is looked up
+            // as it is.
+            KeyedQuery::Get => k.with(rt, |v| {
+                v.get(&ValueKey(arg.clone()))
+                    .cloned()
+                    .unwrap_or(Value::Null)
             }),
         }
     }
@@ -752,13 +778,17 @@ impl Machine {
     }
 }
 
-/// `shown.len`, `.first`, `.last`, `[i]`, `.contains(x)` on a view `let`,
-/// through the view's items (no list copy).
+/// `shown.len`, `.first`, `.last`, `[i]`, `.contains(x)`, `.get(k)` on a
+/// view `let`, through the view's items (no list copy). `get` scans them
+/// by `path`: a view keeps its source's keys, and a mapped view's items
+/// are found by their own.
 fn view_query(
     rt: &Runtime,
+    types: &crate::ty::TypeTable,
     v: strand_core::KeyedMemo<ValueKey, Value>,
     query: KeyedQuery,
     arg: Option<Value>,
+    path: &Value,
 ) -> Result<Value, Error> {
     let item = |v: Option<&(ValueKey, Value)>| v.map_or(Value::Null, |(_, x)| x.clone());
     let arg = arg.unwrap_or(Value::Null);
@@ -772,6 +802,9 @@ fn view_query(
         }
         KeyedQuery::Contains => v.with(rt, |xs| {
             Value::Bool(xs.iter().any(|(_, x)| builtins::equal(x, &arg)))
+        }),
+        KeyedQuery::Get => v.with(rt, |xs| {
+            builtins::get_by_key(types, xs.iter().map(|(_, x)| x), &arg, path)
         }),
     }
 }

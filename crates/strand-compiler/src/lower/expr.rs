@@ -319,6 +319,21 @@ impl Lowerer<'_> {
         }
     }
 
+    /// (dictionary) Push the path `xs.get(k)` finds an item of
+    /// `receiver` by ([`super::Lowerer::get_key`]): its fields joined
+    /// with `.` as text, or `null` for the item's own identity.
+    fn get_key_path(&mut self, c: &mut Chunk, receiver: &hir::Expr, span: Span) {
+        match self.get_key(receiver, 0) {
+            Some(path) => {
+                let k = c.constant(Const::Text(path.join(".")));
+                c.emit(Op::Const(k), span);
+            }
+            None => {
+                c.emit(Op::Null, span);
+            }
+        }
+    }
+
     /// (dictionary) The `Entry<K, V>` of a dictionary type, which the
     /// checker made when the program read its entries.
     fn entry_record(&self, ty: &Ty) -> Option<crate::ty::RecordId> {
@@ -520,6 +535,26 @@ impl Lowerer<'_> {
                     Op::Keyed {
                         root,
                         query: KeyedQuery::Contains,
+                    },
+                    span,
+                );
+            }
+            // (dictionary) `xs.get(k)` on a keyed `state`, view or
+            // service list: one lookup by key through the tracked
+            // accessor.
+            ExprKind::Call {
+                callee: Callee::Method { receiver, name, .. },
+                args,
+            } if name == "get" && args.len() == 1 && self.keyed_root(c, receiver).is_some() => {
+                let root = self
+                    .keyed_root(c, receiver)
+                    .unwrap_or(KeyedRoot::Def(DefId(0)));
+                self.expr(c, &args[0].value);
+                self.get_key_path(c, receiver, span);
+                c.emit(
+                    Op::Keyed {
+                        root,
+                        query: KeyedQuery::Get,
                     },
                     span,
                 );
@@ -816,6 +851,16 @@ impl Lowerer<'_> {
                     if let Some(m) = c.args.last_mut() {
                         m.params.push(at);
                         m.arity = at + 1;
+                    }
+                }
+                // (dictionary) `xs.get(k)` on any other list (`n.actions`,
+                // `pins.filter(…)`): the path its items are known by, after
+                // the key.
+                if list_recv && name == "get" {
+                    self.get_key_path(c, receiver, span);
+                    if let Some(m) = c.args.last_mut() {
+                        m.params.push(1);
+                        m.arity = 2;
                     }
                 }
                 let n = c.name(name);

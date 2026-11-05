@@ -707,8 +707,8 @@ fn functions(s: &Schema) -> String {
     let _ = writeln!(o, "### `[T]`\n");
     let _ = writeln!(
         o,
-        "A list of `T` items. `remove_key`, `move` and `update` are a keyed \
-         list's (`[T] key field`, or a keyed record's), `K` its key's type.\n"
+        "A list of `T` items. `get`, `remove_key`, `move` and `update` are a \
+         keyed list's (`[T] key field`, or a keyed record's), `K` its key's type.\n"
     );
     let _ = writeln!(o, "| Member | |");
     let _ = writeln!(o, "| --- | --- |");

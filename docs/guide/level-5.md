@@ -621,9 +621,10 @@ with named fields. Build one with its name and named arguments:
 list of pins, and `key app` says each pin is known by its `app`. Change
 it with `pins.push(p)`, `pins.insert(i, p)`, `pins.remove_key(k)`,
 `pins.move(k, i)` and `pins.update(k, …)`; removing a key that is not
-there does nothing. Because each item is known by
-its key, an icon keeps its place, its animation and anything it holds
-when the order changes, and glides to its new spot. `persist` keeps the
+there does nothing. `pins.get(k)` reads the pin with key `k`, `null`
+when there is none, while `pins[0]` is still the first. Because each
+item is known by its key, an icon keeps its place, its animation and
+anything it holds when the order changes, and glides to its new spot. `persist` keeps the
 list across restarts.
 
 **A dictionary remembers one value per key**, when there is no record

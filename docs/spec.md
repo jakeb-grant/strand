@@ -1207,6 +1207,15 @@ monitor, the keyboard always).
   collection does not hold does nothing, so forgetting an item is safe
   to repeat; `move` and `update` of one are an error of the handler
   (section 8.3), as `push` and `insert` of a key it already holds are.
+- `xs.get(k)` reads the item whose key is `k`, or `null` when there is
+  none: `tray.items.get(id)`, `pins.get(app)`. It is for keyed lists: a
+  service's (by its items' own key), a `state`'s with `key f`, and a
+  view `let` or chain over one (`pins.filter(…).get(app)`, by the
+  `state`'s `key`). `k` has the key's type, and a binding over
+  `xs.get(k)` follows the collection. `get` on a list with no key is a
+  load error (`check::missing_key`). `xs[i]` stays a position on every
+  list: a key never goes in a list's brackets (decisions.md
+  dictionary).
   `.filter`, `.map`, `.take`, `.sort_by` and `.fuzzy` on a keyed
   collection or a service list keep keys and update incrementally.
 - A dictionary's `m.entries` is keyed by each entry's `key` (section

@@ -590,6 +590,53 @@ fn dictionaries_check_by_their_key_and_value_types() {
     assert_eq!(entry[0].key.as_deref(), Some(&["key".to_string()][..]));
 }
 
+/// (dictionary) `xs.get(k)` reads a `T?` by the collection's key: a
+/// service list's by its records' own `key` (`tray.items.get(id)`, the
+/// shell's `find(i => i.id == id)`), a keyed `state`'s by its `key`
+/// clause, and a view `let` or a chain over that `state` (`filter`,
+/// `take`, `fuzzy`'s `Match<T>`) by the same clause, which they carry
+/// without one of their own. The key is typed by it: a number for a
+/// `text` key is a mismatch.
+#[test]
+fn keyed_get_reads_by_the_collections_key() {
+    let src = "type Pin { app: text; at: int }\n\
+               state pins: [Pin] key app = []\n\
+               state open = \"\"\n\
+               let shown = pins.filter(p => p.at > 0)\n\
+               let alias = shown\n\
+               let hits = pins.fuzzy(open, p => p.app)\n\
+               let item = tray.items.get(open)\n\
+               let ws = workspaces.all.get(2)\n\
+               let pin = pins.get(open)\n\
+               let seen = shown.get(open)\n\
+               let aliased = alias.get(open)\n\
+               let first = pins.take(3).get(open)\n\
+               let hit = hits.get(open)\n";
+    let out = one(src);
+    let p = &out.program;
+    for (name, ty) in [
+        ("item", "TrayItem?"),
+        ("ws", "Workspace?"),
+        ("pin", "Pin?"),
+        ("seen", "Pin?"),
+        ("aliased", "Pin?"),
+        ("first", "Pin?"),
+        ("hit", "Match<Pin>?"),
+    ] {
+        assert_eq!(def_ty(p, name), ty, "{name}");
+    }
+    assert_eq!(
+        codes(
+            "type Pin { app: text; at: int }\nstate pins: [Pin] key app = []\nlet p = pins.get(3)\n"
+        ),
+        ["check::type_mismatch"]
+    );
+    assert_eq!(
+        codes("let w = workspaces.all.get(\"one\")\n"),
+        ["check::type_mismatch"]
+    );
+}
+
 /// (dictionary) What a dictionary refuses beyond the negative corpus: a
 /// read through a missing entry needs `?.`, its writes are for handlers
 /// on a writable place, a `get` or `set` method says how to read and

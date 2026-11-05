@@ -104,6 +104,12 @@ Each error and its fix:
   service field, an action's parameter or a command's output reads a
   list of a `type` you declare instead. A plugin's schema that declares
   a dictionary is skipped with a warning saying the same.
+- **`check::unknown_field`**, "dictionaries have no method `get`": read
+  an entry as `m[k]`, which is `null` when the key is absent.
+- **`check::missing_key`**, "`get` needs a keyed collection, and … has
+  no key": `xs.get(k)` is a keyed list's, finding an item by its key.
+  Declare the key, `state xs: [T] key field = []`, or read the list by
+  position, `xs[i]`, or by a test, `xs.find(x => …)`.
 
 ## A settings dictionary keeps its last good value
 

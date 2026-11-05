@@ -436,6 +436,9 @@ pub(crate) struct Checker<'a> {
     pub tokens: tokens::Tokens<'a>,
     /// Key paths of keyed `state` collections.
     pub state_keys: HashMap<DefId, Vec<String>>,
+    /// (dictionary) Key paths of `let`s over one (`let shown =
+    /// pins.filter(…)`): what `shown.get(k)` finds by.
+    pub view_keys: HashMap<DefId, Vec<String>>,
     /// Where `key …` would go in an unkeyed `state` list of records.
     pub key_slots: HashMap<DefId, (FileId, u32)>,
     /// Untyped component parameters (an error if used).
@@ -589,6 +592,7 @@ impl<'a> Checker<'a> {
             comp_sigs: HashMap::new(),
             tokens: tokens::Tokens::default(),
             state_keys: HashMap::new(),
+            view_keys: HashMap::new(),
             key_slots: HashMap::new(),
             untyped: HashSet::new(),
             reported: HashSet::new(),

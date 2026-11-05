@@ -163,6 +163,8 @@ A `for` gives each item its own copy, kept by the item's **key**: a
 workspace by its id, a notification by its id. When the list changes,
 copies whose key stays keep their state and slide to their new place.
 A list of plain values names its key, `for p in pins key p.app`.
+A keyed list reads one item by its key with `get`: `tray.items.get(id)`
+is the tray item with that id, or `null` when there is none.
 
 ## Handlers
 

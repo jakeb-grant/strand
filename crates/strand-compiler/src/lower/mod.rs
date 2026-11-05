@@ -1763,6 +1763,48 @@ impl Lowerer<'_> {
         }
     }
 
+    /// (dictionary) The path of the field `xs.get(k)` finds an item of
+    /// `e` by: the `key` of the keyed `state` it derives from, through
+    /// any `let` and the steps that keep items (`filter`, `take`, `skip`,
+    /// `sort_by`, `reverse`; `fuzzy`'s `Match<T>` by `item.<key>`), as
+    /// the checker typed `k` (`check::Checker::key_path_of`). `None`: by
+    /// the item's own identity (a keyed record's `key`).
+    pub(crate) fn get_key(&self, e: &hir::Expr, depth: usize) -> Option<Vec<String>> {
+        if depth > 64 {
+            return None;
+        }
+        match &e.kind {
+            hir::ExprKind::Def(d) => match self.out.state_keys.get(d) {
+                Some(k) => Some(k.clone()),
+                None => self
+                    .let_exprs
+                    .get(d)
+                    .and_then(|e| self.get_key(e, depth + 1)),
+            },
+            hir::ExprKind::Call {
+                callee: hir::Callee::Method { receiver, name, .. },
+                ..
+            } if matches!(
+                name.as_str(),
+                "filter" | "take" | "skip" | "sort_by" | "reverse"
+            ) =>
+            {
+                self.get_key(receiver, depth + 1)
+            }
+            hir::ExprKind::Call {
+                callee: hir::Callee::Method { receiver, name, .. },
+                ..
+            } if name == "fuzzy" => self
+                .get_key(receiver, depth + 1)
+                .or_else(|| match receiver.ty.non_null().list_elem() {
+                    Some((Ty::Record(r), _)) => self.hir.types.record(*r).key.clone(),
+                    _ => None,
+                })
+                .map(|path| std::iter::once("item".to_string()).chain(path).collect()),
+            _ => None,
+        }
+    }
+
     pub(crate) fn add_chunk(&mut self, c: Chunk) -> ChunkId {
         self.out.chunks.push(c);
         let id = self.out.chunks.len() as ChunkId - 1;
