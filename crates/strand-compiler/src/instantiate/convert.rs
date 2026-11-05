@@ -340,7 +340,9 @@ fn convert(types: &TypeTable, ty: &Ty, v: &Value, border_pair: bool) -> Option<P
                 .collect(),
         ),
         Value::Node(n) => PropValue::Node(n.scene.get()?),
+        // No prop takes a dictionary (the checker says so).
         Value::Fn(_)
+        | Value::Dict(_)
         | Value::Palette(_)
         | Value::TokenSet(_)
         | Value::Keyframes(_)

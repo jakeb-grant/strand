@@ -6467,3 +6467,131 @@ panel P {
     shell.at(4.0);
     assert_eq!(runs(&shell), [2.0, 2.0, 1.0], "opened again");
 }
+
+/// (dictionary) A dictionary `state` is one cell: a `let` reading one
+/// entry (`used["a"]`) re-runs on any write, but the equality cut-off
+/// stops there unless its entry changed, so what reads the `let` does
+/// not re-run when another key is written.
+#[test]
+fn a_let_over_one_entry_does_not_rerun_its_dependents_when_another_changes() {
+    let src = "state used: [text: int] = []\nlet a = used[\"a\"] ?? 0\nbar B {\n  text join(\" \", a * 10)\n  box { on click { used[\"b\"] = 1 } }\n  box { on click { used[\"a\"] = 2 } }\n}\n";
+    let mut shell = boot(&[("used.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert_eq!(shell.scene.texts(), ["0"]);
+    let boxes = shell.inst.nodes_handling("click");
+    let before = shell.rt.stats().computations;
+    shell.inst.event(boxes[0], "click", Vec::new());
+    let u = shell.flush();
+    assert!(u.diff.ops.is_empty(), "{:?}", u.diff);
+    // The `let` only: the text's binding is cut off.
+    assert_eq!(shell.rt.stats().computations - before, 1);
+    let before = shell.rt.stats().computations;
+    shell.inst.event(boxes[1], "click", Vec::new());
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["20"]);
+    assert_eq!(shell.rt.stats().computations - before, 2);
+}
+
+/// (dictionary) `for e in m.entries` keeps each row by its key (`Entry`'s
+/// `key`): a value change updates that row's node in place, a new key
+/// mounts at its place in key order, a removed key's row leaves, and
+/// the other rows keep their nodes.
+#[test]
+fn rows_of_entries_keep_state_across_writes() {
+    let src = "state m: [int: text] = [1: \"a\", 3: \"c\"]\nbar B {\n  for e in m.entries { text e.value }\n  box { on click { m[2] = \"b\" } }\n  box { on click { m[1] = \"A\" } }\n  box { on click { m.remove(3) } }\n}\n";
+    let mut shell = boot(&[("rows.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert_eq!(shell.scene.texts(), ["a", "c"]);
+    let (a, c) = (shell.text_node("a"), shell.text_node("c"));
+    let boxes = shell.inst.nodes_handling("click");
+    shell.inst.event(boxes[0], "click", Vec::new());
+    let u = shell.flush();
+    assert_eq!(shell.scene.texts(), ["a", "b", "c"]);
+    let creates = u
+        .diff
+        .ops
+        .iter()
+        .filter(|op| matches!(op, SceneOp::Create { .. }))
+        .count();
+    assert_eq!(creates, 1, "{:?}", u.diff);
+    assert_eq!(shell.text_node("a"), a);
+    assert_eq!(shell.text_node("c"), c);
+    shell.inst.event(boxes[1], "click", Vec::new());
+    let u = shell.flush();
+    assert_eq!(shell.scene.texts(), ["A", "b", "c"]);
+    assert_eq!(shell.text_node("A"), a, "the row of key 1 kept its node");
+    assert!(
+        u.diff
+            .ops
+            .iter()
+            .all(|op| matches!(op, SceneOp::SetProp { .. })),
+        "{:?}",
+        u.diff
+    );
+    shell.inst.event(boxes[2], "click", Vec::new());
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["A", "b"]);
+    assert_eq!(shell.text_node("A"), a);
+}
+
+/// (dictionary) `on change m[k]` fires only when that entry's value
+/// changes, and sees `null` once the entry is removed; writes to other
+/// keys do not fire it.
+#[test]
+fn on_change_an_entry_fires_only_for_that_key() {
+    let src = "state m: [int: text] = [1: \"a\"]\nstate fired = 0\nstate seen = \"\"\non change m[1] { fired += 1; seen = m[1] ?? \"gone\" }\nbar B {\n  text join(\" \", fired, seen)\n  box { on click { m[2] = \"b\" } }\n  box { on click { m[1] = \"A\" } }\n  box { on click { m[1] = \"A\"; m[3] = \"c\" } }\n  box { on click { m.remove(1) } }\n  box { on click { m[2] = \"B\" } }\n}\n";
+    let seen = click_each_box(src);
+    let texts: Vec<&str> = seen.iter().map(|(t, _)| t.trim_end()).collect();
+    assert_eq!(texts, ["0", "0", "1 A", "1 A", "2 gone", "2 gone"]);
+    assert!(seen.iter().all(|(_, e)| e.is_empty()), "{seen:?}");
+}
+
+/// (dictionary) The issue's case end to end: the last window used on each
+/// workspace, written as focus moves and read by key when a workspace
+/// chip is clicked (`windows.all.find(w => w.id == (last_win[ws.id] ??
+/// ""))?.focus()`), with no list of records to filter and append.
+#[test]
+fn the_last_window_on_each_workspace_is_remembered_by_key() {
+    let src = "state last_win: [int: text] = []\non change windows.focused?.id {\n  let at = windows.focused?.workspace ?? -1\n  if at >= 0 { last_win[at] = windows.focused?.id ?? \"\" }\n}\nbar B {\n  text last_win.entries.map(e => join(\"=\", e.key, e.value)).join(\" \")\n  for ws in workspaces.all {\n    box { on click { windows.all.find(w => w.id == (last_win[ws.id] ?? \"\"))?.focus() } }\n  }\n}\n";
+    let mut shell = boot(&[("last.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+        let ws = |id: i64| host.record("Workspace", &[("id", Value::int(id))]);
+        host.set(rt, "workspaces.all", Value::list(vec![ws(1), ws(2)]))
+            .unwrap();
+    });
+    let win = |id: &str, ws: i64| {
+        shell.host.record(
+            "Window",
+            &[("id", Value::text(id)), ("workspace", Value::int(ws))],
+        )
+    };
+    let (w1, w2, w3) = (win("0x11", 1), win("0x22", 2), win("0x33", 1));
+    shell
+        .host
+        .set(
+            &shell.rt,
+            "windows.all",
+            Value::list(vec![w1.clone(), w2.clone(), w3.clone()]),
+        )
+        .unwrap();
+    shell.flush();
+    for w in [w1, w2, w3] {
+        shell.host.set(&shell.rt, "windows.focused", w).unwrap();
+        let u = shell.flush();
+        assert!(u.errors.is_empty(), "{:?}", u.errors);
+    }
+    // `on change` takes the first focus as its baseline.
+    assert_eq!(shell.scene.texts(), ["1=0x33 2=0x22"]);
+    let chips = shell.inst.nodes_handling("click");
+    shell.inst.event(chips[1], "click", Vec::new());
+    shell.flush();
+    let actions: Vec<String> = shell
+        .host
+        .take_actions()
+        .iter()
+        .map(|a| a.to_string())
+        .collect();
+    assert_eq!(actions, ["Window(0x22).focus(0)"]);
+}

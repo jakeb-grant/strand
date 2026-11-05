@@ -2010,3 +2010,28 @@ fn a_stale_claim_number_after_a_reload_spends_the_key() {
     shell.flush();
     assert_eq!(shell.value("bar", "b"), Value::int(1));
 }
+
+/// (dictionary) A reload keeps a dictionary `state` by its entries: an
+/// enum key is translated by its variant's name, and the entries are put
+/// back in the new program's key order (the variants' new declaration
+/// order).
+#[test]
+fn a_reload_keeps_a_dictionary_in_the_new_key_order() {
+    let src = |variants: &str| {
+        format!(
+            "enum U {{ {variants} }}\nstate m: [U: int] = []\nbar Top {{\n  text m.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  box {{ on click {{ m[high] = 2; m[low] = 1 }} }}\n}}\n"
+        )
+    };
+    let mut shell = boot(&[("keys.strand", &src("low, high"))]);
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    assert!(shell.scene.find_text("low=1,high=2").is_some());
+    let (report, _) = shell.reload(&[("keys.strand", &src("high, low"))]);
+    assert!(report.notices.is_empty(), "{:?}", report.notices);
+    assert!(
+        shell.scene.find_text("high=2,low=1").is_some(),
+        "{}",
+        shell.scene.render()
+    );
+}

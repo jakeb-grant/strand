@@ -611,3 +611,174 @@ fn values_round_trip_through_report_json() {
     assert_eq!(label, Some(Value::text("xxxxxx")));
     assert!(from_json(&prog.types, &ty, &serde_json::json!(3)).is_err());
 }
+
+/// (dictionary) `[K: V]` at run time: `m[k]` reads the value for a key or
+/// null; `len`, `keys`, `values` and `entries` follow key order (ints
+/// numerically, texts by Unicode scalar, enums in declaration order,
+/// `false` before `true`) however the literal was written; of two
+/// computed keys the later wins.
+#[test]
+fn dictionaries_read_by_key_in_key_order() {
+    let src = "enum Urgency { low, normal, critical }\n\
+               state two = 1\n\
+               state names: [int: text] = [3: \"chat\", 1: \"web\", 10: \"mail\", 2: \"code\"]\n\
+               let hit = names[1] ?? \"none\"\n\
+               let miss = names[4] ?? \"none\"\n\
+               let computed = names[two] ?? \"none\"\n\
+               let n = names.len\n\
+               let keys = names.keys\n\
+               let values = names.values.join(\",\")\n\
+               let pairs = names.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n\
+               let texts: [text: int] = [\"b\": 2, \"é\": 3, \"B\": 1, \"a\": 0]\n\
+               let text_keys = texts.keys.join(\",\")\n\
+               let waits: [Urgency: duration] = [critical: 0s, low: 3s, normal: 6s]\n\
+               let wait_keys = waits.keys.map(u => join(\"\", u)).join(\",\")\n\
+               let low_wait = waits[low] ?? 1s\n\
+               let flags: [bool: text] = [true: \"on\", false: \"off\"]\n\
+               let flag_values = flags.values.join(\",\")\n\
+               state k = 1\n\
+               let later = [k: \"first\", 1: \"second\"]\n\
+               let later_n = later.len\n\
+               let later_v = later[1] ?? \"\"\n";
+    let (rt, _, inst) = run(src);
+    let types = inst.vm().types();
+    let shown = |n: &str| get(&inst, n).show(types);
+    assert_eq!(get(&inst, "hit"), Value::text("web"));
+    assert_eq!(get(&inst, "miss"), Value::text("none"));
+    // A key read through a state follows it.
+    assert_eq!(get(&inst, "computed"), Value::text("web"));
+    inst.set_value("t", "two", Value::float(2.0)).unwrap();
+    inst.flush();
+    assert_eq!(get(&inst, "computed"), Value::text("code"));
+    assert_eq!(get(&inst, "n"), Value::int(4));
+    assert_eq!(
+        get(&inst, "keys"),
+        Value::list(vec![
+            Value::int(1),
+            Value::int(2),
+            Value::int(3),
+            Value::int(10)
+        ])
+    );
+    assert_eq!(get(&inst, "values"), Value::text("web,code,chat,mail"));
+    assert_eq!(
+        get(&inst, "pairs"),
+        Value::text("1=web,2=code,3=chat,10=mail")
+    );
+    assert_eq!(get(&inst, "text_keys"), Value::text("B,a,b,é"));
+    assert_eq!(get(&inst, "wait_keys"), Value::text("low,normal,critical"));
+    assert_eq!(get(&inst, "low_wait"), Value::Num(3000.0, Num::Ms));
+    assert_eq!(get(&inst, "flag_values"), Value::text("off,on"));
+    assert_eq!(shown("names"), "1: web, 2: code, 3: chat, 10: mail");
+    // `[k: …, 1: …]` with `k` holding 1: one entry, the later.
+    assert_eq!(get(&inst, "later_n"), Value::int(1));
+    assert_eq!(get(&inst, "later_v"), Value::text("second"));
+    inst.set_value("t", "k", Value::int(5)).unwrap();
+    inst.flush();
+    assert_eq!(get(&inst, "later_n"), Value::int(2));
+    drop(rt);
+}
+
+/// (dictionary) Writes, in handlers: `m[k] = v` inserts at the key's place
+/// or replaces its value; `m[k].f = x` changes a field of a present
+/// entry; `m.remove(k)` forgets an entry and does nothing for a key the
+/// dictionary does not hold; `m.clear()` empties it; `m = m.filter(e =>
+/// …)` keeps the entries the test is true for, as a dictionary. A field
+/// write to an absent entry is a handler error value, and changes
+/// nothing.
+#[test]
+fn dictionary_writes_insert_replace_remove_and_filter() {
+    let src = "type Pin { app: text; at: int }\n\
+               state m: [int: text] = [2: \"b\"]\n\
+               state pins: [text: Pin] = [\"a\": Pin(app: \"a\", at: 1)]\n\
+               let shown = m.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n\
+               let pin_at = pins.values.map(p => join(\"@\", p.app, p.at)).join(\",\")\n\
+               bar B {\n\
+                 box { on click { m[3] = \"c\"; m[1] = \"a\"; m[2] = \"B\" } }\n\
+                 box { on click { m.remove(2); m.remove(7) } }\n\
+                 box { on click { m = m.filter(e => e.key > 1) } }\n\
+                 box { on click { m.clear() } }\n\
+                 box { on click { pins[\"a\"].at = 5 } }\n\
+                 box { on click { pins[\"z\"].at = 9 } }\n\
+                 box { on click { m[4] = \"d\" } }\n\
+                 box { on click { m.remove(9) } }\n\
+               }\n\
+               state writes = 0\n\
+               on change m { writes += 1 }\n";
+    let (rt, host, inst) = run(src);
+    host.set(
+        &rt,
+        "screens.all",
+        Value::list(vec![
+            host.record("Screen", &[("name", Value::text("DP-1"))]),
+        ]),
+    )
+    .unwrap();
+    inst.flush();
+    let boxes = inst.nodes_handling("click");
+    assert_eq!(boxes.len(), 8);
+    let click = |i: usize| {
+        inst.event(boxes[i], "click", Vec::new());
+        inst.flush()
+    };
+    assert_eq!(get(&inst, "shown"), Value::text("2=b"));
+    click(0);
+    assert_eq!(get(&inst, "shown"), Value::text("1=a,2=B,3=c"));
+    let u = click(1);
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(get(&inst, "shown"), Value::text("1=a,3=c"));
+    click(2);
+    assert_eq!(get(&inst, "shown"), Value::text("3=c"));
+    click(3);
+    assert_eq!(get(&inst, "shown"), Value::text(""));
+    assert_eq!(get(&inst, "pin_at"), Value::text("a@1"));
+    click(4);
+    assert_eq!(get(&inst, "pin_at"), Value::text("a@5"));
+    let u = click(5);
+    assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+    assert!(
+        u.errors[0]
+            .error
+            .to_string()
+            .contains("no entry for this key"),
+        "{:?}",
+        u.errors
+    );
+    assert_eq!(get(&inst, "pin_at"), Value::text("a@5"));
+    // Removing a key it does not hold writes nothing: `on change` does
+    // not fire.
+    click(6);
+    let writes = get(&inst, "writes");
+    let u = click(7);
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(get(&inst, "shown"), Value::text("4=d"));
+    assert_eq!(get(&inst, "writes"), writes);
+}
+
+/// (dictionary) `==` on dictionaries is structural: the same keys with
+/// equal values, however the literals were written (there is no
+/// insertion order to tell them apart); the derived equality agrees, so
+/// the graph's cut-off does too.
+#[test]
+fn dictionaries_compare_by_their_entries() {
+    let src = "let a: [int: text] = [1: \"x\", 2: \"y\"]\n\
+               let b: [int: text] = [2: \"y\", 1: \"x\"]\n\
+               let c: [int: text] = [1: \"x\", 2: \"z\"]\n\
+               let d: [int: text] = [1: \"x\"]\n\
+               let e: [int: text] = []\n\
+               let same = a == b\n\
+               let other_value = a == c\n\
+               let fewer = a != d\n\
+               let empty = e == []\n\
+               let ints = [1: 2]\n\
+               let floats: [int: float] = [1: 2.0]\n\
+               let widened = ints == floats\n";
+    let (_, _, inst) = run(src);
+    assert_eq!(get(&inst, "same"), Value::Bool(true));
+    assert_eq!(get(&inst, "other_value"), Value::Bool(false));
+    assert_eq!(get(&inst, "fewer"), Value::Bool(true));
+    assert_eq!(get(&inst, "empty"), Value::Bool(true));
+    // Values compare as `==` compares them: `2 == 2.0`.
+    assert_eq!(get(&inst, "widened"), Value::Bool(true));
+    assert_eq!(get(&inst, "a"), get(&inst, "b"));
+}

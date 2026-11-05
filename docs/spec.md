@@ -1202,6 +1202,19 @@ monitor, the keyboard always).
   (section 8.3), as `push` and `insert` of a key it already holds are.
   `.filter`, `.map`, `.take`, `.sort_by` and `.fuzzy` on a keyed
   collection or a service list keep keys and update incrementally.
+- A dictionary's `m.entries` is keyed by each entry's `key` (section
+  7.1): `for e in m.entries { … }` keeps a row per key across writes. A
+  changed value updates its row, a new key mounts at its place in key
+  order, and a removed key's row plays `exit`.
+- Nothing bounds a collection for you: there is no capacity and no
+  eviction. A collection that must stay small is bounded where it is
+  written. A dictionary is pruned by liveness, in the handler that
+  writes it: `used = used.filter(e => windows.all.any(w => w.id ==
+  e.key))`. A recency list stays a list, bounded by `take`: `recent =
+  ([t] + recent.filter(s => s != t)).take(8)`. Prune when you write,
+  not on a service's first report: `on change` takes the first value as
+  its baseline, and a service may first report an empty list
+  (decisions.md dictionary).
 - A `list` container lays out and mounts only its visible rows
   (virtualisation is the container's job, not the loop's).
 - Rows that change above a `list`'s view keep the rows in view where
@@ -1723,6 +1736,20 @@ monitor, the keyboard always).
     `V`, so `m[k] = null` is a type mismatch whose help says
     `m.remove(k)`. A compound `m[k] += 1` is `check::dict_compound`,
     since the entry may be missing: write `m[k] = (m[k] ?? 0) + 1`.
+    `m[k].f = x` when `k` is absent is an error of the handler (section
+    8.3), "no entry for this key", and changes nothing, as `xs[i].f =
+    x` past a list's end is. `m = m.filter(e => …)` replaces it whole.
+  - Its entries are always in key order, whatever order they were
+    written in: ints by number, `text`s and paths by Unicode scalar,
+    enums in their declaration order, `false` before `true`. `keys`,
+    `values`, `entries` and `filter` follow that order. There is no
+    insertion or recency order to keep: another order is
+    `m.entries.sort_by(e => e.value)`. When a literal's computed keys
+    repeat one, the later entry wins.
+  - A dictionary `state` is one value. A binding that reads `m[k]`
+    re-runs on any write to `m`, and stops there unless its entry's
+    value changed (section 8.1), so `on change m[k]` runs only when
+    that entry changes, and sees `null` once it is removed.
   - Its members are listed in docs/reference/functions.md under
     `[K: V]`: `len`, `keys` (a `[K]`), `values` (a `[V]`), `entries`,
     `filter(e => …)` (a `[K: V]`), and in a handler `remove(k)`, which
@@ -1789,6 +1816,9 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   `90deg < 10px`): a load error. Two `Date`s order by time, earlier
   first (`d.date < clock.today`); a date without a time of day comes
   before every time on that day.
+- `==` on two dictionaries is true when they hold the same keys, each
+  with an equal value; key order is fixed (section 7.1), so how they
+  were written does not matter. There is no `+` on dictionaries.
 - `+` on two `text`s joins them (`name + "…"`, and `s += "!"` in a
   handler); `+` between a `text` and anything else is a load error.
 - `+` on two lists of one item type joins them, the left's items first

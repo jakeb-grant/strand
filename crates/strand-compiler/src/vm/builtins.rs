@@ -9,7 +9,9 @@ use strand_scene::{BinOp, Color, Oklch, TokenExpr, TokenMethod};
 
 use super::Vm;
 use super::exec::{Args, EventCtx};
-use super::value::{AsyncValue, CallValue, NodeState, Num, PendingOp, Value, time_in_logic};
+use super::value::{
+    AsyncValue, CallValue, Dict, NodeState, Num, PendingOp, Value, dict_key, key_cmp, time_in_logic,
+};
 use crate::hir::{BinaryOp, UnaryOp};
 use crate::ty::{Prim, RecordId, Ty, TypeTable};
 
@@ -64,6 +66,7 @@ fn default_depth(types: &TypeTable, ty: &Ty, depth: u32) -> Value {
         },
         Ty::Enum(e) => Value::Enum(*e, 0),
         Ty::List(..) => Value::list(Vec::new()),
+        Ty::Dict(..) => Value::Dict(Rc::default()),
         Ty::Async(inner) => Value::Async(Rc::new(AsyncValue {
             value: Some(default_depth(types, inner, depth + 1)),
             pending: false,
@@ -255,6 +258,7 @@ pub(crate) fn field(vm: &Rc<Vm>, rt: &Runtime, base: &Value, name: &str) -> Resu
             _ => Value::Null,
         },
         Value::List(items) => list_field(items, name),
+        Value::Dict(d) => dict_field(d, name),
         Value::Text(t) if name == "len" => Value::int(t.chars().count() as i64),
         Value::Async(a) => match name {
             "pending" => Value::Bool(a.pending),
@@ -281,7 +285,45 @@ fn list_field(items: &[Value], name: &str) -> Value {
     }
 }
 
+/// (dictionary) `m.len`, `m.keys`, `m.values` (`m.entries` is
+/// [`entries`]).
+fn dict_field(d: &Dict, name: &str) -> Value {
+    match name {
+        "len" => Value::int(d.len() as i64),
+        "keys" => Value::list(d.entries().iter().map(|(k, _)| k.clone()).collect()),
+        "values" => Value::list(d.entries().iter().map(|(_, v)| v.clone()).collect()),
+        _ => Value::Null,
+    }
+}
+
+/// (dictionary) `m.entries`: an `Entry<K, V>` record (`entry`) per entry,
+/// in key order.
+pub(crate) fn entries(m: &Value, entry: RecordId) -> Value {
+    match m {
+        Value::Dict(d) => Value::list(
+            d.entries()
+                .iter()
+                .map(|(k, v)| entry_of(entry, k, v))
+                .collect(),
+        ),
+        _ => Value::Null,
+    }
+}
+
+/// One `Entry<K, V>`: its `key` and `value` fields in the schema's order.
+fn entry_of(entry: RecordId, k: &Value, v: &Value) -> Value {
+    Value::record(entry, vec![k.clone(), v.clone()])
+}
+
+/// `base[index]`: a list's item at a position, a dictionary's value for a
+/// key; null when there is none.
 pub(crate) fn index(base: &Value, index: &Value) -> Value {
+    if let Value::Dict(d) = base {
+        return d
+            .get(&dict_key(index.clone()))
+            .cloned()
+            .unwrap_or(Value::Null);
+    }
     let Some(items) = base.as_list() else {
         return Value::Null;
     };
@@ -333,6 +375,15 @@ pub fn equal(a: &Value, b: &Value) -> bool {
                 && x.fields.iter().zip(&y.fields).all(|(a, b)| equal(a, b))
         }
         (Value::Color(x), Value::Color(y)) => x.to_rgba8() == y.to_rgba8(),
+        // (dictionary) The same keys, each with an equal value: both are
+        // in key order, so pairwise.
+        (Value::Dict(x), Value::Dict(y)) => {
+            x.len() == y.len()
+                && x.entries()
+                    .iter()
+                    .zip(y.entries())
+                    .all(|((a, v), (b, w))| key_cmp(a, b) == Ordering::Equal && equal(v, w))
+        }
         _ => a == b,
     }
 }
@@ -1040,6 +1091,7 @@ pub(crate) fn method(
         Value::Text(t) => text_method(t, name, &args),
         Value::Num(n, u) => num_method(*n, *u, name, &args),
         Value::List(items) => list_method(vm, rt, items, name, args),
+        Value::Dict(d) => dict_method(vm, rt, d, name, args),
         Value::Async(a) => {
             let again = a.op.as_ref().map(|_| Args {
                 params: args.params.clone(),
@@ -1370,6 +1422,32 @@ fn score_of(m: &Value) -> f64 {
 /// which a stable sort leaves in list order.
 pub(crate) fn better_match(a: &Value, b: &Value) -> std::cmp::Ordering {
     score_of(b).total_cmp(&score_of(a))
+}
+
+/// (dictionary) `m.filter(e => …)`: the entries whose `Entry<K, V>` (the
+/// lowering's last argument) the test keeps, as a dictionary.
+fn dict_method(
+    vm: &Rc<Vm>,
+    rt: &Runtime,
+    d: &Dict,
+    name: &str,
+    args: Args,
+) -> Result<Value, Error> {
+    match name {
+        "filter" => {
+            let f = args.get(0).cloned().unwrap_or(Value::Null);
+            let entry = RecordId(args.num(1).unwrap_or(0.0) as u32);
+            let mut out = d.clone();
+            let mut keep = Vec::with_capacity(d.len());
+            for (k, v) in d.entries() {
+                keep.push(vm.call(rt, &f, vec![entry_of(entry, k, v)])?.truthy());
+            }
+            let mut at = keep.into_iter();
+            out.retain(|_| at.next().unwrap_or(false));
+            Ok(Value::Dict(Rc::new(out)))
+        }
+        _ => Err(fail(format!("dictionaries have no method `{name}` here"))),
+    }
 }
 
 fn list_method(

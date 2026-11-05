@@ -3502,7 +3502,7 @@ proof  = "crates/strand-compiler/tests/checker.rs::dictionaries_check_by_their_k
 page   = "site/concepts/language.md"
 text   = "bare (`low`). `last_win[3]` reads the value for `3`, or `null` when"
 source = ['docs/spec.md "`m[k]` reads a `V?`: `null` when `k` is absent."']
-proof  = "crates/strand-compiler/tests/checker.rs::dictionaries_check_by_their_key_and_value_types (`names[1]` is a `text?`, `waits[critical] ?? 6s` a `duration`); the runtime's miss is the next step's"
+proof  = "crates/strand-compiler/tests/checker.rs::dictionaries_check_by_their_key_and_value_types (`names[1]` is a `text?`, `waits[critical] ?? 6s` a `duration`); crates/strand-compiler/tests/vm.rs::dictionaries_read_by_key_in_key_order (a hit, and `names[4] ?? \"none\"` a miss)"
 
 [[claim]]
 page   = "site/concepts/language.md"
@@ -3527,3 +3527,15 @@ page   = "site/help/troubleshooting.md"
 text   = "dictionary\": walk its entries, `for e in m.entries { … e.key …"
 source = ['crates/strand-compiler/src/check/stmt.rs "walk its entries, each a `key` and a `value`"']
 proof  = "crates/strand-compiler/tests/negative/dict_for_without_entries.strand (fix: `.entries`)"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "Entries are always kept in key order, whatever order they were written"
+source = ['docs/spec.md "Its entries are always in key order, whatever order they were"', 'crates/strand-compiler/src/vm/value.rs "pub fn key_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {"']
+proof  = "crates/strand-compiler/tests/vm.rs::dictionaries_read_by_key_in_key_order (int, text, enum and bool keys), crates/strand-compiler/src/vm/value.rs::tests::dictionaries_keep_key_order_and_one_key_per_number"
+
+[[claim]]
+page   = "site/concepts/language.md"
+text   = "and two dictionaries with the same entries are equal (`==`). Nothing"
+source = ['docs/spec.md "`==` on two dictionaries is true when they hold the same keys, each"']
+proof  = "crates/strand-compiler/tests/vm.rs::dictionaries_compare_by_their_entries"

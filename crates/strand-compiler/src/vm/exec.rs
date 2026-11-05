@@ -15,7 +15,9 @@ use strand_core::{Error, Runtime};
 use strand_scene::{Channel, Color, TokenExpr};
 
 use super::builtins;
-use super::value::{Closure, NodeState, Num, PendingOp, Value, ValueKey, time_in_logic};
+use super::value::{
+    Closure, Dict, NodeState, Num, PendingOp, Value, ValueKey, dict_key, time_in_logic,
+};
 use super::{Env, Vm};
 use crate::hir::{AssignOp, LocalId};
 use crate::lower::{
@@ -490,6 +492,19 @@ impl Machine {
                     let items = self.pop_n(*n);
                     self.stack.push(Value::list(items));
                 }
+                Op::Dict(n) => {
+                    let flat = self.pop_n(n * 2);
+                    let mut it = flat.into_iter();
+                    let mut d = Dict::default();
+                    while let (Some(k), Some(v)) = (it.next(), it.next()) {
+                        d.insert(k, v);
+                    }
+                    self.stack.push(Value::Dict(Rc::new(d)));
+                }
+                Op::Entries(r) => {
+                    let v = self.pop();
+                    self.stack.push(builtins::entries(&v, *r));
+                }
                 Op::Commas(n) => {
                     let items = self.pop_n(*n);
                     self.stack.push(Value::Commas(Rc::new(items)));
@@ -821,6 +836,27 @@ fn mutate(
         return mutate_keyed(vm, rt, k, method, args);
     }
     let current = rt.untrack(|rt| read_place(vm, rt, place, &indices, env))?;
+    if let Value::Dict(d) = &current {
+        // (dictionary) `m.remove(k)`, `m.clear()`. Forgetting a key the
+        // dictionary does not hold does nothing, and writes nothing
+        // (decisions.md dictionary).
+        let new = match method {
+            "remove" => {
+                let key = dict_key(args.get(0).cloned().unwrap_or(Value::Null));
+                if !d.contains(&key) {
+                    return Ok(());
+                }
+                let mut d = (**d).clone();
+                d.remove(&key);
+                d
+            }
+            "clear" if d.is_empty() => return Ok(()),
+            "clear" => Dict::default(),
+            _ => return Err(fail(format!("dictionaries have no method `{method}`"))),
+        };
+        let value = Value::Dict(Rc::new(new));
+        return store(vm, rt, place, indices, env, AssignOp::Set, value);
+    }
     let mut list: Vec<Value> = current.as_list().map(<[Value]>::to_vec).unwrap_or_default();
     let path = key_path(vm, place, &list);
     let find = |list: &[Value], k: &Value| {
@@ -1041,12 +1077,23 @@ fn field_ty<'a>(
     }
 }
 
-/// The declared type of the items of a list of type `ty`.
+/// The declared type of the items of a list of type `ty`, or of the
+/// values of a dictionary.
 fn item_ty(ty: Option<&crate::ty::Ty>) -> Option<&crate::ty::Ty> {
     use crate::ty::Ty;
     match ty? {
         Ty::Optional(t) => item_ty(Some(t)),
-        Ty::List(t, _) => Some(t),
+        Ty::List(t, _) | Ty::Dict(_, t) => Some(t),
+        _ => None,
+    }
+}
+
+/// (dictionary) The declared key type of a dictionary of type `ty`.
+fn key_ty(ty: Option<&crate::ty::Ty>) -> Option<&crate::ty::Ty> {
+    use crate::ty::Ty;
+    match ty? {
+        Ty::Optional(t) => key_ty(Some(t)),
+        Ty::Dict(k, _) => Some(k),
         _ => None,
     }
 }
@@ -1216,6 +1263,20 @@ fn set_in(
         }
         PlaceSeg::Index => {
             let (i, more) = indices.split_first().ok_or_else(|| fail("missing index"))?;
+            if let Value::Dict(d) = cur {
+                // (dictionary) `m[k] = v` inserts or replaces; below it
+                // (`m[k].f = x`, `m[k] += 1`) the entry must be there.
+                let key = dict_key(conform(key_ty(ty), i.clone()));
+                let old = match d.get(&key) {
+                    Some(old) => old,
+                    None if rest.is_empty() && op.binary().is_none() => &Value::Null,
+                    None => return Err(fail("no entry for this key")),
+                };
+                let new = set_in(vm, old, item_ty(ty), rest, more, op, value)?;
+                let mut d = (**d).clone();
+                d.insert(key, new);
+                return Ok(Value::Dict(Rc::new(d)));
+            }
             let Some(list) = cur.as_list() else {
                 return Err(fail("cannot index a missing list"));
             };

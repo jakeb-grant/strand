@@ -509,6 +509,8 @@ fn file_scope(
             | Op::Pop
             | Op::Dup
             | Op::List(_)
+            | Op::Dict(_)
+            | Op::Entries(_)
             | Op::Commas(_)
             | Op::Spaced(_)
             | Op::Variant(..)

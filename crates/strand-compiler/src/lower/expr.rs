@@ -16,6 +16,9 @@ use super::code::{
     PlaceSeg,
 };
 
+/// (dictionary) Dictionary methods that change it (`m[k] = v` is a store).
+pub(crate) const DICT_MUTATIONS: &[&str] = &["remove", "clear"];
+
 /// List methods that change the collection they are called on.
 pub(crate) const MUTATIONS: &[&str] = &[
     "push",
@@ -316,6 +319,15 @@ impl Lowerer<'_> {
         }
     }
 
+    /// (dictionary) The `Entry<K, V>` of a dictionary type, which the
+    /// checker made when the program read its entries.
+    fn entry_record(&self, ty: &Ty) -> Option<crate::ty::RecordId> {
+        match ty.non_null() {
+            Ty::Dict(k, v) => crate::schema::find_entry(&self.hir.types, k, v),
+            _ => None,
+        }
+    }
+
     fn note_service(&mut self, s: &str) {
         if let Some(top) = self.services.last_mut() {
             top.insert((s.to_string(), None));
@@ -522,8 +534,16 @@ impl Lowerer<'_> {
                 }
                 self.expr(c, base);
                 let skip = optional.then(|| c.emit(Op::NullJump(0), span));
-                let n = c.name(name);
-                c.emit(Op::Field(n), span);
+                // (dictionary) `m.entries` makes its `Entry<K, V>`s.
+                match self.entry_record(&base.ty) {
+                    Some(r) if name == "entries" => {
+                        c.emit(Op::Entries(r), span);
+                    }
+                    _ => {
+                        let n = c.name(name);
+                        c.emit(Op::Field(n), span);
+                    }
+                }
                 if let Some(s) = skip {
                     c.patch(s);
                 }
@@ -623,11 +643,14 @@ impl Lowerer<'_> {
                 }
                 c.emit(Op::List(items.len() as u32), span);
             }
-            // (dictionary) A dictionary is checked but not yet built: its
-            // value is this error, so nothing reads a half-made one.
-            ExprKind::Dict(_) => {
-                let msg = c.name("dictionaries are checked but cannot run yet");
-                c.emit(Op::Fail(msg), span);
+            // (dictionary) Each key then its value; the VM sorts them and
+            // a later computed key wins.
+            ExprKind::Dict(entries) => {
+                for (k, v) in entries {
+                    self.expr(c, k);
+                    self.expr(c, v);
+                }
+                c.emit(Op::Dict(entries.len() as u32), span);
             }
             ExprKind::Commas(items) => {
                 for i in items {
@@ -736,7 +759,12 @@ impl Lowerer<'_> {
                 overload,
             } => {
                 let list_recv = matches!(receiver.ty.non_null(), Ty::List(..));
-                if list_recv && MUTATIONS.contains(&name.as_str()) {
+                // (dictionary) `m.remove(k)` and `m.clear()` write the
+                // dictionary's place, as a list's mutations do.
+                let dict_recv = matches!(receiver.ty.non_null(), Ty::Dict(..));
+                if (list_recv && MUTATIONS.contains(&name.as_str()))
+                    || (dict_recv && DICT_MUTATIONS.contains(&name.as_str()))
+                {
                     let place = self.place(c, receiver);
                     let arity = mutation_arity(name);
                     let map = self.push_args(c, args, arity, None);
@@ -773,12 +801,21 @@ impl Lowerer<'_> {
                 let map = self.push_args(c, args, arity, variadic.map(usize::from));
                 // `xs.fuzzy`: the `Match<T>` to make, as a last argument
                 // the source doesn't write.
-                if let Some(r) = super::fuzzy_record(&receiver.ty, name, result) {
+                // (dictionary) `m.filter`: the `Entry<K, V>` its test takes,
+                // likewise.
+                let made = super::fuzzy_record(&receiver.ty, name, result).or_else(|| {
+                    (name == "filter")
+                        .then(|| self.entry_record(&receiver.ty))
+                        .flatten()
+                });
+                if let Some(r) = made {
                     let id = c.constant(Const::Num(f64::from(r.0), Num::Int));
                     c.emit(Op::Const(id), span);
+                    // After `fuzzy`'s query and text, or `filter`'s test.
+                    let at: u16 = if name == "fuzzy" { 2 } else { 1 };
                     if let Some(m) = c.args.last_mut() {
-                        m.params.push(2);
-                        m.arity = 3;
+                        m.params.push(at);
+                        m.arity = at + 1;
                     }
                 }
                 let n = c.name(name);

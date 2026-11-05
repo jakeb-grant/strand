@@ -134,6 +134,13 @@ walks the entries, each with its `key` and `value`, and `.keys`,
 [functions reference](../../docs/reference/functions.md) lists every
 member.
 
+Entries are always kept in key order, whatever order they were written
+in: numbers by value, texts by character code, enums in the order they
+are declared. `.keys` and `for e in m.entries` walk them in that order,
+and two dictionaries with the same entries are equal (`==`). Nothing
+caps a dictionary's size: a handler that adds entries also drops the
+ones it no longer needs, `m = m.filter(e => …)`.
+
 **Coming from Python or JS.** A dictionary is written with brackets,
 not braces: `[k: v]`, and `[]` when it is empty. Braces hold a block
 in Strand, so `{"a": 1}` is an error whose fix is `["a": 1]`. A

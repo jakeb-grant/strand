@@ -37,7 +37,7 @@ use strand_core::{Error, Runtime};
 
 pub use exec::{EventCtx, Frame};
 pub use host::{ActionCtx, ActionTarget, InputCtx, ServiceHost};
-pub use value::{Num, Slot, Value, ValueKey};
+pub use value::{Dict, Num, Slot, Value, ValueKey};
 
 use crate::hir::{DefId, DefKind, LocalId, NodeIdx};
 use crate::lower::{ChunkId, Program};

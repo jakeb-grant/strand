@@ -225,6 +225,13 @@ pub enum Op {
     },
     /// Pop n values, push a list / comma value / space-separated value.
     List(u32),
+    /// (dictionary) Pop n keys and values (key first, in source order),
+    /// push the dictionary of them: sorted by key, and of two entries
+    /// with one key the later wins.
+    Dict(u32),
+    /// (dictionary) Pop a dictionary, push `.entries`: its entries in key
+    /// order as records of this `Entry<K, V>` (keyed by `key`).
+    Entries(RecordId),
     Commas(u32),
     Spaced(u32),
     /// Make a closure (lambda index).
