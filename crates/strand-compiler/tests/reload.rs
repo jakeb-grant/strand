@@ -324,6 +324,191 @@ fn a_renamed_or_retyped_cell_resets() {
     assert!(report.reset[0].1.contains("type changed"), "{report:?}");
 }
 
+/// (removed-state-notice) A cell is renamed only to a cell its own file
+/// gained: cells removed from one file while another file renames one
+/// are gone without a word, and only the rename resets, with a warning
+/// that is also a notice (the overlay's row is the `reload` event's).
+/// The owner's shell: `notify` dropped `shown`, `grown` and `filled` in
+/// the save that renamed `launcher.wide` to `out`.
+#[test]
+fn a_cell_removed_from_one_file_is_not_renamed_by_another() {
+    let launcher = |n: &str| format!("export state {n} = false\n");
+    let notify = "export state open_key = false\nexport state shown = false\n\
+                  export state grown = false\nexport state filled = false\n";
+    let bar = |n: &str, more: &str| {
+        format!("bar Top {{ text join(\" \", launcher.{n}, notify.open_key{more}) }}\n")
+    };
+    let more = ", notify.shown, notify.grown, notify.filled";
+    let mut shell = boot(&[
+        ("launcher.strand", &launcher("wide")),
+        ("notify.strand", notify),
+        ("bar.strand", &bar("wide", more)),
+    ]);
+    shell
+        .inst
+        .set_value("launcher", "wide", Value::Bool(true))
+        .unwrap();
+    shell
+        .inst
+        .set_value("notify", "grown", Value::Bool(true))
+        .unwrap();
+    shell.flush();
+    let files = [
+        ("launcher.strand", launcher("out")),
+        (
+            "notify.strand",
+            "export state open_key = false\n".to_string(),
+        ),
+        ("bar.strand", bar("out", "")),
+    ];
+    let files: Vec<(&str, &str)> = files.iter().map(|(f, s)| (*f, s.as_str())).collect();
+    let (report, _) = shell.reload(&files);
+    assert_eq!(
+        report.reset,
+        [("launcher.wide".to_string(), "renamed".to_string())],
+        "{report:?}"
+    );
+    assert_eq!(report.notices, ["launcher.wide: reset (renamed)"]);
+    assert!(report.classes.contains(&EditClass::StateReset));
+    shell.assert_cold_boot(&files);
+    // A cell holding a set value removed from one file while another
+    // file gains a cell: nothing reset, nothing to say (the old pairing
+    // by scope called `launcher.gone` renamed to `notify.extra`).
+    let files = [
+        (
+            "launcher.strand",
+            "export state out = false\nstate gone = 1\n",
+        ),
+        ("notify.strand", "export state open_key = false\n"),
+        ("bar.strand", &*bar("out", "")),
+    ];
+    let (report, _) = shell.reload(&files);
+    assert!(
+        report.reset.is_empty() && report.notices.is_empty(),
+        "a cell added alone: {report:?}"
+    );
+    shell
+        .inst
+        .set_value("launcher", "gone", Value::int(2))
+        .unwrap();
+    shell.flush();
+    let files = [
+        ("launcher.strand", "export state out = false\n"),
+        (
+            "notify.strand",
+            "export state open_key = false\nstate extra = 1\n",
+        ),
+        ("bar.strand", &*bar("out", "")),
+    ];
+    let (report, _) = shell.reload(&files);
+    assert!(
+        report.reset.is_empty() && report.notices.is_empty(),
+        "{report:?}"
+    );
+    assert!(!report.classes.contains(&EditClass::StateReset));
+    shell.assert_cold_boot(&files);
+}
+
+/// (removed-state-notice) A file that lost more cells than it gained
+/// removed some of them, and Strand cannot tell which: each is reset as
+/// `renamed or removed`, never only `renamed`.
+#[test]
+fn more_cells_lost_than_gained_are_renamed_or_removed() {
+    let mut shell = boot(&[(
+        "t.strand",
+        "state a = 1\nstate b = 1\nstate c = 1\nbar Top { text join(\" \", a, b, c) }\n",
+    )]);
+    let files = [(
+        "t.strand",
+        "state a = 1\nstate d = 1\nbar Top { text join(\" \", a, d) }\n",
+    )];
+    let (report, _) = shell.reload(&files);
+    let why = "renamed or removed".to_string();
+    assert_eq!(
+        report.reset,
+        [("t.b".to_string(), why.clone()), ("t.c".to_string(), why)],
+        "{report:?}"
+    );
+    assert_eq!(
+        report.notices,
+        [
+            "t.b: reset (renamed or removed)",
+            "t.c: reset (renamed or removed)"
+        ]
+    );
+    shell.assert_cold_boot(&files);
+}
+
+/// (removed-state-notice) A file renamed in one load is one owner under
+/// both names: its cells reset as `renamed`, set or at their default
+/// (decisions.md 2026-10-05, the edit table as the fuzzer reads it), and
+/// when the new file has fewer cells, as `renamed or removed`.
+#[test]
+fn a_module_renamed_in_one_load_resets_as_renamed() {
+    let bar = |m: &str| format!("bar Top {{ text join(\" \", {m}.a, {m}.b) }}\n");
+    let cells = "export state a = 1\nexport state b = 2\n";
+    let mut shell = boot(&[("cells.strand", cells), ("bar.strand", &bar("cells"))]);
+    shell.inst.set_value("cells", "a", Value::int(7)).unwrap();
+    shell.flush();
+    let files = [("store.strand", cells), ("bar.strand", &*bar("store"))];
+    let (report, _) = shell.reload(&files);
+    let renamed = |c: &str| (c.to_string(), "renamed".to_string());
+    assert_eq!(
+        report.reset,
+        [renamed("cells.a"), renamed("cells.b")],
+        "{report:?}"
+    );
+    assert_eq!(
+        report.notices,
+        ["cells.a: reset (renamed)", "cells.b: reset (renamed)"]
+    );
+    shell.assert_cold_boot(&files);
+    // Renamed to a file with one cell of the two.
+    let mut shell = boot(&[("cells.strand", cells), ("bar.strand", &bar("cells"))]);
+    let files = [
+        ("store.strand", "export state a = 1\n"),
+        ("bar.strand", "bar Top { text join(\" \", store.a) }\n"),
+    ];
+    let (report, _) = shell.reload(&files);
+    let why = "renamed or removed".to_string();
+    assert_eq!(
+        report.reset,
+        [
+            ("cells.a".to_string(), why.clone()),
+            ("cells.b".to_string(), why)
+        ],
+        "{report:?}"
+    );
+    shell.assert_cold_boot(&files);
+}
+
+/// (removed-state-notice) A cell whose value no longer fits its type (an
+/// enum's variant removed) resets with a notice, so the overlay's row is
+/// in the `reload` event's `notices` too.
+#[test]
+fn a_value_that_no_longer_fits_is_reset_with_a_notice() {
+    let src = |variants: &str, other: &str| {
+        format!(
+            "enum Mode {{ {variants} }}\nstate m: Mode = a\n\
+             bar Top {{ text m == {other} ? \"B\" : \"A\" {{ on click {{ m = {other} }} }} }}\n"
+        )
+    };
+    let mut shell = boot(&[("t.strand", &src("a, b, c", "b"))]);
+    click_text(&mut shell, "A");
+    assert!(shell.scene.find_text("B").is_some());
+    let files = [("t.strand", src("a, c", "c"))];
+    let files: Vec<(&str, &str)> = files.iter().map(|(f, s)| (*f, s.as_str())).collect();
+    let (report, _) = shell.reload(&files);
+    assert_eq!(
+        report.reset,
+        [("t.m".to_string(), "value does not fit".to_string())],
+        "{report:?}"
+    );
+    assert_eq!(report.notices, ["t.m: reset (value does not fit)"]);
+    assert!(report.classes.contains(&EditClass::StateReset));
+    shell.assert_cold_boot(&files);
+}
+
 /// A module renamed in two loads (the new file first, then the use
 /// sites with the old file gone): the second load drops the old module's
 /// cells, and those holding a value the user set are reported reset.
@@ -410,6 +595,11 @@ fn handler_restart_cancels_its_await() {
     assert_eq!(report.restarted, 1, "{report:?}");
     assert_eq!(report.cancelled, 1, "{report:?}");
     assert!(report.classes.contains(&EditClass::Handler));
+    // Said in the notices, the overlay's rows and `strand watch`'s.
+    assert_eq!(
+        report.notices,
+        ["1 handler restarted: 1 in-flight `await` cancelled"]
+    );
     shell.at(2.0);
     assert_eq!(shell.value("t", "a"), Value::int(0), "cancelled");
     assert_eq!(shell.value("t", "b"), Value::int(1), "kept running");

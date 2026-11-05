@@ -156,8 +156,10 @@ pub(crate) struct Carry {
     pub kept_nodes: std::collections::HashSet<NodeId>,
     /// Scope keys the new instance mounted.
     pub scopes: std::collections::HashSet<Rc<str>>,
-    /// Cells the new instance created fresh, by scope key (renames).
-    pub fresh: Vec<(Rc<str>, String)>,
+    /// The owners of the cells the new instance created fresh, one
+    /// entry per cell ([`cell_owner`]): what a cell nobody took may have
+    /// been renamed to.
+    pub fresh: Vec<Rc<str>>,
     /// Persisted paths handed from an old cell to a new one: their
     /// "path in use" diagnostic is the handover, not a mistake.
     pub handover: Vec<String>,
@@ -172,6 +174,16 @@ pub(crate) struct Carry {
     /// reload: one that was a single surface hands that instance its
     /// cells.
     pub single_bars: std::collections::HashSet<Rc<str>>,
+}
+
+/// The owner part of a cell's reload key, `<scope>#<owner>` of
+/// `<scope>#<owner>.<name>`: the same file's or component's cells in the
+/// same place of the instance tree (a surface's own cells: `<scope>#`).
+/// A file's cells all live in the root scope, so the scope alone would
+/// pair a cell removed from one file with one added to another
+/// (decisions.md, removed-state-notice).
+pub(crate) fn cell_owner(key: &str) -> &str {
+    key.rsplit_once('.').map_or(key, |(owner, _)| owner)
 }
 
 /// `<ident>[<instance>]<rest>` as `(ident, rest)`, for a bar instance
@@ -443,10 +455,12 @@ impl Ctx {
         });
     }
 
-    /// Note a cell made fresh in a reload (no old cell under its key).
-    pub(crate) fn fresh_cell(&self, scope: Rc<str>, name: String) {
+    /// Note a cell made fresh in a reload (no old cell under its key):
+    /// its owner gained a cell, which an old cell of that owner nobody
+    /// took may have been renamed to.
+    pub(crate) fn fresh_cell(&self, key: &str) {
         if let Some(c) = self.carry.borrow_mut().as_mut() {
-            c.fresh.push((scope, name));
+            c.fresh.push(cell_owner(key).into());
         }
     }
 

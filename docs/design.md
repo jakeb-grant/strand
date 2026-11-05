@@ -694,6 +694,7 @@ Crate: raw inotify through [`rustix`](https://docs.rs/rustix/latest/rustix/fs/in
 - A node keeps its identity while its source text maps to it, so editing a node's own props never resets it. Next, `key` or `id` decides, then position among siblings of the same kind. Real ambiguity resets with a warning; Strand never guesses.
 - State lives on components, surfaces and list items, never on leaf elements, so the node you're editing can't take your popup state with it.
 - A state cell takes a new default only if it still holds the old one. Otherwise the overlay says `launcher.query: kept "fir" (default changed) [reset]`.
+- A cell is renamed only when its own file or component gains another in the same save (a file renamed in that save is still its own); a cell simply removed goes without a warning, unless its whole file went while it held a value you set. What the overlay lists after a reload is what `strand watch` reports as its notices (`docs/decisions.md`, removed-state-notice).
 - Monitors match on make, model and description, and their state survives a 30-second unplug.
 - Escape hatches: `@reset` on a declaration, "reset subtree" in the inspector, `strand reload --hard`.
 

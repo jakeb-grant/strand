@@ -734,7 +734,7 @@ impl Ctx {
         let mut moved_live = false;
         let mut keep: Option<CellRec> = None;
         match carried {
-            None => self.fresh_cell(scope_key.clone(), info.name.clone()),
+            None => self.fresh_cell(&key),
             Some(rec) => {
                 let (old_ty, why) = match &rec {
                     CellRec::Plain { ty, .. } | CellRec::Keyed { ty, .. } => {
@@ -754,10 +754,7 @@ impl Ctx {
 
                 match why {
                     Some(why) => {
-                        self.report(|r| {
-                            r.class(EditClass::StateReset);
-                            r.reset.push((path.clone(), why));
-                        });
+                        self.report(|r| r.reset_cell(path.clone(), why));
                         // A persisted cell reset by `@reset` forgets what
                         // it stored.
                         if s.reset
@@ -787,9 +784,7 @@ impl Ctx {
                                 keep = Some(rec);
                             }
                             None => self.report(|r| {
-                                r.class(EditClass::StateReset);
-                                r.reset
-                                    .push((path.clone(), "value does not fit".to_string()));
+                                r.reset_cell(path.clone(), "value does not fit".to_string())
                             }),
                         }
                     }
@@ -1234,10 +1229,7 @@ impl Ctx {
             )) if self.storage.settings.is_none() => Some((holder, slot, from)),
             Some(_) => None,
             None => {
-                self.fresh_cell(
-                    env.ident(),
-                    path.rsplit('.').next().unwrap_or("").to_string(),
-                );
+                self.fresh_cell(&key);
                 None
             }
         };
