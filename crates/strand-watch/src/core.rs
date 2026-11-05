@@ -1413,17 +1413,36 @@ impl<B: Backend> Core<B> {
         // or a removal of, heard during this flush (`drain`): a removal
         // among them has not had its grace yet.
         let mut unsettled = HashSet::new();
-        if p.full.is_some() || p.config {
+        let waiting = if p.full.is_some() || p.config {
             self.rescan_config(
                 &mut touched,
                 &mut changes,
                 &mut notices,
                 &mut unsettled,
                 now,
-            );
-        }
+            )
+        } else {
+            Vec::new()
+        };
         if p.full.is_some() {
             touched.extend(self.files.keys().cloned());
+        }
+        // The modules waiting with the set go back to the open batch
+        // unread, with its event times but not as a deferred read: a
+        // deferred read keeps the bound of the batch it was first due in,
+        // which for a batch cut at `max_delay` is 15 ms away, and the
+        // next flush would then list the set inside the grace of the
+        // removal it waits for, that removal's event already drained, and
+        // report it (save-blank).
+        if !waiting.is_empty() {
+            if let Some((first, last)) = p.events {
+                self.add_events(first, last);
+            }
+            for path in waiting {
+                touched.remove(&path);
+                self.deferred.remove(&path);
+                self.pending.files.insert(path);
+            }
         }
         let mut cache = p.cache;
         if p.trees || p.full.is_some() {
@@ -1652,6 +1671,10 @@ impl<B: Backend> Core<B> {
         !forced && written_within(&r.stamp, at, self.opts.coalesce, skew)
     }
 
+    /// List the module set again and bring `self.files` and `touched` up
+    /// to date with it. Returns the modules the listing left out when the
+    /// set waits for a queued event (save-blank): the set is unchanged and
+    /// they are not to be read this flush.
     fn rescan_config(
         &mut self,
         touched: &mut BTreeSet<PathBuf>,
@@ -1659,16 +1682,16 @@ impl<B: Backend> Core<B> {
         notices: &mut Vec<Notice>,
         unsettled: &mut HashSet<PathBuf>,
         now: Instant,
-    ) {
+    ) -> Vec<PathBuf> {
         let Some(cfg) = self.config.as_mut() else {
-            return;
+            return Vec::new();
         };
         self.config_root = Some(paths::resolve(&cfg.root));
         let mut set = match (cfg.rescan)() {
             Ok(set) => set,
             Err(e) => {
                 notices.push(Notice::RescanFailed(e.to_string()));
-                return;
+                return Vec::new();
             }
         };
         // A listing can miss a file being saved: on btrfs a rename over it
@@ -1689,7 +1712,7 @@ impl<B: Backend> Core<B> {
                 Ok(set) => set,
                 Err(e) => {
                     notices.push(Notice::RescanFailed(e.to_string()));
-                    return;
+                    return Vec::new();
                 }
             };
         }
@@ -1733,23 +1756,22 @@ impl<B: Backend> Core<B> {
                 .iter()
                 .any(|(path, e)| e.module && !new.contains(path) && unsettled.contains(path));
             if wait {
+                self.pending.config = true;
+                self.schedule(now);
                 // Every module the listing left out waits with it: one
                 // whose removal was heard before this flush (the old name
                 // of a rename) would otherwise go out `Removed` from its
-                // read below, a grace before the new name joins.
-                unsettled.extend(
-                    self.files
-                        .iter()
-                        .filter(|(path, e)| e.module && !new.contains(*path))
-                        .map(|(path, _)| path.clone()),
-                );
-                self.pending.config = true;
-                self.schedule(now);
-                return;
+                // read, a grace before the new name joins.
+                return self
+                    .files
+                    .iter()
+                    .filter(|(path, e)| e.module && !new.contains(*path))
+                    .map(|(path, _)| path.clone())
+                    .collect();
             }
         }
         let Some(cfg) = self.config.as_mut() else {
-            return;
+            return Vec::new();
         };
         cfg.modules.files = set.files;
         for (path, e) in self.files.iter_mut() {
@@ -1805,6 +1827,7 @@ impl<B: Backend> Core<B> {
                 }
             }
         }
+        Vec::new()
     }
 
     /// Compare `path` with its last known state and push one change per
@@ -3120,6 +3143,59 @@ mod tests {
             ],
             "{b:#?}"
         );
+        assert!(core.deadline().is_none());
+    }
+
+    /// As above, the rename's batch kept open until `max_delay` by events
+    /// that kept coming: putting the old name off with the set must not
+    /// bring that batch's bound along, or the next flush comes 15 ms
+    /// later, inside `colors.strand`'s gap, with its `DELETE` already
+    /// drained, and reports it `Removed` (decisions.md save-blank).
+    #[test]
+    fn a_rename_waiting_with_the_set_at_max_delay_keeps_the_grace() {
+        let (_tmp, root) = cfg_dir();
+        let bar = root.join("bar.strand");
+        let colors = root.join("colors.strand");
+        let panel = root.join("panel.strand");
+        std::fs::write(&bar, "bar").unwrap();
+        std::fs::write(&colors, "colors").unwrap();
+        let queue = Queued::default();
+        let opts = Options::default();
+        let mut core = Core::new(queue.clone(), opts.clone(), Some(config(&root)));
+        settle(&mut core);
+        let t0 = Instant::now();
+        std::fs::rename(&bar, &panel).unwrap();
+        core.on_raw(Raw::Gone(bar.clone()), t0);
+        core.on_raw(Raw::Written(panel.clone()), t0);
+        // Cut at its `max_delay`.
+        let cut = t0 + opts.max_delay;
+        std::fs::remove_file(&colors).unwrap();
+        queue.push(Raw::Gone(colors.clone()));
+        assert!(
+            core.flush(cut).is_none(),
+            "the rename waits with colors.strand"
+        );
+        let next = core.deadline().unwrap();
+        assert!(
+            next >= cut + opts.removal_grace,
+            "the next flush comes {:?} after the cut, inside colors.strand's grace",
+            next - cut
+        );
+        let t1 = cut + Duration::from_millis(20);
+        std::fs::write(&colors, "colors 2").unwrap();
+        core.on_raw(Raw::Written(colors.clone()), t1);
+        let b = core.flush(core.deadline().unwrap()).unwrap();
+        let got: Vec<_> = b.changes.iter().map(|c| (&c.path, c.kind)).collect();
+        assert_eq!(
+            got,
+            [
+                (&bar, ChangeKind::Removed),
+                (&colors, ChangeKind::Modified),
+                (&panel, ChangeKind::Created),
+            ],
+            "{b:#?}"
+        );
+        assert_eq!(b.first_event, t0, "the rename's event times are kept");
         assert!(core.deadline().is_none());
     }
 
