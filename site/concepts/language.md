@@ -103,6 +103,7 @@ Expressions are small and typed:
 | Colours | `#7aa2f7`, `$accent`, `$surface.alpha(0.8)` |
 | Text | `"Search apps"`, joined with `+`; no interpolation |
 | Lists | `[1, 2, 3]`, `apps.search(q).take(5)` |
+| Dictionaries | `[1: "web", 2: "code"]`, `last_win[ws.id] ?? ""` |
 | Optional values | `n.image ?? n.app.icon` (`??` gives the right side when the left is `null`) |
 | Choices | `muted ? 0 : volume`, `match kind { volume => …, brightness => … }` |
 | Functions | `x => x * 2`, `fn double(x: int) -> int { x * 2 }` |
@@ -110,6 +111,46 @@ Expressions are small and typed:
 A value that might be `null` must be unwrapped with `?.` or `??`
 before it is used, and `strand check` says where you forgot. A
 `match` must cover every case.
+
+### Dictionaries
+
+A **dictionary** `[K: V]` keeps one value for each key: the last
+window used on each workspace, a wallpaper for each monitor, how long
+each urgency of notification stays.
+
+```strand file=memory.strand
+enum Urgency { low, normal, critical }
+state last_win: [int: text] = [] persist
+let waits: [Urgency: duration] = [low: 3s, normal: 6s, critical: 0s]
+```
+
+A key is an `int`, a `text`, a `path`, a `bool` or an enum, written
+bare (`low`). `last_win[3]` reads the value for `3`, or `null` when
+there is none, so it is unwrapped like any optional value:
+`last_win[ws.id] ?? ""`. A handler sets one with `last_win[3] = id`
+and forgets one with `last_win.remove(3)`. `for e in last_win.entries`
+walks the entries, each with its `key` and `value`, and `.keys`,
+`.values`, `.len` and `.filter(e => …)` read the rest. The
+[functions reference](../../docs/reference/functions.md) lists every
+member.
+
+Entries are always kept in key order, whatever order they were written
+in: numbers by value, texts by character code, enums in the order they
+are declared. `.keys` and `for e in m.entries` walk them in that order,
+and two dictionaries with the same entries are equal (`==`). Nothing
+caps a dictionary's size: a handler that adds entries also drops the
+ones it no longer needs, `m = m.filter(e => …)`.
+[Remembering things by key](../how-to/remembering-by-key.md) builds
+the common cases.
+
+**Coming from Python or JS.** A dictionary is written with brackets,
+not braces: `[k: v]`, and `[]` when it is empty. Braces hold a block
+in Strand, so `{"a": 1}` is an error whose fix is `["a": 1]`. A
+dictionary's type is declared where it starts empty
+(`state m: [text: int] = []`); an untyped `[]` is a list. There are no
+`get`, `set` or `has` methods: `m[k]`, `m[k] = v` and `m[k] != null`
+do those jobs, and a value is never `null`, so a key that reads
+`null` is one that is not there.
 
 ## Trees that change
 
@@ -124,6 +165,10 @@ A `for` gives each item its own copy, kept by the item's **key**: a
 workspace by its id, a notification by its id. When the list changes,
 copies whose key stays keep their state and slide to their new place.
 A list of plain values names its key, `for p in pins key p.app`.
+A keyed list reads one item by its key with `get`: `tray.items.get(id)`
+is the tray item with that id, or `null` when there is none. A
+dictionary's entries are keyed by their keys, so `for e in m.entries`
+needs no `key` and keeps each entry's copy as values change.
 
 ## Handlers
 

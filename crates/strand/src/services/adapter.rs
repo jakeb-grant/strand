@@ -21,7 +21,7 @@ use strand_compiler::vm::{Value, ValueKey};
 use strand_core::{Error, EventQueue, KeyedSignal, Memo, NodeId, Runtime, Scope, VecDiff};
 use strand_services::{Applied, Data, DynService};
 
-use super::convert::{steps, to_data, to_value};
+use super::convert::{steps, to_service_data, to_value};
 
 /// One field's cells on the language side.
 #[derive(Clone, Copy, Debug)]
@@ -258,8 +258,10 @@ impl StoreHost {
         out.extend(self.svc.ids(i));
     }
 
-    fn data_args(&self, args: &[Value]) -> Vec<Data> {
-        args.iter().map(|v| to_data(&self.types, v)).collect()
+    fn data_args(&self, args: &[Value]) -> Result<Vec<Data>, Error> {
+        args.iter()
+            .map(|v| to_service_data(&self.types, v))
+            .collect()
     }
 
     /// Dispose its cells (the registry going away).
@@ -329,7 +331,7 @@ impl ServiceHost for StoreHost {
             )));
         }
         self.svc
-            .write(rt, i, &steps(rest), to_data(&self.types, &value))
+            .write(rt, i, &steps(rest), to_service_data(&self.types, &value)?)
     }
 
     fn write_item(
@@ -356,9 +358,9 @@ impl ServiceHost for StoreHost {
         self.svc.write_item(
             rt,
             &record,
-            &to_data(&self.types, item),
+            &to_service_data(&self.types, item)?,
             &steps(path),
-            to_data(&self.types, &value),
+            to_service_data(&self.types, &value)?,
         )
     }
 
@@ -369,7 +371,7 @@ impl ServiceHost for StoreHost {
         method: &str,
         args: &[Value],
     ) -> Result<Value, Error> {
-        match self.svc.call(rt, method, &self.data_args(args)) {
+        match self.svc.call(rt, method, &self.data_args(args)?) {
             Some(r) => r.map(|d| to_value(&self.types, &d)),
             None if self.svc.methods().contains(&method) => Err(Error::failed(format!(
                 "`{}.{method}` is asynchronous: it is fetched (`ServiceHost::fetch`), not called",
@@ -408,7 +410,10 @@ impl ServiceHost for StoreHost {
             return Box::pin(async move { r });
         }
         let types = self.types.clone();
-        let args = self.data_args(&args);
+        let args = match self.data_args(&args) {
+            Ok(a) => a,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
         if self.svc.readers() > 0 {
             let fut = self.svc.fetch(rt, method, &args);
             return Box::pin(async move {
@@ -450,13 +455,16 @@ impl ServiceHost for StoreHost {
         // actions in order and ask an xdg-activation token with it.
         ctx: ActionCtx,
     ) -> Result<(), Error> {
-        let args = self.data_args(args);
+        let args = self.data_args(args)?;
         match target {
             ActionTarget::Service(_) => self.svc.action(rt, name, None, &args, ctx),
-            ActionTarget::Item(v) => {
-                self.svc
-                    .action(rt, name, Some(&to_data(&self.types, v)), &args, ctx)
-            }
+            ActionTarget::Item(v) => self.svc.action(
+                rt,
+                name,
+                Some(&to_service_data(&self.types, v)?),
+                &args,
+                ctx,
+            ),
         }
     }
 

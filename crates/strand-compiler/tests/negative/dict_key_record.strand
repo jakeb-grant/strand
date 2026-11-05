@@ -1,0 +1,8 @@
+// expect: check::dict_key
+// A record, a list or an optional cannot key a dictionary (no JSON or
+// TOML key holds one); a keyed record's help names its key's type.
+type Pin { app: text; label: text }
+state by_pin: [Pin: int] = []
+state by_window: [Window: text] = []
+state by_list: [[int]: text] = []
+state by_maybe: [int?: text] = []

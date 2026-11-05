@@ -1,7 +1,8 @@
 //! (report) The VM's values as a glitch report's JSON (docs/architecture.md,
 //! "Glitch reports", Values): [`to_json`] writes a [`Value`] by the type
 //! it carries (records as objects of their fields, lists as arrays, enums
-//! by variant name, durations in ms, colours as `"#rrggbbaa"`) straight
+//! by variant name, durations in ms, colours as `"#rrggbbaa"`, (dictionary)
+//! a dictionary as an array of `[key, value]` pairs in key order) straight
 //! into any writer, so the ring's bounded arena writer allocates nothing;
 //! [`from_json`] reads it back by a declared type (the replay's `set` and
 //! `[seed]`). A text held back by the redaction rules is `{"~text": N}`;
@@ -77,6 +78,22 @@ pub fn to_json(
             }
             w.write_char(']')
         }
+        // (dictionary) Pairs, as `persist` stores them: a key is written
+        // as any value is, so a text key `keep` refuses is held back too.
+        Value::Dict(d) => {
+            w.write_char('[')?;
+            for (i, (k, x)) in d.entries().iter().enumerate() {
+                if i > 0 {
+                    w.write_char(',')?;
+                }
+                w.write_char('[')?;
+                to_json(types, k, w, keep)?;
+                w.write_char(',')?;
+                to_json(types, x, w, keep)?;
+                w.write_char(']')?;
+            }
+            w.write_char(']')
+        }
         _ => w.write_str("null"),
     }
 }
@@ -94,6 +111,48 @@ pub fn to_json_string(types: &TypeTable, v: &Value) -> String {
 pub fn from_json(types: &TypeTable, ty: &Ty, j: &Json) -> Result<Value, String> {
     let j = unhold(j);
     super::persist::decode(types, ty, &j).ok_or_else(|| format!("expected {}", types.show(ty)))
+}
+
+/// (dictionary) How many entries of `j`, read back as a `ty`, are lost
+/// because two of a dictionary's keys read back as one: two held-back
+/// texts of the same length are the same placeholder `x`s, and of the
+/// two [`from_json`] keeps the later. A replay names the cell in its
+/// fidelity notes (docs/eval.md). 0 when nothing is lost, or `j` does not
+/// fit `ty`.
+pub fn keys_read_as_one(types: &TypeTable, ty: &Ty, j: &Json) -> usize {
+    match (ty, j) {
+        (Ty::Optional(t), j) => keys_read_as_one(types, t, j),
+        (Ty::List(t, _), Json::Array(items)) => {
+            items.iter().map(|i| keys_read_as_one(types, t, i)).sum()
+        }
+        (Ty::Record(r), Json::Object(m)) => types
+            .record(*r)
+            .fields
+            .iter()
+            .filter_map(|f| Some(keys_read_as_one(types, &f.ty, m.get(&f.name)?)))
+            .sum(),
+        (Ty::Dict(k, t), Json::Array(pairs)) => {
+            let mut keys = super::value::Dict::default();
+            let mut lost = 0;
+            for p in pairs {
+                let Some([key, value]) = p.as_array().map(Vec::as_slice) else {
+                    continue;
+                };
+                lost += keys_read_as_one(types, t, value);
+                // `to_json` writes each key once, so two that read back
+                // as one are a held-back text and another of its length.
+                if let Ok(kv) = from_json(types, k, key) {
+                    if keys.contains(&kv) {
+                        lost += 1;
+                    } else {
+                        keys.insert(kv, Value::Null);
+                    }
+                }
+            }
+            lost
+        }
+        _ => 0,
+    }
 }
 
 /// Whether `j` is a held-back text, and its length.

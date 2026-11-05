@@ -91,6 +91,7 @@ guide's ladder test use this table as the list of constructs.
 | `after T while c`, `every T while c` | `timer` | 8.4 |
 | handler statements, `=`, `+=`, `-=`, `*=`, `/=`, `await` | `stmt`, `assign_op`, `unary` | 8.3 |
 | literals, units, colours, strings | lexical | 7.1 |
+| `[K: V]`, `[k: v, …]`, `m[k]` (dictionaries) | `type_atom`, `primary`, `postfix` | 7.1 |
 | `?.`, `??`, ternary, lambdas, calls, named args, `from` args | `expr` | 7.2 |
 | `$token.path`, token methods | `token_path`, `postfix` | 9.2 |
 | `file "path" { template: "t"; run: [argv] }` or `{ text: expr }`, at the top level or in a tree | `top_file`, `element` | 4.1, 9.7 |
@@ -641,7 +642,9 @@ monitor, the keyboard always).
 - **`state x = expr`** declares a writable cell. Its initial value is
   the default expression, evaluated once when the cell is created.
   `state x: T = expr` gives the type; `state xs: [T] key f = []`
-  declares a keyed collection (section 6.5).
+  declares a keyed collection (section 6.5), and `state m: [K: V] =
+  []` a dictionary (section 7.1), which is keyed by its keys: a `key`
+  clause on one is a load error (`check::dict_keyed`).
 - **`let x = expr`** declares a derived, read-only value. It is
   recomputed lazily when what it reads changes. Assigning to a `let` is
   a load error.
@@ -672,8 +675,9 @@ monitor, the keyboard always).
   written to it, as is the value it came from, and a fraction pushed or
   inserted into a whole list makes it a `[float]`.
 - **`persist`** (`state x = 0 persist`) keeps the value across restarts
-  (section 10.3). It is allowed only on a `state` holding plain data:
-  not functions, `Async` values, runtime handles or live service items.
+  (section 10.3). It is allowed only on a `state` holding plain data
+  (lists, dictionaries and records of it): not functions, `Async`
+  values, runtime handles or live service items.
 - **`export`** (`export state`, `export let`) makes a top-level value
   readable from other files and from the command line as `file.name`
   (section 4.2). It changes nothing else.
@@ -686,8 +690,9 @@ monitor, the keyboard always).
 - `type Pin { app: AppId; label: text }` declares a record. Records are
   built with call syntax and named arguments: `Pin(app: a, label: "x")`.
   An optional field may be left out (it is null), and so may a list
-  field (it is empty), so a record that gains either, builtin or your
-  own, stays buildable as before; every other field is needed. Fields
+  or dictionary field (it is empty), so a record that gains one,
+  builtin or your own, stays buildable as before; every other field is
+  needed. Fields
   are read with `.`.
 
 ### 5.5 Functions
@@ -762,7 +767,14 @@ monitor, the keyboard always).
   (decisions.md flex, 2026-10-24). When
   the running binary does not serve a service a file declares, reads
   give its schema defaults and writes, calls and actions are refused,
-  with a notice naming the file while the program reads it.
+  with a notice naming the file while the program reads it. A schema
+  cannot declare a dictionary `[K: V]` yet (a field, an action's
+  parameter, a result): such a file does not apply, its warning saying
+  to use a list of a `record`. A value holding a dictionary that would
+  reach a service any other way (a write, an action's argument) is the
+  action's error "a service cannot take a dictionary yet", never a
+  silent null (decisions.md dictionary: D-Bus and JSON maps are phase
+  2).
 
 ### 5.7 Actions
 
@@ -1183,16 +1195,43 @@ monitor, the keyboard always).
   `for p in pins key p.app { … }`. A `for` over plain data without a
   key is a load error. A key is an identity, not an equality: a number
   key keeps its unit, so `2px` and `2ch` are two keys although
-  `2ch == 2px` (section 7.2).
+  `2ch == 2px` (section 7.2). `int` and `float` are not units: `3` and
+  `3.0` are one key, so a key computed by arithmetic finds its item
+  whichever of the two it is (decisions.md dictionary).
 - When `xs` changes, copies whose key stays are kept with their state
   and move to their new place (they glide there, section 6.6); copies
   whose key goes play `exit` and unmount; new keys mount and play
   `enter`.
 - `state xs: [T] key f = []` declares a keyed collection: each item's
   key is its field `f`. Handlers change it with `push`, `insert`,
-  `remove_key`, `move` and `update`. `.filter`, `.map`, `.take`,
-  `.sort_by` and `.fuzzy` on a keyed collection or a service list keep
-  keys and update incrementally.
+  `remove_key`, `move` and `update`. `remove_key` of a key the
+  collection does not hold does nothing, so forgetting an item is safe
+  to repeat; `move` and `update` of one are an error of the handler
+  (section 8.3), as `push` and `insert` of a key it already holds are.
+  `.filter`, `.map`, `.take`, `.sort_by` and `.fuzzy` on a keyed
+  collection or a service list keep keys and update incrementally.
+- `xs.get(k)` reads the item whose key is `k`, or `null` when there is
+  none: `tray.items.get(id)`, `pins.get(app)`. It is for keyed lists: a
+  service's (by its items' own key), a `state`'s with `key f`, and a
+  view `let` or chain over one (`pins.filter(…).get(app)`, by the
+  `state`'s `key`). `k` has the key's type, and a binding over
+  `xs.get(k)` follows the collection. `get` on a list with no key is a
+  load error (`check::missing_key`). `xs[i]` stays a position on every
+  list: a key never goes in a list's brackets (decisions.md
+  dictionary).
+- A dictionary's `m.entries` is keyed by each entry's `key` (section
+  7.1): `for e in m.entries { … }` keeps a row per key across writes. A
+  changed value updates its row, a new key mounts at its place in key
+  order, and a removed key's row plays `exit`.
+- Nothing bounds a collection for you: there is no capacity and no
+  eviction. A collection that must stay small is bounded where it is
+  written. A dictionary is pruned by liveness, in the handler that
+  writes it: `used = used.filter(e => windows.all.any(w => w.id ==
+  e.key))`. A recency list stays a list, bounded by `take`: `recent =
+  ([t] + recent.filter(s => s != t)).take(8)`. Prune when you write,
+  not on a service's first report: `on change` takes the first value as
+  its baseline, and a service may first report an empty list
+  (decisions.md dictionary).
 - A `list` container lays out and mounts only its visible rows
   (virtualisation is the container's job, not the loop's).
 - Rows that change above a `list`'s view keep the rows in view where
@@ -1665,6 +1704,7 @@ monitor, the keyboard always).
 | `text` | `"Search apps"`; any UTF-8, escapes `\" \\ \n \t \r \0 \u{…}`; no interpolation |
 | `bool` | `true`, `false` |
 | `[T]` | `[]`, `["a", "b"]`; lists |
+| `[K: V]` | `[]`, `[1: "web", 2: "code"]`, `[low: 3s, critical: 0s]`; dictionaries, one `V` per key |
 | `T?` | `T` or `null` |
 | `Async<T>` | section 8.6 |
 | records, enums | sections 5.4 |
@@ -1686,6 +1726,70 @@ monitor, the keyboard always).
   keep it, so rows keep their state as the query changes. `Match<T>` can be
   written as a type, as `Async<T>` can; a config's own `type Match` takes
   the name instead.
+- **Dictionaries.** `[K: V]` holds one value of type `V` for each key of
+  type `K` (decisions.md dictionary).
+  - A key is an `int`, a `text` (or an alias of one, such as `AppId`), a
+    `path`, a `bool` or an enum. Any other key type is
+    `check::dict_key`: a `float` may be a fraction and a number with a
+    unit compares by unit (`2px` and `2ch` would be two keys), so the
+    help says to key by a whole number (`x.round()`) or a `text`;
+    records, lists and functions have no key form. A `K?` key type is
+    the same error: a key is never null.
+  - A value is any type but an optional one: `[K: V?]` is
+    `check::dict_value`, since a missing key already reads `null`.
+  - `[k: v, …]` takes its type from the type expected, its keys checked
+    as `K` and values as `V`. Without one, its keys and values each
+    join as a list's items do (`[1: "a"]` is an `[int: text]`), and the
+    dictionary keeps that type: it does not widen as an untyped whole
+    number list does (section 5.3), so writing `0.5` into `state m =
+    ["a": 1]` is a type mismatch whose help declares `state m: [text:
+    float] = ["a": 1]`. `[]`
+    is the empty dictionary wherever one is expected; an untyped `state
+    m = []` is a list, and indexing one with a `text` key is
+    `check::dict_untyped`, whose help declares it: `state m: [text: V]
+    = []`. The same constant key twice in a literal is
+    `check::dict_duplicate`.
+  - `m[k]` reads a `V?`: `null` when `k` is absent. The key is expected
+    as a `K`, so a `K?` key must be unwrapped first, as a list index
+    must. A miss in a chain needs `?.`: `pins["kitty"]?.at`.
+  - In a handler, `m[k] = v` adds the entry or replaces its value, and
+    `m[k].f = x` writes a field of a present entry: the target is a
+    `V`, so `m[k] = null` is a type mismatch whose help says
+    `m.remove(k)`. A compound `m[k] += 1` is `check::dict_compound`,
+    since the entry may be missing: write `m[k] = (m[k] ?? 0) + 1`.
+    `m[k].f = x` when `k` is absent is an error of the handler (section
+    8.3), "no entry for this key", and changes nothing, as `xs[i].f =
+    x` past a list's end is. A mutation through `?.` skips a null and
+    writes nothing: `m[k]?.push(x)` on an absent entry never creates it,
+    and `m?.clear()` or `m?.remove(k)` on a null `[K: V]?` leaves it
+    null. `m = m.filter(e => …)` replaces it whole.
+  - Its entries are always in key order, whatever order they were
+    written in: ints by number, `text`s and paths by Unicode scalar,
+    enums in their declaration order, `false` before `true`. `keys`,
+    `values`, `entries` and `filter` follow that order. There is no
+    insertion or recency order to keep: another order is
+    `m.entries.sort_by(e => e.value)`. When a literal's computed keys
+    repeat one, the later entry wins.
+  - A dictionary `state` is one value. A binding that reads `m[k]`
+    re-runs on any write to `m`, and stops there unless its entry's
+    value changed (section 8.1), so `on change m[k]` runs only when
+    that entry changes, and sees `null` once it is removed.
+  - Its members are listed in docs/reference/functions.md under
+    `[K: V]`: `len`, `keys` (a `[K]`), `values` (a `[V]`), `entries`,
+    `filter(e => …)` (a `[K: V]`), and in a handler `remove(k)`, which
+    does nothing when `k` is absent, and `clear()`. There is no `get`,
+    `set` or `has`: `m[k]`, `m[k] = v` and `m[k] != null` are those.
+  - `m.entries` is a `[Entry<K, V>]`, each with its `key` and `value`,
+    keyed by `key`, so `for e in m.entries { … }` needs no `key` clause
+    and keeps each row by its key. `for e in m` is `check::dict_for`,
+    whose fix is `m.entries`. `Entry<K, V>` can be written as a type,
+    as `Match<T>` can; a config's own `type Entry` takes the name
+    instead.
+  - Binding a prop two-way to an entry (`value: <-> m[k]`) is
+    `check::dict_two_way`: bind a `state` that starts from the entry
+    (`state v = m[k] ?? 0.5`, `value: <-> v`) and write the entry `on
+    change v { m[k] = v }`. A service field, an action's parameter or a command's
+    output cannot hold a dictionary yet (`check::dict_service`).
 - A list's members (`len`, `filter`, `find`, `push`, …) are listed in
   docs/reference/functions.md under `[T]`. `xs[i]` counts from 0 and
   reads `null` past the end. `xs.index_of(test)` is the index of the
@@ -1737,6 +1841,9 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   `90deg < 10px`): a load error. Two `Date`s order by time, earlier
   first (`d.date < clock.today`); a date without a time of day comes
   before every time on that day.
+- `==` on two dictionaries is true when they hold the same keys, each
+  with an equal value; key order is fixed (section 7.1), so how they
+  were written does not matter. There is no `+` on dictionaries.
 - `+` on two `text`s joins them (`name + "…"`, and `s += "!"` in a
   handler); `+` between a `text` and anything else is a load error.
 - `+` on two lists of one item type joins them, the left's items first
@@ -1860,9 +1967,10 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   action call such as `ws.focus()`, or of a declared action, section
   5.7) and assignments.
 - **Assignment** (`=`, `+=`, `-=`, `*=`, `/=`) writes a place: a
-  `state`, a field or item of one, an `rw` service field (including one
-  on an item of a service's keyed list), or a settings field (written
-  field by field). `x op= e` is `x = x op e`. Assigning to a `let`, a
+  `state`, a field or item of one, an entry of a dictionary one (`m[k]
+  = v`, with `=` alone: section 7.1), an `rw` service field (including
+  one on an item of a service's keyed list), or a settings field
+  (written field by field). `x op= e` is `x = x op e`. Assigning to a `let`, a
   prop (directly or through an `id`), a parameter or a read-only service
   field is a load error with a fix. Assignment is a statement, never an
   expression.
@@ -1925,7 +2033,9 @@ is expected is a load error whose help suggests rounding it (`.round()`,
 - `prop: <-> target` binds a widget's prop to a writable place: a
   `state`, an `rw` service field, or a settings field. The prop shows
   the target, and when the widget changes the value (a slider dragged, a
-  popup dismissed, text typed) it writes the target.
+  popup dismissed, text typed) it writes the target. An entry of a
+  dictionary is not such a place, since it may be missing
+  (`check::dict_two_way`, section 7.1).
 - The prop must be one the schema marks two-way (`value`, `text`,
   `open`, …), and the target must be writable; otherwise it is a load
   error. `<->` takes one expression, a place.
@@ -2275,6 +2385,12 @@ new program with the running one.
   were renamed: each says `renamed or removed`. The warning, like every row the reload overlay lists for a
   reload, is one of the `reload` event's `notices` in `strand watch`;
   the cell is also under its `reset`.
+- (dictionary) A dictionary keeps its entries through a reload by key:
+  an enum key follows its variant by name, so reordering the enum
+  reorders the entries. A variant removed drops the entries it keyed
+  and keeps the rest, and one line says so, `island.used: dropped 2
+  entries (key no longer in Urgency)`; a value that no longer fits
+  resets the cell, as a list's item does.
 - A handler counts as changed when its code or anything it reaches
   (the `fn`s and `let`s it calls or reads) changed; an unchanged handler
   keeps its in-flight work.
@@ -2319,6 +2435,17 @@ new program with the running one.
   default hash matches is used; when the default changed, an unchanged
   stored value adopts the new default and a changed one is kept and
   reported once. A corrupt store gives the default and a warning.
+- (dictionary) A persisted dictionary is stored as `[key, value]`
+  pairs in key order, `[[3,"0x55"],[5,"0x7a"]]` (an `int` key a
+  number, an enum key its variant's name), so the same entries are the
+  same stored value and the same default however a literal ordered
+  them. A store edited by hand may hold pairs in any order (of two with
+  one key the later wins) or an object of key texts, `{"3": "0x55"}`.
+  An entry whose enum key the config no longer declares is dropped as
+  the store is read, with the line a reload gives (10.1), at each start
+  until the cell is next written; anything else that does not read as the type, a list of
+  records turned into a dictionary among them, gives the default and a
+  warning: there is no migration.
 - Builtin services keep their own state beside `persist`, in the same
   directory (readable only by you): `apps`' frecency, and, while
   `notifications.remember` is on (the default), `notifications.all`,
@@ -2375,14 +2502,35 @@ people can edit by hand.
   exist yet, and its missing directories. A file that does not exist
   yet gives every field its default, and reading it creates nothing.
 - Edits to the file apply live, as per-field writes.
+- **A dictionary field** (`wallpapers: [text: path] = []`) is a TOML
+  table: a `[wallpapers]` section or an inline `{ "DP-1" = "…" }`. Each
+  key is read by the key type: an `int` in decimal, an enum's variant by
+  name, `true` or `false`, a `text` or `path` as written (a dotted app id
+  quoted, `"org.gnome.Nautilus" = 0.5`). One bad entry (a key that does
+  not read, two keys that read as one such as `3` and `03`, or a value
+  that does not fit) keeps the whole field's last good value, with a
+  diagnostic naming the key: `prefs.toml: wallpapers: "DP-1": expected
+  path; keeping its last good value`. A deleted table springs back to
+  its default, as a deleted key does.
 - **Writes** (`<->`, handler assignments, `strand set prefs.compact
   true`) are saved after 250 ms of quiet and keep the file's comments,
-  spacing and order. They follow
+  spacing and order. A dictionary is written key by key into the table
+  the file has, a section or an inline one: a changed entry keeps its
+  place and comment, a removed one is deleted, a new one goes at the
+  table's end; a field the file does not have yet is written as its own
+  `[name]` section, after the file's other keys. A record written as an
+  inline table keeps the spacing of each field the same way. They follow
   symbolic links and replace the file through a temporary file and a
   rename. A read-only target (such as a file in `/nix/store`) gets the
   write in an overlay in the state directory instead, with a
   notice.
 - Who wins between the overlay, the file and the default: section 8.8.
+- A live reload keeps each field whose type is the same, carrying its
+  values into the new program by name (section 10.1): an enum field or
+  key follows its variant, and a dictionary's entries whose key variant
+  is gone are dropped with one overlay line, as a kept `state`'s are.
+  The file may still name the old variant; its next read says so and
+  keeps the field's last good value.
 
 ## 12. Errors and faults
 
@@ -2434,7 +2582,19 @@ people can edit by hand.
     with its unit, `#rrggbb`, `null` for an optional. For a service
     field, a signed number or percentage (`+5%`) is a step from the
     current value, never below 0;
-  - `strand toggle path` flips an exported `bool` state;
+  - (dictionary) after a dictionary, the rest of the path is one key,
+    read by the key type, so a dotted app id is one key: `strand get
+    island.last_win.3` prints that entry, or `null` when it is absent,
+    and `strand set prefs.scale.org.gnome.Nautilus 0.5` writes one entry,
+    inserting or replacing it, its value read by the value type. `strand
+    get` of a whole dictionary prints an object keyed by each key's text
+    (`{"3": "0x55"}`) for `--json`, and its entries in key order as text.
+    A whole dictionary is not set from text, and an entry is not removed
+    (`null` is never a dictionary's value): both are refused, naming what
+    does it (`strand set path.<key> value`, a handler's `m.remove(k)`). A
+    key that does not read as the key type is refused, naming it;
+  - `strand toggle path` flips an exported `bool` state, settings field
+    or `bool` dictionary entry (an absent one becomes `true`);
   - `strand call target args…` calls a service-level action; the
     actions of the builtin services that take passwords (`auth`,
     `polkit`, `greetd`) are refused, since a password is typed into the

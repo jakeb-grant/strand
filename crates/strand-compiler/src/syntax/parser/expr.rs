@@ -560,23 +560,9 @@ impl Parser<'_> {
             }
             K::LBracket => {
                 self.bump();
-                let items = self.with_nl(false, |p| {
-                    let mut items = Vec::new();
-                    while !matches!(
-                        p.kind(),
-                        K::RBracket | K::Eof | K::LBrace | K::RBrace | K::Semi
-                    ) {
-                        let before = p.pos;
-                        items.push(p.expr());
-                        if p.eat(K::Comma).is_none() || p.pos == before {
-                            break;
-                        }
-                    }
-                    p.expect(K::RBracket);
-                    items
-                });
-                ExprKind::Array(items)
+                self.with_nl(false, |p| p.bracket_items())
             }
+            K::LBrace if self.braced_dict() => return self.braced_dict_literal(),
             _ => {
                 self.expected("an expression");
                 return self.error_expr();
@@ -586,6 +572,193 @@ impl Parser<'_> {
             kind,
             span: self.finish(t.span.start),
         }
+    }
+
+    /// The items of `[ … ]` after its `[`: a list, or a dictionary when
+    /// the first item is `key: value` (`docs/grammar.md`, `primary`). A
+    /// ternary key has taken its own `:` by then (`[c ? a : b: v]`).
+    fn bracket_items(&mut self) -> ExprKind {
+        let open = self.prev_end().saturating_sub(1);
+        if self.at(K::Colon) && self.nth_kind(1) == K::RBracket {
+            // `[:]`: Swift's empty dictionary.
+            self.bump();
+            let close = self.bump();
+            self.push_error(
+                Diagnostic::error("syntax::dict_item", "an empty dictionary is `[]`")
+                    .with_label(Span::new(open, close.span.end), "no `[:]` form")
+                    .with_suggestion(Span::new(open, close.span.end), "[]"),
+            );
+            return ExprKind::Array(Vec::new());
+        }
+        let mut items = Vec::new();
+        let mut entries = Vec::new();
+        // Whether the first item was `key: value`.
+        let mut dict = None;
+        while !matches!(
+            self.kind(),
+            K::RBracket | K::Eof | K::LBrace | K::RBrace | K::Semi
+        ) {
+            let before = self.pos;
+            let item = self.expr();
+            let entry = self.at(K::Colon);
+            let is_dict = *dict.get_or_insert(entry);
+            if entry {
+                self.bump();
+                let value = self.expr();
+                if is_dict {
+                    entries.push((item, value));
+                } else {
+                    let first: Option<&Expr> = items.first();
+                    let mut d = Diagnostic::error(
+                        "syntax::dict_item",
+                        "every item of a dictionary is `key: value`",
+                    )
+                    .with_label(item.span.to(value.span), "a `key: value` item in a list");
+                    if let Some(f) = first {
+                        d = d.with_secondary(f.span, "this item has no value, so this is a list");
+                    }
+                    self.push_error(d.with_help(
+                        "give every item a value for a dictionary (`[k: v, …]`), or none for a list",
+                    ));
+                    items.push(item);
+                }
+            } else if is_dict {
+                let first = entries
+                    .first()
+                    .map(|(k, v): &(Expr, Expr)| k.span.to(v.span));
+                let mut d = Diagnostic::error(
+                    "syntax::dict_item",
+                    "every item of a dictionary is `key: value`",
+                )
+                .with_label(item.span, "this item has no value");
+                if let Some(f) = first {
+                    d = d.with_secondary(f, "a `key: value` item, so this is a dictionary");
+                }
+                self.push_error(d.with_help(
+                    "give every item a value for a dictionary (`[k: v, …]`), or none for a list",
+                ));
+            } else {
+                items.push(item);
+            }
+            if self.eat(K::Comma).is_none() || self.pos == before {
+                break;
+            }
+        }
+        self.expect(K::RBracket);
+        if dict == Some(true) {
+            ExprKind::Dict(entries)
+        } else {
+            ExprKind::Array(items)
+        }
+    }
+
+    /// At a `{` where an expression starts: does it read as a dictionary
+    /// written in braces (`{}`, `{"a": 1}`, `{low: 3s}`)? An expression
+    /// never starts with `{`, so this only picks the message. In a prop
+    /// value a name and `:` may be a sub-block's prop, so there only a
+    /// quoted or number key counts.
+    fn braced_dict(&self) -> bool {
+        let in_value = self.value_level == Some(self.nl.len());
+        match (self.nth_kind(1), self.nth_kind(2)) {
+            (K::RBrace, _) => !in_value,
+            (K::String | K::Number, K::Colon) => true,
+            (K::Ident, K::Colon) => !in_value,
+            _ => false,
+        }
+    }
+
+    /// `{1: "a"}` where an expression starts: skipped whole, and reported
+    /// with the bracketed form as its fix (decisions.md, dictionary).
+    fn braced_dict_literal(&mut self) -> Expr {
+        let start = self.cur().span.start;
+        // The fix is offered only for a shape that can only be a
+        // dictionary: every key quoted or a number (`{"a": 1}`, `{}`). A
+        // name key (`{app: "a", label: "b"}`) may be a record meant JS's
+        // way, so the help names both forms.
+        let fits = self.braced_shape(false).plain_keys;
+        self.skip_group();
+        let span = self.finish(start);
+        let d = Diagnostic::error("syntax::dict_braces", "dictionaries use brackets: `[k: v]`")
+            .with_label(span, "braces hold a block, not a value");
+        let d = if fits {
+            bracketed_fix(
+                d,
+                span,
+                self.src,
+                "write it `[k: v, …]`; an empty one is `[]`",
+            )
+        } else {
+            let inner = braced_inner(span, self.src).unwrap_or("k: v, …");
+            d.with_help(format!(
+                "a record is built by its type's name, `Name({inner})`; a dictionary is \
+                 `[{inner}]`"
+            ))
+        };
+        self.push_error(d);
+        Expr {
+            kind: ExprKind::Error,
+            span,
+        }
+    }
+
+    /// (dictionary) What stands directly inside the braces at `{`: how
+    /// many `:` and how many `,` or `;`, and whether every key (the first
+    /// token, and each after a `,` or `;`) is a quoted text or a number.
+    /// In a type (`generic`) `<…>` nests as brackets do.
+    fn braced_shape(&self, generic: bool) -> BracedShape {
+        let mut depth = 0usize;
+        let mut shape = BracedShape {
+            colons: 0,
+            separators: 0,
+            plain_keys: true,
+            type_key: false,
+        };
+        let mut at_key = true;
+        for i in 1..256 {
+            let k = self.nth_kind(i);
+            if depth == 0 && at_key && k != K::RBrace {
+                if i == 1 && k == K::Ident {
+                    let name = self.text(self.nth(i));
+                    shape.type_key = matches!(name, "int" | "text" | "path" | "bool")
+                        || name.starts_with(char::is_uppercase);
+                }
+                shape.plain_keys &= matches!(k, K::String | K::Number);
+                at_key = false;
+            }
+            match k {
+                K::LBrace | K::LBracket | K::LParen => depth += 1,
+                K::Lt if generic => depth += 1,
+                K::Gt if generic => depth = depth.saturating_sub(1),
+                K::RBracket | K::RParen => depth = depth.saturating_sub(1),
+                K::RBrace if depth == 0 => return shape,
+                K::RBrace => depth -= 1,
+                K::Eof => return shape,
+                K::Colon if depth == 0 => shape.colons += 1,
+                K::Comma | K::Semi if depth == 0 => {
+                    shape.separators += 1;
+                    at_key = true;
+                }
+                _ => {}
+            }
+        }
+        shape
+    }
+
+    /// At a `{` where a type starts: does it read as a dictionary type
+    /// written in braces (`{int: text}`)? True when a `:` stands directly
+    /// inside it before its `}`.
+    fn braced_dict_type(&self) -> bool {
+        let mut depth = 0usize;
+        for i in 1..64 {
+            match self.nth_kind(i) {
+                K::LBrace | K::LBracket | K::LParen | K::Lt => depth += 1,
+                K::RBracket | K::RParen | K::Gt => depth = depth.saturating_sub(1),
+                K::RBrace | K::Eof => return false,
+                K::Colon if depth == 0 => return true,
+                _ => {}
+            }
+        }
+        false
     }
 
     fn number(&mut self, t: Tok) -> Number {
@@ -794,14 +967,44 @@ impl Parser<'_> {
         let mut ty = match self.kind() {
             K::LBracket => {
                 self.bump();
-                let inner = self.with_nl(false, |p| {
+                let kind = self.with_nl(false, |p| {
                     let t = p.ty();
+                    let kind = if p.eat(K::Colon).is_some() {
+                        TypeKind::Dict(Box::new(t), Box::new(p.ty()))
+                    } else {
+                        TypeKind::List(Box::new(t))
+                    };
                     p.expect(K::RBracket);
-                    t
+                    kind
                 });
                 Type {
-                    kind: TypeKind::List(Box::new(inner)),
+                    kind,
                     span: self.finish(start),
+                }
+            }
+            K::LBrace if self.braced_dict_type() => {
+                // `{K: V}` is a dictionary type; more than one field
+                // (`{x: int, y: int}`), or one named as a field
+                // (`{name: text}`), is a record type written TS's way,
+                // which `[…]` would not fix.
+                let shape = self.braced_shape(true);
+                let fits = shape.colons == 1 && shape.separators == 0 && shape.type_key;
+                self.skip_group();
+                let span = self.finish(start);
+                let d =
+                    Diagnostic::error("syntax::dict_braces", "dictionaries use brackets: `[K: V]`")
+                        .with_label(span, "braces hold a record's fields or a block, not a type");
+                self.push_error(if fits {
+                    bracketed_fix(d, span, self.src, "write it `[K: V]`")
+                } else {
+                    d.with_help(
+                        "a record type is declared by its name, `type Name { x: int; y: int }`, \
+                         and written `Name`; a dictionary type is `[K: V]`",
+                    )
+                });
+                Type {
+                    kind: TypeKind::Error,
+                    span,
                 }
             }
             K::Ident => {
@@ -936,6 +1139,38 @@ impl Parser<'_> {
             arms_span: self.finish(open.span.start),
         }
     }
+}
+
+/// `d` with the fix for a braced dictionary at `span`: the same text in
+/// brackets when it is on one line (`{1: "a"}` to `[1: "a"]`), otherwise
+/// `help`.
+fn bracketed_fix(mut d: Diagnostic, span: Span, src: &str, help: &str) -> Diagnostic {
+    match braced_inner(span, src) {
+        Some(t) => {
+            d.suggest(span, format!("[{t}]"));
+            d
+        }
+        None => d.with_help(help),
+    }
+}
+
+/// What a `{ … }` on one line holds, trimmed.
+fn braced_inner(span: Span, src: &str) -> Option<&str> {
+    span.text(src)
+        .strip_prefix('{')
+        .and_then(|t| t.strip_suffix('}'))
+        .filter(|t| !t.contains('\n'))
+        .map(str::trim)
+}
+
+/// (dictionary) See `Parser::braced_shape`.
+struct BracedShape {
+    colons: usize,
+    separators: usize,
+    plain_keys: bool,
+    /// The first key names a type: a builtin key type or a capitalised
+    /// name (`{int: text}`, `{Urgency: int}`), not a field (`{name: text}`).
+    type_key: bool,
 }
 
 #[cfg(test)]

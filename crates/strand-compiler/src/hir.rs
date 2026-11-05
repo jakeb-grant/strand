@@ -794,6 +794,9 @@ pub enum ExprKind {
         arms: Vec<(Pattern, Expr)>,
     },
     List(Vec<Expr>),
+    /// `[1: "web", 2: "code"]`, or `[]` where a dictionary is expected:
+    /// its entries as written (key, value).
+    Dict(Vec<(Expr, Expr)>),
     /// `8, 8, 0` (prop and token values).
     Commas(Vec<Expr>),
     /// `0 2px 8px $shadow` (shadow and font values).

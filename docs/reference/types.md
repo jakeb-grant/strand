@@ -2,7 +2,7 @@
 
 # Types
 
-The records, enums, aliases and opaque types of the builtin schema. The language's own types (`int`, `float`, `bool`, `text`, `color`, `length`, `duration`, `T?`, `[T]`, `Async<T>` and the rest) are in spec.md, section 7.1.
+The records, enums, aliases and opaque types of the builtin schema. The language's own types (`int`, `float`, `bool`, `text`, `color`, `length`, `duration`, `T?`, `[T]`, `[K: V]`, `Async<T>` and the rest) are in spec.md, section 7.1.
 
 ## Records
 
@@ -321,6 +321,17 @@ which; the other fields are empty. A drag inside the shell delivers the
 | `files` | `[path]` | The dropped files. |
 | `app` | `App?` | The dropped app. |
 | `text` | `text` | The dropped text. |
+
+### `Entry`
+
+An entry of a dictionary `[K: V]`, as `Entry<K, V>`: what `m.entries`
+holds and what `m.filter(e => …)` is given. Keyed by `key`, so a `for e
+in m.entries` row keeps its state while its value changes.
+
+| Field | Type | |
+| --- | --- | --- |
+| `key` | `any` | Its key, a `K`. |
+| `value` | `any` | Its value, a `V`. |
 
 ### `File`
 

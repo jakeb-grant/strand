@@ -1,0 +1,9 @@
+// expect: check::type_mismatch
+// `xs.get(k)`'s key has the collection's key type: a pin is found by its
+// `app` (a `text`), a workspace by its `id` (an `int`).
+type Pin { app: text; label: text }
+state pins: [Pin] key app = []
+bar B {
+  text pins.get(3)?.label ?? ""
+  text workspaces.all.get("one")?.name ?? ""
+}

@@ -433,6 +433,96 @@ fn requests_from_another_thread_are_answered_by_the_logic_loop() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (dictionary) `strand get` and `strand set` reach a dictionary over
+/// the shell's request channel: `get` of the whole dictionary answers an
+/// object keyed by each key's text, `get` of one entry (the rest of the
+/// path one key, so a dotted app id is one) answers it or null, and `set`
+/// of one entry writes it; a whole dictionary, a `null` (an entry's
+/// removal) or a value that does not read is refused, saying why.
+#[test]
+fn strand_get_and_set_reach_one_dictionary_entry() {
+    let dir = temp_dir("ipc-dict");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "export state scale: [text: float] = [\"kitty\": 0.9]\nbar Top {\n  text scale.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n}\n",
+    )
+    .unwrap();
+    let program = load(&dir);
+    let storage = Storage::in_dirs(dir.join("state"), &dir);
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let (give, take) = std::sync::mpsc::channel();
+    let live = Live {
+        requests_to: Some(logic::RequestsTo(Box::new(move |r| {
+            let _ = give.send(r);
+        }))),
+        ..Live::default()
+    };
+    let t = std::thread::spawn(move || logic(program, storage, from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| s.texts() == ["kitty=0.9"]);
+    let requests = take.recv_timeout(Duration::from_secs(10)).unwrap();
+    let ask = |req: ipc::Request| {
+        let requests = requests.clone();
+        std::thread::spawn(move || block_on(requests.call(req).unwrap()))
+            .join()
+            .unwrap()
+    };
+    let set = |path: &str, value: &str| {
+        ask(ipc::Request::Set {
+            path: path.into(),
+            value: value.into(),
+        })
+    };
+    let get = |path: &str| ask(ipc::Request::Get { path: path.into() });
+    assert_eq!(
+        set("bar.scale.org.gnome.Nautilus", "0.5"),
+        json!({"ok": true})
+    );
+    m.until("the entry", |s| {
+        s.texts() == ["kitty=0.9,org.gnome.Nautilus=0.5"]
+    });
+    let all = get("bar.scale");
+    assert_eq!(all["ok"], true, "{all}");
+    assert_eq!(
+        all["value"],
+        json!({"kitty": 0.9, "org.gnome.Nautilus": 0.5}),
+        "{all}"
+    );
+    assert_eq!(
+        get("bar.scale.org.gnome.Nautilus"),
+        json!({"ok": true, "value": 0.5, "text": "0.5", "layer": null})
+    );
+    assert_eq!(get("bar.scale.nope")["value"], json!(null));
+    for (path, value, why) in [
+        (
+            "bar.scale",
+            "{}",
+            "`bar.scale` is a dictionary, `[text: float]`: `strand set` writes one entry, \
+             `strand set bar.scale.<key> <value>`",
+        ),
+        (
+            "bar.scale.kitty",
+            "null",
+            "`bar.scale.kitty`: `strand set` does not remove an entry (a dictionary's values \
+             are never `null`); a handler removes it with `scale.remove(k)`",
+        ),
+        ("bar.scale.kitty", "big", "`big` is not a float"),
+    ] {
+        assert_eq!(
+            set(path, value),
+            json!({"ok": false, "error": why}),
+            "{path} {value}"
+        );
+    }
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// (S-tools) `strand report` goes through the snapshot hop: logic asks
 /// main, main's half comes back, and the socket's answer is it with
 /// logic's half added (the PSS, the version, the compositor's name); an

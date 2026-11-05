@@ -937,13 +937,31 @@ impl Ctx {
                 }
                 let (pe, pd) = (prog.clone(), prog.clone());
                 let (te, td) = (info.ty.clone(), info.ty.clone());
+                // (dictionary) Stored entries whose key the program no
+                // longer declares (an enum variant removed while the
+                // shell was not running) are dropped as the store is read.
+                let dropped = Rc::new(RefCell::new(crate::vm::value::Dropped::default()));
+                let dd = dropped.clone();
                 let cell = Rc::new(rt.persisted(
                     store,
                     &path,
                     default.clone(),
                     move |v| crate::vm::persist::encode_bytes(&pe.types, &te, v),
-                    move |b| crate::vm::persist::decode_bytes(&pd.types, &td, b),
+                    move |b| {
+                        let (v, d) = crate::vm::persist::decode_bytes_dropping(&pd.types, &td, b)?;
+                        dd.borrow_mut().merge(&d);
+                        Some(v)
+                    },
                 ));
+                // Noted at its first read (the store keeps them until
+                // the cell is next written, so each start says so); a
+                // reload's own translation notes what it drops from a
+                // kept cell.
+                if from.is_none()
+                    && let Some(line) = dropped.borrow().notice(&path)
+                {
+                    self.notices.borrow_mut().push(line);
+                }
                 if let strand_core::Restore::KeptOverNewDefault(_) = &cell.restored
                     && let Ok(v) = cell.signal.get_untracked(rt)
                 {
@@ -1182,7 +1200,13 @@ impl Ctx {
                 (name.clone(), now, passed)
             })
             .collect();
-        let make_specs = |specs: Vec<(String, Ty, Value)>| -> Vec<strand_core::FieldSpec<Value>> {
+        // `from`: a reload's old program, whose values the kept handle's
+        // fields hold; each is carried into this one by `translate`
+        // (dictionary: an enum by its variant's name, so an enum key
+        // follows its variant and an entry whose variant is gone drops).
+        let make_specs = |specs: Vec<(String, Ty, Value)>,
+                          from: Option<Arc<crate::lower::Program>>|
+         -> Vec<strand_core::FieldSpec<Value>> {
             specs
                 .into_iter()
                 .map(|(name, ty, default)| {
@@ -1193,13 +1217,22 @@ impl Ctx {
                         .find(|t| t.0 == name)
                         .map(|t| t.2.clone())
                         .unwrap_or_else(|| prog.types.stable(&ty).to_string());
-                    strand_core::FieldSpec::new(
+                    let spec = strand_core::FieldSpec::new(
                         name,
                         default,
                         move |item| crate::vm::persist::decode_item(&pd.types, &td, item),
                         move |v| crate::vm::persist::encode_item(&pe.types, &te, v),
                     )
-                    .with_type(shown)
+                    .with_type(shown);
+                    match &from {
+                        Some(from) => {
+                            let (from, to) = (from.clone(), prog.clone());
+                            spec.with_carry(move |v| {
+                                crate::vm::value::translate(v, &from.types, &to.types).map(|x| x.0)
+                            })
+                        }
+                        None => spec,
+                    }
                 })
                 .collect()
         };
@@ -1239,7 +1272,25 @@ impl Ctx {
                 self.report(|r| r.kept.push(path.to_string()));
                 let out = match &old.handle {
                     Some(h) => {
-                        let _ = rt.with_owner(holder.id(), |rt| h.redeclare(rt, make_specs(specs)));
+                        // (dictionary) Entries the carry drops (an enum
+                        // key whose variant is gone): one line per field,
+                        // as a kept state's.
+                        for (name, sig) in h.signals() {
+                            if !specs.iter().any(|s| *s.0 == *name) {
+                                continue;
+                            }
+                            let Ok(v) = sig.get_untracked(rt) else {
+                                continue;
+                            };
+                            let dropped =
+                                crate::vm::value::translate_dropping(&v, &from.types, &prog.types)
+                                    .and_then(|(_, _, d)| d.notice(&format!("{path}.{name}")));
+                            if let Some(line) = dropped {
+                                self.report(|r| r.notice(line));
+                            }
+                        }
+                        let specs = make_specs(specs, Some(from.clone()));
+                        let _ = rt.with_owner(holder.id(), |rt| h.redeclare(rt, specs));
                         let fields = h
                             .signals()
                             .into_iter()
@@ -1257,12 +1308,20 @@ impl Ctx {
                                             .field(&name)
                                             .and_then(|s| s.get_untracked(rt).ok())
                                             .and_then(|v| {
-                                                crate::vm::value::translate(
-                                                    &v,
-                                                    &from.types,
-                                                    &prog.types,
-                                                )
-                                                .map(|x| x.0)
+                                                let (v, _, dropped) =
+                                                    crate::vm::value::translate_dropping(
+                                                        &v,
+                                                        &from.types,
+                                                        &prog.types,
+                                                    )?;
+                                                // (dictionary) Entries whose
+                                                // enum key is gone: one line,
+                                                // as a kept state's.
+                                                let cell = format!("{path}.{name}");
+                                                if let Some(line) = dropped.notice(&cell) {
+                                                    self.report(|r| r.notice(line));
+                                                }
+                                                Some(v)
                                             })
                                             .unwrap_or(default);
                                         (name, rt.signal(v))
@@ -1277,7 +1336,7 @@ impl Ctx {
             }
             None => rt.scope(|rt| match (&self.storage.settings, resolved.clone()) {
                 (Some(store), Some(resolved)) => {
-                    let handle = rt.settings_file(store, resolved, make_specs(specs));
+                    let handle = rt.settings_file(store, resolved, make_specs(specs, None));
                     let fields = handle
                         .signals()
                         .into_iter()

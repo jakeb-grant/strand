@@ -1,0 +1,7 @@
+// expect: check::dict_two_way
+// A widget writing back to an entry that may be missing: bind a `state`
+// and write the entry from it.
+state levels: [text: float] = []
+component C {
+  slider { value: <-> levels["main"] }
+}

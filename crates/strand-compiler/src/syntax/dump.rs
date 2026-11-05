@@ -504,6 +504,7 @@ fn ty_label(t: &Type) -> String {
             s
         }
         TypeKind::List(inner) => format!("[{}]", ty_label(inner)),
+        TypeKind::Dict(k, v) => format!("[{}: {}]", ty_label(k), ty_label(v)),
         TypeKind::Optional(inner) => format!("{}?", ty_label(inner)),
         TypeKind::Error => "<error>".into(),
     }
@@ -554,6 +555,14 @@ pub fn expr(e: &Expr) -> TreeNode {
         ExprKind::Name(id) => TreeNode::leaf(id.name.clone(), span),
         ExprKind::Token(k) => TreeNode::leaf(format!("${}", ident_path(&k.segments)), span),
         ExprKind::Array(xs) => many("array", xs),
+        ExprKind::Dict(entries) => TreeNode::sexpr(
+            "dict",
+            span,
+            entries
+                .iter()
+                .map(|(k, v)| TreeNode::sexpr(":", k.span.to(v.span), vec![expr(k), expr(v)]))
+                .collect(),
+        ),
         ExprKind::Paren(x) => TreeNode::sexpr("paren", span, vec![expr(x)]),
         ExprKind::Unary { op, expr: x } => {
             let label = if *op == UnaryOp::Neg {

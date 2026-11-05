@@ -12,8 +12,8 @@ check::persist
    ·                                     ╰── not plain data
  4 │ state ok = 1 persist
    ╰────
-  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
-        those; for a node or a live item (a window, an app) store its key instead
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists, dictionaries
+        and records of those; for a node or a live item (a window, an app) store its key instead
 
 syntax::persist
 
@@ -49,8 +49,8 @@ check::persist
     ·                            ╰── not plain data
  10 │ state pal: Palette = material(seed: #7aa2f7) persist
     ╰────
-  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
-        those; for a node or a live item (a window, an app) store its key instead
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists, dictionaries
+        and records of those; for a node or a live item (a window, an app) store its key instead
 
 check::persist
 
@@ -62,8 +62,8 @@ check::persist
     ·                                                 ╰── not plain data
  11 │ state prefs from "p.toml" { w: Holder? = null; s: Spring = spring(1, 1); n: int = 3 }
     ╰────
-  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
-        those; for a node or a live item (a window, an app) store its key instead
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists, dictionaries
+        and records of those; for a node or a live item (a window, an app) store its key instead
 
 check::persist
 
@@ -75,8 +75,8 @@ check::persist
     ·                                   ╰── not plain data
  12 │ // Runtime handles and live service items are not data either.
     ╰────
-  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
-        those; for a node or a live item (a window, an app) store its key instead
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists, dictionaries
+        and records of those; for a node or a live item (a window, an app) store its key instead
 
 check::persist
 
@@ -88,8 +88,8 @@ check::persist
     ·                                                      ╰── not plain data
  12 │ // Runtime handles and live service items are not data either.
     ╰────
-  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
-        those; for a node or a live item (a window, an app) store its key instead
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists, dictionaries
+        and records of those; for a node or a live item (a window, an app) store its key instead
 
 check::persist
 
@@ -101,8 +101,8 @@ check::persist
     ·                             ╰── not plain data
  14 │ state ns: [Node] = [] persist
     ╰────
-  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
-        those; for a node or a live item (a window, an app) store its key instead
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists, dictionaries
+        and records of those; for a node or a live item (a window, an app) store its key instead
 
 check::persist
 
@@ -114,8 +114,8 @@ check::persist
     ·                          ╰── not plain data
  15 │ type NodeHolder { n: Node; label: text }
     ╰────
-  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
-        those; for a node or a live item (a window, an app) store its key instead
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists, dictionaries
+        and records of those; for a node or a live item (a window, an app) store its key instead
 
 check::persist
 
@@ -127,8 +127,8 @@ check::persist
     ·                                 ╰── not plain data
  17 │ state win: Window? = null persist
     ╰────
-  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
-        those; for a node or a live item (a window, an app) store its key instead
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists, dictionaries
+        and records of those; for a node or a live item (a window, an app) store its key instead
 
 check::persist
 
@@ -140,8 +140,8 @@ check::persist
     ·                              ╰── not plain data
  18 │ state handles from "h.toml" { who: Node? = null; app: App? = null; count: int = 0 }
     ╰────
-  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
-        those; for a node or a live item (a window, an app) store its key instead
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists, dictionaries
+        and records of those; for a node or a live item (a window, an app) store its key instead
 
 check::persist
 
@@ -152,8 +152,8 @@ check::persist
     ·                                    ──┬──
     ·                                      ╰── not plain data
     ╰────
-  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
-        those; for a node or a live item (a window, an app) store its key instead
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists, dictionaries
+        and records of those; for a node or a live item (a window, an app) store its key instead
 
 check::persist
 
@@ -164,5 +164,5 @@ check::persist
     ·                                                       ──┬─
     ·                                                         ╰── not plain data
     ╰────
-  help: only plain data is stored: numbers, text, paths, colours, enums, and lists and records of
-        those; for a node or a live item (a window, an app) store its key instead
+  help: only plain data is stored: numbers, text, paths, colours, enums, and lists, dictionaries
+        and records of those; for a node or a live item (a window, an app) store its key instead

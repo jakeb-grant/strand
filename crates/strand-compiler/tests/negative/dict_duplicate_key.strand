@@ -1,0 +1,6 @@
+// expect: check::dict_duplicate
+// A key written twice as the same constant holds one value, a number or
+// an enum variant alike.
+enum Urgency { low, normal, critical }
+let names: [int: text] = [1: "web", 2: "code", 1: "chat"]
+let waits: [Urgency: duration] = [low: 3s, critical: 0s, low: 6s]

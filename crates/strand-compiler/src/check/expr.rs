@@ -61,6 +61,20 @@ pub(crate) fn path_text(e: &ast::Expr) -> Option<String> {
     }
 }
 
+/// How a place or a key is written, for messages: `a.b`, `"a"`, `3`,
+/// `m["a"]`; `None` for anything longer.
+pub(crate) fn written(e: &ast::Expr) -> Option<String> {
+    match &e.kind {
+        ast::ExprKind::String(s) => Some(format!("{:?}", s.value)),
+        ast::ExprKind::Number(n) if n.unit.is_none() => Some(n.value.to_string()),
+        ast::ExprKind::Bool(b) => Some(b.to_string()),
+        ast::ExprKind::Index { base, index } => {
+            Some(format!("{}[{}]", written(base)?, written(index)?))
+        }
+        _ => path_text(e),
+    }
+}
+
 /// (flex) A literal that takes its type from where it is written: a
 /// plain whole number (`int` or `float`), an empty list.
 fn takes_type(e: &ast::Expr) -> bool {
@@ -88,6 +102,23 @@ impl<'a> Checker<'a> {
         // A thin dispatcher: deep expressions recurse through here, so each
         // case lives in its own function and this frame stays small.
         let span = e.span;
+        // An assignment target's path is its names, fields and indexes;
+        // anything else in it (a call, an operand) is read.
+        let place = self.ctx.place;
+        if place
+            && !matches!(
+                e.kind,
+                ast::ExprKind::Field { .. } | ast::ExprKind::Index { .. } | ast::ExprKind::Paren(_)
+            )
+        {
+            self.ctx.place = false;
+        }
+        let h = self.expr_kind(e, expected, span);
+        self.ctx.place = place;
+        h
+    }
+
+    fn expr_kind(&mut self, e: &'a ast::Expr, expected: Option<&Ty>, span: Span) -> hir::Expr {
         match &e.kind {
             ast::ExprKind::Number(n) => self.number(n, expected, span),
             ast::ExprKind::String(s) => hir::Expr {
@@ -109,6 +140,7 @@ impl<'a> Checker<'a> {
             ast::ExprKind::Name(id) => self.name_expr(id, expected),
             ast::ExprKind::Token(key) => self.token_expr(key),
             ast::ExprKind::Array(items) => self.array(items, expected, span),
+            ast::ExprKind::Dict(entries) => self.dict(entries, expected, span),
             ast::ExprKind::Paren(inner) => {
                 let mut h = self.expr(inner, expected);
                 h.span = span;
@@ -205,20 +237,40 @@ impl<'a> Checker<'a> {
     #[inline(never)]
     fn index(&mut self, base: &'a ast::Expr, index: &'a ast::Expr, span: Span) -> hir::Expr {
         let b = self.expr(base, None);
-        let i = self.expect(index, &Ty::INT, "an index");
+        // The key is read, even in an assignment's target.
+        let place = std::mem::replace(&mut self.ctx.place, false);
+        let i = match b.ty.non_null() {
+            Ty::Dict(k, _) => {
+                let k = (**k).clone();
+                self.expect(index, &k, "a key")
+            }
+            Ty::List(elem, _) if elem.is_error() => {
+                let i = self.expr(index, Some(&Ty::INT));
+                if !self.untyped_list_keyed(&b, base, &i) {
+                    self.require(&i, &Ty::INT, "an index");
+                }
+                i
+            }
+            _ => self.expect(index, &Ty::INT, "an index"),
+        };
+        self.ctx.place = place;
         let ty = match b.ty.clone() {
             Ty::Error | Ty::Any => Ty::Error,
             Ty::Optional(_) => {
                 self.nullable_use(&b, base, "index");
                 Ty::Error
             }
+            // `m[k]` reads null for a key it does not hold; written, it is
+            // the entry itself (`m[k] = v`, `m[k].f = x`).
+            Ty::Dict(_, v) if place => *v,
+            Ty::Dict(_, v) => v.optional(),
             t => match t.list_elem() {
                 Some((elem, _)) => elem.clone(),
                 None => {
                     let shown = self.show(&t);
                     self.error(
                         "check::type_mismatch",
-                        format!("only lists can be indexed, not `{shown}`"),
+                        format!("only lists and dictionaries can be indexed, not `{shown}`"),
                         base.span,
                         format!("this is `{shown}`"),
                     );
@@ -1295,6 +1347,35 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            Ty::Dict(k, v) => {
+                let entry = self.entry_of(k, v);
+                let members = crate::schema::dict_members(k, v, &entry);
+                match members.iter().find(|m| m.name == n) {
+                    Some(m) if m.kind == crate::schema::MemberKind::Field => m.ty.clone(),
+                    found => {
+                        let candidates: Vec<String> = members
+                            .iter()
+                            .filter(|m| m.kind == crate::schema::MemberKind::Field)
+                            .map(|m| m.name.clone())
+                            .collect();
+                        self.no_field(t, base_ast, name, &candidates, found.is_some());
+                        // (dictionary) Python's and JS's words for them.
+                        let alias = match n {
+                            "size" | "length" | "count" => Some("len"),
+                            "items" | "pairs" => Some("entries"),
+                            _ => None,
+                        };
+                        if found.is_none()
+                            && let Some(to) = alias
+                            && let Some(d) = self.diags.last_mut()
+                            && d.code == "check::unknown_field"
+                        {
+                            d.suggest(name.span, to);
+                        }
+                        Ty::Error
+                    }
+                }
+            }
             Ty::Prim(Prim::Text | Prim::Path) if n == "len" => Ty::INT,
             Ty::Record(r) => {
                 let rec = self.types.record(*r);
@@ -1703,8 +1784,8 @@ impl<'a> Checker<'a> {
 
     /// `Pin(app: a, label: "x")`. An optional field may be left out (it
     /// is null), and (services-round) so may a list field (it is empty),
-    /// so a record that gains either stays buildable as before (spec.md
-    /// 5.4).
+    /// as (dictionary) may a dictionary field, so a record that gains one
+    /// stays buildable as before (spec.md 5.4).
     fn construct(&mut self, r: RecordId, args: &'a [ast::Arg], span: Span) -> hir::Expr {
         let rec = self.types.record(r);
         let sig = FnSig::new(
@@ -1713,7 +1794,7 @@ impl<'a> Checker<'a> {
                 .map(|f| ParamSig {
                     name: f.name.clone(),
                     ty: f.ty.clone(),
-                    has_default: f.ty.is_optional() || matches!(f.ty, Ty::List(..)),
+                    has_default: f.ty.is_optional() || matches!(f.ty, Ty::List(..) | Ty::Dict(..)),
                     default: None,
                     variadic: false,
                 })
@@ -2095,6 +2176,23 @@ impl<'a> Checker<'a> {
             ty: if nullable { ty.optional() } else { ty },
             span,
         };
+        let dict_call = match &ty {
+            Ty::Dict(k, v) => Some(self.dict_method(&recv, recv_ast, k, v, name, args, span)),
+            _ => None,
+        };
+        if let Some((args, ret)) = dict_call {
+            return wrap(
+                ExprKind::Call {
+                    callee: Callee::Method {
+                        receiver: Box::new(recv),
+                        name: n.to_string(),
+                        overload: 0,
+                    },
+                    args,
+                },
+                ret,
+            );
+        }
         if let Ty::List(elem, keyed) = &ty {
             let (args, ret) = self.list_method(&recv, recv_ast, elem, *keyed, name, args, span);
             return wrap(
@@ -2248,9 +2346,7 @@ impl<'a> Checker<'a> {
 
     /// The key type of a keyed list value.
     fn key_ty(&mut self, recv: &hir::Expr, elem: &Ty) -> Option<Ty> {
-        if let ExprKind::Def(d) = recv.kind
-            && let Some(path) = self.state_keys.get(&d).cloned()
-        {
+        if let Some(path) = self.key_path_of(recv, 0) {
             return match elem {
                 Ty::Record(r) => self.types.field_path(*r, &path),
                 _ => Some(elem.clone()),
@@ -2262,6 +2358,46 @@ impl<'a> Checker<'a> {
             return self.types.field_path(*r, &path);
         }
         None
+    }
+
+    /// (dictionary) The path of the field the items of a list expression
+    /// are known by, when it is not their own identity: the `key` of the
+    /// keyed `state` it derives from, through `let`s (`view_keys`)
+    /// and the steps that keep items (`filter`, `take`, `skip`, `sort_by`,
+    /// `reverse`; `fuzzy`'s `Match<T>` by `item.<key>`). Lowering finds
+    /// `xs.get(k)`'s item by the same path (`Lowerer::get_key`).
+    pub(super) fn key_path_of(&self, e: &hir::Expr, depth: usize) -> Option<Vec<String>> {
+        if depth > 64 {
+            return None;
+        }
+        match &e.kind {
+            ExprKind::Def(d) => self
+                .state_keys
+                .get(d)
+                .or_else(|| self.view_keys.get(d))
+                .cloned(),
+            ExprKind::Call {
+                callee: hir::Callee::Method { receiver, name, .. },
+                ..
+            } if matches!(
+                name.as_str(),
+                "filter" | "take" | "skip" | "sort_by" | "reverse"
+            ) =>
+            {
+                self.key_path_of(receiver, depth + 1)
+            }
+            ExprKind::Call {
+                callee: hir::Callee::Method { receiver, name, .. },
+                ..
+            } if name == "fuzzy" => self
+                .key_path_of(receiver, depth + 1)
+                .or_else(|| match receiver.ty.non_null().list_elem() {
+                    Some((Ty::Record(r), _)) => self.types.record(*r).key.clone(),
+                    _ => None,
+                })
+                .map(|path| std::iter::once("item".to_string()).chain(path).collect()),
+            _ => None,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2322,7 +2458,34 @@ impl<'a> Checker<'a> {
                         name.span,
                         "no key to find items by",
                     );
-                    d.help = Some("declare one: `state xs: [T] key field = []`".into());
+                    // Only a `state` list of records can declare a key; a
+                    // `let` or a list of plain values is helped to what it
+                    // has instead.
+                    let xs = path_text(recv_ast).unwrap_or_else(|| "xs".into());
+                    d.help = Some(match (n, slot.is_some()) {
+                        // (dictionary) `get` is by key only.
+                        ("get", true) => format!(
+                            "declare one: `state {xs}: [T] key field = []`; without one, \
+                             `{xs}[i]` reads an item by its position and `{xs}.find(x => …)` \
+                             by a test"
+                        ),
+                        // A list of records is searched by one of its
+                        // fields; a list of plain values by the value.
+                        ("get", false) if matches!(elem, Ty::Record(_)) => format!(
+                            "only a `state` list of records has a key; `{xs}[i]` reads an item \
+                             by its position and `{xs}.find(x => x.field == k)` by a test"
+                        ),
+                        ("get", false) => format!(
+                            "only a `state` list of records has a key; `{xs}[i]` reads an item \
+                             by its position, `{xs}.find(x => x == k)` by a test, and \
+                             `{xs}.contains(k)` says whether it is there"
+                        ),
+                        (_, true) => format!("declare one: `state {xs}: [T] key field = []`"),
+                        (_, false) => format!(
+                            "only a `state` list of records has a key: \
+                             `state {xs}: [T] key field = []`"
+                        ),
+                    });
                     if let Some((file, at, fields)) = slot {
                         for f in fields {
                             super::tree::add_key(
@@ -2422,6 +2585,207 @@ impl<'a> Checker<'a> {
             ret
         };
         (out, ret)
+    }
+
+    /// A method of a dictionary `[k: v]` (`schema::dict_members`):
+    /// `filter`, `remove`, `clear`. The writing ones are for handlers, on
+    /// a dictionary that can be written.
+    #[allow(clippy::too_many_arguments)]
+    fn dict_method(
+        &mut self,
+        recv: &hir::Expr,
+        recv_ast: &ast::Expr,
+        key: &Ty,
+        value: &Ty,
+        name: &ast::Ident,
+        args: &'a [ast::Arg],
+        span: Span,
+    ) -> (Vec<CallArg>, Ty) {
+        let n = name.name.as_str();
+        let entry = self.entry_of(key, value);
+        let members = crate::schema::dict_members(key, value, &entry);
+        let Some(member) = members
+            .iter()
+            .find(|m| m.name == n && m.kind == crate::schema::MemberKind::Method)
+        else {
+            let candidates: Vec<String> = members
+                .iter()
+                .filter(|m| m.kind == crate::schema::MemberKind::Method)
+                .map(|m| m.name.clone())
+                .collect();
+            let is_field = members.iter().any(|m| m.name == n);
+            let d = self.error(
+                "check::unknown_field",
+                format!("dictionaries have no method `{n}`"),
+                name.span,
+                if is_field {
+                    "a field, not a method"
+                } else {
+                    "unknown method"
+                },
+            );
+            if is_field {
+                d.help = Some(format!("read it without `()`: `.{n}`"));
+            } else {
+                self.foreign_dict_method(recv_ast, &entry, name, args, span, &candidates);
+            }
+            for a in args {
+                // A lambda (`m.forEach(e => …)`) has no parameter type to
+                // take here: one mistake, one diagnostic.
+                if !matches!(a.value.kind, ast::ExprKind::Lambda { .. }) {
+                    self.expr(&a.value, None);
+                }
+            }
+            return (Vec::new(), Ty::Error);
+        };
+        let sig = (*member.sigs[0]).clone();
+        let label = path_text(recv_ast).map_or_else(|| n.to_string(), |p| format!("{p}.{n}"));
+        if member.writes
+            && !self.action_check(&label, name.span)
+            && let Err(why) = self.writable(recv)
+        {
+            self.not_writable(why, recv.span, "change");
+        }
+        self.call_args(&sig, args, &format!("`{label}`"), span)
+    }
+
+    /// (dictionary) Help for a method a dictionary does not have, by what
+    /// the name means in Python or JS: `get(k)` and `set(k, v)` are
+    /// `m[k]` and `m[k] = v` (with a fix), `has(k)` is `m[k] != null`,
+    /// `delete(k)` and `pop(k)` are `remove(k)`, `items()` is `.entries`,
+    /// a list method (`map`, `forEach`) goes through `.entries`, and
+    /// `size()` is `.len`. The help names the receiver as written.
+    fn foreign_dict_method(
+        &mut self,
+        recv_ast: &ast::Expr,
+        entry: &Ty,
+        name: &ast::Ident,
+        args: &'a [ast::Arg],
+        span: Span,
+        candidates: &[String],
+    ) {
+        let n = name.name.as_str();
+        let m = path_text(recv_ast).unwrap_or_else(|| "m".into());
+        let arg = |i: usize| -> Option<&'a str> {
+            let a = args.get(i)?;
+            if a.kind != ast::ArgKind::Positional {
+                return None;
+            }
+            self.text_of(a.value.span)
+        };
+        // `m.get(k)` with a plain `.` (not `?.`) and positional
+        // arguments: the call's tail can be rewritten.
+        let plain_dot = self.text_of(Span::new(recv_ast.span.end, name.span.start)) == Some(".");
+        // A write's fix only for a call standing as its own statement:
+        // `let x = m.set(k, v)` would become `let x = m[k] = v`.
+        let alone = self.stmt_expr == Some(span);
+        let tail = Span::new(recv_ast.span.end, span.end);
+        let list_method = crate::schema::list_members(entry, true, &Ty::Error)
+            .iter()
+            .any(|x| x.name == n && x.kind == crate::schema::MemberKind::Method && !x.writes);
+        let (a0, a1) = (arg(0), arg(1));
+        let Some(d) = self.diags.last_mut() else {
+            return;
+        };
+        match n {
+            "get" => {
+                d.help = Some(format!(
+                    "read an entry by its key: `{m}[k]`, null when it is absent"
+                ));
+                if let (true, Some(k), 1) = (plain_dot, a0, args.len()) {
+                    d.add_suggestion(tail, format!("[{k}]"));
+                }
+            }
+            "has" | "contains" | "has_key" | "includes" => {
+                d.help = Some(format!(
+                    "a missing key reads null: `{m}[k] != null` is true when `k` is there"
+                ));
+            }
+            "set" | "insert" | "put" | "push" | "add" => {
+                d.help = Some(format!(
+                    "write an entry by its key, in a handler: `{m}[k] = v`"
+                ));
+                if let (true, true, Some(k), Some(v), 2) = (alone, plain_dot, a0, a1, args.len()) {
+                    d.add_suggestion(tail, format!("[{k}] = {v}"));
+                }
+            }
+            "delete" | "pop" | "del" | "erase" | "discard" | "unset" => {
+                d.help = Some(format!("forget an entry by its key: `{m}.remove(k)`"));
+                // Python's `pop` returns the value; `remove` returns nothing.
+                if alone && args.len() == 1 {
+                    d.add_suggestion(name.span, "remove");
+                }
+            }
+            "items" | "iter" | "each" | "pairs" | "for_each" | "forEach" => {
+                if list_method {
+                    d.help = Some(format!(
+                        "its entries are a list, each a `key` and a `value`: `{m}.entries.{n}(…)`"
+                    ));
+                    d.add_suggestion(Span::at(name.span.start), "entries.");
+                } else {
+                    d.help = Some(format!(
+                        "its entries are a list, each a `key` and a `value`: `{m}.entries`, \
+                         walked with `for e in {m}.entries`"
+                    ));
+                    if args.is_empty() {
+                        d.add_suggestion(Span::new(name.span.start, span.end), "entries");
+                    }
+                }
+            }
+            "size" | "length" | "count" if args.is_empty() => {
+                d.help = Some(format!("its number of entries is a field: `{m}.len`"));
+                d.add_suggestion(Span::new(name.span.start, span.end), "len");
+            }
+            _ if list_method => {
+                d.help = Some(format!(
+                    "its entries are a list, each a `key` and a `value`: `{m}.entries.{n}(…)`"
+                ));
+                d.add_suggestion(Span::at(name.span.start), "entries.");
+            }
+            _ => {
+                let fix = Self::closest(n, candidates);
+                d.suggest_opt(name.span, fix);
+            }
+        }
+    }
+
+    /// `m["a"]` where `m` is an untyped `[]` (`state m = []`), a list read
+    /// by position: says how to declare the dictionary that was meant
+    /// (`check::dict_untyped`). True when it reported.
+    fn untyped_list_keyed(&mut self, b: &hir::Expr, base: &ast::Expr, i: &hir::Expr) -> bool {
+        let key = i.ty.non_null();
+        if *key == Ty::INT || key.is_lenient() || !self.types.is_dict_key(key) {
+            return false;
+        }
+        let k = self.show(key);
+        let decl = match b.kind {
+            ExprKind::Def(d) => {
+                let def = &self.defs[d.0 as usize];
+                match def.kind {
+                    DefKind::State => Some(format!("state {}: [{k}: V] = []", def.name)),
+                    DefKind::Let => Some(format!("let {}: [{k}: V] = …", def.name)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let what = if key == &Ty::TEXT {
+            "text".to_string()
+        } else {
+            format!("`{k}`")
+        };
+        let owner = quoted(base);
+        self.error(
+            "check::dict_untyped",
+            format!("{owner} is an untyped `[]`, a list read by position"),
+            i.span,
+            format!("a `{k}` key"),
+        )
+        .help = Some(match decl {
+            Some(d) => format!("to key by {what}, declare it: `{d}`"),
+            None => format!("to key by {what}, give it a dictionary type: `[{k}: V]`"),
+        });
+        true
     }
 
     /// (flex) `xs.reduce(init, f)`, typed by `init`'s type `U`: `f` is a
@@ -2936,6 +3300,16 @@ impl<'a> Checker<'a> {
     // Lists, lambdas, match
 
     fn array(&mut self, items: &'a [ast::Expr], expected: Option<&Ty>, span: Span) -> hir::Expr {
+        // `[]` where a dictionary is expected is the empty dictionary.
+        if items.is_empty()
+            && let Some(Ty::Dict(k, v)) = expected.map(Ty::non_null)
+        {
+            return hir::Expr {
+                kind: ExprKind::Dict(Vec::new()),
+                ty: Ty::Dict(k.clone(), v.clone()),
+                span,
+            };
+        }
         let want = expected.and_then(|t| match t.non_null() {
             Ty::List(e, _) => Some((**e).clone()),
             _ => None,
@@ -2973,6 +3347,169 @@ impl<'a> Checker<'a> {
             ty: Ty::list(elem),
             span,
         }
+    }
+
+    /// (dictionary) An untyped literal whose values may be null (`[1:
+    /// null, 2: "a"]`, `["a": x?.name]`): `check::dict_value` at the
+    /// first such value. A written `null` is an entry to leave out, since
+    /// a missing key already reads null, with a fix that removes it; any
+    /// other value needs a fallback.
+    fn literal_null_value(
+        &mut self,
+        entries: &[(ast::Expr, ast::Expr)],
+        parts: &[(hir::Expr, hir::Expr)],
+    ) {
+        let null_at = entries
+            .iter()
+            .position(|(_, v)| matches!(v.kind, ast::ExprKind::Null));
+        if let Some(i) = null_at {
+            let (k, v) = &entries[i];
+            // The entry and the comma on one side of it.
+            let cut = match (entries.get(i + 1), i.checked_sub(1).map(|p| &entries[p])) {
+                (Some((next, _)), _) => Some(Span::new(k.span.start, next.span.start)),
+                (None, Some((_, prev))) => Some(Span::new(prev.span.end, v.span.end)),
+                (None, None) => None,
+            };
+            let d = self.error(
+                "check::dict_value",
+                "a dictionary's value cannot be `null`",
+                v.span,
+                "null",
+            );
+            d.help = Some(match cut {
+                Some(_) => "leave this entry out: a missing key already reads null".into(),
+                None => "leave this entry out: a missing key already reads null; an empty \
+                         dictionary is `[]` with its type declared, `let m: [K: V] = []`"
+                    .into(),
+            });
+            if let Some(cut) = cut {
+                d.add_suggestion(cut, "");
+                if let Some(s) = d.suggestions.last_mut() {
+                    s.title = Some("Leave the entry out".into());
+                }
+            }
+            return;
+        }
+        let Some((_, v)) = parts.iter().find(|(_, v)| v.ty.is_optional()) else {
+            return;
+        };
+        let shown = self.show(&v.ty);
+        self.error(
+            "check::dict_value",
+            format!("a dictionary's value cannot be `{shown}`"),
+            v.span,
+            "may be null",
+        )
+        .help = Some(
+            "a missing key already reads null; give a fallback, `… ?? default`, \
+             or leave the entry out when it is null"
+                .into(),
+        );
+    }
+
+    /// `[k: v, …]`: typed by `expected` when that is a dictionary,
+    /// otherwise by its entries as a list literal is by its items (`[1:
+    /// "web"]` is `[int: text]`, a whole-number key or value an `int`). A
+    /// key written twice as the same constant is `check::dict_duplicate`.
+    fn dict(
+        &mut self,
+        entries: &'a [(ast::Expr, ast::Expr)],
+        expected: Option<&Ty>,
+        span: Span,
+    ) -> hir::Expr {
+        let want = expected.and_then(|t| match t.non_null() {
+            Ty::Dict(k, v) => Some(((**k).clone(), (**v).clone())),
+            _ => None,
+        });
+        let mut parts = Vec::new();
+        let (mut key_ty, mut value_ty) = (None, None);
+        let mut seen: Vec<(String, Span)> = Vec::new();
+        for (k, v) in entries {
+            let (hk, hv) = match &want {
+                Some((wk, wv)) => (
+                    self.expect(k, wk, "a dictionary key"),
+                    self.expect(v, wv, "a dictionary value"),
+                ),
+                None => {
+                    let k_hint = super::whole_shape(k).or_else(|| key_ty.clone());
+                    let hk = self.expr(k, k_hint.as_ref());
+                    let v_hint = super::whole_shape(v).or_else(|| value_ty.clone());
+                    let hv = self.expr(v, v_hint.as_ref());
+                    key_ty = self.join_item(key_ty, &hk, "keys");
+                    value_ty = self.join_item(value_ty, &hv, "values");
+                    (hk, hv)
+                }
+            };
+            if let Some(c) = constant_key(&hk) {
+                match seen.iter().find(|(s, _)| *s == c) {
+                    Some((_, first)) => {
+                        let file = self.file();
+                        let written = match hk.kind {
+                            ExprKind::Variant(e, v) => {
+                                self.types.enum_(e).variants[v as usize].clone()
+                            }
+                            _ => c[1..].to_string(),
+                        };
+                        self.error(
+                            "check::dict_duplicate",
+                            format!("`{written}` is a key twice in this dictionary"),
+                            k.span,
+                            "written again here",
+                        )
+                        .add_secondary(file, *first, "first here")
+                        .help = Some("a key holds one value: remove one of them".into());
+                    }
+                    None => seen.push((c, k.span)),
+                }
+            }
+            parts.push((hk, hv));
+        }
+        let ty = match want {
+            Some((k, v)) => Ty::dict(k, v),
+            None => {
+                let (key, value) = (key_ty.unwrap_or(Ty::Error), value_ty.unwrap_or(Ty::Error));
+                let key_span = entries.first().map_or(span, |(k, _)| k.span);
+                let value_span = entries.first().map_or(span, |(_, v)| v.span);
+                let value = match value {
+                    Ty::Optional(inner) => {
+                        self.literal_null_value(entries, &parts);
+                        *inner
+                    }
+                    Ty::Null => {
+                        self.literal_null_value(entries, &parts);
+                        Ty::Error
+                    }
+                    v => v,
+                };
+                self.dict_type(key, key_span, value, value_span)
+            }
+        };
+        hir::Expr {
+            kind: ExprKind::Dict(parts),
+            ty,
+            span,
+        }
+    }
+
+    /// The type an untyped dictionary literal's keys (or values) have so
+    /// far, joined with `h`'s, as a list literal joins its items.
+    fn join_item(&mut self, prev: Option<Ty>, h: &hir::Expr, what: &str) -> Option<Ty> {
+        Some(match prev {
+            None => h.ty.clone(),
+            Some(prev) => match self.types.join(&prev, &h.ty) {
+                Some(t) => t,
+                None => {
+                    let (a, b) = (self.show(&prev), self.show(&h.ty));
+                    self.error(
+                        "check::type_mismatch",
+                        format!("dictionary {what} differ: `{a}` and `{b}`"),
+                        h.span,
+                        format!("this is `{b}`"),
+                    );
+                    Ty::Error
+                }
+            },
+        })
     }
 
     fn lambda(
@@ -3321,7 +3858,7 @@ impl<'a> Checker<'a> {
                 hir::Pattern::Variant(e, v) => Some(format!("{}.{v}", e.0)),
                 hir::Pattern::Literal(h) => match &h.kind {
                     ExprKind::Bool(b) => Some(format!("b{b}")),
-                    ExprKind::Text(t) => Some(format!("t{t}")),
+                    ExprKind::Text(t) => Some(format!("t{t:?}")),
                     ExprKind::Number { value, unit } => Some(format!("n{value}{unit:?}")),
                     _ => None,
                 },
@@ -3589,8 +4126,31 @@ impl<'a> Checker<'a> {
             K::List(items) | K::Commas(items) | K::Spaced(items) => {
                 items.iter().any(|i| self.is_reactive(i))
             }
+            K::Dict(entries) => entries
+                .iter()
+                .any(|(k, v)| self.is_reactive(k) || self.is_reactive(v)),
             K::Lambda { .. } => false,
         }
+    }
+}
+
+/// A dictionary key written as a constant, as text that is equal for
+/// equal keys (`3` and `3.0` alike, as the runtime keys them): `None` for
+/// a computed key.
+fn constant_key(h: &hir::Expr) -> Option<String> {
+    match &h.kind {
+        ExprKind::Number { value, unit: None } => Some(format!("n{value}")),
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => match expr.kind {
+            ExprKind::Number { value, unit: None } => Some(format!("n{}", -value)),
+            _ => None,
+        },
+        ExprKind::Text(t) => Some(format!("t{t:?}")),
+        ExprKind::Bool(b) => Some(format!("b{b}")),
+        ExprKind::Variant(e, v) => Some(format!("v{}.{v}", e.0)),
+        _ => None,
     }
 }
 

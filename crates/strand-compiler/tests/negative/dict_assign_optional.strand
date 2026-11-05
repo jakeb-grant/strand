@@ -1,0 +1,10 @@
+// expect: check::nullable
+// A value that may be null written to an entry needs a fallback, as
+// anywhere a plain value is expected: the help is not the one for
+// writing `null` itself (dict_assign_null).
+state last_win: [int: text] = []
+state ws = 1
+state picked: text? = null
+component C {
+  box { on click { last_win[ws] = picked } }
+}

@@ -1,0 +1,14 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::dict_keyed
+
+  × a dictionary is already keyed, by its keys
+   ╭─[dict_key_clause.strand:3:30]
+ 2 │ // A dictionary is keyed by its keys: a `key` clause on one is a mistake.
+ 3 │ state names: [int: text] key id = []
+   ·                              ─┬
+   ·                               ╰── a `key` clause on a dictionary
+   ╰────
+  help: drop the `key …`: a list of records needs one, a dictionary `[K: V]` has its keys

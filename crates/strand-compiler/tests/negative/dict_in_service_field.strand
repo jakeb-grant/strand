@@ -1,0 +1,11 @@
+// expect: check::dict_service
+// Services and commands do not carry dictionaries yet: a field, a type a
+// field holds, an action's parameter and a command's output.
+type Info { tags: [text: text] }
+service stats from poll "/tmp/stats.json" every 5s {
+  counts: [text: int]
+  info: Info
+}
+permit exec "setter", "reader"
+action set_all(m: [text: int]) ["setter", m]
+action read_all() -> [text: int] ["reader"]

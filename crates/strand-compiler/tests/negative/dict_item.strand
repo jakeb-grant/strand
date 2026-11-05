@@ -1,0 +1,6 @@
+// expect: syntax::dict_item
+// Every item of a dictionary is `key: value`, and a list's items have no
+// value; `[:]` is not a form, the empty dictionary is `[]`.
+let a = [1: "web", 2]
+let b = [1, 2: "code"]
+let c: [int: text] = [:]

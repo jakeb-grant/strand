@@ -48,6 +48,141 @@ pub struct Record {
     pub fields: Vec<Value>,
 }
 
+/// (dictionary) A dictionary's entries, always in key order ([`key_cmp`]):
+/// ints numerically, texts and paths by Unicode scalar, enums in
+/// declaration order, `false` before `true`. There is no insertion or
+/// recency history, so the derived equality, the language's `==` and the
+/// graph's equality cut-off agree, and two dictionaries with the same
+/// entries are equal however they were written (decisions.md
+/// dictionary). Each key is held as [`dict_key`] makes it: a whole number
+/// is an `int`, whatever arithmetic computed it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Dict {
+    entries: Vec<(Value, Value)>,
+}
+
+impl Dict {
+    /// A dictionary of `entries` in any order: sorted, and of two entries
+    /// with one key the later wins (a literal's computed keys, a store
+    /// edited by hand).
+    pub fn from_entries(entries: impl IntoIterator<Item = (Value, Value)>) -> Self {
+        let mut d = Dict::default();
+        for (k, v) in entries {
+            d.insert(k, v);
+        }
+        d
+    }
+
+    /// The entries, in key order.
+    pub fn entries(&self) -> &[(Value, Value)] {
+        &self.entries
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn find(&self, key: &Value) -> Result<usize, usize> {
+        self.entries.binary_search_by(|(k, _)| key_cmp(k, key))
+    }
+
+    /// The value for `key`, if it has one.
+    pub fn get(&self, key: &Value) -> Option<&Value> {
+        self.find(key).ok().map(|i| &self.entries[i].1)
+    }
+
+    pub fn contains(&self, key: &Value) -> bool {
+        self.find(key).is_ok()
+    }
+
+    /// Inserts `key` at its place in key order, or replaces its value.
+    pub fn insert(&mut self, key: Value, value: Value) {
+        let key = dict_key(key);
+        match self.find(&key) {
+            Ok(i) => self.entries[i].1 = value,
+            Err(i) => self.entries.insert(i, (key, value)),
+        }
+    }
+
+    /// Removes `key`'s entry; `None` (and no change) when there is none.
+    pub fn remove(&mut self, key: &Value) -> Option<Value> {
+        let i = self.find(key).ok()?;
+        Some(self.entries.remove(i).1)
+    }
+
+    /// The entries `keep` is true for, in key order.
+    pub fn retain(&mut self, keep: impl FnMut(&(Value, Value)) -> bool) {
+        self.entries.retain(keep);
+    }
+}
+
+/// (dictionary) A dictionary key as it is held: a whole plain number is an
+/// `int` (`3.0` is the key `3`, as [`ValueKey`] has it), anything else as
+/// it is.
+pub fn dict_key(k: Value) -> Value {
+    match k {
+        Value::Num(n, Num::Float) if n.is_finite() && n.fract() == 0.0 => {
+            Value::Num(n + 0.0, Num::Int)
+        }
+        Value::Num(n, Num::Int) => Value::Num(n + 0.0, Num::Int),
+        k => k,
+    }
+}
+
+/// (dictionary) The order of dictionary keys: numbers by value (`int` and
+/// `float` one plain number, as [`ValueKey`] has it), texts by Unicode
+/// scalar (UTF-8's byte order is the scalars' order), enums by declaration
+/// order, `false` before `true`. Values of other kinds, which no key type
+/// holds, order by kind.
+pub fn key_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    fn rank(v: &Value) -> u8 {
+        match v {
+            Value::Null => 0,
+            Value::Bool(_) => 1,
+            Value::Num(..) => 2,
+            Value::Text(_) => 3,
+            Value::Enum(..) => 4,
+            _ => 5,
+        }
+    }
+    match (a, b) {
+        (Value::Num(x, u), Value::Num(y, v)) => {
+            let n = |f: f64| if f.is_nan() { f64::NAN.abs() } else { f + 0.0 };
+            n(*x)
+                .total_cmp(&n(*y))
+                .then_with(|| key_unit(*u).rank().cmp(&key_unit(*v).rank()))
+        }
+        (Value::Text(x), Value::Text(y)) => x.as_bytes().cmp(y.as_bytes()),
+        (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
+        (Value::Enum(e, x), Value::Enum(f, y)) => e.0.cmp(&f.0).then(x.cmp(y)),
+        _ if rank(a) != rank(b) => rank(a).cmp(&rank(b)),
+        _ if key_eq(a, b) => Ordering::Equal,
+        // Two values of a kind no key type holds: by their debug form, a
+        // total order that never says two different ones are one key.
+        _ => format!("{a:?}").cmp(&format!("{b:?}")),
+    }
+}
+
+impl Num {
+    /// A stable rank of the unit, for ordering keys of one number by unit.
+    fn rank(self) -> u8 {
+        match self {
+            Num::Int => 0,
+            Num::Float => 1,
+            Num::Px => 2,
+            Num::Percent => 3,
+            Num::Ch => 4,
+            Num::Deg => 5,
+            Num::Ms => 6,
+        }
+    }
+}
+
 /// A palette: every Material 3 system role under Strand's names
 /// (`strand-theme`).
 pub use strand_theme::Palette;
@@ -395,6 +530,8 @@ pub enum Value {
     EnumType(EnumId),
     Record(Rc<Record>),
     List(Rc<Vec<Value>>),
+    /// (dictionary) A dictionary `[K: V]`: its entries in key order.
+    Dict(Rc<Dict>),
     /// `8, 8, 0`: a comma shorthand.
     Commas(Rc<Vec<Value>>),
     /// `0 2px 8px $shadow`: a space-separated value (shadows, fonts).
@@ -529,6 +666,7 @@ impl Value {
             Value::Call(c) => c.args.iter().any(Value::has_time),
             Value::Pose(p) => p.iter().any(|(_, v)| v.has_time()),
             Value::Record(r) => r.fields.iter().any(Value::has_time),
+            Value::Dict(d) => d.entries().iter().any(|(_, v)| v.has_time()),
             _ => false,
         }
     }
@@ -601,6 +739,7 @@ impl Value {
             Value::List(v) | Value::Commas(v) | Value::Spaced(v) => v.iter().any(Value::has_tokens),
             Value::Call(c) => c.args.iter().any(Value::has_tokens),
             Value::Pose(p) => p.iter().any(|(_, v)| v.has_tokens()),
+            Value::Dict(d) => d.entries().iter().any(|(_, v)| v.has_tokens()),
             _ => false,
         }
     }
@@ -672,6 +811,12 @@ impl Value {
                 .map(|v| v.show(types))
                 .collect::<Vec<_>>()
                 .join(" "),
+            Value::Dict(d) => d
+                .entries()
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k.show(types), v.show(types)))
+                .collect::<Vec<_>>()
+                .join(", "),
             Value::Async(a) => a.value.as_ref().map(|v| v.show(types)).unwrap_or_default(),
             Value::Record(r) => {
                 let def = types.record(r.ty);
@@ -759,6 +904,13 @@ pub fn fits(types: &TypeTable, ty: &crate::ty::Ty, v: &Value) -> bool {
             Value::List(items) => items.iter().all(|i| fits(types, t, i)),
             _ => false,
         },
+        (Ty::Dict(k, t), v) => match v {
+            Value::Dict(d) => d
+                .entries()
+                .iter()
+                .all(|(key, x)| fits(types, k, key) && fits(types, t, x)),
+            _ => false,
+        },
         _ => true,
     }
 }
@@ -812,7 +964,11 @@ pub fn hex(c: Color) -> String {
 }
 
 /// A value used as a hash key (keyed lists, `on change` identities).
-/// Floats compare by bits, so `NaN` keys are equal to themselves.
+/// Floats compare by bits, so `NaN` keys are equal to themselves. A
+/// number keeps its unit (`2px` and `2ch` are two keys), but `int` and
+/// `float` are one plain number, not units: `3` and `3.0` are one key,
+/// so a key a handler computes finds its item whatever tag the
+/// arithmetic left it (decisions.md dictionary).
 #[derive(Clone, Debug)]
 pub struct ValueKey(pub Value);
 
@@ -832,7 +988,9 @@ impl Hash for ValueKey {
 
 fn key_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
-        (Value::Num(x, u), Value::Num(y, v)) => u == v && norm(*x) == norm(*y),
+        (Value::Num(x, u), Value::Num(y, v)) => {
+            key_unit(*u) == key_unit(*v) && norm(*x) == norm(*y)
+        }
         (Value::List(x), Value::List(y))
         | (Value::Commas(x), Value::Commas(y))
         | (Value::Spaced(x), Value::Spaced(y)) => {
@@ -843,7 +1001,22 @@ fn key_eq(a: &Value, b: &Value) -> bool {
                 && x.fields.len() == y.fields.len()
                 && x.fields.iter().zip(&y.fields).all(|(a, b)| key_eq(a, b))
         }
+        (Value::Dict(x), Value::Dict(y)) => {
+            x.len() == y.len()
+                && x.entries()
+                    .iter()
+                    .zip(y.entries())
+                    .all(|((a, v), (b, w))| key_eq(a, b) && key_eq(v, w))
+        }
         _ => a == b,
+    }
+}
+
+/// The unit a number keys by: `float` keys as `int`, both plain numbers.
+fn key_unit(u: Num) -> Num {
+    match u {
+        Num::Float => Num::Int,
+        u => u,
     }
 }
 
@@ -857,7 +1030,7 @@ fn key_hash<H: Hasher>(v: &Value, state: &mut H) {
         Value::Bool(b) => b.hash(state),
         Value::Num(n, u) => {
             norm(*n).hash(state);
-            u.hash(state);
+            key_unit(*u).hash(state);
         }
         Value::Text(t) => t.hash(state),
         Value::Color(c) => c.to_rgba8().hash(state),
@@ -876,6 +1049,13 @@ fn key_hash<H: Hasher>(v: &Value, state: &mut H) {
             items.len().hash(state);
             for i in items.iter() {
                 key_hash(i, state);
+            }
+        }
+        Value::Dict(d) => {
+            d.len().hash(state);
+            for (k, x) in d.entries() {
+                key_hash(k, state);
+                key_hash(x, state);
             }
         }
         Value::Service(s) => s.hash(state),
@@ -940,13 +1120,17 @@ pub fn keyed_vec<H: 'static>(
     types: fn(&H) -> &TypeTable,
     path: Option<Vec<String>>,
 ) -> KeyedVec<ValueKey, Value> {
-    KeyedVec::new(move |v: &Value| {
-        let t = types(&holder);
-        ValueKey(match &path {
-            Some(p) => v.key_path(t, p).cloned().unwrap_or(Value::Null),
-            None => v.identity(t),
-        })
-    })
+    KeyedVec::new(move |v: &Value| ValueKey(item_key(v, types(&holder), path.as_deref())))
+}
+
+/// The key an item of a keyed collection is known by: its field at
+/// `path` (a `state`'s `key`; null when it has none), else its own
+/// identity (a keyed record's `key`, else the item).
+pub fn item_key(v: &Value, types: &TypeTable, path: Option<&[String]>) -> Value {
+    match path {
+        Some(p) => v.key_path(types, p).cloned().unwrap_or(Value::Null),
+        None => v.identity(types),
+    }
 }
 
 /// `v`, a value of a program with type table `from`, as a value of a
@@ -954,9 +1138,79 @@ pub fn keyed_vec<H: 'static>(
 /// and variant name, records by name and field name. `None` when the new
 /// program has no such type, variant or field, or for values that only
 /// mean something in the program that made them (closures, element
-/// handles, pending loads, token sets). Returns the value and whether
+/// handles, pending loads, token sets). A dictionary entry whose key no
+/// longer translates is dropped, not the whole value
+/// ([`translate_dropping`] counts them). Returns the value and whether
 /// anything changed.
 pub fn translate(v: &Value, from: &TypeTable, to: &TypeTable) -> Option<(Value, bool)> {
+    translate_in(v, from, to, &mut Dropped::default())
+}
+
+/// (dictionary) [`translate`], with the dictionary entries it dropped
+/// because their key no longer names anything in the new program (an
+/// enum key whose variant is gone): a reload's overlay notes them once
+/// per cell ([`Dropped::notice`]).
+pub fn translate_dropping(
+    v: &Value,
+    from: &TypeTable,
+    to: &TypeTable,
+) -> Option<(Value, bool, Dropped)> {
+    let mut dropped = Dropped::default();
+    let (nv, changed) = translate_in(v, from, to, &mut dropped)?;
+    Some((nv, changed, dropped))
+}
+
+/// (dictionary) Dictionary entries a value lost because their key no
+/// longer names anything: an enum key whose variant a reload removed, or
+/// one a stored value names that the program no longer declares
+/// (`persist::decode_bytes_dropping`). Only a key drops its entry; a
+/// value that no longer fits fails the whole value, as a list item does.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Dropped {
+    /// How many entries were dropped.
+    pub entries: usize,
+    /// The key type they no longer are (the first one met), by name.
+    pub key: String,
+}
+
+impl Dropped {
+    /// One entry dropped, its key of type `key`.
+    pub fn add(&mut self, key: &str) {
+        self.entries += 1;
+        if self.key.is_empty() {
+            self.key = key.to_string();
+        }
+    }
+
+    /// Those `other` counted too.
+    pub fn merge(&mut self, other: &Dropped) {
+        if self.key.is_empty() {
+            self.key.clone_from(&other.key);
+        }
+        self.entries += other.entries;
+    }
+
+    /// The overlay's line for cell `path`, when any entry was dropped:
+    /// `island.used: dropped 2 entries (key no longer in Urgency)`.
+    pub fn notice(&self, path: &str) -> Option<String> {
+        if self.entries == 0 {
+            return None;
+        }
+        Some(format!(
+            "{path}: dropped {} entr{} (key no longer in {})",
+            self.entries,
+            if self.entries == 1 { "y" } else { "ies" },
+            self.key
+        ))
+    }
+}
+
+fn translate_in(
+    v: &Value,
+    from: &TypeTable,
+    to: &TypeTable,
+    dropped: &mut Dropped,
+) -> Option<(Value, bool)> {
     Some(match v {
         Value::Null
         | Value::Unit
@@ -990,7 +1244,7 @@ pub fn translate(v: &Value, from: &TypeTable, to: &TypeTable) -> Option<(Value, 
             for f in &ndef.fields {
                 let i = def.fields.iter().position(|x| x.name == f.name);
                 let (fv, c) = match i.and_then(|i| r.fields.get(i)) {
-                    Some(old) => translate(old, from, to)?,
+                    Some(old) => translate_in(old, from, to, dropped)?,
                     // A new field: its type's default.
                     None => (crate::vm::schema_host::default_value(to, &f.ty), true),
                 };
@@ -1006,7 +1260,7 @@ pub fn translate(v: &Value, from: &TypeTable, to: &TypeTable) -> Option<(Value, 
             let mut changed = false;
             let mut out = Vec::with_capacity(xs.len());
             for x in xs.iter() {
-                let (nx, c) = translate(x, from, to)?;
+                let (nx, c) = translate_in(x, from, to, dropped)?;
                 changed |= c;
                 out.push(nx);
             }
@@ -1018,11 +1272,31 @@ pub fn translate(v: &Value, from: &TypeTable, to: &TypeTable) -> Option<(Value, 
             };
             (nv, changed)
         }
+        // (dictionary) Keys and values each translated, then put back in
+        // key order (an enum key's variants may have moved). A key that
+        // no longer translates (its variant is gone) drops its entry,
+        // counted in `dropped`; a value that no longer translates drops
+        // the whole value, as a list item does.
+        Value::Dict(d) => {
+            let mut changed = false;
+            let mut out = Vec::with_capacity(d.len());
+            for (k, x) in d.entries() {
+                let Some((nk, ck)) = translate_in(k, from, to, dropped) else {
+                    dropped.add(&key_type_name(from, k));
+                    changed = true;
+                    continue;
+                };
+                let (nx, cx) = translate_in(x, from, to, dropped)?;
+                changed |= ck || cx;
+                out.push((nk, nx));
+            }
+            (Value::Dict(Rc::new(Dict::from_entries(out))), changed)
+        }
         Value::Pose(ps) => {
             let mut changed = false;
             let mut out = Vec::with_capacity(ps.len());
             for (n, x) in ps.iter() {
-                let (nx, c) = translate(x, from, to)?;
+                let (nx, c) = translate_in(x, from, to, dropped)?;
                 changed |= c;
                 out.push((n.clone(), nx));
             }
@@ -1039,6 +1313,19 @@ pub fn translate(v: &Value, from: &TypeTable, to: &TypeTable) -> Option<(Value, 
     })
 }
 
+/// (dictionary) The name of a dropped key's type in table `types`, for
+/// [`Dropped::notice`]: an enum's name (only an enum key can stop naming
+/// anything).
+pub(crate) fn key_type_name(types: &TypeTable, k: &Value) -> String {
+    match k {
+        Value::Enum(e, _) => types
+            .enums
+            .get(e.0 as usize)
+            .map_or_else(|| "enum".to_string(), |d| d.name.clone()),
+        _ => "its type".to_string(),
+    }
+}
+
 #[cfg(test)]
 // `ValueKey` hashes and compares the value, never the pending future an
 // `Async` may hold.
@@ -1052,13 +1339,63 @@ mod tests {
         let mut set = HashSet::new();
         assert!(set.insert(ValueKey(Value::int(1))));
         assert!(!set.insert(ValueKey(Value::int(1))));
-        assert!(set.insert(ValueKey(Value::float(1.0))));
+        // `int` and `float` are one plain number: `1.0` is the key `1`,
+        // `1.5` another; a unit is a key of its own.
+        assert!(!set.insert(ValueKey(Value::float(1.0))));
+        assert!(set.contains(&ValueKey(Value::float(1.0))));
+        assert!(set.insert(ValueKey(Value::float(1.5))));
+        assert!(set.insert(ValueKey(Value::Num(1.0, Num::Px))));
         assert!(set.insert(ValueKey(Value::float(f64::NAN))));
         assert!(!set.insert(ValueKey(Value::float(f64::NAN))));
         assert!(set.insert(ValueKey(Value::text("a"))));
         assert!(
             !set.insert(ValueKey(Value::float(-0.0))) || set.contains(&ValueKey(Value::float(0.0)))
         );
+    }
+
+    /// (dictionary) Entries stay in key order whatever order they are
+    /// written in; a whole number is one `int` key whatever its tag, so
+    /// two dictionaries with the same entries are equal (the derived
+    /// equality, which the graph's cut-off uses).
+    #[test]
+    fn dictionaries_keep_key_order_and_one_key_per_number() {
+        let mut d = Dict::from_entries([
+            (Value::int(3), Value::text("c")),
+            (Value::int(1), Value::text("a")),
+            (Value::float(2.0), Value::text("b")),
+        ]);
+        let keys: Vec<Value> = d.entries().iter().map(|(k, _)| k.clone()).collect();
+        assert_eq!(keys, [Value::int(1), Value::int(2), Value::int(3)]);
+        d.insert(Value::int(2), Value::text("B"));
+        assert_eq!(d.len(), 3);
+        assert_eq!(d.get(&Value::float(2.0)), Some(&Value::text("B")));
+        assert_eq!(d.get(&Value::float(2.5)), None);
+        let e = Dict::from_entries([
+            (Value::float(2.0), Value::text("B")),
+            (Value::float(3.0), Value::text("c")),
+            (Value::int(1), Value::text("a")),
+        ]);
+        assert_eq!(d, e);
+        assert_eq!(d.remove(&Value::int(7)), None);
+        assert_eq!(d.remove(&Value::float(1.0)), Some(Value::text("a")));
+        assert_eq!(d.len(), 2);
+        let t = Dict::from_entries([
+            (Value::text("b"), Value::Null),
+            (Value::text("\u{e9}"), Value::Null),
+            (Value::text("B"), Value::Null),
+            (Value::text("a"), Value::Null),
+        ]);
+        let shown: Vec<&str> = t
+            .entries()
+            .iter()
+            .filter_map(|(k, _)| k.as_text())
+            .collect();
+        assert_eq!(shown, ["B", "a", "b", "\u{e9}"]);
+        let flags = Dict::from_entries([
+            (Value::Bool(true), Value::Null),
+            (Value::Bool(false), Value::Null),
+        ]);
+        assert_eq!(flags.entries()[0].0, Value::Bool(false));
     }
 
     #[test]

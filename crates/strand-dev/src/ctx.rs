@@ -368,6 +368,12 @@ impl Finder<'_> {
                     self.expr(x);
                 }
             }
+            ExprKind::Dict(entries) => {
+                for (k, v) in entries {
+                    self.expr(k);
+                    self.expr(v);
+                }
+            }
             _ => {}
         }
     }

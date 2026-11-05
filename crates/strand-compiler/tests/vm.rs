@@ -611,3 +611,295 @@ fn values_round_trip_through_report_json() {
     assert_eq!(label, Some(Value::text("xxxxxx")));
     assert!(from_json(&prog.types, &ty, &serde_json::json!(3)).is_err());
 }
+
+/// (dictionary) A dictionary in a glitch report is `[key, value]` pairs
+/// in key order, read back by its type; a key `keep` refuses is held
+/// back as a value is, `{"~text": N}`. Two held keys of one length read
+/// back as the same placeholders, so the later entry is kept and
+/// `keys_read_as_one` counts the one lost (the replay's fidelity note).
+#[test]
+fn dictionaries_round_trip_through_report_json_with_held_keys() {
+    use strand_compiler::vm::json::{from_json, keys_read_as_one, to_json, to_json_string};
+    let src = "enum Level { low, high }\nstate used: [text: int] = [\"kitty\": 1, \"ab\": 2, \"cd\": 3]\nstate by: [Level: [int: text]] = [high: [2: \"b\"], low: [1: \"a\"]]\nbar B { height: 10 }\n";
+    let (_rt, _host, inst) = run(src);
+    let prog = inst.vm().prog.clone();
+    let used = get(&inst, "used");
+    assert_eq!(
+        to_json_string(&prog.types, &used),
+        r#"[["ab",2],["cd",3],["kitty",1]]"#
+    );
+    let ty = inst.cell_type("t.used").unwrap();
+    let j: serde_json::Value = serde_json::from_str(&to_json_string(&prog.types, &used)).unwrap();
+    assert_eq!(from_json(&prog.types, &ty, &j).unwrap(), used);
+    assert_eq!(keys_read_as_one(&prog.types, &ty, &j), 0);
+    // An object reads too, as a hand-written seed has it.
+    let o = serde_json::json!({"kitty": 1, "cd": 3, "ab": 2});
+    assert_eq!(from_json(&prog.types, &ty, &o).unwrap(), used);
+    let mut held = String::new();
+    to_json(&prog.types, &used, &mut held, &mut |t| t == "kitty").unwrap();
+    assert_eq!(held, r#"[[{"~text":2},2],[{"~text":2},3],["kitty",1]]"#);
+    let j: serde_json::Value = serde_json::from_str(&held).unwrap();
+    let back = from_json(&prog.types, &ty, &j).unwrap();
+    assert_eq!(back.show(&prog.types), "kitty: 1, xx: 3");
+    assert_eq!(keys_read_as_one(&prog.types, &ty, &j), 1);
+    // Nested: enum keys by name, a dictionary as a value.
+    let by = get(&inst, "by");
+    assert_eq!(
+        to_json_string(&prog.types, &by),
+        r#"[["low",[[1,"a"]]],["high",[[2,"b"]]]]"#
+    );
+    let ty = inst.cell_type("t.by").unwrap();
+    let j: serde_json::Value = serde_json::from_str(&to_json_string(&prog.types, &by)).unwrap();
+    assert_eq!(from_json(&prog.types, &ty, &j).unwrap(), by);
+    let nested = serde_json::json!([["low", [[{"~text": 1}, "a"], [{"~text": 1}, "b"]]]]);
+    let ty = strand_compiler::ty::Ty::dict(
+        strand_compiler::ty::Ty::TEXT,
+        strand_compiler::ty::Ty::dict(strand_compiler::ty::Ty::TEXT, strand_compiler::ty::Ty::TEXT),
+    );
+    assert_eq!(keys_read_as_one(&prog.types, &ty, &nested), 1);
+}
+
+/// (dictionary) `[K: V]` at run time: `m[k]` reads the value for a key or
+/// null; `len`, `keys`, `values` and `entries` follow key order (ints
+/// numerically, texts by Unicode scalar, enums in declaration order,
+/// `false` before `true`) however the literal was written; of two
+/// computed keys the later wins.
+#[test]
+fn dictionaries_read_by_key_in_key_order() {
+    let src = "enum Urgency { low, normal, critical }\n\
+               state two = 1\n\
+               state names: [int: text] = [3: \"chat\", 1: \"web\", 10: \"mail\", 2: \"code\"]\n\
+               let hit = names[1] ?? \"none\"\n\
+               let miss = names[4] ?? \"none\"\n\
+               let computed = names[two] ?? \"none\"\n\
+               let n = names.len\n\
+               let keys = names.keys\n\
+               let values = names.values.join(\",\")\n\
+               let pairs = names.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n\
+               let texts: [text: int] = [\"b\": 2, \"é\": 3, \"B\": 1, \"a\": 0]\n\
+               let text_keys = texts.keys.join(\",\")\n\
+               let waits: [Urgency: duration] = [critical: 0s, low: 3s, normal: 6s]\n\
+               let wait_keys = waits.keys.map(u => join(\"\", u)).join(\",\")\n\
+               let low_wait = waits[low] ?? 1s\n\
+               let flags: [bool: text] = [true: \"on\", false: \"off\"]\n\
+               let flag_values = flags.values.join(\",\")\n\
+               state k = 1\n\
+               let later = [k: \"first\", 1: \"second\"]\n\
+               let later_n = later.len\n\
+               let later_v = later[1] ?? \"\"\n";
+    let (rt, _, inst) = run(src);
+    let types = inst.vm().types();
+    let shown = |n: &str| get(&inst, n).show(types);
+    assert_eq!(get(&inst, "hit"), Value::text("web"));
+    assert_eq!(get(&inst, "miss"), Value::text("none"));
+    // A key read through a state follows it.
+    assert_eq!(get(&inst, "computed"), Value::text("web"));
+    inst.set_value("t", "two", Value::float(2.0)).unwrap();
+    inst.flush();
+    assert_eq!(get(&inst, "computed"), Value::text("code"));
+    assert_eq!(get(&inst, "n"), Value::int(4));
+    assert_eq!(
+        get(&inst, "keys"),
+        Value::list(vec![
+            Value::int(1),
+            Value::int(2),
+            Value::int(3),
+            Value::int(10)
+        ])
+    );
+    assert_eq!(get(&inst, "values"), Value::text("web,code,chat,mail"));
+    assert_eq!(
+        get(&inst, "pairs"),
+        Value::text("1=web,2=code,3=chat,10=mail")
+    );
+    assert_eq!(get(&inst, "text_keys"), Value::text("B,a,b,é"));
+    assert_eq!(get(&inst, "wait_keys"), Value::text("low,normal,critical"));
+    assert_eq!(get(&inst, "low_wait"), Value::Num(3000.0, Num::Ms));
+    assert_eq!(get(&inst, "flag_values"), Value::text("off,on"));
+    assert_eq!(shown("names"), "1: web, 2: code, 3: chat, 10: mail");
+    // `[k: …, 1: …]` with `k` holding 1: one entry, the later.
+    assert_eq!(get(&inst, "later_n"), Value::int(1));
+    assert_eq!(get(&inst, "later_v"), Value::text("second"));
+    inst.set_value("t", "k", Value::int(5)).unwrap();
+    inst.flush();
+    assert_eq!(get(&inst, "later_n"), Value::int(2));
+    drop(rt);
+}
+
+/// (dictionary) Writes, in handlers: `m[k] = v` inserts at the key's place
+/// or replaces its value; `m[k].f = x` changes a field of a present
+/// entry; `m.remove(k)` forgets an entry and does nothing for a key the
+/// dictionary does not hold; `m.clear()` empties it; `m = m.filter(e =>
+/// …)` keeps the entries the test is true for, as a dictionary. A field
+/// write to an absent entry is a handler error value, and changes
+/// nothing.
+#[test]
+fn dictionary_writes_insert_replace_remove_and_filter() {
+    let src = "type Pin { app: text; at: int }\n\
+               state m: [int: text] = [2: \"b\"]\n\
+               state pins: [text: Pin] = [\"a\": Pin(app: \"a\", at: 1)]\n\
+               let shown = m.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n\
+               let pin_at = pins.values.map(p => join(\"@\", p.app, p.at)).join(\",\")\n\
+               bar B {\n\
+                 box { on click { m[3] = \"c\"; m[1] = \"a\"; m[2] = \"B\" } }\n\
+                 box { on click { m.remove(2); m.remove(7) } }\n\
+                 box { on click { m = m.filter(e => e.key > 1) } }\n\
+                 box { on click { m.clear() } }\n\
+                 box { on click { pins[\"a\"].at = 5 } }\n\
+                 box { on click { pins[\"z\"].at = 9 } }\n\
+                 box { on click { m[4] = \"d\" } }\n\
+                 box { on click { m.remove(9) } }\n\
+               }\n\
+               state writes = 0\n\
+               on change m { writes += 1 }\n";
+    let (rt, host, inst) = run(src);
+    host.set(
+        &rt,
+        "screens.all",
+        Value::list(vec![
+            host.record("Screen", &[("name", Value::text("DP-1"))]),
+        ]),
+    )
+    .unwrap();
+    inst.flush();
+    let boxes = inst.nodes_handling("click");
+    assert_eq!(boxes.len(), 8);
+    let click = |i: usize| {
+        inst.event(boxes[i], "click", Vec::new());
+        inst.flush()
+    };
+    assert_eq!(get(&inst, "shown"), Value::text("2=b"));
+    click(0);
+    assert_eq!(get(&inst, "shown"), Value::text("1=a,2=B,3=c"));
+    let u = click(1);
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(get(&inst, "shown"), Value::text("1=a,3=c"));
+    click(2);
+    assert_eq!(get(&inst, "shown"), Value::text("3=c"));
+    click(3);
+    assert_eq!(get(&inst, "shown"), Value::text(""));
+    assert_eq!(get(&inst, "pin_at"), Value::text("a@1"));
+    click(4);
+    assert_eq!(get(&inst, "pin_at"), Value::text("a@5"));
+    let u = click(5);
+    assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+    assert!(
+        u.errors[0]
+            .error
+            .to_string()
+            .contains("no entry for this key"),
+        "{:?}",
+        u.errors
+    );
+    assert_eq!(get(&inst, "pin_at"), Value::text("a@5"));
+    // Removing a key it does not hold writes nothing: `on change` does
+    // not fire.
+    click(6);
+    let writes = get(&inst, "writes");
+    let u = click(7);
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(get(&inst, "shown"), Value::text("4=d"));
+    assert_eq!(get(&inst, "writes"), writes);
+}
+
+/// (dictionary) `?.` on a mutation skips a null: `m?.clear()` and
+/// `m?.remove(k)` on a null `[K: V]?`, or on a dictionary under a null
+/// record, write nothing (the cell never becomes a list), and a list
+/// mutation on an absent entry (`m[k]?.push(x)`) never creates the
+/// entry (decisions.md dictionary).
+#[test]
+fn a_mutation_through_a_null_or_an_absent_entry_writes_nothing() {
+    let src = "type S { m: [int: text] }\n\
+               state m: [int: text]? = null\n\
+               state s: S? = null\n\
+               state lists: [text: [int]] = [\"x\": [5]]\n\
+               let ents = (m ?? []).entries.map(e => e.value).join(\",\")\n\
+               let shown = lists.entries.map(e => join(\"=\", e.key, e.value.len)).join(\",\")\n\
+               bar B {\n\
+                 box { on click { m?.clear() } }\n\
+                 box { on click { m?.remove(3) } }\n\
+                 box { on click { s?.m?.clear(); s?.m?.remove(1) } }\n\
+                 box { on click { lists[\"b\"]?.push(1) } }\n\
+                 box { on click { lists[\"c\"]?.clear() } }\n\
+                 box { on click { lists[\"d\"]?.remove(0) } }\n\
+                 box { on click { lists[\"x\"]?.push(6) } }\n\
+                 box { on click { m = [1: \"a\"]; m?.remove(1) } }\n\
+               }\n";
+    let (rt, host, inst) = run(src);
+    host.set(
+        &rt,
+        "screens.all",
+        Value::list(vec![
+            host.record("Screen", &[("name", Value::text("DP-1"))]),
+        ]),
+    )
+    .unwrap();
+    inst.flush();
+    let boxes = inst.nodes_handling("click");
+    assert_eq!(boxes.len(), 8);
+    let click = |i: usize| {
+        let u = {
+            inst.event(boxes[i], "click", Vec::new());
+            inst.flush()
+        };
+        assert!(u.errors.is_empty(), "click {i}: {:?}", u.errors);
+    };
+    for i in 0..3 {
+        click(i);
+        assert_eq!(get(&inst, "m"), Value::Null, "click {i}");
+        assert_eq!(get(&inst, "s"), Value::Null, "click {i}");
+    }
+    for i in 3..6 {
+        click(i);
+        assert_eq!(get(&inst, "shown"), Value::text("x=1"), "click {i}");
+    }
+    // A present entry still takes the list's mutation.
+    click(6);
+    assert_eq!(get(&inst, "shown"), Value::text("x=2"));
+    // A non-null optional dictionary still takes the dictionary's.
+    click(7);
+    assert_eq!(get(&inst, "ents"), Value::text(""));
+    assert!(matches!(get(&inst, "m"), Value::Dict(_)));
+}
+
+/// (dictionary) A record's dictionary field may be left out when it is
+/// built, as a list field may (spec.md 5.4): it is empty, so a record
+/// that gains one stays buildable.
+#[test]
+fn a_record_built_without_its_dictionary_field_has_an_empty_one() {
+    let src = "type S { name: text; seen: [text: int]; tags: [text] }\n\
+               let s = S(name: \"a\")\n\
+               let n = s.seen.len + s.tags.len\n\
+               let filled = S(name: \"b\", seen: [\"x\": 1]).seen[\"x\"] ?? 0\n";
+    let (_, _, inst) = run(src);
+    assert_eq!(get(&inst, "n"), Value::int(0));
+    assert_eq!(get(&inst, "filled"), Value::int(1));
+}
+
+/// (dictionary) `==` on dictionaries is structural: the same keys with
+/// equal values, however the literals were written (there is no
+/// insertion order to tell them apart); the derived equality agrees, so
+/// the graph's cut-off does too.
+#[test]
+fn dictionaries_compare_by_their_entries() {
+    let src = "let a: [int: text] = [1: \"x\", 2: \"y\"]\n\
+               let b: [int: text] = [2: \"y\", 1: \"x\"]\n\
+               let c: [int: text] = [1: \"x\", 2: \"z\"]\n\
+               let d: [int: text] = [1: \"x\"]\n\
+               let e: [int: text] = []\n\
+               let same = a == b\n\
+               let other_value = a == c\n\
+               let fewer = a != d\n\
+               let empty = e == []\n\
+               let ints = [1: 2]\n\
+               let floats: [int: float] = [1: 2.0]\n\
+               let widened = ints == floats\n";
+    let (_, _, inst) = run(src);
+    assert_eq!(get(&inst, "same"), Value::Bool(true));
+    assert_eq!(get(&inst, "other_value"), Value::Bool(false));
+    assert_eq!(get(&inst, "fewer"), Value::Bool(true));
+    assert_eq!(get(&inst, "empty"), Value::Bool(true));
+    // Values compare as `==` compares them: `2 == 2.0`.
+    assert_eq!(get(&inst, "widened"), Value::Bool(true));
+    assert_eq!(get(&inst, "a"), get(&inst, "b"));
+}

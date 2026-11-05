@@ -1,0 +1,18 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::type_mismatch
+
+  × this assignment expects `int`, found `float`
+   ╭─[dict_untyped_fraction.strand:7:36]
+ 6 │ component C {
+ 7 │   box { on click { levels["mic"] = 0.5 } }
+   ·                                    ─┬─
+   ·                                     ╰── this is `float`
+ 8 │ }
+   ╰────
+  help: a dictionary keeps its literal's value type, `int` here; to hold fractions, declare it:
+        `state levels: [text: float] = …`
+
+fix [check::type_mismatch] dict_untyped_fraction.strand@249: + `: [text: float]` (Declare `levels: [text: float]`)

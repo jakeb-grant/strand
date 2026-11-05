@@ -1,0 +1,30 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::dict_for
+
+  × `for` walks a list, and this is a dictionary, `[int: text]`
+   ╭─[dict_for_without_entries.strand:7:14]
+ 6 │   col {
+ 7 │     for n in names key n.key { text n.value }
+   ·              ──┬──
+   ·                ╰── a dictionary
+ 8 │     box { on click { for n in names { names[n.key] = n.value } } }
+   ╰────
+  help: walk its entries, each a `key` and a `value`: `for e in names.entries`
+
+check::dict_for
+
+  × `for` walks a list, and this is a dictionary, `[int: text]`
+   ╭─[dict_for_without_entries.strand:8:31]
+ 7 │     for n in names key n.key { text n.value }
+ 8 │     box { on click { for n in names { names[n.key] = n.value } } }
+   ·                               ──┬──
+   ·                                 ╰── a dictionary
+ 9 │   }
+   ╰────
+  help: walk its entries, each a `key` and a `value`: `for e in names.entries`
+
+fix [check::dict_for] dict_for_without_entries.strand@220: + `.entries`
+fix [check::dict_for] dict_for_without_entries.strand@283: + `.entries`

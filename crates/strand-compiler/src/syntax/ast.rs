@@ -509,6 +509,10 @@ pub enum ExprKind {
     /// `$space.2`: a token path without method calls.
     Token(TokenKey),
     Array(Vec<Expr>),
+    /// `[1: "web", 2: "code"]`: a dictionary literal, its entries as
+    /// written (key, value). The empty `[]` is an [`ExprKind::Array`]; the
+    /// checker reads it as a dictionary where one is expected.
+    Dict(Vec<(Expr, Expr)>),
     Paren(Box<Expr>),
     Unary {
         op: UnaryOp,
@@ -726,6 +730,8 @@ pub enum TypeKind {
     },
     /// `[Pin]`.
     List(Box<Type>),
+    /// `[int: text]`: a dictionary from keys to values.
+    Dict(Box<Type>, Box<Type>),
     /// `T?`.
     Optional(Box<Type>),
     Error,

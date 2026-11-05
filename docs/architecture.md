@@ -504,7 +504,10 @@ name them.
   hears "`reset` needs a `path`". A command a transport does not
   serve is answered as unknown (`not_served`).
 - `get` reads what `set` writes (exported values, settings fields, token
-  overlays). `call` reaches service-level actions only. `toggle` is bool
+  overlays, and (dictionary) one dictionary entry, the rest of the path
+  after a dictionary one key: `Instance::get`/`set`/`set_text`/`toggle`
+  share `Instance::path_to`; a dictionary is an object in `get`'s
+  answer). `call` reaches service-level actions only. `toggle` is bool
   only. Token paths are spelled `$accent`.
 - `MAX_LINE` (64 KiB) bounds requests; an answer is bounded by the
   connection's 1 MiB queue.
@@ -802,7 +805,9 @@ and marked truncated), `named_value`, `push_named`, `pause`/`resume`
   lapped, so a dump holds a suffix with every value in it.
 - **Values** are compact JSON typed by the schema or program; a field
   change is `[old, new]` or shorter `{"e": …}` edits, a keyed one
-  `{"d", "r"}` or `{"patch": …}`; a held-back text is `{"~text": N}`.
+  `{"d", "r"}` or `{"patch": …}`; a held-back text is `{"~text": N}`;
+  (dictionary) a dictionary is an array of `[key, value]` pairs in key
+  order, a text key held back as any text is.
 - **Coalescing.** A motion merges into a newest same-surface motion
   under one refresh period old; a text key into newest same-surface
   text.
@@ -1592,11 +1597,15 @@ by `strand-compiler`, not here. See `crates/strand-core/src/lib.rs`.
   path, fields)` (`strand_core::settings`), one `FieldSpec` per field
   over `toml_edit::Item` (re-exported). The `Settings<V>` handle gives
   each field a `Signal` whose writes are saved after 250 ms of quiet,
-  keeping comments and order; `reload(rt)` when the file changes (a
+  keeping comments and order (a table written over a table, a
+  dictionary's section or an inline table, is merged key by key); `reload(rt)` when the file changes (a
   syntax error keeps the last good values; unsaved writes never undone);
   `set_overlay`/`clear_overlay` (overlay over file over default; a
   read-only target's writes go to the overlay); a last-good snapshot
-  per file; `redeclare(rt, fields)` for a changed declaration. Reports
+  per file; `redeclare(rt, fields)` for a changed declaration, a field
+  keeping its type carried into the new program through
+  `FieldSpec::with_carry` (the compiler's `value::translate`), each
+  layer and the cell, one that no longer fits read again. Reports
   are `Diagnostic::Settings(SettingsNotice)`. Watcher hand-off: see
   `strand-watch`.
 
@@ -1695,9 +1704,9 @@ Public interfaces:
   shared re-keys nothing (decisions.md m6-w2-language).
 - **Types** (`strand_compiler::ty`): `Ty` is `Error` (already reported,
   accepted everywhere), `Any`, `Null`, `Unit`, `Prim`, `Opaque`,
-  `Enum`, `EnumType`, `Record`, `List(T, keyed)`, `Optional`, `Async`,
-  `Fn`, `Tuple` and `Union` (schema props only), with records and enums
-  in a `TypeTable`.
+  `Enum`, `EnumType`, `Record`, `List(T, keyed)`, `Dict(K, V)`,
+  `Optional`, `Async`, `Fn`, `Tuple` and `Union` (schema props only),
+  with records and enums in a `TypeTable`.
 - **Checking**: `strand_compiler::compile(&SourceMap) -> Compiled`
   checks every file as one program. It never panics and always returns
   a program: an unresolved name or ill-typed expression becomes

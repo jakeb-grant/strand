@@ -24,7 +24,8 @@
 //!   operators, `=>`, `->`, `<->`, `~`, `=`, after `,`, `;` and `:`, and
 //!   inside `{ … }`; none inside `( … )` and `[ … ]`, around `.` and `?.`,
 //!   after a prefix `-` or `!`, before `:` (except a ternary's) and inside
-//!   types (`Async<[Hit]>`). Whether a `(` or `[` touches the word before
+//!   types (`Async<[Hit]>`) but after a dictionary type's `:` (`[int:
+//!   text]`, as in a dictionary literal `[1: "web"]`). Whether a `(` or `[` touches the word before
 //!   it is never changed, since that decides between a call and a new
 //!   term (`docs/grammar.md`, "Calls touch").
 //! - **Alignment the author made is kept.** Where a `{`, `=>`, `=`, a
@@ -454,6 +455,12 @@ impl Facts {
             | ExprKind::Token(_)
             | ExprKind::Error => {}
             ExprKind::Array(xs) | ExprKind::Commas(xs) | ExprKind::Spaced(xs) => self.exprs(xs),
+            ExprKind::Dict(entries) => {
+                for (k, v) in entries {
+                    self.expr(k);
+                    self.expr(v);
+                }
+            }
             ExprKind::Paren(x) => self.expr(x),
             ExprKind::Unary { op, expr } => {
                 if matches!(op, UnaryOp::Neg | UnaryOp::Not) {
@@ -911,7 +918,13 @@ impl Layout<'_> {
         if let (Some(x), Some(y)) = (self.in_type[p], self.in_type[i])
             && x == y
         {
-            return if a == K::Comma { Gap::Space } else { Gap::None };
+            // `[int: text]`: a dictionary type's `:` is spaced as a
+            // literal's is.
+            return if matches!(a, K::Comma | K::Colon) {
+                Gap::Space
+            } else {
+                Gap::None
+            };
         }
         let g = match (a, b) {
             (_, K::Comma | K::Semi | K::RParen | K::RBracket) => Gap::None,

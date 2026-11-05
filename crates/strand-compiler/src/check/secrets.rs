@@ -378,6 +378,12 @@ fn mentions(e: &Expr, out: &mut HashSet<Place>) {
         ExprKind::List(v) | ExprKind::Commas(v) | ExprKind::Spaced(v) => {
             v.iter().for_each(|x| mentions(x, out));
         }
+        ExprKind::Dict(entries) => {
+            for (k, v) in entries {
+                mentions(k, out);
+                mentions(v, out);
+            }
+        }
         _ => {}
     });
 }
@@ -498,6 +504,10 @@ impl Carry<'_> {
             },
             ExprKind::Match { arms, .. } => arms.iter().find_map(|(_, a)| self.of(a)),
             ExprKind::List(v) | ExprKind::Commas(v) | ExprKind::Spaced(v) => self.any(v),
+            // A dictionary holds its keys as well as its values.
+            ExprKind::Dict(entries) => entries
+                .iter()
+                .find_map(|(k, v)| self.of(k).or_else(|| self.of(v))),
             _ => None,
         }
     }
@@ -1147,7 +1157,19 @@ impl<'a> Walk<'a> {
                     label: format!("written to `{name}`"),
                 });
             }
-            Some(Root::Place(place)) => self.flow(place, value),
+            Some(Root::Place(place)) => {
+                // `m[k] = v`: the dictionary holds the key `k` too.
+                let mut at = target;
+                while let ExprKind::Field { base, .. } | ExprKind::Index { base, .. } = &at.kind {
+                    if let ExprKind::Index { index, .. } = &at.kind
+                        && matches!(base.ty.non_null(), Ty::Dict(..))
+                    {
+                        self.flows.push((place, index));
+                    }
+                    at = base;
+                }
+                self.flow(place, value)
+            }
             Some(Root::Service(_)) => {
                 let name = shown(target, self.defs, self.locals).unwrap_or_default();
                 self.expr(value);
@@ -1281,6 +1303,12 @@ impl<'a> Walk<'a> {
             }
             ExprKind::List(v) | ExprKind::Commas(v) | ExprKind::Spaced(v) => {
                 v.iter().for_each(|x| self.expr(x));
+            }
+            ExprKind::Dict(entries) => {
+                for (k, v) in entries {
+                    self.expr(k);
+                    self.expr(v);
+                }
             }
             _ => {}
         }

@@ -16,6 +16,9 @@ use super::code::{
     PlaceSeg,
 };
 
+/// (dictionary) Dictionary methods that change it (`m[k] = v` is a store).
+pub(crate) const DICT_MUTATIONS: &[&str] = &["remove", "clear"];
+
 /// List methods that change the collection they are called on.
 pub(crate) const MUTATIONS: &[&str] = &[
     "push",
@@ -316,6 +319,30 @@ impl Lowerer<'_> {
         }
     }
 
+    /// (dictionary) Push the path `xs.get(k)` finds an item of
+    /// `receiver` by ([`super::Lowerer::get_key`]): its fields joined
+    /// with `.` as text, or `null` for the item's own identity.
+    fn get_key_path(&mut self, c: &mut Chunk, receiver: &hir::Expr, span: Span) {
+        match self.get_key(receiver, 0) {
+            Some(path) => {
+                let k = c.constant(Const::Text(path.join(".")));
+                c.emit(Op::Const(k), span);
+            }
+            None => {
+                c.emit(Op::Null, span);
+            }
+        }
+    }
+
+    /// (dictionary) The `Entry<K, V>` of a dictionary type, which the
+    /// checker made when the program read its entries.
+    fn entry_record(&self, ty: &Ty) -> Option<crate::ty::RecordId> {
+        match ty.non_null() {
+            Ty::Dict(k, v) => crate::schema::find_entry(&self.hir.types, k, v),
+            _ => None,
+        }
+    }
+
     fn note_service(&mut self, s: &str) {
         if let Some(top) = self.services.last_mut() {
             top.insert((s.to_string(), None));
@@ -512,6 +539,26 @@ impl Lowerer<'_> {
                     span,
                 );
             }
+            // (dictionary) `xs.get(k)` on a keyed `state`, view or
+            // service list: one lookup by key through the tracked
+            // accessor.
+            ExprKind::Call {
+                callee: Callee::Method { receiver, name, .. },
+                args,
+            } if name == "get" && args.len() == 1 && self.keyed_root(c, receiver).is_some() => {
+                let root = self
+                    .keyed_root(c, receiver)
+                    .unwrap_or(KeyedRoot::Def(DefId(0)));
+                self.expr(c, &args[0].value);
+                self.get_key_path(c, receiver, span);
+                c.emit(
+                    Op::Keyed {
+                        root,
+                        query: KeyedQuery::Get,
+                    },
+                    span,
+                );
+            }
             ExprKind::Field {
                 base,
                 name,
@@ -522,8 +569,16 @@ impl Lowerer<'_> {
                 }
                 self.expr(c, base);
                 let skip = optional.then(|| c.emit(Op::NullJump(0), span));
-                let n = c.name(name);
-                c.emit(Op::Field(n), span);
+                // (dictionary) `m.entries` makes its `Entry<K, V>`s.
+                match self.entry_record(&base.ty) {
+                    Some(r) if name == "entries" => {
+                        c.emit(Op::Entries(r), span);
+                    }
+                    _ => {
+                        let n = c.name(name);
+                        c.emit(Op::Field(n), span);
+                    }
+                }
                 if let Some(s) = skip {
                     c.patch(s);
                 }
@@ -622,6 +677,15 @@ impl Lowerer<'_> {
                     self.expr(c, i);
                 }
                 c.emit(Op::List(items.len() as u32), span);
+            }
+            // (dictionary) Each key then its value; the VM sorts them and
+            // a later computed key wins.
+            ExprKind::Dict(entries) => {
+                for (k, v) in entries {
+                    self.expr(c, k);
+                    self.expr(c, v);
+                }
+                c.emit(Op::Dict(entries.len() as u32), span);
             }
             ExprKind::Commas(items) => {
                 for i in items {
@@ -730,7 +794,11 @@ impl Lowerer<'_> {
                 overload,
             } => {
                 let list_recv = matches!(receiver.ty.non_null(), Ty::List(..));
-                if list_recv && MUTATIONS.contains(&name.as_str()) {
+                // (dictionary) `m.remove(k)` and `m.clear()` write the
+                // dictionary's place, as a list's mutations do.
+                let dict_recv = matches!(receiver.ty.non_null(), Ty::Dict(..));
+                let dict = dict_recv && DICT_MUTATIONS.contains(&name.as_str());
+                if (list_recv && MUTATIONS.contains(&name.as_str())) || dict {
                     let place = self.place(c, receiver);
                     let arity = mutation_arity(name);
                     let map = self.push_args(c, args, arity, None);
@@ -741,6 +809,7 @@ impl Lowerer<'_> {
                             place,
                             method,
                             args: map,
+                            dict,
                         },
                         span,
                     );
@@ -767,12 +836,31 @@ impl Lowerer<'_> {
                 let map = self.push_args(c, args, arity, variadic.map(usize::from));
                 // `xs.fuzzy`: the `Match<T>` to make, as a last argument
                 // the source doesn't write.
-                if let Some(r) = super::fuzzy_record(&receiver.ty, name, result) {
+                // (dictionary) `m.filter`: the `Entry<K, V>` its test takes,
+                // likewise.
+                let made = super::fuzzy_record(&receiver.ty, name, result).or_else(|| {
+                    (name == "filter")
+                        .then(|| self.entry_record(&receiver.ty))
+                        .flatten()
+                });
+                if let Some(r) = made {
                     let id = c.constant(Const::Num(f64::from(r.0), Num::Int));
                     c.emit(Op::Const(id), span);
+                    // After `fuzzy`'s query and text, or `filter`'s test.
+                    let at: u16 = if name == "fuzzy" { 2 } else { 1 };
                     if let Some(m) = c.args.last_mut() {
-                        m.params.push(2);
-                        m.arity = 3;
+                        m.params.push(at);
+                        m.arity = at + 1;
+                    }
+                }
+                // (dictionary) `xs.get(k)` on any other list (`n.actions`,
+                // `pins.filter(…)`): the path its items are known by, after
+                // the key.
+                if list_recv && name == "get" {
+                    self.get_key_path(c, receiver, span);
+                    if let Some(m) = c.args.last_mut() {
+                        m.params.push(1);
+                        m.arity = 2;
                     }
                 }
                 let n = c.name(name);

@@ -108,6 +108,10 @@ pub enum KeyedQuery {
     Index,
     /// `xs.contains(x)`: the value is on the stack (found by its key).
     Contains,
+    /// (dictionary) `xs.get(k)`: the key is on the stack, and above it
+    /// the path of the field items are known by (`a.b` as text; `null`
+    /// for an item's own identity, a keyed record's `key`).
+    Get,
 }
 
 /// A lambda made by [`Op::Closure`].
@@ -217,14 +221,24 @@ pub enum Op {
     },
     /// A list mutation on a writable place (`pins.push(p)`): place index,
     /// method name, argument map. Index values of the place are below the
-    /// arguments.
+    /// arguments. `dict` is set when the receiver's type is a dictionary
+    /// (`m.remove(k)`, `m.clear()`), so a null `[K: V]?` is never taken
+    /// for a list.
     Mutate {
         place: u32,
         method: u32,
         args: u32,
+        dict: bool,
     },
     /// Pop n values, push a list / comma value / space-separated value.
     List(u32),
+    /// (dictionary) Pop n keys and values (key first, in source order),
+    /// push the dictionary of them: sorted by key, and of two entries
+    /// with one key the later wins.
+    Dict(u32),
+    /// (dictionary) Pop a dictionary, push `.entries`: its entries in key
+    /// order as records of this `Entry<K, V>` (keyed by `key`).
+    Entries(RecordId),
     Commas(u32),
     Spaced(u32),
     /// Make a closure (lambda index).
@@ -267,10 +281,10 @@ pub enum Op {
     },
     /// Pop an `Async` and suspend until it settles; push its value.
     Await,
-    /// `xs.len`, `xs.first`, `xs.last`, `xs[i]`, `xs.contains(x)` on a
-    /// keyed collection: answered by core's accessors (`with`,
-    /// `get_key`), never by copying the list; a plain list is read as
-    /// usual.
+    /// `xs.len`, `xs.first`, `xs.last`, `xs[i]`, `xs.contains(x)`,
+    /// `xs.get(k)` on a keyed collection: answered through core's
+    /// tracked accessor (`with`), never by copying the list; a plain list
+    /// is read as usual.
     Keyed {
         root: KeyedRoot,
         query: KeyedQuery,

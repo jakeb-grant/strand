@@ -1,0 +1,54 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::dict_service
+
+  × a service field cannot hold a dictionary yet: `[text: int]`
+   ╭─[dict_in_service_field.strand:6:11]
+ 5 │ service stats from poll "/tmp/stats.json" every 5s {
+ 6 │   counts: [text: int]
+   ·           ─────┬─────
+   ·                ╰── not yet
+ 7 │   info: Info
+   ╰────
+  help: services and commands do not carry dictionaries yet: read a list of a `type` you declare
+        instead (`type Pair { key: text; value: int }`)
+
+check::dict_service
+
+  × a service field cannot hold a dictionary yet, and `Info` holds one
+   ╭─[dict_in_service_field.strand:7:9]
+ 6 │   counts: [text: int]
+ 7 │   info: Info
+   ·         ──┬─
+   ·           ╰── not yet
+ 8 │ }
+   ╰────
+  help: services and commands do not carry dictionaries yet: read a list of a `type` you declare
+        instead (`type Pair { key: text; value: int }`)
+
+check::dict_service
+
+  × an action's parameter cannot hold a dictionary yet: `[text: int]`
+    ╭─[dict_in_service_field.strand:10:19]
+  9 │ permit exec "setter", "reader"
+ 10 │ action set_all(m: [text: int]) ["setter", m]
+    ·                   ─────┬─────
+    ·                        ╰── not yet
+ 11 │ action read_all() -> [text: int] ["reader"]
+    ╰────
+  help: services and commands do not carry dictionaries yet: read a list of a `type` you declare
+        instead (`type Pair { key: text; value: int }`)
+
+check::dict_service
+
+  × a command's output cannot hold a dictionary yet: `[text: int]`
+    ╭─[dict_in_service_field.strand:11:22]
+ 10 │ action set_all(m: [text: int]) ["setter", m]
+ 11 │ action read_all() -> [text: int] ["reader"]
+    ·                      ─────┬─────
+    ·                           ╰── not yet
+    ╰────
+  help: services and commands do not carry dictionaries yet: read a list of a `type` you declare
+        instead (`type Pair { key: text; value: int }`)

@@ -45,7 +45,9 @@ impl<'a> Checker<'a> {
             ast::StmtKind::Let(l) => self.stmt_let(l),
             ast::StmtKind::Assign { target, op, value } => self.assign(target, *op, value),
             ast::StmtKind::Expr(e) => {
+                let outer = self.stmt_expr.replace(e.span);
                 let h = self.expr(e, None);
+                self.stmt_expr = outer;
                 if self.ctx.handler && matches!(h.ty, Ty::Async(_)) {
                     // `on click { sleep(1s) }` almost always meant to wait.
                     let shown = self.show(&h.ty);
@@ -198,7 +200,9 @@ impl<'a> Checker<'a> {
             };
         }
         let mark = self.diags.len();
+        let place = std::mem::replace(&mut self.ctx.place, true);
         let t = self.expr(target, None);
+        self.ctx.place = place;
         if self.ctx.pure_fn {
             self.error(
                 "check::impure",
@@ -221,15 +225,37 @@ impl<'a> Checker<'a> {
             }
             self.not_writable(why, target.span, "assign");
         }
+        let entry = self.dict_entry(&t, target);
         let v = match op {
             AssignOp::Set => {
                 let v = self.expr(value, Some(&t.ty));
                 self.record_flow(&t, &v);
                 // `xs = [0.5]`: the items' own type, not the target's.
                 let written = self.written_ty(&v);
-                if !self.widen(&t, &written) {
-                    self.require(&v, &t.ty, "this assignment");
+                if !self.widen(&t, &written)
+                    && !self.require(&v, &t.ty, "this assignment")
+                    && let Some((m, k)) = &entry
+                {
+                    if matches!(v.ty, Ty::Null) {
+                        // `m[k] = null`: a dictionary's values are never
+                        // null, and removing is its own word. A `V?` value
+                        // (`m[k] = windows.focused?.id`) keeps the
+                        // nullable help: it needs a fallback.
+                        if let Some(d) = self.diags.last_mut() {
+                            d.help = Some(format!(
+                                "a dictionary's values are never null; to remove the entry, `{m}.remove({k})`"
+                            ));
+                        }
+                    } else {
+                        self.dict_widen_help(&t, &v);
+                    }
                 }
+                v
+            }
+            _ if entry.is_some() => {
+                let v = self.expr(value, None);
+                let (m, k) = entry.unwrap_or_default();
+                self.dict_compound(&t, op, target, value, &m, &k);
                 v
             }
             _ => {
@@ -272,6 +298,131 @@ impl<'a> Checker<'a> {
             op,
             value: v,
         }
+    }
+
+    /// `check::dict_compound`: `m[k] += v` may find no entry. The help
+    /// and fix write the entry whole, starting a missing key from the
+    /// value type's zero (`""` for text, `[]` for a list, `0s` for a
+    /// duration, 1 for `*=` and `/=` on a number), with what was written
+    /// on the right.
+    fn dict_compound(
+        &mut self,
+        t: &hir::Expr,
+        op: AssignOp,
+        target: &ast::Expr,
+        value: &'a ast::Expr,
+        m: &str,
+        k: &str,
+    ) {
+        let op_text = op.as_str();
+        let bin = &op_text[..1];
+        let start = match t.ty.non_null() {
+            Ty::List(..) => "[]",
+            Ty::Prim(Prim::Text | Prim::Path) => "\"\"",
+            Ty::Prim(Prim::Duration) => "0s",
+            Ty::Prim(Prim::Length) => "0px",
+            Ty::Prim(Prim::Percent) => "0%",
+            Ty::Prim(Prim::Angle) => "0deg",
+            _ if bin == "*" || bin == "/" => "1",
+            _ => "0",
+        };
+        let entry = self
+            .text_of(target.span)
+            .map_or_else(|| format!("{m}[{k}]"), str::to_string);
+        // The right side as written, in parentheses unless it is one term.
+        let rhs = self.text_of(value.span).map(|r| {
+            if matches!(
+                value.kind,
+                ast::ExprKind::Binary { .. }
+                    | ast::ExprKind::Ternary { .. }
+                    | ast::ExprKind::Lambda { .. }
+                    | ast::ExprKind::Match(_)
+                    | ast::ExprKind::Commas(_)
+                    | ast::ExprKind::Spaced(_)
+            ) {
+                format!("({r})")
+            } else {
+                r.to_string()
+            }
+        });
+        let whole = format!(
+            "{entry} = ({entry} ?? {start}) {bin} {}",
+            rhs.as_deref().unwrap_or("…")
+        );
+        let d = self.error(
+            "check::dict_compound",
+            format!("`{op_text}` cannot change a dictionary entry, which may be missing"),
+            t.span,
+            "an entry of a dictionary",
+        );
+        d.help = Some(format!(
+            "write the entry whole, with a value for a missing key: `{whole}`"
+        ));
+        if rhs.is_some() {
+            d.add_suggestion(Span::new(target.span.start, value.span.end), whole);
+        }
+    }
+
+    /// (dictionary) `m["b"] = 0.5` into an untyped `state m = ["a": 1]`:
+    /// a dictionary keeps its literal's value type (it does not widen as
+    /// a whole-number list does), so the help and fix declare it with
+    /// `float` values rather than round the number written.
+    fn dict_widen_help(&mut self, t: &hir::Expr, v: &hir::Expr) {
+        let hir::ExprKind::Index { base, .. } = &t.kind else {
+            return;
+        };
+        let hir::ExprKind::Def(d) = base.kind else {
+            return;
+        };
+        let Ty::Dict(key, _) = &base.ty else {
+            return;
+        };
+        if !self.untyped_dicts.contains(&d) || t.ty != Ty::INT || v.ty != Ty::FLOAT {
+            return;
+        }
+        let def = &self.defs[d.0 as usize];
+        let (name, file, at) = (def.name.clone(), def.file, def.span.end);
+        let declared = format!("[{}: float]", self.show(key));
+        if let Some(diag) = self.diags.last_mut() {
+            diag.help = Some(format!(
+                "a dictionary keeps its literal's value type, `int` here; \
+                 to hold fractions, declare it: `state {name}: {declared} = …`"
+            ));
+            diag.suggestions.clear();
+            if file == diag.file() {
+                diag.suggestions.push(crate::diagnostic::Suggestion {
+                    file,
+                    span: Span::new(at, at),
+                    replacement: format!(": {declared}"),
+                    title: Some(format!("Declare `{name}: {declared}`")),
+                });
+            }
+        }
+    }
+
+    /// The dictionary and key `t` writes an entry of, when `t` is `m[k]`,
+    /// as `target` writes them (`last_win`, `3`), for messages.
+    fn dict_entry(&self, t: &hir::Expr, target: &ast::Expr) -> Option<(String, String)> {
+        let hir::ExprKind::Index { base, .. } = &t.kind else {
+            return None;
+        };
+        if !matches!(base.ty.non_null(), Ty::Dict(..)) {
+            return None;
+        }
+        let mut written = target;
+        while let ast::ExprKind::Paren(inner) = &written.kind {
+            written = inner;
+        }
+        let (m, k) = match &written.kind {
+            ast::ExprKind::Index { base, index } => {
+                (super::expr::written(base), super::expr::written(index))
+            }
+            _ => (None, None),
+        };
+        Some((
+            m.unwrap_or_else(|| "m".into()),
+            k.unwrap_or_else(|| "k".into()),
+        ))
     }
 
     /// The prop an assignment target names when it is a prop of the
@@ -352,6 +503,28 @@ impl<'a> Checker<'a> {
             Ty::Optional(_) => {
                 self.nullable_use(iter, ast, "operand");
                 Ty::Error
+            }
+            Ty::Dict(k, v) => {
+                // One way to walk a dictionary: its entries, each a key
+                // and a value (decisions.md, dictionary).
+                let entry = self.entry_of(k, v);
+                let shown = self.show(&iter.ty);
+                let written = super::expr::path_text(ast);
+                let at = Span::at(ast.span.end);
+                let d = self.error(
+                    "check::dict_for",
+                    format!("`for` walks a list, and this is a dictionary, `{shown}`"),
+                    iter.span,
+                    "a dictionary",
+                );
+                d.help = Some(match &written {
+                    Some(m) => format!(
+                        "walk its entries, each a `key` and a `value`: `for e in {m}.entries`"
+                    ),
+                    None => "walk its entries, each a `key` and a `value`: `.entries`".into(),
+                });
+                d.add_suggestion(at, ".entries");
+                entry
             }
             t => match t.list_elem() {
                 Some((e, _)) => e.clone(),

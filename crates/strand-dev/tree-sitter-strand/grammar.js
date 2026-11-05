@@ -564,6 +564,7 @@ module.exports = grammar({
       $.identifier,
       $.parenthesized_expression,
       $.array,
+      $.dictionary,
       $.match_expression,
     ),
 
@@ -663,6 +664,16 @@ module.exports = grammar({
 
     parenthesized_expression: $ => seq('(', $._expression, ')'),
     array: $ => seq('[', optional(commaSep1($._expression)), ']'),
+    // `[k: v, …]`: the first item's `:` makes the brackets a dictionary,
+    // and every item has one (the parser's `syntax::dict_item`). A
+    // ternary key has taken its own `:` first. The empty `[]` is an
+    // `array`, read by the type expected.
+    dictionary: $ => seq('[', commaSep1($.dictionary_entry), ']'),
+    dictionary_entry: $ => seq(
+      field('key', $._expression),
+      ':',
+      field('value', $._expression),
+    ),
 
     match_expression: $ => seq(
       'match',
@@ -698,9 +709,16 @@ module.exports = grammar({
 
     // ---- Types -----------------------------------------------------------
 
-    _type: $ => choice($.type_name, $.list_type, $.optional_type),
+    _type: $ => choice($.type_name, $.list_type, $.dictionary_type, $.optional_type),
     optional_type: $ => seq($._type, token.immediate('?')),
     list_type: $ => seq('[', $._type, ']'),
+    dictionary_type: $ => seq(
+      '[',
+      field('key', $._type),
+      ':',
+      field('value', $._type),
+      ']',
+    ),
     type_name: $ => prec.right(seq(
       $.identifier,
       repeat(seq('.', $.identifier)),

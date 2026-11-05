@@ -1,0 +1,28 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::dict_duplicate
+
+  × `1` is a key twice in this dictionary
+   ╭─[dict_duplicate_key.strand:5:48]
+ 4 │ enum Urgency { low, normal, critical }
+ 5 │ let names: [int: text] = [1: "web", 2: "code", 1: "chat"]
+   ·                           ┬                    ┬
+   ·                           │                    ╰── written again here
+   ·                           ╰── first here
+ 6 │ let waits: [Urgency: duration] = [low: 3s, critical: 0s, low: 6s]
+   ╰────
+  help: a key holds one value: remove one of them
+
+check::dict_duplicate
+
+  × `low` is a key twice in this dictionary
+   ╭─[dict_duplicate_key.strand:6:58]
+ 5 │ let names: [int: text] = [1: "web", 2: "code", 1: "chat"]
+ 6 │ let waits: [Urgency: duration] = [low: 3s, critical: 0s, low: 6s]
+   ·                                   ─┬─                    ─┬─
+   ·                                    │                      ╰── written again here
+   ·                                    ╰── first here
+   ╰────
+  help: a key holds one value: remove one of them

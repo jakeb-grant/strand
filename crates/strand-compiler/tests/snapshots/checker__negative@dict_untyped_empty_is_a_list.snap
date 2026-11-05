@@ -1,0 +1,27 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::needs_type
+
+  × cannot tell the type of `seen`
+   ╭─[dict_untyped_empty_is_a_list.strand:4:14]
+ 3 │ // how to declare the dictionary meant; an `int` index reads it as a list.
+ 4 │ state seen = []
+   ·              ─┬
+   ·               ╰── nothing to infer from
+ 5 │ let first = seen[0]
+   ╰────
+  help: write the type: `state seen: [T] = []`, or for a dictionary `state seen: [K: V] = []`
+
+check::dict_untyped
+
+  × `seen` is an untyped `[]`, a list read by position
+   ╭─[dict_untyped_empty_is_a_list.strand:7:25]
+ 6 │ component C {
+ 7 │   box { on click { seen["kitty"] = 1 } }
+   ·                         ───┬───
+   ·                            ╰── a `text` key
+ 8 │ }
+   ╰────
+  help: to key by text, declare it: `state seen: [text: V] = []`

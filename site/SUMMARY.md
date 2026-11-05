@@ -32,6 +32,7 @@
 - [A theme from your wallpaper](how-to/wallpaper-theme.md)
 - [A theme from a file](how-to/theme-from-file.md)
 - [A settings file](how-to/settings-file.md)
+- [Remembering things by key](how-to/remembering-by-key.md)
 - [A D-Bus method or an action](how-to/dbus-and-actions.md)
 - [Keyboard shortcuts](how-to/keys.md)
 

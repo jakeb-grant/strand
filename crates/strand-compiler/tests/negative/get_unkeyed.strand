@@ -1,0 +1,14 @@
+// expect: check::missing_key
+// `xs.get(k)` finds an item by its key, so it needs a keyed collection:
+// an unkeyed `state` of records offers each field that could key it,
+// and the help says `xs[i]` reads by position and `find` by a test, by
+// a field for a `let` of records.
+type Pin { app: text; label: text }
+state notes: [Pin] = []
+let labels = ["a", "b"]
+let shown = notes.filter(p => p.label != "")
+bar B {
+  text notes.get("a")?.label ?? ""
+  text shown.get("a")?.label ?? ""
+  text labels.get(0) ?? ""
+}

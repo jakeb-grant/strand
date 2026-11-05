@@ -1,0 +1,16 @@
+// expect: check::dict_compound
+// An entry may be missing, so `+=` has nothing to add to: the help and
+// fix write the entry whole, a missing key starting from its value
+// type's zero (`""` for text, `[]` for a list, `0s` for a duration, 1
+// for `*=`), with the right side as written.
+state hits: [text: int] = []
+state scale: [text: float] = []
+state labels: [text: text] = []
+state tags: [text: [text]] = []
+state waits: [text: duration] = []
+state n = 2
+component C {
+  box { on click { hits["a"] += 1; scale["b"] *= 2 } }
+  box { on click { labels["a"] += "!"; tags["x"] += ["t"]; waits["low"] += 1s } }
+  box { on click { hits["b"] -= n + 1 } }
+}

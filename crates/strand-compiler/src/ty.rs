@@ -130,6 +130,11 @@ pub enum Ty {
     /// `[T]`; `keyed` when items carry an identity (`key`, or a record
     /// with a key), which a tree `for` needs.
     List(Box<Ty>, bool),
+    /// `[K: V]`: a dictionary from keys to values, its entries kept in
+    /// key order. Keys are `int`, `text`, `path`, `bool` or an enum
+    /// ([`TypeTable::is_dict_key`]); a value is never `T?`, so a read that
+    /// misses (`m[k]`, a `V?`) is null only for an absent key.
+    Dict(Box<Ty>, Box<Ty>),
     /// `T?`.
     Optional(Box<Ty>),
     /// `Async<T>`: keeps its last value, exposes `pending` and `error`.
@@ -167,6 +172,10 @@ impl Ty {
 
     pub fn keyed_list(elem: Ty) -> Ty {
         Ty::List(Box::new(elem), true)
+    }
+
+    pub fn dict(key: Ty, value: Ty) -> Ty {
+        Ty::Dict(Box::new(key), Box::new(value))
     }
 
     /// `T?`, without doubling an existing `?` (and `null?` is `null`).
@@ -240,6 +249,18 @@ impl TypeTable {
         self.data_walk(ty, false, &mut Vec::new())
     }
 
+    /// True if values of this type can key a dictionary (`[K: V]`):
+    /// `int`, `text` and its aliases, `path`, `bool` and enums. Not a
+    /// fractional number or one with a unit (NaN, and `2px` against
+    /// `2ch`), nor records, lists or functions, which no JSON or TOML key
+    /// can hold.
+    pub fn is_dict_key(&self, ty: &Ty) -> bool {
+        matches!(
+            ty,
+            Ty::Error | Ty::Enum(_) | Ty::Prim(Prim::Int | Prim::Text | Prim::Path | Prim::Bool)
+        )
+    }
+
     fn data_walk(&self, ty: &Ty, stored: bool, seen: &mut Vec<RecordId>) -> bool {
         match ty {
             Ty::Error | Ty::Null | Ty::Enum(_) => true,
@@ -273,6 +294,7 @@ impl TypeTable {
                 ok
             }
             Ty::List(t, _) | Ty::Optional(t) => self.data_walk(t, stored, seen),
+            Ty::Dict(k, v) => self.data_walk(k, stored, seen) && self.data_walk(v, stored, seen),
             Ty::Tuple(ts) => !stored && ts.iter().all(|t| self.data_walk(t, stored, seen)),
             Ty::Opaque(_) => !stored,
             Ty::Any | Ty::Unit | Ty::EnumType(_) | Ty::Async(_) | Ty::Fn(_) | Ty::Union(_) => false,
@@ -580,6 +602,9 @@ impl TypeTable {
             (_, Ty::Optional(b)) => self.assignable(from, b),
             (Ty::Async(a), Ty::Async(b)) => self.assignable(a, b),
             (Ty::List(a, _), Ty::List(b, _)) => self.assignable(a, b),
+            (Ty::Dict(ka, va), Ty::Dict(kb, vb)) => {
+                self.assignable(ka, kb) && self.assignable(va, vb)
+            }
             (Ty::Tuple(a), Ty::Tuple(b)) => {
                 !a.is_empty()
                     && a.len() <= b.len()
@@ -624,6 +649,9 @@ impl TypeTable {
             | (Ty::Prim(Prim::Float), Ty::Prim(Prim::Int)) => return Some(Ty::FLOAT),
             (Ty::List(x, k1), Ty::List(y, k2)) => {
                 return self.join(x, y).map(|t| Ty::List(Box::new(t), *k1 && *k2));
+            }
+            (Ty::Dict(k1, v1), Ty::Dict(k2, v2)) => {
+                return Some(Ty::dict(self.join(k1, k2)?, self.join(v1, v2)?));
             }
             _ => {}
         }
@@ -742,6 +770,7 @@ impl fmt::Display for ShowTy<'_> {
             }
 
             Ty::List(t, _) => write!(f, "[{}]", show(t)),
+            Ty::Dict(k, v) => write!(f, "[{}: {}]", show(k), show(v)),
             Ty::Optional(t) => match &**t {
                 Ty::Fn(_) | Ty::Union(_) => write!(f, "({})?", show(t)),
                 _ => write!(f, "{}?", show(t)),
@@ -818,6 +847,33 @@ mod tests {
         let t = TypeTable::default();
         let ty = Ty::Async(Box::new(Ty::list(Ty::TEXT.optional())));
         assert_eq!(t.show(&ty).to_string(), "Async<[text?]>");
+        let dict = Ty::dict(Ty::INT, Ty::list(Ty::TEXT)).optional();
+        assert_eq!(t.show(&dict).to_string(), "[int: [text]]?");
+    }
+
+    #[test]
+    fn dictionaries_assign_join_and_store_by_their_parts() {
+        let t = TypeTable::default();
+        let ints = Ty::dict(Ty::TEXT, Ty::INT);
+        let floats = Ty::dict(Ty::TEXT, Ty::FLOAT);
+        assert!(t.assignable(&ints, &floats));
+        assert!(!t.assignable(&floats, &ints));
+        assert!(!t.assignable(&ints, &Ty::list(Ty::INT)));
+        assert_eq!(t.join(&ints, &floats), Some(floats.clone()));
+        assert!(t.is_data(&floats));
+        assert!(!t.is_data(&Ty::dict(Ty::TEXT, Ty::FONT)));
+        for key in [Ty::INT, Ty::TEXT, Ty::PATH, Ty::BOOL] {
+            assert!(t.is_dict_key(&key), "{key:?}");
+        }
+        for key in [
+            Ty::FLOAT,
+            Ty::LENGTH,
+            Ty::DURATION,
+            Ty::list(Ty::INT),
+            Ty::INT.optional(),
+        ] {
+            assert!(!t.is_dict_key(&key), "{key:?}");
+        }
     }
 }
 

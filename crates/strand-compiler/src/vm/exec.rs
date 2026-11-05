@@ -15,7 +15,9 @@ use strand_core::{Error, Runtime};
 use strand_scene::{Channel, Color, TokenExpr};
 
 use super::builtins;
-use super::value::{Closure, NodeState, Num, PendingOp, Value, ValueKey, time_in_logic};
+use super::value::{
+    Closure, Dict, NodeState, Num, PendingOp, Value, ValueKey, dict_key, time_in_logic,
+};
 use super::{Env, Vm};
 use crate::hir::{AssignOp, LocalId};
 use crate::lower::{
@@ -463,6 +465,7 @@ impl Machine {
                     place,
                     method,
                     args,
+                    dict,
                 } => {
                     let a = self.pop_args(&chunk.args[*args as usize]);
                     if a.params
@@ -482,6 +485,7 @@ impl Machine {
                         indices,
                         &self.env,
                         &chunk.names[*method as usize],
+                        *dict,
                         a,
                     )?;
                     self.stack.push(Value::Unit);
@@ -489,6 +493,19 @@ impl Machine {
                 Op::List(n) => {
                     let items = self.pop_n(*n);
                     self.stack.push(Value::list(items));
+                }
+                Op::Dict(n) => {
+                    let flat = self.pop_n(n * 2);
+                    let mut it = flat.into_iter();
+                    let mut d = Dict::default();
+                    while let (Some(k), Some(v)) = (it.next(), it.next()) {
+                        d.insert(k, v);
+                    }
+                    self.stack.push(Value::Dict(Rc::new(d)));
+                }
+                Op::Entries(r) => {
+                    let v = self.pop();
+                    self.stack.push(builtins::entries(&v, *r));
                 }
                 Op::Commas(n) => {
                     let items = self.pop_n(*n);
@@ -613,9 +630,14 @@ impl Machine {
                 }
                 Op::Fail(n) => return Err(fail(chunk.names[*n as usize].clone())),
                 Op::Keyed { root, query } => {
-                    let arg = matches!(query, KeyedQuery::Index | KeyedQuery::Contains)
-                        .then(|| self.pop());
-                    let v = self.keyed(vm, rt, chunk, root, *query, arg)?;
+                    // `get`'s key path is above its key.
+                    let path = (*query == KeyedQuery::Get).then(|| self.pop());
+                    let arg = matches!(
+                        query,
+                        KeyedQuery::Index | KeyedQuery::Contains | KeyedQuery::Get
+                    )
+                    .then(|| self.pop());
+                    let v = self.keyed(vm, rt, chunk, root, *query, arg, path)?;
                     self.stack.push(v);
                 }
             }
@@ -653,7 +675,9 @@ impl Machine {
 
     /// [`Op::Keyed`]: a keyed collection answered through core's
     /// accessors (tracked on the collection, no copy of the list); any
-    /// other list value is read and queried as usual.
+    /// other list value is read and queried as usual. `path` is `get`'s
+    /// key path (see [`KeyedQuery::Get`]).
+    #[allow(clippy::too_many_arguments)]
     fn keyed(
         &self,
         vm: &Rc<Vm>,
@@ -662,11 +686,15 @@ impl Machine {
         root: &KeyedRoot,
         query: KeyedQuery,
         arg: Option<Value>,
+        path: Option<Value>,
     ) -> Result<Value, Error> {
+        let path = path.unwrap_or(Value::Null);
         let cell = match root {
             KeyedRoot::Def(d) => match self.env.def(*d) {
                 Some(super::Slot::Keyed(k, _)) => Some(k),
-                Some(super::Slot::View(v, _)) => return view_query(rt, v, query, arg),
+                Some(super::Slot::View(v, _)) => {
+                    return view_query(rt, vm.types(), v, query, arg, &path);
+                }
                 _ => None,
             },
             KeyedRoot::Service { service, field } => vm.host.read_keyed(
@@ -700,6 +728,11 @@ impl Machine {
                         rest: Vec::new(),
                     },
                 ),
+                // (dictionary) A persisted keyed `state` is a plain cell:
+                // found by its `key` in the list read (tracked) above.
+                KeyedQuery::Get => Ok(base.as_list().map_or(Value::Null, |xs| {
+                    builtins::get_by_key(vm.types(), xs, &arg, &path)
+                })),
             };
         };
         let item = |v: Option<&(ValueKey, Value)>| v.map_or(Value::Null, |(_, x)| x.clone());
@@ -711,13 +744,22 @@ impl Machine {
                 let i = arg.as_f64().filter(|i| *i >= 0.0);
                 k.with(rt, |v| item(i.and_then(|i| v.items().get(i as usize))))
             }
-            KeyedQuery::Contains => {
-                let key = k.with_untracked(rt, |v| (v.key_fn())(&arg))?;
-                let found = k.get_key(rt, &key)?;
-                Ok(Value::Bool(
-                    found.is_some_and(|x| builtins::equal(&x, &arg)),
-                ))
-            }
+            // Read through `with`, so a binding over `xs.contains(x)`
+            // follows the collection (core's `get_key` is untracked).
+            KeyedQuery::Contains => k.with(rt, |v| {
+                let key = (v.key_fn())(&arg);
+                Value::Bool(v.get(&key).is_some_and(|x| builtins::equal(x, &arg)))
+            }),
+            // (dictionary) One lookup by key, read through `with` so a
+            // binding over `xs.get(k)` follows the collection. The
+            // collection's own key is the one `get` finds by (a `state`'s
+            // `key`, a service item's identity), so the key is looked up
+            // as it is.
+            KeyedQuery::Get => k.with(rt, |v| {
+                v.get(&ValueKey(arg.clone()))
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            }),
         }
     }
 
@@ -738,13 +780,17 @@ impl Machine {
     }
 }
 
-/// `shown.len`, `.first`, `.last`, `[i]`, `.contains(x)` on a view `let`,
-/// through the view's items (no list copy).
+/// `shown.len`, `.first`, `.last`, `[i]`, `.contains(x)`, `.get(k)` on a
+/// view `let`, through the view's items (no list copy). `get` scans them
+/// by `path`: a view keeps its source's keys, and a mapped view's items
+/// are found by their own.
 fn view_query(
     rt: &Runtime,
+    types: &crate::ty::TypeTable,
     v: strand_core::KeyedMemo<ValueKey, Value>,
     query: KeyedQuery,
     arg: Option<Value>,
+    path: &Value,
 ) -> Result<Value, Error> {
     let item = |v: Option<&(ValueKey, Value)>| v.map_or(Value::Null, |(_, x)| x.clone());
     let arg = arg.unwrap_or(Value::Null);
@@ -758,6 +804,9 @@ fn view_query(
         }
         KeyedQuery::Contains => v.with(rt, |xs| {
             Value::Bool(xs.iter().any(|(_, x)| builtins::equal(x, &arg)))
+        }),
+        KeyedQuery::Get => v.with(rt, |xs| {
+            builtins::get_by_key(types, xs.iter().map(|(_, x)| x), &arg, path)
         }),
     }
 }
@@ -804,8 +853,11 @@ fn key_of(vm: &Vm, item: &Value, path: Option<&[String]>) -> Value {
 }
 
 /// `xs.push(x)`, `xs.remove_key(k)`, `xs.move(k, i)`, … on a writable
-/// list. A keyed `state` is a core keyed collection: each call is one
-/// keyed operation (one `VecDiff`), never a copy of the list.
+/// list, or `m.remove(k)`, `m.clear()` on a dictionary (`dict`, from the
+/// receiver's declared type). A keyed `state` is a core keyed
+/// collection: each call is one keyed operation (one `VecDiff`), never a
+/// copy of the list.
+#[allow(clippy::too_many_arguments)]
 fn mutate(
     vm: &Rc<Vm>,
     rt: &Runtime,
@@ -813,6 +865,7 @@ fn mutate(
     indices: Vec<Value>,
     env: &Rc<Env>,
     method: &str,
+    dict: bool,
     args: Args,
 ) -> Result<(), Error> {
     if let PlaceRoot::Def(d) = &place.root
@@ -821,7 +874,41 @@ fn mutate(
     {
         return mutate_keyed(vm, rt, k, method, args);
     }
-    let current = rt.untrack(|rt| read_place(vm, rt, place, &indices, env))?;
+    let (current, absent) = rt.untrack(|rt| read_place_at(vm, rt, place, &indices, env))?;
+    if dict {
+        // (dictionary) `m.remove(k)`, `m.clear()`. Forgetting a key the
+        // dictionary does not hold does nothing, and writes nothing
+        // (decisions.md dictionary). A null `[K: V]?` (`m?.clear()`, or
+        // `s?.m.clear()` under a null record) holds no key either: nothing
+        // is written, and the cell never becomes a list.
+        let d = match &current {
+            Value::Dict(d) => d,
+            Value::Null => return Ok(()),
+            _ => return Err(fail(format!("`{method}`: not a dictionary"))),
+        };
+        let new = match method {
+            "remove" => {
+                let key = dict_key(args.get(0).cloned().unwrap_or(Value::Null));
+                if !d.contains(&key) {
+                    return Ok(());
+                }
+                let mut d = (**d).clone();
+                d.remove(&key);
+                d
+            }
+            "clear" if d.is_empty() => return Ok(()),
+            "clear" => Dict::default(),
+            _ => return Err(fail(format!("dictionaries have no method `{method}`"))),
+        };
+        let value = Value::Dict(Rc::new(new));
+        return store(vm, rt, place, indices, env, AssignOp::Set, value);
+    }
+    if absent {
+        // (dictionary) `m[k]?.push(x)` on an entry the dictionary does not
+        // hold: `?.` skips the null, and nothing below an entry creates it
+        // (decisions.md dictionary).
+        return Ok(());
+    }
     let mut list: Vec<Value> = current.as_list().map(<[Value]>::to_vec).unwrap_or_default();
     let path = key_path(vm, place, &list);
     let find = |list: &[Value], k: &Value| {
@@ -856,11 +943,13 @@ fn mutate(
             list.remove(at as usize);
         }
         "clear" => list.clear(),
+        // Forgetting a key the list does not hold does nothing, and
+        // writes nothing (decisions.md dictionary).
         "remove_key" => match find(&list, &arg(0)) {
             Some(i) => {
                 list.remove(i);
             }
-            None => return Err(fail("`remove_key`: no item with this key")),
+            None => return Ok(()),
         },
         "move" => match find(&list, &arg(0)) {
             Some(i) => {
@@ -938,6 +1027,11 @@ fn mutate_keyed(
         "remove_key" | "move" | "update" => {
             let key = ValueKey(arg(0));
             if !has(&key)? {
+                // `remove_key` of a missing key does nothing; `move` and
+                // `update` of one are errors (decisions.md dictionary).
+                if method == "remove_key" {
+                    return Ok(());
+                }
                 return Err(fail(format!("`{method}`: no item with this key")));
             }
             match method {
@@ -972,6 +1066,19 @@ fn read_place(
     indices: &[Value],
     env: &Rc<Env>,
 ) -> Result<Value, Error> {
+    read_place_at(vm, rt, place, indices, env).map(|(v, _)| v)
+}
+
+/// The current value of a place, and whether the way to it went through
+/// a dictionary entry that is absent (the value is then null).
+fn read_place_at(
+    vm: &Rc<Vm>,
+    rt: &Runtime,
+    place: &Place,
+    indices: &[Value],
+    env: &Rc<Env>,
+) -> Result<(Value, bool), Error> {
+    let mut absent = false;
     let mut idx = indices.iter();
     let (mut v, segs) = match &place.root {
         PlaceRoot::Def(d) => (vm.read_def(rt, *d, env)?, &place.segs[..]),
@@ -984,10 +1091,14 @@ fn read_place(
     for seg in segs {
         v = match seg {
             PlaceSeg::Field(f) => builtins::field(vm, rt, &v, f)?,
-            PlaceSeg::Index => builtins::index(&v, idx.next().unwrap_or(&Value::Null)),
+            PlaceSeg::Index => {
+                let at = builtins::index(&v, idx.next().unwrap_or(&Value::Null));
+                absent |= matches!(v, Value::Dict(_)) && at.is_null();
+                at
+            }
         };
     }
-    Ok(v)
+    Ok((v, absent))
 }
 
 /// A plain number written where the declared type is `int` or `float`
@@ -1035,12 +1146,23 @@ fn field_ty<'a>(
     }
 }
 
-/// The declared type of the items of a list of type `ty`.
+/// The declared type of the items of a list of type `ty`, or of the
+/// values of a dictionary.
 fn item_ty(ty: Option<&crate::ty::Ty>) -> Option<&crate::ty::Ty> {
     use crate::ty::Ty;
     match ty? {
         Ty::Optional(t) => item_ty(Some(t)),
-        Ty::List(t, _) => Some(t),
+        Ty::List(t, _) | Ty::Dict(_, t) => Some(t),
+        _ => None,
+    }
+}
+
+/// (dictionary) The declared key type of a dictionary of type `ty`.
+fn key_ty(ty: Option<&crate::ty::Ty>) -> Option<&crate::ty::Ty> {
+    use crate::ty::Ty;
+    match ty? {
+        Ty::Optional(t) => key_ty(Some(t)),
+        Ty::Dict(k, _) => Some(k),
         _ => None,
     }
 }
@@ -1210,6 +1332,20 @@ fn set_in(
         }
         PlaceSeg::Index => {
             let (i, more) = indices.split_first().ok_or_else(|| fail("missing index"))?;
+            if let Value::Dict(d) = cur {
+                // (dictionary) `m[k] = v` inserts or replaces; below it
+                // (`m[k].f = x`, `m[k] += 1`) the entry must be there.
+                let key = dict_key(conform(key_ty(ty), i.clone()));
+                let old = match d.get(&key) {
+                    Some(old) => old,
+                    None if rest.is_empty() && op.binary().is_none() => &Value::Null,
+                    None => return Err(fail("no entry for this key")),
+                };
+                let new = set_in(vm, old, item_ty(ty), rest, more, op, value)?;
+                let mut d = (**d).clone();
+                d.insert(key, new);
+                return Ok(Value::Dict(Rc::new(d)));
+            }
             let Some(list) = cur.as_list() else {
                 return Err(fail("cannot index a missing list"));
             };

@@ -1,0 +1,11 @@
+// expect: check::dict_value
+// A missing key already reads null, so a value is never optional: the
+// help drops the `?` from a written type. In a literal, a `null` value
+// is an entry to leave out (the fix removes it), and any other value
+// that may be null needs a fallback.
+state names: [int: text?] = []
+let nothing = [1: null]
+let some = [1: null, 2: "a"]
+let last = [1: "a", 2: null]
+state title: text? = null
+let maybe = [1: title]

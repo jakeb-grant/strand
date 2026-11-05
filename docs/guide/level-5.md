@@ -2,7 +2,7 @@
 
 You learn: `tokens`, spring overrides `~`, `service from dbus`,
 `pages`, drag and drop, shaders, `file`; also `set { }`, `keyframes` and
-`play`, `canvas`, `type` and `key`, `slot`, `fn`, a node's `box` and
+`play`, `canvas`, `type` and `key`, dictionaries `[K: V]`, `slot`, `fn`, a node's `box` and
 `pointer`, settings files,
 SVG layer selectors, and `service … from file | dir | listen | poll` with
 `permit exec`, and `action`.
@@ -588,7 +588,7 @@ bar Dock {
   row { grow: 1; justify: center; align: center; gap: $space.2
     on drop(p: Pin, at: int) { pins.move(p.app, at) }
     for p in pins key p.app {
-      let app = apps.all.find(a => a.id == p.app)   // the installed app, or null
+      let app = apps.all.get(p.app)   // the installed app, or null
       image app?.icon ?? "application-x-executable" { size: 44; drag: p; tooltip: p.label
         enter { scale: 0; opacity: 0 }
         when app == null { opacity: 0.4 }
@@ -620,10 +620,22 @@ with named fields. Build one with its name and named arguments:
 **`state pins: [Pin] key app = […]` is a keyed list.** `[Pin]` is a
 list of pins, and `key app` says each pin is known by its `app`. Change
 it with `pins.push(p)`, `pins.insert(i, p)`, `pins.remove_key(k)`,
-`pins.move(k, i)` and `pins.update(k, …)`. Because each item is known by
-its key, an icon keeps its place, its animation and anything it holds
-when the order changes, and glides to its new spot. `persist` keeps the
+`pins.move(k, i)` and `pins.update(k, …)`; removing a key that is not
+there does nothing. `pins.get(k)` reads the pin with key `k`, `null`
+when there is none, while `pins[0]` is still the first. Because each
+item is known by its key, an icon keeps its place, its animation and
+anything it holds when the order changes, and glides to its new spot. `persist` keeps the
 list across restarts.
+
+**A dictionary remembers one value per key**, when there is no record
+to keep in order. A `[int: text]` holds one `text` for each `int` key:
+`state last_win: [int: text] = [] persist` holds a window id for each
+workspace number. `last_win[3]` reads one, `null` when there is none,
+so it is written `last_win[ws.id] ?? ""`; in a handler,
+`last_win[3] = id` sets it and `last_win.remove(3)` forgets it. Walk it
+with `for e in last_win.entries`, each entry a `key` and a `value`.
+[Remembering things by key](../../site/how-to/remembering-by-key.md)
+builds it whole, with the other cases a shell keeps by key.
 
 **Drag and drop.** `drag: p` makes the icon draggable, carrying its
 pin. `on drop(p: Pin, at: int)` on the row receives it with the index
@@ -641,11 +653,13 @@ fixed time, `~ ease(out_back, 300ms)` with an easing curve, and
 the icon is 10 px up, at 0% and 100% where it belongs. `play hop` in a
 handler plays it once on the node the handler is on.
 
-**`let app = apps.all.find(a => a.id == p.app)`** finds the installed
-app with the pin's id, or `null` when it is not installed. You need the
-app itself, not its id, to call `launch()`. `app?.icon` is `null` when
-`app` is, and `?? "application-x-executable"` puts the generic icon in
-its place; `app?.launch()` does nothing when `app` is `null`.
+**`let app = apps.all.get(p.app)`** reads the installed app by its
+key, the pin's id, or `null` when it is not installed: `apps.all` is a
+keyed list of `App`s, each known by its `id`, as a pin is by its
+`app`. You need the app itself, not its id, to call `launch()`.
+`app?.icon` is `null` when `app` is, and `?? "application-x-executable"`
+puts the generic icon in its place; `app?.launch()` does nothing when
+`app` is `null`.
 
 Every pin draws exactly one icon, the missing ones included, and that
 matters for drag and drop: the `at` a drop reports counts the icons
@@ -680,7 +694,7 @@ bar Dock {
   row { id: icons; grow: 1; justify: center; align: center; gap: $space.2
     on drop(p: Pin, at: int) { pins.move(p.app, at) }
     for p in pins key p.app {
-      let app = apps.all.find(a => a.id == p.app)
+      let app = apps.all.get(p.app)
       image app?.icon ?? "application-x-executable" { size: 44; drag: p; tooltip: p.label
         cursor: pointer
         // How far the pointer is from this icon's centre, along the row.

@@ -1078,6 +1078,24 @@ fn tokens_beside(persist: &strand_core::PersistStore) -> TokenOverlay {
     TokenOverlay::at(dir.parent().unwrap_or(dir).join(TOKENS_FILE))
 }
 
+/// (dictionary) Where a `strand get`/`set` path leads
+/// (`Instance::path_to`).
+struct PathTo {
+    def: DefId,
+    steps: Vec<PathStep>,
+    /// The type at the path's end.
+    ty: crate::ty::Ty,
+    /// The dictionary an entry step reads, as a handler names it
+    /// (`prefs.wallpapers`), when the path ends at an entry.
+    dict: Option<String>,
+}
+
+/// One step of a [`PathTo`]: a record's field, or a dictionary's key.
+enum PathStep {
+    Field(String),
+    Key(Value),
+}
+
 /// A value of type `ty` written as text (`strand set`).
 pub fn parse_text(types: &crate::ty::TypeTable, ty: &crate::ty::Ty, text: &str) -> Option<Value> {
     use crate::ty::{Prim, Ty};
@@ -2221,86 +2239,155 @@ impl Instance {
     /// The value of an exported `file.name` (the CLI's `strand get`), or
     /// of a field inside it (`theme.prefs.compact`).
     pub fn get(&self, path: &str) -> Result<Value, Error> {
-        let (d, rest) = self.export(path)?;
+        let at = self.path_to(path)?;
         let root = self.ctx.vm.root.clone();
-        let mut v = self.rt.untrack(|rt| self.ctx.vm.read_def(rt, d, &root))?;
-        for f in rest {
-            v = v
-                .field(&self.ctx.vm.prog.types, &f)
-                .cloned()
-                .ok_or_else(|| Error::failed(format!("`{path}` has no field `{f}`")))?;
+        let mut v = self
+            .rt
+            .untrack(|rt| self.ctx.vm.read_def(rt, at.def, &root))?;
+        for s in at.steps {
+            v = match (s, &v) {
+                (PathStep::Field(f), _) => v
+                    .field(&self.ctx.vm.prog.types, &f)
+                    .cloned()
+                    .ok_or_else(|| Error::failed(format!("`{path}` has no field `{f}`")))?,
+                // (dictionary) The entry, or null when it is absent.
+                (PathStep::Key(k), Value::Dict(d)) => d.get(&k).cloned().unwrap_or(Value::Null),
+                (PathStep::Key(_), _) => Value::Null,
+            };
         }
         Ok(v)
     }
 
     /// Write an exported `state` or settings file, or a field inside one
     /// (`strand set theme.look mocha`, `strand set theme.prefs.compact
-    /// true`): an ordinary write, checked against the declared type.
+    /// true`), or (dictionary) one entry of a dictionary by its key
+    /// (`strand set prefs.wallpapers.DP-1 ~/walls/a.jpg`, inserted or
+    /// replaced): an ordinary write, checked against the declared type.
     pub fn set(&self, path: &str, value: Value) -> Result<(), Error> {
-        let (d, rest) = self.export(path)?;
+        let at = self.path_to(path)?;
         let prog = self.ctx.vm.prog.clone();
-        if prog.def(d).kind == DefKind::Let {
+        if prog.def(at.def).kind == DefKind::Let {
             return Err(Error::failed(format!("`{path}` is a `let`, not state")));
         }
-        let mut ty = prog.def(d).ty.clone();
-        for f in &rest {
-            let field = match ty.non_null() {
-                crate::ty::Ty::Record(r) => prog
-                    .types
-                    .record(*r)
-                    .fields
-                    .iter()
-                    .find(|x| x.name == *f)
-                    .map(|x| x.ty.clone()),
-                _ => None,
-            };
-            ty = field.ok_or_else(|| Error::failed(format!("`{path}` has no field `{f}`")))?;
-        }
-        if !crate::vm::value::fits(&prog.types, &ty, &value) {
+        if !crate::vm::value::fits(&prog.types, &at.ty, &value) {
             return Err(Error::failed(format!(
                 "`{path}` is a {}, not {}",
-                prog.types.show(&ty),
+                prog.types.show(&at.ty),
                 value.show(&prog.types)
             )));
         }
+        let mut indices = Vec::new();
+        let segs = at
+            .steps
+            .into_iter()
+            .map(|s| match s {
+                PathStep::Field(f) => crate::lower::PlaceSeg::Field(f),
+                PathStep::Key(k) => {
+                    indices.push(k);
+                    crate::lower::PlaceSeg::Index
+                }
+            })
+            .collect();
         let place = crate::lower::Place {
-            root: crate::lower::PlaceRoot::Def(d),
-            segs: rest
-                .into_iter()
-                .map(crate::lower::PlaceSeg::Field)
-                .collect(),
+            root: crate::lower::PlaceRoot::Def(at.def),
+            segs,
         };
         let root = self.ctx.vm.root.clone();
         self.ctx
             .vm
-            .write_place(&self.rt, &place, Vec::new(), &root, value)
+            .write_place(&self.rt, &place, indices, &root, value)
     }
 
     /// `strand set theme.look mocha`: [`Instance::set`] with the value
     /// written as text and read by the target's type: an enum variant by
     /// name, `true`/`false`, a number (`int`, `float`, `px`, `%`, `deg`,
     /// `ms`/`s`), a `#rrggbb` colour, text and paths as given, `null` for
-    /// an optional value.
+    /// an optional value. (dictionary) A whole dictionary is not set from
+    /// text, and an entry is not removed (its value is never `null`):
+    /// both are refused, saying what does it.
     pub fn set_text(&self, path: &str, text: &str) -> Result<(), Error> {
-        let (d, rest) = self.export(path)?;
+        let at = self.path_to(path)?;
         let prog = self.ctx.vm.prog.clone();
-        let mut ty = prog.def(d).ty.clone();
-        for f in &rest {
-            let field = match ty.non_null() {
-                crate::ty::Ty::Record(r) => prog
-                    .types
-                    .record(*r)
-                    .fields
-                    .iter()
-                    .find(|x| x.name == *f)
-                    .map(|x| x.ty.clone()),
-                _ => None,
-            };
-            ty = field.ok_or_else(|| Error::failed(format!("`{path}` has no field `{f}`")))?;
+        let ty = &at.ty;
+        if matches!(ty.non_null(), crate::ty::Ty::Dict(..)) {
+            return Err(Error::failed(format!(
+                "`{path}` is a dictionary, `{}`: `strand set` writes one entry, `strand set \
+                 {path}.<key> <value>`",
+                prog.types.show(ty)
+            )));
         }
-        let value = parse_text(&prog.types, &ty, text.trim())
-            .ok_or_else(|| Error::failed(format!("`{text}` is not a {}", prog.types.show(&ty))))?;
+        let text = text.trim();
+        if text == "null"
+            && let Some(dict) = &at.dict
+        {
+            return Err(Error::failed(format!(
+                "`{path}`: `strand set` does not remove an entry (a dictionary's values are never \
+                 `null`); a handler removes it with `{dict}.remove(k)`"
+            )));
+        }
+        let value = parse_text(&prog.types, ty, text)
+            .ok_or_else(|| Error::failed(format!("`{text}` is not a {}", prog.types.show(ty))))?;
         self.set(path, value)
+    }
+
+    /// (dictionary) Where a `strand get`/`set`/`toggle` path leads: the
+    /// declaration it starts with, the fields after it, and, once a step
+    /// reaches a dictionary, the rest of the path as one key read by the
+    /// key type (`prefs.wallpapers.DP-1`, `f.scale.org.gnome.Nautilus`,
+    /// so a dotted app id is one key). A key that does not read as one,
+    /// or a dictionary with no key after it in a path that goes on, is
+    /// refused.
+    fn path_to(&self, path: &str) -> Result<PathTo, Error> {
+        use crate::ty::Ty;
+        let (d, rest) = self.export(path)?;
+        let prog = &self.ctx.vm.prog;
+        let mut ty = prog.def(d).ty.clone();
+        let mut steps = Vec::with_capacity(rest.len());
+        let mut dict = None;
+        let mut i = 0;
+        while let Some(f) = rest.get(i) {
+            match ty.non_null() {
+                Ty::Dict(k, v) => {
+                    let key = rest[i..].join(".");
+                    let read = parse_text(&prog.types, k, &key).ok_or_else(|| {
+                        let head = path.strip_suffix(&format!(".{key}")).unwrap_or(path);
+                        Error::failed(format!(
+                            "`{key}` is not a key of `{head}`, a {}: its keys are {}",
+                            prog.types.show(&ty),
+                            prog.types.show(k)
+                        ))
+                    })?;
+                    dict = Some(
+                        std::iter::once(prog.def(d).name.as_str())
+                            .chain(rest[..i].iter().map(String::as_str))
+                            .collect::<Vec<_>>()
+                            .join("."),
+                    );
+                    steps.push(PathStep::Key(read));
+                    ty = (**v).clone();
+                    break;
+                }
+                Ty::Record(r) => {
+                    ty = prog
+                        .types
+                        .record(*r)
+                        .fields
+                        .iter()
+                        .find(|x| x.name == *f)
+                        .map(|x| x.ty.clone())
+                        .ok_or_else(|| Error::failed(format!("`{path}` has no field `{f}`")))?;
+                    steps.push(PathStep::Field(f.clone()));
+                }
+                _ => return Err(Error::failed(format!("`{path}` has no field `{f}`"))),
+            }
+            i += 1;
+        }
+        Ok(PathTo {
+            def: d,
+            steps,
+            ty,
+            dict,
+        })
     }
 
     /// The exported declaration a `file.name[.field…]` path starts with,

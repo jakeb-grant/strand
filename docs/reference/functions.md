@@ -113,7 +113,7 @@ Builtin functions and values, every name in scope in every file, and the methods
 
 ### `[T]`
 
-A list of `T` items. `remove_key`, `move` and `update` are a keyed list's (`[T] key field`, or a keyed record's), `K` its key's type.
+A list of `T` items. `get`, `remove_key`, `move` and `update` are a keyed list's (`[T] key field`, or a keyed record's), `K` its key's type.
 
 | Member | |
 | --- | --- |
@@ -132,6 +132,7 @@ A list of `T` items. `remove_key`, `move` and `update` are a keyed list's (`[T] 
 | `fn reduce(init: U, f: fn(U, T) -> U) -> U` | `init` carried through every item in order by `f`, which takes what it gave last and the item: `xs.reduce(0, (sum, x) => sum + x)`, `init` for no items. Its type is `init`'s. |
 | `fn join(sep: text) -> text` | The text items joined with `sep`. |
 | `fn contains(item: T) -> bool` | Whether `item` is in the list. |
+| `fn get(key: K) -> T?` | The item with `key`, or null (keyed lists: `tray.items.get(id)`). |
 | `fn any(test: fn(T) -> bool) -> bool` | Whether `test` is true for some item. |
 | `fn all(test: fn(T) -> bool) -> bool` | Whether `test` is true for every item. |
 | `fn count(test: fn(T) -> bool) -> int` | How many items `test` is true for. |
@@ -141,7 +142,21 @@ A list of `T` items. `remove_key`, `move` and `update` are a keyed list's (`[T] 
 | `fn insert(at: int, item: T)` | Inserts `item` at `at` (handlers only). |
 | `fn remove(at: int)` | Removes the item at `at` (handlers only). |
 | `fn clear()` | Removes every item (handlers only). |
-| `fn remove_key(key: K)` | Removes the item with `key` (keyed lists, handlers only). |
+| `fn remove_key(key: K)` | Removes the item with `key`, and does nothing when there is none (keyed lists, handlers only). |
 | `fn move(key: K, to: int)` | Moves the item with `key` to `to` (keyed lists, handlers only). |
 | `fn update(key: K, f: fn(T) -> T)` | Replaces the item with `key` by `f` of it (keyed lists, handlers only). |
+
+### `[K: V]`
+
+A dictionary: one `V` for each key `K`. `m[k]` reads the value for `k`, a `V?` that is `null` when there is none, and in a handler `m[k] = v` sets it (spec.md, section 7.1).
+
+| Member | |
+| --- | --- |
+| `len: int` | How many entries. |
+| `keys: [K]` | The keys, in key order. |
+| `values: [V]` | The values, in the order of their keys. |
+| `entries: [Entry<K, V>]` | The entries (`Entry<K, V>`, each a `key` and a `value`), in key order and keyed by `key`: `for e in m.entries { … }`. |
+| `fn filter(keep: fn(Entry<K, V>) -> bool) -> [K: V]` | The entries `keep` is true for, as a dictionary: `m.filter(e => e.value > 0)`. |
+| `fn remove(key: K)` | Removes the entry for `key`, and does nothing when there is none (handlers only). |
+| `fn clear()` | Removes every entry (handlers only). |
 

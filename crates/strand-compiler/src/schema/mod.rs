@@ -53,8 +53,8 @@ mod parse;
 pub mod plugins;
 
 pub use members::{
-    ASYNC_TRANSFORMS, MemberInfo, MemberKind, async_members, builtin_methods, list_members,
-    members_of,
+    ASYNC_TRANSFORMS, MemberInfo, MemberKind, async_members, builtin_methods, dict_members,
+    find_entry, list_members, members_of,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -627,6 +627,30 @@ mod tests {
             .extend("methods color { fn mix(other: color, amount: float) -> int }")
             .expect_err("same parameters as the builtin mix");
         assert!(err[0].message.contains("declared twice"), "{err:?}");
+    }
+
+    /// (dictionary) A schema (a plugin's, or a service crate's) cannot
+    /// declare a dictionary yet, in a service's field, an action's
+    /// parameter or a function's result: the error says so and what to
+    /// use, and nothing is added.
+    #[test]
+    fn a_schema_dictionary_is_not_yet() {
+        for text in [
+            "service maps_test { counts: [text: int] }",
+            "service maps_test { action set_all(m: [text: int]) }",
+            "fn maps_test() -> [int: text]",
+        ] {
+            let mut s = Schema::builtin().clone();
+            let err = s.extend(text).expect_err(text);
+            assert_eq!(
+                err[0].to_string(),
+                "line 1: a schema's type cannot be a dictionary `[K: V]` yet: services, actions \
+                 and their results carry a list of a `record` instead (`[Pair]` with `record \
+                 Pair { key: text; value: int }`)",
+                "{text}"
+            );
+            assert!(!s.functions.contains_key("maps_test"), "atomic");
+        }
     }
 
     #[test]

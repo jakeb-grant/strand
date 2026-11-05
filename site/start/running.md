@@ -168,9 +168,14 @@ These talk to the running shell:
   field, a service field the service lets you write, or a token. The
   value is read as the target's type. For a service's number, a signed
   number or percentage, such as `+5%`, steps from its current value.
-- `strand toggle <path>` flips an exported `bool` state.
+- `strand toggle <path>` flips an exported `bool` state, a `bool`
+  settings field or a `bool` dictionary entry (an absent entry becomes
+  `true`).
 - `strand get <path>` prints an exported value, a settings field or a
   token.
+- After a [dictionary](../concepts/language.md#dictionaries), the rest
+  of the path is one key: `strand get island.last_win.3` prints one
+  entry, and `strand set prefs.scale.org.gnome.Nautilus 0.5` writes one.
 
 A path is `file.name` for a value a file exports (`launcher.open` is
 the `export state open` of `launcher.strand`), `service.field` for a

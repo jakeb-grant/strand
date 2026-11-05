@@ -1,0 +1,10 @@
+// expect: check::dict_for
+// One way to walk a dictionary: its entries. The fix adds `.entries`, and
+// the body still checks against `Entry<K, V>`.
+state names: [int: text] = []
+component C {
+  col {
+    for n in names key n.key { text n.value }
+    box { on click { for n in names { names[n.key] = n.value } } }
+  }
+}

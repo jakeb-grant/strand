@@ -1,0 +1,7 @@
+// expect: check::type_mismatch
+// A dictionary's values are never null: removing an entry is
+// `m.remove(k)`, which the help names.
+state last_win: [int: text] = []
+component C {
+  box { on click { last_win[3] = null } }
+}

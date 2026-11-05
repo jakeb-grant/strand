@@ -350,6 +350,7 @@ impl Compiler {
             ExprKind::Array(_) | ExprKind::Commas(_) | ExprKind::Spaced(_) => {
                 self.fail(not_theme(e.span, "a list"), e.span)
             }
+            ExprKind::Dict(_) => self.fail(not_theme(e.span, "a dictionary"), e.span),
             ExprKind::Index { .. } => self.fail(not_theme(e.span, "indexing"), e.span),
             ExprKind::Lambda { .. } => self.fail(not_theme(e.span, "a lambda"), e.span),
             ExprKind::Match(_) => self.fail(not_theme(e.span, "`match`"), e.span),

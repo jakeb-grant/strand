@@ -727,6 +727,16 @@ impl Parser {
     fn ty_atom(&mut self) -> PResult<RawType> {
         if self.eat("[") {
             let t = self.ty()?;
+            // (dictionary) Services cannot carry a dictionary yet: D-Bus
+            // and JSON maps are phase 2 (decisions.md, dictionary), as
+            // `check::dict_service` says in a config.
+            if self.at(":") {
+                return self.err(
+                    "a schema's type cannot be a dictionary `[K: V]` yet: services, actions and \
+                     their results carry a list of a `record` instead (`[Pair]` with `record \
+                     Pair { key: text; value: int }`)",
+                );
+            }
             self.expect("]")?;
             return Ok(RawType::List(Box::new(t)));
         }

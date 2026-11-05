@@ -363,6 +363,7 @@ mod tests {
             file: id,
             name: "a",
             ast: &parse.file,
+            text: src,
         }];
         check(&modules, Schema::builtin())
     }

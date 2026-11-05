@@ -1,0 +1,8 @@
+// expect: check::type_mismatch
+// An untyped dictionary keeps its literal's value type: it does not
+// widen as a whole-number list does, so a fraction written to an entry
+// is helped to a declaration with `float` values, not rounded.
+state levels = ["main": 1]
+component C {
+  box { on click { levels["mic"] = 0.5 } }
+}

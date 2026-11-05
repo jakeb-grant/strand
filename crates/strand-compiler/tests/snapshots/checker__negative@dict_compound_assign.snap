@@ -1,0 +1,87 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::dict_compound
+
+  × `+=` cannot change a dictionary entry, which may be missing
+    ╭─[dict_compound_assign.strand:13:20]
+ 12 │ component C {
+ 13 │   box { on click { hits["a"] += 1; scale["b"] *= 2 } }
+    ·                    ────┬────
+    ·                        ╰── an entry of a dictionary
+ 14 │   box { on click { labels["a"] += "!"; tags["x"] += ["t"]; waits["low"] += 1s } }
+    ╰────
+  help: write the entry whole, with a value for a missing key: `hits["a"] = (hits["a"] ?? 0) + 1`
+
+check::dict_compound
+
+  × `*=` cannot change a dictionary entry, which may be missing
+    ╭─[dict_compound_assign.strand:13:36]
+ 12 │ component C {
+ 13 │   box { on click { hits["a"] += 1; scale["b"] *= 2 } }
+    ·                                    ─────┬────
+    ·                                         ╰── an entry of a dictionary
+ 14 │   box { on click { labels["a"] += "!"; tags["x"] += ["t"]; waits["low"] += 1s } }
+    ╰────
+  help: write the entry whole, with a value for a missing key: `scale["b"] = (scale["b"] ?? 1) *
+        2`
+
+check::dict_compound
+
+  × `+=` cannot change a dictionary entry, which may be missing
+    ╭─[dict_compound_assign.strand:14:20]
+ 13 │   box { on click { hits["a"] += 1; scale["b"] *= 2 } }
+ 14 │   box { on click { labels["a"] += "!"; tags["x"] += ["t"]; waits["low"] += 1s } }
+    ·                    ─────┬─────
+    ·                         ╰── an entry of a dictionary
+ 15 │   box { on click { hits["b"] -= n + 1 } }
+    ╰────
+  help: write the entry whole, with a value for a missing key: `labels["a"] = (labels["a"] ?? "")
+        + "!"`
+
+check::dict_compound
+
+  × `+=` cannot change a dictionary entry, which may be missing
+    ╭─[dict_compound_assign.strand:14:40]
+ 13 │   box { on click { hits["a"] += 1; scale["b"] *= 2 } }
+ 14 │   box { on click { labels["a"] += "!"; tags["x"] += ["t"]; waits["low"] += 1s } }
+    ·                                        ────┬────
+    ·                                            ╰── an entry of a dictionary
+ 15 │   box { on click { hits["b"] -= n + 1 } }
+    ╰────
+  help: write the entry whole, with a value for a missing key: `tags["x"] = (tags["x"] ?? []) +
+        ["t"]`
+
+check::dict_compound
+
+  × `+=` cannot change a dictionary entry, which may be missing
+    ╭─[dict_compound_assign.strand:14:60]
+ 13 │   box { on click { hits["a"] += 1; scale["b"] *= 2 } }
+ 14 │   box { on click { labels["a"] += "!"; tags["x"] += ["t"]; waits["low"] += 1s } }
+    ·                                                            ──────┬─────
+    ·                                                                  ╰── an entry of a dictionary
+ 15 │   box { on click { hits["b"] -= n + 1 } }
+    ╰────
+  help: write the entry whole, with a value for a missing key: `waits["low"] = (waits["low"] ??
+        0s) + 1s`
+
+check::dict_compound
+
+  × `-=` cannot change a dictionary entry, which may be missing
+    ╭─[dict_compound_assign.strand:15:20]
+ 14 │   box { on click { labels["a"] += "!"; tags["x"] += ["t"]; waits["low"] += 1s } }
+ 15 │   box { on click { hits["b"] -= n + 1 } }
+    ·                    ────┬────
+    ·                        ╰── an entry of a dictionary
+ 16 │ }
+    ╰────
+  help: write the entry whole, with a value for a missing key: `hits["b"] = (hits["b"] ?? 0) - (n
+        + 1)`
+
+fix [check::dict_compound] dict_compound_assign.strand: `hits["a"] += 1` -> `hits["a"] = (hits["a"] ?? 0) + 1`
+fix [check::dict_compound] dict_compound_assign.strand: `scale["b"] *= 2` -> `scale["b"] = (scale["b"] ?? 1) * 2`
+fix [check::dict_compound] dict_compound_assign.strand: `labels["a"] += "!"` -> `labels["a"] = (labels["a"] ?? "") + "!"`
+fix [check::dict_compound] dict_compound_assign.strand: `tags["x"] += ["t"]` -> `tags["x"] = (tags["x"] ?? []) + ["t"]`
+fix [check::dict_compound] dict_compound_assign.strand: `waits["low"] += 1s` -> `waits["low"] = (waits["low"] ?? 0s) + 1s`
+fix [check::dict_compound] dict_compound_assign.strand: `hits["b"] -= n + 1` -> `hits["b"] = (hits["b"] ?? 0) - (n + 1)`

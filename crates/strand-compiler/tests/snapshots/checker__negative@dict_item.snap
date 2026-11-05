@@ -1,0 +1,42 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+syntax::dict_item
+
+  × every item of a dictionary is `key: value`
+   ╭─[dict_item.strand:4:20]
+ 3 │ // value; `[:]` is not a form, the empty dictionary is `[]`.
+ 4 │ let a = [1: "web", 2]
+   ·          ────┬───  ┬
+   ·              │     ╰── this item has no value
+   ·              ╰── a `key: value` item, so this is a dictionary
+ 5 │ let b = [1, 2: "code"]
+   ╰────
+  help: give every item a value for a dictionary (`[k: v, …]`), or none for a list
+
+syntax::dict_item
+
+  × every item of a dictionary is `key: value`
+   ╭─[dict_item.strand:5:13]
+ 4 │ let a = [1: "web", 2]
+ 5 │ let b = [1, 2: "code"]
+   ·          ┬  ────┬────
+   ·          │      ╰── a `key: value` item in a list
+   ·          ╰── this item has no value, so this is a list
+ 6 │ let c: [int: text] = [:]
+   ╰────
+  help: give every item a value for a dictionary (`[k: v, …]`), or none for a list
+
+syntax::dict_item
+
+  × an empty dictionary is `[]`
+   ╭─[dict_item.strand:6:22]
+ 5 │ let b = [1, 2: "code"]
+ 6 │ let c: [int: text] = [:]
+   ·                      ─┬─
+   ·                       ╰── no `[:]` form
+   ╰────
+  help: did you mean `[]`?
+
+fix [syntax::dict_item] dict_item.strand: `[:]` -> `[]`

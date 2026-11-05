@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use strand_compiler::schema::{
-    DocKey, ElementSchema, MemberKind, PropSchema, Schema, list_members, members_of,
+    DocKey, ElementSchema, MemberKind, PropSchema, Schema, dict_members, list_members, members_of,
 };
 use strand_compiler::ty::{FnSig, Origin, Prim, RecordDef, Ty, TypeTable};
 
@@ -550,8 +550,8 @@ fn types(s: &Schema) -> String {
         "# Types\n\n\
          The records, enums, aliases and opaque types of the builtin schema. The \
          language's own types (`int`, `float`, `bool`, `text`, `color`, `length`, \
-         `duration`, `T?`, `[T]`, `Async<T>` and the rest) are in spec.md, \
-         section 7.1.\n\n## Records\n\n",
+         `duration`, `T?`, `[T]`, `[K: V]`, `Async<T>` and the rest) are in \
+         spec.md, section 7.1.\n\n## Records\n\n",
     );
     let mut records: Vec<&RecordDef> = s
         .types
@@ -707,13 +707,39 @@ fn functions(s: &Schema) -> String {
     let _ = writeln!(o, "### `[T]`\n");
     let _ = writeln!(
         o,
-        "A list of `T` items. `remove_key`, `move` and `update` are a keyed \
-         list's (`[T] key field`, or a keyed record's), `K` its key's type.\n"
+        "A list of `T` items. `get`, `remove_key`, `move` and `update` are a \
+         keyed list's (`[T] key field`, or a keyed record's), `K` its key's type.\n"
     );
     let _ = writeln!(o, "| Member | |");
     let _ = writeln!(o, "| --- | --- |");
     let item = Ty::Opaque("T".into());
     for m in list_members(&item, true, &Ty::Opaque("K".into())) {
+        let doc = cell(m.doc.as_deref());
+        if m.sigs.is_empty() {
+            let _ = writeln!(
+                o,
+                "| {} | {doc} |",
+                code(&format!("{}: {}", m.name, ty(&s.types, &m.ty)))
+            );
+        }
+        for f in &m.sigs {
+            let _ = writeln!(o, "| {} | {doc} |", code(&sig(&s.types, &m.name, f)));
+        }
+    }
+    o.push('\n');
+    // (dictionary) A dictionary's members are generic over its key and
+    // value, built for the pair at hand: shown for `K` and `V`.
+    let _ = writeln!(o, "### `[K: V]`\n");
+    let _ = writeln!(
+        o,
+        "A dictionary: one `V` for each key `K`. `m[k]` reads the value for \
+         `k`, a `V?` that is `null` when there is none, and in a handler `m[k] \
+         = v` sets it (spec.md, section 7.1).\n"
+    );
+    let _ = writeln!(o, "| Member | |");
+    let _ = writeln!(o, "| --- | --- |");
+    let entry = Ty::Opaque("Entry<K, V>".into());
+    for m in dict_members(&Ty::Opaque("K".into()), &Ty::Opaque("V".into()), &entry) {
         let doc = cell(m.doc.as_deref());
         if m.sigs.is_empty() {
             let _ = writeln!(

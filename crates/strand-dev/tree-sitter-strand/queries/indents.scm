@@ -13,6 +13,7 @@
   (parameters)
   (arguments)
   (array)
+  (dictionary)
 ] @indent.begin
 
 [ "}" "]" ")" ] @indent.end @indent.branch

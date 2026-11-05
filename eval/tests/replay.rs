@@ -2638,3 +2638,54 @@ fn each_recorded_end_of_a_queued_run_is_replayed_in_order() {
         "the second end waits for its time: {st:?}"
     );
 }
+
+/// (dictionary) A dictionary cell is recorded whole on each write, as
+/// `[key, value]` pairs, a key that is not a text of the config held back
+/// as its length: the replay rewinds it to its start, writes it as the
+/// live shell did and records it held back alike, so the replay is
+/// faithful.
+#[test]
+fn a_dictionary_cell_replays_with_no_divergence() {
+    let mut f = Fx::session();
+    f.config.push_str(
+        "export state used: [text: int] = []\non change clicks { used[join(\"\", \"w\", clicks)] = clicks }\n",
+    );
+    f.cell(8 * S + 100 * MS, "shell.used", r#"[[],[[{"~text":2},1]]]"#);
+    f.cells["shell.used"] = json!([[{"~text": 2}, 1]]);
+    let dir = f.write("dictionary");
+    let (r, _) = replay_of(&dir, &defaults());
+    assert!(
+        r.fidelity.divergences.is_empty(),
+        "{:#?}\n{}",
+        r.fidelity.divergences,
+        r.text
+    );
+    assert_eq!(r.fidelity.writes, (2, 2));
+    assert!(r.fidelity.notes.is_empty(), "{:?}", r.fidelity.notes);
+}
+
+/// (dictionary) Two keys held back as the same length read back as the
+/// same placeholder `x`s: the replay starts the cell with the later
+/// entry, and its fidelity notes name the cell and how many were lost.
+#[test]
+fn two_held_keys_of_one_length_are_a_fidelity_note() {
+    let mut f = Fx::session();
+    f.config.push_str("export state used: [text: int] = []\n");
+    f.cells["shell.used"] = json!([[{"~text": 2}, 1], [{"~text": 2}, 2], ["kitty", 3]]);
+    let dir = f.write("dictionary-held");
+    let (r, _) = replay_of(&dir, &defaults());
+    let note = "`shell.used`: 1 of its entries was keyed by a text held back as its length, read \
+                back as the same `x`s as another key of that length, so the replay starts the \
+                cell with the later of each and without it";
+    assert!(
+        r.fidelity.notes.iter().any(|n| n == note),
+        "{:?}",
+        r.fidelity.notes
+    );
+    assert!(r.text.contains(note), "{}", r.text);
+    assert!(
+        r.fidelity.divergences.is_empty(),
+        "{:#?}",
+        r.fidelity.divergences
+    );
+}

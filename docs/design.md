@@ -130,7 +130,7 @@ Nothing at level N+1 appears in a level-N example.
 | 2 | `$tokens`, `component`, `for`, `when`, `on click` | `on secondary`, `hit:`, `hover` and `pressed` | Workspace dots, tray |
 | 3 | `state`, `<->`, `if`, `popup`, `enter` | `=` and `+=`-style assignment, `else`, `exit`, `on scroll(dy)` | Clock with calendar, volume slider |
 | 4 | `on change … after`, `after … while`, `persist`, `export`, `list`, `Async` | `let`, `enum`, `match`, `every … while`, `on show`, `id:`, `@reset`, lambdas, `await`, `lock`, `window` | OSD, notifications, launcher, lock screen, password dialog, settings window |
-| 5 | `tokens`, spring overrides `~`, `service from dbus`, `pages`, drag and drop, shaders, `file` | `set { }`, `keyframes`/`play`, `canvas`, `type` and `key`, `slot`, `fn`, a node's `box` and `pointer`, settings files, SVG `#name { }` selectors, `service from file \| dir \| listen \| poll`, `permit exec`, `action` | Control centre, dock, custom services |
+| 5 | `tokens`, spring overrides `~`, `service from dbus`, `pages`, drag and drop, shaders, `file` | `set { }`, `keyframes`/`play`, `canvas`, `type` and `key`, dictionaries `[K: V]`, `slot`, `fn`, a node's `box` and `pointer`, settings files, SVG `#name { }` selectors, `service from file \| dir \| listen \| poll`, `permit exec`, `action` | Control centre, dock, custom services |
 
 "Also taught there" places every construct "You learn" does not name, each at the first level whose build needs it (decisions.md, m5-docs).
 
@@ -340,7 +340,7 @@ A fine-grained push-pull signal graph (the Leptos/Solid model, glitch-free) runs
 
 - **Graph.** Clean/check/dirty colouring with equality cut-off, so a change that produces the same value stops there. Nodes are generational ids in a `slotmap`; a stale read returns an error value, never a panic.
 - **Three kinds of value.** `state` is writable. `let` and props are lazy derived values. Service fields are writable only where the service marks them `rw`. Assigning to a `let` or a bound prop is a compile error.
-- **Keyed collections, no capacities.** `type Pin { app: AppId; label: text }` with `state pins: [Pin] key app = []`. Handlers use `push`, `insert`, `remove_key`, `move`, `update`. Services publish diffs (`VecDiff`), and `.filter`, `.map`, `.take`, `.sort_by` update incrementally and keep keys.
+- **Keyed collections, no capacities.** `type Pin { app: AppId; label: text }` with `state pins: [Pin] key app = []`. Handlers use `push`, `insert`, `remove_key`, `move`, `update`, and `pins.get(app)` reads one item by its key (`T?`; `pins[i]` stays a position). Services publish diffs (`VecDiff`), and `.filter`, `.map`, `.take`, `.sort_by` update incrementally and keep keys. One value per key is a dictionary, `state last_win: [int: text] = [] persist`: `last_win[ws.id]` reads a `text?`, a handler writes `last_win[ws.id] = id` or `last_win.remove(ws.id)`, and `for e in last_win.entries` walks its entries (`Entry<K, V>`, keyed by `key`) in key order. Neither has a capacity: a config bounds a dictionary by filtering out what has gone (`m = m.filter(e => …)`) and a recency list by `take(n)`, at write time.
 - **Async without ceremony.** `apps.search(q)` and `material(image:)` return `Async<T>`: it keeps its previous value, and exposes `.pending` and `.error`. `x ?? fallback` covers both. Using `Async<T>` where `T` is expected is a type error, so you can't forget the loading state.
 - **One tick, one diff.** Writes batch into a single prop diff per tick. The render thread owns all springs and never waits on logic.
 - **State vs events.** State is latest-value and coalesced per frame. Events such as `on notifications.received(n)` are lossless queues.
@@ -705,6 +705,7 @@ Crate: raw inotify through [`rustix`](https://docs.rs/rustix/latest/rustix/fs/in
 - Each field is checked on its own. A bad value keeps that field's last good value with a diagnostic; other fields still apply.
 - A TOML syntax error keeps every last good value. A deleted key springs back to its default.
 - UI writes and `strand set prefs.compact true` go through `toml_edit`, which keeps comments, spacing and order.
+- A dictionary field (`wallpapers: [text: path] = []`) is a TOML table, read key by key and written back key by key into the table the file has; `strand set prefs.wallpapers.DP-1 ~/walls/a.jpg` writes one entry.
 - Writes follow symlinks and replace via temp file plus rename. Read-only targets such as `/nix/store` go to an overlay in `$XDG_STATE_HOME`, with a notice.
 
 ### Errors

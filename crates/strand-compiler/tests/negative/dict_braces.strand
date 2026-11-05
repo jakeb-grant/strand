@@ -1,0 +1,12 @@
+// expect: syntax::dict_braces
+// Dictionaries use brackets, in a type and in a literal: braces hold
+// blocks and records' fields. The fix rewrites the braces as brackets
+// when the shape can only be a dictionary; a JS object or a TS object
+// type, which may mean a record, gets help naming both forms instead.
+type Pin { app: text; label: text }
+state names: {int: text} = []
+let more: [int: text] = {1: "web", 2: "code"}
+let none: [text: int] = {}
+let pin: Pin = {app: "a", label: "b"}
+state at: {x: int, y: int} = []
+state one: {name: text} = []

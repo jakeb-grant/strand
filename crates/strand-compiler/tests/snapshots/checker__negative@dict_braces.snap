@@ -1,0 +1,82 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+assertion_line: 165
+expression: rendered
+---
+syntax::dict_braces
+
+  × dictionaries use brackets: `[K: V]`
+   ╭─[dict_braces.strand:7:14]
+ 6 │ type Pin { app: text; label: text }
+ 7 │ state names: {int: text} = []
+   ·              ─────┬─────
+   ·                   ╰── braces hold a record's fields or a block, not a type
+ 8 │ let more: [int: text] = {1: "web", 2: "code"}
+   ╰────
+  help: did you mean `[int: text]`?
+
+syntax::dict_braces
+
+  × dictionaries use brackets: `[k: v]`
+   ╭─[dict_braces.strand:8:25]
+ 7 │ state names: {int: text} = []
+ 8 │ let more: [int: text] = {1: "web", 2: "code"}
+   ·                         ──────────┬──────────
+   ·                                   ╰── braces hold a block, not a value
+ 9 │ let none: [text: int] = {}
+   ╰────
+  help: did you mean `[1: "web", 2: "code"]`?
+
+syntax::dict_braces
+
+  × dictionaries use brackets: `[k: v]`
+    ╭─[dict_braces.strand:9:25]
+  8 │ let more: [int: text] = {1: "web", 2: "code"}
+  9 │ let none: [text: int] = {}
+    ·                         ─┬
+    ·                          ╰── braces hold a block, not a value
+ 10 │ let pin: Pin = {app: "a", label: "b"}
+    ╰────
+  help: did you mean `[]`?
+
+syntax::dict_braces
+
+  × dictionaries use brackets: `[k: v]`
+    ╭─[dict_braces.strand:10:16]
+  9 │ let none: [text: int] = {}
+ 10 │ let pin: Pin = {app: "a", label: "b"}
+    ·                ───────────┬──────────
+    ·                           ╰── braces hold a block, not a value
+ 11 │ state at: {x: int, y: int} = []
+    ╰────
+  help: a record is built by its type's name, `Name(app: "a", label: "b")`; a dictionary is `[app:
+        "a", label: "b"]`
+
+syntax::dict_braces
+
+  × dictionaries use brackets: `[K: V]`
+    ╭─[dict_braces.strand:11:11]
+ 10 │ let pin: Pin = {app: "a", label: "b"}
+ 11 │ state at: {x: int, y: int} = []
+    ·           ────────┬───────
+    ·                   ╰── braces hold a record's fields or a block, not a type
+ 12 │ state one: {name: text} = []
+    ╰────
+  help: a record type is declared by its name, `type Name { x: int; y: int }`, and written `Name`;
+        a dictionary type is `[K: V]`
+
+syntax::dict_braces
+
+  × dictionaries use brackets: `[K: V]`
+    ╭─[dict_braces.strand:12:12]
+ 11 │ state at: {x: int, y: int} = []
+ 12 │ state one: {name: text} = []
+    ·            ──────┬─────
+    ·                  ╰── braces hold a record's fields or a block, not a type
+    ╰────
+  help: a record type is declared by its name, `type Name { x: int; y: int }`, and written `Name`;
+        a dictionary type is `[K: V]`
+
+fix [syntax::dict_braces] dict_braces.strand: `{int: text}` -> `[int: text]`
+fix [syntax::dict_braces] dict_braces.strand: `{1: "web", 2: "code"}` -> `[1: "web", 2: "code"]`
+fix [syntax::dict_braces] dict_braces.strand: `{}` -> `[]`

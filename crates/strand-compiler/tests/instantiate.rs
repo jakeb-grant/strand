@@ -19,6 +19,9 @@ struct Shell {
     scene: SceneMirror,
     /// The boot diff's ops.
     boot: Vec<SceneOp>,
+    /// The boot tick's notices and diagnostics.
+    boot_notices: Vec<String>,
+    boot_diagnostics: Vec<strand_core::Diagnostic>,
 }
 
 impl Shell {
@@ -71,10 +74,14 @@ fn boot_with(
         inst,
         scene: SceneMirror::new(),
         boot: Vec::new(),
+        boot_notices: Vec::new(),
+        boot_diagnostics: Vec::new(),
     };
     let u = shell.flush();
     assert!(u.errors.is_empty(), "{:?}", u.errors);
     shell.boot = u.diff.ops;
+    shell.boot_notices = u.notices;
+    shell.boot_diagnostics = u.diagnostics;
     shell
 }
 
@@ -952,7 +959,7 @@ fn unmount_cancels_a_suspended_handler() {
 /// Handler errors are values: reported in the tick, the shell runs on.
 #[test]
 fn handler_errors_are_values() {
-    let src = "type Pin { app: text; label: text }\nstate pins: [Pin] key app = []\nstate n = 0\nbar B {\n  box { on click { pins.remove_key(\"x\") } }\n  box { on secondary { n += 1 } }\n}\n";
+    let src = "type Pin { app: text; label: text }\nstate pins: [Pin] key app = []\nstate n = 0\nbar B {\n  box { on click { pins.update(\"x\", p => p) } }\n  box { on secondary { n += 1 } }\n}\n";
     let mut shell = boot(&[("t.strand", src)], |rt, host| {
         screens(rt, host, &["DP-1"])
     });
@@ -961,13 +968,201 @@ fn handler_errors_are_values() {
     let u = shell.flush();
     assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
     assert!(
-        u.errors[0].contains("no item with this key"),
+        u.errors[0].contains("`update`: no item with this key"),
         "{:?}",
         u.errors
     );
     shell.inst.event(boxes[1], "secondary", Vec::new());
     shell.flush();
     assert_eq!(shell.inst.value_of("t", "n").unwrap(), Value::int(1));
+}
+
+/// Clicks each box in turn and returns, per click, the texts shown after
+/// it and the handler errors it raised.
+fn click_each_box(src: &str) -> Vec<(String, Vec<String>)> {
+    let mut shell = boot(&[("keys.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let mut seen = vec![(shell.scene.texts().join(" "), Vec::new())];
+    for b in shell.scene.of_kind(NodeKind::Box) {
+        shell.inst.event(b, "click", Vec::new());
+        let u = shell.flush();
+        let errors = u.errors.iter().map(|e| e.error.to_string()).collect();
+        seen.push((shell.scene.texts().join(" "), errors));
+    }
+    seen
+}
+
+/// `remove_key` of a key the collection does not hold does nothing, as a
+/// dictionary's `remove` will: forgetting an entry is idempotent
+/// (decisions.md dictionary). On a keyed `state` (core's keyed
+/// collection) and on a persisted one (a plain list cell) alike; `move`
+/// and `update` of a missing key stay handler errors.
+#[test]
+fn remove_key_of_a_missing_key_does_nothing() {
+    for persist in ["", " persist"] {
+        let src = format!(
+            "type Pin {{ app: text; label: text }}\nstate pins: [Pin] key app = [Pin(app: \"a\", label: \"A\")]{persist}\nstate writes = 0\non change pins {{ writes += 1 }}\nbar B {{\n  text join(\" \", pins.len, writes)\n  box {{ on click {{ pins.remove_key(\"x\") }} }}\n  box {{ on click {{ pins.move(\"x\", 0) }} }}\n  box {{ on click {{ pins.update(\"x\", p => p) }} }}\n  box {{ on click {{ pins.remove_key(\"a\"); pins.remove_key(\"a\") }} }}\n}}\n"
+        );
+        let seen = click_each_box(&src);
+        let none: Vec<String> = Vec::new();
+        assert_eq!(seen[0], ("1 0".to_string(), none.clone()), "{persist}");
+        // A miss: no error and no write (`on change` does not fire).
+        assert_eq!(seen[1], ("1 0".to_string(), none.clone()), "{persist}");
+        for (i, method) in [(2, "move"), (3, "update")] {
+            assert_eq!(seen[i].0, "1 0", "{persist}");
+            assert_eq!(
+                seen[i].1,
+                [format!("`{method}`: no item with this key")],
+                "{persist}"
+            );
+        }
+        // Removing a key twice in one handler: the second does nothing.
+        assert_eq!(seen[4], ("0 1".to_string(), none), "{persist}");
+    }
+}
+
+/// A number key is one key whatever its tag: `int` and `float` are not
+/// units, so `3` and `3.0` are one key (decisions.md dictionary; spec.md
+/// 6.5). Items whose `float` key was written `3` (held as `3.0`) are
+/// found by an `int` state holding 3, by `remove_key`, `move`,
+/// `update`, `push`'s duplicate check and `.contains`, on a keyed
+/// `state` and on a persisted one. Before, the keyed `state` missed
+/// them: the key kept the number's tag.
+#[test]
+fn remove_key_finds_a_key_whatever_its_number_tag() {
+    for persist in ["", " persist"] {
+        let src = format!(
+            "type Row {{ at: float; label: text }}\nstate rows: [Row] key at = [Row(at: 3, label: \"a\"), Row(at: 4, label: \"b\")]{persist}\nstate three = 3\nbar B {{\n  text join(\" \", rows.len, rows.contains(Row(at: three, label: \"c\")), rows.first?.label)\n  box {{ on click {{ rows.update(three, r => Row(at: r.at, label: \"c\")) }} }}\n  box {{ on click {{ rows.move(three, 1) }} }}\n  box {{ on click {{ rows.push(Row(at: three, label: \"d\")) }} }}\n  box {{ on click {{ rows.remove_key(three) }} }}\n}}\n"
+        );
+        let seen = click_each_box(&src);
+        let none: Vec<String> = Vec::new();
+        let texts: Vec<&str> = seen.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(
+            texts,
+            ["2 false a", "2 true c", "2 true b", "2 true b", "1 false b"],
+            "{persist}"
+        );
+        for (i, (_, errors)) in seen.iter().enumerate() {
+            if i == 3 {
+                assert_eq!(
+                    errors,
+                    &["`push`: an item with this key is already in the list"],
+                    "{persist}"
+                );
+            } else {
+                assert_eq!(errors, &none, "{persist} {i}");
+            }
+        }
+    }
+}
+
+/// (dictionary) `xs.get(k)` reads the item with key `k`, or `null`, on a
+/// keyed `state` (core's collection: one lookup through the tracked
+/// accessor), a persisted one (a plain list cell, found by its `key`), a
+/// view `let` over it (a scan of the view's items) and a chain written in
+/// place (`rows.take(9).get(k)`, found by the `state`'s `key` that
+/// lowering passes). Each binding follows the collection and the key:
+/// a push, an update, a remove and a new key each show at once.
+#[test]
+fn get_reads_by_key_and_is_null_on_a_miss() {
+    for persist in ["", " persist"] {
+        let src = format!(
+            "type Row {{ id: int; label: text }}\nstate rows: [Row] key id = [Row(id: 1, label: \"a\")]{persist}\nstate at = 2\nlet shown = rows.filter(r => r.id > 0)\nbar B {{\n  text rows.get(1)?.label ?? \"-\"\n  text rows.get(at)?.label ?? \"-\"\n  text shown.get(at)?.label ?? \"-\"\n  text rows.take(9).get(at)?.label ?? \"-\"\n  box {{ on click {{ rows.push(Row(id: 2, label: \"b\")) }} }}\n  box {{ on click {{ rows.update(2, r => Row(id: r.id, label: \"c\")) }} }}\n  box {{ on click {{ rows.remove_key(1) }} }}\n  box {{ on click {{ at = 3 }} }}\n  box {{ on click {{ rows.push(Row(id: 3, label: \"d\")) }} }}\n}}\n"
+        );
+        let seen = click_each_box(&src);
+        let none: Vec<String> = Vec::new();
+        let texts: Vec<&str> = seen.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "a - - -", "a b b b", "a c c c", "- c c c", "- - - -", "- d d d"
+            ],
+            "{persist}"
+        );
+        for (i, (_, errors)) in seen.iter().enumerate() {
+            assert_eq!(errors, &none, "{persist} {i}");
+        }
+    }
+}
+
+/// (dictionary) `xs.get(k)` on a service's keyed list (core's keyed
+/// signal), on a view `let` over it, and on a list reached through an
+/// item's field (`n.actions`, found by its records' own `key`): each
+/// follows the service's changes.
+#[test]
+fn get_on_a_service_list_and_a_view_tracks_the_collection() {
+    let src = "let mail = notifications.popups.filter(n => n.app.name == \"mail\")\nbar B {\n  text notifications.popups.get(1)?.summary ?? \"-\"\n  text mail.get(1)?.summary ?? \"-\"\n  text notifications.popups.get(1)?.actions?.get(\"reply\")?.label ?? \"-\"\n}\n";
+    let mut shell = boot(&[("get.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert_eq!(shell.scene.texts().join(" "), "- - -");
+    let popups = |host: &SchemaHost, summary: &str, actions: &[(&str, &str)]| {
+        let actions = actions
+            .iter()
+            .map(|(id, label)| {
+                host.record(
+                    "NotificationAction",
+                    &[("id", Value::text(*id)), ("label", Value::text(*label))],
+                )
+            })
+            .collect();
+        let mail = host.record(
+            "Notification",
+            &[
+                ("id", Value::int(1)),
+                (
+                    "app",
+                    host.record("NotificationApp", &[("name", Value::text("mail"))]),
+                ),
+                ("summary", Value::text(summary)),
+                ("urgency", host.variant("Urgency", "normal")),
+                ("actions", Value::list(actions)),
+            ],
+        );
+        Value::list(vec![notification(host, 2, "chat", "other", "normal"), mail])
+    };
+    type Step<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
+    let steps: [Step; 3] = [
+        ("hi", &[("reply", "Reply")], "hi hi Reply"),
+        (
+            "bye",
+            &[("open", "Open"), ("reply", "Answer")],
+            "bye bye Answer",
+        ),
+        ("bye", &[("open", "Open")], "bye bye -"),
+    ];
+    for (summary, actions, want) in steps {
+        let v = popups(&shell.host, summary, actions);
+        shell
+            .host
+            .set(&shell.rt, "notifications.popups", v)
+            .unwrap();
+        let u = shell.flush();
+        assert!(u.errors.is_empty(), "{:?}", u.errors);
+        assert_eq!(shell.scene.texts().join(" "), want);
+    }
+    shell
+        .host
+        .set(&shell.rt, "notifications.popups", Value::list(Vec::new()))
+        .unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts().join(" "), "- - -");
+}
+
+/// (dictionary) `xs.get(k)` finds an item whatever its number key's tag,
+/// as `remove_key` does: items whose `float` key was written `3` (held as
+/// `3.0`) are found by an `int` state holding 3, on a keyed `state`, a
+/// persisted one, a view and a chain in place.
+#[test]
+fn get_finds_a_key_whatever_its_number_tag() {
+    for persist in ["", " persist"] {
+        let src = format!(
+            "type Row {{ at: float; label: text }}\nstate rows: [Row] key at = [Row(at: 3, label: \"a\"), Row(at: 4, label: \"b\")]{persist}\nstate three = 3\nlet shown = rows.filter(r => r.at > 0)\nbar B {{\n  text rows.get(three)?.label ?? \"-\"\n  text shown.get(three)?.label ?? \"-\"\n  text rows.take(9).get(three)?.label ?? \"-\"\n  text rows.get(3.5)?.label ?? \"-\"\n}}\n"
+        );
+        let seen = click_each_box(&src);
+        assert_eq!(seen[0].0, "a a a -", "{persist}");
+    }
 }
 
 /// Events go to the innermost handler; `propagate()` passes one on.
@@ -3011,6 +3206,8 @@ fn sinks_run_once_after_the_handlers_that_feed_them() {
         inst,
         scene,
         boot: Vec::new(),
+        boot_notices: Vec::new(),
+        boot_diagnostics: Vec::new(),
     };
     assert_eq!(shell.scene.texts(), ["ok", "ok", "ok", "0 0 0 0"]);
     let runs = |shell: &Shell| shell.rt.stats().effect_runs;
@@ -3122,26 +3319,73 @@ fn keyed_chains_update_incrementally() {
     assert_eq!(shell.scene.texts(), ["r6", "r8", "r10", "r12", "r14"]);
 }
 
-/// `.len`, `.first`, `[i]` and `.contains` on a keyed collection go
-/// through core's accessors: a change never copies the list.
+/// `.len`, `.first`, `[i]`, `.contains` and `.get` on a keyed collection
+/// go through core's accessors: a change never copies the list.
 #[test]
 fn keyed_reads_do_not_copy_the_list() {
     let mut src = String::from("type Row { id: int; label: text }\nstate rows: [Row] key id = [");
     for i in 0..2000 {
         src.push_str(&format!("Row(id: {i}, label: \"r{i}\"), "));
     }
-    src.push_str("]\nstate next = 5000\nbar B {\n  text join(\" \", rows.len, rows.first?.label, rows[1]?.label, rows.contains(Row(id: 3, label: \"r3\")))\n  button { on click { rows.push(Row(id: next, label: \"new\")); next += 1 } }\n}\n");
+    src.push_str("]\nstate next = 5000\nbar B {\n  text join(\" \", rows.len, rows.first?.label, rows[1]?.label, rows.contains(Row(id: 3, label: \"r3\")), rows.get(3)?.label)\n  button { on click { rows.push(Row(id: next, label: \"new\")); next += 1 } }\n}\n");
     let mut shell = boot(&[("len.strand", &src)], |rt, host| {
         screens(rt, host, &["DP-1"])
     });
-    assert_eq!(shell.scene.texts(), ["2000 r0 r1 true"]);
+    assert_eq!(shell.scene.texts(), ["2000 r0 r1 true r3"]);
     let button = shell.inst.nodes_handling("click")[0];
     let before = shell.rt.stats().computations;
     shell.inst.event(button, "click", Vec::new());
     shell.flush();
-    assert_eq!(shell.scene.texts(), ["2001 r0 r1 true"]);
+    assert_eq!(shell.scene.texts(), ["2001 r0 r1 true r3"]);
     // The text's binding only: no list value is rebuilt.
     assert_eq!(shell.rt.stats().computations - before, 1);
+}
+
+/// The texts a binding over `rows.contains(…)` shows as the keyed
+/// collection is pushed to, updated and removed from, one box per write.
+fn contains_follows(src: &str) -> Vec<String> {
+    let mut shell = boot(&[("contains.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let mut seen = vec![shell.scene.texts().join(" ")];
+    for b in shell.scene.of_kind(NodeKind::Box) {
+        shell.inst.event(b, "click", Vec::new());
+        let u = shell.flush();
+        assert!(u.errors.is_empty(), "{:?}", u.errors);
+        seen.push(shell.scene.texts().join(" "));
+    }
+    seen
+}
+
+const CONTAINS_WRITES: &str = "  box { on click { rows.push(Row(id: 1, label: \"a\")) } }\n  box { on click { rows.update(1, r => Row(id: r.id, label: \"b\")) } }\n  box { on click { rows.update(1, r => Row(id: r.id, label: \"a\")) } }\n  box { on click { rows.remove_key(1) } }\n}\n";
+
+/// A binding that reads a keyed `state` only through `.contains(x)`
+/// re-runs when the collection changes: the query reads the item by its
+/// key through the tracked accessor (decisions.md dictionary; before, it
+/// read through core's untracked `get_key`, so the text stayed `false`
+/// after the push).
+#[test]
+fn a_binding_over_contains_reruns_when_the_keyed_state_changes() {
+    let src = format!(
+        "type Row {{ id: int; label: text }}\nstate rows: [Row] key id = []\nbar B {{\n  text join(\" \", rows.contains(Row(id: 1, label: \"a\")))\n{CONTAINS_WRITES}"
+    );
+    assert_eq!(
+        contains_follows(&src),
+        ["false", "true", "false", "true", "false"]
+    );
+}
+
+/// The same through a view `let` over the keyed `state`: `.contains`
+/// on the view follows the view.
+#[test]
+fn a_binding_over_contains_on_a_view_reruns_when_the_keyed_state_changes() {
+    let src = format!(
+        "type Row {{ id: int; label: text }}\nstate rows: [Row] key id = []\nlet shown = rows.filter(r => r.id > 0)\nbar B {{\n  text join(\" \", shown.contains(Row(id: 1, label: \"a\")))\n{CONTAINS_WRITES}"
+    );
+    assert_eq!(
+        contains_follows(&src),
+        ["false", "true", "false", "true", "false"]
+    );
 }
 
 /// Service actions are writes too: a handler calling `n.expire()` (on an
@@ -4173,6 +4417,8 @@ fn boot_bounded(
                 inst,
                 scene: SceneMirror::new(),
                 boot: Vec::new(),
+                boot_notices: Vec::new(),
+                boot_diagnostics: Vec::new(),
             };
             let u = shell.flush();
             let boot: Vec<String> = u.errors.iter().map(|e| e.to_string()).collect();
@@ -6339,4 +6585,684 @@ panel P {
     shell.at(2.2);
     shell.at(4.0);
     assert_eq!(runs(&shell), [2.0, 2.0, 1.0], "opened again");
+}
+
+/// (dictionary) A dictionary `state` is one cell: a `let` reading one
+/// entry (`used["a"]`) re-runs on any write, but the equality cut-off
+/// stops there unless its entry changed, so what reads the `let` does
+/// not re-run when another key is written.
+#[test]
+fn a_let_over_one_entry_does_not_rerun_its_dependents_when_another_changes() {
+    let src = "state used: [text: int] = []\nlet a = used[\"a\"] ?? 0\nbar B {\n  text join(\" \", a * 10)\n  box { on click { used[\"b\"] = 1 } }\n  box { on click { used[\"a\"] = 2 } }\n}\n";
+    let mut shell = boot(&[("used.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert_eq!(shell.scene.texts(), ["0"]);
+    let boxes = shell.inst.nodes_handling("click");
+    let before = shell.rt.stats().computations;
+    shell.inst.event(boxes[0], "click", Vec::new());
+    let u = shell.flush();
+    assert!(u.diff.ops.is_empty(), "{:?}", u.diff);
+    // The `let` only: the text's binding is cut off.
+    assert_eq!(shell.rt.stats().computations - before, 1);
+    let before = shell.rt.stats().computations;
+    shell.inst.event(boxes[1], "click", Vec::new());
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["20"]);
+    assert_eq!(shell.rt.stats().computations - before, 2);
+}
+
+/// (dictionary) `for e in m.entries` keeps each row by its key (`Entry`'s
+/// `key`): a value change updates that row's node in place, a new key
+/// mounts at its place in key order, a removed key's row leaves, and
+/// the other rows keep their nodes.
+#[test]
+fn rows_of_entries_keep_state_across_writes() {
+    let src = "state m: [int: text] = [1: \"a\", 3: \"c\"]\nbar B {\n  for e in m.entries { text e.value }\n  box { on click { m[2] = \"b\" } }\n  box { on click { m[1] = \"A\" } }\n  box { on click { m.remove(3) } }\n}\n";
+    let mut shell = boot(&[("rows.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    assert_eq!(shell.scene.texts(), ["a", "c"]);
+    let (a, c) = (shell.text_node("a"), shell.text_node("c"));
+    let boxes = shell.inst.nodes_handling("click");
+    shell.inst.event(boxes[0], "click", Vec::new());
+    let u = shell.flush();
+    assert_eq!(shell.scene.texts(), ["a", "b", "c"]);
+    let creates = u
+        .diff
+        .ops
+        .iter()
+        .filter(|op| matches!(op, SceneOp::Create { .. }))
+        .count();
+    assert_eq!(creates, 1, "{:?}", u.diff);
+    assert_eq!(shell.text_node("a"), a);
+    assert_eq!(shell.text_node("c"), c);
+    shell.inst.event(boxes[1], "click", Vec::new());
+    let u = shell.flush();
+    assert_eq!(shell.scene.texts(), ["A", "b", "c"]);
+    assert_eq!(shell.text_node("A"), a, "the row of key 1 kept its node");
+    assert!(
+        u.diff
+            .ops
+            .iter()
+            .all(|op| matches!(op, SceneOp::SetProp { .. })),
+        "{:?}",
+        u.diff
+    );
+    shell.inst.event(boxes[2], "click", Vec::new());
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["A", "b"]);
+    assert_eq!(shell.text_node("A"), a);
+}
+
+/// (dictionary) `on change m[k]` fires only when that entry's value
+/// changes, and sees `null` once the entry is removed; writes to other
+/// keys do not fire it.
+#[test]
+fn on_change_an_entry_fires_only_for_that_key() {
+    let src = "state m: [int: text] = [1: \"a\"]\nstate fired = 0\nstate seen = \"\"\non change m[1] { fired += 1; seen = m[1] ?? \"gone\" }\nbar B {\n  text join(\" \", fired, seen)\n  box { on click { m[2] = \"b\" } }\n  box { on click { m[1] = \"A\" } }\n  box { on click { m[1] = \"A\"; m[3] = \"c\" } }\n  box { on click { m.remove(1) } }\n  box { on click { m[2] = \"B\" } }\n}\n";
+    let seen = click_each_box(src);
+    let texts: Vec<&str> = seen.iter().map(|(t, _)| t.trim_end()).collect();
+    assert_eq!(texts, ["0", "0", "1 A", "1 A", "2 gone", "2 gone"]);
+    assert!(seen.iter().all(|(_, e)| e.is_empty()), "{seen:?}");
+}
+
+/// (dictionary) The issue's case end to end: the last window used on each
+/// workspace, written as focus moves and read by key when a workspace
+/// chip is clicked (`windows.all.find(w => w.id == (last_win[ws.id] ??
+/// ""))?.focus()`), with no list of records to filter and append.
+#[test]
+fn the_last_window_on_each_workspace_is_remembered_by_key() {
+    let src = "state last_win: [int: text] = []\non change windows.focused?.id {\n  let at = windows.focused?.workspace ?? -1\n  if at >= 0 { last_win[at] = windows.focused?.id ?? \"\" }\n}\nbar B {\n  text last_win.entries.map(e => join(\"=\", e.key, e.value)).join(\" \")\n  for ws in workspaces.all {\n    box { on click { windows.all.find(w => w.id == (last_win[ws.id] ?? \"\"))?.focus() } }\n  }\n}\n";
+    let mut shell = boot(&[("last.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+        let ws = |id: i64| host.record("Workspace", &[("id", Value::int(id))]);
+        host.set(rt, "workspaces.all", Value::list(vec![ws(1), ws(2)]))
+            .unwrap();
+    });
+    let win = |id: &str, ws: i64| {
+        shell.host.record(
+            "Window",
+            &[("id", Value::text(id)), ("workspace", Value::int(ws))],
+        )
+    };
+    let (w1, w2, w3) = (win("0x11", 1), win("0x22", 2), win("0x33", 1));
+    shell
+        .host
+        .set(
+            &shell.rt,
+            "windows.all",
+            Value::list(vec![w1.clone(), w2.clone(), w3.clone()]),
+        )
+        .unwrap();
+    shell.flush();
+    for w in [w1, w2, w3] {
+        shell.host.set(&shell.rt, "windows.focused", w).unwrap();
+        let u = shell.flush();
+        assert!(u.errors.is_empty(), "{:?}", u.errors);
+    }
+    // `on change` takes the first focus as its baseline.
+    assert_eq!(shell.scene.texts(), ["1=0x33 2=0x22"]);
+    let chips = shell.inst.nodes_handling("click");
+    shell.inst.event(chips[1], "click", Vec::new());
+    shell.flush();
+    let actions: Vec<String> = shell
+        .host
+        .take_actions()
+        .iter()
+        .map(|a| a.to_string())
+        .collect();
+    assert_eq!(actions, ["Window(0x22).focus(0)"]);
+}
+
+/// (dictionary) The how-to "Remembering things by key"
+/// (site/how-to/remembering-by-key.md): its taskbar, a dictionary of
+/// focus stamps ordering the windows by their last use, each shown by
+/// its app's nickname from a constant table, the stamps of closed
+/// windows pruned at the write; and its recency list, kept as a list and
+/// capped by `take`. The sources are the page's files, with a `text` of
+/// the stamps' keys added to watch the pruning.
+#[test]
+fn the_how_to_bounds_what_it_remembers_by_liveness_and_by_take() {
+    let taskbar = "let nick: [text: text] = [\"org.gnome.Nautilus\": \"Files\", \"kitty\": \"Terminal\", \"firefox\": \"Web\"]\nstate stamp = 0\nstate used: [text: int] = []\non change windows.focused?.id {\n  let id = windows.focused?.id ?? \"\"\n  if id != \"\" {\n    stamp += 1\n    used[id] = stamp\n    used = used.filter(e => windows.all.any(w => w.id == e.key))\n  }\n}\nbar Taskbar {\n  text used.keys.join(\",\")\n  row {\n    for w in windows.all.sort_by(w => -(used[w.id] ?? 0)) {\n      text nick[w.app_id] ?? w.title { on click { w.focus() } }\n    }\n  }\n}\n";
+    let mut shell = boot(&[("taskbar.strand", taskbar)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+    });
+    let win = |id: &str, app: &str| {
+        shell.host.record(
+            "Window",
+            &[
+                ("id", Value::text(id)),
+                ("app_id", Value::text(app)),
+                ("title", Value::text(format!("{app} window").as_str())),
+            ],
+        )
+    };
+    let (w1, w2, w3) = (
+        win("0x1", "kitty"),
+        win("0x2", "firefox"),
+        win("0x3", "foot"),
+    );
+    let all = |ws: &[&Value]| Value::list(ws.iter().map(|w| (*w).clone()).collect());
+    shell
+        .host
+        .set(&shell.rt, "windows.all", all(&[&w1, &w2, &w3]))
+        .unwrap();
+    shell.flush();
+    // The first focus is `on change`'s baseline; the others are stamped.
+    for w in [&w1, &w2, &w3, &w1] {
+        shell
+            .host
+            .set(&shell.rt, "windows.focused", w.clone())
+            .unwrap();
+        let u = shell.flush();
+        assert!(u.errors.is_empty(), "{:?}", u.errors);
+    }
+    assert_eq!(
+        shell.scene.texts(),
+        ["0x1,0x2,0x3", "Terminal", "foot window", "Web"]
+    );
+    // 0x3 closes: its stamp goes at the next write, not before.
+    shell
+        .host
+        .set(&shell.rt, "windows.all", all(&[&w1, &w2]))
+        .unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["0x1,0x2,0x3", "Terminal", "Web"]);
+    shell
+        .host
+        .set(&shell.rt, "windows.focused", w2.clone())
+        .unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["0x1,0x2", "Web", "Terminal"]);
+
+    let recent = "state recent: [int] = [] persist\non change workspaces.all.find(w => w.focused)?.id {\n  let id = workspaces.all.find(w => w.focused)?.id ?? -1\n  if id >= 0 { recent = ([id] + recent.filter(x => x != id)).take(5) }\n}\nbar Recent {\n  col {\n    for id in recent key id {\n      text workspaces.all.get(id)?.name ?? \"\" { on click { workspaces.all.get(id)?.focus() } }\n    }\n  }\n}\n";
+    let mut shell = boot(&[("recent.strand", recent)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+    });
+    let focus_on = |shell: &mut Shell, on: i64| {
+        let ws = (1..=7)
+            .map(|id| {
+                shell.host.record(
+                    "Workspace",
+                    &[
+                        ("id", Value::int(id)),
+                        ("name", Value::text(id.to_string().as_str())),
+                        ("focused", Value::Bool(id == on)),
+                    ],
+                )
+            })
+            .collect();
+        shell
+            .host
+            .set(&shell.rt, "workspaces.all", Value::list(ws))
+            .unwrap();
+        let u = shell.flush();
+        assert!(u.errors.is_empty(), "{:?}", u.errors);
+    };
+    for on in [1, 2, 3, 4, 5, 6, 7, 3] {
+        focus_on(&mut shell, on);
+    }
+    // Most recent first, each once, five at most.
+    assert_eq!(shell.scene.texts(), ["3", "7", "6", "5", "4"]);
+}
+
+/// (dictionary) A persisted dictionary's source: an `int`-keyed and an
+/// enum-keyed one, shown in key order, with a box writing both.
+const PERSISTED_DICTS: &str = "enum Level { low, high }\nstate seen: [int: text] = [] persist\nstate by: [Level: int] = [] persist\nbar B {\n  text seen.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  text by.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  box { on click { seen[3] = \"c\"; seen[1] = \"a\"; by[high] = 2; by[low] = 1 } }\n}\n";
+
+/// One monitor, DP-1.
+fn dp1(rt: &Runtime, host: &SchemaHost) {
+    screens(rt, host, &["DP-1"]);
+}
+
+/// The value cell `path` of `storage` holds on disk, once its writes
+/// have landed.
+fn stored(storage: &Storage, path: &str) -> String {
+    let p = storage.persist.as_ref().unwrap();
+    assert!(p.sync(Duration::from_secs(5)));
+    let s = p.load(path).unwrap().expect("a stored value");
+    String::from_utf8(s.value).unwrap()
+}
+
+/// (dictionary) A persisted dictionary is stored as `[key, value]` pairs
+/// in key order (an `int` key a JSON integer, an enum key its variant's
+/// name) and comes back after a restart in key order; a store edited by
+/// hand reads too: an object of key texts, or pairs out of order with a
+/// key twice (the later wins).
+#[test]
+fn a_persisted_dictionary_survives_a_restart() {
+    let dir = temp_dir("persist-dict");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let files = [("t.strand", PERSISTED_DICTS)];
+    let mut shell = boot_with(&files, dp1, storage.clone());
+    assert_eq!(shell.scene.texts(), ["", ""]);
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["1=a,3=c", "low=1,high=2"]);
+    drop(shell);
+    assert_eq!(stored(&storage, "t.seen"), r#"[[1,"a"],[3,"c"]]"#);
+    assert_eq!(stored(&storage, "t.by"), r#"[["low",1.0],["high",2.0]]"#);
+    let shell = boot_with(&files, dp1, storage.clone());
+    assert_eq!(shell.scene.texts(), ["1=a,3=c", "low=1,high=2"]);
+    assert!(shell.boot_notices.is_empty(), "{:?}", shell.boot_notices);
+    drop(shell);
+    // By hand: an object, and pairs out of order with `5` twice.
+    let p = storage.persist.clone().unwrap();
+    p.save("t.seen", b"[]", br#"{"7": "g", "2": "b"}"#).unwrap();
+    p.save("t.by", b"[]", br#"[["high", 2], ["low", 1], ["high", 3]]"#)
+        .unwrap();
+    let shell = boot_with(&files, dp1, storage.clone());
+    assert_eq!(shell.scene.texts(), ["2=b,7=g", "low=1,high=3"]);
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (dictionary) A persisted dictionary's default follows 10.3's rule at
+/// a restart: a stored value that is still the old default adopts the
+/// new one; one written since is kept and said once. The order is the
+/// key order whatever the literal's, so the same entries written in
+/// another order are the same default.
+#[test]
+fn a_changed_default_follows_the_adopt_rule() {
+    let dir = temp_dir("persist-dict-default");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let src = |d: &str| {
+        format!(
+            "state m: [int: text] = {d} persist\nbar B {{\n  text m.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  box {{ on click {{ m[3] = \"c\" }} }}\n}}\n"
+        )
+    };
+    let boot_on = |d: &str| boot_with(&[("t.strand", &src(d))], dp1, storage.clone());
+    // Stored, and still the old default: the new default is adopted.
+    let p = storage.persist.clone().unwrap();
+    p.save("t.m", br#"[[1,"a"]]"#, br#"[[1,"a"]]"#).unwrap();
+    let shell = boot_on("[2: \"B\"]");
+    assert_eq!(shell.scene.texts(), ["2=B"]);
+    assert!(shell.boot_notices.is_empty(), "{:?}", shell.boot_notices);
+    drop(shell);
+    let mut shell = boot_on("[1: \"a\", 2: \"b\"]");
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    drop(shell);
+    // The same entries in another order: the same default, so the
+    // written value is used and nothing is said.
+    let shell = boot_on("[2: \"b\", 1: \"a\"]");
+    assert_eq!(shell.scene.texts(), ["1=a,2=b,3=c"]);
+    assert!(shell.boot_notices.is_empty(), "{:?}", shell.boot_notices);
+    drop(shell);
+    // Written since, and a new default: kept over it, and said.
+    let shell = boot_on("[4: \"d\"]");
+    assert_eq!(shell.scene.texts(), ["1=a,2=b,3=c"]);
+    assert_eq!(
+        shell.boot_notices,
+        ["t.m: kept 1: a, 2: b, 3: c (default changed) [reset]"]
+    );
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Whether `diagnostics` has core's warning that `path`'s store did not
+/// read back.
+fn persist_failed(diagnostics: &[strand_core::Diagnostic], path: &str) -> bool {
+    diagnostics.iter().any(
+        |d| matches!(d, strand_core::Diagnostic::PersistFailed { path: p, .. } if &**p == path),
+    )
+}
+
+/// (dictionary) A persisted list of records turned into a dictionary is
+/// a type change: what was stored does not read as the new type, so the
+/// cell starts from its default with core's warning (no migration).
+#[test]
+fn a_type_change_resets_with_a_warning() {
+    let dir = temp_dir("persist-dict-type");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let before = "type Seen { ws: int; win: text }\nstate last: [Seen] = [Seen(ws: 3, win: \"0x55\")] persist\nbar B {\n  text join(\" \", last.len)\n  box { on click { last = last + [Seen(ws: 5, win: \"0x7a\")] } }\n}\n";
+    let mut shell = boot_with(&[("t.strand", before)], dp1, storage.clone());
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["2"]);
+    drop(shell);
+    let after = "state last: [int: text] = [3: \"0x55\"] persist\nbar B {\n  text last.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n}\n";
+    let shell = boot_with(&[("t.strand", after)], dp1, storage.clone());
+    assert_eq!(shell.scene.texts(), ["3=0x55"]);
+    assert!(
+        persist_failed(&shell.boot_diagnostics, "t.last"),
+        "{:?}",
+        shell.boot_diagnostics
+    );
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (dictionary) A store whose dictionary does not read (a pair without
+/// its value, a key of the wrong type, a value that does not fit) gives
+/// the default and core's warning; the next start reads what was
+/// written since.
+#[test]
+fn a_corrupt_store_gives_the_default() {
+    let dir = temp_dir("persist-dict-corrupt");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let files = [(
+        "t.strand",
+        "state m: [int: text] = [7: \"g\"] persist\nbar B {\n  text m.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  box { on click { m[1] = \"a\" } }\n}\n",
+    )];
+    let p = storage.persist.clone().unwrap();
+    let default = br#"[[7,"g"]]"#;
+    for bad in [
+        &br#"[[1]]"#[..],
+        br#"[["one","a"]]"#,
+        br#"[[1.5,"a"]]"#,
+        br#"[[1,2]]"#,
+        br#"{"one":"a"}"#,
+        b"not json",
+    ] {
+        p.save("t.m", default, bad).unwrap();
+        let shell = boot_with(&files, dp1, storage.clone());
+        let shown = String::from_utf8_lossy(bad);
+        assert_eq!(shell.scene.texts(), ["7=g"], "{shown}");
+        assert!(
+            persist_failed(&shell.boot_diagnostics, "t.m"),
+            "{shown}: {:?}",
+            shell.boot_diagnostics
+        );
+        drop(shell);
+    }
+    let mut shell = boot_with(&files, dp1, storage.clone());
+    assert!(
+        shell.boot_diagnostics.is_empty(),
+        "moved aside, not read again"
+    );
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    drop(shell);
+    let shell = boot_with(&files, dp1, storage.clone());
+    assert_eq!(shell.scene.texts(), ["1=a,7=g"]);
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (dictionary) A stored entry whose enum key the program no longer
+/// declares (a variant removed while the shell was not running) is
+/// dropped as the store is read, the rest kept, and the start says so
+/// once.
+#[test]
+fn a_stored_entry_whose_enum_key_is_gone_is_dropped_with_a_note() {
+    let dir = temp_dir("persist-dict-gone");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let p = storage.persist.clone().unwrap();
+    p.save(
+        "t.by",
+        b"[]",
+        br#"[["low",1],["mid",5],["gone",6],["high",2]]"#,
+    )
+    .unwrap();
+    let shell = boot_with(&[("t.strand", PERSISTED_DICTS)], dp1, storage.clone());
+    assert_eq!(shell.scene.texts(), ["", "low=1,high=2"]);
+    assert_eq!(
+        shell.boot_notices,
+        ["t.by: dropped 2 entries (key no longer in Level)"]
+    );
+    assert!(
+        shell.boot_diagnostics.is_empty(),
+        "{:?}",
+        shell.boot_diagnostics
+    );
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (dictionary) A settings file with dictionary fields: per-screen
+/// wallpapers in a `[wallpapers]` section, per-app scales and urgency
+/// timeouts, a `bool` per clock, each shown in key order.
+const SETTINGS_DICTS: &str = "state prefs from \"prefs.toml\" {\n  gap: int = 4\n  wallpapers: [text: path] = []\n  scale: [text: float] = [\"kitty\": 0.9]\n  after: [Urgency: duration] = []\n  shown: [text: bool] = []\n}\nbar B {\n  text prefs.wallpapers.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  text prefs.scale.entries.map(e => join(\"=\", e.key, e.value)).join(\",\")\n  box { on click { prefs.wallpapers[\"eDP-1\"] = \"~/c.jpg\"; prefs.wallpapers.remove(\"HDMI-A-1\") } }\n}\n";
+
+/// The text of every settings notice in `diagnostics`, its file named
+/// from the config directory `config`.
+fn settings_notices(
+    diagnostics: &[strand_core::Diagnostic],
+    config: &std::path::Path,
+) -> Vec<String> {
+    let dir = format!("{}/", config.display());
+    diagnostics
+        .iter()
+        .filter_map(|d| match d {
+            strand_core::Diagnostic::Settings(n) => Some(n.to_string().replace(&dir, "")),
+            _ => None,
+        })
+        .collect()
+}
+
+/// (dictionary) A settings dictionary is a TOML table: a `[section]` or
+/// an inline `{ … }`, its keys read by the key type (an enum's by variant
+/// name). One bad entry, a key that does not read or a value that does
+/// not fit, keeps the field's last good value with a notice naming the
+/// key; the other fields still apply; a deleted table springs back to
+/// its default.
+#[test]
+fn a_settings_dictionary_reads_a_table_and_keeps_its_last_good_value() {
+    let dir = temp_dir("settings-dict-read");
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let file = config.join("prefs.toml");
+    std::fs::write(
+        &file,
+        "gap = 4\n\n[wallpapers]\nHDMI-A-1 = \"~/b.jpg\"\nDP-1 = \"~/a.jpg\" # left\n",
+    )
+    .unwrap();
+    let storage = Storage::in_dirs(dir.join("state"), &config);
+    let mut shell = boot_with(&[("t.strand", SETTINGS_DICTS)], dp1, storage);
+    assert_eq!(
+        shell.scene.texts(),
+        ["DP-1=~/a.jpg,HDMI-A-1=~/b.jpg", "kitty=0.9"]
+    );
+    assert!(settings_notices(&shell.boot_diagnostics, &config).is_empty());
+    let reload = |shell: &mut Shell, text: &str| {
+        std::fs::write(&file, text).unwrap();
+        assert!(shell.inst.reload_settings(&file));
+        settings_notices(&shell.flush().diagnostics, &config)
+    };
+    // Inline tables; an enum's keys by variant name, in declaration order.
+    let notes = reload(
+        &mut shell,
+        "gap = 5\nwallpapers = { \"DP-1\" = \"~/i.jpg\" }\nafter = { critical = \"0s\", low = \"3s\" }\nscale = { \"org.gnome.Nautilus\" = 0.5 }\n",
+    );
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(
+        shell.scene.texts(),
+        ["DP-1=~/i.jpg", "org.gnome.Nautilus=0.5"]
+    );
+    assert_eq!(
+        shell.inst.get("prefs.after.low").unwrap(),
+        Value::Num(3000.0, Num::Ms)
+    );
+    let Value::Dict(after) = shell.inst.get("prefs.after").unwrap() else {
+        panic!("a dictionary")
+    };
+    assert_eq!(after.len(), 2);
+    // One bad entry: the field keeps its last good value, the notice
+    // names the key, and the other fields still apply.
+    let wallpapers = "wallpapers = { \"DP-1\" = \"~/i.jpg\" }\n";
+    let after = "after = { critical = \"0s\", low = \"3s\" }\n";
+    for (text, said) in [
+        (
+            format!("gap = 6\n{after}\n[wallpapers]\nDP-1 = 3\n"),
+            "prefs.toml: wallpapers: \"DP-1\": expected path; keeping its last good value",
+        ),
+        (
+            format!("gap = 6\n{wallpapers}after = {{ urgent = \"1s\" }}\n"),
+            "prefs.toml: after: key \"urgent\": expected one of low, normal, critical; keeping its last good value",
+        ),
+        (
+            format!("gap = 6\n{wallpapers}after = {{ low = \"soon\" }}\n"),
+            "prefs.toml: after: \"low\": expected a duration like \"200ms\" or \"6s\"; keeping its last good value",
+        ),
+    ] {
+        let notes = reload(&mut shell, &text);
+        assert_eq!(notes, [said], "{text}");
+        assert_eq!(
+            shell.inst.get("prefs.gap").unwrap(),
+            Value::int(6),
+            "{text}"
+        );
+        assert_eq!(shell.scene.texts()[0], "DP-1=~/i.jpg", "{text}");
+        assert_eq!(
+            shell.inst.get("prefs.after.low").unwrap(),
+            Value::Num(3000.0, Num::Ms),
+            "{text}"
+        );
+    }
+    // Two keys that read as one `int` are one bad entry too.
+    let ints = "state p from \"ints.toml\" { names: [int: text] = [] }\nbar B { text p.names.entries.map(e => join(\"=\", e.key, e.value)).join(\",\") }\n";
+    std::fs::write(config.join("ints.toml"), "[names]\n3 = \"c\"\n1 = \"a\"\n").unwrap();
+    let ints_storage = Storage::in_dirs(dir.join("state2"), &config);
+    let mut other = boot_with(&[("i.strand", ints)], dp1, ints_storage);
+    assert_eq!(other.scene.texts(), ["1=a,3=c"]);
+    std::fs::write(config.join("ints.toml"), "[names]\n3 = \"c\"\n03 = \"x\"\n").unwrap();
+    assert!(other.inst.reload_settings(&config.join("ints.toml")));
+    assert_eq!(
+        settings_notices(&other.flush().diagnostics, &config),
+        ["ints.toml: names: key \"03\": the same key as \"3\"; keeping its last good value"]
+    );
+    std::fs::write(config.join("ints.toml"), "[names]\nthree = \"c\"\n").unwrap();
+    assert!(other.inst.reload_settings(&config.join("ints.toml")));
+    assert_eq!(
+        settings_notices(&other.flush().diagnostics, &config),
+        ["ints.toml: names: key \"three\": expected int; keeping its last good value"]
+    );
+    assert_eq!(other.scene.texts(), ["1=a,3=c"]);
+    drop(other);
+    // A deleted table springs back to its default.
+    let notes = reload(&mut shell, "gap = 6\n");
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(shell.scene.texts(), ["", "kitty=0.9"]);
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (dictionary) A write to a settings dictionary is saved key by key in
+/// the table the file has: a changed entry keeps its place and comment, a
+/// removed one goes, a new one is added at the table's end, and the rest
+/// of the file is untouched; a dictionary the file does not have yet is
+/// written as its own `[section]`. The written file reads back the same.
+#[test]
+fn a_settings_dictionary_writes_back_key_by_key() {
+    let dir = temp_dir("settings-dict-write");
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let file = config.join("prefs.toml");
+    std::fs::write(
+        &file,
+        "# my prefs\ngap = 4\n\n# per screen\n[wallpapers]\n# the left one\nDP-1   = \"~/a.jpg\"   # left\nHDMI-A-1 = \"~/b.jpg\"\n",
+    )
+    .unwrap();
+    let storage = Storage::in_dirs(dir.join("state"), &config);
+    let mut shell = boot_with(&[("t.strand", SETTINGS_DICTS)], dp1, storage.clone());
+    let saved = |shell: &mut Shell, at: f64| {
+        shell.at(at);
+        assert!(
+            storage
+                .settings
+                .as_ref()
+                .unwrap()
+                .sync(Duration::from_secs(5))
+        );
+        std::fs::read_to_string(&file).unwrap()
+    };
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    assert_eq!(shell.scene.texts()[0], "DP-1=~/a.jpg,eDP-1=~/c.jpg");
+    assert_eq!(
+        saved(&mut shell, 1.0),
+        "# my prefs\ngap = 4\n\n# per screen\n[wallpapers]\n# the left one\nDP-1   = \"~/a.jpg\"   # left\neDP-1 = \"~/c.jpg\"\n"
+    );
+    // `strand set` of one entry: a dotted app id is one key, and a field
+    // the file does not have is written as a section after the others.
+    shell
+        .inst
+        .set_text("prefs.wallpapers.DP-1", "~/new.jpg")
+        .unwrap();
+    shell
+        .inst
+        .set_text("prefs.scale.org.gnome.Nautilus", "0.5")
+        .unwrap();
+    shell.flush();
+    assert_eq!(
+        saved(&mut shell, 2.0),
+        "# my prefs\ngap = 4\n\n# per screen\n[wallpapers]\n# the left one\nDP-1   = \"~/new.jpg\"   # left\neDP-1 = \"~/c.jpg\"\n\n[scale]\nkitty = 0.9\n\"org.gnome.Nautilus\" = 0.5\n"
+    );
+    // An entry is in its field's layer (`strand get --json`).
+    assert_eq!(
+        shell.inst.layer("prefs.wallpapers.DP-1"),
+        Some(strand_core::SettingsLayer::File)
+    );
+    assert_eq!(
+        shell.inst.layer("prefs.scale.nope"),
+        Some(strand_core::SettingsLayer::File)
+    );
+    // What was written reads back as it was.
+    assert!(shell.inst.reload_settings(&file));
+    let u = shell.flush();
+    assert!(settings_notices(&u.diagnostics, &config).is_empty());
+    assert_eq!(
+        shell.scene.texts(),
+        [
+            "DP-1=~/new.jpg,eDP-1=~/c.jpg",
+            "kitty=0.9,org.gnome.Nautilus=0.5"
+        ]
+    );
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (dictionary) `strand get` and `strand set` reach one entry by a key
+/// path segment: the rest of the path after the dictionary is one key,
+/// read by the key type. `get` of an absent entry is null; `set` inserts
+/// or replaces; `toggle` flips a `bool` entry. A whole dictionary is not
+/// set from text, an entry is not removed (`null`), and a key or value
+/// that does not read is refused: each says why.
+#[test]
+fn strand_get_and_set_reach_one_entry_of_a_dictionary() {
+    let src = "enum Level { low, high }\nexport state names: [int: text] = [1: \"web\"]\nexport state by: [Level: int] = []\nstate prefs from \"prefs.toml\" { shown: [text: bool] = [] }\nbar B { text names.entries.map(e => join(\"=\", e.key, e.value)).join(\",\") }\n";
+    let mut shell = boot(&[("dicts.strand", src)], dp1);
+    let inst = &shell.inst;
+    assert_eq!(inst.get("dicts.names.1").unwrap(), Value::text("web"));
+    assert_eq!(inst.get("dicts.names.2").unwrap(), Value::Null);
+    inst.set_text("dicts.names.3", "chat").unwrap();
+    inst.set_text("dicts.names.1", "mail").unwrap();
+    inst.set("dicts.names.2", Value::text("code")).unwrap();
+    inst.set_text("dicts.by.high", "2").unwrap();
+    assert_eq!(inst.get("dicts.by.high").unwrap(), Value::int(2));
+    assert!(inst.toggle("prefs.shown.clock").unwrap());
+    assert!(!inst.toggle("prefs.shown.clock").unwrap());
+    assert_eq!(inst.get("prefs.shown.clock").unwrap(), Value::Bool(false));
+    let err = |path: &str, text: &str| inst.set_text(path, text).unwrap_err().to_string();
+    assert_eq!(
+        err("dicts.names", "x"),
+        "`dicts.names` is a dictionary, `[int: text]`: `strand set` writes one entry, `strand set dicts.names.<key> <value>`"
+    );
+    assert_eq!(
+        err("dicts.names.1", "null"),
+        "`dicts.names.1`: `strand set` does not remove an entry (a dictionary's values are never `null`); a handler removes it with `names.remove(k)`"
+    );
+    assert_eq!(
+        err("prefs.shown.clock", "null"),
+        "`prefs.shown.clock`: `strand set` does not remove an entry (a dictionary's values are never `null`); a handler removes it with `prefs.shown.remove(k)`"
+    );
+    assert_eq!(
+        err("dicts.names.three", "x"),
+        "`three` is not a key of `dicts.names`, a [int: text]: its keys are int"
+    );
+    assert_eq!(
+        err("dicts.by.mid", "1"),
+        "`mid` is not a key of `dicts.by`, a [Level: int]: its keys are Level"
+    );
+    assert_eq!(err("dicts.by.low", "many"), "`many` is not a int");
+    assert!(inst.get("dicts.names.x.y").is_err());
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["1=mail,2=code,3=chat"]);
 }

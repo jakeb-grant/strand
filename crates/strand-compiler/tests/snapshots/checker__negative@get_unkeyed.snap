@@ -1,0 +1,46 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+assertion_line: 165
+expression: rendered
+---
+check::missing_key
+
+  × `get` needs a keyed collection, and `notes` has no key
+    ╭─[get_unkeyed.strand:11:14]
+ 10 │ bar B {
+ 11 │   text notes.get("a")?.label ?? ""
+    ·              ─┬─
+    ·               ╰── no key to find items by
+ 12 │   text shown.get("a")?.label ?? ""
+    ╰────
+  help: declare one: `state notes: [T] key field = []`; without one, `notes[i]` reads an item by
+        its position and `notes.find(x => …)` by a test
+
+check::missing_key
+
+  × `get` needs a keyed collection, and `shown` has no key
+    ╭─[get_unkeyed.strand:12:14]
+ 11 │   text notes.get("a")?.label ?? ""
+ 12 │   text shown.get("a")?.label ?? ""
+    ·              ─┬─
+    ·               ╰── no key to find items by
+ 13 │   text labels.get(0) ?? ""
+    ╰────
+  help: only a `state` list of records has a key; `shown[i]` reads an item by its position and
+        `shown.find(x => x.field == k)` by a test
+
+check::missing_key
+
+  × `get` needs a keyed collection, and `labels` has no key
+    ╭─[get_unkeyed.strand:13:15]
+ 12 │   text shown.get("a")?.label ?? ""
+ 13 │   text labels.get(0) ?? ""
+    ·               ─┬─
+    ·                ╰── no key to find items by
+ 14 │ }
+    ╰────
+  help: only a `state` list of records has a key; `labels[i]` reads an item by its position,
+        `labels.find(x => x == k)` by a test, and `labels.contains(k)` says whether it is there
+
+fix [check::missing_key] get_unkeyed.strand@334: + ` key app` (Add `key app`)
+fix [check::missing_key] get_unkeyed.strand@334: + ` key label` (Add `key label`)

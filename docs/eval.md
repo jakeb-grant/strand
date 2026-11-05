@@ -2699,9 +2699,10 @@ capability, used by any scenario):
   `T0` (see above).
 - Header `icons`: a flat icon folder used in place of the config's
   `icons/` (strand-icons' config folder).
-- `set <path> <JSON>`: a record, list or optional value written as
-  JSON by its schema type (`vm::json::from_json`); scalars still read
-  as `strand set` reads them.
+- `set <path> <JSON>`: a record, list, (dictionary) dictionary
+  (`[key, value]` pairs, or an object of key texts) or optional value
+  written as JSON by its schema type (`vm::json::from_json`); scalars
+  still read as `strand set` reads them.
 - `key NAME [+ctrl|+shift|+alt|+super…] [down|up]`: a key on the
   focused surface (a press and a release without `down`/`up`).
   `type N [over MS]` types N placeholder `x`s, `paste N` pastes N.
@@ -2832,6 +2833,13 @@ and says where it first parts from it:
   cell the ring's table could not hold (a name of 64 bytes or more, any
   when it was full); each held by time is named in a note, with its
   time and the replay's write it was held to;
+  (dictionary) a dictionary cell is recorded whole on each write, as
+  `[key, value]` pairs, a key held back as any text is; two keys held
+  back as the same length read back as the same `x`s, so the replay
+  starts the cell with the later entry of each, and a note names the
+  cell and how many entries it lost (`vm::json::keys_read_as_one`,
+  `ReplayLog::keys_read_as_one`; the owner's answer, decisions.md
+  dictionary);
 - (services) each config's write to a service the ring recorded (a
   `WRITE`: `audio.sink.muted = true`; from version 3 an item's write,
   a `LOCAL` keyed record) against the writes the replay's own handlers
