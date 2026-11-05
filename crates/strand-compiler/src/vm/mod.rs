@@ -643,6 +643,29 @@ fn same_error(a: &Error, b: &Error) -> bool {
     }
 }
 
+/// (path-tilde) A `path` argument as the program gets it: `~/…` is in the
+/// home folder (`$HOME`), as every other path Strand takes is; anything
+/// else, a bare `~` and `~user/…` included, as written, as those other
+/// places leave them. Without an absolute `$HOME` (unset, relative, not
+/// UTF-8) it stays as written too.
+fn home_expanded(path: String) -> String {
+    let home = std::env::var_os("HOME").and_then(|h| h.into_string().ok());
+    with_home(path, home.as_deref())
+}
+
+/// [`home_expanded`] with `home` for `$HOME`.
+fn with_home(path: String, home: Option<&str>) -> String {
+    // `rest` keeps its `/`: `~/x` is `$HOME/x`, and `/x` when `$HOME`
+    // is `/`.
+    let Some(rest) = path.strip_prefix('~').filter(|r| r.starts_with('/')) else {
+        return path;
+    };
+    let Some(home) = home.filter(|h| h.starts_with('/')) else {
+        return path;
+    };
+    format!("{}{rest}", home.trim_end_matches('/'))
+}
+
 impl std::fmt::Debug for Vm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Vm").finish_non_exhaustive()
@@ -711,7 +734,8 @@ impl Vm {
 
     /// (M6) Asks for declared action `def`'s command with `args` filling
     /// its parameters, each one argument as its text (never split; the
-    /// program runs with no shell between). It runs when the host takes it
+    /// program runs with no shell between), a `path`'s `~/…` with the
+    /// home folder in its place (path-tilde). It runs when the host takes it
     /// ([`Vm::take_execs`]).
     pub(crate) fn exec(&self, def: DefId, args: &[Value]) -> Result<(), Error> {
         self.request(def, args, None)
@@ -746,7 +770,12 @@ impl Vm {
             .map(|p| match p {
                 crate::hir::ArgvPart::Text(t) => t.clone(),
                 crate::hir::ArgvPart::Param(i) => {
-                    args.get(*i).map(|v| v.show(types)).unwrap_or_default()
+                    let shown = args.get(*i).map(|v| v.show(types)).unwrap_or_default();
+                    if action.paths.contains(i) {
+                        home_expanded(shown)
+                    } else {
+                        shown
+                    }
                 }
             })
             .collect();
@@ -1189,5 +1218,30 @@ impl InputHandler {
 impl Drop for InputHandler {
     fn drop(&mut self) {
         INPUT_HANDLERS.with(|c| c.set(c.get().saturating_sub(1)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_home;
+
+    /// (path-tilde) `~/…` takes the home folder; a bare `~` (as a
+    /// settings file's or an image's), `~user/…`, a `~` further in and a
+    /// home that is not absolute leave it as written.
+    #[test]
+    fn a_path_argument_takes_the_home_folder_for_its_tilde() {
+        let h = Some("/home/ana");
+        let at = |p: &str, home| with_home(p.to_string(), home);
+        assert_eq!(at("~/Videos/a.mp4", h), "/home/ana/Videos/a.mp4");
+        assert_eq!(at("~/", h), "/home/ana/");
+        assert_eq!(at("~/x", Some("/home/ana/")), "/home/ana/x");
+        assert_eq!(at("~/", Some("/")), "/");
+        assert_eq!(at("~/x", Some("/")), "/x");
+        for kept in ["~", "~bob/x", "~x", "/tmp/~/x", "./~", "a.mp4", ""] {
+            assert_eq!(at(kept, h), kept);
+        }
+        assert_eq!(at("~/x", None), "~/x");
+        assert_eq!(at("~/x", Some("relative")), "~/x");
+        assert_eq!(at("~/x", Some("")), "~/x");
     }
 }

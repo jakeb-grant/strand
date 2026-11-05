@@ -5063,6 +5063,70 @@ fn a_declared_action_asks_for_its_command_with_whole_arguments() {
     assert_eq!(held, [("hold", vec![Value::text("performance")])]);
 }
 
+/// (path-tilde) A `path` parameter's `~/…` reaches the program with the
+/// home folder in place of the `~`, as every other path Strand takes
+/// does, in an action with a result too; a `text` parameter given the
+/// same value, and a `path` that is a bare `~`, only holds a `~` further
+/// in or names another user's home, stay as written.
+#[test]
+fn a_path_argument_reaches_the_program_with_the_home_folder() {
+    use strand_compiler::vm::ExecRequest;
+    let home = std::env::var("HOME").expect("the test needs $HOME");
+    assert!(home.starts_with('/'), "an absolute $HOME: {home:?}");
+    let home = home.trim_end_matches('/');
+    let src = "permit exec \"wf-recorder\"\npermit exec \"du\"\n\
+        action rec(file: path, label: text, other: path) \
+        [\"wf-recorder\", \"-f\", file, label, other]\n\
+        action size(dir: path) -> text [\"du\", \"-s\", dir]\n\
+        state got = \"\"\n\
+        bar B {\n  box { on click { rec(\"~/Videos/a.mp4\", \"~/Videos/a.mp4\", \"~bob/x\") } }\n  \
+        box { on click { rec(\"/tmp/~/a.mp4\", \"~\", \"~\") } }\n  \
+        box { on click { got = await size(\"~/Pictures\") } }\n}\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    let argv = |shell: &mut Shell, i: usize| {
+        shell.inst.event(boxes[i], "click", Vec::new());
+        let u = shell.flush();
+        assert!(u.errors.is_empty(), "{:?}", u.errors);
+        shell
+            .inst
+            .take_execs()
+            .into_iter()
+            .map(|r: ExecRequest| (r.action, r.argv))
+            .collect::<Vec<_>>()
+    };
+    let owned = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        argv(&mut shell, 0),
+        [(
+            "rec".to_string(),
+            owned(&[
+                "wf-recorder",
+                "-f",
+                &format!("{home}/Videos/a.mp4"),
+                "~/Videos/a.mp4",
+                "~bob/x",
+            ])
+        )]
+    );
+    assert_eq!(
+        argv(&mut shell, 1),
+        [(
+            "rec".to_string(),
+            owned(&["wf-recorder", "-f", "/tmp/~/a.mp4", "~", "~"])
+        )]
+    );
+    assert_eq!(
+        argv(&mut shell, 2),
+        [(
+            "size".to_string(),
+            owned(&["du", "-s", &format!("{home}/Pictures")])
+        )]
+    );
+}
+
 /// (M6, the owner's ruling) A config's `service battery` is the one its
 /// config reads: the host is asked for the declared service's field, not
 /// the builtin's (decisions.md m6-w2-language).

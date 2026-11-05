@@ -377,7 +377,8 @@ parameters in it, and call it like a function:
 with `permit exec "hyprctl"`, then `on click { dispatch(3) }`. Each
 parameter is exactly one argument of the program, as it is: a title
 with spaces or quotes is never split, and no shell stands between
-strand and the program. (The program reads the argument its own way:
+strand and the program. A `path` parameter's `~/…` is your home folder,
+as everywhere strand takes a path; a `text` one is passed as written. (The program reads the argument its own way:
 `["sh", "-c", cmd]` runs `cmd` as a shell script, and `strand check`
 warns about that; a value starting with `-` may look like an option.) The
 program must be written out and allowed by `permit exec`, so every

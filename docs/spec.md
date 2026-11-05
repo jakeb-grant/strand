@@ -745,8 +745,14 @@ monitor, the keyboard always).
   action call is, allowed only in a handler (section 8.3). Each
   parameter becomes exactly one argument of the program, its value as
   `text` shows it, never split on spaces: the program is run directly,
-  with no shell between strand and it. What the program does with an
-  argument is its own: a shell's `-c` runs the argument after it as a
+  with no shell between strand and it. A `path` parameter whose value
+  starts with `~/` reaches the program with the home folder (`$HOME`,
+  when it is absolute) in place of that `~`, as every other path strand
+  takes does (a settings file, a `from file`, an image); a bare `~`,
+  `~user/…` and a `text` parameter are passed as written, a bare `~` and
+  `~user/…` as those other places leave them (decisions.md path-tilde).
+  What the program does with an argument is its own: a shell's `-c`
+  runs the argument after it as a
   script (`["sh", "-c", cmd]` runs `cmd`'s value as shell code; pass a
   value after a written-out script instead, where it is `$1`), and an
   argument starting with `-` may be read as an option (`--` before it,
