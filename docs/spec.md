@@ -480,7 +480,9 @@ monitor, the keyboard always).
   (`on key`, `on activate`) run on that monitor's instance. Every monitor not picked
   shows a solid in the lock's colour (its `bg`). `screens: focused`, or
   a pick that names no plugged monitor, keeps one instance on the
-  focused monitor (else the first), whose `screen` changes in place
+  focused monitor (else the first of `screens.all`, the leftmost: the
+  monitor it shows on is the one its `screen` is; decisions.md
+  screen-position), whose `screen` changes in place
   when focus moves the content to another (nothing is mounted again, so
   what was typed stays; decisions.md flex, 2026-10-24, and lockmon,
   2026-10-25). A `thumbnail screen` in a lock shows a still of that

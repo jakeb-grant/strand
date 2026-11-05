@@ -2198,7 +2198,13 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   manager-painted solid in `set_lock_color`'s colour, outputs plugged in
   while locked included. `State::lock_contents()`,
   `lock_content_on(output)` and `lock_content()` (the focused output's,
-  else the first) name them. `State::lock_instance_failed(node)` puts an
+  else the first) name them. (screen-position) "The first" output, where
+  the lock's single instance shows while no monitor is focused, is the
+  leftmost in the layout (`first_in_layout`: least `Monitor::position`
+  by `x`, then `y`, an unknown one as 0, 0, the lowest global at one
+  place, an output with no monitor yet last), the key logic's
+  `run::layout_order` sorts `screens.all` by, so the instance shows on
+  the monitor whose `screen` logic gave it. `State::lock_instance_failed(node)` puts an
   instance's output back on the solid for the session; the binary calls
   it for a faulted, unmounted or never-drawn instance (not drawn
   `INSTANCE_FIRST_FRAME`, 3 s, after its configure while another has).

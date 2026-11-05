@@ -349,6 +349,23 @@ mod tests {
         let mut unknown = vec![screen("B", "DP-2"), screen("A", "DP-1")];
         layout_order(&mut unknown);
         assert_eq!(names(&unknown), ["DP-2", "DP-1"], "plug order kept");
+        // Many at two places, interleaved: more than an unstable sort
+        // keeps in order by chance (a short slice is insertion-sorted).
+        let many: Vec<ScreenInfo> = (0..48)
+            .map(|i| {
+                let name = format!("DP-{i}");
+                placed(&name, &name, f64::from(i % 2) * 1920.0, 0.0)
+            })
+            .collect();
+        let mut sorted = many.clone();
+        layout_order(&mut sorted);
+        let want: Vec<&str> = many
+            .iter()
+            .step_by(2)
+            .chain(many.iter().skip(1).step_by(2))
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names(&sorted), want, "plug order kept at each place");
         let mut negative = vec![
             placed("A", "DP-1", 0.0, 0.0),
             placed("B", "DP-2", -2560.0, 0.0),

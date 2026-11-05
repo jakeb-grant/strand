@@ -331,6 +331,57 @@ fn locks_every_output_including_hotplug() {
     assert!(lock.state_mut().unlock(token()));
 }
 
+/// (screen-position) With no monitor focused, a `screens: focused` lock
+/// shows its content on the leftmost monitor, the first of logic's
+/// `screens.all` whose `screen` the instance has, not on the first
+/// output advertised: HEADLESS-1, advertised first, is placed right of
+/// the second.
+#[test]
+fn an_unfocused_lock_shows_on_the_leftmost_monitor() {
+    let test = "an_unfocused_lock_shows_on_the_leftmost_monitor";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let second = sway.create_output();
+    sway.msg(&["output", &second, "pos", "0", "0"]);
+    sway.msg(&["output", "HEADLESS-1", "pos", "1920", "0"]);
+    let mut lock = locker(&sway);
+    lock.state_mut()
+        .apply_surface_change(LOCK, SurfaceChange::Created(lock_spec(true)));
+    wait_lock(&mut lock, LockState::Locked);
+    let ok = lock
+        .dispatch_until(WAIT, |s| {
+            s.lock_content_on(&second)
+                .and_then(|c| s.surface(c))
+                .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(
+        ok,
+        "the content is on the leftmost output ({second}); solids on {:?}",
+        lock.state().lock_solid_outputs()
+    );
+    assert_eq!(
+        lock.state().lock_content(),
+        lock.state().lock_content_on(&second)
+    );
+    assert_eq!(
+        lock.state().lock_solid_outputs(),
+        ["HEADLESS-1".to_string()]
+    );
+    pump_lock(&mut lock, Duration::from_millis(300));
+    assert_eq!(shot(&sway, &second), [BLUE, BLUE], "content on {second}");
+    assert_eq!(
+        shot(&sway, "HEADLESS-1"),
+        [GREEN, GREEN],
+        "the solid on HEADLESS-1"
+    );
+    assert!(lock.state_mut().unlock(token()));
+}
+
 #[test]
 fn finished_is_reported_and_not_shown() {
     let test = "finished_is_reported_and_not_shown";

@@ -1844,7 +1844,10 @@ impl Harness {
 
     /// `screens.all` and `screens.focused`: (fidelity) every screen, in
     /// the scenario's order, the first focused, as
-    /// crates/strand/src/run/mod.rs `set_screens` makes them.
+    /// crates/strand/src/run/mod.rs `set_screens` makes them. Live sorts
+    /// its list into layout order first (`run::layout_order`,
+    /// screen-position); the sandbox keeps the scenario's, which
+    /// docs/eval.md asks to be that order (a replay's is live's).
     fn set_screens(&mut self) -> Result<(), Error> {
         let records: Vec<Value> = self
             .sc

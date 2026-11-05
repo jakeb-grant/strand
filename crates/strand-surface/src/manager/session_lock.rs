@@ -7,8 +7,8 @@
 //! config's lock is one node per monitor (the compiler mounts an
 //! instance on each, every monitor by default), each pinned to its
 //! monitor by its spec's `screens:`; a node on `screens: focused` shows
-//! on the focused monitor ([`State::set_focused_monitor`], else the first
-//! output). Each output with a node shows that node's content, a
+//! on the focused monitor ([`State::set_focused_monitor`], else the
+//! leftmost output, as logic's `screens.all` is ordered). Each output with a node shows that node's content, a
 //! [`Surface`] the host paints like any other (its keys reach the host
 //! as usual); an output with none (a monitor no instance has reached
 //! yet, one the config's `screens:` leaves out, one whose instance the
@@ -577,11 +577,16 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     // ---- lock surfaces -------------------------------------------------------
 
-    /// The focused monitor's output, else the first: where a `screens:
-    /// focused` instance shows, and the content keys on a solid reach.
+    /// The focused monitor's output, else the first in the layout
+    /// ([`first_in_layout`]): where a `screens: focused` instance shows,
+    /// and the content keys on a solid reach.
     fn lock_output(&self) -> Option<u32> {
-        self.focused_output()
-            .or_else(|| self.outputs.keys().next().copied())
+        self.focused_output().or_else(|| {
+            first_in_layout(self.outputs.keys().map(|g| {
+                let monitor = self.monitors.id_of(*g).and_then(|id| self.monitors.get(id));
+                (*g, monitor.map(|m| m.position))
+            }))
+        })
     }
 
     /// (lockmon) Which node's content each output shows: the newest live
@@ -1069,9 +1074,59 @@ impl<H: SurfaceHost + 'static> Dispatch2<ExtSessionLockSurfaceV1, State<H>> for 
     }
 }
 
+/// (screen-position) An output's global and its monitor's position
+/// (`None`: no monitor known for it yet; `Some(None)`: a monitor whose
+/// position is not known).
+type OutputPlace = (u32, Option<Option<(i32, i32)>>);
+
+/// (screen-position) The lock's first monitor while none is focused:
+/// the output whose monitor is leftmost, by `x`, then `y` (an unknown
+/// position counting as 0, 0), the lowest global at one place, an output
+/// whose monitor is not known yet last. It is the order logic puts
+/// `screens.all` in (`run::layout_order`), so the monitor a `screens:
+/// focused` lock shows on is the one whose `screen` logic gave it.
+fn first_in_layout(outputs: impl Iterator<Item = OutputPlace>) -> Option<u32> {
+    outputs
+        .min_by_key(|(g, monitor)| {
+            let (x, y) = monitor.flatten().unwrap_or((0, 0));
+            (monitor.is_none(), x, y, *g)
+        })
+        .map(|(g, _)| g)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AfterFinished, after_finished};
+    use super::{AfterFinished, OutputPlace, after_finished, first_in_layout};
+
+    /// (screen-position) The first monitor is the leftmost, not the
+    /// first advertised: then the topmost at one `x`, the lowest global
+    /// at one place, and an output with no monitor known yet only when
+    /// nothing else is.
+    #[test]
+    fn the_first_monitor_is_the_leftmost() {
+        let first = |o: &[OutputPlace]| first_in_layout(o.iter().copied());
+        assert_eq!(
+            first(&[(10, Some(Some((1920, 0)))), (11, Some(Some((0, 0))))]),
+            Some(11)
+        );
+        assert_eq!(
+            first(&[(10, Some(Some((0, 0)))), (11, Some(Some((-2560, 0))))]),
+            Some(11)
+        );
+        assert_eq!(
+            first(&[(10, Some(Some((0, 1080)))), (11, Some(Some((0, -1440))))]),
+            Some(11)
+        );
+        // `x` first: a monitor raised to the right stays after its left
+        // neighbour.
+        assert_eq!(
+            first(&[(10, Some(Some((1920, -200)))), (11, Some(Some((0, 0))))]),
+            Some(11)
+        );
+        assert_eq!(first(&[(10, Some(None)), (11, Some(None))]), Some(10));
+        assert_eq!(first(&[(10, None), (11, Some(Some((1920, 0))))]), Some(11));
+        assert_eq!(first(&[]), None);
+    }
 
     #[test]
     fn finished_after_locked_asks_for_a_new_lock_once() {
