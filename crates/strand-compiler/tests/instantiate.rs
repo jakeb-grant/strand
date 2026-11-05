@@ -6072,13 +6072,13 @@ panel Launcher {
     assert_eq!(get(&shell, "runs"), Value::int(4));
 }
 
-/// (panel-change-closed) A closed panel's handlers do not run, and what
-/// changed while it was closed is not run late when it opens: its own
-/// `on change`, its debounced one and one in an element of it (mounted
-/// once it has shown) each take the value as it is. Opening it in a
-/// later tick runs nothing; a change while it is open runs them all.
+/// (panel-change-closed) A closed panel's handlers do not run; when it
+/// opens, its own `on change`, its debounced one and one in an element of
+/// it (mounted once it has shown) each run once for what they missed while
+/// it was closed, as before. Before it first opens they have seen nothing:
+/// a change then is not run when it opens in a later tick.
 #[test]
-fn a_closed_panels_on_change_runs_nothing_late() {
+fn a_closed_panels_on_change_runs_once_for_what_it_missed() {
     let src = "export state open = false
 export state x = 0
 state body = 0
@@ -6102,20 +6102,135 @@ panel P {
     shell.inst.set("p.open", Value::Bool(true)).unwrap();
     shell.at(2.1);
     shell.at(4.0);
-    assert_eq!(runs(&shell), none, "opened later");
+    assert_eq!(runs(&shell), none, "opened later, first time");
     shell.inst.set("p.open", Value::Bool(false)).unwrap();
     shell.at(4.1);
     shell.inst.set("p.x", Value::int(2)).unwrap();
     shell.at(4.2);
+    shell.at(5.0);
+    assert_eq!(runs(&shell), none, "changed while closed");
     shell.inst.set("p.open", Value::Bool(true)).unwrap();
-    shell.at(4.3);
-    shell.at(6.0);
-    assert_eq!(runs(&shell), none, "changed while closed, opened later");
-    shell.inst.set("p.x", Value::int(3)).unwrap();
-    shell.at(6.1);
-    shell.at(8.0);
+    shell.at(5.1);
+    shell.at(7.0);
     let one = [Value::int(1), Value::int(1), Value::int(1)];
-    assert_eq!(runs(&shell), one, "changed while open");
+    assert_eq!(runs(&shell), one, "opened later: what it missed, once");
+    shell.inst.set("p.x", Value::int(3)).unwrap();
+    shell.at(7.1);
+    shell.at(9.0);
+    let two = [Value::int(2), Value::int(2), Value::int(2)];
+    assert_eq!(runs(&shell), two, "changed while open");
+}
+
+/// (panel-change-closed) A handler that keeps a component's state in step
+/// with something outside (`on change src { mine = src }`) catches up when
+/// the panel it is in opens again, in the component and in the panel's
+/// body alike.
+#[test]
+fn a_reopened_panels_handlers_catch_up() {
+    let src = "export state open = true
+export state src = 0
+state nested = 0
+state body = 0
+component Mirror {
+  on change src { nested = src }
+  box { }
+}
+panel P {
+  open: <-> open
+  on change src { body = src }
+  Mirror
+}
+";
+    let mut shell = boot(&[("m.strand", src)], |_, _| {});
+    let get = |shell: &Shell, n: &str| shell.inst.value_of("m", n).unwrap();
+    shell.inst.set("m.open", Value::Bool(false)).unwrap();
+    shell.flush();
+    shell.inst.set("m.src", Value::int(5)).unwrap();
+    shell.flush();
+    assert_eq!(get(&shell, "nested"), Value::int(0), "closed");
+    shell.inst.set("m.open", Value::Bool(true)).unwrap();
+    shell.flush();
+    shell.flush();
+    assert_eq!(get(&shell, "nested"), Value::int(5), "the component's");
+    assert_eq!(get(&shell, "body"), Value::int(5), "the body's");
+}
+
+/// (panel-change-closed) The `on change` handlers of one tick run in the
+/// order written, those of a surface's body and of its elements alike: in
+/// a bar, and in a panel that starts closed, whose body handlers mount
+/// before the rest of it and take their place when it first opens.
+#[test]
+fn a_surfaces_handlers_run_in_the_order_written() {
+    for (surface, open) in [
+        ("bar B {", "true"),
+        ("panel P {\n  open: <-> open", "false"),
+    ] {
+        for (first, second, last) in [
+            ("box { on change x { y = 1 } }", "on change x { y = 2 }", 2),
+            ("on change x { y = 2 }", "box { on change x { y = 1 } }", 1),
+        ] {
+            let src = format!(
+                "export state open = {open}\nexport state x = 0\nstate y = 0\n\
+                 {surface}\n  {first}\n  {second}\n}}\n"
+            );
+            let mut shell = boot(&[("o.strand", &src)], |rt, host| {
+                screens(rt, host, &["DP-1"])
+            });
+            shell.inst.set("o.open", Value::Bool(true)).unwrap();
+            shell.flush();
+            shell.inst.set("o.x", Value::int(1)).unwrap();
+            shell.flush();
+            assert_eq!(
+                shell.inst.value_of("o", "y").unwrap(),
+                Value::int(last),
+                "{src}"
+            );
+        }
+    }
+}
+
+/// (panel-change-closed) A `persist`ed state in a component of a panel,
+/// written in the tick that closes the panel, is saved once the panel
+/// opens again: a closed surface holds its save tracker as before, and
+/// only its `on change` handlers note each tick's value.
+#[test]
+fn a_persisted_state_written_as_its_panel_closes_is_saved() {
+    let dir = temp_dir("persist-closing");
+    let storage = Storage::in_dirs(dir.join("state"), dir.join("config"));
+    let src = "export state open = true
+component C {
+  state picked = \"\" persist
+  box { on click { picked = \"a\"; open = false } }
+}
+panel P {
+  open: <-> open
+  C
+}
+";
+    let mut shell = boot_with(&[("s.strand", src)], |_, _| {}, storage.clone());
+    let pick = shell.inst.nodes_handling("click")[0];
+    assert!(shell.inst.event(pick, "click", Vec::new()));
+    shell.at(0.1);
+    assert_eq!(shell.inst.get("s.open").unwrap(), Value::Bool(false));
+    shell.inst.set("s.open", Value::Bool(true)).unwrap();
+    shell.at(0.2);
+    shell.at(1.0);
+    shell.at(1.5);
+    let p = storage.persist.clone().unwrap();
+    assert!(p.sync(Duration::from_secs(5)));
+    let saved: Vec<String> = std::fs::read_dir(p.dir())
+        .map(|d| {
+            d.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        saved.iter().any(|f| f.contains("picked")),
+        "saved before shutdown: {saved:?}"
+    );
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// (panel-change-closed) A debounced `on change` of a panel's body, and

@@ -381,10 +381,14 @@ pub(crate) struct Inner {
     /// ([`Runtime::suspend_closed`]), a subset of `suspended`.
     closed: RefCell<HashSet<NodeId>>,
     /// Sinks that keep up with what they read while only closed scopes
-    /// hold them (`on change` effects, [`Runtime::keep_up_while_closed`]):
-    /// at the end of each flush they run, an `on change` only taking its
-    /// baseline (`keeping_up`).
+    /// hold them (the compiler's `on change` effects, marked with
+    /// [`Runtime::keep_up_while_closed`]): at the end of each flush they
+    /// run, an `on change` only noting the tick's value (`keeping_up`).
     keeps_up: RefCell<HashSet<NodeId>>,
+    /// The `keeps_up` sinks that ran while closed: each runs once more
+    /// when no suspended scope holds it, an `on change` then running for
+    /// what it missed.
+    kept_up: RefCell<HashSet<NodeId>>,
     /// True while the flush's last pass runs a held `keeps_up` sink.
     keeping_up: Cell<bool>,
     /// Scheduling ranks (see `order`): absent means 0. A map, not a node
@@ -561,6 +565,7 @@ impl Runtime {
                 held_set: RefCell::new(HashSet::new()),
                 closed: RefCell::new(HashSet::new()),
                 keeps_up: RefCell::new(HashSet::new()),
+                kept_up: RefCell::new(HashSet::new()),
                 keeping_up: Cell::new(false),
                 ranks: RefCell::new(foldhash::HashMap::default()),
                 writes: RefCell::new(foldhash::HashMap::default()),
@@ -1469,7 +1474,11 @@ impl Runtime {
                 }
             }
         }
-        for set in [&self.inner.closed, &self.inner.keeps_up] {
+        for set in [
+            &self.inner.closed,
+            &self.inner.keeps_up,
+            &self.inner.kept_up,
+        ] {
             let mut set = set.borrow_mut();
             if !set.is_empty() {
                 for &n in &order {
@@ -1568,7 +1577,37 @@ impl Runtime {
             }
             None => self.inner.root_owned.borrow_mut().push(id),
         }
-        // Renumber the subtree (and handler sites) in its own order.
+        self.renumber_subtree(id);
+        if let Some(node) = self.inner.nodes.borrow_mut().get_mut(id) {
+            node.owner = new_owner;
+        }
+        // Owners run before what they own: lift the subtree to its new
+        // owner's rank.
+        if let Some(o) = new_owner {
+            self.inherit_rank(id, o);
+        }
+        // Moved out of a suspended scope: held work runs again.
+        let unfroze = !self.inner.suspended.borrow().is_empty();
+        self.release_held(unfroze);
+        Ok(())
+    }
+
+    /// Renumber a live node's subtree after every existing node, keeping
+    /// its own order, as [`Runtime::reparent`] does, without moving it:
+    /// its sinks then run after those of every node made before, as if it
+    /// had been made now. The compiler makes a closed surface's body
+    /// `on change` handlers early and renumbers each where it is written
+    /// when the rest of the body mounts, so handlers of one tick still run
+    /// in the order written (decisions.md panel-change-closed). A no-op on
+    /// a disposed `id`.
+    pub fn renumber(&self, id: NodeId) {
+        if self.exists(id) {
+            self.renumber_subtree(id);
+        }
+    }
+
+    /// Renumber `id`'s subtree (and handler sites) in its own order.
+    fn renumber_subtree(&self, id: NodeId) {
         let mut subtree = Vec::new();
         let mut stack = vec![id];
         while let Some(n) = stack.pop() {
@@ -1589,19 +1628,6 @@ impl Runtime {
                 node.seq = seq;
             }
         }
-        if let Some(node) = nodes.get_mut(id) {
-            node.owner = new_owner;
-        }
-        drop(nodes);
-        // Owners run before what they own: lift the subtree to its new
-        // owner's rank.
-        if let Some(o) = new_owner {
-            self.inherit_rank(id, o);
-        }
-        // Moved out of a suspended scope: held work runs again.
-        let unfroze = !self.inner.suspended.borrow().is_empty();
-        self.release_held(unfroze);
-        Ok(())
     }
 
     /// Freeze a subtree (a component whose handler faulted, outlined in red
@@ -1645,16 +1671,18 @@ impl Runtime {
     }
 
     /// Suspend `id` as a closed surface's content ([`Runtime::suspend`]),
-    /// with one difference: what keeps up while closed (every `on change`
-    /// effect, and sinks marked [`Runtime::keep_up_while_closed`]) is not
-    /// held until [`Runtime::resume`] but runs at the end of each flush
-    /// that dirtied it, an `on change` only taking what it watches as its
-    /// baseline. So a change made while it is closed is never run late,
-    /// and one made in the flush that resumes it is compared with the
-    /// value of the flush before (spec.md 5.1, decisions.md
-    /// panel-change-closed). Under a scope also suspended for a fault (a
-    /// component frozen inside the surface) everything is held, as
-    /// [`Runtime::suspend`] holds it.
+    /// with one difference: a sink marked [`Runtime::keep_up_while_closed`]
+    /// (the compiler's `on change` effects) is not held until
+    /// [`Runtime::resume`] but runs at the end of each flush that dirtied
+    /// it, an `on change` only noting the tick's value, and then once more
+    /// on resume. So an `on change` still runs once for a change it missed
+    /// while closed (compared with what it last saw open), and also for
+    /// one made in the flush that resumes it, compared with the value of
+    /// the flush before, which a plain [`Runtime::suspend`] cannot tell
+    /// from the value it last saw (spec.md 5.1, decisions.md
+    /// panel-change-closed). Other sinks are held as `suspend` holds them;
+    /// under a scope also suspended for a fault (a component frozen inside
+    /// the surface) everything is.
     pub fn suspend_closed(&self, id: NodeId) -> Result<(), Error> {
         self.suspend(id)?;
         self.inner.closed.borrow_mut().insert(id);
@@ -1662,10 +1690,13 @@ impl Runtime {
     }
 
     /// Mark the sink `id` to keep up while closed scopes hold it (see
-    /// [`Runtime::suspend_closed`]): it runs, at the end of each flush that
-    /// dirtied it, as it would if nothing held it. For an effect that
-    /// makes an `on change` (a debounce following a reactive duration),
-    /// so the `on change` exists before its surface opens.
+    /// [`Runtime::suspend_closed`]): it runs at the end of each flush that
+    /// dirtied it, and once more when it is released. An `on change`
+    /// effect then only notes the tick's value ([`Runtime::on_change`]);
+    /// any other sink runs as it would if nothing held it (the compiler's
+    /// effect that makes a debounce for a reactive duration, so the
+    /// debounce's `on change` exists before its surface opens). Opt-in: a
+    /// `persist` or settings tracker is held by a closed scope as before.
     pub fn keep_up_while_closed(&self, id: NodeId) {
         if self.exists(id) {
             self.inner.keeps_up.borrow_mut().insert(id);
@@ -1673,8 +1704,8 @@ impl Runtime {
     }
 
     /// True while a sink that keeps up while closed runs at the end of a
-    /// flush ([`Runtime::suspend_closed`]): an `on change` takes its
-    /// baseline then and runs no handler.
+    /// flush ([`Runtime::suspend_closed`]): an `on change` notes the
+    /// tick's value then and runs no handler.
     pub(crate) fn keeping_up(&self) -> bool {
         self.inner.keeping_up.get()
     }
@@ -1700,7 +1731,8 @@ impl Runtime {
     }
 
     /// The flush's last pass: run the held sinks that keep up while closed
-    /// (each once per flush, `done`), an `on change` taking its baseline.
+    /// (each once per flush, `done`), an `on change` noting the value, each
+    /// then run once more when released (`kept_up`).
     /// Returns whether one ran (it may have made new work: a debounce's
     /// `on change`).
     fn keep_up_closed(
@@ -1736,6 +1768,7 @@ impl Runtime {
                 held_set.remove(n);
             }
         }
+        self.inner.kept_up.borrow_mut().extend(due.iter().copied());
         for &n in &due {
             done.insert(n);
             self.inner.keeping_up.set(true);
@@ -1779,6 +1812,26 @@ impl Runtime {
         }
         *self.inner.held_set.borrow_mut() = keep.iter().copied().collect();
         *self.inner.held.borrow_mut() = keep;
+        // What kept up while closed runs once now that nothing holds it
+        // (an `on change` for what it missed, `suspend_closed`).
+        if unfroze && !self.inner.kept_up.borrow().is_empty() {
+            let kept: Vec<NodeId> = self.inner.kept_up.borrow().iter().copied().collect();
+            for n in kept {
+                if !self.exists(n) {
+                    self.inner.kept_up.borrow_mut().remove(&n);
+                } else if !self.is_suspended(n) {
+                    self.inner.kept_up.borrow_mut().remove(&n);
+                    let mut nodes = self.inner.nodes.borrow_mut();
+                    if let Some(node) = nodes.get_mut(n) {
+                        if node.color == Color::Clean {
+                            self.inner.pending.borrow_mut().push(n);
+                        }
+                        node.color = Color::Dirty;
+                        requeued = true;
+                    }
+                }
+            }
+        }
         // Released timers and sleeps count again from the next clock
         // advance: wake the host so it ticks.
         let restarted = unfroze && self.sync_frozen_timers();

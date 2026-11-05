@@ -1789,19 +1789,24 @@ impl Ctx {
     }
 
     /// A surface's children. Its own `on show`, `on hide` (and other
-    /// element events) stay live; the `on change` handlers written in
-    /// its body are mounted with it, frozen while it is closed; the rest
-    /// is mounted the first time the surface is shown, and the services
-    /// its body reads are acquired only while it is shown. The instance
-    /// sends `show` when `open` turns true (or at mount for a surface
-    /// without `open`) and `hide` when it turns false.
+    /// element events) stay live; the rest is mounted the first time the
+    /// surface is shown, in the order written, and the services its body
+    /// reads are acquired only while it is shown. A surface that starts
+    /// closed (not a `popup` or `lock`) mounts the `on change` handlers
+    /// written in its body at once, frozen, so the tick that first opens
+    /// it is seen; each is renumbered where it is written when the rest
+    /// mounts ([`Runtime::renumber`]), so the handlers of one tick still
+    /// run in the order written. The instance sends `show` when `open`
+    /// turns true (or at mount for a surface without `open`) and `hide`
+    /// when it turns false.
     ///
-    /// Hidden, a `bar`'s, `panel`'s or `lock`'s content is frozen (state
-    /// kept, nothing evaluated, its nodes left on the scene), except that
-    /// its `on change` handlers keep up with what they watch without
-    /// running ([`Runtime::suspend_closed`]): a change made while it is
-    /// closed is not run when it opens, and one made in the tick that
-    /// opens it is (decisions.md panel-change-closed). A `popup`'s
+    /// Hidden, a `bar`'s, `panel`'s, `osd`'s or `window`'s content is
+    /// frozen with [`Runtime::suspend_closed`] (state kept, nothing
+    /// evaluated, its nodes left on the scene): its `on change` handlers
+    /// wait, noting each tick's value, and when it opens run once for what
+    /// they missed and for a change made in the tick that opens it
+    /// (decisions.md panel-change-closed). A `lock`'s is frozen with plain
+    /// [`Runtime::suspend`], its handlers being its logic's. A `popup`'s
     /// is unmounted, as the schema's `on_demand` says: its nodes leave
     /// the scene and its scopes go, but the `state`s of the components
     /// in it are kept ([`Ctx::keep_cells`]) and bound again when it opens
@@ -1841,18 +1846,19 @@ impl Ctx {
                 }
             });
         }
-        // (panel-change-closed) The `on change` handlers of the body
-        // itself are mounted now, frozen while it is closed, so the tick
-        // that first opens it changes what they watch as any later one
-        // does. A popup's content mounts each time it opens, and the
+        // (panel-change-closed) A surface that starts closed mounts the
+        // `on change` handlers of its body itself now, frozen while it is
+        // closed, so the tick that first opens it changes what they watch
+        // as any later one does. One that starts open mounts all of it now
+        // in order; a popup's content mounts each time it opens, and the
         // lock's logic is its own (`lock_logic`).
-        let (early, content): (Vec<Node>, Vec<Node>) = if on_demand || is_lock {
-            (Vec::new(), content)
-        } else {
-            content.into_iter().partition(
-                |n| matches!(n, Node::Handler(h) if matches!(h.event, Event::Change { .. })),
-            )
+        let starts_open = match open {
+            None => true,
+            Some(memo) => rt
+                .untrack(|rt| memo.get(rt))
+                .is_ok_and(|o| matches!(o.value, PropValue::Bool(true))),
         };
+        let early_change = !(on_demand || is_lock || starts_open);
         let services = services.unwrap_or_default();
         let content = Arc::new(content);
         let inner = self.em.borrow_mut().new_frag(Some(frag), None);
@@ -1864,12 +1870,23 @@ impl Ctx {
         let block = Rc::new(Cell::new(block));
         let keep = on_demand.then(|| rt.scope(|_| ()).0);
         let token = self.hold(rt, services);
-        if !early.is_empty() {
-            let early = Arc::new(early);
-            let _ = rt.with_owner(block.get().id(), |rt| {
-                self.mount_nodes(rt, &early, env, inner, Some(&ec));
-            });
-        }
+        // Each early handler's scope, where it is written in `content`.
+        let early: Vec<Option<strand_core::NodeId>> = content
+            .iter()
+            .map(|n| {
+                let change =
+                    matches!(n, Node::Handler(h) if matches!(h.event, Event::Change { .. }));
+                if !(early_change && change) {
+                    return None;
+                }
+                rt.with_owner(block.get().id(), |rt| {
+                    rt.scope(|rt| self.mount_node(rt, n, env, inner, Some(&ec)))
+                        .0
+                        .id()
+                })
+                .ok()
+            })
+            .collect();
         // Whether `block` is suspended as closed (`suspend_closed`).
         let frozen = Rc::new(Cell::new(false));
         let mounted = Rc::new(Cell::new(false));
@@ -1905,7 +1922,14 @@ impl Ctx {
                 }
                 if !mounted.replace(true) {
                     let _ = rt.with_owner(block.get().id(), |rt| {
-                        me.mount_nodes(rt, &content, &env, inner, Some(&ec));
+                        for (i, n) in content.iter().enumerate() {
+                            // An early handler takes its place in the
+                            // order written.
+                            match early.get(i).copied().flatten() {
+                                Some(scope) => rt.renumber(scope),
+                                None => me.mount_node(rt, n, &env, inner, Some(&ec)),
+                            }
+                        }
                     });
                 }
                 me.route(rt, ec.scene, "show", Vec::new(), None);
@@ -4450,6 +4474,9 @@ impl Ctx {
                                 Ok(())
                             })
                             .id();
+                        // (panel-change-closed) In a closed surface it
+                        // keeps up, to see the tick that opens it.
+                        rt.keep_up_while_closed(id);
                         self.declare_reads(rt, id, &tracked, env, &[]);
                         self.declare_writes(rt, id, body, env);
                         if let Some(site) = rt.site_of(id) {
@@ -4523,6 +4550,7 @@ impl Ctx {
                                 Some(o) => rt.with_owner(o, make),
                                 None => Ok(make(rt)),
                             })?;
+                            rt.keep_up_while_closed(new.effect.id());
                             // The tracked reads on the debounce's effect,
                             // the body's writes on its timer.
                             rt.untrack(|rt| {

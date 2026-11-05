@@ -124,8 +124,8 @@ are `Async`.
   clipboard.history.first?.text` stays quiet when a new copy becomes the
   first. Watch the item's key too and it runs on each new one:
   `on change clipboard.history.first?.id, clipboard.history.first?.text`.
-- A closed panel's handlers wait, and what changed while it was closed
-  is not run late. A change made in the tick that opens it is seen:
+- A closed panel's handlers wait, and run once for what they missed
+  when it opens. A change made in the tick that opens it is seen too:
   a key that sets `view` and opens the launcher runs the launcher's own
   `on change view`, the first time too.
 - `after 6s while !hover { … }` runs once, after its condition has held

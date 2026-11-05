@@ -1496,10 +1496,14 @@ by `strand-compiler`, not here. See `crates/strand-core/src/lib.rs`.
   `MAX_FROZEN_EVENTS` per listener, input dropped); the fixing reload
   calls `rt.resume(scope)` or reparents and disposes. A closed
   surface's content is frozen with `rt.suspend_closed(scope)` instead:
-  the same, except that an `on change` effect (and any sink marked
-  `rt.keep_up_while_closed(id)`) is run at the end of each flush that
-  dirtied it rather than held, the `on change` only taking its baseline
-  (decisions.md panel-change-closed). Reloaded timers take over the old
+  the same, except that a sink marked `rt.keep_up_while_closed(id)`
+  (the compiler's `on change` effects; a `persist` or settings tracker
+  is not marked) is run at the end of each flush that dirtied it rather
+  than held, an `on change` only noting the flush's value, and once
+  more on resume, when it runs for what it missed or for a change in
+  the flush that resumes it (decisions.md panel-change-closed).
+  `rt.renumber(id)` renumbers a subtree after every node, as a
+  reparent does, without moving it. Reloaded timers take over the old
   countdown with `rescale_from`.
 - Handlers: each listener, timer and `on change` handler has a site
   (`rt.handler_site()`, `rt.site_of`) owning its tasks; disposing it
@@ -1835,16 +1839,19 @@ Public interfaces:
     released) and returns as it was, or is dropped by
     `Instance::forget_screen(id)`. Every surface gets `Prop::Name`.
   - A surface's `on show`/`on hide`/`on dismiss` are always live; the
-    `on change` handlers of its body mount with it; the rest of its
-    body mounts when first shown. Hidden, it is frozen with
-    `Runtime::suspend_closed`, under which an `on change` effect (and
-    a debounce's duration, `keep_up_while_closed`) is not held but run
-    at the end of each flush that dirtied it, taking its baseline and
-    running no handler: what changed while closed is not run late, and
-    a change in the tick that opens it is compared with the tick before
-    (decisions.md panel-change-closed). A `popup` unmounts instead, and
-    the lock's content and logic use plain `suspend`. The instance, not
-    render, sends `show`/`hide`.
+    rest of its body mounts when first shown, in the order written,
+    except that a surface that starts closed mounts its body's
+    `on change` handlers with it, each in its own scope, renumbered
+    (`Runtime::renumber`) where it is written when the rest mounts.
+    Hidden, it is frozen with `Runtime::suspend_closed`, under which an
+    `on change` effect (and a debounce's duration) marked
+    `keep_up_while_closed` is not held but run at the end of each flush
+    that dirtied it, noting the value and running no handler, then once
+    more on resume: it runs for what it missed and for a change in the
+    tick that opens it, compared with the tick before (decisions.md
+    panel-change-closed). A `popup` unmounts instead, and the lock's
+    content and logic use plain `suspend`. The instance, not render,
+    sends `show`/`hide`.
   - Runtime errors are located values (`RuntimeError`), the span the
     innermost failing operation's. `Instance::origin(node)` maps a scene
     node to its element. `Instance::freeze(&err)` suspends the faulting
