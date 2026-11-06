@@ -241,6 +241,12 @@ impl Renderer {
                     && !f.caret_restarted
                 {
                     s.dirty = false;
+                    // (lock-int) Its last painted frame draws this scene:
+                    // a settled lock's shows the exit's end already.
+                    let root = s.root;
+                    if let Some(drawn) = self.lock_settled.get_mut(&root) {
+                        drawn.insert(id);
+                    }
                 }
                 s.animating = animating;
                 s.awaiting_text = !waiting.is_empty();

@@ -152,6 +152,9 @@ fn a_lock_stays_open_while_its_content_plays_out() {
     assert!(r.tree().ghost_count() > 0, "the still kept while shown");
     r.detach_surface(LOCK);
     r.update();
+    assert!(r.tree().ghost_count() > 0, "kept across its surface going");
+    r.lock_session_ended();
+    r.update();
     assert_eq!(r.tree().ghost_count(), 0, "what it kept unmounted");
 }
 
@@ -183,6 +186,9 @@ fn a_closed_lock_keeps_its_exits_end_until_it_goes() {
         let mut fresh = Buffer::new(320, 200, Scale::ONE);
         let wanted = r.wants_frame(LOCK);
         let d = fresh.paint_at(&mut r, LOCK, 0, frame(k + j));
+        if j == 0 {
+            assert!(wanted, "the frame after the close is wanted");
+        }
         if d.is_empty() {
             assert!(j > 0, "the settled frame is drawn once");
             assert!(
@@ -390,6 +396,143 @@ fn an_exit_under_a_node_with_none_plays() {
     let spec = r.surface_spec(lock).cloned().unwrap();
     assert!(!spec.open && !spec.closing, "closed once it has played out");
     r.detach_surface(LOCK);
+    r.lock_session_ended();
     r.update();
     assert_eq!(r.tree().ghost_count(), 0, "what it kept unmounted");
+}
+
+/// The lock's #2050d0, as the buffer holds it (BGRA).
+const BLUE_BGRA: [u8; 4] = [0xd0, 0x50, 0x20, 0xff];
+
+/// [`lock`] closed and played out on `LOCK`, painted every frame until it
+/// closed; returns the frame count reached.
+fn play_out(r: &mut strand_render::Renderer, buf: &mut Buffer, lock: NodeId) -> u32 {
+    let mut k = 1;
+    while r.surface_spec(lock).is_some_and(|s| s.open) {
+        buf.paint_at(r, LOCK, 1, frame(k));
+        k += 1;
+        assert!(k < 200, "the lock never closed");
+    }
+    k
+}
+
+/// Paints `surface` in full into a new `w` × `h` buffer at frame `k`:
+/// whether it was wanted, what it drew, and the buffer.
+fn fresh_frame(
+    r: &mut strand_render::Renderer,
+    surface: SurfaceId,
+    (w, h): (u32, u32),
+    k: u32,
+) -> (bool, Damage, Buffer) {
+    let mut b = Buffer::new(w, h, Scale::ONE);
+    let wanted = r.wants_frame(surface);
+    let d = b.paint_at(r, surface, 0, frame(k));
+    (wanted, d, b)
+}
+
+/// (lock-int review) One lock root shown on two surfaces painted at
+/// different rates: the faster one ends the exit and closes the lock, and
+/// draws the exit's end once and then nothing, while the slower one, which
+/// has not drawn the end yet, still wants a frame and draws the end, the
+/// kept box included, then freezes too. Render says which has drawn the
+/// end (`lock_end_drawn`, what strand-surface's unlock waits for).
+#[test]
+fn a_lock_on_two_surfaces_freezes_each_on_the_end() {
+    const SLOW: SurfaceId = SurfaceId(5);
+    let (mut r, mut buf, [lock, still, card]) = lock(true);
+    r.set_surface_bounds(SLOW, Some(LogicalSize::new(320.0, 200.0)));
+    r.attach_surface(SLOW, lock);
+    r.configure_surface(SLOW, Size::new(320, 200), Scale::ONE);
+    let mut slow = Buffer::new(320, 200, Scale::ONE);
+    assert!(!slow.paint_at(&mut r, SLOW, 0, T0).is_empty());
+    assert_eq!(slow.px(160, 100), CARD);
+    close(&mut r, lock, &[still, card]);
+    let mut k = 1;
+    while r.surface_spec(lock).is_some_and(|s| s.open) {
+        buf.paint_at(&mut r, LOCK, 1, frame(k));
+        if k % 4 == 0 && k < 8 {
+            slow.paint_at(&mut r, SLOW, 1, frame(k));
+        }
+        k += 1;
+        assert!(k < 200, "the lock never closed");
+    }
+    assert!(
+        slow.px(160, 100) != GREEN,
+        "the slow surface is still part way: {:?}",
+        slow.px(160, 100)
+    );
+    assert!(!r.lock_end_drawn(LOCK) && !r.lock_end_drawn(SLOW));
+    // The fast one: the end once, then frozen.
+    let (wanted, d, b) = fresh_frame(&mut r, LOCK, (320, 200), k);
+    assert!(wanted && !d.is_empty());
+    assert_eq!((b.px(10, 100), b.px(160, 100)), (GREEN, GREEN));
+    assert!(r.lock_end_drawn(LOCK) && !r.lock_end_drawn(SLOW));
+    assert!(!r.wants_frame(LOCK), "the fast one is frozen");
+    // The slow one has not drawn it: it wants a frame, and draws the end
+    // with the box kept.
+    assert!(r.wants_frame(SLOW), "the slow one still owes the end");
+    let (_, d, b) = fresh_frame(&mut r, SLOW, (320, 200), k + 1);
+    assert!(!d.is_empty());
+    assert_eq!(
+        (b.px(10, 100), b.px(160, 100)),
+        (GREEN, GREEN),
+        "the slow one's end keeps the box, the card gone"
+    );
+    assert!(r.lock_end_drawn(SLOW));
+    assert!(!r.wants_frame(SLOW) && !r.wants_frame(LOCK), "both frozen");
+    for (s, j) in [(LOCK, 2), (SLOW, 3)] {
+        let (_, d, _) = fresh_frame(&mut r, s, (320, 200), k + j);
+        assert!(d.is_empty(), "{s:?} drew after its end");
+    }
+}
+
+/// (lock-int review) A frozen lock's surface renewed (a GPU given up on):
+/// the old one goes, a refresh runs before the new one comes (the review's
+/// repro), and the new id's first frame is the exit's end, not the lock's
+/// background alone, after which it is frozen; given a new size, it
+/// draws the end again at that size and freezes again. Before, a refresh
+/// with no surface showing the lock let its kept box go, and the new
+/// surface drew the blue alone.
+#[test]
+fn a_renewed_or_resized_frozen_lock_draws_its_end() {
+    const NEW: SurfaceId = SurfaceId(9);
+    let (mut r, mut buf, [lock, still, card]) = lock(true);
+    close(&mut r, lock, &[still, card]);
+    let k = play_out(&mut r, &mut buf, lock);
+    let (_, d, _) = fresh_frame(&mut r, LOCK, (320, 200), k);
+    assert!(!d.is_empty());
+    assert!(!r.wants_frame(LOCK));
+    // Renewed: detach, a refresh, attach a new id.
+    r.detach_surface(LOCK);
+    r.update();
+    r.set_surface_bounds(NEW, Some(LogicalSize::new(320.0, 200.0)));
+    r.attach_surface(NEW, lock);
+    r.configure_surface(NEW, Size::new(320, 200), Scale::ONE);
+    assert!(!r.lock_end_drawn(NEW), "the new one owes the end");
+    let (wanted, d, b) = fresh_frame(&mut r, NEW, (320, 200), k + 1);
+    assert!(wanted && !d.is_empty());
+    assert_ne!(
+        b.px(10, 100),
+        BLUE_BGRA,
+        "the renewed surface drew the bg alone"
+    );
+    assert_eq!((b.px(10, 100), b.px(160, 100)), (GREEN, GREEN));
+    assert!(r.lock_end_drawn(NEW) && !r.wants_frame(NEW), "frozen");
+    // A new size: drawn once, the end at that size, then frozen again.
+    r.set_surface_bounds(NEW, Some(LogicalSize::new(320.0, 240.0)));
+    r.configure_surface(NEW, Size::new(320, 240), Scale::ONE);
+    let (wanted, d, b) = fresh_frame(&mut r, NEW, (320, 240), k + 2);
+    assert!(wanted && !d.is_empty(), "a new size draws");
+    assert_eq!(
+        b.px(10, 120),
+        GREEN,
+        "the end, the box kept: {:?}",
+        b.px(10, 120)
+    );
+    assert_eq!(b.px(160, 120), GREEN, "the card stays gone");
+    assert!(!r.wants_frame(NEW), "frozen again");
+    // The lock session ends: what it kept goes.
+    r.lock_session_ended();
+    r.update();
+    assert_eq!(r.tree().ghost_count(), 0);
 }

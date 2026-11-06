@@ -193,6 +193,9 @@ struct Leaving {
     /// each content surface's last frame to show
     /// ([`State::lock_frames_shown`]).
     settling: bool,
+    /// (lock-int) A look at the last frames is due once the current
+    /// dispatch is through ([`State::lock_painted`]).
+    look_due: bool,
 }
 
 /// (lock-polish) What the lock's nodes say about an exit in progress.
@@ -600,6 +603,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             timer: Some(timer),
             since: Instant::now(),
             settling: false,
+            look_due: false,
         });
         self.host.lock_changed(LockState::Unlocking);
         true
@@ -624,8 +628,9 @@ impl<H: SurfaceHost + 'static> State<H> {
                 LOCK_EXIT_CAP.as_millis()
             ),
             (true, true) => log::warn!(
-                "lock: the exit's last frames had not shown at its {} ms cap: unlocking",
-                LOCK_EXIT_CAP.as_millis()
+                "lock: the exit's last frames had not shown at its {} ms cap ({}): unlocking",
+                LOCK_EXIT_CAP.as_millis(),
+                self.lock_frames_owed().join(", ")
             ),
             (false, false) => log::info!("lock: the exit ended after {ms} ms: unlocking"),
             (false, true) => {
@@ -707,16 +712,57 @@ impl<H: SurfaceHost + 'static> State<H> {
     }
 
     /// (lock-int) Each content surface of the lock has its last frame on
-    /// screen: none waits for a frame callback or the presentation of a
-    /// commit (its own, or the GPU thread's present it asked a callback
-    /// for). One never mapped, gone, renewed (a new id, mapped by its own
-    /// first frame), or whose last paint sent nothing waits for nothing.
+    /// screen: the painter has drawn the exit's end on it since its node
+    /// closed ([`SurfaceHost::lock_end_drawn`]), and no frame callback or
+    /// presentation of a commit is outstanding (its own, or the GPU
+    /// thread's present it asked a callback for), so that frame, or one
+    /// before it that drew the same (a paint that sent nothing), shows.
+    /// One that cannot draw it waits for nothing: gone, never mapped, or
+    /// renewed (a new id, unmapped until its own first frame).
     fn lock_frames_shown(&self) -> bool {
+        self.lock_frames_owed().is_empty()
+    }
+
+    /// (lock-int) The content surfaces [`Self::lock_frames_shown`] waits
+    /// for, each with why: the end not drawn, or its frame not shown.
+    fn lock_frames_owed(&self) -> Vec<String> {
         self.session_lock
             .contents
             .values()
-            .filter_map(|id| self.surfaces.get(id))
-            .all(|s| !s.mapped() || !s.throttled())
+            .filter_map(|id| {
+                let s = self.surfaces.get(id).filter(|s| s.mapped())?;
+                if !self.host.lock_end_drawn(*id) {
+                    Some(format!("surface {} has not drawn the end", id.0))
+                } else if s.throttled() {
+                    Some(format!("surface {}'s last frame has not shown", id.0))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// (lock-int) Lock content `surface` was painted while the exit waits
+    /// for the lock's last frames: they are looked at again once the
+    /// current dispatch is through, when the frame painted has gone with
+    /// its callback asked (the host sends a presented one after its
+    /// paint returns), so a paint that ends the wait, the end drawn with
+    /// nothing to send, is not missed.
+    pub(super) fn lock_painted(&mut self, surface: SurfaceId) {
+        let Some(l) = &mut self.session_lock.leaving else {
+            return;
+        };
+        if !l.settling || l.look_due || !self.session_lock.contents.values().any(|s| *s == surface)
+        {
+            return;
+        }
+        l.look_due = true;
+        self.handle.insert_idle(|state| {
+            if let Some(l) = &mut state.session_lock.leaving {
+                l.look_due = false;
+            }
+            state.follow_exit();
+        });
     }
 
     /// (lock-int) A frame callback or presentation came for `surface`:
@@ -779,7 +825,9 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// the new one's first frame takes. Keyboard focus moves to the new
     /// one with it. The session stays locked throughout. Returns the new
     /// surface, `None` when `surface` is no lock content or no lock is
-    /// asked for or held.
+    /// asked for or held, and (lock-int) when the renewal ended an exit
+    /// waiting for the old one's last frame, so the session unlocked and
+    /// the new one went with the lock.
     pub fn renew_lock_content(&mut self, surface: SurfaceId) -> Option<SurfaceId> {
         let lock = self.session_lock.phase.lock().cloned()?;
         let global = self
@@ -815,9 +863,9 @@ impl<H: SurfaceHost + 'static> State<H> {
             self.report_keyboard();
         }
         // (lock-int) An exit waiting for the old one's last frame waits
-        // for it no more.
+        // for it no more. If that unlocked, `new` went with the lock.
         self.lock_frame_shown(new);
-        Some(new)
+        self.is_lock_content(new).then_some(new)
     }
 
     /// (lockmon) The surface showing the lock's content on output

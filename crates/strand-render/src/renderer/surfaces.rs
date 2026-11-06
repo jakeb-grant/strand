@@ -389,11 +389,6 @@ impl Renderer {
         if let Some(root) = self.surfaces.remove(&surface).map(|s| s.root)
             && !self.surfaces.values().any(|s| s.root == root)
         {
-            // (lock-int) What a settled lock kept goes with its last
-            // surface, at the next refresh (a renewed one attaches first).
-            if self.lock_settled.contains_key(&root) {
-                self.spec_dirty.insert(root);
-            }
             // (integration-r7) Where it lay, for the boxes it leaves.
             let place = self.extras.origins.get(&root).cloned();
             self.extras.placed.remove(&root);

@@ -233,6 +233,9 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// lost hover as soon as the pointer left that (decisions.md
     /// gpu-regions, owner-testing.md bug 23).
     pub fn sync_presented(&mut self, surface: SurfaceId) {
+        // (lock-int) An exit may wait for this paint (and the frame the
+        // host sends after this call, its callback asked first).
+        self.lock_painted(surface);
         if !self.gpu.has(surface) {
             return;
         }

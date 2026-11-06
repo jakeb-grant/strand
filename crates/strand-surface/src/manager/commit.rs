@@ -167,6 +167,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         };
         s.stats.paints += 1;
         self.stats.paints += 1;
+        // (lock-int) An exit may wait for this paint (and its commit,
+        // made below before the look).
+        self.lock_painted(id);
         let wants_more = self.host.wants_frame(id);
         // (flex) A frame may show a node whose `cursor:` changed under a
         // pointer that has not moved.

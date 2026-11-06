@@ -785,6 +785,14 @@ impl Renderer {
             // settles on that exit's last frame until its surface goes.
             if spec.kind == NodeKind::Lock && was_closing && !spec.open {
                 self.lock_settled.entry(id).or_default();
+                // Each of its surfaces owes that frame: a paint draws it,
+                // or a preview finding the scene as last painted says the
+                // last frame drew it (`wake.rs`).
+                for s in self.surfaces.values_mut() {
+                    if s.root == id {
+                        s.mark_dirty();
+                    }
+                }
             }
             if !spec.open && reported == Some(true) {
                 // (popup-reopen) It closes now (its closing pose, if it
@@ -802,11 +810,8 @@ impl Renderer {
             // Content kept for a closing pose that is not playing (it
             // opened again, or closes at once after all) goes now; a
             // lock's stays while its content's exits play.
-            // (lock-int) A settled lock keeps it while a surface shows it.
-            if self.lock_settled.contains_key(&id) && !self.surfaces.values().any(|s| s.root == id)
-            {
-                self.lock_settled.remove(&id);
-            }
+            // (lock-int) A settled lock keeps it until the lock session
+            // ends (`Renderer::lock_session_ended`) or it opens again.
             if self.closing_content.contains_key(&id)
                 && self.anim.exiting(id) != Some(ExitKind::Close)
                 && !spec.closing

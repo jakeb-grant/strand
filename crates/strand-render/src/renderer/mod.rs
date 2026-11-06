@@ -514,8 +514,10 @@ pub struct Renderer {
     /// and what has none (the still) drawn as it was. Such a surface
     /// paints nothing more until it goes ([`Renderer::lock_frozen`]), and
     /// what the lock kept for its exit stays mounted while a surface
-    /// shows it, so a frame one must draw (a new size, a renewed surface)
-    /// is that end too, never the lock's background alone.
+    /// shows it, so a frame one must draw (a new size, a renewed surface,
+    /// anything that makes it repaint in full) is that end too, never the
+    /// lock's background alone. It lasts until the lock opens again or
+    /// the lock session ends ([`Renderer::lock_session_ended`]).
     lock_settled: BTreeMap<NodeId, BTreeSet<SurfaceId>>,
     /// Surface nodes the diff being applied closes (`open: false`).
     closing_now: BTreeSet<NodeId>,

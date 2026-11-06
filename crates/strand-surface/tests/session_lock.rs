@@ -71,6 +71,9 @@ struct LockHost {
     /// Paints nothing (and wants no frame) while set: a surface's first
     /// frame held back.
     hold: bool,
+    /// (lock-int) Surfaces that have not drawn the lock's exit's end
+    /// (`SurfaceHost::lock_end_drawn`).
+    ends_owed: HashSet<SurfaceId>,
 }
 
 impl Painter for LockHost {
@@ -130,6 +133,10 @@ impl SurfaceHost for LockHost {
 
     fn lock_changed(&mut self, state: LockState) {
         self.locks.push(state);
+    }
+
+    fn lock_end_drawn(&self, surface: SurfaceId) -> bool {
+        !self.ends_owed.contains(&surface)
     }
 }
 
@@ -602,6 +609,197 @@ fn an_exit_unlocks_once_its_last_frame_shows() {
     );
     settle(&mut lock, &mut desk, Duration::from_millis(300));
     assert_eq!(shot(&sway, "HEADLESS-1")[0], RED, "the desktop again");
+}
+
+/// (lock-int) An open two-way `lock` pinned to `output`, as render reports
+/// it `open` and `closing`.
+fn exit_spec_on(output: &str, open: bool, closing: bool) -> SurfaceSpec {
+    let mut s = lock_spec_on(output);
+    s.open = open;
+    s.open_two_way = true;
+    s.closing = closing;
+    s
+}
+
+/// (lock-int) Render's report for each of `nodes`.
+fn report(
+    lock: &mut SurfaceManager<LockHost>,
+    nodes: &[(NodeId, &str)],
+    open: bool,
+    closing: bool,
+) {
+    for (node, output) in nodes {
+        lock.state_mut().apply_surface_change(
+            *node,
+            SurfaceChange::Updated {
+                spec: exit_spec_on(output, open, closing),
+                recreate: false,
+            },
+        );
+    }
+}
+
+/// (lock-int) Paints `content` again, as the painter drawing the exit's
+/// end on it, and dispatches until it is painted.
+fn draw_end(lock: &mut SurfaceManager<LockHost>, content: SurfaceId) {
+    let host = lock.state_mut().host_mut();
+    host.ends_owed.remove(&content);
+    host.fill = [0x40, 0x40, 0x40];
+    host.painted.remove(&content);
+    lock.state_mut().repaint(content);
+    let painted = lock
+        .dispatch_until(WAIT, |s| s.host().painted.contains(&content))
+        .unwrap();
+    assert!(painted, "the end was never painted on {content:?}");
+}
+
+/// (lock-int) A locked session on `outputs` (`HEADLESS-1` and any made),
+/// one two-way lock instance on each, every content painted; the exit
+/// started (`unlock_after_exit`) with each content owing the exit's end.
+/// Returns the lock, the desktop, the instances and their contents, and
+/// when the password was accepted.
+#[allow(clippy::type_complexity)]
+fn exit_started(
+    sway: &Sway,
+    outputs: usize,
+) -> (
+    SurfaceManager<LockHost>,
+    SurfaceManager<TestHost>,
+    Vec<(NodeId, String)>,
+    Vec<SurfaceId>,
+    std::time::Instant,
+) {
+    let mut names = vec!["HEADLESS-1".to_string()];
+    for i in 1..outputs {
+        let o = sway.create_output();
+        sway.msg(&["output", &o, "pos", &(1920 * i).to_string(), "0"]);
+        names.push(o);
+    }
+    let mut desk = desktop(sway, outputs);
+    let mut lock = locker(sway);
+    let nodes: Vec<(NodeId, String)> = names
+        .iter()
+        .enumerate()
+        .map(|(i, o)| (NodeId::new(30 + i as u32, 0), o.clone()))
+        .collect();
+    for (node, o) in &nodes {
+        lock.state_mut()
+            .apply_surface_change(*node, SurfaceChange::Created(exit_spec_on(o, true, false)));
+    }
+    wait_lock(&mut lock, LockState::Locked);
+    let painted = lock
+        .dispatch_until(WAIT, |s| {
+            s.lock_contents().len() == outputs
+                && s.lock_contents()
+                    .iter()
+                    .all(|c| s.surface(*c).is_some_and(|i| i.stats.commits > 0))
+        })
+        .unwrap();
+    assert!(painted, "every content is painted");
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    let contents = lock.state().lock_contents();
+    lock.state_mut().host_mut().ends_owed = contents.iter().copied().collect();
+    let since = std::time::Instant::now();
+    assert!(lock.state_mut().unlock_after_exit(token()));
+    let refs: Vec<(NodeId, &str)> = nodes.iter().map(|(n, o)| (*n, o.as_str())).collect();
+    report(&mut lock, &refs, true, true);
+    (lock, desk, nodes, contents, since)
+}
+
+/// (lock-int review) With a lock instance on each of two outputs, the
+/// unlock waits until both have drawn the exit's end and shown it: render
+/// closing both nodes unlocks nothing while either still owes its end
+/// frame (the slower monitor, or an exit render ended before drawing it),
+/// one drawn leaves it waiting for the other, and the second drawn and
+/// shown unlocks, well inside the cap. Before, the unlock went once no
+/// frame was outstanding, whatever the last frame showed.
+#[test]
+fn an_exit_on_two_outputs_waits_for_both_ends() {
+    let test = "an_exit_on_two_outputs_waits_for_both_ends";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let (mut lock, mut desk, nodes, contents, since) = exit_started(&sway, 2);
+    let refs: Vec<(NodeId, &str)> = nodes.iter().map(|(n, o)| (*n, o.as_str())).collect();
+    report(&mut lock, &refs, false, false);
+    settle(&mut lock, &mut desk, Duration::from_millis(150));
+    let unlocked =
+        |l: &SurfaceManager<LockHost>| l.state().host().locks.contains(&LockState::Unlocked);
+    assert!(!unlocked(&lock), "unlocked with neither end drawn");
+    draw_end(&mut lock, contents[0]);
+    settle(&mut lock, &mut desk, Duration::from_millis(150));
+    assert!(!unlocked(&lock), "unlocked with one output's end drawn");
+    assert!(lock.state().is_locked() && lock.state().lock_leaving());
+    draw_end(&mut lock, contents[1]);
+    wait_lock(&mut lock, LockState::Unlocked);
+    let took = since.elapsed();
+    assert!(
+        took < strand_surface::LOCK_EXIT_CAP,
+        "unlocked by the cap ({took:?}), not by the ends showing"
+    );
+}
+
+/// (lock-int review) A lock asked for again while the unlock waits for
+/// the exit's last frames (render reports a closed node open again) stays
+/// locked: the host hears `Locked` again and never `Unlocked`, not even
+/// past the cap, whose timer went with the exit.
+#[test]
+fn a_lock_asked_for_again_while_its_end_shows_stays_locked() {
+    let test = "a_lock_asked_for_again_while_its_end_shows_stays_locked";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let (mut lock, mut desk, nodes, _contents, _) = exit_started(&sway, 1);
+    let refs: Vec<(NodeId, &str)> = nodes.iter().map(|(n, o)| (*n, o.as_str())).collect();
+    report(&mut lock, &refs, false, false);
+    settle(&mut lock, &mut desk, Duration::from_millis(100));
+    assert!(lock.state().lock_leaving(), "waiting for the end");
+    let before = lock.state().host().locks.len();
+    report(&mut lock, &refs, true, false);
+    assert_eq!(
+        lock.state().host().locks[before..],
+        [LockState::Locked],
+        "asked for again: locked again"
+    );
+    settle(&mut lock, &mut desk, Duration::from_millis(1200));
+    assert!(
+        !lock.state().host().locks.contains(&LockState::Unlocked),
+        "unlocked after being asked for again: {:?}",
+        lock.state().host().locks
+    );
+    assert!(lock.state().is_locked() && !lock.state().lock_leaving());
+    assert_ne!(shot(&sway, "HEADLESS-1")[0], RED);
+    assert!(lock.state_mut().unlock(token()));
+}
+
+/// (lock-int review) The end never drawn (a frame that never comes): the
+/// cap's timer unlocks about `LOCK_EXIT_CAP` after the password, not
+/// before and not much after.
+#[test]
+fn the_cap_unlocks_when_the_end_never_shows() {
+    let test = "the_cap_unlocks_when_the_end_never_shows";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let (mut lock, _desk, nodes, _contents, since) = exit_started(&sway, 1);
+    let refs: Vec<(NodeId, &str)> = nodes.iter().map(|(n, o)| (*n, o.as_str())).collect();
+    report(&mut lock, &refs, false, false);
+    wait_lock(&mut lock, LockState::Unlocked);
+    let took = since.elapsed();
+    let cap = strand_surface::LOCK_EXIT_CAP;
+    assert!(
+        took >= cap && took < cap + Duration::from_millis(500),
+        "unlocked {took:?} after the password, the cap {cap:?}"
+    );
 }
 
 /// Keys typed while locked reach the content surface (a virtual

@@ -2325,16 +2325,25 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   the lock plays its way out: the host hears `LockState::Unlocking`, the
   lock nodes shown with a two-way `open` are waited for until render
   reports each closed (`SurfaceSpec::closing` while it holds one open
-  for its exit), and the token is spent once each content surface's
-  last frame has shown (no frame callback or presentation it waits
-  for: its own commit's, or the one asked for the GPU thread's present;
-  one unmapped or gone waits for nothing; lock-int), or `LOCK_EXIT_CAP`
-  (1 s) after it came by a calloop timer of the manager's own. Render
-  draws a lock that closed after its exit once more, the exit's end
-  (what had no pose kept drawn), and then nothing on that surface until
-  it goes or the lock opens again (`Renderer::lock_frozen`), so the
-  frame waited for is the exit's end and never the lock's background
-  alone. Meanwhile
+  for its exit), and the token is spent once each mapped content
+  surface has drawn the exit's end (`SurfaceHost::lock_end_drawn`, true
+  by default; the binary's asks `Renderer::lock_end_drawn`) and that
+  frame has shown (no frame callback or presentation it waits for: its
+  own commit's, or the one asked for the GPU thread's present; one
+  unmapped or gone waits for nothing; lock-int), looked at again after
+  each lock paint and each frame shown, or `LOCK_EXIT_CAP` (1 s) after
+  it came by a calloop timer of the manager's own, whose warning names
+  the surfaces still owed. Render settles a lock that closed after its
+  exit: each of its surfaces owes one more frame, the exit's end (what
+  had no pose kept drawn), which a paint draws, or a preview finding
+  the scene as last painted says was drawn, and then draws nothing new
+  (`Renderer::lock_frozen`); what invalidates a surface (a new size, a
+  new surface id under the root, a backend or asset change, a failed
+  commit) draws that end again, never anything else. The settling and
+  what the lock kept last until the lock opens again or the host calls
+  `Renderer::lock_session_ended` (on `Unlocked` and `Finished`), so a
+  renewal's detach and attach, or a refresh between them, keep it, and
+  a lock made after `finished` draws afresh. Meanwhile
   `send_input` drops every event but focus and pointer enter/leave,
   contents stay on their outputs (a new output gets the solid), a waited
   node seen leaving and then open again (the lock asked for again) drops

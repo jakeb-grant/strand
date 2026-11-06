@@ -126,6 +126,39 @@ impl Renderer {
         })
     }
 
+    /// (lock-int) Whether lock content `surface` has drawn its lock's
+    /// settled frame, the exit's end, since the lock closed after its
+    /// exit; true for a surface render does not know or whose lock did
+    /// not settle (nothing of it is left to draw). strand-surface's
+    /// unlock after an exit waits for it on every content surface
+    /// (`SurfaceHost::lock_end_drawn`).
+    pub fn lock_end_drawn(&self, surface: SurfaceId) -> bool {
+        let Some(s) = self.surfaces.get(&surface) else {
+            return true;
+        };
+        self.lock_settled
+            .get(&s.root)
+            .is_none_or(|drawn| drawn.contains(&surface))
+    }
+
+    /// (lock-int) The session lock ended (unlocked, or the compositor
+    /// ended it): every lock that settled lets its exit's end go, what it
+    /// kept for it unmounting, so a lock shown later on the same nodes
+    /// (the one asked for after `finished`) draws what a new lock does.
+    /// Until then a settled lock keeps it across its surfaces going and
+    /// coming (a renewal).
+    pub fn lock_session_ended(&mut self) {
+        let roots: Vec<NodeId> = std::mem::take(&mut self.lock_settled).into_keys().collect();
+        for root in roots {
+            self.drop_closing_content(root);
+            for s in self.surfaces.values_mut() {
+                if s.root == root {
+                    s.mark_dirty();
+                }
+            }
+        }
+    }
+
     /// (lock-int) `surface` drew a frame: one of a settled lock drew its
     /// settled frame, and is frozen from now on.
     pub(super) fn lock_drew(&mut self, surface: SurfaceId) {

@@ -236,6 +236,16 @@ pub trait SurfaceHost: Painter {
     /// needs of the screens now (stills for the lock's `thumbnail
     /// screen`), briefly: the request waits for it.
     fn before_lock(&mut self) {}
+    /// (lock-int) Whether lock content `surface` has painted the lock's
+    /// settled frame, the exit's end, since its node closed (or paints
+    /// nothing of the node: one the painter does not draw, a node it
+    /// does not know or that did not play an exit). A lock that played
+    /// its way out unlocks only once each content surface has, and that
+    /// frame has shown. True by default: a host that draws no exits.
+    fn lock_end_drawn(&self, surface: SurfaceId) -> bool {
+        let _ = surface;
+        true
+    }
     /// (M4) Whether a drop on `surface` now, at the drag's last position,
     /// would land on something whose `on drop` takes it (the Router's
     /// `drop_target`). The manager asks after every `Drag*` event it sent

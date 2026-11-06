@@ -1721,9 +1721,13 @@ impl SurfaceHost for Host {
         if matches!(
             state,
             strand_surface::LockState::Unlocked | strand_surface::LockState::Finished
-        ) && let Some(feeds) = &mut self.feeds
-        {
-            feeds.lock_ended(&mut self.renderer);
+        ) {
+            // (lock-int) Its exit's end goes too: a lock asked for after
+            // `finished` draws anew on the same nodes.
+            self.renderer.lock_session_ended();
+            if let Some(feeds) = &mut self.feeds {
+                feeds.lock_ended(&mut self.renderer);
+            }
         }
         if let Some(f) = &self.logic {
             f.send(ToLogic::LockState(crate::run::lock::session_lock(state)));
@@ -1731,6 +1735,11 @@ impl SurfaceHost for Host {
         if let Some(p) = &self.wake {
             p.ping();
         }
+    }
+
+    fn lock_end_drawn(&self, surface: SurfaceId) -> bool {
+        // (lock-int) The built-in field draws no exit.
+        self.lock.shown_on(surface) || self.renderer.lock_end_drawn(surface)
     }
 
     fn compositor_caps(&mut self, caps: &CompositorCaps) {
@@ -2644,6 +2653,96 @@ mod tests {
         let _ = pings();
         host.input(&wheel);
         assert_eq!(pings(), 1);
+    }
+
+    /// (lock-int review) The compositor ending the lock while it waits for
+    /// the exit's end to show (`finished`): the new lock strand-surface
+    /// asks for recreates the content with the same id on the same, now
+    /// closed, node, and the host lets the old lock's end go when it hears
+    /// `Finished`, so that surface draws what a new lock on a closed node
+    /// draws (the lock's own background), not the end the last one kept
+    /// (a still of the desktop on a session still locked), and what it
+    /// kept is unmounted. Before, the kept still stayed mounted and drew.
+    #[test]
+    fn a_lock_finished_as_its_end_shows_lets_the_end_go() {
+        use strand_scene::{NodeKind, PropValue, SceneOp};
+        let font = std::fs::read(strand_text::test_font_path()).unwrap();
+        let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+            std::sync::Arc::new(font),
+        ]));
+        let renderer = Renderer::new(strand_render::TextBackend::Inline(Box::new(engine)));
+        let mut host = Host::new(renderer, false);
+        let (lock, still, card) = (NodeId::new(0, 0), NodeId::new(1, 0), NodeId::new(2, 0));
+        let num = PropValue::Number;
+        let color = |c: &str| PropValue::Color(strand_scene::Color::from_hex(c).unwrap());
+        let mut d = SceneDiff::new();
+        d.create(lock, NodeKind::Lock, None, 0)
+            .set(lock, Prop::Open, PropValue::Bool(true))
+            .set(
+                lock,
+                Prop::TwoWay,
+                PropValue::List(vec![PropValue::Keyword("open".into())]),
+            )
+            .set(lock, Prop::Bg, color("#2050d0"))
+            .create(still, NodeKind::Box, Some(lock), 0)
+            .set(still, Prop::Width, num(100.0))
+            .set(still, Prop::Height, num(100.0))
+            .set(still, Prop::Bg, color("#00ff00"))
+            .create(card, NodeKind::Box, Some(lock), 1)
+            .set(card, Prop::Width, num(50.0))
+            .set(card, Prop::Height, num(50.0))
+            .set(card, Prop::Bg, color("#e0e0e0"))
+            .set(
+                card,
+                Prop::Exit,
+                PropValue::Pose(vec![(Prop::Opacity, num(0.0))]),
+            );
+        assert!(host.renderer.apply(d).is_empty());
+        let s = SurfaceId(4);
+        host.renderer
+            .set_surface_bounds(s, Some(strand_scene::LogicalSize::new(100.0, 100.0)));
+        host.surface_attached(s, lock, None);
+        host.surface_configured(s, Size::new(100, 100), Scale::ONE);
+        let mut px = vec![0u8; 100 * 100 * 4];
+        let mut paint = |host: &mut Host, ms: u64| {
+            px.fill(0);
+            let t = PaintTarget::new(&mut px, Size::new(100, 100), 400, Scale::ONE, 0).unwrap();
+            let mut t = t.at(std::time::Duration::from_millis(ms));
+            let d = host.paint(s, &mut t);
+            (d, px[..4].to_vec())
+        };
+        paint(&mut host, 1000);
+        // The password accepted: logic closes the lock and unmounts it.
+        let mut d = SceneDiff::new();
+        for id in [still, card] {
+            d.push(SceneOp::Remove { id, window: false });
+        }
+        d.set(lock, Prop::Open, PropValue::Bool(false));
+        assert!(host.renderer.apply(d).is_empty());
+        let mut ms = 1016;
+        while host.renderer.surface_spec(lock).is_some_and(|s| s.open) {
+            paint(&mut host, ms);
+            ms += 16;
+            assert!(ms < 10_000, "the exit never ended");
+        }
+        let (_, corner) = paint(&mut host, ms);
+        assert_eq!(corner, [0x00, 0xff, 0x00, 0xff], "the end keeps the still");
+        assert!(host.lock_end_drawn(s));
+        assert!(host.renderer.tree().ghost_count() > 0);
+        // `finished`: the lock surfaces go, the host hears it, and the new
+        // lock's content comes back with the same id on the closed node.
+        host.surface_detached(s);
+        host.lock_changed(strand_surface::LockState::Finished);
+        host.surface_attached(s, lock, None);
+        host.surface_configured(s, Size::new(100, 100), Scale::ONE);
+        let (d, corner) = paint(&mut host, ms + 16);
+        assert!(!d.is_empty(), "the new lock's first frame is drawn");
+        assert_eq!(
+            corner,
+            [0xd0, 0x50, 0x20, 0xff],
+            "the new lock drew the last one's end"
+        );
+        assert_eq!(host.renderer.tree().ghost_count(), 0, "the kept still went");
     }
 
     /// (M4) The host hands render where each surface lies and on which

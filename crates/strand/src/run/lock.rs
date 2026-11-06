@@ -1721,7 +1721,7 @@ pub(crate) mod faults {
     }
 
     /// (lock-int) `lock_slow_close`: render's report that a lock closed
-    /// once its exit played out reaches strand-surface 400 ms late (and
+    /// once its exit played out reaches strand-surface 300 ms late (and
     /// whatever else render says of that node meanwhile, after it), as a
     /// busy main loop might hand it over, so what the lock's surfaces show
     /// between the exit's end and the unlock stays on screen long enough
@@ -1737,7 +1737,7 @@ pub(crate) mod faults {
         thread_local! {
             static HELD: RefCell<Held> = const { RefCell::new(None) };
         }
-        const HOLD: Duration = Duration::from_millis(400);
+        const HOLD: Duration = Duration::from_millis(300);
         if !on("lock_slow_close") {
             return;
         }

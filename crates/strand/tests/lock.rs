@@ -4291,38 +4291,75 @@ fn the_locks_still_stays_drawn_as_it_plays_out() {
 /// (lock-int) Between the exit's end and the unlock the lock keeps the
 /// exit's last frame on screen: the still, with no pose of its own, and
 /// the card gone. `lock_slow_close` hands render's report that the lock
-/// closed to strand-surface 400 ms late (a busy main loop), so whatever
+/// closed to strand-surface 300 ms late (a busy main loop), so whatever
 /// the lock draws in that gap stays up long enough for grim: every shot
 /// from the Return to the unlock shows the still, none the lock's `bg`
-/// alone. Before, render drew the lock with nothing kept in it the frame
-/// after it closed, and that frame could show for a moment before the
-/// unlock landed (the owner's "blip to dark"): here it would show for the
-/// whole hold. The unlock still comes from the exit, not the cap.
+/// alone, and the shots in the hold show the card gone and nothing
+/// changing. Before, render drew the lock with nothing kept in it the
+/// frame after it closed, and that frame could show for a moment before
+/// the unlock landed (the owner's "blip to dark"): here it would show for
+/// the whole hold. The unlock still comes from the exit, not the cap: a
+/// 150 ms exit and the hold leave half the cap spare.
 #[test]
 fn the_locks_last_frame_stays_until_the_unlock() {
-    let test = "lock_exit_settled";
+    last_frame_stays("lock_exit_settled", false);
+}
+
+/// (lock-int review) [`the_locks_last_frame_stays_until_the_unlock`] with
+/// the lock presented by the GPU thread (lavapipe): the freeze holds on the
+/// GPU's paint and present path too.
+#[test]
+fn the_locks_last_frame_stays_until_the_unlock_on_the_gpu() {
+    last_frame_stays("lock_exit_settled_gpu", true);
+}
+
+fn last_frame_stays(test: &str, gpu: bool) {
     if !in_lock_vm(test) {
         return;
     }
-    let config = exit_config_on(
-        &still_config(),
-        "exit { opacity: 0 }",
-        "ease(linear, 200ms)",
+    let base = if gpu { GLOW_CONFIG } else { CONFIG };
+    let base = base.replace(
+        "  text pct(10 / zero)\n",
+        "  text pct(10 / zero)\n  thumbnail screen { id: still; fit: cover; width: 320; height: 180 }\n",
     );
-    let mut vm = Vm::with(test, "lock_slow_close", &config);
+    let config = exit_config_on(&base, "exit { opacity: 0 }", "ease(linear, 150ms)");
+    let mut vm = if gpu {
+        Vm::gpu(test, "lock_slow_close", &config)
+    } else {
+        Vm::with(test, "lock_slow_close", &config)
+    };
+    let card = |s: &Shot| s.px(360, 200);
     let still = |s: &Shot| s.desktop_pixels() >= 320 * 6 && s.desktop_in_row(10) < s.w / 2;
     vm.strand.cli(&["set", "lock.locked", "true"]);
     vm.until("HEADLESS-1", "the card and the still", |s| {
-        near(s.corner(), LOCK_BG) && near(s.px(360, 200), CARD) && still(s)
+        near(card(s), CARD) && still(s)
     });
+    if gpu {
+        // The glow springs until the lock is promoted (`until_presented`
+        // takes the still's desktop pixels for the desktop).
+        let deadline = Instant::now() + WAIT;
+        let mut on = false;
+        while vm.gpu_attached().is_none() {
+            on = !on;
+            vm.strand
+                .cli(&["set", "lock.glow", if on { "true" } else { "false" }]);
+            std::thread::sleep(Duration::from_millis(400));
+            assert!(
+                Instant::now() < deadline,
+                "the lock was never promoted:\n{}",
+                vm.strand.log_text()
+            );
+        }
+        if on {
+            vm.strand.cli(&["set", "lock.glow", "false"]);
+            std::thread::sleep(Duration::from_millis(400));
+        }
+    }
     vm.keys.type_text(PASSWORD);
-    vm.until("HEADLESS-1", "the typed password", |s| {
-        near(s.corner(), LOCK_TYPED)
-    });
     vm.keys.enter("");
     vm.until_log("the lock plays its way out");
     let deadline = Instant::now() + WAIT;
-    let (mut shots, mut held) = (0, 0);
+    let (mut shots, mut in_hold) = (0, Vec::new());
     loop {
         let s = vm.sway.shot("HEADLESS-1");
         let log = vm.strand.log_text();
@@ -4338,21 +4375,40 @@ fn the_locks_last_frame_stays_until_the_unlock() {
         );
         shots += 1;
         if log.contains("STRAND_FAULT lock_slow_close") {
-            held += 1;
+            in_hold.push(card(&s));
         }
         assert!(Instant::now() < deadline, "never unlocked\n{log}");
     }
     vm.until("HEADLESS-1", "unlocked", Shot::desktop);
     let log = vm.strand.log_text();
-    eprintln!("lock exit, settled: {shots} shots before the unlock, {held} in the hold");
+    eprintln!(
+        "lock exit, settled{}: {shots} shots before the unlock, {} in the hold ({:02x?})",
+        if gpu { ", GPU" } else { "" },
+        in_hold.len(),
+        in_hold
+    );
     assert!(
-        held >= 2,
-        "too few shots in the hold to tell ({held} of {shots})\n{log}"
+        in_hold.len() >= 2,
+        "too few shots in the hold to tell ({} of {shots})\n{log}",
+        in_hold.len()
+    );
+    // The first shot in the hold may have been grabbed as the hold began,
+    // with the exit's last frame on its way: from the second on, the end.
+    let end = in_hold[1];
+    assert!(
+        !near(end, CARD) && in_hold[1..].iter().all(|c| near(*c, end)),
+        "the card is not gone, or the lock changed, in the hold: {in_hold:02x?}\n{log}"
     );
     assert!(
         log.contains("lock: the exit ended after ") && !log.contains("ms cap: unlocking"),
         "the exit did not end by itself:\n{log}"
     );
+    if gpu {
+        assert!(
+            vm.gpu_attached().is_some_and(|(_, m)| m == "Present"),
+            "the lock was not presented:\n{log}"
+        );
+    }
 }
 
 /// (lock-polish review) A `screens: focused` lock whose monitor is
