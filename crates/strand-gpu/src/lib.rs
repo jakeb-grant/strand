@@ -561,13 +561,14 @@ pub enum Op {
     /// last frame drew a backdrop with the same key, its pixels are drawn
     /// again as they are, nothing rendered or run; `0` draws it anew.
     ///
-    /// (perf-gpu-retain review) `reduce` (1, 2 or 4) draws it at that
-    /// fraction of the region's size, as the CPU draws a small backdrop
-    /// blur: `ops` scaled down into a texture of the region's size over
-    /// `reduce` (rounded up), the passes run there (their uniforms as
-    /// given, in its pixels), and their pixels drawn back over `region`
-    /// scaled up by `reduce` exactly, sampled bilinearly from pixel
-    /// centres with the edge pixels repeated. 1 is full resolution.
+    /// (perf-gpu-retain review) `reduce` (1, 2, 4 or 8) draws it at that
+    /// fraction of the region's size, as the CPU draws a backdrop blur
+    /// (lock-blur: any, however large): `ops` scaled down into a texture
+    /// of the region's size over `reduce` (rounded up), the passes run
+    /// there (their uniforms as given, in its pixels), and their pixels
+    /// drawn back over `region` scaled up by `reduce` exactly, sampled
+    /// bilinearly from pixel centres with the edge pixels repeated. 1 is
+    /// full resolution.
     Backdrop {
         region: kurbo::Rect,
         ops: Vec<Op>,

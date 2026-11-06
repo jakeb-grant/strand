@@ -155,12 +155,12 @@ pub(crate) struct PassWant {
     /// It reads `strand.pointer`: a pointer motion repaints it.
     pub pointer: bool,
     /// (perf-gpu-retain review) Drawn at this fraction of its size, its
-    /// uniforms in those pixels (a small backdrop blur at the CPU's
-    /// reduction, `backdrop::Pass::reduction`); 1 for full size.
+    /// uniforms in those pixels (a backdrop blur at the CPU's reduction,
+    /// `backdrop::Pass::reduction`); 1 for full size.
     pub reduce: u32,
     /// (perf-gpu-retain review) Drawn only in a GPU frame
     /// (`Op::Backdrop`), never asked for on its own: where no GPU frame
-    /// draws it the CPU does (a small backdrop blur).
+    /// draws it the CPU does (a backdrop blur, lock-blur: any size).
     pub inframe_only: bool,
 }
 
@@ -1351,8 +1351,8 @@ impl Renderer {
             if gpu_drawn && (w.id.slot == Slot::Node || inframe.contains(&w.id)) {
                 continue;
             }
-            // (review) A small backdrop blur no GPU frame draws is the
-            // CPU's, at its reduction, as on a surface the CPU draws.
+            // (review, lock-blur) A backdrop blur no GPU frame draws is
+            // the CPU's, at its reduction, as on a surface the CPU draws.
             if w.inframe_only {
                 continue;
             }

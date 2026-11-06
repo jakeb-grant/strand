@@ -116,6 +116,36 @@ pub(crate) fn group<'v>(
     (!out.is_empty()).then(|| out.into())
 }
 
+/// (lock-blur) `effects` drawn under `xform` (a node's `scale` and its
+/// ancestors', in physical pixels): a `filter: blur` blurs the node's own
+/// pixels, which the transform scales, so its radius scales with them,
+/// as CSS draws a filter before a transform. An image drawn at an eighth
+/// and `scale: 8` under `blur(4)` is as blurred as one drawn whole under
+/// `blur(32)`. The radius is the area's scale (a turn keeps it), at most
+/// [`MAX_RADIUS`].
+pub(crate) fn under_transform(
+    effects: Arc<[Effect]>,
+    xform: vello_cpu::kurbo::Affine,
+) -> Arc<[Effect]> {
+    let [a, b, c, d, _, _] = xform.as_coeffs();
+    let m = (a * d - b * c).abs().sqrt() as f32;
+    if !m.is_finite()
+        || (m - 1.0).abs() < 1e-4
+        || !effects.iter().any(|e| matches!(e, Effect::Blur { .. }))
+    {
+        return effects;
+    }
+    effects
+        .iter()
+        .map(|e| match e {
+            Effect::Blur { radius } => Effect::Blur {
+                radius: (radius * m).clamp(0.0, MAX_RADIUS),
+            },
+            other => other.clone(),
+        })
+        .collect()
+}
+
 /// Adds `e` to `out`, composing a colour matrix with one just before it
 /// (a chain of colour functions is one pass).
 fn push_effect(out: &mut Vec<Effect>, e: Effect) {

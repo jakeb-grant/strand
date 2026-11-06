@@ -1228,8 +1228,8 @@ fn a_backdrop_inside_a_filtered_ancestor_shows_what_is_behind() {
     let mut buf = Buffer::new(120, 64, Scale::ONE);
     buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
     assert_matches_ref("effects_backdrop_nested", &buf, 2);
-    // Grey, but for the little of the sharp stripes that shows where the
-    // blur reaches past the surface's edge (transparent there).
+    // Grey: (lock-blur) what is behind goes on past the surface's edge,
+    // so no sharp stripe shows through where the blur reaches past it.
     let chroma = |p: [u8; 4]| p[..3].iter().max().unwrap() - p[..3].iter().min().unwrap();
     let grey = |p: [u8; 4]| chroma(p) <= 16;
     let pure = [buf.px(45, 2), buf.px(35, 2), buf.px(55, 2)];
@@ -3714,4 +3714,246 @@ fn jelly_stretches_a_drag_whose_moves_are_previewed() {
         buf.pixels, plain_buf.pixels,
         "the frame painted without a preview"
     );
+}
+
+/// A Gaussian of σ `sigma` over premultiplied pixels (`w × h`), transparent
+/// past the edges, at full size in f64: what a `filter: blur` means.
+fn gaussian(px: &[u8], w: usize, h: usize, sigma: f64) -> Vec<f64> {
+    let r = (3.0 * sigma).ceil() as isize;
+    let k: Vec<f64> = (-r..=r)
+        .map(|i| (-(i * i) as f64 / (2.0 * sigma * sigma)).exp())
+        .collect();
+    let sum: f64 = k.iter().sum();
+    let k: Vec<f64> = k.iter().map(|v| v / sum).collect();
+    let pass = |src: &[f64], across: bool| {
+        let mut out = vec![0f64; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                for (j, kv) in k.iter().enumerate() {
+                    let o = j as isize - r;
+                    let (sx, sy) = if across {
+                        (x as isize + o, y as isize)
+                    } else {
+                        (x as isize, y as isize + o)
+                    };
+                    if sx < 0 || sy < 0 || sx >= w as isize || sy >= h as isize {
+                        continue;
+                    }
+                    let s = (sy as usize * w + sx as usize) * 4;
+                    for c in 0..4 {
+                        out[(y * w + x) * 4 + c] += kv * src[s + c];
+                    }
+                }
+            }
+        }
+        out
+    };
+    let src: Vec<f64> = px.iter().map(|v| f64::from(*v)).collect();
+    pass(&pass(&src, true), false)
+}
+
+/// The largest difference of `got` from `want` per channel, and the
+/// share of channels more than `tol` apart.
+fn worst(got: &[u8], want: &[f64], tol: f64) -> (f64, f64) {
+    let mut worst = 0f64;
+    let mut bad = 0usize;
+    for (g, w) in got.iter().zip(want) {
+        let d = (f64::from(*g) - w).abs();
+        worst = worst.max(d);
+        if d > tol {
+            bad += 1;
+        }
+    }
+    (worst, bad as f64 / got.len().max(1) as f64)
+}
+
+/// Stripes of colour (`n` of them, each `w × h` logical px, from `x0`)
+/// in `holder`.
+fn stripes_in(b: &mut Builder, holder: NodeId, n: usize, w: f32, h: f32) {
+    let colors = ["#f38ba8", "#a6e3a1", "#89b4fa", "#f9e2af"];
+    for i in 0..n {
+        let mut p = at_xy(i as f32 * w, 0.0, w, h);
+        p.push((Prop::Bg, color(colors[i % 4])));
+        p.push((Prop::Place, kw("absolute")));
+        b.node(NodeKind::Box, Some(holder), p);
+    }
+}
+
+/// A clear `w × h` panel holding one box of `props` with `n` stripes of
+/// `sw × sh` in it, painted at 1 s.
+fn holder_scene(
+    props: Fx,
+    (n, sw, sh): (usize, f32, f32),
+    (w, h): (u32, u32),
+) -> (Renderer, Buffer) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Panel, None, vec![]);
+    let mut p = props;
+    p.push((Prop::Place, kw("absolute")));
+    let holder = b.node(NodeKind::Box, Some(root), p);
+    stripes_in(&mut b, holder, n, sw, sh);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(w, h, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_secs(1));
+    (r, buf)
+}
+
+/// (lock-blur) A large `filter: blur` over content that does not change
+/// is drawn once, at its reduction (design.md "Filters and compositing"),
+/// close to a full-size Gaussian, and costs nothing on the frames after:
+/// a repaint beside it draws no group again (ref
+/// `effects_filter_blur_large.png`).
+#[test]
+fn a_large_filter_blur_is_drawn_once_and_kept() {
+    let fx = |blur: bool| {
+        let mut p = at_xy(40.0, 40.0, 320.0, 200.0);
+        if blur {
+            p.push(filter("blur", vec![num(36.0)]));
+        }
+        p
+    };
+    let (_, sharp) = holder_scene(fx(false), (8, 40.0, 200.0), (440, 280));
+    let (mut r, mut buf) = holder_scene(fx(true), (8, 40.0, 200.0), (440, 280));
+    assert_matches_ref("effects_filter_blur_large", &buf, 2);
+    let want = gaussian(&sharp.pixels, 440, 280, 36.0);
+    let (far, share) = worst(&buf.pixels, &want, 2.0);
+    eprintln!("reduced against full size: worst {far:.1}, {share:.4} past 2");
+    assert!(far <= 4.0 && share <= 0.01, "worst {far}, {share} past 2");
+    let (_, builds, kept) = r.offscreen_cache();
+    assert_eq!((builds, kept), (1, 1), "drawn once and kept");
+    // Frames after: a full repaint draws it from what was kept.
+    let before = buf.pixels.clone();
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_secs(2));
+    assert_eq!(r.offscreen_cache().1, 1, "not drawn again");
+    assert_eq!(buf.pixels, before);
+}
+
+/// (lock-blur review) A dimmed blur, the lock's wallpaper, is drawn at
+/// its reduction whichever order its filter is written in: `blur(36)
+/// brightness(0.7)` draws as `brightness(0.7) blur(36)` does (within a
+/// level of rounding; at full size it differs by more), close to a
+/// full-size Gaussian dimmed, once.
+#[test]
+fn a_dimmed_large_blur_is_drawn_at_its_reduction_in_either_order() {
+    let fx = |chain: Vec<PropValue>| {
+        let mut p = at_xy(40.0, 40.0, 320.0, 200.0);
+        p.push((Prop::Filter, PropValue::List(chain)));
+        p
+    };
+    let blur = || call("blur", vec![num(36.0)]);
+    let dim = || call("brightness", vec![num(0.7)]);
+    let (_, sharp) = holder_scene(fx(vec![dim()]), (8, 40.0, 200.0), (440, 280));
+    let (_, first) = holder_scene(fx(vec![dim(), blur()]), (8, 40.0, 200.0), (440, 280));
+    let (r, after) = holder_scene(fx(vec![blur(), dim()]), (8, 40.0, 200.0), (440, 280));
+    let diff = first
+        .pixels
+        .iter()
+        .zip(&after.pixels)
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap_or(0);
+    eprintln!("blur then brightness against brightness then blur: worst {diff}");
+    assert!(diff <= 1, "the two orders differ by {diff}");
+    let want = gaussian(&sharp.pixels, 440, 280, 36.0);
+    let (far, share) = worst(&after.pixels, &want, 2.0);
+    eprintln!("reduced against full size: worst {far:.1}, {share:.4} past 2");
+    assert!(far <= 4.0 && share <= 0.01, "worst {far}, {share} past 2");
+    assert_eq!(r.offscreen_cache().1, 1, "drawn once");
+}
+
+/// (lock-blur) A box that draws only its plain rounded background, under
+/// `filter: blur`, is drawn as the blurred rounded rect a shadow is: no
+/// offscreen group, at any size its springs give it, and the same look
+/// as the box blurred (ref `effects_blurred_box.png`).
+#[test]
+fn a_blurred_plain_box_is_drawn_as_a_shadow() {
+    let boxed = |blur: bool, w: f32| {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Panel, None, vec![]);
+        let mut p = at_xy(70.0, 50.0, w, 100.0);
+        p.extend([
+            (Prop::Place, kw("absolute")),
+            (Prop::Radius, num(16.0)),
+            (Prop::Bg, PropValue::Color(hex("#11111b").alpha(0.6))),
+        ]);
+        if blur {
+            p.push(filter("blur", vec![num(12.0)]));
+        }
+        let id = b.node(NodeKind::Box, Some(root), p);
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        r.attach_surface(S, r.tree().roots()[0]);
+        let mut buf = Buffer::new(320, 200, Scale::ONE);
+        buf.paint_at(&mut r, S, 0, std::time::Duration::from_secs(1));
+        (r, buf, id)
+    };
+    let (_, sharp, _) = boxed(false, 180.0);
+    let (mut r, mut buf, id) = boxed(true, 180.0);
+    assert_matches_ref("effects_blurred_box", &buf, 2);
+    assert_eq!(r.offscreen_cache().1, 0, "no offscreen group");
+    let want = gaussian(&sharp.pixels, 320, 200, 12.0);
+    let (far, share) = worst(&buf.pixels, &want, 2.0);
+    eprintln!("analytic against full size: worst {far:.1}, {share:.4} past 2");
+    assert!(far <= 3.0 && share <= 0.005, "worst {far}, {share} past 2");
+    // Another size: still no group.
+    let mut d = SceneDiff::new();
+    d.set(id, Prop::Width, num(220.0));
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_secs(2));
+    assert_eq!(
+        r.offscreen_cache().1,
+        0,
+        "no offscreen group at its new size"
+    );
+    // A box with more than its background keeps its group.
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Panel, None, vec![]);
+    let mut p = at_xy(70.0, 50.0, 180.0, 100.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Bg, color("#11111b")),
+        (
+            Prop::Border,
+            PropValue::Border(Border {
+                width: 2.0,
+                paint: Paint::Solid(hex("#f38ba8")),
+            }),
+        ),
+        filter("blur", vec![num(12.0)]),
+    ]);
+    b.node(NodeKind::Box, Some(root), p);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(320, 200, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_secs(1));
+    assert_eq!(r.offscreen_cache().1, 1, "a bordered box is a group");
+}
+
+/// (lock-blur) A `filter: blur` blurs the node's own pixels, which its
+/// `scale` scales: drawn at an eighth under `blur(4)` and `scale: 8`, a
+/// group is as blurred as the same drawn whole under `blur(32)`
+/// (decisions.md lock-blur).
+#[test]
+fn a_filter_blur_scales_with_its_node() {
+    let mut small = at_xy(180.0, 87.5, 40.0, 25.0);
+    small.extend([filter("blur", vec![num(4.0)]), (Prop::Scale, num(8.0))]);
+    let (_, scaled) = holder_scene(small, (4, 10.0, 25.0), (400, 200));
+    let mut whole = at_xy(40.0, 0.0, 320.0, 200.0);
+    whole.push(filter("blur", vec![num(32.0)]));
+    let (_, drawn) = holder_scene(whole, (4, 80.0, 200.0), (400, 200));
+    let want: Vec<f64> = drawn.pixels.iter().map(|v| f64::from(*v)).collect();
+    let (far, share) = worst(&scaled.pixels, &want, 2.0);
+    eprintln!("scaled against whole: worst {far:.1}, {share:.4} past 2");
+    assert!(far <= 3.0, "worst {far}, {share} past 2");
+    // Barely blurred is gone: across a stripe's edge it changes slowly.
+    let row: Vec<i32> = (150..250).map(|x| scaled.px(x, 100)[1] as i32).collect();
+    let step = row
+        .windows(2)
+        .map(|p| (p[1] - p[0]).abs())
+        .max()
+        .unwrap_or(0);
+    assert!(step <= 4, "{row:?}");
 }

@@ -702,7 +702,8 @@ impl<'a> Flattener<'a> {
         });
         // (M4) Group effects: a layer around the node and its subtree,
         // whose damage grows by their reach.
-        let effects = crate::effects::group(get, rect.w, rect.h, self.scale.as_f32());
+        let effects = crate::effects::group(get, rect.w, rect.h, self.scale.as_f32())
+            .map(|e| crate::effects::under_transform(e, self.xform));
         // (M4) Some of it shows: a GPU pass is asked for only then (the
         // device starts only while an effect is visible).
         #[cfg(feature = "gpu")]
@@ -918,6 +919,9 @@ impl<'a> Flattener<'a> {
         };
         // Where its fillets show past the clips above it.
         let mut fillets = Rect::default();
+        // (lock-blur) Its background as a plain rounded box in one
+        // colour: the item and its corners' radii.
+        let mut plain_fill: Option<(usize, [f32; 4])> = None;
         if has_area
             && let Some(paint) = paint_of(get(Prop::Bg))
                 .or(default_bg)
@@ -949,6 +953,16 @@ impl<'a> Flattener<'a> {
             } else {
                 (FillShape::Path(box_path.clone()), phys)
             };
+            if fillet.is_none()
+                && outline.is_none()
+                && !squircle
+                && matches!(paint, Paint::Solid(_))
+            {
+                plain_fill = Some((
+                    self.out.items.len(),
+                    [r.top_left, r.top_right, r.bottom_right, r.bottom_left].map(|v| v as f32),
+                ));
+            }
             self.push(
                 Item::Fill {
                     shape,
@@ -1975,10 +1989,12 @@ impl<'a> Flattener<'a> {
         }
         if let Some(i) = layer_group {
             self.out.items[i].bounds = subtree;
-            // (M4) Its bundled passes, drawn by the GPU.
-            #[cfg(feature = "gpu")]
-            self.filter_pass(node.id, i, time.map_or(0.0, |t| t.t));
-            self.marker(Item::PopLayer);
+            if mask_group.is_some() || !self.blurred_box(i, plain_fill) {
+                // (M4) Its bundled passes, drawn by the GPU.
+                #[cfg(feature = "gpu")]
+                self.filter_pass(node.id, i, time.map_or(0.0, |t| t.t));
+                self.marker(Item::PopLayer);
+            }
         }
         if let Some((i, pop)) = mask_group {
             self.out.items[i].bounds = subtree;
@@ -2585,6 +2601,81 @@ impl<'a> Flattener<'a> {
             ink,
         );
         passed
+    }
+
+    /// (lock-blur) Draws the layer pushed at item `i` as one blurred
+    /// rounded rect when that is all it is: a `filter: blur` and nothing
+    /// else, over a box that draws only its background, a plain rounded
+    /// box in one colour (`plain`: its item and corners' radii), under at
+    /// most a turn and an even scale. Such a blur is the field the shadow
+    /// primitive draws, so it costs what a shadow does on either backend
+    /// (the CPU's cached tiles, the GPU's own primitive) instead of an
+    /// offscreen group drawn, blurred and uploaded at each size: a soft
+    /// shadow under a growing card took 20 to 30 ms a frame. True if it
+    /// did (the layer's push and the fill are replaced; no pop follows).
+    pub(super) fn blurred_box(&mut self, i: usize, plain: Option<(usize, [f32; 4])>) -> bool {
+        let Some((fill, radii)) = plain else {
+            return false;
+        };
+        let Some(Item::PushLayer(layer)) = self.out.items.get(i).map(|d| &d.item) else {
+            return false;
+        };
+        let [strand_scene::Effect::Blur { radius }] = &*layer.effects else {
+            return false;
+        };
+        if layer.gpu.is_some() || layer.mosaic.is_some() || fill != i + 1 {
+            return false;
+        }
+        // Nothing after the fill but its children's clip, around nothing.
+        let empty = match &self.out.items[fill + 1..] {
+            [] => true,
+            [a, b] => matches!((&a.item, &b.item), (Item::PushClip(_), Item::PopClip)),
+            _ => false,
+        };
+        let Some(Item::Fill {
+            paint: Paint::Solid(color),
+            frame,
+            ..
+        }) = self.out.items.get(fill).map(|d| &d.item)
+        else {
+            return false;
+        };
+        // A turn and an even scale, which keep a blur round.
+        let xform = layer.xform;
+        let [a, b, c, d, _, _] = xform.as_coeffs();
+        let m = (a * d - b * c).abs().sqrt();
+        let even = (a - d).abs() <= 1e-6 * m && (b + c).abs() <= 1e-6 * m;
+        // The radius is the surface's (scaled with the node); the box is
+        // drawn in its own space.
+        let sigma = f64::from(*radius) * self.scale.as_f64() / m;
+        if !empty || !even || !m.is_finite() || m < 1e-6 || !(sigma.is_finite() && sigma > 0.0) {
+            return false;
+        }
+        // vello's blurred rounded rect is `erf(d / std_dev)`, a Gaussian
+        // of σ = std_dev / √2: its std_dev for this σ is √2 σ.
+        let std_dev = (sigma * std::f64::consts::SQRT_2) as f32;
+        let (rect, color) = (*frame, *color);
+        // Out to 3σ, as the layer's reach.
+        let reach = (3.0 * sigma).ceil() + 1.0;
+        let extent = rect.inflate(reach, reach);
+        let bounds = self.out.items[i]
+            .bounds
+            .union(map_rect(xform, cover(extent)))
+            .intersect(self.surface)
+            .unwrap_or_default();
+        self.out.items.truncate(i);
+        self.out.items.push(DisplayItem {
+            item: Item::Shadow {
+                rect,
+                radii,
+                std_dev,
+                color,
+                clip: extent.to_path(TOLERANCE),
+                extent,
+            },
+            bounds,
+        });
+        true
     }
 }
 

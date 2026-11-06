@@ -25,12 +25,14 @@ named_enum! {
 }
 
 named_enum! {
-    /// design.md's bundled GPU effects (eight, CRT and chromatic
+    /// design.md's bundled GPU effects (seven, CRT and chromatic
     /// aberration being two spellings of one): `filter: bloom(r) | crt()
     /// | chromatic(px) | wobble(amp)`, `backdrop: glass()`, and the GPU
-    /// versions of `particles` above 1,000, 3-D `tilt`, `effect aurora`
-    /// and large backdrop blur. Their WGSL lives in `strand-gpu`; the
-    /// stream that builds each one records its knobs (decisions.md).
+    /// versions of `particles` above 1,000, 3-D `tilt` and `effect
+    /// aurora`; and the backdrop blur a GPU frame draws at the CPU's
+    /// scale (lock-blur: the eighth once, no longer an effect of its
+    /// own). Their WGSL lives in `strand-gpu`; the stream that builds
+    /// each one records its knobs (decisions.md).
     pub enum Bundled {
         Bloom = "bloom",
         Glass = "glass",

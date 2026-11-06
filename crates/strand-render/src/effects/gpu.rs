@@ -13,10 +13,11 @@
 //!   (its subtree, CPU-filtered first), whose pixels become the layer's
 //!   offscreen group ([`crate::layers::Layer::gpu`]). The fallback: a
 //!   glow for bloom, the subtree unfiltered for the rest, the 2-D tilt.
-//! - `backdrop: glass()` and a `backdrop: blur(…)` over 0.2 Mpx: passes
-//!   over what is drawn behind the box, at full resolution, as the
-//!   backdrop layer's group. The fallback: `crate::backdrop`'s quarter-
-//!   scale blur (and tint).
+//! - `backdrop: glass()`: a pass over what is drawn behind the box, at
+//!   full resolution, as the backdrop layer's group. The fallback:
+//!   `crate::backdrop`'s quarter-scale blur and tint. A `backdrop:
+//!   blur(…)` is no pass of its own: a GPU frame draws it at the CPU's
+//!   reduction, and any other frame is the CPU's (lock-blur).
 //! - `effect aurora` and `particles` above 1,000 alive: the node's own
 //!   pass, drawn as its raster. The fallback: the still aurora and the
 //!   capped field, with their notices (said only when no GPU can draw
@@ -34,11 +35,6 @@ const GLASS_DISPERSION: f32 = 0.3;
 
 /// Glass's frost, logical pixels.
 const GLASS_FROST: f32 = 1.5;
-
-/// A `backdrop: blur(…)` over a box of at least this many buffer pixels
-/// is drawn by the GPU at full resolution (design.md: "large
-/// full-resolution backdrop blur, above about 0.2 Mpx").
-pub(crate) const LARGE_BLUR: u64 = 200_000;
 
 /// True if `node`'s raw `filter:` has a `wobble(…)`, which moves with
 /// time once the GPU draws it.
