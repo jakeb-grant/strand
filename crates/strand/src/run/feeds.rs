@@ -100,6 +100,15 @@ pub(crate) const LOCK_STILL_WAIT: Duration = Duration::from_millis(500);
 /// still is then 3.5 MiB, not 32.
 pub(crate) const STILL_MAX: (u32, u32) = (1280, 720);
 
+/// (lock-int) The size a lock's still is taken at: its screen's own (no
+/// cap). A lock that opens on the desktop and plays its way out to it
+/// draws its still over the whole screen, and its last frame must be the
+/// desktop as it was, pixel for pixel: scaled up from [`STILL_MAX`], it
+/// was soft, and the sharp desktop showing at the unlock read as a flash
+/// on the owner's 1920×1200 screen. A 4K screen's still is 32 MiB, held
+/// only while locked.
+pub(crate) const LOCK_STILL_MAX: (u32, u32) = (0, 0);
+
 /// (lockmon review) How long a still taken before a surface mapped may
 /// take before it is given up (its thumbnails then show nothing): the
 /// screenshot thread gives up itself at its own `SHOT_WAIT`, so this
@@ -266,7 +275,7 @@ impl Feeds {
             .map(|c| {
                 let tx = tx.clone();
                 let name = c.clone();
-                capture_screen(c, STILL_MAX, move |f| {
+                capture_screen(c, LOCK_STILL_MAX, move |f| {
                     let _ = tx.send((name, f));
                 })
             })

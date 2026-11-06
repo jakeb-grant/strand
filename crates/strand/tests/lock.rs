@@ -4332,3 +4332,66 @@ fn an_exit_whose_output_goes_ends_then() {
         .unwrap_or_default();
     eprintln!("lock exit, output unplugged: the exit ended after {took}");
 }
+
+/// (lock-int) A lock's still is taken at its screen's own size: on a
+/// screen larger than the thumbnails' cap (1920×1080 here, `STILL_MAX`
+/// 1280×720), a lock drawing it over the whole screen shows the desktop
+/// as it was, pixel for pixel. Scaled up from the cap it was soft, and
+/// the sharp desktop showing as the session unlocked read as a flash.
+#[test]
+fn a_locks_still_is_the_desktop_pixel_for_pixel() {
+    let test = "lock_still_sharp";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let config = CONFIG
+        .replace(
+            "  input { type: password",
+            "  thumbnail screen { width: screen.width; height: screen.height; fit: cover }\n  \
+             input { type: password",
+        )
+        .replace("  bg: #2050d0\n", "")
+        + r#"
+panel Detail {
+  anchor: top_left; width: 1900; height: 300; open: true; bg: #ffffff
+  text "The quick brown fox jumps over the lazy dog 0123456789" { color: #101010; font: "DejaVu Sans" 44px 400 }
+}
+"#;
+    let vm = Vm::with(test, "", &config);
+    vm.sway
+        .msg(&["output", "HEADLESS-1", "resolution", "1920x1080"])
+        .expect("a 1920x1080 output");
+    let wide = |s: &Shot| s.w == 1920 && s.h == 1080;
+    vm.until("HEADLESS-1", "the desktop at 1920x1080", |s| {
+        wide(s) && s.desktop_anywhere().is_some()
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    let before = vm.sway.shot("HEADLESS-1");
+    vm.strand.cli(&["set", "lock.locked", "true"]);
+    vm.until_log("first frame shows 1 of 1 screen stills");
+    std::thread::sleep(Duration::from_millis(800));
+    let after = vm.sway.shot("HEADLESS-1");
+    assert!(wide(&before) && wide(&after), "shots at 1920x1080");
+    // The field and the text sit at the lock's top left; the rest is the still.
+    let (mut off, mut worst) = (0, 0u8);
+    for y in 0..after.h {
+        for x in 0..after.w {
+            if x < 420 && y < 120 {
+                continue;
+            }
+            let (a, b) = (before.px(x, y), after.px(x, y));
+            let d = (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap_or(0);
+            worst = worst.max(d);
+            if d > 3 {
+                off += 1;
+            }
+        }
+    }
+    eprintln!("lock still: {off} pixels off the desktop, worst {worst}");
+    assert_eq!(
+        off,
+        0,
+        "the lock's still is not the desktop as it was ({off} pixels off, worst {worst})\n{}",
+        vm.strand.log_text()
+    );
+}
