@@ -79,6 +79,12 @@ impl HandOffs {
         self.on.contains(&id)
     }
 
+    /// (lock-int) `id` was destroyed while the GPU thread held it: kept
+    /// alive (and shown) until it lets go of it.
+    pub(super) fn is_doomed(&self, id: SurfaceId) -> bool {
+        self.doomed.contains_key(&id)
+    }
+
     /// `id`'s handles are lent and it is not handed off yet: nobody
     /// commits a buffer to it.
     pub(super) fn is_lent(&self, id: SurfaceId) -> bool {
@@ -192,6 +198,8 @@ impl<H: SurfaceHost + 'static> State<H> {
         if let Some(s) = self.gpu.doomed.remove(&surface) {
             // Its swapchain is gone: the wl_surface can go.
             drop(s);
+            // (lock-int) A lock's stills may wait for it to go.
+            self.settle_soon();
             return;
         }
         if !self.gpu.on.remove(&surface) {

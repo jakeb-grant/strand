@@ -377,6 +377,11 @@ pub(crate) struct Animator {
     pub(crate) springs: Vec<crate::probe::SpringTrace>,
     /// (caret) Focused `input`s' caret blinks.
     pub(crate) blinks: crate::widgets::Blinks,
+    /// (lock-int) The painted frame being drawn settles its surface
+    /// before a lock's stills are taken (`Renderer::settle_for_lock`):
+    /// what moves toward an end snaps there, as under `reduced_motion`,
+    /// while time runs on (clocks, loops, a caret's blink).
+    settle: bool,
 }
 
 /// (M4) A node's lift and glide, held aside by [`Animator::hold_still`].
@@ -431,7 +436,35 @@ impl Animator {
     /// (graph-follow) Time stands still in the frame being drawn
     /// (`reduced_motion`, or a frame with no clock).
     pub fn still(&self) -> bool {
-        self.snapping()
+        self.frozen()
+    }
+
+    /// (lock-int) The painted frame just begun settles its surface for a
+    /// lock's still (`Renderer::settle_for_lock`): every motion toward an
+    /// end snaps to it and ends ([`Animator::snapping`]), while what
+    /// follows time ([`Animator::frozen`]) runs on. [`Animator::begin`]
+    /// turns it off.
+    pub(crate) fn set_settle(&mut self, on: bool) {
+        self.settle = on && self.commit;
+    }
+
+    /// (lock-int) Something under `root` moves toward an end: a spring,
+    /// glide or size, an `enter` or `exit`, a finite `play`, a morph,
+    /// roll, mask or jelly. [`Animator::busy`] less the loops, which
+    /// never end (a looping `play`; clocks and carets are not motions).
+    pub fn settles(&self, tree: &SceneTree, root: NodeId) -> bool {
+        let under = |id: &NodeId| tree.root_of(*id) == Some(root);
+        self.nodes.keys().any(under)
+            || self.enter.iter().any(under)
+            || self.exits.keys().any(under)
+            || self.shapes.pending(|id| under(&id))
+            || self.rolls.pending(|id| under(&id))
+            || self.plays.ends(|id| under(&id))
+            || self.staggers.busy(|id| under(&id))
+            || self.reveals.busy(self.time, |id| under(&id))
+            || self.shared.busy(|id| under(&id))
+            || self.image_swaps.busy(|id| under(&id))
+            || self.jellies.busy(|id| under(&id))
     }
 
     /// Starts drawing a frame at `time` (`commit`: it will be painted).
@@ -442,6 +475,7 @@ impl Animator {
         self.prev = prev.filter(|p| !p.is_zero());
         self.commit = commit;
         self.active = false;
+        self.settle = false;
         self.drawn.clear();
         if commit {
             self.plays.begin(time);
@@ -516,7 +550,7 @@ impl Animator {
         id: NodeId,
         rate: crate::clock::Rate,
     ) -> (strand_scene::TimeContext, Option<Duration>) {
-        let frozen = self.snapping();
+        let frozen = self.frozen();
         let period = match rate {
             crate::clock::Rate::Refresh => None,
             crate::clock::Rate::Every(p) => Some(p),
@@ -543,7 +577,7 @@ impl Animator {
     /// time) in the frame being drawn: its clock starts here if this
     /// frame will be painted and the clocks are not frozen.
     pub fn start_clock(&mut self, id: NodeId) {
-        if self.commit && !self.snapping() {
+        if self.commit && !self.frozen() {
             self.times.begin(id, self.time);
         }
     }
@@ -552,14 +586,20 @@ impl Animator {
     /// and anchor hashed in `key`: blinking from the painted frame that
     /// first drew it so (steady while everything snaps).
     pub(crate) fn caret(&mut self, id: NodeId, key: u64) -> crate::widgets::CaretPhase {
-        let still = self.snapping();
+        let still = self.frozen();
         self.blinks
             .phase(id, key, self.time, self.slack, self.commit, still)
     }
 
     /// Everything snaps: `reduced_motion`, or a frame at time zero (no
-    /// clock).
+    /// clock), and (lock-int) a frame that settles its surface for a
+    /// lock's still, where time still runs ([`Animator::frozen`]).
     fn snapping(&self) -> bool {
+        self.frozen() || self.settle
+    }
+
+    /// Time stands still: `reduced_motion`, or a frame at time zero.
+    fn frozen(&self) -> bool {
         self.reduced || self.time.is_zero()
     }
 
@@ -986,7 +1026,10 @@ impl Animator {
             return None;
         };
         let k = k.clone();
-        let frame = self.frame();
+        let mut frame = self.frame();
+        // (lock-int) A loop plays on through a frame that settles; a
+        // play that ends is at its end.
+        frame.snap = self.frozen() || (self.settle && k.repeat.is_some());
         let (p, moving) = self.plays.progress(node.id, &k, frame);
         if let Some(p) = p {
             let boxes = Extents {

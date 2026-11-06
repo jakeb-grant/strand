@@ -698,6 +698,10 @@ impl Renderer {
         // Springs sample this frame's time; a scene flattened earlier
         // (by `update`) is stale while anything moves.
         let swapping = self.swap_moving(surface) || self.scrolling(surface);
+        // (lock-int) The frame that settles it for a lock's stills
+        // (`Renderer::settle_for_lock`): flattened afresh, every motion
+        // toward an end snapped to it.
+        let settle = self.take_lock_settle(surface);
         let Some(s) = self.surfaces.get_mut(&surface) else {
             return Damage::new();
         };
@@ -713,7 +717,7 @@ impl Renderer {
         // (growth) Nor while a step it may take waits for this frame.
         // (wave-cost) Nor over a size set since, which only a layout shows
         // (`SurfaceState::mark_sized` keeps the scene for `kept_scene`).
-        let cached = if s.animating || pending || ticking || s.step_due || s.anim_layout {
+        let cached = if s.animating || pending || ticking || s.step_due || s.anim_layout || settle {
             None
         } else {
             // A scene with time-bound nodes was evaluated at another
@@ -727,6 +731,7 @@ impl Renderer {
             self.sample_tokens(target.time, true);
         }
         self.anim.begin(target.time, prev, true);
+        self.anim.set_settle(settle);
         let now = self.now();
         self.anim.date_hidden(now);
         // (eval-rules-3) The palette roots' samples join the frame's.
@@ -739,7 +744,7 @@ impl Renderer {
         let waited = self.estimate_waited;
         let laid = self.layout_spent;
         // (wave-cost) No box moved: the last frame's scene.
-        let kept = match (&cached, swapping || ticking) {
+        let kept = match (&cached, swapping || ticking || settle) {
             (None, false) => self.kept_scene(surface),
             _ => None,
         };

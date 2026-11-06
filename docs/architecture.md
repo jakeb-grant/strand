@@ -2114,8 +2114,9 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   after an unplug), frames (`frame_deadline`, `frame_dropped`), input
   (`input`, `cursor`, `press_serial`, `keyboard_state`,
   `take_clipboard_asks`), drag and drop, windows (`window_state`,
-  `window_closed`), `compositor_caps`, `gpu_release`, `before_lock` and
-  `lock_changed`. The binary implements it on a wrapper around
+  `window_closed`), `compositor_caps`, `gpu_release`, `before_lock`,
+  (lock-int) `settle_for_lock`/`lock_settle_owed`/`lock_settle_changes`
+  and `lock_changed`. The binary implements it on a wrapper around
   `Renderer`.
 - `SurfaceManager::connect(host, Config)` / `with_connection`;
   `dispatch(timeout)` blocks while idle. Other sources go on
@@ -2321,6 +2322,37 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   a solid is delivered as the focused output's content's (else the
   first's). `before_lock()` runs just before the request (the binary
   takes pre-lock stills there).
+  (lock-int) A request a `lock` spec opening makes waits for Strand's own
+  surfaces to settle first (`lock_settle.rs`):
+  `SurfaceHost::settle_for_lock() -> Option<LockSettled>` (default
+  `None`) settles them and names the surfaces to wait for
+  (`LockSettled { surfaces, what }`); `None` asks for the lock at once,
+  in the same call, adding no wait. Otherwise the request waits until
+  each named surface is settled (gone, a GPU-held one once the GPU
+  thread let go of it; unmapped; or no longer
+  `SurfaceHost::lock_settle_owed` with no frame callback or presentation
+  outstanding, the GPU thread's present included), the host has handed
+  over its surface changes (`SurfaceHost::lock_settle_changes`), and a
+  `wl_display.sync` sent after that has come back (the stills are taken
+  on another connection), looked at again after each paint, frame shown,
+  surface gone or taken back and surface change, or `LOCK_SETTLE_CAP`
+  (25 ms) after the spec opened by a calloop timer of the manager's own;
+  then `before_lock()` and the request. `State::lock_settling()` says it
+  waits. `State::lock()` called directly (a restart's fail-closed lock,
+  the lock asked for again after `finished`) never settles and ends a
+  settle in progress; the spec closing meanwhile drops it, asking for
+  nothing. The binary's `settle_for_lock` settles only for a lock that
+  takes stills (a `thumbnail screen` in it, none kept yet):
+  `Renderer::settle_for_lock() -> LockSettle { exits, closed, settled,
+  going }` ends every running `exit` not under a lock (a closing
+  surface's spec reports closed at once, and `demo::Main::sync` hands
+  that change over in the same sync, before any paint) and marks each
+  other surface not under a lock with a motion toward an end
+  (`Animator::settles`: `busy` less looping `play`s) for one settled
+  frame, its next painted one, where `Animator::set_settle` snaps every
+  finite motion as `reduced_motion` does while clocks, loops and carets
+  run on; `Renderer::lock_settle_owed(surface)` is true until it has
+  painted it, or while it shows a closed non-lock node.
   (lock-polish) `State::unlock_after_exit(token)` holds the token while
   the lock plays its way out: the host hears `LockState::Unlocking`, the
   lock nodes shown with a two-way `open` are waited for until render

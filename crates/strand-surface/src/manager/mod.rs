@@ -90,6 +90,8 @@ mod effect;
 mod gpu_handoff;
 mod idle;
 mod layer;
+// (lock-int) Strand's own surfaces settle before a lock's stills.
+mod lock_settle;
 mod origin;
 mod outputs;
 mod pipes;
@@ -108,6 +110,7 @@ pub use gpu_handoff::RawHandles;
 
 use catcher::{Catcher, Under, wants_scrim, wants_under};
 use layer::to_sctk_layer;
+pub use lock_settle::{LOCK_SETTLE_CAP, LockSettled};
 pub use session_lock::{LOCK_EXIT_CAP, LOCK_FALLBACK_NODE, LockError};
 pub use window::ToplevelState;
 
@@ -236,6 +239,32 @@ pub trait SurfaceHost: Painter {
     /// needs of the screens now (stills for the lock's `thumbnail
     /// screen`), briefly: the request waits for it.
     fn before_lock(&mut self) {}
+    /// (lock-int) A `lock` spec opened and the lock is about to be asked
+    /// for: the host settles its own surfaces first, so the stills it
+    /// takes in [`SurfaceHost::before_lock`] show the desktop at rest
+    /// (render ends every running `exit` outside the lock, and gives the
+    /// other surfaces moving toward an end one settled frame). Returns
+    /// the surfaces the request waits for, each until it has painted its
+    /// settled frame ([`SurfaceHost::lock_settle_owed`]) and that frame
+    /// has shown, or has gone, bounded by
+    /// [`LOCK_SETTLE_CAP`]; `None` when nothing moves (or no still is
+    /// taken), and the lock is asked for at once. Not called for a lock
+    /// asked for by [`State::lock`] directly.
+    fn settle_for_lock(&mut self) -> Option<LockSettled> {
+        None
+    }
+    /// (lock-int) Whether `surface` still owes what a settle waits for:
+    /// its settled frame is not painted yet, or it shows a node that
+    /// closed and must go.
+    fn lock_settle_owed(&self, surface: SurfaceId) -> bool {
+        let _ = surface;
+        false
+    }
+    /// (lock-int) The host has surface changes it has not handed over
+    /// yet (a settle's closed specs): a settle waits for them.
+    fn lock_settle_changes(&self) -> bool {
+        false
+    }
     /// (lock-int) Whether lock content `surface` has painted the lock's
     /// settled frame, the exit's end, since its node closed (or paints
     /// nothing of the node: one the painter does not draw, a node it
@@ -967,6 +996,9 @@ pub struct State<H: SurfaceHost + 'static> {
     wsi_fifo: bool,
     /// (M4) The session lock (`session_lock.rs`).
     session_lock: session_lock::SessionLock,
+    /// (lock-int) Strand's own surfaces settling before a lock is asked
+    /// for (`lock_settle.rs`).
+    lock_settle: Option<lock_settle::Settle>,
     /// (M4) Surfaces the GPU thread commits (`gpu_handoff.rs`).
     gpu: gpu_handoff::HandOffs,
     /// (M4) Drag and drop over `wl_data_device` (`src/dnd.rs`).
@@ -1210,6 +1242,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             give_up_timers: HashMap::new(),
             wsi_fifo,
             session_lock: session_lock::SessionLock::new(session_lock),
+            lock_settle: None,
             gpu: gpu_handoff::HandOffs::default(),
             dnd,
             selection: selection::Selection::new(),
@@ -1525,6 +1558,8 @@ impl<H: SurfaceHost + 'static> State<H> {
         for id in self.surfaces_of(node) {
             self.sync_idle_inhibitor(id);
         }
+        // (lock-int) A lock's stills may wait for the host's changes.
+        self.settle_soon();
     }
 
     /// The layer-surface node `node` is nested in (itself for one):

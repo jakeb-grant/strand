@@ -32,7 +32,9 @@ use strand_scene::{
     ButtonState, ClipboardAsk, Color, Damage, InputEvent, LogicalRect, NodeId, NodeKind,
     PaintTarget, Painter, PropValue, Size, SurfaceChange, SurfaceId, SurfaceSpec,
 };
-use strand_surface::{Config, LockState, Monitor, SurfaceHost, SurfaceManager};
+use strand_surface::{
+    Config, LOCK_SETTLE_CAP, LockSettled, LockState, Monitor, SurfaceHost, SurfaceManager,
+};
 
 const LOCK: NodeId = NodeId::new(7, 0);
 const GREEN: [u8; 3] = [0, 255, 0];
@@ -74,6 +76,12 @@ struct LockHost {
     /// (lock-int) Surfaces that have not drawn the lock's exit's end
     /// (`SurfaceHost::lock_end_drawn`).
     ends_owed: HashSet<SurfaceId>,
+    /// (lock-int) What the next `settle_for_lock` settles: these
+    /// surfaces each owe a frame (`settle_owed`) until painted.
+    settle: Option<Vec<SurfaceId>>,
+    settle_owed: HashSet<SurfaceId>,
+    /// (lock-int) Settled frames painted and stills taken, in order.
+    events: Vec<String>,
 }
 
 impl Painter for LockHost {
@@ -86,6 +94,9 @@ impl Painter for LockHost {
         }
         self.sizes.insert(surface, target.size);
         self.painted.insert(surface);
+        if self.settle_owed.remove(&surface) {
+            self.events.push(format!("settled {}", surface.0));
+        }
         let [r, g, b] = self.fill;
         for px in target.pixels.chunks_exact_mut(4) {
             px.copy_from_slice(&[b, g, r, 0xff]);
@@ -137,6 +148,26 @@ impl SurfaceHost for LockHost {
 
     fn lock_end_drawn(&self, surface: SurfaceId) -> bool {
         !self.ends_owed.contains(&surface)
+    }
+
+    fn settle_for_lock(&mut self) -> Option<LockSettled> {
+        let surfaces = self.settle.take()?;
+        for s in &surfaces {
+            self.painted.remove(s);
+            self.settle_owed.insert(*s);
+        }
+        Some(LockSettled {
+            surfaces,
+            what: "a test's surfaces".into(),
+        })
+    }
+
+    fn lock_settle_owed(&self, surface: SurfaceId) -> bool {
+        self.settle_owed.contains(&surface)
+    }
+
+    fn before_lock(&mut self) {
+        self.events.push("stills".into());
     }
 }
 
@@ -1701,4 +1732,128 @@ fn a_lock_instance_on_every_output() {
     settle(&mut lock, &mut desk, Duration::from_millis(500));
     assert!(lock.state().lock_contents().is_empty());
     assert_eq!(shot(&sway, "HEADLESS-1")[0], RED);
+}
+
+/// (lock-int) A lock spec opening asks the host to settle its own
+/// surfaces first (`SurfaceHost::settle_for_lock`): with nothing to
+/// settle the lock is asked for at once, in the same call, its stills
+/// taken first; with a surface to settle, nothing is asked until that
+/// surface has painted its settled frame and the frame has shown, and
+/// then the stills come before the request, within
+/// `LOCK_SETTLE_CAP`. A lock the spec closes again while it settles is
+/// never asked for.
+#[test]
+fn a_lock_waits_for_the_hosts_settled_frames() {
+    let test = "a_lock_waits_for_the_hosts_settled_frames";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let mut desk = desktop(&sway, 1);
+    let mut lock = locker(&sway);
+    // A panel of the lock client's own, as Strand's island is.
+    const PANEL: NodeId = NodeId::new(9, 0);
+    lock.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(bar_spec("Own", 36.0)));
+    let ok = lock
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(PANEL)
+                .first()
+                .is_some_and(|id| s.host().painted.contains(id))
+        })
+        .unwrap();
+    assert!(ok, "the panel never painted");
+    let panel = lock.state().surfaces_of(PANEL)[0];
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+
+    // Nothing to settle: asked for at once.
+    lock.state_mut()
+        .apply_surface_change(LOCK, SurfaceChange::Created(lock_spec(true)));
+    assert!(lock.state().lock_active(), "asked for in the same call");
+    assert_eq!(lock.state().host().events, ["stills"]);
+    wait_lock(&mut lock, LockState::Locked);
+    assert!(lock.state_mut().unlock(token()));
+    wait_lock(&mut lock, LockState::Unlocked);
+    lock.state_mut().apply_surface_change(
+        LOCK,
+        SurfaceChange::Updated {
+            spec: lock_spec(false),
+            recreate: false,
+        },
+    );
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+
+    // The panel to settle: nothing is asked for yet.
+    lock.state_mut().host_mut().events.clear();
+    lock.state_mut().host_mut().settle = Some(vec![panel]);
+    let asked = std::time::Instant::now();
+    lock.state_mut().apply_surface_change(
+        LOCK,
+        SurfaceChange::Updated {
+            spec: lock_spec(true),
+            recreate: false,
+        },
+    );
+    assert!(!lock.state().lock_active(), "it settles first");
+    assert!(lock.state().lock_settling());
+    assert!(lock.state().host().events.is_empty());
+    let ok = lock.dispatch_until(WAIT, |s| s.lock_active()).unwrap();
+    let took = asked.elapsed();
+    assert!(ok, "never asked for");
+    assert_eq!(
+        lock.state().host().events,
+        [format!("settled {}", panel.0), "stills".to_string()],
+        "the settled frame, then the stills"
+    );
+    assert!(
+        took < LOCK_SETTLE_CAP + Duration::from_millis(200),
+        "asked for after {took:?}"
+    );
+    wait_lock(&mut lock, LockState::Locked);
+    assert!(lock.state_mut().unlock(token()));
+    let n = lock.state().host().locks.len();
+    let ok = lock
+        .dispatch_until(WAIT, |s| s.host().locks[n..].contains(&LockState::Unlocked))
+        .unwrap();
+    assert!(ok, "never unlocked again");
+    lock.state_mut().apply_surface_change(
+        LOCK,
+        SurfaceChange::Updated {
+            spec: lock_spec(false),
+            recreate: false,
+        },
+    );
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+
+    // Closed again while it settles: never asked for.
+    lock.state_mut().host_mut().events.clear();
+    lock.state_mut().host_mut().settle = Some(vec![panel]);
+    lock.state_mut().apply_surface_change(
+        LOCK,
+        SurfaceChange::Updated {
+            spec: lock_spec(true),
+            recreate: false,
+        },
+    );
+    assert!(lock.state().lock_settling());
+    lock.state_mut().apply_surface_change(
+        LOCK,
+        SurfaceChange::Updated {
+            spec: lock_spec(false),
+            recreate: false,
+        },
+    );
+    assert!(!lock.state().lock_settling());
+    settle(&mut lock, &mut desk, LOCK_SETTLE_CAP * 4);
+    assert!(
+        !lock.state().lock_active(),
+        "a closed spec asks for nothing"
+    );
+    assert!(
+        !lock.state().host().events.contains(&"stills".to_string()),
+        "{:?}",
+        lock.state().host().events
+    );
 }

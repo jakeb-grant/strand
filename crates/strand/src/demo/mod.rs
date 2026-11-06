@@ -158,6 +158,16 @@ impl LoopSync for Main<'_> {
         for (node, change) in changes {
             state.apply_surface_change(node, change);
         }
+        // (lock-int) A lock asked for above settled Strand's own surfaces
+        // first: a panel whose exit that ended goes now, before the poll
+        // below could paint it at rest.
+        if std::mem::take(&mut state.host_mut().settled_for_lock) {
+            let mut changes = state.host_mut().renderer.take_surface_changes();
+            crate::run::lock::faults::hold_lock_close(state, &mut changes);
+            for (node, change) in changes {
+                state.apply_surface_change(node, change);
+            }
+        }
         state.host_mut().forward_facts();
         state.poll();
         Ok(())

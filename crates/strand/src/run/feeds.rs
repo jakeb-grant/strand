@@ -259,6 +259,12 @@ impl Feeds {
         out
     }
 
+    /// (lock-int) Stills from before the lock are kept (the lock asked
+    /// for again after `finished` keeps the first ones).
+    pub(crate) fn has_lock_stills(&self) -> bool {
+        !self.lock_stills.is_empty()
+    }
+
     /// (lockmon) A lock is about to be asked for: a still of each screen
     /// in `connectors`, taken now (the desktop still shows), waiting at
     /// most `wait`. Kept until [`Feeds::lock_ended`]; a lock asked for

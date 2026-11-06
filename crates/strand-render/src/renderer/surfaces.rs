@@ -400,6 +400,7 @@ impl Renderer {
         }
         self.forget_fade(surface);
         self.extras.images.forget(surface);
+        self.lock_settle.remove(&surface);
         self.reap_exits();
         self.bounds.remove(&surface);
         self.facts_sent.retain(|(s, _), _| *s != surface);

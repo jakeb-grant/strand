@@ -177,6 +177,16 @@ impl Plays {
                 .any(|(id, p)| !p.done && p.seen.is_some() && p.seen == self.frame && under(*id))
     }
 
+    /// (lock-int) [`Plays::busy`] for plays that end: a new one a preview
+    /// saw (not known yet to loop or not), or one the last painted frame
+    /// drew that has a length and has not ended.
+    pub(crate) fn ends(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
+        self.pending.iter().any(|id| under(*id))
+            || self.nodes.iter().any(|(id, p)| {
+                p.end.is_some() && !p.done && p.seen.is_some() && p.seen == self.frame && under(*id)
+            })
+    }
+
     /// A preview saw a new `play` `under` a surface (roll-preview).
     pub(crate) fn pending(&self, mut under: impl FnMut(NodeId) -> bool) -> bool {
         self.pending.iter().any(|id| under(*id))

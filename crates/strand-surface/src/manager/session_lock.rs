@@ -458,10 +458,15 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// `Finished`. Called when a `lock` spec opens; the binary also calls
     /// it to lock with its fallback when no lock is compiled.
     /// [`LockError::NotEnabled`] before [`Self::enable_session_lock`].
+    ///
+    /// (lock-int) A lock asked for here is asked for at once: a settle of
+    /// Strand's own surfaces in progress (`lock_settle.rs`, only a spec
+    /// opening starts one) ends now.
     pub fn lock(&mut self) -> Result<(), LockError> {
         if self.session_lock.phase.lock().is_some() {
             return Ok(());
         }
+        self.stop_settle();
         if !self.session_lock.enabled {
             return Err(LockError::NotEnabled);
         }
@@ -749,6 +754,8 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// paint returns), so a paint that ends the wait, the end drawn with
     /// nothing to send, is not missed.
     pub(super) fn lock_painted(&mut self, surface: SurfaceId) {
+        // (lock-int) A lock's stills may wait for this paint too.
+        self.settle_soon();
         let Some(l) = &mut self.session_lock.leaving else {
             return;
         };
@@ -768,6 +775,8 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// (lock-int) A frame callback or presentation came for `surface`:
     /// an exit waiting for the lock's last frames looks again.
     pub(super) fn lock_frame_shown(&mut self, surface: SurfaceId) {
+        // (lock-int) A lock's stills may wait for this frame too.
+        self.settle_soon();
         if self
             .session_lock
             .leaving
@@ -1013,13 +1022,24 @@ impl<H: SurfaceHost + 'static> State<H> {
             .iter()
             .any(|n| self.specs.contains_key(n));
         if !any {
+            self.drop_settle();
             self.sync_lock_surfaces();
             return;
         }
         if !self.lock_spec_open() {
+            self.drop_settle();
             self.session_lock.spent = false;
             self.session_lock.asked_again = false;
         } else if !self.session_lock.spent && !self.lock_active() {
+            // (lock-int) Strand's own surfaces settle first, the lock
+            // asked for once they have (`lock_settle.rs`), or at once
+            // with nothing moving. Only a request that can go waits.
+            if self.session_lock.enabled
+                && self.session_lock.manager.is_some()
+                && self.settle_before_lock()
+            {
+                return;
+            }
             match self.lock() {
                 Ok(()) => {}
                 // Not spent: enabling it later takes the lock.

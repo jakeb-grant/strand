@@ -28,6 +28,7 @@ mod feed;
 mod frame;
 mod layout_pass;
 mod lists;
+mod lock_settle;
 mod pointer;
 mod pose;
 #[cfg(feature = "eval-hooks")]
@@ -46,6 +47,7 @@ pub use backend::GPU_WAIT;
 pub use feed::{FeedDemand, FeedKind, THUMBNAIL_STEP};
 pub use frame::PaintTimes;
 pub use lists::{ListFrames, ScrollInput, ScrollKind, ScrollMove};
+pub use lock_settle::LockSettle;
 pub use specs::resize_share;
 pub use summary::FrameSummary;
 pub use text::TextBackend;
@@ -519,6 +521,9 @@ pub struct Renderer {
     /// lock's background alone. It lasts until the lock opens again or
     /// the lock session ends ([`Renderer::lock_session_ended`]).
     lock_settled: BTreeMap<NodeId, BTreeSet<SurfaceId>>,
+    /// (lock-int) Surfaces whose next painted frame settles them before
+    /// a lock's stills ([`Renderer::settle_for_lock`]).
+    lock_settle: BTreeSet<SurfaceId>,
     /// Surface nodes the diff being applied closes (`open: false`).
     closing_now: BTreeSet<NodeId>,
     /// Nodes the diff being applied creates on a surface not shown: if
@@ -688,6 +693,7 @@ impl Renderer {
             exit_stall: EXIT_STALL,
             closing_content: BTreeMap::new(),
             lock_settled: BTreeMap::new(),
+            lock_settle: BTreeSet::new(),
             closing_now: BTreeSet::new(),
             born: Vec::new(),
             opening: BTreeSet::new(),

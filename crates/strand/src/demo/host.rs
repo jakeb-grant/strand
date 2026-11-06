@@ -56,6 +56,10 @@ pub struct Host {
     /// (M4) Handed-off surfaces the manager had to destroy: the GPU host
     /// sends `Release` for each (`run/gpu.rs`).
     pub gpu_released: Vec<SurfaceId>,
+    /// (lock-int) A lock settled Strand's own surfaces while surface
+    /// changes were being handed over: what that closed is handed over
+    /// in the same sync (`demo::Main::sync`), before any of them paints.
+    pub(crate) settled_for_lock: bool,
     /// (M4) `strand run`: the producers of the visible fed nodes (a
     /// `spectrum`'s audio tap), changed after a paint or a diff changes
     /// them.
@@ -575,6 +579,7 @@ impl Host {
             idle: Vec::new(),
             blur_fallback: BlurFallback::default(),
             gpu_released: Vec::new(),
+            settled_for_lock: false,
             feeds: None,
             lock: crate::run::lock::LockScreen::default(),
             recorder: crate::run::record::InputRecorder::new(false),
@@ -1711,6 +1716,41 @@ impl SurfaceHost for Host {
             let screens = feeds.lock_screens(self.renderer.tree());
             feeds.take_lock_stills(&screens, crate::run::feeds::LOCK_STILL_WAIT);
         }
+    }
+
+    fn settle_for_lock(&mut self) -> Option<strand_surface::LockSettled> {
+        // (lock-int) Only a lock that takes stills of the screens waits
+        // for the desktop to come to rest, and only for its first ones (a
+        // lock asked for again keeps those: `Feeds::take_lock_stills`).
+        let feeds = self.feeds.as_ref()?;
+        if feeds.has_lock_stills() || feeds.lock_screens(self.renderer.tree()).is_empty() {
+            return None;
+        }
+        let s = self.renderer.settle_for_lock();
+        if s.is_empty() {
+            return None;
+        }
+        self.settled_for_lock = true;
+        if let Some(p) = &self.wake {
+            p.ping();
+        }
+        Some(strand_surface::LockSettled {
+            surfaces: s.surfaces(),
+            what: format!(
+                "{} exits ended, {} surfaces closed, {} surfaces snapped to rest",
+                s.exits,
+                s.closed.len(),
+                s.settled.len()
+            ),
+        })
+    }
+
+    fn lock_settle_owed(&self, surface: SurfaceId) -> bool {
+        self.renderer.lock_settle_owed(surface)
+    }
+
+    fn lock_settle_changes(&self) -> bool {
+        self.renderer.has_surface_changes()
     }
 
     fn lock_changed(&mut self, state: strand_surface::LockState) {

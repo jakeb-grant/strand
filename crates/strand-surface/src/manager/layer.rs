@@ -339,6 +339,8 @@ impl<H: SurfaceHost + 'static> State<H> {
         if let Some(m) = zone_gone {
             self.place_layers_on(&m);
         }
+        // (lock-int) A lock's stills may wait for it to go.
+        self.settle_soon();
         // `grab_focus` may name it still: the sync moves it on and tells
         // the new target (not the gone one).
         self.sync_popup_keyboard();

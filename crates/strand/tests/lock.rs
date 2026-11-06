@@ -4518,3 +4518,248 @@ panel Detail {
         vm.strand.log_text()
     );
 }
+
+// ---- (lock-int) a lock's stills show the desktop at rest -------------------
+
+/// The owner's launcher and island (decisions.md lock-int, 2026-11-05),
+/// cut down: the island's two icons fade out while the launcher is open
+/// and back over 240 ms; the launcher's card, the island's colour, drops
+/// open and folds back over the island, and its surface goes 300 ms
+/// after `open` turns false, with `exit { opacity: 0 }`. Its Lock
+/// (`pick`) folds it and asks for the lock as its surface goes, in the
+/// tick that starts its exit, as `session.lock()` from the owner's
+/// launcher does. `glow` springs the card's colour, a large animation
+/// render promotes to the GPU.
+const LAUNCH_CONFIG: &str = r#"export state locked = false
+export state zero = 1
+export state open = false
+export state pick = 0
+export state glow = false
+state lock_next = false
+state shown = false
+state dropped = false
+on change open { if open { shown = true } else { dropped = false } }
+on change open after 110ms { if open { dropped = true } }
+on change open after 300ms { if !open { shown = false } }
+on change shown { if !shown { open = false; if lock_next { lock_next = false; locked = true } } }
+on change pick { lock_next = true; open = false }
+
+panel Island {
+  anchor: top; margin: 6, 0, 0; size: auto; open: true
+  stack { width: 640; height: 34; bg: #303040
+    row { width: 640; height: 34; align: center; pad: 0, 12
+      opacity: 1 ~ 240ms
+      when open { opacity: 0 ~ 80ms }
+      box { width: 200; height: 20; bg: #40d040 }
+      spacer {}
+      box { width: 200; height: 20; bg: #40d040 }
+    }
+  }
+}
+
+panel Launcher {
+  layer: overlay; anchor: top; margin: 6, 0, 0; size: auto
+  keyboard: exclusive; open: <-> shown
+  exit { opacity: 0 }
+  col { clip: true; width: 640; height: (dropped ? 300 : 34) ~ spring(700, 1)
+    bg: glow ? #383850 : #303040 ~ 250ms
+    row { height: 34; shrink: 0; pad: 0, 14; align: center
+      box { width: 16; height: 16; bg: #d0d0d0 }
+    }
+  }
+}
+
+lock Gate {
+  state secret = ""
+  open: <-> locked
+  bg: #2050d0
+  thumbnail screen { width: screen.width; height: screen.height; fit: cover }
+  col { width: 200; height: screen.height; pad: 600, 0, 0, 0
+    box { width: 64; height: 64; bg: #2050d0 }
+  }
+  input { type: password; text: <-> secret; focus: true
+    on activate { if secret != "" { auth.submit(secret) }; secret = "" }
+  }
+}
+"#;
+/// The island's icons; 8000 pixels when both show.
+const ICON: [u8; 3] = [0x40, 0xd0, 0x40];
+/// The launcher's search glyph: only its card shows it.
+const GLYPH: [u8; 3] = [0xd0, 0xd0, 0xd0];
+/// What a lock's settle logs ([`strand_surface::LOCK_SETTLE_CAP`]).
+const SETTLED: &str = "lock: Strand's surfaces settled in ";
+const NOT_SETTLED: &str = "lock: Strand's surfaces had not settled";
+
+impl Vm {
+    /// [`LAUNCH_CONFIG`]'s island at rest, both icons showing.
+    fn island(&self) {
+        self.until("HEADLESS-1", "the island", |s| s.pixels_of(ICON) >= 7900);
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    /// Opens [`LAUNCH_CONFIG`]'s launcher and waits for it dropped.
+    fn launcher(&self) {
+        self.strand.cli(&["set", "lock.open", "true"]);
+        self.until("HEADLESS-1", "the launcher dropped", |s| {
+            s.pixels_of(GLYPH) > 100 && s.pixels_of(ICON) == 0
+        });
+        std::thread::sleep(Duration::from_millis(600));
+    }
+
+    /// One lock, asked for directly (the control) or from the launcher's
+    /// Lock (`owner`): the lock's first shot, its still under the lock's
+    /// box, once unlocked again.
+    fn launch_lock(&mut self, owner: bool) -> Shot {
+        let lock_shown = |s: &Shot| near(s.px(30, 630), LOCK_BG);
+        if owner {
+            self.launcher();
+            self.strand.cli(&["set", "lock.pick", "1"]);
+        } else {
+            self.strand.cli(&["set", "lock.locked", "true"]);
+        }
+        let deadline = Instant::now() + WAIT;
+        let first = loop {
+            let s = self.sway.shot("HEADLESS-1");
+            if lock_shown(&s) {
+                break s;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "never the lock\n{}",
+                self.strand.log_text()
+            );
+        };
+        let n = self
+            .strand
+            .log_text()
+            .matches("session lock: Unlocked")
+            .count();
+        self.keys.enter(PASSWORD);
+        let deadline = Instant::now() + WAIT;
+        while self
+            .strand
+            .log_text()
+            .matches("session lock: Unlocked")
+            .count()
+            <= n
+        {
+            assert!(
+                Instant::now() < deadline,
+                "never unlocked\n{}",
+                self.strand.log_text()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        self.island();
+        first
+    }
+}
+
+/// (lock-int) A lock asked for from the owner's launcher opens on the
+/// desktop at rest. The launcher's Lock folds it into the island and
+/// asks for the lock in the tick its `exit` starts; before the fix the
+/// stills were taken at once, the exit not yet drawn, so the lock's
+/// still showed the launcher's folded card over the island, its search
+/// glyph and no icons (the owner's "empty island" around the lock; on
+/// the code before, `owner` read 0 icon and 256 glyph pixels every run).
+/// Now Strand's own surfaces settle first: the launcher's exit ends and
+/// its surface goes, the island's fade is at its end, and the still shows
+/// both icons and no glyph, as a lock asked for directly does (the
+/// control). The direct lock has nothing moving, so it settles nothing
+/// and waits for nothing: no settle line in its log.
+#[test]
+fn a_lock_from_the_launcher_shows_the_desktop_at_rest() {
+    let test = "lock_launch";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::with(test, "", LAUNCH_CONFIG);
+    vm.island();
+    let direct = vm.launch_lock(false);
+    let log = vm.strand.log_text();
+    assert!(
+        !log.contains(SETTLED) && !log.contains(NOT_SETTLED),
+        "a lock with nothing moving settles nothing:\n{log}"
+    );
+    let owner = vm.launch_lock(true);
+    let log = vm.strand.log_text();
+    let firsts = vm.first_frames();
+    eprintln!(
+        "lock_launch: direct icon {} glyph {}, owner icon {} glyph {}; first frames {firsts:?} ms; {}",
+        direct.pixels_of(ICON),
+        direct.pixels_of(GLYPH),
+        owner.pixels_of(ICON),
+        owner.pixels_of(GLYPH),
+        log.lines()
+            .filter(|l| l.contains(SETTLED) || l.contains(NOT_SETTLED))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    );
+    for (name, shot) in [("direct", &direct), ("owner", &owner)] {
+        let (icon, glyph) = (shot.pixels_of(ICON), shot.pixels_of(GLYPH));
+        assert!(
+            icon >= 7900 && glyph == 0,
+            "{name}: the lock's still shows the launcher's card over the island \
+             (icon {icon} px, glyph {glyph} px)\n{log}"
+        );
+    }
+    assert_eq!(
+        log.matches(SETTLED).count(),
+        1,
+        "the launcher's lock settled once, within its cap:\n{log}"
+    );
+}
+
+/// (lock-int) The same with the launcher presented by the GPU thread
+/// (lavapipe): its surface goes only once the thread has let go of its
+/// swapchain, and the still waits for that too. On the code before the
+/// fix its still showed the folded card as the CPU's did.
+#[test]
+fn a_lock_from_a_gpu_presented_launcher_shows_the_desktop_at_rest() {
+    let test = "lock_launch_gpu";
+    if !in_lock_vm(test) {
+        return;
+    }
+    // A card 900 wide: dropped, 0.27 Mpx, a frame of its colour's spring
+    // is large enough for the GPU (0.2 Mpx); folded, it covers the island
+    // as the 640 one does.
+    let config = LAUNCH_CONFIG.replace(
+        "col { clip: true; width: 640",
+        "col { clip: true; width: 900",
+    );
+    assert_ne!(config, LAUNCH_CONFIG);
+    let mut vm = Vm::gpu(test, "", &config);
+    vm.island();
+    vm.launcher();
+    // The card's colour springs until render promotes it.
+    let deadline = Instant::now() + WAIT;
+    let mut glow = false;
+    while !vm.strand.log_text().contains("attached (Present)") {
+        glow = !glow;
+        vm.strand
+            .cli(&["set", "lock.glow", if glow { "true" } else { "false" }]);
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            Instant::now() < deadline,
+            "the launcher never went to the GPU\n{}",
+            vm.strand.log_text()
+        );
+    }
+    let owner = vm.launch_lock(true);
+    let log = vm.strand.log_text();
+    let (icon, glyph) = (owner.pixels_of(ICON), owner.pixels_of(GLYPH));
+    eprintln!(
+        "lock_launch_gpu: owner icon {icon} glyph {glyph}; first frames {:?} ms; {}",
+        vm.first_frames(),
+        log.lines()
+            .filter(|l| l.contains(SETTLED) || l.contains(NOT_SETTLED) || l.contains("released"))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    );
+    assert!(
+        icon >= 7900 && glyph == 0,
+        "the lock's still shows the launcher's card over the island \
+         (icon {icon} px, glyph {glyph} px)\n{log}"
+    );
+    assert!(log.contains(SETTLED), "it settled within its cap:\n{log}");
+}
