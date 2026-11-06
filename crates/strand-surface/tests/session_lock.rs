@@ -1020,6 +1020,7 @@ fn a_lock_surface_is_handed_off_after_its_first_frame_and_renewed_on_the_cpu() {
         "its last frame shows while presented"
     );
     let commits = lock.state().surface(content).unwrap().stats.commits;
+    let renewed_at = lock.state().host().input.len();
     // Renewed: a fresh surface on the same output, the old one destroyed
     // (kept for the GPU thread, its role gone).
     let new = lock
@@ -1043,6 +1044,18 @@ fn a_lock_surface_is_handed_off_after_its_first_frame_and_renewed_on_the_cpu() {
     assert!(painted, "the renewed content is painted on the CPU");
     settle(&mut lock, &mut desk, Duration::from_millis(300));
     assert_eq!(shot(&sway, "HEADLESS-1"), [BLUE, BLUE], "still locked");
+    // (lock-int review) The compositor's leave of the old `wl_surface`,
+    // still alive for the GPU thread, left nothing of ours: the new
+    // content never lost the keyboard (a leave of it would close a
+    // two-way `open` and clear what was typed).
+    assert!(
+        !lock.state().host().input[renewed_at..]
+            .iter()
+            .any(|e| matches!(e, InputEvent::KeyboardLeave { surface } if *surface == new)),
+        "the renewed content was told the keyboard left it: {:?}",
+        &lock.state().host().input[renewed_at..]
+    );
+    assert_eq!(lock.state().keyboard_focus(), Some(new));
     let from = lock.state().host().input.len();
     keyboard.tap();
     assert!(

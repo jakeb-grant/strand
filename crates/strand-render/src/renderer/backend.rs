@@ -518,6 +518,13 @@ fn value_floats(v: &PropValue, scale: f32, out: &mut Vec<f32>) {
 /// times at most two at once, so an older one's never comes.
 const UNTIMED: usize = 4;
 
+/// (lock-int re-check) The most a lock's hand-off to the GPU thread holds
+/// its clock ([`HandOff`]): the GPU thread's silence strand allows a lock
+/// surface's request (its `LOCK_GPU_BOUND`). A hand-off that cost more was
+/// a stall, and its frame jumps by the rest; a gap longer than that is
+/// idle time, never held.
+const HAND_OFF_MOST: Duration = Duration::from_millis(500);
+
 /// One surface as the GPU backend sees it.
 #[derive(Debug, Default)]
 struct Surf {
@@ -561,8 +568,13 @@ struct Surf {
     /// ([`HandOff`]).
     hand_off: HandOff,
     /// (lock-int review) How far behind the time it is asked at each of
-    /// its presented frames is drawn: the time its hand-off held its clock.
+    /// its presented frames is drawn: the time its hand-off held its clock,
+    /// at most [`HAND_OFF_MOST`], and zero again once nothing moves.
     lag: Duration,
+    /// (lock-int re-check) Its last presented frame drew something that
+    /// moves on (a motion or a clock); true from a switch of backend, so
+    /// a hand-off's first presented frame is held.
+    moved: bool,
 }
 
 /// (lock-int review) A lock surface's hand-off to the GPU thread holds its
@@ -574,7 +586,12 @@ struct Surf {
 /// and the next one jumped over the time lost (most of an island's
 /// growth in one frame). Held, each takes the time of the frame shown
 /// before it, one period on, and the lock plays on from there, the time
-/// lost added to [`Surf::lag`].
+/// lost added to [`Surf::lag`]. (lock-int re-check) Only while something
+/// moves: a frame after one that drew nothing moving is drawn at the time
+/// asked, the lag dropped (no frame can show the time it skips), so the
+/// wait before a presented lock's next frame (a caret's blink, a key) is
+/// never taken for the hand-off's; and the lag is at most
+/// [`HAND_OFF_MOST`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum HandOff {
     /// Nothing held.
@@ -891,6 +908,7 @@ impl Renderer {
         s.shown = None;
         // (lock-int review) A lock's clock is held across its hand-off.
         s.lag = Duration::ZERO;
+        s.moved = true;
         s.hand_off = if lock && backend == Backend::GpuPresent {
             HandOff::Attached
         } else {
@@ -1631,6 +1649,13 @@ impl Renderer {
         let _ = self.paint(surface, &mut target);
         self.gpu.scratch = scratch;
         let frame = self.gpu.present.take();
+        // (lock-int re-check) What this frame drew moves on in the next:
+        // its own `animating`, not a preview's (`update` sets that too).
+        let moved = self.surfaces.get(&surface).is_some_and(|s| s.animating)
+            || self.clocks.running(surface);
+        if let Some(s) = self.gpu.surfaces.get_mut(&surface) {
+            s.moved = moved;
+        }
         if frame.is_some()
             && let Some(s) = self.gpu.surfaces.get_mut(&surface)
         {
@@ -1645,25 +1670,33 @@ impl Renderer {
     /// (lock-int review) The time presented frame of `surface` asked at
     /// `at` is drawn at ([`HandOff`]): `at` less the time its hand-off
     /// held its clock. The first presented frame, and the one after it,
-    /// go on one period from the frame shown before them.
+    /// go on one period from the frame shown before them, by at most
+    /// [`HAND_OFF_MOST`]; after a frame in which nothing moved (no motion,
+    /// no clock), the lag is dropped. The time drawn never goes back: a
+    /// held frame is drawn after the one before it, and a dropped lag
+    /// moves it on.
     fn held_time(&mut self, surface: SurfaceId, at: Duration) -> Duration {
         let last = self.surfaces.get(&surface).and_then(|s| s.painted_time);
         let period = self.clocks.period(surface);
         let Some(g) = self.gpu.surfaces.get_mut(&surface) else {
             return at;
         };
-        if matches!(g.hand_off, HandOff::Attached | HandOff::Presented)
+        if !g.moved {
+            // Nothing moves: no frame can show the time skipped, and what
+            // starts in this one leads from it (`Animator::lead`).
+            g.lag = Duration::ZERO;
+        } else if matches!(g.hand_off, HandOff::Attached | HandOff::Presented)
             && let Some(last) = last
         {
-            g.lag = at.saturating_sub(last + period);
-            if g.hand_off == HandOff::Presented {
-                g.hand_off = HandOff::Idle;
-                log::info!(
-                    "lock: surface {}'s clock was held {} ms across its hand-off to the GPU",
-                    surface.0,
-                    g.lag.as_millis()
-                );
-            }
+            g.lag = at.saturating_sub(last + period).min(HAND_OFF_MOST);
+        }
+        if g.hand_off == HandOff::Presented {
+            g.hand_off = HandOff::Idle;
+            log::info!(
+                "lock: surface {}'s clock was held {} ms across its hand-off to the GPU",
+                surface.0,
+                g.lag.as_millis()
+            );
         }
         at.saturating_sub(g.lag)
     }

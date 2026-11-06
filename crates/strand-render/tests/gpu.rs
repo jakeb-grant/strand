@@ -3472,6 +3472,183 @@ fn a_locks_hand_off_to_the_gpu_holds_its_clock() {
     }
 }
 
+/// The left edge of the light card on row 20 of `buf` (`None`: not there).
+fn card_left(buf: &Buffer) -> Option<u32> {
+    (0..buf.size.w).find(|&x| buf.px(x, 20)[2] > 0x80)
+}
+
+/// (lock-int re-check) A lock's hand-off holds its clock only for what the
+/// hand-off cost, never for the wait after it. Its first presented frame
+/// here is the glide's last moving one, and its next comes 5 s later (a
+/// key starting a shake): that frame is drawn at the time asked, the lag
+/// dropped, and the shake moves on its first frame. The same lock on a
+/// second output, still on the CPU, then shows the shake one frame on,
+/// not over: before, the presented frame took the 5 s in as its lag and
+/// started the shake 5 s in the past, so the other output drew it ended
+/// in one frame. A held time never goes back.
+#[test]
+fn a_locks_hand_off_hold_never_takes_in_the_wait_after_it() {
+    const S2: SurfaceId = SurfaceId(2);
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Lock,
+        None,
+        vec![
+            (Prop::Width, num(200.0)),
+            (Prop::Height, num(100.0)),
+            (Prop::Bg, color("#2050d0")),
+            (Prop::Open, PropValue::Bool(true)),
+        ],
+    );
+    let card = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::Width, num(40.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#e0e0e0")),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.take_surface_changes();
+    for s in [S, S2] {
+        r.set_surface_bounds(s, Some(LogicalSize::new(200.0, 100.0)));
+        r.attach_surface(s, root);
+        r.configure_surface(s, Size::new(200, 100), Scale::ONE);
+    }
+    let mut buf = Buffer::new(200, 100, Scale::ONE);
+    let mut other = Buffer::new(200, 100, Scale::ONE);
+    let t0 = Duration::from_secs(1);
+    let ms = |n: u64| t0 + Duration::from_millis(n);
+    buf.paint_at(&mut r, S, 0, t0);
+    other.paint_at(&mut r, S2, 0, t0);
+    let glide = |x: f32, millis: u64| {
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::SetProp {
+            id: card,
+            prop: Prop::X,
+            value: num(x),
+            transition: Transition::Duration {
+                duration: Duration::from_millis(millis),
+                easing: Easing::Linear,
+            },
+        });
+        d
+    };
+    // A 30 ms glide, begun on the CPU on both outputs.
+    assert!(r.apply(glide(150.0, 30)).is_empty());
+    buf.paint_at(&mut r, S, 1, ms(16));
+    other.paint_at(&mut r, S2, 1, ms(16));
+    r.promote_now(S);
+    r.set_backend(S, Backend::GpuPresent);
+    let _ = r.take_backend_changes();
+    // Its first presented frame, 80 ms on, ends the glide.
+    let id = r.paint_gpu(S, ms(96)).expect("the glide goes on").id;
+    let first = r.frame_time(S).unwrap();
+    assert!(
+        !r.animating(S),
+        "the first presented frame settles the glide"
+    );
+    r.deliver_gpu(GpuReply::Presented {
+        surface: S,
+        frame: id,
+        at: Instant::now(),
+        waited: Duration::ZERO,
+        ran: vec![],
+    });
+    // The other output at rest, where the shake starts from.
+    other.paint_at(&mut r, S2, 1, ms(100));
+    let rest = card_left(&other).expect("the card is drawn");
+    // 5 s on, a key starts a 1 s shake on the presented output.
+    assert!(r.apply(glide(0.0, 1000)).is_empty());
+    r.paint_gpu(S, ms(5096)).expect("the shake starts");
+    let shaken = r.frame_time(S).unwrap();
+    assert!(
+        shaken > first,
+        "the time drawn goes on: {first:?}, {shaken:?}"
+    );
+    assert_eq!(
+        r.presented_lag(S),
+        Duration::ZERO,
+        "the wait after the hand-off is not held"
+    );
+    assert_eq!(shaken, ms(5096));
+    assert!(r.animating(S), "the shake moves on its first frame");
+    // The other output, one frame on, shows it under way, not over.
+    other.paint_at(&mut r, S2, 1, ms(5113));
+    let left = card_left(&other).expect("the card is drawn");
+    assert!(
+        left < rest && left + 75 > rest,
+        "the shake is a frame in on the other output: card at {left}, from {rest}"
+    );
+    // And the presented output's next frame goes on from its first.
+    r.paint_gpu(S, ms(5113)).expect("the shake goes on");
+    assert_eq!(r.frame_time(S).unwrap(), ms(5113));
+}
+
+/// (lock-int re-check) While something moves, a hand-off holds a lock's
+/// clock by at most 500 ms (the GPU silence strand allows a lock surface's
+/// request): a gap past that after the first presented frame is not the
+/// hand-off's, and the frame after it jumps by the rest.
+#[test]
+fn a_locks_hand_off_hold_is_bounded() {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Lock,
+        None,
+        vec![
+            (Prop::Width, num(200.0)),
+            (Prop::Height, num(100.0)),
+            (Prop::Open, PropValue::Bool(true)),
+        ],
+    );
+    let card = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![(Prop::Width, num(40.0)), (Prop::Height, num(40.0))],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.take_surface_changes();
+    r.set_surface_bounds(S, Some(LogicalSize::new(200.0, 100.0)));
+    r.attach_surface(S, root);
+    r.configure_surface(S, Size::new(200, 100), Scale::ONE);
+    let mut buf = Buffer::new(200, 100, Scale::ONE);
+    let t0 = Duration::from_secs(1);
+    let ms = |n: u64| t0 + Duration::from_millis(n);
+    buf.paint_at(&mut r, S, 0, t0);
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::SetProp {
+        id: card,
+        prop: Prop::X,
+        value: num(150.0),
+        transition: Transition::Duration {
+            duration: Duration::from_secs(10),
+            easing: Easing::Linear,
+        },
+    });
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, ms(16));
+    r.promote_now(S);
+    r.set_backend(S, Backend::GpuPresent);
+    let _ = r.take_backend_changes();
+    let id = r.paint_gpu(S, ms(96)).expect("the glide goes on").id;
+    let first = r.frame_time(S).unwrap();
+    r.deliver_gpu(GpuReply::Presented {
+        surface: S,
+        frame: id,
+        at: Instant::now(),
+        waited: Duration::ZERO,
+        ran: vec![],
+    });
+    r.paint_gpu(S, ms(3096)).expect("the glide goes on");
+    assert_eq!(r.presented_lag(S), Duration::from_millis(500));
+    let second = r.frame_time(S).unwrap();
+    assert_eq!(second, ms(2596));
+    assert!(second > first);
+}
+
 /// Stripes in a box at `at` under `filter: blur(sigma), brightness(0.6)`
 /// on a bar.
 fn filter_blur_scene(at: (f32, f32, f32, f32), sigma: f32) -> SceneDiff {
