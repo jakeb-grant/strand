@@ -713,6 +713,68 @@ fn click_away_closes_only_a_two_way_open() {
     );
 }
 
+/// (lock-int review) A lock's two-way `open` is never written by the
+/// router: Escape, click-away and focus loss close a panel bound so, but
+/// only `auth` closes a lock. The keyboard leaving one monitor's lock for
+/// another's, or a lock surface renewed under it, wrote `locked = false`
+/// while the session stayed locked, and a config clearing its password
+/// field on that lost what was typed.
+#[test]
+fn nothing_but_auth_closes_a_lock() {
+    use strand_scene::{NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let (lock, panel) = (NodeId::new(0, 0), NodeId::new(1, 0));
+    let two_way = PropValue::List(vec![PropValue::Keyword("open".into())]);
+    let mut d = SceneDiff::new();
+    d.create(lock, NodeKind::Lock, None, 0)
+        .set(lock, Prop::Open, PropValue::Bool(true))
+        .set(lock, Prop::TwoWay, two_way.clone());
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Size, PropValue::Number(50.0))
+        .set(panel, Prop::Open, PropValue::Bool(true))
+        .set(panel, Prop::TwoWay, two_way);
+    assert!(r.apply(d).is_empty());
+    let (sl, sp) = (SurfaceId(1), SurfaceId(2));
+    let mut f = R::default();
+    f.attached(sl, lock);
+    f.attached(sp, panel);
+    let close = |node| Intent::Write {
+        node,
+        prop: Prop::Open,
+        value: PropValue::Bool(false),
+    };
+    let escape = |s| InputEvent::Key {
+        surface: s,
+        key: KeyInput {
+            name: "Escape".into(),
+            text: String::new(),
+            state: ButtonState::Pressed,
+            repeat: false,
+            modifiers: Default::default(),
+            time: 0,
+            latin: None,
+        },
+    };
+    for s in [sl, sp] {
+        f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+        f.input(&escape(s), &mut r);
+        f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+        f.input(&InputEvent::KeyboardLeave { surface: s }, &mut r);
+        f.input(&InputEvent::ClickAway { surface: s }, &mut r);
+    }
+    let out = f.drain();
+    assert!(!out.contains(&close(lock)), "the lock was closed: {out:?}");
+    assert_eq!(
+        out.iter().filter(|i| **i == close(panel)).count(),
+        3,
+        "the panel closes on each: {out:?}"
+    );
+}
+
 /// A left press on another Strand surface (the bar, which the launcher's
 /// click-away catcher does not cover) closes every open `keyboard:
 /// exclusive` surface with a two-way `open`, and still reaches the bar;

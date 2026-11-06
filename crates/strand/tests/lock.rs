@@ -2348,6 +2348,39 @@ fn finished_after_locked_locks_again_with_the_fallback() {
     vm.fallback_passwords();
 }
 
+/// (lock-int review) The compositor ends the lock while it plays its way
+/// out (the proxy's `finished` once the exit has started, its pose 8 s
+/// long so the cap is far): `finished` after `locked` fails closed then
+/// too. The exit's token goes unspent and strand asks for a new lock,
+/// which shows the fallback, and only a password typed there unlocks.
+/// Before, strand sent the unlock on the finished object and asked for
+/// nothing, so a compositor that kept the session locked left the user on
+/// its own blank screen, and the restart marker went with the lock.
+#[test]
+fn finished_as_the_lock_plays_out_locks_again_with_the_fallback() {
+    let test = "finished_exit";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let sway = Sway::start("finished_exit");
+    let proxy = proxy::Proxy::start(&sway.dir, "wayland-proxy", sway.socket());
+    let source = exit_config("exit { opacity: 0 }", "ease(linear, 8s)");
+    let mut vm = Vm::on(sway, &proxy.name(), "", &source);
+    vm.lock();
+    vm.content();
+    vm.until_locked("HEADLESS-1", "the card", true, |s| near(s.card(), CARD));
+    vm.keys.enter(PASSWORD);
+    vm.until_log("the lock plays its way out");
+    proxy.end();
+    vm.until("HEADLESS-1", "the built-in password field", Shot::fallback);
+    assert!(proxy.ended());
+    vm.fallback_logged();
+    vm.log_has("the compositor ended the session lock as it played its way out");
+    vm.log_has("session lock: asking for a new lock");
+    vm.log_has("the compositor ended the lock");
+    vm.fallback_passwords();
+}
+
 /// Another locker holds the session: the compositor refuses strand's
 /// lock. Not a fault: no fallback, the run goes on, and once the other
 /// locker is gone strand's own lock works with the right password only.
@@ -3116,11 +3149,15 @@ fn the_locks_thumbnail_is_a_still_from_before_the_lock() {
 /// (lock-gpu) A lock whose whole background springs between two colours
 /// (`glow`), a large animation render promotes to the GPU. Its password
 /// shows nothing, so its colour is only ever `glow`'s or a refusal's.
+/// (lock-int review) As the owner's lock does, it clears the field when
+/// `locked` turns false, so a write of `false` while the session stays
+/// locked loses what was typed.
 const GLOW_CONFIG: &str = r#"export state locked = false
 export state zero = 1
 export state glow = false
+export state secret = ""
+on change locked { if !locked { secret = "" } }
 lock Gate {
-  state secret = ""
   open: <-> locked
   bg: glow ? #d05020 : #2050d0 ~ 250ms
   when auth.failed { bg: #a02040 }
@@ -3405,6 +3442,19 @@ fn a_lock_whose_gpu_stalls_goes_on_on_the_cpu() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+    // (lock-int review) The renewal is no focus loss: the state the lock
+    // is bound to stays true (the keyboard's leave of the old surface
+    // closed the new one's lock, and the field was cleared), and nothing
+    // wrote it false.
+    std::thread::sleep(Duration::from_millis(300));
+    let out = vm.strand.cli_out(&["get", "lock.locked"]);
+    let locked = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let log = vm.strand.log_text();
+    assert_eq!(locked, "true", "`locked` across the renewal:\n{log}");
+    assert!(
+        !log.contains("`open` was set to false while the session is locked"),
+        "something wrote the lock's `open` false:\n{log}"
+    );
     eprintln!(
         "lock gpu stall: renewed {} ms after the fault armed, its first CPU frame {} ms after \
          that; the middle of the password was typed {} the renewal",
@@ -3571,11 +3621,23 @@ fn a_lock_that_animates_from_its_first_frame_is_presented() {
         "a CPU frame after it was presented: {:?}\n{log}",
         frames.iter().map(|(g, _)| u8::from(*g)).collect::<Vec<_>>()
     );
+    // (lock-int review) Its clock was held across the hand-off, so the
+    // fade goes on from the CPU's last frame rather than jumping over the
+    // time the first presented frame took to come.
+    let held = log
+        .lines()
+        .find_map(|l| {
+            l.split(&format!("lock: surface {id}'s clock was held "))
+                .nth(1)
+        })
+        .unwrap_or_else(|| panic!("no clock held across the hand-off:\n{log}"))
+        .to_string();
     eprintln!(
-        "lock fade: first frames {:?} ms; {} CPU frames, then {} presented",
+        "lock fade: first frames {:?} ms; {} CPU frames, then {} presented; the clock held {}",
         vm.first_frames(),
         first_gpu,
-        frames.len() - first_gpu
+        frames.len() - first_gpu,
+        held.trim()
     );
     vm.keys.enter(PASSWORD);
     vm.until(

@@ -722,7 +722,19 @@ impl<H: SurfaceHost + 'static> KeyboardHandler for State<H> {
         }
         // (lockmon) A solid lock surface's keys went to the content
         // focused then, which the focused output no longer names.
-        let id = self.surface_for(surface).or(self.keyboard_focus);
+        // (lock-int review) Only a solid's: a `wl_surface` that is no
+        // longer ours (a renewed lock content's, kept for the GPU thread,
+        // whose leave comes after the keys moved to the new one) left
+        // nothing of ours, and taking it for the focused surface's would
+        // close that one (focus loss closes a two-way `open`).
+        let id = match self.surface_for(surface) {
+            Some(id) => Some(id),
+            None if self.is_lock_solid(surface) => self.keyboard_focus,
+            None => {
+                log::trace!("keyboard leave of a surface no longer ours");
+                return;
+            }
+        };
         log::trace!("keyboard leave {id:?} (grab focus {:?})", self.grab_focus);
         if self.keyboard_focus == id {
             self.keyboard_focus = None;

@@ -2383,7 +2383,7 @@ impl Router {
                 self.pending_paste.remove(&surface);
                 // Focus loss closes a surface bound `open: <-> x`; (window)
                 // not a window, which the compositor focuses and unfocuses
-                // as any app's.
+                // as any app's; (lock-int review) nor a lock (`close`).
                 if open_two_way(scene.tree(), root) && !is_window(scene.tree(), root) {
                     self.close(scene, root);
                 }
@@ -2915,8 +2915,6 @@ impl Router {
         }
     }
 
-    /// `open: false` on the surface node `root` (Escape, click-away, focus
-    /// loss); a popup is also told `dismiss`.
     /// A left press on `surface` (showing `root`) is a click away from
     /// every other open `keyboard: exclusive` surface whose `open` is
     /// two-way: the catcher under such a surface covers only the usable
@@ -2968,7 +2966,20 @@ impl Router {
         }
     }
 
+    /// `open: false` on the surface node `root` (Escape, click-away, focus
+    /// loss); a popup is also told `dismiss`.
+    ///
+    /// (lock-int review) Never a lock: only `auth` closes one (logic writes
+    /// its `open` false as the password is accepted). A write here would
+    /// reach the state it is bound to while the session stays locked
+    /// (logic holds the lock open, not the state), and a config that
+    /// clears its password field when that state turns false would lose
+    /// what was typed: the keyboard moving to another monitor's lock, or
+    /// leaving a lock surface renewed under it, is focus loss.
     fn close(&mut self, scene: &dyn InputScene, root: NodeId) {
+        if is_lock(scene.tree(), root) {
+            return;
+        }
         self.emit(Intent::Write {
             node: root,
             prop: Prop::Open,
@@ -3012,8 +3023,10 @@ impl Router {
             _ => None,
         };
         // (window) Escape is a window's own key: only the compositor (or
-        // `w.close()`) closes it.
-        let open = open_two_way(scene.tree(), root) && !is_window(scene.tree(), root);
+        // `w.close()`) closes it; (lock-int review) and a lock's (`close`).
+        let open = open_two_way(scene.tree(), root)
+            && !is_window(scene.tree(), root)
+            && !is_lock(scene.tree(), root);
         self.event(
             focus,
             NodeEvent::Key {
@@ -3987,6 +4000,12 @@ fn first_with_focus(tree: &SceneTree, root: NodeId) -> Option<NodeId> {
 fn open_two_way(tree: Option<&SceneTree>, root: NodeId) -> bool {
     tree.and_then(|t| t.get(root))
         .is_some_and(|n| strand_scene::is_two_way(n.get(Prop::TwoWay), Prop::Open))
+}
+
+/// (lock-int review) True if the surface node `root` is a `lock`.
+fn is_lock(tree: Option<&SceneTree>, root: NodeId) -> bool {
+    tree.and_then(|t| t.get(root))
+        .is_some_and(|n| n.kind == NodeKind::Lock)
 }
 
 /// (window) True if the surface node `root` is a `window`.

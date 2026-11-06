@@ -3373,3 +3373,101 @@ fn a_crossfade_replaced_after_its_gpu_snapshot_goes_on_from_the_blend_shown() {
     let (moved, _) = compare_bytes(&mid, &old);
     assert!(moved > 0, "mid-crossfade");
 }
+
+/// (lock-int review) A lock's hand-off to the GPU thread holds its clock:
+/// nothing shows its frames from its last CPU frame until its first
+/// presented one comes back (the attach, a new swapchain and that frame's
+/// own work), so its first presented frame is drawn one period after the
+/// CPU's last, and the one after that one period after it, however long
+/// each took to come; the time lost is the lag every later frame is drawn
+/// behind by. Before, each was drawn at the time it was asked and the
+/// owner's island grew most of the way in one frame. A panel's frames are
+/// drawn at the time asked, as before. Needs no device: the frames are
+/// only lowered.
+#[test]
+fn a_locks_hand_off_to_the_gpu_holds_its_clock() {
+    for kind in [NodeKind::Lock, NodeKind::Panel] {
+        let lock = kind == NodeKind::Lock;
+        let mut b = Builder::default();
+        let mut props = vec![
+            (Prop::Width, num(200.0)),
+            (Prop::Height, num(100.0)),
+            (Prop::Bg, color("#2050d0")),
+        ];
+        if lock {
+            props.push((Prop::Open, PropValue::Bool(true)));
+        }
+        let root = b.node(kind, None, props);
+        let card = b.node(
+            NodeKind::Box,
+            Some(root),
+            vec![
+                (Prop::Width, num(40.0)),
+                (Prop::Height, num(40.0)),
+                (Prop::Bg, color("#e0e0e0")),
+            ],
+        );
+        let mut r = renderer();
+        assert!(r.apply(b.diff).is_empty());
+        r.take_surface_changes();
+        if lock {
+            r.set_surface_bounds(S, Some(LogicalSize::new(200.0, 100.0)));
+        }
+        r.attach_surface(S, root);
+        r.configure_surface(S, Size::new(200, 100), Scale::ONE);
+        let mut buf = Buffer::new(200, 100, Scale::ONE);
+        let t0 = Duration::from_secs(1);
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        buf.paint_at(&mut r, S, 0, t0);
+        // A second's linear glide, begun on the CPU.
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::SetProp {
+            id: card,
+            prop: Prop::X,
+            value: num(150.0),
+            transition: Transition::Duration {
+                duration: Duration::from_secs(1),
+                easing: Easing::Linear,
+            },
+        });
+        assert!(r.apply(d).is_empty());
+        buf.paint_at(&mut r, S, 1, ms(16));
+        let cpu = r.frame_time(S).unwrap();
+        assert_eq!(cpu, ms(16));
+        r.promote_now(S);
+        r.set_backend(S, Backend::GpuPresent);
+        let _ = r.take_backend_changes();
+        // Attached 80 ms after the CPU's last frame.
+        let id = r.paint_gpu(S, ms(96)).expect("the glide goes on").id;
+        let first = r.frame_time(S).unwrap();
+        // Its frame came back 60 ms after it was asked.
+        r.deliver_gpu(GpuReply::Presented {
+            surface: S,
+            frame: id,
+            at: Instant::now(),
+            waited: Duration::ZERO,
+            ran: vec![],
+        });
+        r.paint_gpu(S, ms(156)).expect("the glide goes on");
+        let second = r.frame_time(S).unwrap();
+        r.paint_gpu(S, ms(173)).expect("the glide goes on");
+        let third = r.frame_time(S).unwrap();
+        let period = Duration::from_nanos(1_000_000_000 / 60);
+        if lock {
+            assert!(
+                first > cpu && first - cpu <= period,
+                "the first presented frame goes on from the CPU's: {cpu:?}, {first:?}"
+            );
+            assert!(
+                second > first && second - first <= period,
+                "the next goes on from it: {first:?}, {second:?}"
+            );
+            assert_eq!(third - second, Duration::from_millis(17), "then as asked");
+            assert_eq!(r.presented_lag(S), ms(173) - third);
+            assert!(r.presented_lag(S) >= Duration::from_millis(100));
+        } else {
+            assert_eq!((first, second, third), (ms(96), ms(156), ms(173)));
+            assert_eq!(r.presented_lag(S), Duration::ZERO);
+        }
+    }
+}

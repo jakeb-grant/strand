@@ -37,8 +37,10 @@
 //! seen leaving that opens again (the lock asked for again) keeps the
 //! session locked: the token is dropped and the host hears `Locked`; one
 //! still open at the cap is spent, as on any unlock (logic slow to close
-//! it looks the same). A `finished` meanwhile ends the exit: the unlock
-//! is sent at once.
+//! it looks the same). A `finished` meanwhile ends the exit as any
+//! `finished` after `locked` ends a lock: its token goes unspent and a new
+//! lock is asked for (lock-int review: the compositor may keep the session
+//! locked, so the fail-closed rule below holds during an exit too).
 //!
 //! Nothing locks until the owner opts in ([`State::enable_session_lock`]):
 //! a lock that only a token releases must not be taken by a build that
@@ -513,9 +515,10 @@ impl<H: SurfaceHost + 'static> State<H> {
         // logic has not closed yet (it is slow, or stopped) as often as
         // one asked for again before render showed it leaving, and the
         // two look the same here; locking again would ask for a password
-        // just accepted, so it waits to close as on an unlock with no exit.
-        // One seen leaving that opened again never gets here
-        // ([`ExitStep::AskedAgain`]).
+        // just accepted, so it waits to close as on an unlock with no exit
+        // (logic writes it false at `Unlocked`, lock-int review, so the
+        // next request is a change). One seen leaving that opened again
+        // never gets here ([`ExitStep::AskedAgain`]).
         self.session_lock.spent = self.lock_spec_open();
         self.lock_session_ended();
         if let Err(e) = self.conn.flush() {
@@ -1284,13 +1287,15 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// surface) the focused output's content ([`Self::lock_content`]).
     pub(super) fn keyboard_target(&self, wl: &wl_surface::WlSurface) -> Option<SurfaceId> {
         self.surface_for(wl).or_else(|| {
-            self.session_lock
-                .solids
-                .values()
-                .any(|s| &s.wl == wl)
+            self.is_lock_solid(wl)
                 .then(|| self.lock_content())
                 .flatten()
         })
+    }
+
+    /// `wl` is one of the solid lock surfaces.
+    pub(super) fn is_lock_solid(&self, wl: &wl_surface::WlSurface) -> bool {
+        self.session_lock.solids.values().any(|s| &s.wl == wl)
     }
 
     // ---- events --------------------------------------------------------------
@@ -1314,22 +1319,24 @@ impl<H: SurfaceHost + 'static> State<H> {
                 if !ours {
                     return;
                 }
-                // (lock-polish) The compositor ended the lock while it
-                // played its way out, the password accepted: the exit
-                // ends and the unlock goes now. `unlock_and_destroy` is
-                // also the protocol's answer to `finished`, and no new
-                // lock is asked for: it would ask for the password again.
-                if matches!(self.session_lock.phase, Phase::Locked(_))
-                    && let Some(l) = self.session_lock.leaving.take()
-                {
+                // (lock-polish, lock-int review) The compositor ended the
+                // lock while it played its way out: the exit ends and its
+                // token goes unspent. This is `finished` after `locked`
+                // like any other, fail closed: `unlock_and_destroy` below
+                // only releases the object the compositor finished, the
+                // compositor may keep the session locked, and a new lock
+                // is asked for so the user has a password field again
+                // (the fallback's) rather than the compositor's blank
+                // one. Where the compositor did unlock, that costs one
+                // more password.
+                if let Some(l) = self.session_lock.leaving.take() {
                     log::warn!(
-                        "the compositor ended the session lock as it played its way out: unlocked"
+                        "the compositor ended the session lock as it played its way out: \
+                         the password is asked for again"
                     );
                     if let Some(t) = l.timer {
                         self.handle.remove(t);
                     }
-                    self.release(l.token);
-                    return;
                 }
                 let was_locked = match std::mem::take(&mut self.session_lock.phase) {
                     Phase::Pending(l) => {

@@ -885,10 +885,13 @@ impl LockScreen {
     /// The compositor's report.
     pub(crate) fn changed(&mut self, state: LockState) {
         faults::set_locked(state == LockState::Locked);
-        if state == LockState::Finished && self.last == Some(LockState::Locked) {
-            // It ended a lock it held, and the session may still be
-            // locked: the manager asks for a new one, which shows the
-            // field that depends on least.
+        if state == LockState::Finished
+            && matches!(self.last, Some(LockState::Locked | LockState::Unlocking))
+        {
+            // It ended a lock it held (lock-int review: one playing its
+            // way out too), and the session may still be locked: the
+            // manager asks for a new one, which shows the field that
+            // depends on least.
             self.pending = Some("the compositor ended the lock".into());
         }
         if state == LockState::Unlocked {
@@ -2070,6 +2073,12 @@ mod tests {
         s.auth_failed("the helper stopped".into(), 1);
         s.idle();
         assert_eq!(s.pending, None, "no fallback on the next, healthy lock");
+        // (lock-int review) Ended as it played its way out: the session
+        // may still be locked, so the lock asked for next shows it too.
+        s.changed(LockState::Locked);
+        s.changed(LockState::Unlocking);
+        s.changed(LockState::Finished);
+        assert_eq!(s.pending.as_deref(), Some("the compositor ended the lock"));
     }
 
     /// (lock-polish) A lock asked for again in the dispatch that unlocked

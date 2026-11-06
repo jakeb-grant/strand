@@ -305,7 +305,7 @@ fn a_report_leaves_out_the_locks_cells_and_a_passwords() {
 /// At `Unlocking` the runtime writes `open` false (the hold lets go) and
 /// the lock's content leaves the scene, as a popup's does when it closes,
 /// so its exit poses play; the lock still counts as shown (a lock edit
-/// waits) until `Unlocked`, which writes nothing more. A write of `true`
+/// waits) until `Unlocked`, which writes `false` again. A write of `true`
 /// meanwhile (the lock asked for again) opens it again with its content,
 /// and `Locked` holds it as before; the next lock mounts its content anew.
 #[test]
@@ -340,8 +340,9 @@ fn the_lock_closes_and_its_content_leaves_before_the_unlock() {
     assert_eq!(u.notices, [IGNORED_CLOSE], "held open again");
     assert_eq!(s.open(), Some(&PropValue::Bool(true)));
 
-    // Played out this time: `Unlocked` writes nothing more, and the edit
-    // lands.
+    // Played out this time, a `true` written as it left that the surface
+    // manager unlocked all the same (the cap, logic slow to close it):
+    // `Unlocked` writes `false` again, and the edit lands.
     s.report(SessionLock::Unlocking);
     assert_eq!(s.open(), Some(&PropValue::Bool(false)));
     s.inst.set("shell.locked", Value::Bool(true)).unwrap();
@@ -349,12 +350,11 @@ fn the_lock_closes_and_its_content_leaves_before_the_unlock() {
     s.report(SessionLock::Unlocked);
     assert_eq!(
         s.locked(),
-        Value::Bool(true),
-        "a `true` written as it left is the config's, kept"
+        Value::Bool(false),
+        "the unlock spent the `true` written as it left"
     );
+    assert_eq!(s.open(), Some(&PropValue::Bool(false)));
     assert!(!s.inst.lock_shown());
-    s.inst.set("shell.locked", Value::Bool(false)).unwrap();
-    s.flush();
     assert!(!s.reload(&shell("edited")), "lands once unlocked");
     assert!(!s.scene.texts().iter().any(|t| t.starts_with("edited")));
 
@@ -366,6 +366,41 @@ fn the_lock_closes_and_its_content_leaves_before_the_unlock() {
         "{:?}",
         s.scene.texts()
     );
+}
+
+/// (lock-int review) A lock request in the tick that writes `open` false
+/// at `Unlocking` (`on session.lock_requested { locked = true }` drained
+/// with the report) nets no change: render never shows the lock leaving,
+/// so strand-surface unlocks at the exit's cap and spends the lock still
+/// open. `Unlocked` then writes `false`, so the next request is a change
+/// and locks: before, `locked` stayed true and every later `locked =
+/// true` wrote the same value, and nothing locked until strand restarted.
+#[test]
+fn a_request_lost_to_an_exit_does_not_disarm_the_next() {
+    let mut s = boot(&shell("lock"));
+    s.report(SessionLock::Locked);
+    s.inst.set_session_lock(SessionLock::Unlocking);
+    s.inst.set("shell.locked", Value::Bool(true)).unwrap();
+    let u = s.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(
+        s.open(),
+        Some(&PropValue::Bool(true)),
+        "the tick's net value: never seen leaving"
+    );
+    s.report(SessionLock::Unlocked);
+    assert_eq!(s.locked(), Value::Bool(false));
+    assert_eq!(s.open(), Some(&PropValue::Bool(false)));
+    assert!(!s.inst.lock_shown());
+    // The next request is a change: the lock opens and is asked for.
+    s.inst.set("shell.locked", Value::Bool(true)).unwrap();
+    s.flush();
+    assert_eq!(s.open(), Some(&PropValue::Bool(true)), "a fresh request");
+    assert!(s.inst.lock_shown());
+    s.report(SessionLock::Locked);
+    let lock = s.lock();
+    let u = s.click(lock);
+    assert_eq!(u.notices, [IGNORED_CLOSE], "held as any lock");
 }
 
 /// (lock-polish) An unlock with no exit before it (the built-in field's

@@ -466,7 +466,8 @@ pub(crate) fn render_group(
 
 /// Draws `items` under `xform` into a pixmap of `region` (surface
 /// pixels), unfiltered. `None` if the region is too large for one
-/// context.
+/// context. (Only the GPU backend's passes ask for it unreduced.)
+#[cfg(feature = "gpu")]
 pub(crate) fn rasterise(
     items: &[DisplayItem],
     xform: Affine,

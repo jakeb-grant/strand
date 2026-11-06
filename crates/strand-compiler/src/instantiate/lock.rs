@@ -18,7 +18,10 @@
 //!   is unlocked, the lock closes and its content leaves (its exit poses
 //!   play), and a later write of `true` locks again. A write of `true`
 //!   while it leaves opens the lock again: the surface manager keeps the
-//!   session locked and reports `Locked`.
+//!   session locked and reports `Locked`. (lock-int review) `Unlocked`
+//!   writes `open` false again whatever came before it, so a `true`
+//!   written as the lock left that the surface manager never saw (the
+//!   unlock spent it) cannot leave the next write of `true` no change.
 //! - [`Instance::lock_shown`] follows these reports: shown while
 //!   `Locked` or `Unlocking`, not shown after `Finished` (the compositor
 //!   refused or ended the lock) or `Unlocked`. Between a lock opening and the
@@ -126,10 +129,16 @@ impl LockTrack {
     }
 
     /// The compositor's report. True when the runtime should now write
-    /// the lock's `open` false: an unlock beginning (`Unlocking`), or one
-    /// with no exit (`Unlocked` straight from `Locked`). After `Unlocking`
-    /// it was written already, and a `true` written since (the lock asked
-    /// for again as it left) is the config's, left as it is.
+    /// the lock's `open` false: an unlock beginning (`Unlocking`), and
+    /// every unlock (`Unlocked`), whether an exit came before it or not.
+    /// (lock-int review) After `Unlocking` it was written already, but a
+    /// `true` written since that strand-surface never saw leave (written
+    /// in the tick that wrote the `false`, or while logic was busy) did
+    /// not keep the session locked: the unlock spent it (an open spec is
+    /// not a new request until it closes), and left true it would make
+    /// every later `true` no change, so no lock would ever be asked for
+    /// again. One it saw leave and open again never gets here: the
+    /// session stayed locked and `Locked` came instead.
     pub(crate) fn report(&self, rt: &Runtime, state: SessionLock) -> bool {
         let before = self.phase.get();
         let (phase, held) = match state {
@@ -144,7 +153,7 @@ impl LockTrack {
         let _ = self.held.set(rt, held);
         match state {
             SessionLock::Unlocking => before != Phase::Leaving,
-            SessionLock::Unlocked => before != Phase::Leaving,
+            SessionLock::Unlocked => true,
             SessionLock::Locked | SessionLock::Finished => false,
         }
     }

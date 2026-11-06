@@ -86,7 +86,8 @@ routed on main by `strand_render::input::Router` (`handle(&InputEvent,
 &mut dyn InputScene) -> Vec<Intent>`; the `Renderer` is the
 `InputScene`): hover and press chains, focus, selection, `nav`, `input`
 edits, and closing a two-way `open` on Escape, focus loss and
-click-away. A `window` closes only on click-away, its compositor's close
+click-away, never a `lock`'s (only `auth` closes one; lock-int review).
+A `window` closes only on click-away, its compositor's close
 or `WindowAsk::Close`, and the router never writes its root's
 `Focused`. An `Intent` is `Flag`, `Event`, `Write` or
 `Clipboard(ClipboardAsk)`; the binary's host (`demo/host.rs`, `Forward`)
@@ -1983,8 +1984,9 @@ Public interfaces:
     is delivered with its `drag:` value, an external one as a `Drop`
     record.
   - The lock: only an `auth` success unlocks; the runtime then writes the
-    lock's `open` false (at `SessionLock::Unlocking`, lock-polish, or at
-    an `Unlocked` with no `Unlocking` before it), and a config write of
+    lock's `open` false (at `SessionLock::Unlocking`, lock-polish, and
+    again at every `Unlocked`, lock-int review, so a `true` written as
+    it left that the unlock spent is not left standing), and a config write of
     `false` while locked is ignored with a warning. A lock's content is
     unmounted when it closes, as a popup's (its `state`s are the lock
     scope's), so its exit poses play. `lock_shown()` follows
@@ -2327,8 +2329,9 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   `send_input` drops every event but focus and pointer enter/leave,
   contents stay on their outputs (a new output gets the solid), a waited
   node seen leaving and then open again (the lock asked for again) drops
-  the token and the host hears `Locked`, and `finished` sends the unlock
-  at once (`Unlocked`, no new lock). With nothing waited for, no timer
+  the token and the host hears `Locked`, and `finished` drops the token
+  and is answered as any `finished` after `locked` (`Finished`, a new
+  lock asked for; lock-int review). With nothing waited for, no timer
   or the lock still pending it is `unlock`. After an exit, as after any
   unlock, a lock spec open and not leaving is spent until it closes
   (logic slow to close it at the cap looks the same); the exit is
@@ -2355,8 +2358,15 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   `ext_session_lock_surface_v1` at once and its `wl_surface` once the GPU
   thread lets go, and its output gets a fresh content surface with a new
   id, drawn on the CPU until the lock ends (its handles never lent), the
-  keyboard focus moved to it; the session stays locked.
-  `State::is_lock_content(surface)` names a content surface.
+  keyboard focus moved to it; the session stays locked (a
+  `wl_keyboard.leave` of a `wl_surface` no longer ours, the old one's
+  among them, is ignored; only a solid's counts as the focused
+  content's). `State::is_lock_content(surface)` names a content surface.
+  (lock-int review) Render holds a lock surface's clock across its
+  hand-off to the GPU thread: its first presented frame, and the one
+  after it, are drawn one period after the frame shown before them,
+  and every later one behind the time asked by the time lost
+  (`Renderer::presented_lag`).
 - *Drag and drop* (`src/dnd.rs`, as `manager::dnd`): a
   `wl_data_device` per seat yields `InputEvent::Drag*` (external
   payloads read through calloop without blocking, at most

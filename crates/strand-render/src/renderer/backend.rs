@@ -557,6 +557,36 @@ struct Surf {
     /// (perf-gpu-retain) What its last presented frame did with its
     /// snapshot (`Renderer::fresh_gpu_frame` does it again).
     snap: strand_gpu::FrameSnapshot,
+    /// (lock-int review) Where a lock's hand-off to the GPU thread is
+    /// ([`HandOff`]).
+    hand_off: HandOff,
+    /// (lock-int review) How far behind the time it is asked at each of
+    /// its presented frames is drawn: the time its hand-off held its clock.
+    lag: Duration,
+}
+
+/// (lock-int review) A lock surface's hand-off to the GPU thread holds its
+/// clock (decisions.md lock-int). Nothing shows a lent surface's frames
+/// from its last CPU frame until its first presented one: the attach, the
+/// new swapchain and that frame's own work (a large blur group built
+/// again) lie between them, 50 to 200 ms. Sampled at the time they are
+/// asked, the first presented frame showed the pose of when it was asked
+/// and the next one jumped over the time lost (most of an island's
+/// growth in one frame). Held, each takes the time of the frame shown
+/// before it, one period on, and the lock plays on from there, the time
+/// lost added to [`Surf::lag`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum HandOff {
+    /// Nothing held.
+    #[default]
+    Idle,
+    /// Attached to present: its first presented frame goes on from its
+    /// last CPU frame.
+    Attached,
+    /// That frame is in flight.
+    FirstOut,
+    /// It was presented: the next frame goes on from it.
+    Presented,
 }
 
 /// One `shader` node's pass in flight.
@@ -844,6 +874,11 @@ impl Renderer {
     /// tells it once the GPU thread attached it, or took it back). A
     /// switch repaints in full.
     pub fn set_backend(&mut self, surface: SurfaceId, backend: Backend) {
+        let lock = self
+            .surfaces
+            .get(&surface)
+            .and_then(|st| self.specs.get(&st.root))
+            .is_some_and(|sp| sp.kind == strand_scene::NodeKind::Lock);
         let s = self.gpu.surfaces.entry(surface).or_default();
         if s.backend == backend {
             return;
@@ -854,6 +889,13 @@ impl Renderer {
         s.pixels = None;
         s.hold = None;
         s.shown = None;
+        // (lock-int review) A lock's clock is held across its hand-off.
+        s.lag = Duration::ZERO;
+        s.hand_off = if lock && backend == Backend::GpuPresent {
+            HandOff::Attached
+        } else {
+            HandOff::Idle
+        };
         self.gpu.fades.remove(&surface);
         if backend.is_gpu() {
             if !s.promo.on_gpu() {
@@ -1014,6 +1056,9 @@ impl Renderer {
                         }
                     }
                     s.presenting = false;
+                    if s.hand_off == HandOff::FirstOut {
+                        s.hand_off = HandOff::Presented;
+                    }
                 }
             }
             GpuReply::Pixels {
@@ -1571,13 +1616,14 @@ impl Renderer {
             // Zeroed by the allocator and never touched: no pages.
             scratch = vec![0u8; len];
         }
+        let time = self.held_time(surface, at);
         let mut target = PaintTarget {
             pixels: &mut scratch,
             size,
             stride,
             scale,
             age: 0,
-            time: at,
+            time,
         };
         self.gpu.present = None;
         let _ = self.paint(surface, &mut target);
@@ -1587,8 +1633,47 @@ impl Renderer {
             && let Some(s) = self.gpu.surfaces.get_mut(&surface)
         {
             s.presenting = true;
+            if s.hand_off == HandOff::Attached {
+                s.hand_off = HandOff::FirstOut;
+            }
         }
         frame
+    }
+
+    /// (lock-int review) The time presented frame of `surface` asked at
+    /// `at` is drawn at ([`HandOff`]): `at` less the time its hand-off
+    /// held its clock. The first presented frame, and the one after it,
+    /// go on one period from the frame shown before them.
+    fn held_time(&mut self, surface: SurfaceId, at: Duration) -> Duration {
+        let last = self.surfaces.get(&surface).and_then(|s| s.painted_time);
+        let period = self.clocks.period(surface);
+        let Some(g) = self.gpu.surfaces.get_mut(&surface) else {
+            return at;
+        };
+        if matches!(g.hand_off, HandOff::Attached | HandOff::Presented)
+            && let Some(last) = last
+        {
+            g.lag = at.saturating_sub(last + period);
+            if g.hand_off == HandOff::Presented {
+                g.hand_off = HandOff::Idle;
+                log::info!(
+                    "lock: surface {}'s clock was held {} ms across its hand-off to the GPU",
+                    surface.0,
+                    g.lag.as_millis()
+                );
+            }
+        }
+        at.saturating_sub(g.lag)
+    }
+
+    /// (lock-int review) How far behind the time asked `surface`'s
+    /// presented frames are drawn: the time its hand-off to the GPU
+    /// thread held its clock ([`HandOff`]; zero for any other surface).
+    pub fn presented_lag(&self, surface: SurfaceId) -> Duration {
+        self.gpu
+            .surfaces
+            .get(&surface)
+            .map_or(Duration::ZERO, |s| s.lag)
     }
 
     /// In `paint` of a `GpuPresent` surface: lowers the frame for
