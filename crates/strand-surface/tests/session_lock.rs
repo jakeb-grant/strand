@@ -68,10 +68,16 @@ struct LockHost {
     /// Router does for Ctrl+V and Ctrl+C in a focused `input`.
     clip: bool,
     asks: Vec<ClipboardAsk>,
+    /// Paints nothing (and wants no frame) while set: a surface's first
+    /// frame held back.
+    hold: bool,
 }
 
 impl Painter for LockHost {
     fn paint(&mut self, surface: SurfaceId, target: &mut PaintTarget<'_>) -> Damage {
+        if self.hold {
+            return Damage::new();
+        }
         if self.sizes.get(&surface) == Some(&target.size) && self.painted.contains(&surface) {
             return Damage::new();
         }
@@ -85,7 +91,7 @@ impl Painter for LockHost {
     }
 
     fn wants_frame(&self, surface: SurfaceId) -> bool {
-        !self.painted.contains(&surface)
+        !self.hold && !self.painted.contains(&surface)
     }
 }
 
@@ -958,25 +964,34 @@ fn a_lock_surface_is_handed_off_after_its_first_frame_and_renewed_on_the_cpu() {
     let mut desk = desktop(&sway, 1);
     let mut lock = locker(&sway);
     let _input = lock.take_input().unwrap();
+    // Its first frame held back, so the check below always runs.
+    lock.state_mut().host_mut().hold = true;
     lock.state_mut()
         .apply_surface_change(LOCK, SurfaceChange::Created(lock_spec(true)));
-    // Before its first frame nothing is lent.
+    // Configured, before its first frame: nothing is lent, and the host
+    // only puts its promotion off (it is not kept on the CPU for good).
     let made = lock
-        .dispatch_until(WAIT, |s| s.lock_content().is_some())
+        .dispatch_until(WAIT, |s| {
+            s.lock_content()
+                .and_then(|c| s.surface(c))
+                .is_some_and(|i| i.configured)
+        })
         .unwrap();
-    assert!(made, "a content surface");
+    assert!(made, "a configured content surface");
     let content = lock.state().lock_content().unwrap();
-    if lock
-        .state()
-        .surface(content)
-        .is_none_or(|i| i.stats.commits == 0)
-    {
-        #[cfg(feature = "gpu")]
-        assert!(
-            lock.state_mut().raw_handles(content).is_none(),
-            "lent before its first frame"
-        );
-    }
+    assert_eq!(
+        lock.state().surface(content).map(|i| i.stats.commits),
+        Some(0),
+        "no frame yet"
+    );
+    #[cfg(feature = "gpu")]
+    assert!(
+        lock.state_mut().raw_handles(content).is_none(),
+        "lent before its first frame"
+    );
+    assert!(!lock.state().lock_kept_on_cpu(content));
+    lock.state_mut().host_mut().hold = false;
+    lock.state_mut().repaint(content);
     wait_lock(&mut lock, LockState::Locked);
     let painted = lock
         .dispatch_until(WAIT, |s| {
@@ -1036,12 +1051,13 @@ fn a_lock_surface_is_handed_off_after_its_first_frame_and_renewed_on_the_cpu() {
         lock.state().keyboard_focus(),
         &lock.state().host().input[from..]
     );
-    // On the CPU for the rest of the lock.
+    // On the CPU for the rest of the lock: a refusal that lasts.
     #[cfg(feature = "gpu")]
     assert!(
         lock.state_mut().raw_handles(new).is_none(),
         "a renewed content is never lent"
     );
+    assert!(lock.state().lock_kept_on_cpu(new));
     assert!(!lock.state_mut().hand_off(new));
     // The GPU thread lets go of the old one: its wl_surface goes, and
     // nothing the manager sent ended the connection.

@@ -469,8 +469,6 @@ mod tests {
         assert!(p.on_gpu(), "animating again is not a second promotion");
     }
 
-    /// A failure takes a surface back at once, with no frame waited for,
-    /// and a later animation may promote it again (a device up by then).
     /// (lock-gpu) A pinned surface is never promoted, whatever animates
     /// on it; a promotion pending when it was pinned is undone.
     #[test]
@@ -491,6 +489,8 @@ mod tests {
         assert!(!p.on_gpu());
     }
 
+    /// A failure takes a surface back at once, with no frame waited for,
+    /// and a later animation may promote it again (a device up by then).
     #[test]
     fn a_failure_takes_a_surface_back_at_once() {
         let mut p = Promotion::default();

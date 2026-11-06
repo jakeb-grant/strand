@@ -36,7 +36,7 @@ session_lock=$(test_exe strand-surface session_lock)
 vm_pam=$(test_exe strand-auth vm_pam)
 vm_auth=$(test_exe strand-services vm_auth)
 strand_lock=$(cargo test -p strand --features faults --test lock --no-run --message-format=json \
-  | grep -o '"executable":"[^"]*"' | cut -d'"' -f4 | grep "/lock-" | tail -1)
+  | grep -o '"executable":"[^"]*"' | cut -d'"' -f4 | grep "/deps/lock-" | tail -1)
 [ -x "$strand_lock" ] || { echo "build.sh: no executable for strand --test lock" >&2; exit 1; }
 # The binary the test runs (CARGO_BIN_EXE_strand) and, beside it, the
 # helper its lock spawns (strand_auth::default_helper).

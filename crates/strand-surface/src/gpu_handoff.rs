@@ -143,6 +143,18 @@ impl<H: SurfaceHost + 'static> State<H> {
         })
     }
 
+    /// (lock-gpu) `surface` is lock content drawn on the CPU until the
+    /// lock ends (its output's content was renewed in this lock): its
+    /// handles are never lent, so the host keeps it on the CPU for good.
+    /// Any other refusal of [`State::raw_handles`] for a lock surface (not
+    /// mapped yet, a configure pending at another size) passes, and the
+    /// host lets a later frame ask again.
+    pub fn lock_kept_on_cpu(&self, surface: SurfaceId) -> bool {
+        self.surfaces
+            .get(&surface)
+            .is_some_and(|s| matches!(&s.role, Role::Lock(l) if l.cpu_only()))
+    }
+
     /// The GPU thread presents `surface` from now on and is its only
     /// committer. False if there is no such surface.
     pub fn hand_off(&mut self, surface: SurfaceId) -> bool {

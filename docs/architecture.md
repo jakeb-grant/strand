@@ -2495,10 +2495,17 @@ runs), and hands every reply to `Renderer::deliver_gpu(GpuReply)`.
 
 Negotiation: render reports `Promote(surface)`; the binary sends
 `Attach` with `State::raw_handles` (none for readback-only surfaces);
-the reply's `GpuMode` becomes the backend. A lock's content surface with
-no handles, or answered `Readback`, is not attached (or is released at
-once) and stays on the CPU: `Renderer::keep_on_cpu(surface)` pins it
-there (`Promotion::pin_cpu`). A surface's frames wait from
+the reply's `GpuMode` becomes the backend. A lock's content surface is
+attached only with handles, to a device that is up and a thread that has
+not stalled under a lock (below); its handles are asked for only then,
+since a lent surface skips the manager's paints. A refusal that lasts
+(its output renewed in this lock, `State::lock_kept_on_cpu`, or an
+`Attached { Readback }`, released at once) keeps it on the CPU:
+`Renderer::keep_on_cpu(surface)` pins it there (`Promotion::pin_cpu`).
+One that passes (not mapped yet, a configure pending at another size,
+the device starting, the thread stalled or ending) only undoes the
+promotion (`Renderer::refuse_promotion`), so a later large frame asks
+again. A surface's frames wait from
 `Attach` until the reply, since its handles are lent to a WSI that may own
 its buffers by then (decisions.md syncobj-lend): attaching costs about 2 to
 28 ms on the GPU thread, once per surface.
@@ -2569,12 +2576,19 @@ for a lock's content surface, renewed instead of taken back (below).
   The manager renews it itself for a configure at a new size or a new
   scale (a commit of the old size after the ack would be a protocol
   error), and acks a configure at its size at once. The binary
-  (`GpuHost`) renews it when its `Attach` or a frame of it goes
-  unanswered for `LOCK_GPU_BOUND` (500 ms; the loop wakes for it, since a
-  stalled thread sends nothing), on `GpuReply::Failed` (render's
-  `Demote`), when the thread ends (`Exited`, the old `wl_surface` then
-  goes at once), and when the built-in fallback shows on it (the
-  fallback is painted by the main thread only). An `Attached { Readback
+  (`GpuHost`) renews every lock surface the thread holds when the thread
+  answers nothing for `LOCK_GPU_BOUND` (500 ms) while a lock surface's
+  `Attach` or frame waits on it: each request is timed from its sending
+  or the thread's last reply of any kind, whichever is later, since the
+  thread works through its requests in order (the bound times the
+  thread's silence, never other outputs' requests queued ahead); the
+  loop wakes for it, since a stalled thread sends nothing. That thread
+  then gets no lock content until it replies again or a new one starts
+  (`lock_stalled`). The binary also renews one lock surface on
+  `GpuReply::Failed` (render's `Demote`), when the thread ends
+  (`Exited`, the old `wl_surface` then goes at once), and when the
+  built-in fallback shows on it (the fallback is painted by the main
+  thread only). An `Attached { Readback
   }` for a lock (no swapchain was made) is taken back, released and
   pinned to the CPU.
 - The binary's side is `strand/src/run/gpu.rs` (`GpuHost::pump` after

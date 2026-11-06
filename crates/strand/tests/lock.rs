@@ -3165,6 +3165,42 @@ impl Vm {
         });
     }
 
+    /// (lock-gpu) Springs `glow` back and forth (`on` its last value)
+    /// until the lock's content is attached for the GPU, and checks it is
+    /// presented, never read back: its surface.
+    fn until_presented(&self, on: &mut bool) -> u32 {
+        let deadline = Instant::now() + WAIT;
+        let (id, mode) = loop {
+            *on = !*on;
+            self.glow(*on);
+            if let Some(a) = self.gpu_attached() {
+                break a;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the lock was never promoted:\n{}",
+                self.strand.log_text()
+            );
+        };
+        assert_eq!(
+            mode,
+            "Present",
+            "a lock is presented, never read back:\n{}",
+            self.strand.log_text()
+        );
+        id
+    }
+
+    /// (lock-gpu) How many surfaces strand's log says it attached for the
+    /// GPU.
+    fn gpu_attaches(&self) -> usize {
+        self.strand
+            .log_text()
+            .lines()
+            .filter(|l| l.contains("GPU: surface ") && l.contains(" attached ("))
+            .count()
+    }
+
     /// (lock-gpu) The surface strand's log says it attached for the GPU,
     /// and in which mode, once it has.
     fn gpu_attached(&self) -> Option<(u32, String)> {
@@ -3239,26 +3275,7 @@ fn a_lock_that_animates_is_presented_and_never_alternates() {
         near(s.corner(), LOCK_BG)
     });
     let mut on = false;
-    let deadline = Instant::now() + WAIT;
-    let surface = loop {
-        on = !on;
-        vm.glow(on);
-        if let Some(a) = vm.gpu_attached() {
-            break a;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the lock was never promoted:\n{}",
-            vm.strand.log_text()
-        );
-    };
-    assert_eq!(
-        surface.1,
-        "Present",
-        "a lock is presented, never read back:\n{}",
-        vm.strand.log_text()
-    );
-    let id = surface.0;
+    let id = vm.until_presented(&mut on);
     for _ in 0..6 {
         on = !on;
         vm.glow(on);
@@ -3306,8 +3323,11 @@ fn a_lock_that_animates_is_presented_and_never_alternates() {
 /// frame). The lock never waits on it: within its bound the lock's
 /// content is renewed, a fresh lock surface on its output drawn on the
 /// CPU from then on, and the lock goes on animating. The session stays
-/// locked throughout, the keyboard follows, and the password typed half
-/// before the stall and half after unlocks it.
+/// locked throughout, the keyboard follows, and the password typed in
+/// three parts (before the lock is presented, while the stalled thread
+/// presents it, after the renewal) unlocks it. (lock-gpu review) The
+/// next lock, on the same stalled thread, never goes to it: its content
+/// animates on the CPU from its first frame, with nothing to renew.
 #[test]
 fn a_lock_whose_gpu_stalls_goes_on_on_the_cpu() {
     let test = "lock_gpu_stall";
@@ -3319,35 +3339,85 @@ fn a_lock_whose_gpu_stalls_goes_on_on_the_cpu() {
     vm.until_locked("HEADLESS-1", "the config's lock", true, |s| {
         near(s.corner(), LOCK_BG)
     });
-    let (head, tail) = PASSWORD.split_at(7);
+    let (head, rest) = PASSWORD.split_at(4);
+    let (mid, tail) = rest.split_at(4);
     vm.keys.type_text(head);
+    // Springs until the GPU thread has presented the lock: the fault
+    // stops the thread at its next reply.
     let mut on = false;
     let deadline = Instant::now() + WAIT;
-    while !vm
-        .strand
-        .log_text()
-        .contains("is drawn on the CPU from now on")
-    {
+    'armed: loop {
         on = !on;
-        vm.glow(on);
+        vm.strand
+            .cli(&["set", "lock.glow", if on { "true" } else { "false" }]);
+        for _ in 0..20 {
+            if vm.strand.log_text().contains("STRAND_FAULT gpu_stall") {
+                break 'armed;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert!(
             Instant::now() < deadline,
-            "the stalled lock was never renewed:\n{}",
+            "the lock was never presented:\n{}",
             vm.strand.log_text()
         );
     }
-    let log = vm.strand.log_text();
-    assert!(log.contains("STRAND_FAULT gpu_stall"), "{log}");
-    let (old, new) = log
-        .lines()
-        .find_map(|l| {
+    // Typed while the stalled thread presents the lock, inside its bound.
+    let armed = Instant::now();
+    vm.keys.type_text(mid);
+    let before = !vm
+        .strand
+        .log_text()
+        .contains("is drawn on the CPU from now on");
+    // Frames go on asking for the thread until the lock gives up on it;
+    // the log is read every 10 ms, so the times below are that coarse.
+    let mut asked = Instant::now();
+    let (old, new, renewed) = loop {
+        let log = vm.strand.log_text();
+        if let Some((old, new)) = log.lines().find_map(|l| {
             let rest = l.split("lock: surface ").nth(1)?;
             let (old, rest) = rest.split_once(" is drawn on the CPU from now on, as surface ")?;
             Some((old.parse::<u32>().ok()?, rest.trim().parse::<u32>().ok()?))
-        })
-        .expect("the renewal names both surfaces");
+        }) {
+            break (old, new, Instant::now());
+        }
+        if asked.elapsed() >= Duration::from_millis(300) {
+            on = !on;
+            vm.strand
+                .cli(&["set", "lock.glow", if on { "true" } else { "false" }]);
+            asked = Instant::now();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the stalled lock was never renewed:\n{log}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let drawn = format!("strand: damage surface={new} ");
+    while !vm.strand.log_text().contains(&drawn) {
+        assert!(
+            Instant::now() < deadline,
+            "the renewed surface never drew:\n{}",
+            vm.strand.log_text()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    eprintln!(
+        "lock gpu stall: renewed {} ms after the fault armed, its first CPU frame {} ms after \
+         that; the middle of the password was typed {} the renewal",
+        renewed.duration_since(armed).as_millis(),
+        renewed.elapsed().as_millis(),
+        if before { "before" } else { "after" }
+    );
+    let log = vm.strand.log_text();
     assert!(
-        log.contains(&format!("lock: the GPU failed surface {old} (")),
+        log.contains(&format!(
+            "lock: the GPU failed surface {old} (its GPU thread stalled)"
+        )),
+        "{log}"
+    );
+    assert!(
+        log.contains("no lock surface goes to it until it answers again"),
         "{log}"
     );
     assert_eq!(
@@ -3374,4 +3444,140 @@ fn a_lock_whose_gpu_stalls_goes_on_on_the_cpu() {
     // The rest of the password, on the renewed surface.
     vm.keys.enter(tail);
     vm.until("HEADLESS-1", "unlocked by the password", Shot::desktop);
+    // Locked again, the thread still stalled: the new lock's content
+    // animates on the CPU and is never attached, so nothing waits a bound
+    // or is renewed.
+    let attaches = vm.gpu_attaches();
+    vm.lock();
+    vm.until_locked("HEADLESS-1", "the config's lock again", true, |s| {
+        near(s.corner(), if on { GLOW } else { LOCK_BG })
+    });
+    for _ in 0..4 {
+        on = !on;
+        vm.glow(on);
+    }
+    let log = vm.strand.log_text();
+    assert_eq!(
+        vm.gpu_attaches(),
+        attaches,
+        "no lock content goes to the stalled thread:\n{log}"
+    );
+    assert_eq!(
+        log.matches("is drawn on the CPU from now on").count(),
+        1,
+        "nothing to renew in the second lock:\n{log}"
+    );
+    vm.keys.enter(PASSWORD);
+    vm.until("HEADLESS-1", "unlocked again", Shot::desktop);
+}
+
+/// (lock-gpu review) The built-in password field takes over a lock the
+/// GPU thread presents, its thread healthy (a runtime fault in the lock,
+/// `10 / zero`): only the main thread draws the field, so the content is
+/// renewed on the CPU, its old surface released by the thread that still
+/// presents it, and the field takes a wrong password and then the right
+/// one, the session locked throughout.
+#[test]
+fn a_presented_lock_that_faults_shows_the_fallback_on_the_cpu() {
+    let test = "lock_gpu_fallback";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::gpu(test, "", GLOW_CONFIG);
+    vm.lock();
+    vm.until_locked("HEADLESS-1", "the config's lock", true, |s| {
+        near(s.corner(), LOCK_BG)
+    });
+    let mut on = false;
+    let id = vm.until_presented(&mut on);
+    on = !on;
+    vm.glow(on);
+    let log = vm.strand.log_text();
+    assert!(
+        frames_of(&log, id).iter().any(|(gpu, _)| *gpu),
+        "presented before the fault:\n{log}"
+    );
+    vm.strand.cli(&["set", "lock.zero", "0"]);
+    vm.fallback();
+    vm.log_has("a runtime fault froze the lock");
+    vm.log_has(&format!(
+        "lock: the GPU failed surface {id} (the built-in password field shows)"
+    ));
+    vm.log_has(&format!(
+        "lock: surface {id} is drawn on the CPU from now on"
+    ));
+    vm.until_log(&format!("GPU: surface {id} released"));
+    let log = vm.strand.log_text();
+    assert!(
+        !log.contains("no lock surface goes to it"),
+        "the thread is healthy:\n{log}"
+    );
+    vm.fallback_passwords();
+}
+
+/// (lock-gpu review) A lock that animates from its first frame, as the
+/// owner's lock opens from the desktop: a full-output box springs from
+/// opaque to clear as the lock opens, so it asks for the GPU from its
+/// first frames. It is presented by the GPU thread while it opens, its
+/// first frame the CPU's and none of the CPU's after the first presented
+/// one. (On sway the first promotion comes after the first commit, so
+/// this does not reach a refusal that passes; `run/gpu.rs`'s
+/// `a_lock_promotion_is_refused_for_now_or_for_good` and session_lock.rs's
+/// handed-off test pin that.)
+const FADE_CONFIG: &str = r#"export state locked = false
+export state zero = 1
+lock Gate {
+  state secret = ""
+  open: <-> locked
+  bg: #2050d0
+  box { width: 100%; height: 100%; bg: #d05020
+    opacity: 0 ~ spring(120, 1)
+    enter { opacity: 1 }
+  }
+  input { type: password; text: <-> secret; focus: true
+    on activate { if secret != "" { auth.submit(secret) }; secret = "" }
+  }
+}
+"#;
+
+#[test]
+fn a_lock_that_animates_from_its_first_frame_is_presented() {
+    let test = "lock_fade_presented";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::gpu(test, "", FADE_CONFIG);
+    vm.lock();
+    vm.until_locked("HEADLESS-1", "the faded-in lock", true, |s| {
+        near(s.corner(), LOCK_BG)
+    });
+    let log = vm.strand.log_text();
+    let (id, mode) = vm
+        .gpu_attached()
+        .unwrap_or_else(|| panic!("the opening lock was never promoted:\n{log}"));
+    assert_eq!(mode, "Present", "{log}");
+    assert!(!log.contains("stays on the CPU"), "{log}");
+    let frames = frames_of(&log, id);
+    let first_gpu = frames
+        .iter()
+        .position(|(gpu, _)| *gpu)
+        .unwrap_or_else(|| panic!("no frame of surface {id} was presented:\n{log}"));
+    assert!(first_gpu > 0, "the first frame is the CPU's:\n{log}");
+    assert!(
+        frames[first_gpu..].iter().all(|(gpu, _)| *gpu),
+        "a CPU frame after it was presented: {:?}\n{log}",
+        frames.iter().map(|(g, _)| u8::from(*g)).collect::<Vec<_>>()
+    );
+    eprintln!(
+        "lock fade: first frames {:?} ms; {} CPU frames, then {} presented",
+        vm.first_frames(),
+        first_gpu,
+        frames.len() - first_gpu
+    );
+    vm.keys.enter(PASSWORD);
+    vm.until(
+        "HEADLESS-1",
+        "unlocked by the right password",
+        Shot::desktop,
+    );
 }

@@ -773,6 +773,16 @@ impl Renderer {
         self.gpu.surf(surface).promo.pin_cpu();
     }
 
+    /// (lock-gpu) The host cannot attach `surface` yet (a lock surface not
+    /// mapped, or with a configure pending at another size; the device
+    /// not up yet, or its thread stalled under a lock): the promotion it
+    /// asked for is undone
+    /// with no `Attach` sent, and a later frame that animates a large
+    /// area asks again.
+    pub fn refuse_promotion(&mut self, surface: SurfaceId) {
+        self.gpu.surf(surface).promo.force_cpu();
+    }
+
     /// (gpu-first) Starts the device now, before anything needs it, and
     /// keeps it for the process (decisions.md gpu-first): the binary calls
     /// it as the shell starts, so the first animation is drawn by a device

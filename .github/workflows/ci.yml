@@ -710,6 +710,17 @@ jobs:
               # bound, the `gpu_stall` fault).
               - 'crates/strand-surface/src/gpu_handoff.rs'
               - 'crates/strand/src/run/gpu.rs'
+              # (lock-gpu review) A destroyed lock surface's role goes at
+              # once (`drop_role` in `destroy_surface`), which a renewal
+              # needs (`duplicate_output` otherwise); render's pin and its
+              # refusal of a lock's promotion; the GPU thread that attaches
+              # and presents a lock surface (its swapchain, its stall).
+              - 'crates/strand-surface/src/manager/layer.rs'
+              - 'crates/strand-render/src/promote.rs'
+              - 'crates/strand-render/src/renderer/backend.rs'
+              - 'crates/strand-gpu/src/present.rs'
+              - 'crates/strand-gpu/src/thread.rs'
+              - 'crates/strand-gpu/src/device.rs'
               - 'crates/**/*lock_fallback*'
               # The glob stops at a directory's name: the fallback's font.
               - 'crates/strand-render/src/lock_fallback/**'
