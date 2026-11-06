@@ -222,3 +222,101 @@ fn the_locks_own_exit_carries_all_of_it() {
     let spec = r.surface_spec(lock).cloned().unwrap();
     assert!(!spec.open && !spec.closing, "closed once it has played out");
 }
+
+/// (lock-int) An `exit` nested under a node with none plays (the owner's
+/// island, a `stack` with its poses in a full-screen `col` that has
+/// none): its `enter` played, so its exit does too. The lock's content
+/// is one column over all of it with no pose, holding the card, which
+/// fades out on `exit`; the column stays drawn at rest (its own green),
+/// the card fades frame by frame to it, and the lock is held open and
+/// closing until it has.
+#[test]
+fn an_exit_under_a_node_with_none_plays() {
+    let mut b = Builder::default();
+    let lock = b.node(
+        NodeKind::Lock,
+        None,
+        vec![
+            (Prop::Open, PropValue::Bool(true)),
+            (
+                Prop::TwoWay,
+                PropValue::List(vec![PropValue::Keyword("open".into())]),
+            ),
+            (Prop::Bg, color("#2050d0")),
+        ],
+    );
+    let col = b.node(
+        NodeKind::Col,
+        Some(lock),
+        vec![
+            (Prop::Width, num(320.0)),
+            (Prop::Height, num(200.0)),
+            (Prop::Align, PropValue::Keyword("center".into())),
+            (Prop::Bg, color("#00ff00")),
+        ],
+    );
+    let stack = b.node(
+        NodeKind::Stack,
+        Some(col),
+        vec![
+            (Prop::Width, num(200.0)),
+            (Prop::Height, num(100.0)),
+            (Prop::Y, num(50.0)),
+            (Prop::Exit, PropValue::Pose(vec![(Prop::Opacity, num(0.0))])),
+        ],
+    );
+    b.node(
+        NodeKind::Box,
+        Some(stack),
+        vec![
+            (Prop::Width, num(200.0)),
+            (Prop::Height, num(100.0)),
+            (Prop::Bg, color("#e0e0e0")),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.take_surface_changes();
+    r.set_surface_bounds(LOCK, Some(LogicalSize::new(320.0, 200.0)));
+    r.attach_surface(LOCK, lock);
+    r.configure_surface(LOCK, Size::new(320, 200), Scale::ONE);
+    let mut buf = Buffer::new(320, 200, Scale::ONE);
+    assert!(!buf.paint_at(&mut r, LOCK, 0, T0).is_empty());
+    assert_eq!(buf.px(10, 100), GREEN);
+    assert_eq!(buf.px(160, 100), CARD);
+
+    close(&mut r, lock, &[col]);
+    let spec = r.surface_spec(lock).cloned().unwrap();
+    assert!(
+        spec.open && spec.closing,
+        "held open for the nested exit: {spec:?}"
+    );
+    let mut cards = Vec::new();
+    let mut mid = None;
+    let mut k = 1;
+    while r.surface_spec(lock).is_some_and(|s| s.open) {
+        buf.paint_at(&mut r, LOCK, 1, frame(k));
+        assert_eq!(buf.px(10, 100), GREEN, "frame {k}: the column stays drawn");
+        let c = buf.px(160, 100);
+        if mid.is_none() && c != CARD && c != GREEN {
+            mid = Some(buf.clone());
+        }
+        cards.push(c);
+        k += 1;
+        assert!(k < 200, "the lock never closed");
+    }
+    assert!(k > 4, "the exit plays over several frames ({k}): {cards:?}");
+    assert!(
+        cards.windows(2).all(|w| w[1][0] <= w[0][0]),
+        "the card fades frame by frame to the column under it: {cards:?}"
+    );
+    assert_eq!(*cards.last().unwrap(), GREEN, "gone by the last frame");
+    assert_matches_ref(
+        "lock_exit_nested_mid",
+        &mid.expect("a frame part way out"),
+        2,
+    );
+    let spec = r.surface_spec(lock).cloned().unwrap();
+    assert!(!spec.open && !spec.closing, "closed once it has played out");
+    assert_eq!(r.tree().ghost_count(), 0, "what it kept unmounted");
+}

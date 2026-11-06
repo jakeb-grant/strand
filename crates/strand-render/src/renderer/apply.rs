@@ -453,10 +453,23 @@ impl Renderer {
                     && !surface
                     && !reduced
                     && (self.closing_with_pose(r) || self.lock_closing(r))
-                    && self.tree.ghost(*id).is_ok()
                 {
-                    self.closing_content.entry(r).or_default().push(*id);
-                    return true;
+                    // (lock-int) In a closing lock, the first nodes with
+                    // an `exit` under one with none play theirs, as their
+                    // `enter` played (an island in a full-screen column):
+                    // found before the subtree turns ghost.
+                    let nested = if self.lock_closing(r) {
+                        self.posed_under(*id, r)
+                    } else {
+                        Vec::new()
+                    };
+                    if self.tree.ghost(*id).is_ok() {
+                        self.closing_content.entry(r).or_default().push(*id);
+                        for n in nested {
+                            self.anim.exit(n, ExitKind::Ghost);
+                        }
+                        return true;
+                    }
                 }
                 self.flip(parent);
             }
@@ -503,5 +516,40 @@ impl Renderer {
             }
         }
         false
+    }
+
+    /// (lock-int) The outermost nodes with an exit pose strictly under
+    /// `id` (a node with none, removed from closing lock `root`) that the
+    /// lock's surface laid out: each plays its exit while the rest of the
+    /// subtree stays drawn at rest. Not under one that has a pose (that
+    /// node plays, its own subtree with it), as a removed node's ghost.
+    fn posed_under(&self, id: NodeId, root: NodeId) -> Vec<NodeId> {
+        let laid = |n: NodeId| {
+            self.surfaces.values().any(|s| {
+                s.root == root && s.boxes.as_ref().is_some_and(|b| b.rects.contains_key(&n))
+            })
+        };
+        let mut out = Vec::new();
+        let mut stack: Vec<NodeId> = self
+            .tree
+            .get(id)
+            .map(|n| n.children.clone())
+            .unwrap_or_default();
+        while let Some(c) = stack.pop() {
+            let Some(node) = self.tree.get(c) else {
+                continue;
+            };
+            if node.kind.is_surface() {
+                continue;
+            }
+            if is_pose(exit_pose(node)) {
+                if laid(c) {
+                    out.push(c);
+                }
+            } else {
+                stack.extend(node.children.iter().copied());
+            }
+        }
+        out
     }
 }

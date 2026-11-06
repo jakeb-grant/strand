@@ -3471,3 +3471,107 @@ fn a_locks_hand_off_to_the_gpu_holds_its_clock() {
         }
     }
 }
+
+/// Stripes in a box at `at` under `filter: blur(sigma), brightness(0.6)`
+/// on a bar.
+fn filter_blur_scene(at: (f32, f32, f32, f32), sigma: f32) -> SceneDiff {
+    let colors = ["#f38ba8", "#a6e3a1", "#89b4fa", "#f9e2af"];
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let abs = |x: f32, y: f32, w: f32, h: f32| {
+        vec![
+            (Prop::X, num(x)),
+            (Prop::Y, num(y)),
+            (Prop::Width, num(w)),
+            (Prop::Height, num(h)),
+            (Prop::Place, PropValue::Keyword("absolute".into())),
+        ]
+    };
+    let mut p = abs(at.0, at.1, at.2, at.3);
+    p.push((
+        Prop::Filter,
+        PropValue::List(vec![
+            backdrop_call("blur", vec![num(sigma)]),
+            backdrop_call("brightness", vec![num(0.6)]),
+        ]),
+    ));
+    let holder = b.node(NodeKind::Box, Some(root), p);
+    for i in 0..(at.2 as u32) / 20 {
+        let mut p = abs(i as f32 * 20.0, 0.0, 20.0, at.3);
+        p.push((Prop::Bg, color(colors[i as usize % 4])));
+        b.node(NodeKind::Box, Some(holder), p);
+    }
+    b.diff
+}
+
+/// (lock-int) A large `filter: blur` is kept at its reduction and scaled
+/// up where it is drawn, by the CPU's raster on a CPU surface and the
+/// GPU's smooth image on a presented one: the two match within the GPU
+/// tolerance, at scale 1 and 1.5, for a box inside the surface and for
+/// one filling it (the owner's lock's dimmed still, whose blur repeats
+/// its edge where the surface cuts it). Before, both drew the CPU's
+/// pixels scaled up to full size, uploaded whole.
+#[test]
+fn a_filter_blur_looks_the_same_on_either_backend() {
+    let Some(opts) = device() else { return };
+    let logical = (640u32, 400u32);
+    let cases = [(100.0, 60.0, 240.0, 240.0), (0.0, 0.0, 640.0, 400.0)];
+    let runs = [Scale::ONE, Scale::new(180).unwrap()]
+        .into_iter()
+        .flat_map(|scale| cases.map(|c| (scale, c)));
+    for (scale, at) in runs {
+        let size = scale.physical_size(LogicalSize::new(logical.0 as f32, logical.1 as f32));
+        let scene = || filter_blur_scene(at, 36.0);
+        let mut c = renderer();
+        c.set_promotion(false);
+        assert!(c.apply(scene()).is_empty());
+        c.attach_surface(S, c.tree().roots()[0]);
+        c.configure_surface(S, size, scale);
+        let mut buf = Buffer::new(size.w, size.h, scale);
+        buf.paint_at(&mut c, S, 0, Duration::from_secs(1));
+        let mut r = renderer();
+        assert!(r.apply(scene()).is_empty());
+        r.attach_surface(S, r.tree().roots()[0]);
+        r.configure_surface(S, size, scale);
+        let mut first = Buffer::new(size.w, size.h, scale);
+        first.paint_at(&mut r, S, 0, Duration::from_secs(1));
+        let _ = r.take_gpu_requests();
+        r.promote_now(S);
+        let _ = r.take_backend_changes();
+        r.set_backend(S, Backend::GpuPresent);
+        let (ping, pings) = mpsc::channel();
+        let mut gpu = Gpu::spawn(
+            Box::new(move || {
+                let _ = ping.send(());
+            }),
+            opts,
+        );
+        gpu.send(GpuRequest::Attach {
+            surface: S,
+            handles: None,
+            size,
+            scale,
+            opaque: false,
+        });
+        let frame = r
+            .paint_gpu(S, Duration::from_secs(1) + Duration::from_millis(16))
+            .expect("the switch repaints");
+        // The group goes up at its reduction and is drawn scaled.
+        let scaled = frame.ops.iter().any(|o| {
+            matches!(o, strand_gpu::Op::Image { smooth: true, image_transform, .. }
+                if image_transform.as_coeffs()[0] > 1.5)
+        });
+        assert!(scaled, "drawn scaled up from its reduction");
+        let px = draw(&mut gpu, &pings, frame);
+        drop(gpu);
+        let (bad, worst) = compare_bytes(&px, &buf.pixels);
+        let share = bad as f64 / f64::from(size.w * size.h);
+        eprintln!(
+            "filter blur at {at:?}, {scale:?}: {bad} pixels past {GPU_TOLERANCE}, worst {worst}"
+        );
+        assert!(
+            share <= EDGE_SHARE,
+            "filter blur at {at:?}, {scale:?}: {bad} pixels past {GPU_TOLERANCE} of the CPU's (worst {worst})"
+        );
+    }
+}

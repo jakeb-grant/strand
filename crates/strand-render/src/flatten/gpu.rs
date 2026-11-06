@@ -217,11 +217,7 @@ impl Flattener<'_> {
         };
         if let Some((key, pixmap)) = self.extras.shaders.usable(&want).cloned() {
             let mut with = (*layer).clone();
-            with.gpu = Some(Drawn {
-                pixmap,
-                x: region.x,
-                y: region.y,
-            });
+            with.gpu = Some(Drawn::at(pixmap, region.x, region.y));
             self.out.items[i].item = Item::PushLayer(Arc::new(with));
             if let Some(rec) = self.out.records.get_mut(&node) {
                 let mut h = DefaultHasher::new();
@@ -328,11 +324,11 @@ impl Flattener<'_> {
         if self.gpu_frame {
             want.key.hash(sig);
         }
-        let got = self.extras.shaders.usable(&want).map(|(_, p)| Drawn {
-            pixmap: p.clone(),
-            x: region.x,
-            y: region.y,
-        });
+        let got = self
+            .extras
+            .shaders
+            .usable(&want)
+            .map(|(_, p)| Drawn::at(p.clone(), region.x, region.y));
         self.out.passes.push(want);
         got
     }

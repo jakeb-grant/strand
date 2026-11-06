@@ -3935,25 +3935,146 @@ fn a_blurred_plain_box_is_drawn_as_a_shadow() {
 /// (lock-blur) A `filter: blur` blurs the node's own pixels, which its
 /// `scale` scales: drawn at an eighth under `blur(4)` and `scale: 8`, a
 /// group is as blurred as the same drawn whole under `blur(32)`
-/// (decisions.md lock-blur).
+/// (decisions.md lock-blur). Both clear of the surface's edges by 30
+/// px: where the surface cuts a group its blur repeats the edge row
+/// (lock-int), which the scaled group's antialiased edge would weigh
+/// differently, and that is not what this measures.
 #[test]
 fn a_filter_blur_scales_with_its_node() {
-    let mut small = at_xy(180.0, 87.5, 40.0, 25.0);
+    let mut small = at_xy(180.0, 117.5, 40.0, 25.0);
     small.extend([filter("blur", vec![num(4.0)]), (Prop::Scale, num(8.0))]);
-    let (_, scaled) = holder_scene(small, (4, 10.0, 25.0), (400, 200));
-    let mut whole = at_xy(40.0, 0.0, 320.0, 200.0);
+    let (_, scaled) = holder_scene(small, (4, 10.0, 25.0), (400, 260));
+    let mut whole = at_xy(40.0, 30.0, 320.0, 200.0);
     whole.push(filter("blur", vec![num(32.0)]));
-    let (_, drawn) = holder_scene(whole, (4, 80.0, 200.0), (400, 200));
+    let (_, drawn) = holder_scene(whole, (4, 80.0, 200.0), (400, 260));
     let want: Vec<f64> = drawn.pixels.iter().map(|v| f64::from(*v)).collect();
     let (far, share) = worst(&scaled.pixels, &want, 2.0);
     eprintln!("scaled against whole: worst {far:.1}, {share:.4} past 2");
     assert!(far <= 3.0, "worst {far}, {share} past 2");
     // Barely blurred is gone: across a stripe's edge it changes slowly.
-    let row: Vec<i32> = (150..250).map(|x| scaled.px(x, 100)[1] as i32).collect();
+    let row: Vec<i32> = (150..250).map(|x| scaled.px(x, 130)[1] as i32).collect();
     let step = row
         .windows(2)
         .map(|p| (p[1] - p[0]).abs())
         .max()
         .unwrap_or(0);
     assert!(step <= 4, "{row:?}");
+}
+
+/// (lock-int) A `filter: blur` the surface cuts reads its edge repeated
+/// past the cut, as a backdrop blur does: a full-surface copy of a scene
+/// under `blur(36), brightness(0.6)` (the owner's lock's dimmed still)
+/// over a sharp one hides it to the surface's edges and corners. With
+/// the group fading out past the edge, the magenta under it showed
+/// there (red over 180 in the corners); its stripes have no red (ref
+/// `effects_filter_blur_cut.png`).
+#[test]
+fn a_filter_blur_cut_by_its_surface_repeats_its_edge() {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Panel, None, vec![]);
+    let mut under = at_xy(0.0, 0.0, 320.0, 200.0);
+    under.extend([(Prop::Place, kw("absolute")), (Prop::Bg, color("#ff00ff"))]);
+    b.node(NodeKind::Box, Some(root), under);
+    let mut p = at_xy(0.0, 0.0, 320.0, 200.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (
+            Prop::Filter,
+            PropValue::List(vec![
+                call("blur", vec![num(36.0)]),
+                call("brightness", vec![num(0.6)]),
+            ]),
+        ),
+    ]);
+    let holder = b.node(NodeKind::Box, Some(root), p);
+    for (i, c) in ["#00c000", "#0040ff", "#e0e000", "#00e0e0"]
+        .iter()
+        .enumerate()
+    {
+        // Yellow has red: the two middle stripes, far from the edges
+        // checked below, are the only ones with any.
+        let c = if i == 2 { "#00a0a0" } else { c };
+        let mut s = at_xy(i as f32 * 80.0, 0.0, 80.0, 200.0);
+        s.extend([(Prop::Place, kw("absolute")), (Prop::Bg, color(c))]);
+        b.node(NodeKind::Box, Some(holder), s);
+    }
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, root);
+    let mut buf = Buffer::new(320, 200, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_secs(1));
+    assert_eq!(r.offscreen_cache().1, 1, "one group");
+    let mut red = 0u8;
+    for y in 0..200 {
+        for x in 0..320 {
+            red = red.max(buf.px(x, y)[2]);
+        }
+    }
+    let corner = buf.px(0, 0);
+    assert!(
+        red <= 2,
+        "the magenta under it shows (red up to {red}; corner {corner:?})"
+    );
+    // The edge is the blurred stripes, dimmed: no lighter than inside.
+    let (edge, inside) = (buf.px(0, 100), buf.px(40, 100));
+    assert!(
+        edge[1].abs_diff(inside[1]) <= 12 && edge[3] == 0xff,
+        "edge {edge:?} against inside {inside:?}"
+    );
+    assert_matches_ref("effects_filter_blur_cut", &buf, 2);
+}
+
+/// (lock-int) A large blur is kept at its reduction, 1 / k² of its
+/// pixels at full size: three 2560 × 1600 surfaces under `blur(36)`
+/// (16.4 MB each at full size, together past the 32 MB budget, so each
+/// surface's paint evicted another's group and every frame of each
+/// blurred again) keep their three groups, 1 MB each, and a repaint of
+/// any draws none.
+#[test]
+fn large_blurs_are_kept_at_their_reduction() {
+    let (w, h) = (2560u32, 1600u32);
+    let surfaces = [S, S2, SurfaceId(3)];
+    let mut b = Builder::default();
+    let mut roots = Vec::new();
+    for _ in surfaces {
+        let root = b.node(NodeKind::Panel, None, vec![]);
+        let mut p = at_xy(0.0, 0.0, w as f32, h as f32);
+        p.extend([
+            (Prop::Place, kw("absolute")),
+            (
+                Prop::Filter,
+                PropValue::List(vec![
+                    call("blur", vec![num(36.0)]),
+                    call("brightness", vec![num(0.6)]),
+                ]),
+            ),
+        ]);
+        let holder = b.node(NodeKind::Box, Some(root), p);
+        // Not the same stripes: one group each, not one shared.
+        let n = 8 + roots.len();
+        stripes_in(&mut b, holder, n, w as f32 / n as f32, h as f32);
+        roots.push(root);
+    }
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    let mut bufs = Vec::new();
+    for (s, root) in surfaces.into_iter().zip(&roots) {
+        r.attach_surface(s, *root);
+        bufs.push(Buffer::new(w, h, Scale::ONE));
+    }
+    let t = std::time::Duration::from_secs(1);
+    for (s, buf) in surfaces.into_iter().zip(&mut bufs) {
+        buf.paint_at(&mut r, s, 0, t);
+    }
+    let (bytes, builds, kept) = r.offscreen_cache();
+    assert_eq!((builds, kept), (3, 3), "one group a surface, all kept");
+    let reduced = (w / 4) as usize * (h / 4) as usize * 4;
+    assert_eq!(bytes, 3 * reduced, "each at a quarter: {bytes} bytes");
+    // A frame of each in turn (all of it repainted) draws no group again.
+    for k in 1..=2u64 {
+        for (s, buf) in surfaces.into_iter().zip(&mut bufs) {
+            buf.paint_at(&mut r, s, 0, t + std::time::Duration::from_secs(k));
+        }
+    }
+    assert_eq!(r.offscreen_cache().1, 3, "no group drawn again");
 }

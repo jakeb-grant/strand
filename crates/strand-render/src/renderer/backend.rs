@@ -1492,7 +1492,7 @@ impl Renderer {
         items: &[DisplayItem],
         w: &PassWant,
     ) -> Option<Arc<Pixmap>> {
-        let scale = self.surfaces.get(&surface)?.scale;
+        let (scale, size) = self.surfaces.get(&surface).map(|s| (s.scale, s.size))?;
         let region = Rect {
             x: w.at.0,
             y: w.at.1,
@@ -1509,17 +1509,19 @@ impl Renderer {
                 };
                 let end = crate::raster::skip_group(items, i);
                 let inner = &items[i + 1..end.saturating_sub(1).max(i + 1)];
+                let cut = crate::offscreen::cut_sides(region, Rect::from_size(size));
                 let d = crate::offscreen::render_group(
                     inner,
                     layer,
                     region,
+                    cut,
                     &self.atlas,
                     &*cache,
                     scale,
                     groups,
                     false,
                 )?;
-                Some(d.pixmap)
+                d.full()
             }
             PassInput::Behind(i) => {
                 let below = crate::backdrop::behind(items, i, region);
@@ -2225,20 +2227,16 @@ impl Lowering<'_> {
                     if let Some(g) = self.groups.get(&layer_key(l)) {
                         // Filtered on the CPU: its pixels in place of its
                         // items.
+                        // (lock-int) One kept at its reduction goes up as
+                        // it is and is scaled up by the GPU, bilinearly.
                         let id = self.uploads.id(&g.pixmap, &mut self.new);
-                        let (x, y) = (g.x as f64, g.y as f64);
                         self.ops.push(Op::Transform(Affine::IDENTITY));
                         self.ops.push(Op::Image {
-                            rect: kurbo::Rect::new(
-                                x,
-                                y,
-                                x + g.pixmap.width() as f64,
-                                y + g.pixmap.height() as f64,
-                            ),
+                            rect: g.rect(),
                             image: id,
-                            image_transform: Affine::translate((x, y)),
+                            image_transform: g.transform(),
                             tint: None,
-                            smooth: false,
+                            smooth: g.scaled(),
                         });
                         self.ops.push(Op::Transform(cur));
                         self.ops.push(Op::PopLayer);

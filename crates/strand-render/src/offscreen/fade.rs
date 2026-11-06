@@ -339,9 +339,9 @@ impl Offscreen {
         let key = h.finish();
         // A cached layer is drawn where its content is this frame.
         let at = |g: Drawn| Drawn {
-            pixmap: g.pixmap,
             x: extent.x,
             y: extent.y,
+            ..g
         };
         let recent = {
             let hist = self.fades.nodes.entry(node).or_default();
@@ -524,11 +524,7 @@ fn render_layer(
     }
     lr.resources = resources;
     lr.scratch = scratch;
-    Some(Drawn {
-        pixmap: std::sync::Arc::new(pm),
-        x: area.x,
-        y: area.y,
-    })
+    Some(Drawn::at(std::sync::Arc::new(pm), area.x, area.y))
 }
 
 #[cfg(test)]

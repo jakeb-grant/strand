@@ -2664,7 +2664,11 @@ a layer's bundled passes are `Pass` requests attached to the layer
 (`strand_render::layers::Layer::gpu`), except backdrops a GPU frame
 draws itself (`Op::Backdrop`). A backdrop blur is never a pass of its
 own: a GPU frame draws it at the CPU's reduction (`Op::Backdrop`'s
-`reduce`), and any other frame is the CPU's (lock-blur). Render asks
+`reduce`), and any other frame is the CPU's (lock-blur). A large
+`filter: blur` is the CPU's offscreen group, kept at its reduction
+(`offscreen::Drawn::k`): a GPU frame uploads it at that size and draws
+it scaled up (`Op::Image` with `smooth` and the scaling in its
+`image_transform`), as the CPU's raster does (lock-int). Render asks
 for a bundled pass only while its node shows.
 
 **CPU fallback** (no device yet, none, lost, or a build without `gpu`):

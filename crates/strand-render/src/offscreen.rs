@@ -54,6 +54,78 @@ pub struct Drawn {
     pub pixmap: Arc<Pixmap>,
     pub x: i32,
     pub y: i32,
+    /// (lock-int) Surface pixels per pixel of `pixmap` along each axis:
+    /// 1 drawn pixel for pixel, `k` for a blur kept at its reduction
+    /// (1 / k² the bytes) and scaled up bilinearly, the edge pixels
+    /// repeated, where it is drawn (`upscale`, the GPU's smooth image).
+    pub k: u32,
+    /// Where the surface rect's corner falls in `pixmap`, in its pixels
+    /// (a backdrop read from past its region).
+    pub origin: (f64, f64),
+    /// Its size on the surface: the pixmap's own at `k` 1.
+    pub w: u32,
+    pub h: u32,
+}
+
+impl Drawn {
+    /// `pixmap` drawn pixel for pixel at `(x, y)`.
+    pub fn at(pixmap: Arc<Pixmap>, x: i32, y: i32) -> Drawn {
+        let (w, h) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
+        Drawn {
+            pixmap,
+            x,
+            y,
+            k: 1,
+            origin: (0.0, 0.0),
+            w,
+            h,
+        }
+    }
+
+    /// The surface rect it covers.
+    pub fn rect(&self) -> vello_cpu::kurbo::Rect {
+        let (x, y) = (f64::from(self.x), f64::from(self.y));
+        vello_cpu::kurbo::Rect::new(x, y, x + f64::from(self.w), y + f64::from(self.h))
+    }
+
+    /// Its pixmap's transform onto the surface (an image paint's).
+    pub fn transform(&self) -> Affine {
+        Affine::translate((f64::from(self.x), f64::from(self.y)))
+            * Affine::scale(f64::from(self.k))
+            * Affine::translate((-self.origin.0, -self.origin.1))
+    }
+
+    /// Whether it is drawn scaled (sampled bilinearly).
+    pub fn scaled(&self) -> bool {
+        self.k > 1
+    }
+
+    /// Its pixels at their size on the surface (scaled up when kept
+    /// reduced: a GPU pass reads its input pixel for pixel).
+    #[cfg(feature = "gpu")]
+    pub fn full(&self) -> Option<Arc<Pixmap>> {
+        let whole = (
+            u32::from(self.pixmap.width()),
+            u32::from(self.pixmap.height()),
+        );
+        if self.k == 1 && self.origin == (0.0, 0.0) && whole == (self.w, self.h) {
+            return Some(self.pixmap.clone());
+        }
+        let (w16, h16) = (u16::try_from(self.w).ok()?, u16::try_from(self.h).ok()?);
+        let mut out = Pixmap::new(w16, h16);
+        upscale(
+            self.pixmap.data_as_u8_slice(),
+            (
+                usize::from(self.pixmap.width()),
+                usize::from(self.pixmap.height()),
+            ),
+            out.data_as_u8_slice_mut(),
+            (self.w as usize, self.h as usize),
+            self.origin,
+            f64::from(self.k),
+        );
+        Some(Arc::new(out))
+    }
 }
 
 #[derive(Debug)]
@@ -300,6 +372,7 @@ impl Offscreen {
                         inner,
                         layer,
                         region,
+                        cut_sides(region, surface),
                         atlas,
                         cache,
                         scale,
@@ -395,16 +468,33 @@ fn pins(items: &[DisplayItem], groups: &HashMap<usize, Drawn>) -> Vec<Weak<Pixma
     out
 }
 
+/// The sides ([left, top, right, bottom]) where a group drawn over
+/// `region` meets the edge of `surface`: what it holds may go on past
+/// there unseen (its bounds are clipped to the surface), and a group
+/// that ends there has only its blur's faded tail at the edge.
+pub(crate) fn cut_sides(region: Rect, surface: Rect) -> [bool; 4] {
+    let end = |p: i32, l: u32| i64::from(p) + i64::from(l);
+    [
+        region.x <= surface.x,
+        region.y <= surface.y,
+        end(region.x, region.w) >= end(surface.x, surface.w),
+        end(region.y, region.h) >= end(surface.y, surface.h),
+    ]
+}
+
 /// Draws a group's items into a pixmap of `region` and applies its
 /// spatial and colour effects; `bundled`: its bundled passes' CPU
 /// versions too (false for a GPU pass's input, which the GPU filters).
-/// `None` if the region is too large for one context (the group then
-/// draws unfiltered).
+/// `cut`: the sides ([`cut_sides`]) where the surface cut the group,
+/// past which its blur reads the edge repeated. A large blur is kept at
+/// its reduction ([`Drawn::k`]). `None` if the region is too large for
+/// one context (the group then draws unfiltered).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_group(
     items: &[DisplayItem],
     layer: &crate::layers::Layer,
     region: Rect,
+    cut: [bool; 4],
     atlas: &AtlasMirror,
     cache: &PaintCache,
     scale: Scale,
@@ -413,11 +503,13 @@ pub(crate) fn render_group(
 ) -> Option<Drawn> {
     let s = scale.as_f32();
     // (lock-blur) A large blur is drawn at its reduction, filtered there
-    // and scaled back up: a full-screen still under `blur(36)` took over
-    // a second at full size.
+    // and (lock-int) kept so, scaled up where it is drawn: a full-screen
+    // still under `blur(36)` took over a second at full size, and its
+    // upscaled pixels were 16 times the bytes, which a lock on three large
+    // monitors outgrew the budget with, rebuilding every frame.
     let k = group_reduction(&layer.effects, layer.mosaic.is_some(), s);
     let mut pm = rasterise_at(items, layer.xform, region, k, atlas, cache, scale, groups)?;
-    let (w, h) = (pm.width(), pm.height());
+    let (w, h) = (pm.width() as usize, pm.height() as usize);
     let kf = k as f32;
     let bytes = pm.data_as_u8_slice_mut();
     if let Some(cell) = layer.mosaic {
@@ -427,40 +519,52 @@ pub(crate) fn render_group(
             (corner.x - region.x as f64).round() as i64,
             (corner.y - region.y as f64).round() as i64,
         );
-        mosaic(bytes, w as usize, h as usize, cell as usize, phase);
+        mosaic(bytes, w, h, cell as usize, phase);
+    }
+    // (lock-int) What the surface cut off a group is unseen, not absent:
+    // its blur reads the edge repeated there, as a backdrop's does, so a
+    // full-screen still under `blur(36)` does not fade to what is under
+    // it at the screen's edges. A reduced pixel half past the region's
+    // end (a size that is no multiple of `k`) is the one before it.
+    let edges = cut.map(|c| if c { Edge::Repeat } else { Edge::Transparent });
+    if k > 1
+        && layer
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::Blur { .. }))
+    {
+        if cut[2] && !region.w.is_multiple_of(k) && w > 1 {
+            for y in 0..h {
+                let o = (y * w + w - 1) * 4;
+                bytes.copy_within(o - 4..o, o);
+            }
+        }
+        if cut[3] && !region.h.is_multiple_of(k) && h > 1 {
+            let o = (h - 1) * w * 4;
+            bytes.copy_within(o - w * 4..o, o);
+        }
     }
     for e in layer.effects.iter() {
         match e {
-            Effect::Blur { radius } => blur(bytes, w as usize, h as usize, radius * s / kf),
+            Effect::Blur { radius } => blur_edge(bytes, w, h, radius * s / kf, edges),
             Effect::ColorMatrix(m) => color_matrix(bytes, m),
             // `bloom(r)` without a GPU: a glow of the group's own pixels,
             // reaching its radius (3σ; the uniform is in buffer pixels).
             Effect::Shader(pass) if bundled && crate::layers::cpu_glow(e) => {
                 let r = pass.uniforms.first().copied().unwrap_or(0.0);
-                crate::effects::glow::glow_under(bytes, w as usize, h as usize, r / 3.0 / kf, None);
+                crate::effects::glow::glow_under(bytes, w, h, r / 3.0 / kf, None);
             }
             _ => {}
         }
     }
-    let pm = if k > 1 {
-        let (w16, h16) = (u16::try_from(region.w).ok()?, u16::try_from(region.h).ok()?);
-        let mut out = Pixmap::new(w16, h16);
-        upscale(
-            pm.data_as_u8_slice(),
-            (w as usize, h as usize),
-            out.data_as_u8_slice_mut(),
-            (region.w as usize, region.h as usize),
-            (0.0, 0.0),
-            f64::from(k),
-        );
-        out
-    } else {
-        pm
-    };
     Some(Drawn {
         pixmap: Arc::new(pm),
         x: region.x,
         y: region.y,
+        k,
+        origin: (0.0, 0.0),
+        w: region.w,
+        h: region.h,
     })
 }
 
@@ -580,7 +684,8 @@ pub fn mosaic(px: &mut [u8], w: usize, h: usize, cell: usize, phase: (i64, i64))
 /// What a blur reads past the pixels it has.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Edge {
-    /// Nothing: a group fades out past its edge (`filter: blur`).
+    /// Nothing: a group fades out past its edge (`filter: blur`, where
+    /// the group itself ends).
     Transparent,
     /// The edge pixels, repeated: what is behind a backdrop goes on past
     /// what was read of it, as the GPU's pass samples it (lock-blur).
@@ -590,11 +695,12 @@ pub(crate) enum Edge {
 /// A Gaussian blur of standard deviation `sigma` pixels over premultiplied
 /// pixels (separable, out to 3σ; transparent past the edges).
 pub fn blur(px: &mut [u8], w: usize, h: usize, sigma: f32) {
-    blur_edge(px, w, h, sigma, Edge::Transparent);
+    blur_edge(px, w, h, sigma, [Edge::Transparent; 4]);
 }
 
-/// [`blur`], reading `edge` past the pixels' edges.
-pub(crate) fn blur_edge(px: &mut [u8], w: usize, h: usize, sigma: f32, edge: Edge) {
+/// [`blur`], reading `edges` past the pixels' edges ([left, top, right,
+/// bottom]).
+pub(crate) fn blur_edge(px: &mut [u8], w: usize, h: usize, sigma: f32, edges: [Edge; 4]) {
     if !(sigma.is_finite() && sigma > 0.0) || w == 0 || h == 0 || px.len() < w * h * 4 {
         return;
     }
@@ -631,11 +737,15 @@ pub(crate) fn blur_edge(px: &mut [u8], w: usize, h: usize, sigma: f32, edge: Edg
             for (d, s) in padded[r * 4..r * 4 + stride].iter_mut().zip(row) {
                 *d = *s as f32;
             }
-            if edge == Edge::Repeat {
-                let (first, end) = (&row[..4], &row[stride - 4..]);
-                for x in 0..r {
-                    for c in 0..4 {
+            // (Zero where transparent: `padded` is only ever written
+            // inside the row or by a repeating side.)
+            let (first, end) = (&row[..4], &row[stride - 4..]);
+            for x in 0..r {
+                for c in 0..4 {
+                    if edges[0] == Edge::Repeat {
                         padded[x * 4 + c] = first[c] as f32;
+                    }
+                    if edges[2] == Edge::Repeat {
                         padded[(r + w + x) * 4 + c] = end[c] as f32;
                     }
                 }
@@ -655,11 +765,15 @@ pub(crate) fn blur_edge(px: &mut [u8], w: usize, h: usize, sigma: f32, edge: Edg
         out.fill(0.0);
         for (i, k) in kernel.iter().enumerate() {
             let sy = y as isize + i as isize - r as isize;
-            let sy = match edge {
-                Edge::Transparent if sy < 0 || sy >= h as isize => continue,
-                Edge::Transparent => sy as usize,
-                Edge::Repeat => sy.clamp(0, h as isize - 1) as usize,
+            let past = match sy {
+                _ if sy < 0 => Some(edges[1]),
+                _ if sy >= h as isize => Some(edges[3]),
+                _ => None,
             };
+            if past == Some(Edge::Transparent) {
+                continue;
+            }
+            let sy = sy.clamp(0, h as isize - 1) as usize;
             let slot = sy % ring_rows;
             let src = &ring[slot * stride..(slot + 1) * stride];
             for (o, v) in out.iter_mut().zip(src) {
@@ -748,6 +862,7 @@ pub(crate) fn group_reduction(effects: &[Effect], mosaic: bool, s: f32) -> u32 {
 /// GPU draws a reduced backdrop back up (`Op::Backdrop`'s `reduce`).
 /// (lock-blur) Each source row is interpolated across once, and each
 /// destination row is a blend of two of those.
+#[cfg(any(feature = "gpu", test))]
 pub(crate) fn upscale(
     src: &[u8],
     (sw, sh): (usize, usize),

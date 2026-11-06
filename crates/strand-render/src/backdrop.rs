@@ -327,8 +327,9 @@ pub(crate) fn key(
 }
 
 /// Draws the backdrop group at `i` (its layer `layer`) over `region` of a
-/// surface `surface`: what is behind, blurred at reduced scale, scaled up
-/// to `region`, tinted. `None` when the region is empty or too large.
+/// surface `surface`: what is behind, blurred and tinted at reduced
+/// scale, kept so to be scaled up to `region` where it is drawn
+/// ([`Drawn::k`]). `None` when the region is empty or too large.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render(
     items: &[DisplayItem],
@@ -387,31 +388,28 @@ pub(crate) fn render(
         sw as usize,
         sh as usize,
         pass.sigma / k as f32,
-        crate::offscreen::Edge::Repeat,
+        [crate::offscreen::Edge::Repeat; 4],
     );
-    let (w16, h16) = (u16::try_from(region.w).ok()?, u16::try_from(region.h).ok()?);
-    if w16 == 0 || h16 == 0 {
+    if region.w == 0 || region.h == 0 {
         return None;
     }
-    let mut out = Pixmap::new(w16, h16);
-    crate::offscreen::upscale(
-        small.data_as_u8_slice(),
-        (sw as usize, sh as usize),
-        out.data_as_u8_slice_mut(),
-        (region.w as usize, region.h as usize),
-        (
+    // (lock-int) Tinted at its reduction (a colour drawn over is linear in
+    // the pixels, so it is the same before or after the scaling up) and
+    // kept so: scaled up where it is drawn, as the GPU draws its own.
+    if let Some(c) = pass.tint {
+        tint_over(small.data_as_u8_slice_mut(), c);
+    }
+    Some(Drawn {
+        pixmap: Arc::new(small),
+        x: region.x,
+        y: region.y,
+        k,
+        origin: (
             (region.x - read.x) as f64 / k as f64,
             (region.y - read.y) as f64 / k as f64,
         ),
-        k as f64,
-    );
-    if let Some(c) = pass.tint {
-        tint_over(out.data_as_u8_slice_mut(), c);
-    }
-    Some(Drawn {
-        pixmap: Arc::new(out),
-        x: region.x,
-        y: region.y,
+        w: region.w,
+        h: region.h,
     })
 }
 

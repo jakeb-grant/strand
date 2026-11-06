@@ -202,12 +202,7 @@ pub(crate) fn draw(
                     }
                     ctx.set_paint(p);
                     ctx.set_paint_transform(t);
-                    ctx.fill_rect(&kurbo::Rect::new(
-                        g.x as f64,
-                        g.y as f64,
-                        g.x as f64 + g.pixmap.width() as f64,
-                        g.y as f64 + g.pixmap.height() as f64,
-                    ));
+                    ctx.fill_rect(&g.rect());
                     ctx.reset_paint_transform();
                     ctx.set_transform(cur);
                     i = skip_group(items, i - 1);
@@ -220,17 +215,14 @@ pub(crate) fn draw(
                 crate::layers::push(ctx, l, cur);
                 // An offscreen group: its filtered pixels, as an image in
                 // surface pixels, in place of its items.
+                // (lock-int) One kept at its reduction is scaled up here,
+                // bilinearly, its edge pixels repeated.
                 if let Some(g) = groups.get(&layer_key(l)) {
                     ctx.set_transform(base);
-                    let (p, t) = image_paint(&g.pixmap, g.x as f64, g.y as f64, false);
+                    let (p, _) = image_paint(&g.pixmap, 0.0, 0.0, g.scaled());
                     ctx.set_paint(p);
-                    ctx.set_paint_transform(t);
-                    ctx.fill_rect(&kurbo::Rect::new(
-                        g.x as f64,
-                        g.y as f64,
-                        g.x as f64 + g.pixmap.width() as f64,
-                        g.y as f64 + g.pixmap.height() as f64,
-                    ));
+                    ctx.set_paint_transform(g.transform());
+                    ctx.fill_rect(&g.rect());
                     ctx.reset_paint_transform();
                     ctx.set_transform(cur);
                     ctx.pop_layer();
