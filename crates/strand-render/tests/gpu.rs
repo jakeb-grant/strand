@@ -3156,7 +3156,8 @@ fn a_backdrops_pixels_follow_a_fade_or_a_move_behind_it() {
 /// sigma 8, 19 at 16): the look changed at every promotion.
 /// (lock-blur) A full-screen one too, the lock's `blur(36)`, which the
 /// GPU drew at full resolution and the CPU let fade to what is under it
-/// at the screen's edges: both now repeat what is behind past the edge.
+/// at the screen's edges: both now repeat what is behind past the edge;
+/// and at scale 2, where it is drawn at an eighth.
 #[test]
 fn a_backdrop_blur_looks_the_same_on_either_backend() {
     let Some(opts) = device() else { return };
@@ -3164,86 +3165,88 @@ fn a_backdrop_blur_looks_the_same_on_either_backend() {
     let small = (100.0, 60.0, 240.0, 240.0);
     let whole = (0.0, 0.0, 640.0, 400.0);
     let cases = [(small, 2.0f32), (small, 8.0), (small, 16.0), (whole, 36.0)];
-    for scale in [Scale::ONE, Scale::new(180).unwrap()] {
+    // (lock-blur review) And the owner's lock at scale 2: `blur(36)` is
+    // 72 device pixels, drawn at an eighth.
+    let runs = [Scale::ONE, Scale::new(180).unwrap()]
+        .into_iter()
+        .flat_map(|scale| cases.map(|c| (scale, c)))
+        .chain([(Scale::new(240).unwrap(), (whole, 36.0))]);
+    for (scale, (at, sigma)) in runs {
         let size = scale.physical_size(LogicalSize::new(logical.0 as f32, logical.1 as f32));
-        for (at, sigma) in cases {
-            let scene = || blur_scene(logical, at, sigma, false);
-            let mut c = renderer();
-            c.set_promotion(false);
-            assert!(c.apply(scene()).is_empty());
-            c.attach_surface(S, c.tree().roots()[0]);
-            c.configure_surface(S, size, scale);
-            let mut buf = Buffer::new(size.w, size.h, scale);
-            buf.paint_at(&mut c, S, 0, Duration::from_secs(1));
-            assert!(
-                !c.take_gpu_requests()
-                    .iter()
-                    .any(|q| matches!(q, GpuRequest::Pass(_))),
-                "a blur is the CPU's on a CPU surface"
-            );
-            let mut r = renderer();
-            assert!(r.apply(scene()).is_empty());
-            r.attach_surface(S, r.tree().roots()[0]);
-            r.configure_surface(S, size, scale);
-            let mut first = Buffer::new(size.w, size.h, scale);
-            first.paint_at(&mut r, S, 0, Duration::from_secs(1));
-            let _ = r.take_gpu_requests();
-            r.promote_now(S);
-            let _ = r.take_backend_changes();
-            r.set_backend(S, Backend::GpuPresent);
-            let (ping, pings) = mpsc::channel();
-            let mut gpu = Gpu::spawn(
-                Box::new(move || {
-                    let _ = ping.send(());
-                }),
-                opts,
-            );
-            gpu.send(GpuRequest::Attach {
-                surface: S,
-                handles: None,
-                size,
-                scale,
-                opaque: false,
-            });
-            let frame = r
-                .paint_gpu(S, Duration::from_secs(1) + Duration::from_millis(16))
-                .expect("the switch repaints");
-            let reduce: Vec<u32> = backdrops_in(&frame)
+        let scene = || blur_scene(logical, at, sigma, false);
+        let mut c = renderer();
+        c.set_promotion(false);
+        assert!(c.apply(scene()).is_empty());
+        c.attach_surface(S, c.tree().roots()[0]);
+        c.configure_surface(S, size, scale);
+        let mut buf = Buffer::new(size.w, size.h, scale);
+        buf.paint_at(&mut c, S, 0, Duration::from_secs(1));
+        assert!(
+            !c.take_gpu_requests()
                 .iter()
-                .filter_map(|o| match o {
-                    strand_gpu::Op::Backdrop { reduce, .. } => Some(*reduce),
-                    _ => None,
-                })
-                .collect();
-            let sigma_px = sigma * scale.as_f32();
-            let want = if sigma_px >= 64.0 {
-                8
-            } else if sigma_px >= 8.0 {
-                4
-            } else if sigma_px >= 2.0 {
-                2
-            } else {
-                1
-            };
-            assert_eq!(reduce, vec![want], "in the frame, at the CPU's reduction");
-            assert!(
-                !r.take_gpu_requests()
-                    .iter()
-                    .any(|q| matches!(q, GpuRequest::Pass(_))),
-                "no pass of its own"
-            );
-            let px = draw(&mut gpu, &pings, frame);
-            drop(gpu);
-            let (bad, worst) = compare_bytes(&px, &buf.pixels);
-            let share = bad as f64 / f64::from(size.w * size.h);
-            eprintln!(
-                "blur({sigma}) at {scale:?}: {bad} pixels past {GPU_TOLERANCE}, worst {worst}"
-            );
-            assert!(
-                share <= EDGE_SHARE,
-                "blur({sigma}) at {scale:?}: {bad} pixels past {GPU_TOLERANCE} of the CPU's (worst {worst})"
-            );
-        }
+                .any(|q| matches!(q, GpuRequest::Pass(_))),
+            "a blur is the CPU's on a CPU surface"
+        );
+        let mut r = renderer();
+        assert!(r.apply(scene()).is_empty());
+        r.attach_surface(S, r.tree().roots()[0]);
+        r.configure_surface(S, size, scale);
+        let mut first = Buffer::new(size.w, size.h, scale);
+        first.paint_at(&mut r, S, 0, Duration::from_secs(1));
+        let _ = r.take_gpu_requests();
+        r.promote_now(S);
+        let _ = r.take_backend_changes();
+        r.set_backend(S, Backend::GpuPresent);
+        let (ping, pings) = mpsc::channel();
+        let mut gpu = Gpu::spawn(
+            Box::new(move || {
+                let _ = ping.send(());
+            }),
+            opts,
+        );
+        gpu.send(GpuRequest::Attach {
+            surface: S,
+            handles: None,
+            size,
+            scale,
+            opaque: false,
+        });
+        let frame = r
+            .paint_gpu(S, Duration::from_secs(1) + Duration::from_millis(16))
+            .expect("the switch repaints");
+        let reduce: Vec<u32> = backdrops_in(&frame)
+            .iter()
+            .filter_map(|o| match o {
+                strand_gpu::Op::Backdrop { reduce, .. } => Some(*reduce),
+                _ => None,
+            })
+            .collect();
+        let sigma_px = sigma * scale.as_f32();
+        let want = if sigma_px >= 64.0 {
+            8
+        } else if sigma_px >= 8.0 {
+            4
+        } else if sigma_px >= 2.0 {
+            2
+        } else {
+            1
+        };
+        assert_eq!(reduce, vec![want], "in the frame, at the CPU's reduction");
+        assert!(
+            !r.take_gpu_requests()
+                .iter()
+                .any(|q| matches!(q, GpuRequest::Pass(_))),
+            "no pass of its own"
+        );
+        let px = draw(&mut gpu, &pings, frame);
+        drop(gpu);
+        let (bad, worst) = compare_bytes(&px, &buf.pixels);
+        let share = bad as f64 / f64::from(size.w * size.h);
+        eprintln!("blur({sigma}) at {scale:?}: {bad} pixels past {GPU_TOLERANCE}, worst {worst}");
+        assert!(
+            share <= EDGE_SHARE,
+            "blur({sigma}) at {scale:?}: {bad} pixels past {GPU_TOLERANCE} of the CPU's (worst {worst})"
+        );
     }
 }
 

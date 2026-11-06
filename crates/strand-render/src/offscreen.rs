@@ -412,30 +412,10 @@ pub(crate) fn render_group(
     bundled: bool,
 ) -> Option<Drawn> {
     let s = scale.as_f32();
-    // (lock-blur) A large blur is drawn at its reduction ([`filter_reduction`],
-    // the smallest of its blurs'), filtered there and scaled back up: a
-    // full-screen still under `blur(36)` took over a second at full size.
-    // Not under a mosaic, nor when a colour matrix reshapes the blur
-    // after (a glow's doubled coverage, a stroke's edge), which would
-    // sharpen what the scaling up smoothed.
-    let reshaped = layer
-        .effects
-        .iter()
-        .skip_while(|e| !matches!(e, Effect::Blur { .. }))
-        .any(|e| matches!(e, Effect::ColorMatrix(_)));
-    let k = if layer.mosaic.is_some() || reshaped {
-        1
-    } else {
-        layer
-            .effects
-            .iter()
-            .filter_map(|e| match e {
-                Effect::Blur { radius } => Some(filter_reduction(radius * s)),
-                _ => None,
-            })
-            .min()
-            .unwrap_or(1)
-    };
+    // (lock-blur) A large blur is drawn at its reduction, filtered there
+    // and scaled back up: a full-screen still under `blur(36)` took over
+    // a second at full size.
+    let k = group_reduction(&layer.effects, layer.mosaic.is_some(), s);
     let mut pm = rasterise_at(items, layer.xform, region, k, atlas, cache, scale, groups)?;
     let (w, h) = (pm.width(), pm.height());
     let kf = k as f32;
@@ -732,6 +712,33 @@ pub(crate) fn filter_reduction(sigma: f32) -> u32 {
     } else {
         1
     }
+}
+
+/// The reduction a group of `effects` is drawn at on a surface at
+/// scale `s` ([`filter_reduction`], the smallest of its blurs'): full
+/// size under a mosaic, whose cells the scaling up would soften, and
+/// when a colour matrix after a blur changes alpha (a glow's doubled
+/// coverage, a stroke's edge), which would sharpen what the scaling up
+/// smoothed. A colour-only matrix after it (`blur(36) brightness(0.7)`)
+/// keeps the reduction: with alpha kept it is linear in premultiplied
+/// pixels (but for its clamping), so it gives the same before or after
+/// the scaling up, as it does before the blur.
+pub(crate) fn group_reduction(effects: &[Effect], mosaic: bool, s: f32) -> u32 {
+    let reshaped = effects
+        .iter()
+        .skip_while(|e| !matches!(e, Effect::Blur { .. }))
+        .any(|e| matches!(e, Effect::ColorMatrix(m) if m[15..] != [0.0, 0.0, 0.0, 1.0, 0.0]));
+    if mosaic || reshaped {
+        return 1;
+    }
+    effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Blur { radius } => Some(filter_reduction(radius * s)),
+            _ => None,
+        })
+        .min()
+        .unwrap_or(1)
 }
 
 /// Bilinear upscaling by `k` of `src` (premultiplied, `sw × sh`) into
@@ -1199,5 +1206,48 @@ mod tests {
         let before = px.clone();
         mosaic(&mut px, w, h, 1, (0, 0));
         assert_eq!(px, before);
+    }
+
+    /// (lock-blur review) A colour-only matrix after a blur keeps the
+    /// group's reduction, whichever order the filter is written in; one
+    /// that changes alpha after it (a glow's, a stroke edge's), or a
+    /// mosaic, keeps it at full size.
+    #[test]
+    fn a_colour_matrix_after_a_blur_keeps_its_reduction() {
+        use crate::effects::filter;
+        use strand_scene::effect::IDENTITY_MATRIX;
+        let blur = Effect::Blur { radius: 36.0 };
+        let dim = Effect::ColorMatrix(filter::brightness(0.7));
+        let k = |e: &[Effect]| group_reduction(e, false, 1.0);
+        assert_eq!(k(std::slice::from_ref(&blur)), 4);
+        assert_eq!(k(&[dim.clone(), blur.clone()]), 4);
+        assert_eq!(k(&[blur.clone(), dim.clone()]), 4);
+        for m in [
+            filter::grayscale(1.0),
+            filter::saturate(1.4),
+            filter::contrast(1.2),
+            filter::invert(1.0),
+            filter::tint(strand_scene::Color::new(0.5, 0.6, 0.9, 0.8)),
+        ] {
+            assert_eq!(k(&[blur.clone(), Effect::ColorMatrix(m)]), 4, "{m:?}");
+        }
+        let mut gain = IDENTITY_MATRIX;
+        gain[18] = 2.0;
+        assert_eq!(k(&[blur.clone(), Effect::ColorMatrix(gain)]), 1, "a glow's");
+        let mut grow = IDENTITY_MATRIX;
+        grow[18] = 8.0;
+        grow[19] = -1.0;
+        assert_eq!(
+            k(&[blur.clone(), Effect::ColorMatrix(grow)]),
+            1,
+            "an edge's"
+        );
+        assert_eq!(
+            group_reduction(&[blur.clone(), dim], true, 1.0),
+            1,
+            "mosaic"
+        );
+        // The reduction is of device pixels.
+        assert_eq!(group_reduction(&[blur], false, 2.0), 8);
     }
 }

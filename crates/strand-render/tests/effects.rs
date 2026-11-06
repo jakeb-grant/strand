@@ -3830,6 +3830,39 @@ fn a_large_filter_blur_is_drawn_once_and_kept() {
     assert_eq!(buf.pixels, before);
 }
 
+/// (lock-blur review) A dimmed blur, the lock's wallpaper, is drawn at
+/// its reduction whichever order its filter is written in: `blur(36)
+/// brightness(0.7)` draws as `brightness(0.7) blur(36)` does (within a
+/// level of rounding; at full size it differs by more), close to a
+/// full-size Gaussian dimmed, once.
+#[test]
+fn a_dimmed_large_blur_is_drawn_at_its_reduction_in_either_order() {
+    let fx = |chain: Vec<PropValue>| {
+        let mut p = at_xy(40.0, 40.0, 320.0, 200.0);
+        p.push((Prop::Filter, PropValue::List(chain)));
+        p
+    };
+    let blur = || call("blur", vec![num(36.0)]);
+    let dim = || call("brightness", vec![num(0.7)]);
+    let (_, sharp) = holder_scene(fx(vec![dim()]), (8, 40.0, 200.0), (440, 280));
+    let (_, first) = holder_scene(fx(vec![dim(), blur()]), (8, 40.0, 200.0), (440, 280));
+    let (r, after) = holder_scene(fx(vec![blur(), dim()]), (8, 40.0, 200.0), (440, 280));
+    let diff = first
+        .pixels
+        .iter()
+        .zip(&after.pixels)
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap_or(0);
+    eprintln!("blur then brightness against brightness then blur: worst {diff}");
+    assert!(diff <= 1, "the two orders differ by {diff}");
+    let want = gaussian(&sharp.pixels, 440, 280, 36.0);
+    let (far, share) = worst(&after.pixels, &want, 2.0);
+    eprintln!("reduced against full size: worst {far:.1}, {share:.4} past 2");
+    assert!(far <= 4.0 && share <= 0.01, "worst {far}, {share} past 2");
+    assert_eq!(r.offscreen_cache().1, 1, "drawn once");
+}
+
 /// (lock-blur) A box that draws only its plain rounded background, under
 /// `filter: blur`, is drawn as the blurred rounded rect a shadow is: no
 /// offscreen group, at any size its springs give it, and the same look

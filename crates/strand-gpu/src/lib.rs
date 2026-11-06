@@ -564,11 +564,11 @@ pub enum Op {
     /// (perf-gpu-retain review) `reduce` (1, 2, 4 or 8) draws it at that
     /// fraction of the region's size, as the CPU draws a backdrop blur
     /// (lock-blur: any, however large): `ops` scaled down into a texture
-    /// of the region's size over
-    /// `reduce` (rounded up), the passes run there (their uniforms as
-    /// given, in its pixels), and their pixels drawn back over `region`
-    /// scaled up by `reduce` exactly, sampled bilinearly from pixel
-    /// centres with the edge pixels repeated. 1 is full resolution.
+    /// of the region's size over `reduce` (rounded up), the passes run
+    /// there (their uniforms as given, in its pixels), and their pixels
+    /// drawn back over `region` scaled up by `reduce` exactly, sampled
+    /// bilinearly from pixel centres with the edge pixels repeated. 1 is
+    /// full resolution.
     Backdrop {
         region: kurbo::Rect,
         ops: Vec<Op>,
