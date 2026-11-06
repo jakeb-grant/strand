@@ -361,7 +361,8 @@ impl Renderer {
     /// never released at rest and is forgotten on a reload
     /// ([`Renderer::forget_kept_sizes`]). Anything else (a bar, whose
     /// zone and layer follow its overhang; a popup or window, placed by
-    /// the compositor) holds and releases ([`Renderer::hold_shadow_reach`]).
+    /// the compositor) holds and releases ([`Renderer::hold_shadow_reach`]);
+    /// a lock asks for none.
     pub(super) fn reserve_reach(
         &mut self,
         root: NodeId,
@@ -370,6 +371,11 @@ impl Renderer {
         any_edge: Insets,
         size: LogicalSize,
     ) -> Insets {
+        // (lock-polish) A lock covers its output, which sizes it: its
+        // shadows are paint cut at its edge, as past any output's edge.
+        if kind == NodeKind::Lock {
+            return Insets::default();
+        }
         if !matches!(kind, NodeKind::Panel | NodeKind::Osd) {
             return self.hold_shadow_reach(root, positional);
         }
@@ -767,6 +773,10 @@ impl Renderer {
                     // last ghost unmounts (which refreshes the specs).
                     spec.open = true;
                 }
+                // (lock-polish) A lock held open for its exit says so:
+                // strand-surface unlocks when it closes, and tells a lock
+                // asked for again from one still leaving.
+                spec.closing = spec.open && spec.kind == NodeKind::Lock;
             }
             if !spec.open && reported == Some(true) {
                 // (popup-reopen) It closes now (its closing pose, if it
@@ -782,15 +792,21 @@ impl Renderer {
                 self.opening.remove(&id);
             }
             // Content kept for a closing pose that is not playing (it
-            // opened again, or closes at once after all) goes now.
+            // opened again, or closes at once after all) goes now; a
+            // lock's stays while its content's exits play.
             if self.closing_content.contains_key(&id)
                 && self.anim.exiting(id) != Some(ExitKind::Close)
+                && !spec.closing
             {
                 self.drop_closing_content(id);
             }
             let bar = spec.kind == NodeKind::Bar;
             let vertical = matches!(spec.edge, Some(Edge::Left | Edge::Right));
             let axes = match (bar, vertical) {
+                // (lock-polish) The compositor sizes a lock surface to its
+                // output: its content sizes nothing, and no frame waits
+                // for a configure at its content's size, which never comes.
+                _ if spec.kind == NodeKind::Lock => (false, false),
                 (true, true) => (spec.width.is_none(), false),
                 (true, false) => (false, spec.height.is_none()),
                 _ => (spec.width.is_none(), spec.height.is_none()),

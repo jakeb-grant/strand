@@ -184,6 +184,10 @@ source on the logic loop; one more than 1 MiB behind is dropped.
   `ToLogic::LockState`. SIGINT and SIGTERM end `strand
   run` only while no lock is shown. Faults are injectable under the
   `faults` feature (`STRAND_FAULT`) for `tests/lock.rs` (lock VM only).
+  (lock-polish) `auth`'s token goes to `State::unlock_after_exit`, the
+  fallback's to `State::unlock`; while the lock plays its way out
+  (`State::lock_leaving`) `Guard::check` counts no fault, heartbeat or
+  first-frame deadline and tells `auth` no lock is shown.
 - A marker, `$XDG_RUNTIME_DIR/strand-<display>.locked`, exists from a
   lock being asked for until none is asked for or held; a strand started
   while it exists locks at once with the fallback.
@@ -1059,8 +1063,9 @@ is being saved, so the idle-wakeup windows hold.
   `window` is one instance, unpinned. A surface without a size of its
   own gets it from a content layout pass before the spec is reported;
   `stretch` names the axes render leaves to the compositor (a `panel`
-  or `osd` anchored to one edge and sized by its content along it).
-  Render resolves specs through the node's token scope after every
+  or `osd` anchored to one edge and sized by its content along it);
+  `closing` (lock-polish) marks a `lock` render holds open only while
+  its exit plays. Render resolves specs through the node's token scope after every
   `apply`: `Renderer::surface_spec(node)` reads one, and
   `take_surface_changes()` returns `(NodeId, SurfaceChange)`s
   (`Created`, `Updated { spec, recreate }`, `Removed`) in order. A popup
@@ -1097,7 +1102,10 @@ is being saved, so the idle-wakeup windows hold.
   until its exit or its ghosts settle. Exits are bounded:
   `MAX_GHOSTS_PER_PARENT` (8), and an exit on a surface that painted
   nothing for `EXIT_STALL` (1 s) or older than `MAX_MOTION` + 1 s ends
-  at the next `apply`/`update`. `Renderer::next_wake()` is the earliest
+  at the next `apply`/`update`. (lock-polish) A `lock` closing keeps the
+  content logic removes with it that has no pose drawn as it was
+  (`Renderer::lock_closing`) while what has one plays it, and while it
+  is held open for that its spec says `closing: true`. `Renderer::next_wake()` is the earliest
   such instant; the renderer arms its own timer and wakes the loop
   through the text worker's waker, so a surface whose output stopped
   sending frame callbacks still closes.
@@ -1975,11 +1983,15 @@ Public interfaces:
     is delivered with its `drag:` value, an external one as a `Drop`
     record.
   - The lock: only an `auth` success unlocks; the runtime then writes the
-    lock's `open` false, and a config write of `false` while locked is
-    ignored with a warning. `lock_shown()` follows `ToLogic::LockState`,
-    the compositor's state, not the `open` prop:
-    `Instance::set_session_lock(SessionLock::{Locked, Finished,
-    Unlocked})`, which the binary maps from strand-surface's
+    lock's `open` false (at `SessionLock::Unlocking`, lock-polish, or at
+    an `Unlocked` with no `Unlocking` before it), and a config write of
+    `false` while locked is ignored with a warning. A lock's content is
+    unmounted when it closes, as a popup's (its `state`s are the lock
+    scope's), so its exit poses play. `lock_shown()` follows
+    `ToLogic::LockState`, the compositor's state, not the `open` prop
+    (shown while `Locked` or `Unlocking`):
+    `Instance::set_session_lock(SessionLock::{Locked, Unlocking,
+    Finished, Unlocked})`, which the binary maps from strand-surface's
     `LockState` (the compiler does not depend on strand-surface;
     decisions.md m4-lock-w1). Before any report since the lock last
     opened, `lock_shown()` is true while a `lock` on the scene is not
@@ -2306,7 +2318,23 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   a solid is delivered as the focused output's content's (else the
   first's). `before_lock()` runs just before the request (the binary
   takes pre-lock stills there).
-  Invariants: `State::unlock(strand_auth::UnlockToken)` is the only way
+  (lock-polish) `State::unlock_after_exit(token)` holds the token while
+  the lock plays its way out: the host hears `LockState::Unlocking`, the
+  lock nodes shown with a two-way `open` are waited for until render
+  reports each closed (`SurfaceSpec::closing` while it holds one open
+  for its exit), and the token is spent then, or `LOCK_EXIT_CAP` (1 s)
+  after it came by a calloop timer of the manager's own. Meanwhile
+  `send_input` drops every event but focus and pointer enter/leave,
+  contents stay on their outputs (a new output gets the solid), a waited
+  node seen leaving and then open again (the lock asked for again) drops
+  the token and the host hears `Locked`, and `finished` sends the unlock
+  at once (`Unlocked`, no new lock). With nothing waited for, no timer
+  or the lock still pending it is `unlock`. After an exit, as after any
+  unlock, a lock spec open and not leaving is spent until it closes
+  (logic slow to close it at the cap looks the same); the exit is
+  followed on spec changes and when the outputs are reconciled.
+  Invariants: `State::unlock(strand_auth::UnlockToken)` and
+  `State::unlock_after_exit` are the only ways
   to unlock; a spec closing or going away never unlocks (a closed spec
   re-arms, so an open spec locks again only after it closed);
   `finished` without `locked` is a diagnostic and the lock counts as

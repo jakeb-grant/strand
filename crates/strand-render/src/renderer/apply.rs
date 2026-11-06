@@ -446,11 +446,13 @@ impl Renderer {
                 }
                 // Content removed as its surface closes with a pose (a
                 // popup's, unmounted on close): drawn at rest until the
-                // pose ends, so the surface does not leave empty.
+                // pose ends, so the surface does not leave empty. (lock-
+                // polish) So is what leaves a closing lock with no pose
+                // of its own, while what has one plays it (above).
                 if let Some(r) = root
                     && !surface
                     && !reduced
-                    && self.closing_with_pose(r)
+                    && (self.closing_with_pose(r) || self.lock_closing(r))
                     && self.tree.ghost(*id).is_ok()
                 {
                     self.closing_content.entry(r).or_default().push(*id);

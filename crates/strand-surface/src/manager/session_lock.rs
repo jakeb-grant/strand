@@ -23,7 +23,22 @@
 //! stay for the host's built-in field, or one is made on the focused
 //! output. The host hears [`SurfaceHost::lock_changed`]:
 //! `Locked` once the compositor says every output is covered, `Finished`
-//! when it refuses or ends the lock, `Unlocked` after an unlock.
+//! when it refuses or ends the lock, `Unlocking` while the lock plays its
+//! way out, `Unlocked` after an unlock.
+//!
+//! (lock-polish) The lock plays its way out before it unlocks
+//! ([`State::unlock_after_exit`]): the token is held while the lock's
+//! nodes close (logic writes their two-way `open` false and render holds
+//! each open, `SurfaceSpec::closing`, while its exit plays) and spent when
+//! the last of them has closed, or [`LOCK_EXIT_CAP`] after it came, by a
+//! timer of this manager's own whatever render does. Meanwhile the
+//! session stays locked, input on the lock goes nowhere, each content
+//! stays on its output and an output plugged in shows the solid. A node
+//! seen leaving that opens again (the lock asked for again) keeps the
+//! session locked: the token is dropped and the host hears `Locked`; one
+//! still open at the cap is spent, as on any unlock (logic slow to close
+//! it looks the same). A `finished` meanwhile ends the exit: the unlock
+//! is sent at once.
 //!
 //! Nothing locks until the owner opts in ([`State::enable_session_lock`]):
 //! a lock that only a token releases must not be taken by a build that
@@ -31,8 +46,10 @@
 //! is a warning and [`State::lock`] is [`LockError::NotEnabled`].
 //!
 //! Fail-closed rules:
-//! - Only [`State::unlock`], which takes a [`strand_auth::UnlockToken`],
-//!   releases a lock the compositor holds (the other `unlock_and_destroy`
+//! - Only [`State::unlock`] and [`State::unlock_after_exit`], which take
+//!   a [`strand_auth::UnlockToken`], release a lock the compositor holds
+//!   (the exit only delays the unlock: nothing but the token it holds
+//!   ends it) (the other `unlock_and_destroy`
 //!   answers `finished`, on an object the compositor already gave up). The spec closing (`open: false`) or going away
 //!   (a reload, logic gone) changes nothing: the lock surfaces stay and
 //!   the content surfaces keep their ids, so the binary can paint the
@@ -97,6 +114,16 @@ use super::*;
 /// node, so the binary paints its built-in fallback on it.
 pub const LOCK_FALLBACK_NODE: NodeId = NodeId::new(u32::MAX, u32::MAX);
 
+/// (lock-polish) The longest a lock plays its way out: this long after
+/// the token came, the unlock is sent whatever the exit is doing (a
+/// stalled frame, a long or stuck pose). A second: two to four times what
+/// a closing pose on Strand's springs takes (`$motion.spatial` settles in
+/// about 0.2 s, a slow `spring(380, 0.86)` in about 0.5 s), the bound the
+/// lock already gives a first frame (`FIRST_FRAME` in the binary) and
+/// render a stalled exit (`EXIT_STALL`), and short enough that a stuck
+/// one costs someone who has already typed their password one second.
+pub const LOCK_EXIT_CAP: Duration = Duration::from_secs(1);
+
 /// Why [`State::lock`] could not ask for a lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockError {
@@ -145,6 +172,61 @@ impl Phase {
     }
 }
 
+/// (lock-polish) An unlock waiting for the lock to play its way out.
+#[derive(Debug)]
+struct Leaving {
+    /// Spent when the exit ends.
+    token: UnlockToken,
+    /// The lock nodes the unlock waits for: those shown on an output when
+    /// the token came whose `open` logic closes (two-way).
+    waited: BTreeSet<NodeId>,
+    /// Of those, the ones seen leaving or closed since: one open again
+    /// after that was asked for again.
+    seen: BTreeSet<NodeId>,
+    /// The cap's timer ([`LOCK_EXIT_CAP`]).
+    timer: Option<RegistrationToken>,
+    since: Instant,
+}
+
+/// (lock-polish) What the lock's nodes say about an exit in progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExitStep {
+    /// Some still play their exit (or logic has not closed them yet).
+    Wait,
+    /// Every one closed or went: unlock.
+    Done,
+    /// One seen leaving is open again: the lock was asked for again.
+    AskedAgain,
+}
+
+/// (lock-polish) The rule for an exit in progress: each waited node's
+/// spec as `(open, closing)`, `None` when it went (its spec, or its
+/// output). A node closed or going is done; one leaving is waited for; one
+/// open and not leaving is waited for until it has been seen leaving
+/// (logic has yet to close it), after which it was opened again. `seen`
+/// gains the nodes seen leaving or closed.
+fn exit_step(
+    waited: &BTreeSet<NodeId>,
+    seen: &mut BTreeSet<NodeId>,
+    spec: impl Fn(NodeId) -> Option<(bool, bool)>,
+) -> ExitStep {
+    let mut done = true;
+    for n in waited {
+        match spec(*n) {
+            None | Some((false, _)) => {
+                seen.insert(*n);
+            }
+            Some((true, true)) => {
+                seen.insert(*n);
+                done = false;
+            }
+            Some((true, false)) if seen.contains(n) => return ExitStep::AskedAgain,
+            Some((true, false)) => done = false,
+        }
+    }
+    if done { ExitStep::Done } else { ExitStep::Wait }
+}
+
 /// The session lock's state in [`State`].
 #[derive(Debug)]
 pub(super) struct SessionLock {
@@ -180,6 +262,8 @@ pub(super) struct SessionLock {
     /// lock session ([`State::renew_lock_content`]): drawn on the CPU
     /// until the lock ends, whatever content they show.
     cpu_outputs: BTreeSet<u32>,
+    /// (lock-polish) The lock plays its way out, a token held.
+    leaving: Option<Leaving>,
 }
 
 impl SessionLock {
@@ -198,6 +282,7 @@ impl SessionLock {
             deferred: None,
             asked_again: false,
             cpu_outputs: BTreeSet::new(),
+            leaving: None,
         }
     }
 }
@@ -395,7 +480,18 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// token: if `locked` is already on the wire it is a protocol error
     /// (`invalid_destroy`) that would end the connection and leave the
     /// session locked with no lock client.
+    ///
+    /// (lock-polish) While the lock plays its way out, this ends the exit
+    /// and unlocks at once (the fallback's password, which has no exit).
     pub fn unlock(&mut self, token: UnlockToken) -> bool {
+        if let Some(t) = self.session_lock.leaving.take().and_then(|l| l.timer) {
+            self.handle.remove(t);
+        }
+        self.release(token)
+    }
+
+    /// [`Self::unlock`]'s release, after an exit too.
+    fn release(&mut self, token: UnlockToken) -> bool {
         let lock = match std::mem::take(&mut self.session_lock.phase) {
             Phase::Locked(lock) => lock,
             Phase::Idle => return false,
@@ -412,6 +508,14 @@ impl<H: SurfaceHost + 'static> State<H> {
         // After the unlock request, so the compositor never shows its own
         // fallback colour between them.
         self.destroy_lock_surfaces();
+        // An open spec is not a new request until it closes. (lock-polish)
+        // After an exit too: one open and not leaving at the cap is one
+        // logic has not closed yet (it is slow, or stopped) as often as
+        // one asked for again before render showed it leaving, and the
+        // two look the same here; locking again would ask for a password
+        // just accepted, so it waits to close as on an unlock with no exit.
+        // One seen leaving that opened again never gets here
+        // ([`ExitStep::AskedAgain`]).
         self.session_lock.spent = self.lock_spec_open();
         self.lock_session_ended();
         if let Err(e) = self.conn.flush() {
@@ -419,6 +523,146 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         self.host.lock_changed(LockState::Unlocked);
         true
+    }
+
+    /// (lock-polish) Releases the session lock once the lock has played
+    /// its way out: the same token as [`Self::unlock`], held until every
+    /// lock node shown with a two-way `open` has closed (logic writes it
+    /// false at `Unlocking`, and render keeps it open while its exit
+    /// plays) and spent then, or [`LOCK_EXIT_CAP`] after now at the latest
+    /// (a timer of this manager's, so neither render nor logic can hold
+    /// the session past it). The host hears `Unlocking` now and
+    /// `Unlocked` then. With nothing that can play an exit (no such node
+    /// shown, the lock still pending, no timer) it is [`Self::unlock`].
+    /// A token while an exit plays already is dropped: it unlocks nothing
+    /// more. Input on the lock goes nowhere meanwhile ([`Self::lock_leaving`]).
+    pub fn unlock_after_exit(&mut self, token: UnlockToken) -> bool {
+        if self.session_lock.leaving.is_some() {
+            log::info!(
+                "lock: a password accepted while the lock plays its way out changes nothing"
+            );
+            return true;
+        }
+        if !matches!(self.session_lock.phase, Phase::Locked(_)) {
+            return self.unlock(token);
+        }
+        let waited: BTreeSet<NodeId> = self
+            .session_lock
+            .contents
+            .values()
+            .filter_map(|id| self.surfaces.get(id).map(|s| s.node))
+            .filter(|n| {
+                self.specs
+                    .get(n)
+                    .is_some_and(|s| s.open && !s.closing && s.open_two_way)
+            })
+            .collect();
+        if waited.is_empty() {
+            return self.unlock(token);
+        }
+        let timer = self.handle.insert_source(
+            Timer::from_duration(LOCK_EXIT_CAP),
+            |_, _, state: &mut State<H>| {
+                if let Some(l) = &mut state.session_lock.leaving {
+                    l.timer = None;
+                }
+                state.end_exit(true);
+                TimeoutAction::Drop
+            },
+        );
+        let timer = match timer {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!(
+                    "lock: no timer for the exit's cap ({}): unlocking now",
+                    e.error
+                );
+                return self.unlock(token);
+            }
+        };
+        log::info!(
+            "lock: the password was accepted: the lock plays its way out (at most {} ms)",
+            LOCK_EXIT_CAP.as_millis()
+        );
+        self.session_lock.leaving = Some(Leaving {
+            token,
+            waited,
+            seen: BTreeSet::new(),
+            timer: Some(timer),
+            since: Instant::now(),
+        });
+        self.host.lock_changed(LockState::Unlocking);
+        true
+    }
+
+    /// (lock-polish) The lock plays its way out ([`Self::unlock_after_exit`]):
+    /// the session is locked, and input on it goes nowhere.
+    pub fn lock_leaving(&self) -> bool {
+        self.session_lock.leaving.is_some()
+    }
+
+    /// (lock-polish) The exit ended: every node it waited for closed, or
+    /// (`cap`) [`LOCK_EXIT_CAP`] passed. The held token unlocks.
+    fn end_exit(&mut self, cap: bool) {
+        let Some(l) = &self.session_lock.leaving else {
+            return;
+        };
+        let ms = l.since.elapsed().as_millis();
+        if cap {
+            log::warn!(
+                "lock: the exit was still playing at its {} ms cap: unlocking",
+                LOCK_EXIT_CAP.as_millis()
+            );
+        } else {
+            log::info!("lock: the exit ended after {ms} ms: unlocking");
+        }
+        if let Some(l) = self.session_lock.leaving.take() {
+            if let Some(t) = l.timer {
+                self.handle.remove(t);
+            }
+            self.release(l.token);
+        }
+    }
+
+    /// (lock-polish) A lock node that was leaving opened again (the lock
+    /// asked for again as it played its way out): the session never
+    /// unlocked, so it stays locked. The token is dropped (a password is
+    /// typed again) and the host hears `Locked` again.
+    fn exit_asked_again(&mut self) {
+        let Some(l) = self.session_lock.leaving.take() else {
+            return;
+        };
+        if let Some(t) = l.timer {
+            self.handle.remove(t);
+        }
+        // The token goes unspent with `l`.
+        log::info!("lock: asked for again while it played its way out: the session stays locked");
+        self.host.lock_changed(LockState::Locked);
+        self.sync_lock_surfaces();
+    }
+
+    /// (lock-polish) Follows an exit in progress after a lock spec changed
+    /// or an output went ([`exit_step`]).
+    pub(super) fn follow_exit(&mut self) {
+        let shown: BTreeSet<NodeId> = self
+            .session_lock
+            .contents
+            .values()
+            .filter_map(|id| self.surfaces.get(id).map(|s| s.node))
+            .collect();
+        let specs = &self.specs;
+        let Some(l) = &mut self.session_lock.leaving else {
+            return;
+        };
+        let step = exit_step(&l.waited, &mut l.seen, |n| {
+            let s = specs.get(&n).filter(|_| shown.contains(&n))?;
+            Some((s.open, s.closing))
+        });
+        match step {
+            ExitStep::Wait => {}
+            ExitStep::Done => self.end_exit(false),
+            ExitStep::AskedAgain => self.exit_asked_again(),
+        }
     }
 
     /// The compositor has locked the session (`locked`) and no unlock has
@@ -563,13 +807,18 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     // ---- specs ---------------------------------------------------------------
 
-    /// Some `lock` spec is open (its instances' `open` is one value).
-    fn lock_spec_open(&self) -> bool {
+    /// The specs of the lock's nodes.
+    fn lock_specs(&self) -> impl Iterator<Item = &SurfaceSpec> {
         self.session_lock
             .nodes
             .iter()
             .filter_map(|n| self.specs.get(n))
-            .any(|s| s.open)
+    }
+
+    /// Some `lock` spec is open (its instances' `open` is one value); one
+    /// render holds open only for its exit (lock-polish) is closed.
+    fn lock_spec_open(&self) -> bool {
+        self.lock_specs().any(|s| s.open && !s.closing)
     }
 
     /// The lock ended (an unlock, `finished`): nodes whose spec went and
@@ -614,6 +863,7 @@ impl<H: SurfaceHost + 'static> State<H> {
                 }
                 self.specs.insert(node, spec);
                 self.reconcile_lock();
+                self.follow_exit();
             }
             SurfaceChange::Removed => {
                 self.specs.remove(&node);
@@ -628,6 +878,7 @@ impl<H: SurfaceHost + 'static> State<H> {
                 // another instance's (`lock_want`); with none left, the
                 // content surfaces stay, with their ids, for the fallback.
                 self.sync_lock_surfaces();
+                self.follow_exit();
             }
         }
         None
@@ -696,6 +947,17 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// node the lock had that did not fail (else [`LOCK_FALLBACK_NODE`]).
     fn lock_want(&self) -> BTreeMap<u32, NodeId> {
         let l = &self.session_lock;
+        if l.leaving.is_some() {
+            // (lock-polish) While the lock plays its way out each content
+            // stays where it is, its exit playing there, and an output
+            // plugged in meanwhile shows the solid.
+            return l
+                .contents
+                .iter()
+                .filter(|(g, _)| self.outputs.contains_key(g))
+                .filter_map(|(g, id)| Some((*g, self.surfaces.get(id)?.node)))
+                .collect();
+        }
         let live: Vec<(NodeId, &SurfaceSpec)> = l
             .nodes
             .iter()
@@ -1052,6 +1314,23 @@ impl<H: SurfaceHost + 'static> State<H> {
                 if !ours {
                     return;
                 }
+                // (lock-polish) The compositor ended the lock while it
+                // played its way out, the password accepted: the exit
+                // ends and the unlock goes now. `unlock_and_destroy` is
+                // also the protocol's answer to `finished`, and no new
+                // lock is asked for: it would ask for the password again.
+                if matches!(self.session_lock.phase, Phase::Locked(_))
+                    && let Some(l) = self.session_lock.leaving.take()
+                {
+                    log::warn!(
+                        "the compositor ended the session lock as it played its way out: unlocked"
+                    );
+                    if let Some(t) = l.timer {
+                        self.handle.remove(t);
+                    }
+                    self.release(l.token);
+                    return;
+                }
                 let was_locked = match std::mem::take(&mut self.session_lock.phase) {
                     Phase::Pending(l) => {
                         log::warn!(
@@ -1207,7 +1486,58 @@ fn first_in_layout(outputs: impl Iterator<Item = OutputPlace>) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AfterFinished, OutputPlace, after_finished, first_in_layout};
+    use super::{AfterFinished, ExitStep, OutputPlace, after_finished, exit_step, first_in_layout};
+    use std::collections::{BTreeMap, BTreeSet};
+    use strand_scene::NodeId;
+
+    /// (lock-polish) An exit waits while a node leaves (or logic has yet
+    /// to close it), ends when every node closed or went, and is asked
+    /// for again when a node seen leaving is open again; a node never
+    /// seen leaving that is open is only not closed yet.
+    #[test]
+    fn an_exit_ends_when_its_nodes_close_and_not_before() {
+        let (a, b) = (NodeId::new(1, 0), NodeId::new(2, 0));
+        let waited: BTreeSet<NodeId> = [a, b].into();
+        let step = |seen: &mut BTreeSet<NodeId>, specs: &[(NodeId, (bool, bool))]| {
+            let specs: BTreeMap<NodeId, (bool, bool)> = specs.iter().copied().collect();
+            exit_step(&waited, seen, |n| specs.get(&n).copied())
+        };
+        let mut seen = BTreeSet::new();
+        // Logic has not closed them yet.
+        assert_eq!(
+            step(&mut seen, &[(a, (true, false)), (b, (true, false))]),
+            ExitStep::Wait
+        );
+        assert!(seen.is_empty());
+        // Both leaving.
+        assert_eq!(
+            step(&mut seen, &[(a, (true, true)), (b, (true, true))]),
+            ExitStep::Wait
+        );
+        // One closed, one still leaving.
+        assert_eq!(
+            step(&mut seen, &[(a, (false, false)), (b, (true, true))]),
+            ExitStep::Wait
+        );
+        // The other closed: done.
+        assert_eq!(
+            step(&mut seen, &[(a, (false, false)), (b, (false, false))]),
+            ExitStep::Done
+        );
+        // A node that went (its spec, or its output) is done too.
+        let mut seen = BTreeSet::new();
+        assert_eq!(step(&mut seen, &[(b, (false, false))]), ExitStep::Done);
+        // Seen leaving, then open and not leaving: asked for again.
+        let mut seen = BTreeSet::new();
+        assert_eq!(
+            step(&mut seen, &[(a, (true, true)), (b, (true, true))]),
+            ExitStep::Wait
+        );
+        assert_eq!(
+            step(&mut seen, &[(a, (true, false)), (b, (true, true))]),
+            ExitStep::AskedAgain
+        );
+    }
 
     /// (screen-position) The first monitor is the leftmost, not the
     /// first advertised: then the topmost at one `x`, the lowest global

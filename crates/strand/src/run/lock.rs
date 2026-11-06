@@ -43,6 +43,12 @@
 //!   (an unlock, or a lock the compositor refused).
 //! - **Reloads**: a load deferred while the lock is shown is committed
 //!   after the unlock ([`Shell::unlocked`]).
+//! - **The exit** (lock-polish): `auth`'s token goes to
+//!   `State::unlock_after_exit`, so the config's lock plays its way out
+//!   before the session unlocks (within `strand_surface::LOCK_EXIT_CAP`);
+//!   the fallback's token unlocks at once. While it plays, input on the
+//!   lock goes nowhere (strand-surface drops it), `auth` is told no lock
+//!   is shown, and no fault, heartbeat or first-frame deadline counts.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -104,6 +110,7 @@ const MAX_FAULTS: usize = 4096;
 pub(crate) fn session_lock(state: LockState) -> SessionLock {
     match state {
         LockState::Locked => SessionLock::Locked,
+        LockState::Unlocking => SessionLock::Unlocking,
         LockState::Finished => SessionLock::Finished,
         LockState::Unlocked => SessionLock::Unlocked,
     }
@@ -119,8 +126,10 @@ pub(super) fn beat(seq: u64) {
 impl Shell {
     /// The compositor's report on the session lock.
     pub(super) fn lock_state(&mut self, state: SessionLock) {
-        if state == SessionLock::Locked {
-            faults::logic_locked();
+        match state {
+            SessionLock::Locked => faults::logic_locked(),
+            SessionLock::Unlocking => faults::logic_unlocking(),
+            _ => {}
         }
         self.inst.set_session_lock(state);
     }
@@ -572,6 +581,10 @@ pub(crate) struct LockScreen {
     /// it keeps PAM's conversation open while one is (m6-lock): set in
     /// [`LockScreen::see`], after the generation a conversation reads.
     signal: strand_services::auth::LockSignal,
+    /// (lock-polish) Lock sessions ended ([`LockScreen::reset`]): a lock
+    /// asked for again in the dispatch that unlocked is a new one to
+    /// [`Guard::check`], which never saw the session unlocked between.
+    ended: u64,
 }
 
 impl std::fmt::Debug for LockScreen {
@@ -922,6 +935,7 @@ impl LockScreen {
 
     /// No lock any more: the fallback and its reasons go.
     fn reset(&mut self) {
+        self.ended += 1;
         self.fallback = None;
         self.pending = None;
         self.drew = false;
@@ -946,6 +960,9 @@ impl LockScreen {
 pub(super) struct Guard {
     /// When the current lock was first seen asked for or held.
     since: Option<Instant>,
+    /// (lock-polish) The lock sessions ended (`LockScreen::ended`) when
+    /// `since` was taken.
+    ended: u64,
     /// Heartbeats sent.
     seq: u64,
     /// The heartbeat waiting for its answer, and when it went.
@@ -1064,11 +1081,17 @@ impl Guard {
                 let Event::Msg(msg) = event else {
                     return;
                 };
-                let active = state.lock_active();
+                let active = state.lock_active() && !state.lock_leaving();
                 let token = state.host_mut().lock.answer(msg, active);
-                if let Some(t) = token
-                    && !state.unlock(t)
-                {
+                // (lock-polish) The config's lock plays its way out first;
+                // the built-in field has no exit, and once it shows the
+                // config's lock may not work.
+                let unlocked = match (token, state.host().lock.fallback_shown()) {
+                    (None, _) => true,
+                    (Some(t), true) => state.unlock(t),
+                    (Some(t), false) => state.unlock_after_exit(t),
+                };
+                if !unlocked {
                     log::warn!("lock: a password was accepted with no lock to release");
                 }
                 state.poll();
@@ -1099,6 +1122,7 @@ impl Guard {
         strand_services::auth::configure(Some(config));
         let mut guard = Guard {
             since: None,
+            ended: 0,
             seq: 0,
             waiting: None,
             next_beat: None,
@@ -1175,7 +1199,19 @@ impl Guard {
             }
             return;
         }
+        self.follow_ended(state.host().lock.ended);
         let since = *self.since.get_or_insert(now);
+        if state.lock_leaving() {
+            // (lock-polish) A password was accepted and the lock plays its
+            // way out: strand-surface unlocks when it has, within its cap,
+            // so nothing about the lock's health counts now, and `auth`
+            // lets PAM's conversation go (nothing more is checked).
+            state.host_mut().lock.see(false);
+            self.waiting = None;
+            self.next_beat = None;
+            follow_color(state);
+            return;
+        }
         state.host_mut().lock.see(true);
         state.host_mut().lock.asked.get_or_insert(since);
         if signalled && !self.stopping {
@@ -1205,17 +1241,7 @@ impl Guard {
             }
             state.poll();
         }
-        // The other outputs show the lock's colour (the fallback's own,
-        // set above, only while it shows).
-        let tree = state.host().renderer.tree();
-        let color = state
-            .host()
-            .lock
-            .contents
-            .iter()
-            .find(|(_, n)| tree.get(*n).is_some())
-            .map_or(Color::BLACK, |(_, node)| lock_color(tree, *node));
-        state.set_lock_color(color);
+        follow_color(state);
         // The heartbeat.
         match self.waiting {
             Some((seq, _)) if BEAT.load(Ordering::Acquire) >= seq => {
@@ -1231,6 +1257,22 @@ impl Guard {
             }
             None => {}
         }
+    }
+
+    /// (lock-polish) Unlocked and locked again within one dispatch (a lock
+    /// asked for as the last ended, so `check` never saw none): the new
+    /// lock gets its own first-frame deadline and heartbeat, not the old
+    /// one's, which would show the fallback before it could draw.
+    fn follow_ended(&mut self, ended: u64) {
+        if self.ended == ended {
+            return;
+        }
+        self.ended = ended;
+        if self.since.take().is_some() {
+            log::info!("lock: a new lock began as the last ended");
+        }
+        self.waiting = None;
+        self.next_beat = None;
     }
 
     fn reason(
@@ -1364,6 +1406,20 @@ impl Guard {
             .min()
             .map(|t| t.saturating_duration_since(now))
     }
+}
+
+/// The other outputs show the lock's colour (the fallback's own, set by
+/// [`Guard::check`], only while it shows).
+fn follow_color(state: &mut State<Host>) {
+    let tree = state.host().renderer.tree();
+    let color = state
+        .host()
+        .lock
+        .contents
+        .iter()
+        .find(|(_, n)| tree.get(*n).is_some())
+        .map_or(Color::BLACK, |(_, node)| lock_color(tree, *node));
+    state.set_lock_color(color);
 }
 
 /// The colour of the lock's other outputs while the config's lock shows
@@ -1531,6 +1587,16 @@ pub(crate) mod faults {
         }
     }
 
+    /// (lock-polish) Logic heard `Unlocking`: `logic_slow_unlocking` holds
+    /// it 1.5 s, past `LOCK_EXIT_CAP` (and inside the watchdog), before it
+    /// closes the lock, as a busy logic would.
+    pub(crate) fn logic_unlocking() {
+        if on("logic_slow_unlocking") {
+            log::warn!("STRAND_FAULT logic_slow_unlocking");
+            std::thread::sleep(Duration::from_millis(1500));
+        }
+    }
+
     /// The text worker's waker (on its thread): `text_panic` kills the
     /// worker once the session is locked.
     pub(crate) fn text_waker() {
@@ -1670,6 +1736,8 @@ pub(crate) mod faults {
     pub(crate) fn set_locked(_: bool) {}
     #[inline(always)]
     pub(crate) fn logic_locked() {}
+    #[inline(always)]
+    pub(crate) fn logic_unlocking() {}
     #[inline(always)]
     pub(crate) fn text_waker() {}
     #[inline(always)]
@@ -2002,6 +2070,38 @@ mod tests {
         s.auth_failed("the helper stopped".into(), 1);
         s.idle();
         assert_eq!(s.pending, None, "no fallback on the next, healthy lock");
+    }
+
+    /// (lock-polish) A lock asked for again in the dispatch that unlocked
+    /// the last one (`Guard::check` never saw none) starts its own
+    /// first-frame deadline and heartbeat: the unlock's `reset` counts in
+    /// `LockScreen::ended`, and the guard drops the old lock's `since`. A
+    /// lock that goes on keeps its own.
+    #[test]
+    fn a_lock_asked_for_as_the_last_ended_is_a_new_lock_to_the_guard() {
+        let start = Instant::now();
+        let mut g = Guard {
+            since: Some(start),
+            ended: 0,
+            seq: 1,
+            waiting: Some((1, start)),
+            next_beat: Some(start),
+            stopping: false,
+            marker: None,
+            marked: false,
+        };
+        let mut s = LockScreen::default();
+        g.follow_ended(s.ended);
+        assert_eq!(g.since, Some(start), "the same lock keeps its start");
+        assert!(g.waiting.is_some());
+        s.changed(LockState::Locked);
+        s.changed(LockState::Unlocked);
+        g.follow_ended(s.ended);
+        assert_eq!(g.since, None, "a new lock's deadline starts anew");
+        assert_eq!((g.waiting, g.next_beat), (None, None));
+        g.since = Some(start + FIRST_FRAME);
+        g.follow_ended(s.ended);
+        assert_eq!(g.since, Some(start + FIRST_FRAME));
     }
 
     /// The fallback's verdicts: only a success yields a token.

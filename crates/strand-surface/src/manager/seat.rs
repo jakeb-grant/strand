@@ -190,6 +190,21 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// mapped back from the coordinates of its surface's pose scale to
     /// the content at rest (`pose.rs`).
     pub(super) fn send_input(&mut self, mut event: InputEvent) {
+        // (lock-polish) While the lock plays its way out, what is typed
+        // or clicked on it goes nowhere: not to the host, so never to
+        // `auth` and never shown. Focus and the pointer's coming and
+        // going still pass, so they stay true.
+        if self.lock_leaving()
+            && !matches!(
+                event,
+                InputEvent::KeyboardEnter { .. }
+                    | InputEvent::KeyboardLeave { .. }
+                    | InputEvent::PointerEnter { .. }
+                    | InputEvent::PointerLeave { .. }
+            )
+        {
+            return;
+        }
         let factor = self
             .surfaces
             .get(&event.surface())

@@ -27,7 +27,7 @@ cd "$root"
 test_exe() {
   local pkg=$1 name=$2 exe
   exe=$(cargo test -p "$pkg" --test "$name" --no-run --message-format=json \
-    | grep -o '"executable":"[^"]*"' | cut -d'"' -f4 | grep "/$name-" | tail -1)
+    | grep -o '"executable":"[^"]*"' | cut -d'"' -f4 | grep "/deps/$name-" | tail -1)
   [ -x "$exe" ] || { echo "build.sh: no executable for $pkg --test $name" >&2; exit 1; }
   echo "$exe"
 }

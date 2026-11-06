@@ -10,13 +10,18 @@
 //!   scene never asks the surface manager to take the lock down (which
 //!   it would refuse anyway: only an `UnlockToken` unlocks).
 //! - Only an `auth` success unlocks: its token reaches the surface
-//!   manager, which reports [`SessionLock::Unlocked`]; the runtime then
-//!   writes `open` false through the lock's two-way binding
+//!   manager, which reports [`SessionLock::Unlocking`] (lock-polish: the
+//!   lock plays its way out first; the session stays locked) or, with
+//!   nothing to play, [`SessionLock::Unlocked`]; at the first of them the
+//!   runtime writes `open` false through the lock's two-way binding
 //!   (`open: <-> locked`), so the state that locked the session says it
-//!   is unlocked and a later write of `true` locks again.
+//!   is unlocked, the lock closes and its content leaves (its exit poses
+//!   play), and a later write of `true` locks again. A write of `true`
+//!   while it leaves opens the lock again: the surface manager keeps the
+//!   session locked and reports `Locked`.
 //! - [`Instance::lock_shown`] follows these reports: shown while
-//!   `Locked`, not shown after `Finished` (the compositor refused or
-//!   ended the lock) or `Unlocked`. Between a lock opening and the
+//!   `Locked` or `Unlocking`, not shown after `Finished` (the compositor
+//!   refused or ended the lock) or `Unlocked`. Between a lock opening and the
 //!   compositor's first answer (and in a host with no session lock, such
 //!   as the tests and offline tools) a `lock` whose `open` is not false
 //!   counts as shown, so a reload never races a lock coming up.
@@ -39,6 +44,11 @@ use strand_scene::PropValue;
 pub enum SessionLock {
     /// Every output shows a lock surface.
     Locked,
+    /// (lock-polish) An `auth` success was taken: the lock plays its way
+    /// out (its `open` goes false, its exit poses play) while the session
+    /// stays locked, then [`SessionLock::Unlocked`] follows, or
+    /// [`SessionLock::Locked`] when the lock was asked for again meanwhile.
+    Unlocking,
     /// The compositor refused the lock or ended it.
     Finished,
     /// An `auth` success released it.
@@ -52,6 +62,9 @@ pub(crate) enum Phase {
     #[default]
     Unreported,
     Locked,
+    /// (lock-polish) `Unlocking`: still locked, its `open` no longer
+    /// held, its exit playing.
+    Leaving,
     /// `Finished` or `Unlocked` since it last opened.
     Ended,
 }
@@ -113,18 +126,27 @@ impl LockTrack {
     }
 
     /// The compositor's report. True when the runtime should now write
-    /// the lock's `open` false (an unlock).
+    /// the lock's `open` false: an unlock beginning (`Unlocking`), or one
+    /// with no exit (`Unlocked` straight from `Locked`). After `Unlocking`
+    /// it was written already, and a `true` written since (the lock asked
+    /// for again as it left) is the config's, left as it is.
     pub(crate) fn report(&self, rt: &Runtime, state: SessionLock) -> bool {
+        let before = self.phase.get();
         let (phase, held) = match state {
             SessionLock::Locked => (Phase::Locked, true),
+            SessionLock::Unlocking => (Phase::Leaving, false),
             SessionLock::Finished | SessionLock::Unlocked => (Phase::Ended, false),
         };
         self.phase.set(phase);
-        if held {
+        if held && before != Phase::Leaving {
             self.warned.set(false);
         }
         let _ = self.held.set(rt, held);
-        state == SessionLock::Unlocked
+        match state {
+            SessionLock::Unlocking => before != Phase::Leaving,
+            SessionLock::Unlocked => before != Phase::Leaving,
+            SessionLock::Locked | SessionLock::Finished => false,
+        }
     }
 }
 

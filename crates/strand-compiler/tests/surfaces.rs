@@ -535,12 +535,20 @@ fn the_locks_timers_and_handlers_run_once_for_every_monitor() {
         .set_value("shell", "locked", Value::Bool(false))
         .unwrap();
     sh.flush();
-    for i in 2..=4u64 {
+    for i in 2..=3u64 {
         let u = sh.inst.tick(std::time::Duration::from_millis(400 * i + 1));
         sh.scene.apply(&u.diff).unwrap();
         sh.flush();
     }
-    assert_eq!(label(&sh, "d"), ["d2", "d2", "d2"], "it ran while hidden");
+    // (lock-polish) A closed lock's content is unmounted, as a popup's:
+    // nothing shows, and the run below starting from `d2` says its
+    // `dots` (the lock scope's) did not run meanwhile (two periods, so
+    // a run would have left it at `d1`).
+    assert_eq!(
+        label(&sh, "d"),
+        Vec::<String>::new(),
+        "unmounted while hidden"
+    );
     sh.inst
         .set_value("shell", "locked", Value::Bool(true))
         .unwrap();
