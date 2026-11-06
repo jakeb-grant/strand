@@ -300,3 +300,84 @@ fn a_report_leaves_out_the_locks_cells_and_a_passwords() {
     assert!(!after.contains(&"shell.pw".to_string()), "{after:?}");
     assert!(!after.iter().any(|p| p.ends_with(".n")), "{after:?}");
 }
+
+/// (lock-polish) The lock plays its way out before the session unlocks.
+/// At `Unlocking` the runtime writes `open` false (the hold lets go) and
+/// the lock's content leaves the scene, as a popup's does when it closes,
+/// so its exit poses play; the lock still counts as shown (a lock edit
+/// waits) until `Unlocked`, which writes nothing more. A write of `true`
+/// meanwhile (the lock asked for again) opens it again with its content,
+/// and `Locked` holds it as before; the next lock mounts its content anew.
+#[test]
+fn the_lock_closes_and_its_content_leaves_before_the_unlock() {
+    let mut s = boot(&shell("lock"));
+    s.report(SessionLock::Locked);
+    assert!(s.scene.texts().contains(&"lock 0".to_string()));
+
+    s.report(SessionLock::Unlocking);
+    assert_eq!(s.locked(), Value::Bool(false), "the runtime wrote false");
+    assert_eq!(s.open(), Some(&PropValue::Bool(false)), "not held");
+    assert!(
+        !s.scene.texts().contains(&"lock 0".to_string()),
+        "its content left: {:?}",
+        s.scene.texts()
+    );
+    assert!(s.inst.lock_shown(), "still locked: shown");
+    assert!(
+        s.reload(&shell("edited")),
+        "a lock edit waits for the unlock"
+    );
+
+    // Asked for again as it leaves: open again, its content back, and
+    // held once the surface manager says it stayed locked.
+    s.inst.set("shell.locked", Value::Bool(true)).unwrap();
+    s.flush();
+    assert_eq!(s.open(), Some(&PropValue::Bool(true)));
+    assert!(s.scene.texts().contains(&"lock 0".to_string()));
+    s.report(SessionLock::Locked);
+    let lock = s.lock();
+    let u = s.click(lock);
+    assert_eq!(u.notices, [IGNORED_CLOSE], "held open again");
+    assert_eq!(s.open(), Some(&PropValue::Bool(true)));
+
+    // Played out this time: `Unlocked` writes nothing more, and the edit
+    // lands.
+    s.report(SessionLock::Unlocking);
+    assert_eq!(s.open(), Some(&PropValue::Bool(false)));
+    s.inst.set("shell.locked", Value::Bool(true)).unwrap();
+    s.flush();
+    s.report(SessionLock::Unlocked);
+    assert_eq!(
+        s.locked(),
+        Value::Bool(true),
+        "a `true` written as it left is the config's, kept"
+    );
+    assert!(!s.inst.lock_shown());
+    s.inst.set("shell.locked", Value::Bool(false)).unwrap();
+    s.flush();
+    assert!(!s.reload(&shell("edited")), "lands once unlocked");
+    assert!(!s.scene.texts().iter().any(|t| t.starts_with("edited")));
+
+    // The next lock mounts its content anew, the edit in it.
+    let bar = s.scene.of_kind(NodeKind::Bar)[0];
+    s.click(bar);
+    assert!(
+        s.scene.texts().contains(&"edited 1".to_string()),
+        "{:?}",
+        s.scene.texts()
+    );
+}
+
+/// (lock-polish) An unlock with no exit before it (the built-in field's
+/// password, or a lock that had nothing to play) writes `open` false at
+/// `Unlocked`, as before.
+#[test]
+fn an_unlock_with_no_exit_writes_open_false() {
+    let mut s = boot(&shell("lock"));
+    s.report(SessionLock::Locked);
+    s.report(SessionLock::Unlocked);
+    assert_eq!(s.locked(), Value::Bool(false));
+    assert_eq!(s.open(), Some(&PropValue::Bool(false)));
+    assert!(!s.scene.texts().contains(&"lock 0".to_string()));
+    assert!(!s.inst.lock_shown());
+}

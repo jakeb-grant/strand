@@ -208,6 +208,13 @@ pub struct SurfaceSpec {
     pub follows_focus: bool,
     /// `open: …`; unset is open.
     pub open: bool,
+    /// (lock-polish) A `lock` whose `open` went false but which render
+    /// holds open while its exit plays (its own `exit { }` pose, or the
+    /// exits of the content that left with it): `open` stays true until
+    /// they end. Filled in by render, for a lock only; false otherwise.
+    /// strand-surface keeps the session locked meanwhile and unlocks when
+    /// `open` goes false (design.md, "Lock screen").
+    pub closing: bool,
     /// `attach: top`: concave fillets towards that edge (M4).
     pub attach: Option<Edge>,
     /// How far painting reaches past the surface's own box on each side
@@ -422,6 +429,7 @@ impl SurfaceSpec {
                 get(Prop::Open).as_ref().map(AsRef::as_ref),
                 Some(PropValue::Bool(false))
             ),
+            closing: false,
             attach: keyword(Prop::Attach).and_then(|k| Edge::from_name(&k)),
             overhang: Insets::default(),
             open_two_way: is_two_way(get(Prop::TwoWay).as_ref().map(AsRef::as_ref), Prop::Open),

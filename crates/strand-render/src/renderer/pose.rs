@@ -96,6 +96,22 @@ impl Renderer {
         (exiting || closes) && self.shown(Some(root))
     }
 
+    /// (lock-polish) True if lock node `root` is shown and leaving: the
+    /// diff being applied closes it, or its exit plays. Its content
+    /// leaves with it (logic unmounts a closed lock's content, as a
+    /// popup's): what has an `exit` pose plays it, and the rest stays
+    /// drawn as it was until those end, so the lock plays its way out as
+    /// one screen and the session unlocks once it has (design.md, "Lock
+    /// screen").
+    pub(super) fn lock_closing(&self, root: NodeId) -> bool {
+        let Some(spec) = self.specs.get(&root) else {
+            return false;
+        };
+        let leaving = spec.closing
+            || (self.closing_now.contains(&root) && spec.open && !self.closed.contains(&root));
+        spec.kind == strand_scene::NodeKind::Lock && leaving && self.shown(Some(root))
+    }
+
     /// Unmounts the content kept for surface node `root`'s closing pose
     /// (it closed, or opened again and logic sent its content anew).
     pub(super) fn drop_closing_content(&mut self, root: NodeId) {

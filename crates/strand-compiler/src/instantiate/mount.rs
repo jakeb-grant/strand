@@ -1857,12 +1857,13 @@ impl Ctx {
     /// evaluated, its nodes left on the scene): its `on change` handlers
     /// wait, noting each tick's value, and when it opens run once for what
     /// they missed and for a change made in the tick that opens it
-    /// (decisions.md panel-change-closed). A `lock`'s is frozen with plain
-    /// [`Runtime::suspend`], its handlers being its logic's. A `popup`'s
-    /// is unmounted, as the schema's `on_demand` says: its nodes leave
-    /// the scene and its scopes go, but the `state`s of the components
-    /// in it are kept ([`Ctx::keep_cells`]) and bound again when it opens
-    /// (a calendar's month survives closing it).
+    /// (decisions.md panel-change-closed). A `popup`'s is unmounted, as
+    /// the schema's `on_demand` says: its nodes leave the scene and its
+    /// scopes go, but the `state`s of the components in it are kept
+    /// ([`Ctx::keep_cells`]) and bound again when it opens (a calendar's
+    /// month survives closing it). (lock-polish) So is a `lock`'s, so it
+    /// plays its way out as the session unlocks; its handlers and timers
+    /// are its logic's (`lock_logic`), and its `state`s the lock's scope's.
     fn mount_surface_body(
         self: &Rc<Self>,
         rt: &Runtime,
@@ -1920,7 +1921,10 @@ impl Ctx {
         let outer = rt.current_owner();
         let (block, ()) = rt.scope(|_| ());
         let block = Rc::new(Cell::new(block));
-        let keep = on_demand.then(|| rt.scope(|_| ()).0);
+        // (lock-polish) A lock's content is unmounted as a popup's is,
+        // so it leaves when the lock closes for the unlock and its exit
+        // poses play (render's `lock_closing`); each lock mounts it anew.
+        let keep = (on_demand || is_lock).then(|| rt.scope(|_| ()).0);
         let token = self.hold(rt, services);
         // Each early handler's scope, where it is written in `content`.
         let early: Vec<Option<strand_core::NodeId>> = content
@@ -2009,13 +2013,8 @@ impl Ctx {
                             }
                         }
                         None => {
-                            // The lock's content is frozen as before: its
-                            // handlers are its logic's (`lock_logic`).
                             if !frozen.replace(true) {
-                                let _ = match is_lock {
-                                    true => rt.suspend(block.get().id()),
-                                    false => rt.suspend_closed(block.get().id()),
-                                };
+                                let _ = rt.suspend_closed(block.get().id());
                             }
                             // Components in the content let go of their
                             // services too, and nested surfaces of theirs.

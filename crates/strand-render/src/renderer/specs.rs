@@ -773,6 +773,10 @@ impl Renderer {
                     // last ghost unmounts (which refreshes the specs).
                     spec.open = true;
                 }
+                // (lock-polish) A lock held open for its exit says so:
+                // strand-surface unlocks when it closes, and tells a lock
+                // asked for again from one still leaving.
+                spec.closing = spec.open && spec.kind == NodeKind::Lock;
             }
             if !spec.open && reported == Some(true) {
                 // (popup-reopen) It closes now (its closing pose, if it
@@ -788,9 +792,11 @@ impl Renderer {
                 self.opening.remove(&id);
             }
             // Content kept for a closing pose that is not playing (it
-            // opened again, or closes at once after all) goes now.
+            // opened again, or closes at once after all) goes now; a
+            // lock's stays while its content's exits play.
             if self.closing_content.contains_key(&id)
                 && self.anim.exiting(id) != Some(ExitKind::Close)
+                && !spec.closing
             {
                 self.drop_closing_content(id);
             }

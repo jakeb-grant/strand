@@ -108,7 +108,7 @@ pub use gpu_handoff::RawHandles;
 
 use catcher::{Catcher, Under, wants_scrim, wants_under};
 use layer::to_sctk_layer;
-pub use session_lock::{LOCK_FALLBACK_NODE, LockError};
+pub use session_lock::{LOCK_EXIT_CAP, LOCK_FALLBACK_NODE, LockError};
 pub use window::ToplevelState;
 
 /// How long an unmapped surface whose paint drew nothing, while its
@@ -332,8 +332,15 @@ pub struct KeyboardState {
 /// (M4) The session lock as the compositor reports it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LockState {
-    /// `locked`: every output shows a lock surface.
+    /// `locked`: every output shows a lock surface. Also said again when
+    /// a lock asked for while its exit played stays (lock-polish).
     Locked,
+    /// (lock-polish) An `UnlockToken` was taken ([`State::unlock_after_exit`]):
+    /// the lock plays its way out on its surfaces while the session stays
+    /// locked; `Unlocked` follows once it has, or [`LOCK_EXIT_CAP`] after
+    /// the token at the latest, or `Locked` when the lock was asked for
+    /// again meanwhile. Input on the lock goes nowhere until then.
+    Unlocking,
     /// `finished`: the compositor refused or ended the lock, or offers no
     /// `ext-session-lock` at all. Without a `locked` before it, the lock
     /// was never shown.
@@ -1633,6 +1640,9 @@ impl<H: SurfaceHost + 'static> State<H> {
         }
         // The lock covers every output, with or without its spec.
         self.sync_lock_surfaces();
+        // (lock-polish) A content gone with its output plays no exit there:
+        // the unlock waits for it no more.
+        self.follow_exit();
     }
 
     /// Creates and destroys `node`'s surfaces so there is exactly one on

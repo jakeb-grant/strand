@@ -3243,3 +3243,477 @@ fn a_shadow_inside_the_lock_is_cut_at_its_edge() {
         );
     }
 }
+
+// ---- (lock-polish) the lock plays its way out ------------------------------
+
+/// The light card [`exit_config`] puts in the middle of the lock.
+const CARD: [u8; 3] = [0xe0, 0xe0, 0xe0];
+
+/// [`CONFIG`] with a 400 × 240 card on the lock that plays
+/// `exit` (`exit_pose`) on the curve of its `opacity` (`curve`), and, on
+/// the lock itself, every key that reaches it counted in `lock.typed`.
+fn exit_config(exit_pose: &str, curve: &str) -> String {
+    exit_config_on(CONFIG, exit_pose, curve)
+}
+
+/// [`exit_config`] on config `base`, a [`CONFIG`] with more in it.
+fn exit_config_on(base: &str, exit_pose: &str, curve: &str) -> String {
+    base.replace(
+            "export state zero = 1\n",
+            "export state zero = 1\nexport state typed = 0\n",
+        )
+        .replace(
+            "  text pct(10 / zero)\n",
+            &format!(
+                "  text pct(10 / zero)\n  on key(k) {{ typed += 1 }}\n  \
+                 box {{ width: 400; height: 240; bg: #e0e0e0; opacity: 1 ~ {curve}; {exit_pose} }}\n"
+            ),
+        )
+}
+
+impl Shot {
+    /// The middle of [`exit_config`]'s card (the lock stacks its content
+    /// at its top left; the card is drawn over the field and the text).
+    fn card(&self) -> [u8; 3] {
+        self.px(200, 120)
+    }
+}
+
+impl Vm {
+    /// [`exit_config`]'s lock, locked with its card showing and the
+    /// password typed (not sent).
+    fn exit_lock(test: &str, exit_pose: &str, curve: &str) -> Vm {
+        Vm::exit_lock_with(test, "", exit_pose, curve)
+    }
+
+    /// [`Vm::exit_lock`] under `faults`.
+    fn exit_lock_with(test: &str, faults: &str, exit_pose: &str, curve: &str) -> Vm {
+        let mut vm = Vm::with(test, faults, &exit_config(exit_pose, curve));
+        vm.lock();
+        vm.content();
+        vm.until_locked("HEADLESS-1", "the card", true, |s| near(s.card(), CARD));
+        vm.keys.type_text(PASSWORD);
+        vm.until_locked("HEADLESS-1", "the typed password", true, |s| {
+            near(s.corner(), LOCK_TYPED) && near(s.card(), CARD)
+        });
+        vm
+    }
+
+    /// `lock.typed`: the keys the lock took.
+    fn typed(&self) -> u64 {
+        let out = self.strand.cli_out(&["get", "lock.typed"]);
+        let got = String::from_utf8_lossy(&out.stdout).to_string();
+        got.trim()
+            .parse()
+            .unwrap_or_else(|_| panic!("lock.typed: {got:?}"))
+    }
+}
+
+/// (lock-polish) The lock plays its way out before the session unlocks:
+/// grim grabs HEADLESS-1 back to back from the Return that sends the right
+/// password. Shots in the middle of the card's exit show it part way out,
+/// neither as it was in the last locked frame nor gone, and no shot shows
+/// the desktop until the exit has ended: strand logs the exit's end before
+/// it unlocks. Before, the lock went the moment the password was accepted,
+/// and no shot showed the card fading.
+#[test]
+fn the_lock_plays_its_way_out_before_it_unlocks() {
+    let test = "lock_exit";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::exit_lock(test, "enter { opacity: 0 }", "ease(linear, 600ms)");
+    let last = vm.sway.shot("HEADLESS-1");
+    vm.keys.enter("");
+    let deadline = Instant::now() + WAIT;
+    let mut shots = Vec::new();
+    let end = loop {
+        let s = vm.sway.shot("HEADLESS-1");
+        if s.desktop() {
+            break s;
+        }
+        if let Some((x, y)) = s.desktop_anywhere() {
+            panic!(
+                "the desktop showed at {x},{y} before the unlock: {}\n{}",
+                s.describe(),
+                vm.strand.log_text()
+            );
+        }
+        shots.push(s);
+        assert!(
+            Instant::now() < deadline,
+            "never unlocked\n{}",
+            vm.strand.log_text()
+        );
+    };
+    let cards: Vec<[u8; 3]> = shots.iter().map(Shot::card).collect();
+    let mid = shots
+        .iter()
+        .filter(|s| {
+            let c = s.card();
+            !near(c, last.card()) && !near(c, LOCK_BG) && !near(c, end.card())
+        })
+        .count();
+    assert!(
+        mid >= 1,
+        "no shot caught the card part way out ({} shots, the card in each {cards:02x?}; \
+         the last locked frame's {:02x?}, the desktop's {:02x?})\n{}",
+        shots.len(),
+        last.card(),
+        end.card(),
+        vm.strand.log_text()
+    );
+    let log = vm.strand.log_text();
+    let ended = log.find("lock: the exit ended after ");
+    let unlocked = log.find("session lock: Unlocked");
+    assert!(
+        matches!((ended, unlocked), (Some(e), Some(u)) if e < u),
+        "the unlock was not sent after the exit ended:\n{log}"
+    );
+    assert!(
+        !log.contains("ms cap: unlocking"),
+        "the exit ended by itself, not at the cap:\n{log}"
+    );
+    let took = log
+        .lines()
+        .find_map(|l| l.split("lock: the exit ended after ").nth(1))
+        .unwrap_or_default();
+    eprintln!(
+        "lock exit: {} shots while it played, {mid} part way out, the card in each \
+         {cards:02x?}; it ended after {took}",
+        shots.len()
+    );
+    // Locked again, it mounts its content anew and plays in again.
+    vm.lock();
+    vm.content();
+    vm.until_locked("HEADLESS-1", "the card again", true, |s| {
+        near(s.card(), CARD)
+    });
+    vm.lock_enter(PASSWORD);
+    vm.until("HEADLESS-1", "unlocked again", Shot::desktop);
+}
+
+/// (lock-polish) The exit is capped: a card whose exit takes 8 s holds
+/// the unlock one second (`LOCK_EXIT_CAP`), which strand-surface's own
+/// timer enforces, and strand says so. The desktop shows a second or so
+/// after the Return, not before (the exit held it) and not after the 8 s
+/// pose (render's own end).
+#[test]
+fn the_exit_cap_unlocks_an_exit_that_does_not_settle() {
+    let test = "lock_exit_cap";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::exit_lock(test, "exit { opacity: 0 }", "ease(linear, 8s)");
+    let at = Instant::now();
+    vm.keys.enter("");
+    vm.until("HEADLESS-1", "unlocked at the cap", Shot::desktop);
+    let took = at.elapsed();
+    let log = vm.strand.log_text();
+    assert!(
+        log.contains("lock: the exit was still playing at its 1000 ms cap: unlocking"),
+        "the cap did not unlock:\n{log}"
+    );
+    assert!(
+        took >= Duration::from_millis(900),
+        "unlocked {took:?} after the Return, before the cap: the exit held nothing\n{log}"
+    );
+    eprintln!("lock exit cap: unlocked {took:?} after the Return");
+    if took >= Duration::from_secs(6) {
+        panic!(
+            "GATE_MISS lock exit cap: unlocked {took:?} after the Return (the cap is 1 s, the \
+             pose 8 s)\n{log}"
+        );
+    }
+}
+
+/// (lock-polish) Keys typed while the lock plays its way out go nowhere:
+/// strand-surface drops them, so the lock's `on key` (which counted the
+/// password's) hears none of them: none reaches the field, so none is
+/// sent to `auth` or shows. The keys are typed once strand logs the exit's start and before
+/// it unlocks, and the desktop is not shown until after them.
+#[test]
+fn keys_typed_while_the_lock_plays_out_go_nowhere() {
+    let test = "lock_exit_keys";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::exit_lock(test, "exit { opacity: 0 }", "ease(linear, 8s)");
+    let before = vm.typed();
+    assert!(
+        before >= PASSWORD.len() as u64,
+        "the lock counts the keys it takes ({before})"
+    );
+    vm.keys.enter("");
+    vm.until_log("the lock plays its way out");
+    vm.keys.enter("abcd");
+    let log = vm.strand.log_text();
+    assert!(
+        !log.contains("session lock: Unlocked"),
+        "unlocked before the keys were typed: they would prove nothing\n{log}"
+    );
+    let s = vm.sway.shot("HEADLESS-1");
+    assert!(
+        s.desktop_anywhere().is_none() && !near(s.corner(), LOCK_TYPED),
+        "the keys show, or the desktop does: {}",
+        s.describe()
+    );
+    vm.until("HEADLESS-1", "unlocked at the cap", Shot::desktop);
+    let after = vm.typed();
+    eprintln!("lock exit keys: the lock took {before} keys before the Return, {after} after");
+    assert!(
+        after <= before + 1,
+        "the lock took keys typed as it played out: {before} before the Return, {after} after\n{}",
+        vm.strand.log_text()
+    );
+}
+
+/// (lock-polish) The lock asked for again while it plays its way out
+/// stays locked: strand-surface drops the token and the session never
+/// unlocks, well past the exit's cap, until the password is typed again.
+#[test]
+fn a_lock_asked_for_again_as_it_plays_out_stays_locked() {
+    let test = "lock_exit_again";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::exit_lock(test, "exit { opacity: 0 }", "ease(linear, 8s)");
+    vm.keys.enter("");
+    vm.until_log("the lock plays its way out");
+    vm.strand.cli(&["set", "lock.locked", "true"]);
+    vm.until_log("asked for again while it played its way out: the session stays locked");
+    // Twice the cap, and the session is still locked.
+    vm.stays("HEADLESS-1", "locked", Duration::from_secs(2), |s| {
+        s.desktop_anywhere().is_none()
+    });
+    let log = vm.strand.log_text();
+    assert!(
+        !log.contains("ms cap: unlocking") && !log.contains("session lock: Unlocked"),
+        "unlocked after all:\n{log}"
+    );
+    vm.until_locked("HEADLESS-1", "the card again", true, |s| {
+        near(s.card(), CARD)
+    });
+    vm.lock_enter(PASSWORD);
+    vm.until(
+        "HEADLESS-1",
+        "unlocked by the password typed again",
+        Shot::desktop,
+    );
+}
+
+/// (lock-polish) A monitor plugged in while the lock plays its way out is
+/// covered by the lock's colour (the solid: nothing plays out on it), and
+/// never shows the desktop before strand sends the unlock at the cap.
+#[test]
+fn an_output_plugged_in_as_the_lock_plays_out_shows_its_colour() {
+    let test = "lock_exit_plug";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::exit_lock(test, "exit { opacity: 0 }", "ease(linear, 8s)");
+    vm.keys.enter("");
+    vm.until_log("the lock plays its way out");
+    let second = vm.sway.plug();
+    let deadline = Instant::now() + WAIT;
+    let mut covered = 0;
+    loop {
+        let log = vm.strand.log_text();
+        let s = vm.sway.shot(&second);
+        if log.contains("session lock: Unlocked") {
+            break;
+        }
+        if let Some((x, y)) = s.desktop_anywhere() {
+            let log = vm.strand.log_text();
+            assert!(
+                log.contains("ms cap: unlocking"),
+                "{second} showed the desktop at {x},{y} before the unlock: {}\n{log}",
+                s.describe()
+            );
+            break;
+        }
+        if near(s.corner(), LOCK_BG) {
+            covered += 1;
+        }
+        assert!(Instant::now() < deadline, "never unlocked\n{log}");
+    }
+    eprintln!("lock exit, plugged in: {covered} shots of {second} in the lock's colour");
+    assert!(
+        covered >= 1,
+        "{second} never showed the lock's colour before the unlock\n{}",
+        vm.strand.log_text()
+    );
+    vm.until("HEADLESS-1", "unlocked", Shot::desktop);
+}
+
+/// (lock-polish review) A logic too slow to close the lock before the
+/// exit's cap (`logic_slow_unlocking` holds `Unlocking` 1.5 s) leaves the
+/// lock open, not leaving, when the cap unlocks. That open lock is not a
+/// new request (an unlock with no exit spends it too): the session
+/// unlocks at the cap and stays unlocked, the password just accepted
+/// never asked for again, by the config's lock or the built-in field.
+/// Before, it was taken as the lock asked for again and locked at once,
+/// and the guard kept the old lock's start, so the built-in field took
+/// over for "no first frame".
+#[test]
+fn a_slow_logic_at_the_cap_does_not_lock_again() {
+    let test = "lock_exit_slow_logic";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::exit_lock_with(
+        test,
+        "logic_slow_unlocking",
+        "exit { opacity: 0 }",
+        "ease(linear, 600ms)",
+    );
+    let at = Instant::now();
+    vm.keys.enter("");
+    vm.until("HEADLESS-1", "unlocked at the cap", Shot::desktop);
+    let took = at.elapsed();
+    vm.until_log("STRAND_FAULT logic_slow_unlocking");
+    // Past logic's hold and a first-frame deadline: still the desktop.
+    vm.stays(
+        "HEADLESS-1",
+        "unlocked",
+        Duration::from_secs(3),
+        Shot::desktop,
+    );
+    let log = vm.strand.log_text();
+    assert!(
+        log.contains("ms cap: unlocking"),
+        "the cap did not unlock:\n{log}"
+    );
+    assert_eq!(
+        log.matches("session lock: Locked").count(),
+        1,
+        "locked again after the unlock:\n{log}"
+    );
+    assert!(
+        !log.contains("showing the built-in password field"),
+        "the built-in field showed:\n{log}"
+    );
+    eprintln!("lock exit, slow logic: unlocked {took:?} after the Return, and stayed so");
+    // The next lock is the config's, and unlocks.
+    vm.lock();
+    vm.content();
+    vm.lock_enter(PASSWORD);
+    vm.until("HEADLESS-1", "unlocked again", Shot::desktop);
+}
+
+/// (lock-polish review) The still of the desktop in the lock, with no
+/// pose of its own, stays drawn while the lock plays its way out (a card
+/// fading out on `exit`), so the last lock frame can be the desktop as it
+/// was: every shot from the Return to the unlock shows the still, and
+/// one shows the card part way out. The card is under the still, so it
+/// is read where the still does not cover it.
+#[test]
+fn the_locks_still_stays_drawn_as_it_plays_out() {
+    let test = "lock_exit_still";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let config = exit_config_on(
+        &still_config(),
+        "exit { opacity: 0 }",
+        "ease(linear, 600ms)",
+    );
+    let mut vm = Vm::with(test, "", &config);
+    let card = |s: &Shot| s.px(360, 200);
+    let still = |s: &Shot| s.desktop_pixels() >= 320 * 6 && s.desktop_in_row(10) < s.w / 2;
+    vm.strand.cli(&["set", "lock.locked", "true"]);
+    vm.until("HEADLESS-1", "the card and the still", |s| {
+        near(s.corner(), LOCK_BG) && near(card(s), CARD) && still(s)
+    });
+    vm.keys.type_text(PASSWORD);
+    vm.until("HEADLESS-1", "the typed password", |s| {
+        near(s.corner(), LOCK_TYPED)
+    });
+    vm.keys.enter("");
+    vm.until_log("the lock plays its way out");
+    let deadline = Instant::now() + WAIT;
+    let mut shots = Vec::new();
+    loop {
+        let s = vm.sway.shot("HEADLESS-1");
+        if vm.strand.log_text().contains("session lock: Unlocked") {
+            break;
+        }
+        // The desktop itself, not its still, is the unlock.
+        if s.desktop() {
+            break;
+        }
+        assert!(
+            still(&s),
+            "a shot as the lock played out lost the still ({} desktop pixels): {}\n{}",
+            s.desktop_pixels(),
+            s.describe(),
+            vm.strand.log_text()
+        );
+        shots.push(card(&s));
+        assert!(
+            Instant::now() < deadline,
+            "never unlocked\n{}",
+            vm.strand.log_text()
+        );
+    }
+    let mid = shots
+        .iter()
+        .filter(|c| !near(**c, CARD) && !near(**c, LOCK_BG) && !near(**c, LOCK_TYPED))
+        .count();
+    eprintln!(
+        "lock exit, still: {} shots with the still as it played out, {mid} with the card \
+         part way out ({shots:02x?})",
+        shots.len()
+    );
+    assert!(
+        mid >= 1,
+        "no shot caught the card part way out: {shots:02x?}\n{}",
+        vm.strand.log_text()
+    );
+    vm.until("HEADLESS-1", "unlocked", Shot::desktop);
+}
+
+/// (lock-polish review) A `screens: focused` lock whose monitor is
+/// unplugged as it plays its way out: its spec stays, but its content
+/// went with the output, so nothing is left to play and the exit ends
+/// then, not at the cap. Before, nothing looked again until a spec
+/// changed, and the unlock waited for the cap.
+#[test]
+fn an_exit_whose_output_goes_ends_then() {
+    let test = "lock_exit_unplug";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let config = exit_config_on(
+        &CONFIG.replace(
+            "  open: <-> locked\n",
+            "  open: <-> locked\n  screens: focused\n",
+        ),
+        "exit { opacity: 0 }",
+        "ease(linear, 8s)",
+    );
+    let mut vm = Vm::with(test, "", &config);
+    let second = vm.sway.plug();
+    vm.until(&second, "the desktop on the second output", Shot::desktop);
+    vm.lock();
+    vm.content();
+    vm.until_locked("HEADLESS-1", "the card", true, |s| near(s.card(), CARD));
+    vm.keys.type_text(PASSWORD);
+    vm.until_locked("HEADLESS-1", "the typed password", true, |s| {
+        near(s.corner(), LOCK_TYPED) && near(s.card(), CARD)
+    });
+    vm.keys.enter("");
+    vm.until_log("the lock plays its way out");
+    vm.sway.unplug("HEADLESS-1");
+    vm.until(&second, "unlocked", Shot::desktop);
+    let log = vm.strand.log_text();
+    assert!(
+        log.contains("lock: the exit ended after ") && !log.contains("ms cap: unlocking"),
+        "the exit did not end with its output:\n{log}"
+    );
+    let took = log
+        .lines()
+        .find_map(|l| l.split("lock: the exit ended after ").nth(1))
+        .unwrap_or_default();
+    eprintln!("lock exit, output unplugged: the exit ended after {took}");
+}

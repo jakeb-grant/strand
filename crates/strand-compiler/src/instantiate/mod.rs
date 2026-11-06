@@ -1731,12 +1731,13 @@ impl Instance {
 
     /// True while a `lock` surface is shown (reloads that change a lock
     /// wait for the unlock): while the compositor reports the session
-    /// locked, never after it reported `Finished` or `Unlocked`; before
+    /// locked, its exit playing included (`Unlocking`), never after it
+    /// reported `Finished` or `Unlocked`; before
     /// any report since the lock opened, while a `lock` on the scene is
     /// not `open: false` (`lock.rs`).
     pub fn lock_shown(&self) -> bool {
         match self.ctx.lock.borrow().as_ref().map(|l| l.phase()) {
-            Some(lock::Phase::Locked) => return true,
+            Some(lock::Phase::Locked | lock::Phase::Leaving) => return true,
             Some(lock::Phase::Ended) => return false,
             Some(lock::Phase::Unreported) | None => {}
         }
@@ -1750,9 +1751,9 @@ impl Instance {
     }
 
     /// The compositor's report on the session lock (the binary's
-    /// `ToLogic::LockState`). After `Unlocked` the runtime writes each
-    /// `lock`'s two-way `open` false; see `lock.rs`. The change lands
-    /// with the next tick.
+    /// `ToLogic::LockState`). At `Unlocking` (or an `Unlocked` with no
+    /// exit before it) the runtime writes each `lock`'s two-way `open`
+    /// false; see `lock.rs`. The change lands with the next tick.
     pub fn set_session_lock(&self, state: SessionLock) {
         let Some(track) = self.ctx.lock.borrow().clone() else {
             return;
@@ -1775,7 +1776,7 @@ impl Instance {
             if let Err(e) = self.write(node, SceneProp::Open, PropValue::Bool(false)) {
                 let err = self
                     .ctx
-                    .unlocated("the lock's `open` after the unlock".into(), e);
+                    .unlocated("the lock's `open` at the unlock".into(), e);
                 self.ctx.errors.borrow_mut().push(err);
             }
         }
