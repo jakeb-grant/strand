@@ -2682,7 +2682,10 @@ for a lock's content surface, renewed instead of taken back (below).
   or the thread's last reply of any kind, whichever is later, since the
   thread works through its requests in order (the bound times the
   thread's silence, never other outputs' requests queued ahead); the
-  loop wakes for it, since a stalled thread sends nothing. That thread
+  loop wakes for it, since a stalled thread sends nothing. (lock-4k) It
+  is judged at the start of `GpuHost::pump`, on the replies just read and
+  before the pump paints its presented surfaces, so a long paint is never
+  taken for the thread's silence. That thread
   then gets no lock content until it replies again or a new one starts
   (`lock_stalled`). The binary also renews one lock surface on
   `GpuReply::Failed` (render's `Demote`), when the thread ends

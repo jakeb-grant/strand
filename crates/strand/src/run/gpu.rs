@@ -285,6 +285,13 @@ mod host {
                 // renderer's timer happened to fire.
                 crate::demo::text_ready(state);
             }
+            // (lock-4k) Stalls are judged on the replies just read, before
+            // this pump paints: `present` paints each presented surface in
+            // turn, so a frame sent for one waited out the next ones'
+            // paints (two 3840 × 2160 stills drawn, about 900 ms on the
+            // owner's laptop) and was given up on with its answer unread.
+            // What this pump sends is judged at the next, after its answer.
+            self.lock_safety(state);
             self.released(state);
             for change in state.host_mut().renderer.take_backend_changes() {
                 self.change(state, change);
@@ -302,7 +309,11 @@ mod host {
                 self.send(r);
             }
             self.present(state);
-            self.lock_safety(state);
+            super::super::lock::faults::main_busy(|| {
+                self.attached
+                    .iter()
+                    .any(|(id, a)| a.lock && self.presented.get(id).is_some_and(|p| p.in_flight))
+            });
             let mut back = Vec::new();
             let mut ended = false;
             self.exiting.retain_mut(|(g, surfaces)| {

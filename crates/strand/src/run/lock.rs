@@ -1624,6 +1624,9 @@ pub(crate) mod faults {
     /// (`leaving`), so its renewal lands inside the exit.
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
     pub(crate) fn lock_presented(leaving: bool) {
+        if on("main_busy") {
+            MAIN_BUSY.store(true, Ordering::Release);
+        }
         let fault = if on("gpu_stall") {
             "gpu_stall"
         } else if leaving && on("gpu_stall_exit") {
@@ -1633,6 +1636,29 @@ pub(crate) mod faults {
         };
         if !GPU_STALL.swap(true, Ordering::AcqRel) {
             log::warn!("STRAND_FAULT {fault}");
+        }
+    }
+
+    /// (lock-4k) `main_busy` is armed: the GPU thread has presented a
+    /// lock surface's frame.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    static MAIN_BUSY: AtomicBool = AtomicBool::new(false);
+
+    /// (lock-4k) The GPU host has sent this pump's frames: once
+    /// `main_busy` is armed and a lock surface's frame is among them
+    /// (`lock_in_flight`), the main thread is held there for twice the GPU
+    /// bound, once, as painting two 3840 × 2160 stills held it, while the
+    /// GPU thread answers at once.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn main_busy(lock_in_flight: impl FnOnce() -> bool) {
+        static DONE: AtomicBool = AtomicBool::new(false);
+        if MAIN_BUSY.load(Ordering::Acquire)
+            && !DONE.load(Ordering::Acquire)
+            && lock_in_flight()
+            && !DONE.swap(true, Ordering::AcqRel)
+        {
+            log::warn!("STRAND_FAULT main_busy");
+            std::thread::sleep(crate::run::gpu::LOCK_GPU_BOUND * 2);
         }
     }
 
@@ -1825,6 +1851,9 @@ pub(crate) mod faults {
     #[inline(always)]
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
     pub(crate) fn gpu_waker() {}
+    #[inline(always)]
+    #[cfg(feature = "gpu")]
+    pub(crate) fn main_busy(_: impl FnOnce() -> bool) {}
     #[inline(always)]
     pub(crate) fn unmount_lock(_: &mut super::State<super::Host>) {}
     #[inline(always)]

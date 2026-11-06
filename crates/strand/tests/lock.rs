@@ -3358,6 +3358,66 @@ fn a_lock_that_animates_is_presented_and_never_alternates() {
     );
 }
 
+/// (lock-4k) A main thread held past the GPU bound while a lock frame is
+/// in flight is no stall (`main_busy`: once the GPU has presented the
+/// lock, the main thread sleeps twice the bound right after a pump sent
+/// its frames, as painting two 3840 × 2160 stills held it on the owner's
+/// desk). The GPU thread answered at once, so nothing is given up on: the
+/// lock stays on the GPU, presenting, and the password unlocks it.
+#[test]
+fn a_busy_main_thread_is_no_gpu_stall() {
+    let test = "lock_main_busy";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::gpu(test, "main_busy", GLOW_CONFIG);
+    vm.lock();
+    vm.until_locked("HEADLESS-1", "the config's lock", true, |s| {
+        near(s.corner(), LOCK_BG)
+    });
+    // Springs until the GPU has presented the lock and the fault held
+    // the main thread.
+    let mut on = false;
+    let deadline = Instant::now() + WAIT;
+    while !vm.strand.log_text().contains("STRAND_FAULT main_busy") {
+        on = !on;
+        vm.strand
+            .cli(&["set", "lock.glow", if on { "true" } else { "false" }]);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            Instant::now() < deadline,
+            "the fault never held the main thread:\n{}",
+            vm.strand.log_text()
+        );
+    }
+    // Frames after the hold.
+    for _ in 0..4 {
+        on = !on;
+        vm.glow(on);
+    }
+    let log = vm.strand.log_text();
+    assert!(
+        !log.contains("answered nothing for"),
+        "a busy main thread taken for a stalled GPU thread:\n{log}"
+    );
+    assert!(
+        !log.contains("is drawn on the CPU from now on"),
+        "the lock was renewed:\n{log}"
+    );
+    let (surface, mode) = vm.gpu_attached().expect("the lock went to the GPU");
+    assert_eq!(mode, "Present", "{log}");
+    let after = log
+        .split("STRAND_FAULT main_busy")
+        .nth(1)
+        .unwrap_or_default();
+    assert!(
+        frames_of(after, surface).iter().any(|(gpu, _)| *gpu),
+        "the lock goes on presenting after the hold:\n{log}"
+    );
+    vm.keys.enter(PASSWORD);
+    vm.until("HEADLESS-1", "unlocked by the password", Shot::desktop);
+}
+
 /// (lock-gpu, OWNER RULING) The GPU thread stalls under a presented lock
 /// (`gpu_stall`: it stops for good after the lock's first presented
 /// frame). The lock never waits on it: within its bound the lock's
