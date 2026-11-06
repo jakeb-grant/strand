@@ -356,6 +356,13 @@ mod tests {
             // nested 3840 × 2176 for 3840 × 2160), cropped by cover
             ((64, 40), (64, 36), Fit::Cover),
             ((70, 36), (64, 36), Fit::Cover),
+            // `fit: none` at its own size: padded on both axes, cropped on
+            // one and padded on the other (copied), and centred on half a
+            // pixel (sampled); `fill` at its own size (copied)
+            ((60, 30), (64, 36), Fit::None),
+            ((70, 30), (64, 36), Fit::None),
+            ((61, 36), (64, 36), Fit::None),
+            ((64, 36), (64, 36), Fit::Fill),
             // scaled, letterboxed, on fractions
             ((64, 36), (96, 54), Fit::Cover),
             ((64, 36), (40, 40), Fit::Contain),
