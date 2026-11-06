@@ -198,12 +198,14 @@ impl<'a> Flattener<'a> {
         // pixels: alone, its clock is the node's; beside a clock of the
         // node's own pixels (a GIF's frames, a graph's columns, an
         // effect's), it is a second clock on the same start, so each keeps
-        // its own ticks and the node wakes at whichever comes first. A
-        // node reading time runs at refresh, its grain at its own tick
-        // within it (`Built::time`).
-        let grain_rate = crate::effects::raster::grain_rate(node).filter(|_| !timed);
+        // its own ticks and the node wakes at whichever comes first. So
+        // it is beside the clock of a node reading time too, which is not
+        // always refresh (a graph's columns, a GIF's frames, `effect
+        // shimmer`'s cap; lock-int, grain-over review).
+        let grain_rate = crate::effects::raster::grain_rate(node);
         let (raster, grain_rate) = match raster {
             Some(r) => (Some(r), grain_rate),
+            None if timed => (None, grain_rate),
             None => (grain_rate, None),
         };
         let rate = crate::clock::rate(node, timed, raster);
@@ -793,7 +795,21 @@ impl<'a> Flattener<'a> {
         if let Some(e) = &effects {
             crate::layers::hash_effects(&mut sig, e);
         }
-        let layer_group = effects.map(|effects| {
+        // (lock-int, grain-over review) A `filter:` draws the node and its
+        // subtree as one: its grain lies over what the filter draws, so a
+        // blur never blurs it away nor is drawn again on each of its
+        // ticks, and under the rest of its group effects (a `mask:`, a
+        // `blend:`), a group of their own around the filter's.
+        let (outer, effects) = match effects {
+            Some(e) if !phys.is_empty() && crate::effects::raster::grain(get).is_some() => {
+                match crate::effects::split_filter(&e) {
+                    Some((filter, rest)) => (Some(rest), Some(filter)),
+                    None => (None, Some(e)),
+                }
+            }
+            e => (None, e),
+        };
+        let mut layer = |effects| {
             self.marker(Item::PushLayer(Arc::new(crate::layers::Layer {
                 effects,
                 frame,
@@ -802,7 +818,12 @@ impl<'a> Flattener<'a> {
                 mosaic: None,
                 gpu: None,
             })))
-        });
+        };
+        // `Some(None)`: grain over a filter with nothing around it.
+        let outer_group = outer.map(|rest| rest.map(&mut layer));
+        let layer_group = effects.map(layer);
+        let grain_over_filter = outer_group.is_some();
+        let outer_group = outer_group.flatten();
         // (M4) The transition mask over the node and its subtree.
         let mask_group = transition_mask.map(|m| {
             let mut h = DefaultHasher::new();
@@ -996,6 +1017,7 @@ impl<'a> Flattener<'a> {
                 && opacity >= 1.0
                 && self.out.pose.is_none_or(|p| p.opacity >= 1.0)
                 && layer_group.is_none()
+                && outer_group.is_none()
                 && saved == self.xform
                 && self.xform == kurbo::Affine::IDENTITY
                 && opaque_paint(&paint)
@@ -1154,7 +1176,16 @@ impl<'a> Flattener<'a> {
             node.kind,
             NodeKind::Shader | NodeKind::Canvas | NodeKind::Image | NodeKind::Icon
         );
-        if !own_after && let Some(g) = grain.take() {
+        // (lock-int, grain-over review) Under a `filter:`, it lies over
+        // what the filter draws: counted here among the node's own
+        // pixels (its record's hash and ink), drawn once the filter's
+        // group closes.
+        let mut grain_held = Vec::new();
+        if grain_over_filter && let Some(g) = grain.take() {
+            let at = self.out.items.len();
+            self.push_raster(g, frame, raster_clip, phys, &mut sig, &mut ink);
+            grain_held = self.out.items.split_off(at);
+        } else if !own_after && let Some(g) = grain.take() {
             self.push_raster(g, frame, raster_clip, phys, &mut sig, &mut ink);
         }
         // (M4) Inner shadows, over the background.
@@ -1764,6 +1795,7 @@ impl<'a> Flattener<'a> {
             && !squircle
             && transition_mask.is_none()
             && layer_group.is_none()
+            && outer_group.is_none()
             && get(Prop::Stroke).is_none()
             // An inner shadow's ring lies inside the box, past the edge
             // band a moving edge repaints, and its offset and spread are
@@ -1942,10 +1974,10 @@ impl<'a> Flattener<'a> {
         let mut ctx = DefaultHasher::new();
         (inh.ctx, node.epoch).hash(&mut ctx);
         hash_f32(&mut ctx, opacity);
-        if let Some(i) = layer_group
-            && let Item::PushLayer(l) = &self.out.items[i].item
-        {
-            crate::layers::hash_effects(&mut ctx, &l.effects);
+        for i in outer_group.into_iter().chain(layer_group) {
+            if let Item::PushLayer(l) = &self.out.items[i].item {
+                crate::layers::hash_effects(&mut ctx, &l.effects);
+            }
         }
         mask_hash.hash(&mut ctx);
         // A mask (`mask:`, or a transition's) is drawn across the node's
@@ -1953,7 +1985,7 @@ impl<'a> Flattener<'a> {
         // resized masked box repaints its children whole, not only along
         // a clip's edges (m6-owner-fixes review).
         let masked = mask_group.is_some()
-            || layer_group.is_some_and(|i| {
+            || outer_group.into_iter().chain(layer_group).any(|i| {
                 matches!(&self.out.items[i].item, Item::PushLayer(l)
                     if l.effects.iter().any(|e| matches!(e, strand_scene::Effect::Mask(_))))
             });
@@ -2097,6 +2129,25 @@ impl<'a> Flattener<'a> {
         if let Some((i, pop)) = mask_group {
             self.out.items[i].bounds = subtree;
             self.marker(pop);
+        }
+        // (lock-int, grain-over review) Its grain over what its filter
+        // drew, under the same transition mask, and inside its `mask:`
+        // and `blend:` (no pass of theirs on the GPU).
+        if !grain_held.is_empty() {
+            let mask = transition_mask.map(|m| {
+                let (push, pop) = m.group(frame, self.scale.as_f32(), self.xform);
+                let i = self.marker(push);
+                self.out.items[i].bounds = subtree;
+                pop
+            });
+            self.out.items.append(&mut grain_held);
+            if let Some(pop) = mask {
+                self.marker(pop);
+            }
+        }
+        if let Some(i) = outer_group {
+            self.out.items[i].bounds = subtree;
+            self.marker(Item::PopLayer);
         }
         // Drawn: its clock runs, unless all it draws is outside the clip
         // and nothing that places it follows time (it stays out). A

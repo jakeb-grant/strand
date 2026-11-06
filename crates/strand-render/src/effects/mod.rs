@@ -230,6 +230,32 @@ pub(crate) fn with_tilt(effects: Option<Arc<[Effect]>>, turn: [f32; 2]) -> Arc<[
     out.into()
 }
 
+/// A group's effects, in order.
+pub(crate) type Effects = Arc<[Effect]>;
+
+/// (lock-int, grain-over review) A node's group `effects` (as [`group`]
+/// builds them, its `filter:`'s first, then its `mask:` and `blend:`)
+/// split where its filter's end: the filter's own (colour, blur and filter
+/// passes) and the rest (`None` when there is none). `None` when the
+/// filter has none, or when the rest holds a pass of its own (a 3-D tilt,
+/// which shares the node's one filter pass with the filter's passes), so
+/// the two stay one group. A node's grain lies between the two.
+pub(crate) fn split_filter(effects: &[Effect]) -> Option<(Effects, Option<Effects>)> {
+    let n = effects
+        .iter()
+        .take_while(|e| match e {
+            Effect::Mask(_) | Effect::Blend(_) | Effect::Opacity(_) => false,
+            Effect::Shader(p) => !matches!(p.code, ShaderRef::Bundled(Bundled::Tilt)),
+            Effect::ColorMatrix(_) | Effect::Blur { .. } => true,
+        })
+        .count();
+    let (filter, rest) = effects.split_at(n);
+    if filter.is_empty() || rest.iter().any(|e| matches!(e, Effect::Shader(_))) {
+        return None;
+    }
+    Some((filter.into(), (!rest.is_empty()).then(|| rest.into())))
+}
+
 /// `mask: fade(edge, len) | radial(at, size) | shape(name)`.
 fn mask(v: &PropValue, w: f32, h: f32) -> Option<Mask> {
     let PropValue::Call { name, args } = v else {

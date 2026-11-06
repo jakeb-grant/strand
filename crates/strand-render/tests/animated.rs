@@ -500,6 +500,65 @@ fn grain_over_a_gif_keeps_both_clocks() {
     );
 }
 
+/// (lock-int, grain-over review) On an animated image that also reads
+/// time, the node's clock is its frames' (100 ms), not refresh: its grain
+/// keeps a 12 fps clock of its own beside it, so it moves at 84 ms,
+/// before the frames' first change, and the loop wakes for it (it moved
+/// only with the frames, at 10 fps).
+#[test]
+fn grain_on_an_image_reading_time_keeps_its_own_clock() {
+    let f = files();
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(64.0)),
+            (Prop::Height, num(64.0)),
+            (Prop::Bg, color("#282c34")),
+        ],
+    );
+    let row = b.node(NodeKind::Row, Some(root), vec![(Prop::Pad, num(8.0))]);
+    // `rotate: t * 0deg`: reads time, draws upright.
+    let still = PropValue::Token(TokenExpr::Binary {
+        op: BinOp::Mul,
+        lhs: Box::new(TokenExpr::Time),
+        rhs: Box::new(TokenExpr::value(num(0.0))),
+    });
+    b.node(
+        NodeKind::Image,
+        Some(row),
+        vec![
+            (Prop::Source, text(&f.gif)),
+            (Prop::Size, num(48.0)),
+            (Prop::Rotate, still),
+            (Prop::Grain, num(0.2)),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(64, 64, Scale::ONE);
+    let centre = |buf: &Buffer| mean_at(buf, (5, 11), (5, 11));
+
+    let before = std::time::Instant::now();
+    buf.paint_at(&mut r, S, 0, T0);
+    under_grain(centre(&buf), RED, "frame 0");
+    let first = buf.pixels.clone();
+    let due = r
+        .next_wake()
+        .map(|w| T0 + w.saturating_duration_since(before));
+    assert!(
+        r.wants_frame(S) || due.is_some_and(|d| d <= ms(84)),
+        "wakes for the grain's tick: {due:?}"
+    );
+    buf.paint_at(&mut r, S, 1, ms(84));
+    under_grain(centre(&buf), RED, "frame 0, the grain's next tick");
+    assert_ne!(buf.pixels, first, "the grain moved before the frames did");
+    buf.paint_at(&mut r, S, 1, ms(110));
+    under_grain(centre(&buf), GREEN, "frame 1 at its own time");
+}
+
 #[test]
 fn reduced_motion_shows_the_first_frame_and_stops_the_clock() {
     let f = files();

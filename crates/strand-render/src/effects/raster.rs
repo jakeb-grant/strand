@@ -13,8 +13,10 @@
 //! built from its props, an image, a shader's or a canvas's pixels): every
 //! device pixel a grey of random lightness at `amount` opacity, new at
 //! 12 fps (design.md: "grain at 12 fps"), a pixmap of its own beside the
-//! node's (lock-int, grain-over). Under `reduced_motion` its clock stands
-//! still and the grain is static.
+//! node's (lock-int, grain-over). Under a `filter:` it lies over what
+//! the filter draws, outside the filter's group
+//! ([`crate::effects::split_filter`]). Under `reduced_motion` its clock
+//! stands still and the grain is static.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

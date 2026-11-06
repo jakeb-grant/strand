@@ -932,6 +932,81 @@ fn grain_lies_over_a_nodes_own_pixels() {
     );
 }
 
+/// (lock-int, grain-over review) On a node with a `filter:`, grain lies
+/// over what the filter draws: an image under `blur(8), brightness(0.6)`
+/// (the lock's `thumbnail screen { filter: blur(36), brightness(0.6);
+/// grain: 0.03 }`) shows its dimmed colour under grain that varies, not
+/// grain blurred to a flat grey, and the blurred group is drawn once, not
+/// again on each of the grain's ticks. Beside it, under a `mask:` as well,
+/// the grain is masked with the rest (ref `effects_grain_over_filter.png`).
+#[test]
+fn grain_lies_over_what_a_filter_draws() {
+    use std::time::Duration;
+    let blue = solid_png("grain-filter.png", [0x3b, 0x8a, 0xd2, 0xff]);
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let filter = || {
+        (
+            Prop::Filter,
+            PropValue::List(vec![
+                call("blur", vec![num(8.0)]),
+                call("brightness", vec![num(0.6)]),
+            ]),
+        )
+    };
+    for (x, mask) in [(10.0, false), (130.0, true)] {
+        let mut p = at_xy(x, 10.0, 100.0, 100.0);
+        p.extend([
+            (Prop::Place, kw("absolute")),
+            (Prop::Source, text(&blue)),
+            (Prop::Fit, kw("fill")),
+            filter(),
+            (Prop::Grain, num(0.2)),
+        ]);
+        if mask {
+            p.push((Prop::Mask, call("fade", vec![kw("bottom"), num(20.0)])));
+        }
+        b.node(NodeKind::Image, Some(root), p);
+    }
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(240, 120, Scale::ONE);
+    let t0 = Duration::from_secs(1);
+    buf.paint_at(&mut r, S, 0, t0);
+    buf.paint_at(&mut r, S, 1, t0 + Duration::from_millis(16));
+    assert_matches_ref("effects_grain_over_filter", &buf, 2);
+
+    // The image dimmed, under the grain's grey, with the grain over it.
+    let dimmed = [0x3b, 0x8a, 0xd2].map(|c| (c as f32 * 0.6).round() as u8);
+    assert_grain_over(&buf, ((40, 80), (40, 80)), dimmed, "blurred image");
+    assert_grain_over(&buf, ((160, 200), (40, 70)), dimmed, "masked one");
+    // Its mask fades the grain out at the bottom edge with the rest.
+    let ([r0, g0, b0], spread) = mean_and_spread(&buf, (150, 210), (109, 110));
+    assert!(
+        spread < 4.0
+            && [r0, g0, b0]
+                .iter()
+                .zip([0x1e, 0x1e, 0x2e])
+                .all(|(g, w)| (g - w as f32).abs() < 8.0),
+        "masked out at the bottom edge: {:?}, spread {spread}",
+        [r0, g0, b0]
+    );
+
+    // The grain's next ticks redraw the grain alone, never the blur.
+    let groups = r.offscreen_cache().1;
+    let first = buf.pixels.clone();
+    for k in 1..=3u64 {
+        buf.paint_at(&mut r, S, 1, t0 + Duration::from_millis(16 + 84 * k));
+    }
+    assert_ne!(buf.pixels, first, "the grain moved");
+    assert_eq!(
+        r.offscreen_cache().1,
+        groups,
+        "the blurred groups are drawn once"
+    );
+}
+
 /// A dark bar `w × h` logical pixels holding `nodes` (each a kind and its
 /// props, placed absolutely by its own `x`/`y`), painted at `time` ms.
 fn scene(

@@ -2017,14 +2017,6 @@ fn pass_hold() -> bool {
     true
 }
 
-/// (m4-audit) A frame of a promoted surface that hangs (or panics) is
-/// answered `Failed` with no pass key, and the device goes with it. The
-/// `shader` node whose pass ran inline in that frame is recorded as
-/// failed too: demoted, the surface would otherwise ask the next device
-/// for the same pass as one of its own, 30 s later, and hang (and leak)
-/// that device as well. Not asked again while its base stays; asked
-/// once that changes. Needs no device: replies are delivered by hand,
-/// and the device is left up so that only the record stops the ask.
 /// (lock-int, grain-over) On a GPU frame a `shader` node's grain is drawn
 /// over its pass, as it is: the pass stands in for the node's own pixels
 /// only, so the frame runs it once and lays the grain's pixmap after it,
@@ -2078,6 +2070,14 @@ fn a_shaders_grain_is_drawn_over_its_pass_on_a_gpu_frame() {
     );
 }
 
+/// (m4-audit) A frame of a promoted surface that hangs (or panics) is
+/// answered `Failed` with no pass key, and the device goes with it. The
+/// `shader` node whose pass ran inline in that frame is recorded as
+/// failed too: demoted, the surface would otherwise ask the next device
+/// for the same pass as one of its own, 30 s later, and hang (and leak)
+/// that device as well. Not asked again while its base stays; asked
+/// once that changes. Needs no device: replies are delivered by hand,
+/// and the device is left up so that only the record stops the ask.
 #[test]
 fn a_hung_frame_records_its_inline_passes_as_failed() {
     let mut r = renderer();
