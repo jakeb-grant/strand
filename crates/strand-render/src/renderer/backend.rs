@@ -2321,10 +2321,16 @@ impl Lowering<'_> {
                     });
                 }
                 Item::Raster {
-                    node, pixmap, rect, ..
+                    node,
+                    pixmap,
+                    rect,
+                    grain,
+                    ..
                 } => {
-                    if let Some(w) = self.passes.get(node) {
-                        // A `shader` node: its pass, in the GPU frame.
+                    if !grain && let Some(w) = self.passes.get(node) {
+                        // A `shader` node (an aurora, particles): its
+                        // pass, in the GPU frame; its grain is drawn
+                        // over it as it is.
                         let r = kurbo::Rect::new(
                             rect.x0,
                             rect.y0,

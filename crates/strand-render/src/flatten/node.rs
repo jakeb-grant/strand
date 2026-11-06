@@ -82,6 +82,44 @@ impl<'a> Flattener<'a> {
         self.out.clocks.extend(clock);
     }
 
+    /// (M4) A raster pixmap of `node` (its own pixels, or with `grain`
+    /// its grain) drawn from `frame`'s top left, under `clip` (the
+    /// node's shape, when not its plain box); `phys` is the box.
+    fn push_raster(
+        &mut self,
+        (node, key, pixmap, grain): (strand_scene::NodeId, u64, Arc<vello_cpu::Pixmap>, bool),
+        frame: kurbo::Rect,
+        clip: Option<&BezPath>,
+        phys: Rect,
+        sig: &mut DefaultHasher,
+        ink: &mut Rect,
+    ) {
+        if let Some(c) = clip {
+            self.push(Item::PushClip(c.clone()), phys, sig, ink);
+        }
+        let rect = kurbo::Rect::new(
+            frame.x0.round(),
+            frame.y0.round(),
+            frame.x0.round() + pixmap.width() as f64,
+            frame.y0.round() + pixmap.height() as f64,
+        );
+        self.push(
+            Item::Raster {
+                node,
+                key,
+                pixmap,
+                rect,
+                grain,
+            },
+            phys,
+            sig,
+            ink,
+        );
+        if clip.is_some() {
+            self.push(Item::PopClip, phys, sig, ink);
+        }
+    }
+
     /// (cross-surface-morph) Sets the bounds of the group marker `i` to
     /// `local`, in the node's own space as its items' are given to
     /// [`Flattener::push`]: drawn under the node's transform, the group
@@ -156,6 +194,18 @@ impl<'a> Flattener<'a> {
             crate::effects::gpu::rate(node)
                 .filter(|_| self.gpu_draws(node.id, crate::renderer::backend::Slot::Node) && !timed)
         });
+        // (grain-over) `grain:` ticks at 12 fps over the node's own
+        // pixels: alone, its clock is the node's; beside a clock of the
+        // node's own pixels (a GIF's frames, a graph's columns, an
+        // effect's), it is a second clock on the same start, so each keeps
+        // its own ticks and the node wakes at whichever comes first. A
+        // node reading time runs at refresh, its grain at its own tick
+        // within it (`Built::time`).
+        let grain_rate = crate::effects::raster::grain_rate(node).filter(|_| !timed);
+        let (raster, grain_rate) = match raster {
+            Some(r) => (Some(r), grain_rate),
+            None => (grain_rate, None),
+        };
         let rate = crate::clock::rate(node, timed, raster);
         let (time, next) = match rate {
             Some(rate) => {
@@ -169,6 +219,18 @@ impl<'a> Flattener<'a> {
                 (Some(cx), next)
             }
             None => (None, None),
+        };
+        let (grain_time, next) = match grain_rate {
+            Some(g) if rate.is_some() => {
+                let (cx, at) = self.anim.time_of(node.id, g);
+                // `None` is every frame: the sooner of the two.
+                let next = match (next, at) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    _ => None,
+                };
+                (Some(cx), next)
+            }
+            _ => (time, next),
         };
         let clock = rate.map(|_| crate::clock::Clock { next });
         let scope = TokenScope::new(&tokens).with_time(time);
@@ -981,8 +1043,8 @@ impl<'a> Flattener<'a> {
             Vec::new()
         };
         // (M4) A CPU raster node's pixels at its clock's tick, over its
-        // background: a source of its own, or one its props build
-        // (`grain:`), clipped to its shape.
+        // background: a source of its own, or one its props build (an
+        // `effect`, `particles`), clipped to its shape.
         let source_color = match get(Prop::Color) {
             Some(PropValue::Color(c)) => *c,
             _ => match scope.lookup("accent") {
@@ -1019,7 +1081,7 @@ impl<'a> Flattener<'a> {
                             self.extras.fallbacks.note(b);
                         }
                         self.extras.rasters.pixmap_from(
-                            node.id,
+                            (node.id, crate::offscreen::RasterLayer::Own),
                             b,
                             b.config(),
                             pw,
@@ -1031,7 +1093,9 @@ impl<'a> Flattener<'a> {
                 }
             }
             None => {
-                self.extras.rasters.unused(node.id);
+                self.extras
+                    .rasters
+                    .unused(node.id, crate::offscreen::RasterLayer::Own);
                 self.extras.rasters.pixmap(
                     node.id,
                     pw,
@@ -1051,31 +1115,47 @@ impl<'a> Flattener<'a> {
                 )
             }
         };
-        if let Some((key, pixmap)) = raster {
-            let clipped = !radii_zero(&r) || outline.is_some();
-            if clipped {
-                self.push(Item::PushClip(box_path.clone()), phys, &mut sig, &mut ink);
+        // (grain-over) Its `grain:`, a pixmap of its own at grain's tick,
+        // drawn over the node's own pixels (below, once they are drawn:
+        // its background, raster, shader pass, canvas, image or icon).
+        let grain = match crate::effects::raster::grain(get).filter(|_| has_area) {
+            Some(g) => self.extras.rasters.pixmap_from(
+                (node.id, crate::offscreen::RasterLayer::Grain),
+                &g,
+                g.config(),
+                pw,
+                ph,
+                self.scale.as_f32(),
+                g.time(grain_time.unwrap_or_default()),
+            ),
+            None => {
+                self.extras
+                    .rasters
+                    .unused(node.id, crate::offscreen::RasterLayer::Grain);
+                None
             }
-            let rect = kurbo::Rect::new(
-                frame.x0.round(),
-                frame.y0.round(),
-                frame.x0.round() + pixmap.width() as f64,
-                frame.y0.round() + pixmap.height() as f64,
-            );
-            self.push(
-                Item::Raster {
-                    node: node.id,
-                    key,
-                    pixmap,
-                    rect,
-                },
+        };
+        // Where a raster lies, clipped to the node's shape.
+        let raster_clip = (!radii_zero(&r) || outline.is_some()).then_some(&box_path);
+        if let Some((key, pixmap)) = raster {
+            self.push_raster(
+                (node.id, key, pixmap, false),
+                frame,
+                raster_clip,
                 phys,
                 &mut sig,
                 &mut ink,
             );
-            if clipped {
-                self.push(Item::PopClip, phys, &mut sig, &mut ink);
-            }
+        }
+        let mut grain = grain.map(|(key, pixmap)| (node.id, key, pixmap, true));
+        // Over the background and raster of a node whose kind draws
+        // nothing more of its own.
+        let own_after = matches!(
+            node.kind,
+            NodeKind::Shader | NodeKind::Canvas | NodeKind::Image | NodeKind::Icon
+        );
+        if !own_after && let Some(g) = grain.take() {
+            self.push_raster(g, frame, raster_clip, phys, &mut sig, &mut ink);
         }
         // (M4) Inner shadows, over the background.
         if has_area && let Some(PropValue::Shadow(list)) = get(Prop::InnerShadow) {
@@ -1120,6 +1200,7 @@ impl<'a> Flattener<'a> {
                         key,
                         pixmap,
                         rect,
+                        grain: false,
                     },
                     phys,
                     &mut sig,
@@ -1130,6 +1211,12 @@ impl<'a> Flattener<'a> {
                     self.out.passes.push(want);
                 }
             }
+        }
+        // (grain-over) A `shader`'s grain, over its pass.
+        if node.kind == NodeKind::Shader
+            && let Some(g) = grain.take()
+        {
+            self.push_raster(g, frame, raster_clip, phys, &mut sig, &mut ink);
         }
         // (M4) A `canvas`: what its `draw:` recorded (`canvas.rs`).
         if has_area
@@ -1184,6 +1271,12 @@ impl<'a> Flattener<'a> {
             for spec in specs {
                 self.out.text.push((node.id, spec));
             }
+        }
+        // (grain-over) A `canvas`'s grain, over its drawing.
+        if node.kind == NodeKind::Canvas
+            && let Some(g) = grain.take()
+        {
+            self.push_raster(g, frame, raster_clip, phys, &mut sig, &mut ink);
         }
         // Border, drawn inside the box. Along the box (no `shape:`), it
         // is hashed apart from the rest, with the strips it lies in: a
@@ -1576,6 +1669,11 @@ impl<'a> Flattener<'a> {
             ink = ink.union(bounds);
         }
         self.shift_fillet_fill(content_start, self.out.items.len() - before_light);
+        // (grain-over) An image's or icon's grain, over it (not part of
+        // what glows).
+        if let Some(g) = grain.take() {
+            self.push_raster(g, frame, raster_clip, phys, &mut sig, &mut ink);
+        }
         let mut blinking = None;
         let mut caret_cell = None;
         let mut caret_item = None;
@@ -2364,7 +2462,7 @@ impl<'a> Flattener<'a> {
         let goo = Goo { blobs, distance };
         let (pw, ph) = (phys.w, phys.h);
         let Some((key, pixmap)) = self.extras.rasters.pixmap_from(
-            node.id,
+            (node.id, crate::offscreen::RasterLayer::Own),
             &goo,
             goo.config(),
             pw,
@@ -2390,6 +2488,7 @@ impl<'a> Flattener<'a> {
                     key,
                     pixmap,
                     rect,
+                    grain: false,
                 },
                 bounds,
             },

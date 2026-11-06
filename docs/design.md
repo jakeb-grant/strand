@@ -492,7 +492,7 @@ This catalogue comes from a survey of popular Quickshell shells (end-4, caelesti
 | Gradient borders with animated angle; multiple outlines | `border: 2, conic(from: t * 60deg, $accent, $secondary, $accent)` | Trivial; only the ring repaints |
 | Glow on boxes, text and icons | `glow: 12, $accent.alpha(0.6)` | Ok; cached as 9-slice or pixmap |
 | Inner shadow and rim light (lit top edge) | `inner_shadow: 0 2px 6px $shadow; rim: top, $fg.alpha(0.15)` | Ok; cached |
-| Grain | `grain: 0.04` | Trivial when static |
+| Grain, over the node's own pixels: its background and what its kind draws (an image, a thumbnail, a graph, a shader's pass), clipped to its shape | `grain: 0.04` | Moves at 12 fps, static only under `reduced_motion`: on a large node a repaint of its area 12 times a second, and a pixmap of its size beside its own |
 | Text effects: outline, gradient fill, per-letter animation | `text_stroke: 1, $bg; fill: linear(…)`; `text "hi" { letters { y: 2 * wave(1s, phase: index * 0.1) } }` | Trivial–ok |
 | Scrim and dim behind popups | `scrim: $shadow.alpha(0.3)` on a popup or panel | Single-pixel buffer, free |
 

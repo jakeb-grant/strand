@@ -391,6 +391,115 @@ fn the_clock_wakes_only_at_frame_changes() {
     );
 }
 
+/// The mean straight RGB of image 0's source pixels `sx0..sx1 × sy0..sy1`
+/// (each 3 × 3 buffer pixels), and the spread of its red channel.
+fn mean_at(buf: &Buffer, (sx0, sx1): (u32, u32), (sy0, sy1): (u32, u32)) -> ([f32; 3], f32) {
+    let px: Vec<[u8; 4]> = (8 + sy0 * 3..8 + sy1 * 3)
+        .flat_map(|y| (8 + sx0 * 3..8 + sx1 * 3).map(move |x| (x, y)))
+        .map(|(x, y)| buf.px(x, y))
+        .collect();
+    let n = px.len() as f32;
+    let mean = |c: usize| px.iter().map(|p| p[c] as f32).sum::<f32>() / n;
+    let (r, g, b) = (mean(2), mean(1), mean(0));
+    let var = px.iter().map(|p| (p[2] as f32 - r).powi(2)).sum::<f32>() / n;
+    ([r, g, b], var.sqrt())
+}
+
+/// Asserts `got` is `want` under grain at 0.2 (on average a grey of half
+/// lightness at 20 % over it), and that the grain varies.
+#[track_caller]
+fn under_grain(got: ([f32; 3], f32), want: [u8; 4], what: &str) {
+    let w = [want[0], want[1], want[2]].map(|c| c as f32 * 0.8 + 25.5);
+    assert!(
+        got.0.iter().zip(w).all(|(g, w)| (g - w).abs() < 6.0),
+        "{what}: {:?}, want {w:?}",
+        got.0
+    );
+    assert!(got.1 > 6.0, "{what}: grain over it, spread {}", got.1);
+}
+
+/// (lock-int, grain-over) `grain:` on an animated image lies over its
+/// frames, and each keeps its own clock: the frames change at their own
+/// times (100 and 200 ms; a clock at the faster of the two ticks, 83 ms,
+/// would show them at 167 and 250 ms), the grain moves at 12 fps between
+/// them, and the loop wakes for both, one frame per change.
+#[test]
+fn grain_over_a_gif_keeps_both_clocks() {
+    let f = files();
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(64.0)),
+            (Prop::Height, num(64.0)),
+            (Prop::Bg, color("#282c34")),
+        ],
+    );
+    let row = b.node(NodeKind::Row, Some(root), vec![(Prop::Pad, num(8.0))]);
+    b.node(
+        NodeKind::Image,
+        Some(row),
+        vec![
+            (Prop::Source, text(&f.gif)),
+            (Prop::Size, num(48.0)),
+            (Prop::Grain, num(0.2)),
+        ],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(64, 64, Scale::ONE);
+    let centre = |buf: &Buffer| mean_at(buf, (5, 11), (5, 11));
+    let corner = |buf: &Buffer| mean_at(buf, (0, 4), (0, 4));
+
+    buf.paint_at(&mut r, S, 0, T0);
+    under_grain(centre(&buf), RED, "frame 0");
+    let first = buf.pixels.clone();
+    // The grain's tick comes before the frames' first change.
+    buf.paint_at(&mut r, S, 1, ms(84));
+    under_grain(centre(&buf), RED, "frame 0, the grain's next tick");
+    assert_ne!(buf.pixels, first, "the grain moved");
+    buf.paint_at(&mut r, S, 1, ms(110));
+    under_grain(centre(&buf), GREEN, "frame 1 at its own time");
+    buf.paint_at(&mut r, S, 1, ms(210));
+    under_grain(corner(&buf), BLUE, "frame 2 at its own time");
+
+    // Drawn as the frame clock asks over one second at 60 Hz: one frame
+    // per change of either clock. The grain ticks at 83, 167, …, 1000 ms
+    // (12), the frames change at 100, 200, 400, 600, 800 and 900 ms (500
+    // and 1000 fall on a grain tick).
+    let wake = |r: &Renderer, painted: Duration, before: std::time::Instant| {
+        r.next_wake()
+            .map(|w| painted + w.saturating_duration_since(before))
+    };
+    let t1 = Duration::from_secs(5);
+    let mut before = std::time::Instant::now();
+    buf.paint_at(&mut r, S, 1, t1);
+    let mut due = wake(&r, t1, before);
+    let (mut painted, mut changed) = (0, 0);
+    for k in 1..=60u64 {
+        let at = t1 + Duration::from_nanos(1_000_000_000 * k / 60);
+        if !(r.wants_frame(S) || due.is_some_and(|d| at >= d)) {
+            continue;
+        }
+        painted += 1;
+        before = std::time::Instant::now();
+        if !buf.paint_at(&mut r, S, 1, at).is_empty() {
+            changed += 1;
+        }
+        due = wake(&r, at, before);
+    }
+    assert!(
+        (16..=19).contains(&changed),
+        "{changed} changes drawn in 1 s"
+    );
+    assert!(
+        painted <= changed + 2,
+        "{painted} frames drawn for {changed} changes"
+    );
+}
+
 #[test]
 fn reduced_motion_shows_the_first_frame_and_stops_the_clock() {
     let f = files();

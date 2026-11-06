@@ -1011,11 +1011,24 @@ impl std::fmt::Debug for RasterProps<'_> {
     }
 }
 
-/// Raster sources by node, and each node's last pixmap.
+/// (grain-over) Which of a node's raster pixmaps: its own pixels (a
+/// source of its own, or one its props build: an `effect`, `particles`,
+/// a merge's goo), or its `grain:` over them. Each keeps its last pixmap
+/// apart, so drawing one never throws the other's away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RasterLayer {
+    Own,
+    Grain,
+}
+
+/// A raster pixmap kept: the key it was drawn at, and its pixels.
+type Kept = (u64, Arc<Pixmap>);
+
+/// Raster sources by node, and each node's last pixmaps.
 #[derive(Debug, Default)]
 pub struct RasterNodes {
     sources: HashMap<NodeId, Arc<dyn RasterSource>>,
-    drawn: RefCell<HashMap<NodeId, (u64, Arc<Pixmap>)>>,
+    drawn: RefCell<HashMap<(NodeId, RasterLayer), Kept>>,
     builds: RefCell<u64>,
 }
 
@@ -1033,20 +1046,21 @@ impl RasterNodes {
                 self.sources.remove(&node);
             }
         }
-        self.drawn.get_mut().remove(&node);
+        self.drawn.get_mut().remove(&(node, RasterLayer::Own));
     }
 
     /// Drops nodes `keep` rejects.
     pub fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         self.sources.retain(|id, _| keep(*id));
-        self.drawn.get_mut().retain(|id, _| keep(*id));
+        self.drawn.get_mut().retain(|(id, _), _| keep(*id));
     }
 
-    /// Drops `node`'s last pixmap when it has no source of its own (it
-    /// builds none from its props any more).
-    pub fn unused(&self, node: NodeId) {
-        if !self.sources.contains_key(&node) {
-            self.drawn.borrow_mut().remove(&node);
+    /// Drops `node`'s last pixmap of `layer` when nothing draws it: its
+    /// own when it has no source of its own (it builds none from its
+    /// props any more), its grain when it has none.
+    pub fn unused(&self, node: NodeId, layer: RasterLayer) {
+        if layer == RasterLayer::Grain || !self.sources.contains_key(&node) {
+            self.drawn.borrow_mut().remove(&(node, layer));
         }
     }
 
@@ -1069,7 +1083,7 @@ impl RasterNodes {
             .sum()
     }
 
-    /// `node`'s pixels at `w × h` and `time`: the last pixmap if its key
+    /// `node`'s own pixels at `w × h` and `time`: the last pixmap if its key
     /// (state, size, scale, time) is unchanged, else drawn anew. Its key too,
     /// for the node's damage signature.
     pub fn pixmap(
@@ -1084,15 +1098,24 @@ impl RasterNodes {
         let source = self.sources.get(&node)?;
         // Its state (props, what it was fed) is its config.
         let state = source.state(props);
-        self.pixmap_from(node, source.as_ref(), state, w, h, scale, time)
+        self.pixmap_from(
+            (node, RasterLayer::Own),
+            source.as_ref(),
+            state,
+            w,
+            h,
+            scale,
+            time,
+        )
     }
 
-    /// `node`'s pixels drawn by `source`, built from its props (`config`
-    /// says from what: a change draws anew), as [`RasterNodes::pixmap`].
+    /// `node`'s pixels of `layer` drawn by `source`, built from its props
+    /// (`config` says from what: a change draws anew), as
+    /// [`RasterNodes::pixmap`].
     #[allow(clippy::too_many_arguments)]
     pub fn pixmap_from(
         &self,
-        node: NodeId,
+        (node, layer): (NodeId, RasterLayer),
         source: &dyn RasterSource,
         config: u64,
         w: u32,
@@ -1116,7 +1139,7 @@ impl RasterNodes {
         )
             .hash(&mut k);
         let key = k.finish();
-        if let Some((old, pm)) = self.drawn.borrow().get(&node)
+        if let Some((old, pm)) = self.drawn.borrow().get(&(node, layer))
             && *old == key
         {
             return Some((key, pm.clone()));
@@ -1129,7 +1152,9 @@ impl RasterNodes {
         }
         let pm = Arc::new(pm);
         *self.builds.borrow_mut() += 1;
-        self.drawn.borrow_mut().insert(node, (key, pm.clone()));
+        self.drawn
+            .borrow_mut()
+            .insert((node, layer), (key, pm.clone()));
         Some((key, pm))
     }
 }

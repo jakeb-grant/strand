@@ -2025,6 +2025,59 @@ fn pass_hold() -> bool {
 /// that device as well. Not asked again while its base stays; asked
 /// once that changes. Needs no device: replies are delivered by hand,
 /// and the device is left up so that only the record stops the ask.
+/// (lock-int, grain-over) On a GPU frame a `shader` node's grain is drawn
+/// over its pass, as it is: the pass stands in for the node's own pixels
+/// only, so the frame runs it once and lays the grain's pixmap after it,
+/// in the node's box. Needs no device.
+#[test]
+fn a_shaders_grain_is_drawn_over_its_pass_on_a_gpu_frame() {
+    let mut b = Builder::default();
+    let node = shader_bar(&mut b, "#ff0000").1;
+    let mut d = b.diff;
+    d.set(node, Prop::Grain, num(0.2));
+    let mut r = renderer();
+    assert!(r.apply(d).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(240, 60, Scale::ONE);
+    r.promote_now(S);
+    up_without_a_device(&mut r);
+    r.deliver_gpu(GpuReply::Attached {
+        surface: S,
+        mode: strand_gpu::GpuMode::Readback,
+    });
+    let _ = r.take_backend_changes();
+    buf.paint(&mut r, S, 0);
+    let reqs = r.take_gpu_requests();
+    let frame = reqs
+        .iter()
+        .find_map(|q| match q {
+            GpuRequest::Frame(f) => Some(f),
+            _ => None,
+        })
+        .expect("the frame goes to the GPU");
+    let passes: Vec<usize> = frame
+        .ops
+        .iter()
+        .enumerate()
+        .filter(|(_, op)| matches!(op, strand_gpu::Op::Pass { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(passes.len(), 1, "the shader runs once: {:?}", frame.ops);
+    let grain = frame.ops.iter().enumerate().find_map(|(i, op)| match op {
+        strand_gpu::Op::Image { rect, .. } => Some((i, *rect)),
+        _ => None,
+    });
+    let Some((at, rect)) = grain else {
+        panic!("no grain over the pass: {:?}", frame.ops);
+    };
+    assert!(at > passes[0], "the grain after the pass: {:?}", frame.ops);
+    assert_eq!(
+        (rect.x0, rect.y0, rect.x1, rect.y1),
+        (10.0, 10.0, 50.0, 30.0),
+        "in the node's box"
+    );
+}
+
 #[test]
 fn a_hung_frame_records_its_inline_passes_as_failed() {
     let mut r = renderer();

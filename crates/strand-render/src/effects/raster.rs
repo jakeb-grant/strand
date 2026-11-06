@@ -1,15 +1,20 @@
 //! (M4) CPU raster sources built from props (design.md, "Runtime changes
 //! these need", item 3): `grain:`, `particles` ([`super::particles`]) and
-//! the built-in `effect`s ([`super::builtin`]). Each frame the flattener builds a node's source from its
-//! resolved props ([`built`]) and draws it through
+//! the built-in `effect`s ([`super::builtin`]). Each frame the flattener
+//! builds a node's sources from its resolved props ([`built`], [`grain`])
+//! and draws them through
 //! [`crate::offscreen::RasterNodes::pixmap_from`], which keeps the last
-//! pixmap while the props, size, scale and tick are unchanged. Before the
-//! props resolve, [`rate`] gives the node's clock from its raw props.
+//! pixmap of each while the props, size, scale and tick are unchanged.
+//! Before the props resolve, [`rate`] and [`grain_rate`] give their
+//! clocks from the node's raw props.
 //!
-//! `grain: amount` is film grain over the box's background: every device
-//! pixel a grey of random lightness at `amount` opacity, new at 12 fps
-//! (design.md: "grain at 12 fps"). Under `reduced_motion` its clock stands
-//! still and the grain is static (design.md: "Trivial when static").
+//! `grain: amount` is film grain over the node's own pixels (its
+//! background, and what its kind draws: a raster source of its own or
+//! built from its props, an image, a shader's or a canvas's pixels): every
+//! device pixel a grey of random lightness at `amount` opacity, new at
+//! 12 fps (design.md: "grain at 12 fps"), a pixmap of its own beside the
+//! node's (lock-int, grain-over). Under `reduced_motion` its clock stands
+//! still and the grain is static.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -28,9 +33,9 @@ use crate::tree::Node;
 /// `grain:`'s clock: 12 fps.
 pub(crate) const GRAIN: Duration = Duration::from_nanos(1_000_000_000 / 12);
 
-/// The clock rate of the raster source `node`'s props build, read from its
-/// raw props (before they resolve): any `grain:` that is not a literal
-/// zero or less.
+/// The clock rate of the raster source `node`'s props build as its own
+/// pixels (a built-in `effect`, `particles`), read from its raw props
+/// (before they resolve). Its grain's is [`grain_rate`].
 pub(crate) fn rate(node: &Node) -> Option<Rate> {
     match node.kind {
         NodeKind::Particles => return Some(Rate::Refresh),
@@ -49,6 +54,12 @@ pub(crate) fn rate(node: &Node) -> Option<Rate> {
         }
         _ => {}
     }
+    None
+}
+
+/// The clock rate of `node`'s `grain:`, read from its raw props: 12 fps
+/// for any that is not a literal zero or less.
+pub(crate) fn grain_rate(node: &Node) -> Option<Rate> {
     let grain = node.get(Prop::Grain).is_some_and(|v| match v {
         PropValue::Number(n) => *n > 0.0,
         _ => true,
@@ -64,8 +75,10 @@ pub(crate) enum Built {
     Particles(Particles),
 }
 
-/// The source the resolved props (`get`) of a node of `kind` build, if
-/// any; `color` is what it draws in (its own `color`, else `$accent`).
+/// The source the resolved props (`get`) of a node of `kind` build as
+/// its own pixels (a built-in `effect`, `particles`), if any; `color` is
+/// what it draws in (its own `color`, else `$accent`). Its grain is
+/// [`grain`]'s.
 pub(crate) fn built<'v>(
     kind: NodeKind,
     get: impl Fn(Prop) -> Option<&'v PropValue>,
@@ -109,6 +122,12 @@ pub(crate) fn built<'v>(
         }
         _ => {}
     }
+    None
+}
+
+/// The grain the resolved props (`get`) of a node build, drawn over its
+/// own pixels: a `grain:` above zero.
+pub(crate) fn grain<'v>(get: impl Fn(Prop) -> Option<&'v PropValue>) -> Option<Built> {
     let amount = get(Prop::Grain).and_then(number)?.clamp(0.0, 1.0);
     (amount > 0.0).then_some(Built::Grain(Grain { amount }))
 }
@@ -344,19 +363,16 @@ mod tests {
     fn grain_builds_from_a_positive_amount() {
         let v = PropValue::Number(0.04);
         let get = |p: Prop| (p == Prop::Grain).then_some(&v);
-        assert_eq!(
-            built(NodeKind::Box, get, Color::WHITE),
-            Some(Built::Grain(Grain { amount: 0.04 }))
-        );
+        assert_eq!(grain(get), Some(Built::Grain(Grain { amount: 0.04 })));
         let zero = PropValue::Number(0.0);
-        assert_eq!(
-            built(
-                NodeKind::Box,
-                |p| (p == Prop::Grain).then_some(&zero),
-                Color::WHITE
-            ),
-            None
-        );
-        assert_eq!(built(NodeKind::Box, |_| None, Color::WHITE), None);
+        assert_eq!(grain(|p| (p == Prop::Grain).then_some(&zero)), None);
+        assert_eq!(grain(|_| None), None);
+        // (grain-over) Grain is never a node's own pixels: an `effect` or
+        // `particles` builds its own source beside it.
+        assert_eq!(built(NodeKind::Box, get, Color::WHITE), None);
+        assert!(matches!(
+            built(NodeKind::Particles, get, Color::WHITE),
+            Some(Built::Particles(_))
+        ));
     }
 }

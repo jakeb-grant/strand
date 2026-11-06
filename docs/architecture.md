@@ -1279,9 +1279,10 @@ is being saved, so the idle-wakeup windows hold.
     `Blur`, `Blend`, `Mask`, `Opacity`, `Shader(ShaderPass)`);
     `Effect::reach(scale)` is how far it spreads damage. Render brackets
     a group with `Item::PushLayer`/`PopLayer` and lowers it per backend
-    (masks always on the CPU). `Item::Raster` is a CPU raster node
-    (particles, grain, graphs, spectrum, animated frames) cached at its
-    clock's rate through a `RasterSource`. Offscreen groups
+    (masks always on the CPU). `Item::Raster` is a CPU raster node's
+    pixels (particles, graphs, spectrum, animated frames), or its grain
+    drawn over them (a pixmap of its own), each cached at its clock's
+    rate through a `RasterSource`. Offscreen groups
     (`offscreen.rs`, `OFFSCREEN_BYTES`) redraw only when their content
     changes; fade layers (`offscreen/fade.rs`) draw a group that only
     moves or fades once and reuse it, matching a re-raster within the

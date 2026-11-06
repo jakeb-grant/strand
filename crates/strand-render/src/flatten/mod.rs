@@ -72,12 +72,15 @@ pub enum Item {
     PopLayer,
     /// (M4) A CPU raster node's pixels ([`crate::offscreen::RasterNodes`])
     /// filling `rect`, drawn at its clock's rate; `key` names the tick
-    /// and size they were drawn at.
+    /// and size they were drawn at. (grain-over) `grain`: the node's
+    /// `grain:` over its own pixels, drawn as it is on a GPU frame too
+    /// (never in place of the node's own pass, as its own pixels are).
     Raster {
         node: NodeId,
         key: u64,
         pixmap: Arc<vello_cpu::Pixmap>,
         rect: kurbo::Rect,
+        grain: bool,
     },
     /// A blurred rounded rect, clipped to outside the casting box.
     Shadow {

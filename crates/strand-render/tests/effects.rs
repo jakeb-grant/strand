@@ -807,6 +807,131 @@ fn grain_moves_at_12_fps_and_reduced_motion_freezes_it() {
     assert_eq!(pill(&buf), frozen, "static grain");
 }
 
+/// The mean straight RGB of the opaque pixels in `x0..x1 × y0..y1`, and
+/// the standard deviation of their red channel.
+fn mean_and_spread(buf: &Buffer, (x0, x1): (u32, u32), (y0, y1): (u32, u32)) -> ([f32; 3], f32) {
+    let px: Vec<[u8; 4]> = (y0..y1)
+        .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+        .map(|(x, y)| buf.px(x, y))
+        .collect();
+    let n = px.len() as f32;
+    let mean = |c: usize| px.iter().map(|p| p[c] as f32).sum::<f32>() / n;
+    // Premultiplied BGRA, opaque here: straight RGB.
+    let (r, g, b) = (mean(2), mean(1), mean(0));
+    let var = px.iter().map(|p| (p[2] as f32 - r).powi(2)).sum::<f32>() / n;
+    ([r, g, b], var.sqrt())
+}
+
+/// `rgb` under grain at `amount`: on average a grey of half lightness at
+/// `amount` opacity over it.
+fn under_grain(rgb: [u8; 3], amount: f32) -> [f32; 3] {
+    rgb.map(|c| c as f32 * (1.0 - amount) + 127.5 * amount)
+}
+
+#[track_caller]
+fn assert_grain_over(buf: &Buffer, at: ((u32, u32), (u32, u32)), rgb: [u8; 3], what: &str) {
+    let (mean, spread) = mean_and_spread(buf, at.0, at.1);
+    let want = under_grain(rgb, 0.2);
+    assert!(
+        mean.iter().zip(want).all(|(g, w)| (g - w).abs() < 6.0),
+        "{what}: its own pixels under the grain, mean {mean:?}, want {want:?}"
+    );
+    assert!(spread > 8.0, "{what}: grain over them, spread {spread}");
+}
+
+/// (lock-int, grain-over) `grain:` lies over a node's own pixels, as it
+/// lies over a plain box's background: over a `thumbnail`'s frame, an
+/// `image`, and an `effect`'s pixels (the CPU's still aurora, beside one
+/// without grain), each still showing through, clipped to the node's
+/// shape. The lock's `thumbnail screen { filter: …; grain: 0.03 }` drew
+/// the grain alone (ref `effects_grain_over.png`).
+#[test]
+fn grain_lies_over_a_nodes_own_pixels() {
+    let blue = solid_png("grain-over.png", [0x3b, 0x8a, 0xd2, 0xff]);
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let grain = (Prop::Grain, num(0.2));
+    let mut thumb = at_xy(10.0, 10.0, 80.0, 60.0);
+    thumb.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Source, text("0x1")),
+        (Prop::Fit, kw("fill")),
+        (Prop::Radius, num(12.0)),
+        grain.clone(),
+    ]);
+    let thumb = b.node(NodeKind::Thumbnail, Some(root), thumb);
+    let mut image = at_xy(100.0, 10.0, 60.0, 60.0);
+    image.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Source, text(&blue)),
+        (Prop::Fit, kw("fill")),
+        grain.clone(),
+    ]);
+    b.node(NodeKind::Image, Some(root), image);
+    for (x, g) in [(170.0, true), (260.0, false)] {
+        let mut aurora = at_xy(x, 10.0, 80.0, 60.0);
+        aurora.extend([
+            (Prop::Place, kw("absolute")),
+            (Prop::Style, kw("aurora")),
+            (Prop::Color, color("#a6e3a1")),
+        ]);
+        if g {
+            aurora.push(grain.clone());
+        }
+        b.node(NodeKind::Effect, Some(root), aurora);
+    }
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(350, 80, Scale::ONE);
+    let t0 = std::time::Duration::from_secs(1);
+    buf.paint_at(&mut r, S, 0, t0);
+    // A window's frame, red (premultiplied BGRA, as captures come).
+    let (w, h) = (80u32, 60u32);
+    let frame: Vec<u8> = std::iter::repeat_n([0x41u8, 0x3b, 0xd2, 0xff], (w * h) as usize)
+        .flatten()
+        .collect();
+    r.feed_frame(
+        thumb,
+        Some(strand_render::ThumbnailFrame {
+            width: w,
+            height: h,
+            pixels: frame.into(),
+        }),
+    );
+    buf.paint_at(&mut r, S, 1, t0 + std::time::Duration::from_millis(16));
+    assert_matches_ref("effects_grain_over", &buf, 2);
+
+    assert_grain_over(&buf, ((20, 80), (20, 60)), [0xd2, 0x3b, 0x41], "thumbnail");
+    assert_grain_over(&buf, ((104, 156), (14, 66)), [0x3b, 0x8a, 0xd2], "image");
+    // Clipped to the thumbnail's rounded corner.
+    assert_eq!(
+        buf.px(10, 10),
+        [0x2e, 0x1e, 0x1e, 0xff],
+        "outside its corner"
+    );
+    // The aurora under grain: on average its own pixels at 80 % with the
+    // grain's grey, and varying where the one without grain is smooth.
+    let (with, spread) = mean_and_spread(&buf, (175, 245), (15, 65));
+    let (without, smooth) = mean_and_spread(&buf, (265, 335), (15, 65));
+    for (g, o) in with.iter().zip(without) {
+        assert!(
+            (g - (o * 0.8 + 25.5)).abs() < 6.0,
+            "aurora under grain {with:?} against {without:?}"
+        );
+    }
+    let diffs: Vec<i32> = (15..65)
+        .flat_map(|y| (0..70).map(move |x| (x, y)))
+        .map(|(x, y)| buf.px(175 + x, y)[2] as i32 - buf.px(265 + x, y)[2] as i32)
+        .collect();
+    let lo = diffs.iter().min().copied().unwrap_or_default();
+    let hi = diffs.iter().max().copied().unwrap_or_default();
+    assert!(
+        hi - lo > 30,
+        "grain over the aurora varies: {lo}..{hi} (spreads {spread}, {smooth})"
+    );
+}
+
 /// A dark bar `w × h` logical pixels holding `nodes` (each a kind and its
 /// props, placed absolutely by its own `x`/`y`), painted at `time` ms.
 fn scene(

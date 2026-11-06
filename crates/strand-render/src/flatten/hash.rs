@@ -202,10 +202,14 @@ pub(crate) fn hash_item_from(h: &mut impl Hasher, item: &Item, o: Shift) {
                 .hash(h);
         }
         Item::Raster {
-            node, key, rect, ..
+            node,
+            key,
+            rect,
+            grain,
+            ..
         } => {
             14u8.hash(h);
-            (node, key).hash(h);
+            (node, key, grain).hash(h);
             hash_rect_from(h, *rect, o);
         }
         Item::PopLayer => 13u8.hash(h),
