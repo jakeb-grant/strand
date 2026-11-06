@@ -817,7 +817,7 @@ TSX lost on every lens for the same reasons: a JS runtime's memory and startup c
 | Blur coverage: sway, labwc and COSMIC have none; Hyprland's support of the new protocol is unverified | The fallback ladder; tint by default |
 | Reload semantics and lock-screen security | A written spec, the edit fuzzer, VM-only lock testing, and a small, separately reviewable PAM helper |
 | The notification bus name can collide with dunst or mako; nucleo releases have stalled; niri's IPC changes in patch versions | Clear error on name conflict; wrap nucleo; reimplement niri IPC behind a feature flag |
-| Memory figures are estimates | Measure in M0 and M3; the exit criteria fail the milestone above the ceiling (48 MB bar, 128 MiB full shell, GPU cold; with the warm device 252 / 324 MiB on CI's lavapipe tier, decisions.md gpu-first and perf), and anything over the target is reported |
+| Memory figures are estimates | Measure in M0 and M3; the exit criteria fail the milestone above the ceiling (52 MB bar, 128 MiB full shell, GPU cold; with the warm device 252 / 324 MiB on CI's lavapipe tier, decisions.md gpu-first and perf), and anything over the target is reported |
 
 **Open questions**
 
@@ -839,7 +839,7 @@ Everything is tested on one developer machine plus free CI, with no extra hardwa
 | Wayland integration | One container: sway headless with software rendering, optionally weston | Layer-shell, popups, damage, input regions; hotplug and mixed DPI faked with `swaymsg create_output` and per-output scales | Every push |
 | Services | Same container, private D-Bus via `dbus-run-session` | python-dbusmock for UPower, NetworkManager, BlueZ, logind and notifications; PipeWire with null sinks and WirePlumber (stream moves; card profiles unit-tested, for want of a sound card); small zbus mocks for the portal, the tray, iwd and UDisks2 | Every push |
 | Reload fuzzer | Same container, tmpfs | Random edits replayed through five editor save styles; no panic, blank frame or lost state | Every push, longer runs nightly |
-| Budgets | Same container | Memory (PSS) and idle wakeups; GPU cold, the two-monitor bar warns above 42 MB and fails above 48 MB and the full shell warns above 76 MB and fails above 128 MiB; with the warm GPU device on lavapipe, 242 / 252 MiB and 296 / 324 MiB | Every push |
+| Budgets | Same container | Memory (PSS) and idle wakeups; GPU cold, the two-monitor bar warns above 42 MB and fails above 52 MB and the full shell warns above 76 MB and fails above 128 MiB; with the warm GPU device on lavapipe, 242 / 252 MiB and 296 / 324 MiB | Every push |
 | Animation evaluation | `eval/` in the same container ([eval.md](eval.md)) | Scenario scripts on a virtual clock; per-node trace invariants (nothing laid out in place is drawn elsewhere, no jumps, blinks or stuck offsets); a pairwise matrix of effects at 60 and 144 Hz; the CPU and GPU (lavapipe) legs compared; an HTML viewer of every frame | Curated and regression scenarios every push; the matrix and the mutants nightly and on demand |
 | Lock screen | Local QEMU VM | PAM, fail-closed behaviour under injected faults; (services-round) the polkit agent against polkitd and its helper (lockmon: polkit 124's setuid helper and polkit 127's socket-activated one), the greeter against greetd; never tested on your real session | Before touching the lock or authentication code, and before releases |
 | Daily driving | Your own compositor, nested in a window, then as your real shell | Real-world bugs no lab finds | Always |

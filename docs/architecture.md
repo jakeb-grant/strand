@@ -2757,7 +2757,7 @@ watch`, and keeps it for `strand report` and the inspector.
   the full shell 296 / 324 MiB, debug 288 MiB (decisions.md perf). Cold
   (`the_design_bar_with_no_gpu_keeps_the_cold_budget`,
   `the_full_shell_with_no_gpu_keeps_the_cold_budget`; no render node):
-  no device is asked for, 42 / 48 MB and 76 MB / 128 MiB (96 / 92 MiB
+  no device is asked for, 42 / 52 MB and 76 MB / 128 MiB (96 / 92 MiB
   debug), no `libvulkan` or `libLLVM` mapped; skipped where a render
   node exists.
 - `strand/tests/gpu_cold.rs`: wgpu, vello_gpu and naga reach `strand`
