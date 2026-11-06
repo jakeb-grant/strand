@@ -33,7 +33,8 @@ use strand_scene::{
     PaintTarget, Painter, PropValue, Size, SurfaceChange, SurfaceId, SurfaceSpec,
 };
 use strand_surface::{
-    Config, LOCK_SETTLE_CAP, LockSettled, LockState, Monitor, SurfaceHost, SurfaceManager,
+    Config, LOCK_SETTLE_CAP, LockSettleEnd, LockSettled, LockState, Monitor, SurfaceHost,
+    SurfaceManager,
 };
 
 const LOCK: NodeId = NodeId::new(7, 0);
@@ -80,7 +81,14 @@ struct LockHost {
     /// surfaces each owe a frame (`settle_owed`) until painted.
     settle: Option<Vec<SurfaceId>>,
     settle_owed: HashSet<SurfaceId>,
-    /// (lock-int) Settled frames painted and stills taken, in order.
+    /// (lock-int) A settled frame painted is still owed: the settle can
+    /// only end at its cap.
+    settle_stuck: bool,
+    /// (lock-int) Surfaces that paint a new frame at every chance, so a
+    /// frame callback is always owed (something animating).
+    animating: HashSet<SurfaceId>,
+    /// (lock-int) Settled frames painted, the settle's end and stills
+    /// taken, in order.
     events: Vec<String>,
 }
 
@@ -89,12 +97,15 @@ impl Painter for LockHost {
         if self.hold {
             return Damage::new();
         }
-        if self.sizes.get(&surface) == Some(&target.size) && self.painted.contains(&surface) {
+        if self.sizes.get(&surface) == Some(&target.size)
+            && self.painted.contains(&surface)
+            && !self.animating.contains(&surface)
+        {
             return Damage::new();
         }
         self.sizes.insert(surface, target.size);
         self.painted.insert(surface);
-        if self.settle_owed.remove(&surface) {
+        if !self.settle_stuck && self.settle_owed.remove(&surface) {
             self.events.push(format!("settled {}", surface.0));
         }
         let [r, g, b] = self.fill;
@@ -105,7 +116,7 @@ impl Painter for LockHost {
     }
 
     fn wants_frame(&self, surface: SurfaceId) -> bool {
-        !self.hold && !self.painted.contains(&surface)
+        !self.hold && (!self.painted.contains(&surface) || self.animating.contains(&surface))
     }
 }
 
@@ -164,6 +175,11 @@ impl SurfaceHost for LockHost {
 
     fn lock_settle_owed(&self, surface: SurfaceId) -> bool {
         self.settle_owed.contains(&surface)
+    }
+
+    fn lock_settle_ended(&mut self, how: LockSettleEnd) {
+        self.settle_owed.clear();
+        self.events.push(format!("ended {how:?}"));
     }
 
     fn before_lock(&mut self) {
@@ -1734,27 +1750,14 @@ fn a_lock_instance_on_every_output() {
     assert_eq!(shot(&sway, "HEADLESS-1")[0], RED);
 }
 
-/// (lock-int) A lock spec opening asks the host to settle its own
-/// surfaces first (`SurfaceHost::settle_for_lock`): with nothing to
-/// settle the lock is asked for at once, in the same call, its stills
-/// taken first; with a surface to settle, nothing is asked until that
-/// surface has painted its settled frame and the frame has shown, and
-/// then the stills come before the request, within
-/// `LOCK_SETTLE_CAP`. A lock the spec closes again while it settles is
-/// never asked for.
-#[test]
-fn a_lock_waits_for_the_hosts_settled_frames() {
-    let test = "a_lock_waits_for_the_hosts_settled_frames";
-    if !in_lock_vm(test) {
-        return;
-    }
-    let Some(sway) = Sway::start(test) else {
-        return;
-    };
-    let mut desk = desktop(&sway, 1);
-    let mut lock = locker(&sway);
-    // A panel of the lock client's own, as Strand's island is.
+/// A lock client with a panel of its own, as Strand's island is, painted
+/// and shown: its manager and the panel's surface.
+fn locker_with_panel(
+    sway: &Sway,
+    desk: &mut SurfaceManager<TestHost>,
+) -> (SurfaceManager<LockHost>, SurfaceId) {
     const PANEL: NodeId = NodeId::new(9, 0);
+    let mut lock = locker(sway);
     lock.state_mut()
         .apply_surface_change(PANEL, SurfaceChange::Created(bar_spec("Own", 36.0)));
     let ok = lock
@@ -1766,94 +1769,154 @@ fn a_lock_waits_for_the_hosts_settled_frames() {
         .unwrap();
     assert!(ok, "the panel never painted");
     let panel = lock.state().surfaces_of(PANEL)[0];
-    settle(&mut lock, &mut desk, Duration::from_millis(300));
-
-    // Nothing to settle: asked for at once.
     lock.state_mut()
-        .apply_surface_change(LOCK, SurfaceChange::Created(lock_spec(true)));
-    assert!(lock.state().lock_active(), "asked for in the same call");
-    assert_eq!(lock.state().host().events, ["stills"]);
-    wait_lock(&mut lock, LockState::Locked);
-    assert!(lock.state_mut().unlock(token()));
-    wait_lock(&mut lock, LockState::Unlocked);
-    lock.state_mut().apply_surface_change(
-        LOCK,
-        SurfaceChange::Updated {
-            spec: lock_spec(false),
-            recreate: false,
-        },
-    );
-    settle(&mut lock, &mut desk, Duration::from_millis(300));
+        .apply_surface_change(LOCK, SurfaceChange::Created(lock_spec(false)));
+    settle(&mut lock, desk, Duration::from_millis(300));
+    assert!(!lock.state().lock_active());
+    (lock, panel)
+}
 
-    // The panel to settle: nothing is asked for yet.
-    lock.state_mut().host_mut().events.clear();
-    lock.state_mut().host_mut().settle = Some(vec![panel]);
-    let asked = std::time::Instant::now();
+/// Opens the lock spec (`open`) or closes it.
+fn open_lock(lock: &mut SurfaceManager<LockHost>, open: bool) {
     lock.state_mut().apply_surface_change(
         LOCK,
         SurfaceChange::Updated {
-            spec: lock_spec(true),
+            spec: lock_spec(open),
             recreate: false,
         },
     );
-    assert!(!lock.state().lock_active(), "it settles first");
-    assert!(lock.state().lock_settling());
-    assert!(lock.state().host().events.is_empty());
-    let ok = lock.dispatch_until(WAIT, |s| s.lock_active()).unwrap();
-    let took = asked.elapsed();
-    assert!(ok, "never asked for");
-    assert_eq!(
-        lock.state().host().events,
-        [format!("settled {}", panel.0), "stills".to_string()],
-        "the settled frame, then the stills"
-    );
-    assert!(
-        took < LOCK_SETTLE_CAP + Duration::from_millis(200),
-        "asked for after {took:?}"
-    );
-    wait_lock(&mut lock, LockState::Locked);
-    assert!(lock.state_mut().unlock(token()));
+}
+
+/// Unlocks, and closes the spec after.
+fn unlock_and_close(lock: &mut SurfaceManager<LockHost>, desk: &mut SurfaceManager<TestHost>) {
+    let ok = lock.dispatch_until(WAIT, |s| s.is_locked()).unwrap();
+    assert!(ok, "never locked");
     let n = lock.state().host().locks.len();
+    assert!(lock.state_mut().unlock(token()));
     let ok = lock
         .dispatch_until(WAIT, |s| s.host().locks[n..].contains(&LockState::Unlocked))
         .unwrap();
-    assert!(ok, "never unlocked again");
-    lock.state_mut().apply_surface_change(
-        LOCK,
-        SurfaceChange::Updated {
-            spec: lock_spec(false),
-            recreate: false,
-        },
-    );
-    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    assert!(ok, "never unlocked");
+    open_lock(lock, false);
+    settle(lock, desk, Duration::from_millis(300));
+}
 
-    // Closed again while it settles: never asked for.
+/// (lock-int) A lock spec opening asks the host to settle its own
+/// surfaces first (`SurfaceHost::settle_for_lock`): with nothing to
+/// settle the lock is asked for at once, in the same call, its stills
+/// taken first, and nothing ends; with a surface to settle, nothing is
+/// asked until that surface has painted and committed its settled frame
+/// and a sync after it has come back, and then the stills come before
+/// the request, the settle ending `Settled`, not at the cap. The surface
+/// animates, so a frame callback is always owed: its settled frame goes
+/// at once all the same, so the settle takes a few milliseconds, not a
+/// refresh or two (on the code before, 17 to 35 ms at 60 Hz, or the cap).
+/// A lock spec that closes while it settles is asked for all the same,
+/// as a spec that opened always was.
+#[test]
+fn a_lock_waits_for_the_hosts_settled_frames() {
+    let test = "a_lock_waits_for_the_hosts_settled_frames";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let mut desk = desktop(&sway, 1);
+    let (mut lock, panel) = locker_with_panel(&sway, &mut desk);
+
+    // Nothing to settle: asked for at once.
+    open_lock(&mut lock, true);
+    assert!(lock.state().lock_active(), "asked for in the same call");
+    assert_eq!(lock.state().host().events, ["stills"]);
+    unlock_and_close(&mut lock, &mut desk);
+
+    // The panel, animating, to settle: nothing is asked for yet.
+    lock.state_mut().host_mut().animating.insert(panel);
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    let mut tooks = Vec::new();
+    for _ in 0..5 {
+        lock.state_mut().host_mut().events.clear();
+        lock.state_mut().host_mut().settle = Some(vec![panel]);
+        let asked = std::time::Instant::now();
+        open_lock(&mut lock, true);
+        assert!(!lock.state().lock_active(), "it settles first");
+        assert!(lock.state().lock_settling());
+        assert!(lock.state().host().events.is_empty());
+        let ok = lock.dispatch_until(WAIT, |s| s.lock_active()).unwrap();
+        let took = asked.elapsed();
+        assert!(ok, "never asked for");
+        assert_eq!(
+            lock.state().host().events,
+            [
+                format!("settled {}", panel.0),
+                "ended Settled".to_string(),
+                "stills".to_string()
+            ],
+            "the settled frame, the settle's end, then the stills"
+        );
+        tooks.push(took);
+        unlock_and_close(&mut lock, &mut desk);
+        settle(&mut lock, &mut desk, Duration::from_millis(100));
+    }
+    eprintln!("settle of an animating surface: {tooks:?}");
+    // A refresh and more on the code that waited for the callbacks (or
+    // the cap); 3 to 10 ms now, the first round the slowest.
+    let worst = tooks.iter().max().copied().unwrap_or_default();
+    let fastest = tooks.iter().min().copied().unwrap_or_default();
+    assert!(
+        worst < Duration::from_millis(20) && fastest < Duration::from_millis(8),
+        "the settled frame waited for the refresh: {tooks:?}"
+    );
+
+    // Closed again while it settles: asked for all the same.
     lock.state_mut().host_mut().events.clear();
     lock.state_mut().host_mut().settle = Some(vec![panel]);
-    lock.state_mut().apply_surface_change(
-        LOCK,
-        SurfaceChange::Updated {
-            spec: lock_spec(true),
-            recreate: false,
-        },
-    );
+    open_lock(&mut lock, true);
     assert!(lock.state().lock_settling());
-    lock.state_mut().apply_surface_change(
-        LOCK,
-        SurfaceChange::Updated {
-            spec: lock_spec(false),
-            recreate: false,
-        },
-    );
+    open_lock(&mut lock, false);
     assert!(!lock.state().lock_settling());
-    settle(&mut lock, &mut desk, LOCK_SETTLE_CAP * 4);
     assert!(
-        !lock.state().lock_active(),
-        "a closed spec asks for nothing"
+        lock.state().lock_active(),
+        "a spec that opened is asked for"
+    );
+    assert_eq!(lock.state().host().events, ["ended Closed", "stills"]);
+    unlock_and_close(&mut lock, &mut desk);
+}
+
+/// (lock-int) A surface that never settles (its settled frame owed for
+/// good: an output in DPMS off, a surface the compositor stopped calling
+/// back) holds the lock back no longer than `LOCK_SETTLE_CAP`: the
+/// request goes at the cap, the settle ending `Cap` (with a warning
+/// naming what was owed), the stills taken first.
+#[test]
+fn a_lock_settle_ends_at_its_cap() {
+    let test = "a_lock_settle_ends_at_its_cap";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let mut desk = desktop(&sway, 1);
+    let (mut lock, panel) = locker_with_panel(&sway, &mut desk);
+    lock.state_mut().host_mut().settle_stuck = true;
+    lock.state_mut().host_mut().settle = Some(vec![panel]);
+    let asked = std::time::Instant::now();
+    open_lock(&mut lock, true);
+    assert!(lock.state().lock_settling());
+    let ok = lock.dispatch_until(WAIT, |s| s.lock_active()).unwrap();
+    let took = asked.elapsed();
+    assert!(ok, "never asked for");
+    eprintln!("a settle at its cap: {took:?}");
+    assert_eq!(lock.state().host().events, ["ended Cap", "stills"]);
+    assert!(
+        took >= LOCK_SETTLE_CAP && took < LOCK_SETTLE_CAP + Duration::from_millis(200),
+        "asked for after {took:?}"
     );
     assert!(
-        !lock.state().host().events.contains(&"stills".to_string()),
-        "{:?}",
-        lock.state().host().events
+        lock.state().host().settle_owed.is_empty(),
+        "the host dropped its marks"
     );
+    wait_lock(&mut lock, LockState::Locked);
 }

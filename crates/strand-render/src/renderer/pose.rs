@@ -148,6 +148,8 @@ impl Renderer {
     /// Until then a settled lock keeps it across its surfaces going and
     /// coming (a renewal).
     pub fn lock_session_ended(&mut self) {
+        // (lock-int) A settle's marks never outlive the lock session.
+        self.end_lock_settle();
         let roots: Vec<NodeId> = std::mem::take(&mut self.lock_settled).into_keys().collect();
         for root in roots {
             self.drop_closing_content(root);

@@ -117,6 +117,22 @@ impl Renderer {
             })
     }
 
+    /// (lock-int) Whether `surface`'s settled frame is still to paint
+    /// (the GPU path sends it to be presented, and the stills wait for
+    /// that present).
+    pub fn lock_settle_pending(&self, surface: SurfaceId) -> bool {
+        self.lock_settle.contains(&surface)
+    }
+
+    /// (lock-int) The lock's settle ended (its stills taken, at the cap,
+    /// or ended early): a settled frame not painted by then is owed no
+    /// more, so it never snaps whatever moves when that surface next
+    /// paints, under the lock or after it (a monitor in DPMS off, a
+    /// surface the compositor stopped calling back).
+    pub fn end_lock_settle(&mut self) {
+        self.lock_settle.clear();
+    }
+
     /// (lock-int) `surface` paints a frame: whether it is the settled one
     /// [`Renderer::settle_for_lock`] marked it for (then no longer owed).
     pub(super) fn take_lock_settle(&mut self, surface: SurfaceId) -> bool {

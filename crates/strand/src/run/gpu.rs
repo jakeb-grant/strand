@@ -577,11 +577,15 @@ mod host {
                     GpuReply::Released(id) => {
                         let id = *id;
                         log::info!("GPU: surface {} released", id.0);
+                        state.host_mut().settle_presenting.remove(&id);
                         self.attached.remove(&id);
                         self.presented.remove(&id);
                         state.take_back(id);
                     }
                     GpuReply::Presented { surface, .. } => {
+                        if state.host_mut().settle_presenting.remove(surface) {
+                            state.lock_settle_look();
+                        }
                         if self.attached.get(surface).is_some_and(|a| a.lock) {
                             super::super::lock::faults::lock_presented(state.lock_leaving());
                         }
@@ -628,6 +632,9 @@ mod host {
                             p.sent = None;
                             p.sent_at = None;
                         }
+                        if state.host_mut().settle_presenting.remove(surface) {
+                            state.lock_settle_look();
+                        }
                         state.forget_present_callback(*surface);
                     }
                     GpuReply::Exited => {
@@ -635,6 +642,10 @@ mod host {
                         // manager commits its surfaces again and no
                         // longer keeps the lent ones for it.
                         self.presented.clear();
+                        // (lock-int) No present is coming.
+                        if !std::mem::take(&mut state.host_mut().settle_presenting).is_empty() {
+                            state.lock_settle_look();
+                        }
                         let attached = std::mem::take(&mut self.attached);
                         for id in lent(&attached) {
                             state.take_back(id);
@@ -786,6 +797,8 @@ mod host {
                 }
                 let r: &mut Renderer = &mut state.host_mut().renderer;
                 let due = r.presented_due(*id).is_some();
+                // (lock-int) A lock's stills wait for this frame presented.
+                let settling = due && r.lock_settle_pending(*id);
                 let frame = if due { r.paint_gpu(*id, now) } else { None };
                 if let Some(frame) = frame {
                     let (size, scale) = (frame.size, frame.scale);
@@ -808,6 +821,9 @@ mod host {
                     p.sent = Some((size, scale));
                     p.drew_nothing = None;
                     state.host_mut().painted(*id, &Damage::full(size));
+                    if settling {
+                        state.host_mut().settle_presenting.insert(*id);
+                    }
                 } else {
                     if due {
                         // (presented-quiet) It painted and drew nothing, so
@@ -819,6 +835,10 @@ mod host {
                         p.drew_nothing = Some(std::time::Instant::now());
                         state.sync_presented(*id);
                         state.host_mut().painted(*id, &Damage::new());
+                        if settling {
+                            // Nothing changed: settled as it is.
+                            state.lock_settle_look();
+                        }
                     }
                     // A CPU's empty paint carries its regions in a bare
                     // commit. Only a present commits this surface.

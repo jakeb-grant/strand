@@ -4613,7 +4613,10 @@ impl Vm {
         let lock_shown = |s: &Shot| near(s.px(30, 630), LOCK_BG);
         if owner {
             self.launcher();
-            self.strand.cli(&["set", "lock.pick", "1"]);
+            // A new value each time: `on change pick` fires on a change.
+            static PICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+            let pick = PICKS.fetch_add(1, Ordering::Relaxed).to_string();
+            self.strand.cli(&["set", "lock.pick", &pick]);
         } else {
             self.strand.cli(&["set", "lock.locked", "true"]);
         }
@@ -4663,10 +4666,12 @@ impl Vm {
 /// glyph and no icons (the owner's "empty island" around the lock; on
 /// the code before, `owner` read 0 icon and 256 glyph pixels every run).
 /// Now Strand's own surfaces settle first: the launcher's exit ends and
-/// its surface goes, the island's fade is at its end, and the still shows
-/// both icons and no glyph, as a lock asked for directly does (the
-/// control). The direct lock has nothing moving, so it settles nothing
-/// and waits for nothing: no settle line in its log.
+/// its surface goes (the island's icons, 240 ms back in, had already come
+/// back under the card, which hid them), and the still shows both icons
+/// and no glyph, as a lock asked for directly does (the control). The
+/// direct lock has nothing moving, so it settles nothing and waits for
+/// nothing: no settle line in its log. The island still moving when the
+/// lock comes: `a_lock_from_the_launcher_shows_the_island_faded_in`.
 #[test]
 fn a_lock_from_the_launcher_shows_the_desktop_at_rest() {
     let test = "lock_launch";
@@ -4708,6 +4713,70 @@ fn a_lock_from_the_launcher_shows_the_desktop_at_rest() {
         1,
         "the launcher's lock settled once, within its cap:\n{log}"
     );
+    assert!(
+        log.contains("(1 exits ended, 1 surfaces closed, 0 surfaces snapped to rest; 1 surfaces)"),
+        "the launcher's exit ended and it went; nothing else moved:\n{log}"
+    );
+}
+
+/// (lock-int review) The same with the island still fading its icons
+/// back in when the lock comes (600 ms, the lock 300 ms in): a surface
+/// that stays open, mid-animation, so a frame callback is owed when the
+/// settle starts. Its settled frame is painted at once all the same, the
+/// fade at its end, and the still shows both icons whole; the settle
+/// counts it snapped and ends in a few milliseconds, well inside its cap
+/// (14.3 ms on the code that waited for the frame callbacks). On the code
+/// before the settle the still showed the folded card, as in the test
+/// above.
+#[test]
+fn a_lock_from_the_launcher_shows_the_island_faded_in() {
+    let test = "lock_launch_fade";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let config = LAUNCH_CONFIG.replace("opacity: 1 ~ 240ms", "opacity: 1 ~ 600ms");
+    assert_ne!(config, LAUNCH_CONFIG);
+    let mut vm = Vm::with(test, "", &config);
+    vm.island();
+    let mut times = Vec::new();
+    for round in 0..3 {
+        let owner = vm.launch_lock(true);
+        let log = vm.strand.log_text();
+        let (icon, glyph) = (owner.pixels_of(ICON), owner.pixels_of(GLYPH));
+        assert!(
+            icon >= 7900 && glyph == 0,
+            "round {round}: the lock's still shows the island part-way or the card \
+             (icon {icon} px, glyph {glyph} px)\n{log}"
+        );
+        assert!(!log.contains(NOT_SETTLED), "the cap was hit:\n{log}");
+        let lines: Vec<&str> = log.lines().filter(|l| l.contains(SETTLED)).collect();
+        assert_eq!(lines.len(), round + 1, "{log}");
+        let line = lines[round];
+        assert!(
+            line.contains(
+                "(1 exits ended, 1 surfaces closed, 1 surfaces snapped to rest; 2 surfaces)"
+            ),
+            "the island snapped, the launcher went: {line}"
+        );
+        let ms: f64 = line
+            .split(SETTLED)
+            .nth(1)
+            .and_then(|r| r.split(" ms").next())
+            .and_then(|m| m.parse().ok())
+            .unwrap_or(f64::NAN);
+        times.push(ms);
+    }
+    eprintln!("lock_launch_fade: settled in {times:?} ms");
+    // Painted at once, not after the frame callback the fade owed and
+    // its own: 14.3 ms in the one round that ran on the code that waited
+    // for them (at least a refresh, 16.7 ms, less the paint), 3.5 to
+    // 7.2 ms now.
+    // The first round pays for first paints; the fastest shows the wait.
+    let fastest = times.iter().copied().fold(f64::INFINITY, f64::min);
+    assert!(
+        times.iter().all(|ms| *ms < 20.0) && fastest < 8.0,
+        "the settled frame waited for the refresh: {times:?} ms"
+    );
 }
 
 /// (lock-int) The same with the launcher presented by the GPU thread
@@ -4745,8 +4814,36 @@ fn a_lock_from_a_gpu_presented_launcher_shows_the_desktop_at_rest() {
             vm.strand.log_text()
         );
     }
+    let picked = vm.strand.log_text().len();
     let owner = vm.launch_lock(true);
     let log = vm.strand.log_text();
+    // The launcher was the GPU's when the lock was asked for: attached
+    // before, released only after the pick, and its release came before
+    // the settle ended.
+    let attached = log[..picked]
+        .lines()
+        .filter_map(|l| l.split("GPU: surface ").nth(1))
+        .filter_map(|r| r.strip_suffix(" attached (Present)"))
+        .next_back()
+        .map(str::to_string);
+    let Some(launcher) = attached else {
+        panic!("no surface attached for presenting before the pick\n{log}");
+    };
+    let released = format!("GPU: surface {launcher} released");
+    assert!(
+        !log[..picked]
+            .lines()
+            .rev()
+            .take_while(|l| !l.contains("attached (Present)"))
+            .any(|l| l.contains(&released)),
+        "the launcher was released before the pick\n{log}"
+    );
+    let after = &log[picked..];
+    let (r, st) = (after.find(&released), after.find(SETTLED));
+    assert!(
+        r.zip(st).is_some_and(|(r, st)| r < st),
+        "the launcher's release came before the settle ended ({r:?}, {st:?})\n{after}"
+    );
     let (icon, glyph) = (owner.pixels_of(ICON), owner.pixels_of(GLYPH));
     eprintln!(
         "lock_launch_gpu: owner icon {icon} glyph {glyph}; first frames {:?} ms; {}",

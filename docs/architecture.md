@@ -2115,7 +2115,8 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   (`input`, `cursor`, `press_serial`, `keyboard_state`,
   `take_clipboard_asks`), drag and drop, windows (`window_state`,
   `window_closed`), `compositor_caps`, `gpu_release`, `before_lock`,
-  (lock-int) `settle_for_lock`/`lock_settle_owed`/`lock_settle_changes`
+  (lock-int) `settle_for_lock`/`lock_settle_owed`/`lock_settle_changes`/
+  `lock_settle_ended`
   and `lock_changed`. The binary implements it on a wrapper around
   `Renderer`.
 - `SurfaceManager::connect(host, Config)` / `with_connection`;
@@ -2330,18 +2331,28 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   in the same call, adding no wait. Otherwise the request waits until
   each named surface is settled (gone, a GPU-held one once the GPU
   thread let go of it; unmapped; or no longer
-  `SurfaceHost::lock_settle_owed` with no frame callback or presentation
-  outstanding, the GPU thread's present included), the host has handed
-  over its surface changes (`SurfaceHost::lock_settle_changes`), and a
-  `wl_display.sync` sent after that has come back (the stills are taken
-  on another connection), looked at again after each paint, frame shown,
-  surface gone or taken back and surface change, or `LOCK_SETTLE_CAP`
-  (25 ms) after the spec opened by a calloop timer of the manager's own;
-  then `before_lock()` and the request. `State::lock_settling()` says it
-  waits. `State::lock()` called directly (a restart's fail-closed lock,
-  the lock asked for again after `finished`) never settles and ends a
-  settle in progress; the spec closing meanwhile drops it, asking for
-  nothing. The binary's `settle_for_lock` settles only for a lock that
+  `SurfaceHost::lock_settle_owed`: its settled frame committed, a
+  GPU-presented one's presented, which the host owes until the GPU
+  thread's `Presented`), the host has handed over its surface changes
+  (`SurfaceHost::lock_settle_changes`), and a `wl_display.sync` sent
+  after that has come back (the stills are taken on another
+  connection), looked at again after each paint, frame shown, surface
+  gone or taken back and surface change (and `State::lock_settle_look`,
+  which the host calls at such a present), or `LOCK_SETTLE_CAP` (25 ms)
+  after the spec opened by a calloop timer of the manager's own; then
+  `before_lock()` and the request. No frame callback is waited for: a
+  surface whose settled frame is owed paints it at once, a callback
+  still owed for the frame before notwithstanding (and `present_due` is
+  true for it where the compositor has `wp_fifo_manager_v1`).
+  `State::lock_settling()` says it waits. `State::lock()` called
+  directly (a restart's fail-closed lock, the lock asked for again after
+  `finished`) never settles and ends a settle in progress; the spec
+  closing or going meanwhile ends it and asks for the lock all the same.
+  However it ends, `SurfaceHost::lock_settle_ended(LockSettleEnd::{Settled,
+  Cap, Closed, Stopped})` follows, and the binary's drops every mark
+  (`Renderer::end_lock_settle`; `Renderer::lock_session_ended` does too),
+  so a settled frame never painted snaps nothing later. The binary's
+  `settle_for_lock` settles only for a lock that
   takes stills (a `thumbnail screen` in it, none kept yet):
   `Renderer::settle_for_lock() -> LockSettle { exits, closed, settled,
   going }` ends every running `exit` not under a lock (a closing

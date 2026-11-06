@@ -7,23 +7,32 @@
 //! outside the lock and marks the other surfaces with a motion toward an
 //! end for one settled frame. With nothing to settle the lock is asked
 //! for at once, as before, adding no wait. Otherwise the request waits
-//! until each surface the host named has painted its settled frame and
-//! that frame has shown (its frame callback or presentation, the GPU
-//! thread's present included, as an exit's last frame is waited for), or
-//! has gone (its spec closed, a GPU-presented one only once the GPU
-//! thread let go of it), the host has handed over every surface change,
-//! and a `wl_display.sync` sent after all that has come back, so the
-//! compositor has every commit and destroy before the capture, which
-//! runs on a connection of its own. [`LOCK_SETTLE_CAP`] bounds the wait
-//! by a timer of the manager's own, whatever the host or the compositor
-//! does. Then the lock is asked for as [`State::lock`] asks it: the
-//! host's `before_lock` takes the stills, and the request goes.
+//! until each surface the host named is settled: its settled frame
+//! committed (painted at once, not after a frame callback still owed for
+//! the frame before: a commit without one is allowed, and a surface that
+//! animates always owes one), a GPU-presented one's presented by the GPU
+//! thread (the host owes it until then); or gone (its spec closed, a
+//! GPU-presented one only once the GPU thread let go of it). Then, once
+//! the host has handed over every surface change, a `wl_display.sync`
+//! sent after all those commits and destroys must come back, so the
+//! compositor has them before the capture, which runs on a connection
+//! of its own. No frame callback of the settled frame is waited for: that
+//! is a refresh more (up to 17 ms at 60 Hz, on top of the frame before's)
+//! and the capture is of the compositor's next frame anyway.
+//! [`LOCK_SETTLE_CAP`] bounds the wait by a timer of the manager's own,
+//! whatever the host or the compositor does. Then the lock is asked for
+//! as [`State::lock`] asks it: the host's `before_lock` takes the stills,
+//! and the request goes.
 //!
 //! Only a lock asked for by its spec opening settles: [`State::lock`]
 //! called directly (a fail-closed lock after a restart, or the lock asked
 //! for again after `finished`) is asked for at once, and ends a settle
-//! in progress at once. The spec closing meanwhile drops the settle and
-//! asks for nothing. The lock's own surfaces are never settled.
+//! in progress at once. The spec closing (or going) meanwhile ends the
+//! settle and asks for the lock all the same: once a spec has opened, the
+//! lock is asked for, as when there was no settle, and only an unlock
+//! token ends it. However it ends, the host hears it
+//! ([`SurfaceHost::lock_settle_ended`]) and drops what it marked. The
+//! lock's own surfaces are never settled.
 
 use std::collections::BTreeSet;
 
@@ -47,6 +56,20 @@ pub struct LockSettled {
     pub surfaces: Vec<SurfaceId>,
     /// What was settled, for the log line.
     pub what: String,
+}
+
+/// (lock-int) How a lock's settle ended
+/// ([`SurfaceHost::lock_settle_ended`]). The lock is asked for after each.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LockSettleEnd {
+    /// Every surface settled and the sync after them came back.
+    Settled,
+    /// [`LOCK_SETTLE_CAP`] came first (a warning says what was owed).
+    Cap,
+    /// The lock's spec closed or went meanwhile.
+    Closed,
+    /// [`State::lock`] was called directly meanwhile.
+    Stopped,
 }
 
 /// A settle in progress.
@@ -88,7 +111,7 @@ impl<H: SurfaceHost + 'static> State<H> {
                 if let Some(s) = &mut state.lock_settle {
                     s.timer = None;
                 }
-                state.end_settle(true);
+                state.end_settle(LockSettleEnd::Cap);
                 TimeoutAction::Drop
             },
         );
@@ -147,13 +170,33 @@ impl<H: SurfaceHost + 'static> State<H> {
         });
     }
 
+    /// (lock-int) Lets a settle look again: the host calls it when what
+    /// it owed for a surface is done outside the manager (the GPU thread
+    /// presented its settled frame).
+    pub fn lock_settle_look(&mut self) {
+        self.settle_soon();
+    }
+
+    /// (lock-int) A settle waits for `id`'s settled frame, still owed: it
+    /// is painted and committed at once, a frame callback still owed for
+    /// the frame before notwithstanding (`commit.rs`), and a GPU-presented
+    /// one is sent at once where the WSI does not wait for callbacks.
+    pub(super) fn settle_owes(&self, id: SurfaceId) -> bool {
+        self.lock_settle
+            .as_ref()
+            .is_some_and(|s| s.waited.contains(&id))
+            && self.host.lock_settle_owed(id)
+    }
+
     /// Whether `id` is settled: gone (a GPU-presented one once the GPU
-    /// thread let go of it), never mapped, or its settled frame painted
-    /// with no frame callback or presentation outstanding.
+    /// thread let go of it), never mapped, or its settled frame committed
+    /// (the host owes nothing for it: a GPU-presented one is owed until
+    /// the GPU thread presented it). Its frame callback is not waited for
+    /// (module docs).
     fn settled(&self, id: SurfaceId) -> bool {
         match self.surfaces.get(&id) {
             None => !self.gpu.is_doomed(id),
-            Some(s) => !s.mapped() || (!self.host.lock_settle_owed(id) && !s.throttled()),
+            Some(s) => !s.mapped() || !self.host.lock_settle_owed(id),
         }
     }
 
@@ -190,70 +233,72 @@ impl<H: SurfaceHost + 'static> State<H> {
             .as_ref()
             .is_some_and(|s| s.sync.as_ref() == Some(callback))
         {
-            self.end_settle(false);
+            self.end_settle(LockSettleEnd::Settled);
         }
     }
 
-    /// The settle ended (`cap`: at [`LOCK_SETTLE_CAP`]): the lock is
-    /// asked for now, its stills taken first.
-    pub(super) fn end_settle(&mut self, cap: bool) {
-        let Some(s) = self.lock_settle.take() else {
+    /// The settle ended (`how`): the lock is asked for now, its stills
+    /// taken first.
+    pub(super) fn end_settle(&mut self, how: LockSettleEnd) {
+        let Some(s) = self.take_settle(how) else {
             return;
         };
-        if let Some(t) = s.timer {
-            self.handle.remove(t);
-        }
         let ms = s.since.elapsed().as_secs_f64() * 1000.0;
-        if cap {
-            let owed: Vec<String> = s.waited.iter().map(|id| id.0.to_string()).collect();
-            log::warn!(
-                "lock: Strand's surfaces had not settled at the {} ms cap ({}; surfaces {} \
-                 owed): taking the stills",
-                LOCK_SETTLE_CAP.as_millis(),
-                s.what,
-                if owed.is_empty() {
-                    "none".to_string()
-                } else {
-                    owed.join(", ")
-                },
-            );
-        } else {
-            log::info!(
+        match how {
+            LockSettleEnd::Cap => {
+                let owed: Vec<String> = s.waited.iter().map(|id| id.0.to_string()).collect();
+                log::warn!(
+                    "lock: Strand's surfaces had not settled at the {} ms cap ({}; surfaces {} \
+                     owed): taking the stills",
+                    LOCK_SETTLE_CAP.as_millis(),
+                    s.what,
+                    if owed.is_empty() {
+                        "none".to_string()
+                    } else {
+                        owed.join(", ")
+                    },
+                );
+            }
+            LockSettleEnd::Settled => log::info!(
                 "lock: Strand's surfaces settled in {ms:.1} ms before the stills ({}; {} surfaces)",
                 s.what,
                 s.count
-            );
+            ),
+            LockSettleEnd::Closed => log::info!(
+                "lock: closed again after {ms:.1} ms as Strand's surfaces settled: asked for all \
+                 the same"
+            ),
+            LockSettleEnd::Stopped => {}
         }
         if let Err(e) = self.lock() {
             log::warn!("{e}");
         }
     }
 
-    /// (lock-int) The lock spec closed or went while it settled: nothing
-    /// is asked for.
-    pub(super) fn drop_settle(&mut self) {
-        if self.take_settle() {
-            log::info!("lock: closed again as Strand's surfaces settled: no lock is asked for");
-        }
+    /// (lock-int) The lock spec closed or went while it settled: the lock
+    /// is asked for all the same, as it was before there was a settle (a
+    /// spec that opened asks for the lock; only a token unlocks).
+    pub(super) fn close_settle(&mut self) {
+        self.end_settle(LockSettleEnd::Closed);
     }
 
     /// (lock-int) A lock asked for directly ([`State::lock`]) goes at
     /// once: a settle in progress stops.
     pub(super) fn stop_settle(&mut self) {
-        if self.take_settle() {
+        if self.take_settle(LockSettleEnd::Stopped).is_some() {
             log::info!("lock: asked for at once: Strand's surfaces stop settling");
         }
     }
 
-    /// Ends a settle in progress, its timer with it; true if there was one.
-    fn take_settle(&mut self) -> bool {
-        let Some(s) = self.lock_settle.take() else {
-            return false;
-        };
+    /// Ends a settle in progress (`how`), its timer with it, and tells the
+    /// host, which drops what it marked.
+    fn take_settle(&mut self, how: LockSettleEnd) -> Option<Settle> {
+        let s = self.lock_settle.take()?;
         if let Some(t) = s.timer {
             self.handle.remove(t);
         }
-        true
+        self.host.lock_settle_ended(how);
+        Some(s)
     }
 }
 

@@ -60,6 +60,10 @@ pub struct Host {
     /// changes were being handed over: what that closed is handed over
     /// in the same sync (`demo::Main::sync`), before any of them paints.
     pub(crate) settled_for_lock: bool,
+    /// (lock-int) GPU-presented surfaces whose settled frame went to the
+    /// GPU thread and has not been presented yet: a lock's stills wait
+    /// for them (`run/gpu.rs`).
+    pub(crate) settle_presenting: std::collections::BTreeSet<SurfaceId>,
     /// (M4) `strand run`: the producers of the visible fed nodes (a
     /// `spectrum`'s audio tap), changed after a paint or a diff changes
     /// them.
@@ -580,6 +584,7 @@ impl Host {
             blur_fallback: BlurFallback::default(),
             gpu_released: Vec::new(),
             settled_for_lock: false,
+            settle_presenting: std::collections::BTreeSet::new(),
             feeds: None,
             lock: crate::run::lock::LockScreen::default(),
             recorder: crate::run::record::InputRecorder::new(false),
@@ -1746,7 +1751,12 @@ impl SurfaceHost for Host {
     }
 
     fn lock_settle_owed(&self, surface: SurfaceId) -> bool {
-        self.renderer.lock_settle_owed(surface)
+        self.renderer.lock_settle_owed(surface) || self.settle_presenting.contains(&surface)
+    }
+
+    fn lock_settle_ended(&mut self, _: strand_surface::LockSettleEnd) {
+        self.renderer.end_lock_settle();
+        self.settle_presenting.clear();
     }
 
     fn lock_settle_changes(&self) -> bool {

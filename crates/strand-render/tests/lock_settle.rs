@@ -67,8 +67,12 @@ struct Shell {
 
 impl Shell {
     fn new() -> Shell {
+        Shell::with(SHELL)
+    }
+
+    fn with(source: &str) -> Shell {
         let mut map = SourceMap::new();
-        map.add("shell.strand".to_string(), SHELL.to_string());
+        map.add("shell.strand".to_string(), source.to_string());
         let compiled = strand_compiler::compile(&map);
         assert_eq!(compiled.errors(), 0, "{:?}", compiled.diagnostics);
         let program = Arc::new(lower::lower(
@@ -245,4 +249,130 @@ fn a_lock_with_nothing_moving_settles_nothing() {
     for id in [ISLAND, LAUNCHER, LOCK] {
         assert!(!sh.r.lock_settle_owed(id), "{id:?}");
     }
+}
+
+/// (lock-int review) A settle's mark never outlives the settle: a
+/// surface that could not paint its settled frame before the settle
+/// ended (a monitor in DPMS off, a surface the compositor stopped calling
+/// back) draws its next frames as they would have been, a fade started
+/// later playing part-way, not snapped to its end.
+#[test]
+fn a_settle_mark_ends_with_the_settle() {
+    let mut sh = Shell::new();
+    let mut control = Shell::new();
+    sh.start_moving(5);
+    control.start_moving(5);
+    let settled = sh.r.settle_for_lock();
+    assert_eq!(settled.settled, vec![ISLAND], "{settled:?}");
+    // The island never paints its settled frame; the settle ends.
+    sh.r.end_lock_settle();
+    assert!(!sh.r.lock_settle_owed(ISLAND));
+    // A new fade, back in, played over two frames.
+    for shell in [&mut sh, &mut control] {
+        shell.set("fading", Value::Bool(false));
+        assert!(shell.paint(ISLAND, 6));
+        assert!(shell.paint(ISLAND, 7));
+    }
+    let (a, b) = (
+        green(sh.buf(ISLAND).px(10, 10)),
+        green(control.buf(ISLAND).px(10, 10)),
+    );
+    assert!(b > 20 && b < 250, "the control fades in part-way: {b}");
+    assert_eq!(a, b, "the fade plays as the control's, not snapped");
+}
+
+/// (lock-int review) The lock session's end clears the marks too.
+#[test]
+fn the_lock_sessions_end_clears_a_settle_mark() {
+    let mut sh = Shell::new();
+    sh.start_moving(5);
+    assert_eq!(sh.r.settle_for_lock().settled, vec![ISLAND]);
+    assert!(sh.r.lock_settle_pending(ISLAND));
+    sh.r.lock_session_ended();
+    assert!(!sh.r.lock_settle_pending(ISLAND));
+    assert!(!sh.r.lock_settle_owed(ISLAND));
+}
+
+/// An island that stays open, with a box that leaves with an `exit` of
+/// its own when `show` turns false, under a box playing a finite `play`.
+const NESTED: &str = "// shell.strand
+state show = true
+state open = true
+state locked = true
+keyframes nudge { 0% { x: 0 }; 50% { x: 100 }; 100% { x: 0 }; duration: 1s }
+panel Island {
+  anchor: top; width: 200; height: 60; open: true; bg: #1e1e2e
+  col {
+    box { width: 20; height: 20; bg: #ff00ff; play nudge }
+    if show { box { width: 20; height: 20; bg: #00ff00; opacity: 1 ~ 400ms; exit { opacity: 0 } } }
+  }
+}
+panel Launcher {
+  anchor: bottom; width: 200; height: 60; open: open; bg: #e0e0e0
+}
+lock Gate {
+  open: locked; bg: #2050d0
+  on key(k) { auth.submit(k.name) }
+}
+";
+
+/// (lock-int review) A nested `exit` on a panel that stays open ends,
+/// the panel staying open, and a finite `play` snaps to its end, while
+/// the control still draws both part-way.
+#[test]
+fn a_nested_exit_and_a_finite_play_settle_on_an_open_panel() {
+    let mut sh = Shell::with(NESTED);
+    let mut control = Shell::with(NESTED);
+    let [island, _, _] = sh.nodes;
+    for shell in [&mut sh, &mut control] {
+        shell.set("show", Value::Bool(false));
+        for k in 1..=6 {
+            shell.paint(ISLAND, k);
+        }
+    }
+    let magenta = |p: [u8; 4]| p[0] > 200 && p[2] > 200 && p[1] < 50;
+    let greens = |b: &Buffer| {
+        (0..60)
+            .flat_map(|y| (0..200).map(move |x| (x, y)))
+            .filter(|(x, y)| green(b.px(*x, *y)) > 0)
+            .count()
+    };
+    assert!(greens(sh.buf(ISLAND)) > 0, "the exit is under way");
+
+    let settled = sh.r.settle_for_lock();
+    assert_eq!(settled.exits, 1, "{settled:?}");
+    assert!(settled.closed.is_empty(), "{settled:?}");
+    assert!(settled.going.is_empty(), "{settled:?}");
+    assert_eq!(settled.settled, vec![ISLAND], "{settled:?}");
+    assert!(
+        sh.r.surface_spec(island).is_some_and(|s| s.open),
+        "stays open"
+    );
+
+    assert!(sh.paint(ISLAND, 7));
+    assert!(control.paint(ISLAND, 7));
+    let (a, b) = (sh.buf(ISLAND), control.buf(ISLAND));
+    assert_eq!(greens(a), 0, "the box that left is gone");
+    assert!(greens(b) > 0, "the control's box still leaves");
+    assert_eq!(left(a, 10, magenta), Some(0), "the play is at its end");
+    assert!(
+        left(b, 10, magenta).is_some_and(|x| x > 0),
+        "the control still plays: {:?}",
+        left(b, 10, magenta)
+    );
+    assert!(!sh.r.lock_settle_owed(ISLAND));
+}
+
+/// (lock-int review) What has just come to rest settles nothing: a fade
+/// and an exit played to their ends leave no entry, while a loop and a
+/// wave run on.
+#[test]
+fn an_animation_just_finished_settles_nothing() {
+    let mut sh = Shell::new();
+    sh.start_moving(40);
+    let settled = sh.r.settle_for_lock();
+    assert!(settled.is_empty(), "{settled:?}");
+    assert!(!sh.r.lock_settle_pending(ISLAND));
+    assert!(!sh.r.lock_settle_owed(ISLAND));
+    assert!(!sh.r.lock_settle_owed(LOCK));
 }

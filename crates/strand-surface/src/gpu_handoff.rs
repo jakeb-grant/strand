@@ -339,12 +339,17 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// wait for callbacks, is a callback given up on, after
     /// [`THROTTLE_GIVE_UP`] and twice that for each present still unanswered
     /// ([`give_up_after`]).
+    ///
+    /// (lock-int) With that protocol a settled frame a lock's stills wait
+    /// for goes at once too (`lock_settle.rs`); without it, it waits for
+    /// the callback as any frame does, up to the settle's cap.
     pub fn present_due(&self, surface: SurfaceId) -> bool {
         self.surfaces.get(&surface).is_none_or(|s| {
             !s.callback_pending
                 || (self.wsi_fifo
-                    && s.throttled_at
-                        .is_some_and(|t| t.elapsed() >= give_up_after(s.stale_callbacks)))
+                    && (self.settle_owes(surface)
+                        || s.throttled_at
+                            .is_some_and(|t| t.elapsed() >= give_up_after(s.stale_callbacks))))
         })
     }
 

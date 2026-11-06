@@ -48,6 +48,9 @@ impl<H: SurfaceHost + 'static> State<H> {
             // next frame waits for `hand_off` or `take_back`.
             return;
         }
+        // (lock-int) A lock's stills wait for this surface's settled
+        // frame: it goes now, not a refresh later (`lock_settle.rs`).
+        let settle = self.settle_owes(id);
         let Some(s) = self.surfaces.get_mut(&id) else {
             return;
         };
@@ -57,7 +60,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         if s.throttled() {
             let give_up = s.throttled_at.map(|t| t + THROTTLE_GIVE_UP);
             let stuck = give_up.is_some_and(|t| Instant::now() >= t);
-            if s.geometry_changed() || stuck {
+            if s.geometry_changed() || stuck || settle {
                 // A new size or scale supersedes the frame in flight: paint
                 // now, so a surface the compositor does not present (an
                 // occluded bar, an output in DPMS off) still applies its
@@ -65,7 +68,10 @@ impl<H: SurfaceHost + 'static> State<H> {
                 // and no longer matches `in_flight`; a late frame callback
                 // only marks the surface again. (m4-audit) So does a
                 // frame whose callback or presentation has not come in
-                // `THROTTLE_GIVE_UP`: it may never come.
+                // `THROTTLE_GIVE_UP`: it may never come. (lock-int) And a
+                // settled frame a lock's stills wait for: a commit with a
+                // callback still owed is allowed, and the frame before
+                // may just not be shown on its own.
                 if stuck && !s.geometry_changed() {
                     log::debug!(
                         "surface {}: no frame callback or presentation in {THROTTLE_GIVE_UP:?}; painting anyway",

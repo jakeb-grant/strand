@@ -42,8 +42,8 @@ pub use manager::selection::{
 };
 pub use manager::{
     Config, GRAB_WINDOW, KeyboardState, LOCK_EXIT_CAP, LOCK_FALLBACK_NODE, LOCK_SETTLE_CAP,
-    LockError, LockSettled, LockState, RepaintHandle, Request, State, Stats, SurfaceError,
-    SurfaceHost, SurfaceInfo, SurfaceManager, ToplevelState,
+    LockError, LockSettleEnd, LockSettled, LockState, RepaintHandle, Request, State, Stats,
+    SurfaceError, SurfaceHost, SurfaceInfo, SurfaceManager, ToplevelState,
 };
 pub use monitor::{MONITOR_RETENTION, Monitor, MonitorId, identity_description};
 pub use placement::{

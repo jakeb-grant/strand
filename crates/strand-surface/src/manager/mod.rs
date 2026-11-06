@@ -110,7 +110,7 @@ pub use gpu_handoff::RawHandles;
 
 use catcher::{Catcher, Under, wants_scrim, wants_under};
 use layer::to_sctk_layer;
-pub use lock_settle::{LOCK_SETTLE_CAP, LockSettled};
+pub use lock_settle::{LOCK_SETTLE_CAP, LockSettleEnd, LockSettled};
 pub use session_lock::{LOCK_EXIT_CAP, LOCK_FALLBACK_NODE, LockError};
 pub use window::ToplevelState;
 
@@ -264,6 +264,13 @@ pub trait SurfaceHost: Painter {
     /// yet (a settle's closed specs): a settle waits for them.
     fn lock_settle_changes(&self) -> bool {
         false
+    }
+    /// (lock-int) The lock's settle ended (`how`), its stills about to be
+    /// taken or not: whatever it marked is owed no more, so a surface
+    /// that never painted its settled frame does not snap what moves
+    /// when it next paints.
+    fn lock_settle_ended(&mut self, how: LockSettleEnd) {
+        let _ = how;
     }
     /// (lock-int) Whether lock content `surface` has painted the lock's
     /// settled frame, the exit's end, since its node closed (or paints

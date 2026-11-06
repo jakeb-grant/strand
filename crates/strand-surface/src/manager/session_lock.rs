@@ -1022,12 +1022,12 @@ impl<H: SurfaceHost + 'static> State<H> {
             .iter()
             .any(|n| self.specs.contains_key(n));
         if !any {
-            self.drop_settle();
+            self.close_settle();
             self.sync_lock_surfaces();
             return;
         }
         if !self.lock_spec_open() {
-            self.drop_settle();
+            self.close_settle();
             self.session_lock.spent = false;
             self.session_lock.asked_again = false;
         } else if !self.session_lock.spent && !self.lock_active() {
