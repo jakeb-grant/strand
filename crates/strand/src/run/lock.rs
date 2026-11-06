@@ -1720,6 +1720,67 @@ pub(crate) mod faults {
         super::apply(state, diff);
     }
 
+    /// (lock-int) `lock_slow_close`: render's report that a lock closed
+    /// once its exit played out reaches strand-surface 400 ms late (and
+    /// whatever else render says of that node meanwhile, after it), as a
+    /// busy main loop might hand it over, so what the lock's surfaces show
+    /// between the exit's end and the unlock stays on screen long enough
+    /// for grim to see it. A thread wakes the loop when the hold is up.
+    pub(crate) fn hold_lock_close(
+        state: &mut super::State<super::Host>,
+        changes: &mut Vec<(super::NodeId, strand_scene::SurfaceChange)>,
+    ) {
+        use std::cell::RefCell;
+        use std::time::Instant;
+        use strand_scene::SurfaceChange;
+        type Held = Option<(Instant, Vec<(super::NodeId, SurfaceChange)>)>;
+        thread_local! {
+            static HELD: RefCell<Held> = const { RefCell::new(None) };
+        }
+        const HOLD: Duration = Duration::from_millis(400);
+        if !on("lock_slow_close") {
+            return;
+        }
+        HELD.with(|h| {
+            let mut h = h.borrow_mut();
+            if let Some((at, held)) = h.as_mut() {
+                if Instant::now() >= *at {
+                    log::warn!("STRAND_FAULT lock_slow_close: handed over");
+                    let mut all = std::mem::take(held);
+                    all.append(changes);
+                    *changes = all;
+                    *h = None;
+                } else {
+                    let nodes: Vec<super::NodeId> = held.iter().map(|(n, _)| *n).collect();
+                    let (later, rest): (Vec<_>, Vec<_>) =
+                        changes.drain(..).partition(|(n, _)| nodes.contains(n));
+                    held.extend(later);
+                    *changes = rest;
+                }
+                return;
+            }
+            if !state.lock_leaving() {
+                return;
+            }
+            let (closed, rest): (Vec<_>, Vec<_>) = changes.drain(..).partition(|(_, c)| {
+                matches!(c, SurfaceChange::Updated { spec, .. }
+                    if spec.kind == super::NodeKind::Lock && !spec.open && !spec.closing)
+            });
+            *changes = rest;
+            if closed.is_empty() {
+                return;
+            }
+            log::warn!("STRAND_FAULT lock_slow_close");
+            *h = Some((Instant::now() + HOLD, closed));
+            if let Some(ping) = state.host().waker() {
+                std::thread::spawn(move || {
+                    std::thread::sleep(HOLD + Duration::from_millis(10));
+                    ping.ping();
+                });
+            }
+        });
+    }
+
     /// `auth`'s helper gets `STRAND_FAULT` (`auth_crash`, `auth_hang`,
     /// `auth_garbage`: strand-auth's own points), a 3 s timeout under
     /// `auth_hang` (unless `auth_hold`: the default timeout, for a test
@@ -1766,6 +1827,12 @@ pub(crate) mod faults {
     pub(crate) fn gpu_waker() {}
     #[inline(always)]
     pub(crate) fn unmount_lock(_: &mut super::State<super::Host>) {}
+    #[inline(always)]
+    pub(crate) fn hold_lock_close(
+        _: &mut super::State<super::Host>,
+        _: &mut Vec<(super::NodeId, strand_scene::SurfaceChange)>,
+    ) {
+    }
     #[inline(always)]
     pub(crate) fn auth_config(_: &mut strand_services::auth::AuthConfig) {}
 }

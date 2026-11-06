@@ -508,6 +508,15 @@ pub struct Renderer {
     /// popup unmounts its content when it closes), by surface node: kept
     /// as ghosts, drawn at rest, until the surface closes or opens again.
     closing_content: BTreeMap<NodeId, Vec<NodeId>>,
+    /// (lock-int) Lock nodes that closed after their exit played and have
+    /// not opened since, each with the surfaces that have drawn its
+    /// settled frame since: the exit's end, what has an `exit` pose gone
+    /// and what has none (the still) drawn as it was. Such a surface
+    /// paints nothing more until it goes ([`Renderer::lock_frozen`]), and
+    /// what the lock kept for its exit stays mounted while a surface
+    /// shows it, so a frame one must draw (a new size, a renewed surface)
+    /// is that end too, never the lock's background alone.
+    lock_settled: BTreeMap<NodeId, BTreeSet<SurfaceId>>,
     /// Surface nodes the diff being applied closes (`open: false`).
     closing_now: BTreeSet<NodeId>,
     /// Nodes the diff being applied creates on a surface not shown: if
@@ -676,6 +685,7 @@ impl Renderer {
             reserved: HashMap::new(),
             exit_stall: EXIT_STALL,
             closing_content: BTreeMap::new(),
+            lock_settled: BTreeMap::new(),
             closing_now: BTreeSet::new(),
             born: Vec::new(),
             opening: BTreeSet::new(),

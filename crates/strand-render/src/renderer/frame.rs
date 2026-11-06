@@ -427,7 +427,11 @@ impl Painter for Renderer {
         let sched = log::log_enabled!(log::Level::Debug)
             .then(strand_gpu::thread_stats)
             .flatten();
+        let frozen = self.lock_frozen(surface);
         let damage = self.paint_frame(surface, target);
+        if !frozen {
+            self.lock_drew(surface);
+        }
         self.plan_quiet(surface, target.time, damage.is_empty());
         #[cfg(feature = "gpu")]
         if started.elapsed() >= strand_gpu::SLOW_FRAME && log::log_enabled!(log::Level::Debug) {
@@ -684,6 +688,10 @@ impl Renderer {
             {
                 return Damage::new();
             }
+        }
+        // (lock-int) A lock that settled keeps the exit's last frame.
+        if self.lock_frozen(surface) {
+            return Damage::new();
         }
         // Scrolls move to this frame's offsets (lists.rs).
         self.advance_scrolls(surface, target.time);
@@ -1184,6 +1192,7 @@ impl Renderer {
         // not painted yet holds its first frame for its text, up to its
         // deadline.
         self.frame_deadline(surface).is_none()
+            && !self.lock_frozen(surface)
             && self.surfaces.get(&surface).is_some_and(|s| {
                 s.dirty
                     || !s.valid

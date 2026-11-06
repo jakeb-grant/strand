@@ -314,6 +314,8 @@ impl<H: SurfaceHost + 'static> State<H> {
             s.forget_callback();
         }
         self.cancel_give_up(surface);
+        // (lock-int) An exit waiting for this frame waits no more.
+        self.lock_frame_shown(surface);
     }
 
     /// (gpu-pace) `surface`'s next frame may go to the GPU thread: its

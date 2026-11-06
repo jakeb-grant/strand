@@ -30,8 +30,9 @@
 //! ([`State::unlock_after_exit`]): the token is held while the lock's
 //! nodes close (logic writes their two-way `open` false and render holds
 //! each open, `SurfaceSpec::closing`, while its exit plays) and spent when
-//! the last of them has closed, or [`LOCK_EXIT_CAP`] after it came, by a
-//! timer of this manager's own whatever render does. Meanwhile the
+//! the last of them has closed and (lock-int) each content surface's last
+//! frame, the exit's end, has shown, or [`LOCK_EXIT_CAP`] after it came,
+//! by a timer of this manager's own whatever render does. Meanwhile the
 //! session stays locked, input on the lock goes nowhere, each content
 //! stays on its output and an output plugged in shows the solid. A node
 //! seen leaving that opens again (the lock asked for again) keeps the
@@ -188,6 +189,10 @@ struct Leaving {
     /// The cap's timer ([`LOCK_EXIT_CAP`]).
     timer: Option<RegistrationToken>,
     since: Instant,
+    /// (lock-int) Every waited node has closed: the unlock waits for
+    /// each content surface's last frame to show
+    /// ([`State::lock_frames_shown`]).
+    settling: bool,
 }
 
 /// (lock-polish) What the lock's nodes say about an exit in progress.
@@ -532,7 +537,8 @@ impl<H: SurfaceHost + 'static> State<H> {
     /// its way out: the same token as [`Self::unlock`], held until every
     /// lock node shown with a two-way `open` has closed (logic writes it
     /// false at `Unlocking`, and render keeps it open while its exit
-    /// plays) and spent then, or [`LOCK_EXIT_CAP`] after now at the latest
+    /// plays) and spent once their last frames show (`settle_exit`),
+    /// or [`LOCK_EXIT_CAP`] after now at the latest
     /// (a timer of this manager's, so neither render nor logic can hold
     /// the session past it). The host hears `Unlocking` now and
     /// `Unlocked` then. With nothing that can play an exit (no such node
@@ -593,6 +599,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             seen: BTreeSet::new(),
             timer: Some(timer),
             since: Instant::now(),
+            settling: false,
         });
         self.host.lock_changed(LockState::Unlocking);
         true
@@ -611,13 +618,19 @@ impl<H: SurfaceHost + 'static> State<H> {
             return;
         };
         let ms = l.since.elapsed().as_millis();
-        if cap {
-            log::warn!(
+        match (cap, l.settling) {
+            (true, false) => log::warn!(
                 "lock: the exit was still playing at its {} ms cap: unlocking",
                 LOCK_EXIT_CAP.as_millis()
-            );
-        } else {
-            log::info!("lock: the exit ended after {ms} ms: unlocking");
+            ),
+            (true, true) => log::warn!(
+                "lock: the exit's last frames had not shown at its {} ms cap: unlocking",
+                LOCK_EXIT_CAP.as_millis()
+            ),
+            (false, false) => log::info!("lock: the exit ended after {ms} ms: unlocking"),
+            (false, true) => {
+                log::info!("lock: the exit's last frames showed after {ms} ms: unlocking")
+            }
         }
         if let Some(l) = self.session_lock.leaving.take() {
             if let Some(t) = l.timer {
@@ -663,8 +676,60 @@ impl<H: SurfaceHost + 'static> State<H> {
         });
         match step {
             ExitStep::Wait => {}
-            ExitStep::Done => self.end_exit(false),
+            ExitStep::Done => self.settle_exit(),
             ExitStep::AskedAgain => self.exit_asked_again(),
+        }
+    }
+
+    /// (lock-int) Every node the exit waited for closed: the unlock is
+    /// sent once each content surface shows its last frame
+    /// ([`Self::lock_frames_shown`]), at once when they all do. Render
+    /// draws nothing on a lock once it has closed (its last frame is the
+    /// exit's end), so the frame waited for is that one, and the
+    /// compositor's next frame after the unlock is the desktop, never a
+    /// frame from before the end. The cap's timer still bounds it.
+    fn settle_exit(&mut self) {
+        let shown = self.lock_frames_shown();
+        let Some(l) = &mut self.session_lock.leaving else {
+            return;
+        };
+        if shown {
+            self.end_exit(false);
+            return;
+        }
+        if !l.settling {
+            l.settling = true;
+            log::info!(
+                "lock: the exit ended after {} ms: unlocking once its last frames show",
+                l.since.elapsed().as_millis()
+            );
+        }
+    }
+
+    /// (lock-int) Each content surface of the lock has its last frame on
+    /// screen: none waits for a frame callback or the presentation of a
+    /// commit (its own, or the GPU thread's present it asked a callback
+    /// for). One never mapped, gone, renewed (a new id, mapped by its own
+    /// first frame), or whose last paint sent nothing waits for nothing.
+    fn lock_frames_shown(&self) -> bool {
+        self.session_lock
+            .contents
+            .values()
+            .filter_map(|id| self.surfaces.get(id))
+            .all(|s| !s.mapped() || !s.throttled())
+    }
+
+    /// (lock-int) A frame callback or presentation came for `surface`:
+    /// an exit waiting for the lock's last frames looks again.
+    pub(super) fn lock_frame_shown(&mut self, surface: SurfaceId) {
+        if self
+            .session_lock
+            .leaving
+            .as_ref()
+            .is_some_and(|l| l.settling)
+            && self.is_lock_content(surface)
+        {
+            self.follow_exit();
         }
     }
 
@@ -749,6 +814,9 @@ impl<H: SurfaceHost + 'static> State<H> {
             self.send_input(crate::InputEvent::KeyboardEnter { surface: new });
             self.report_keyboard();
         }
+        // (lock-int) An exit waiting for the old one's last frame waits
+        // for it no more.
+        self.lock_frame_shown(new);
         Some(new)
     }
 

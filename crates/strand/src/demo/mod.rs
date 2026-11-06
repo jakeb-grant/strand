@@ -153,7 +153,8 @@ impl LoopSync for Main<'_> {
     /// its layout facts to logic, then asks every surface for a frame.
     fn sync(&mut self) -> Result<(), Infallible> {
         let state = &mut *self.0;
-        let changes = state.host_mut().renderer.take_surface_changes();
+        let mut changes = state.host_mut().renderer.take_surface_changes();
+        crate::run::lock::faults::hold_lock_close(state, &mut changes);
         for (node, change) in changes {
             state.apply_surface_change(node, change);
         }

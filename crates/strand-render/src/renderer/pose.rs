@@ -112,6 +112,31 @@ impl Renderer {
         spec.kind == strand_scene::NodeKind::Lock && leaving && self.shown(Some(root))
     }
 
+    /// (lock-int) `surface` shows a lock that settled on its exit's end
+    /// (`Renderer::lock_settled`) and has drawn that frame: it paints
+    /// nothing more and wants no frame (a new size, which needs one, is
+    /// drawn) until the lock opens again or the surface goes.
+    pub(super) fn lock_frozen(&self, surface: SurfaceId) -> bool {
+        self.surfaces.get(&surface).is_some_and(|s| {
+            s.valid
+                && self
+                    .lock_settled
+                    .get(&s.root)
+                    .is_some_and(|drawn| drawn.contains(&surface))
+        })
+    }
+
+    /// (lock-int) `surface` drew a frame: one of a settled lock drew its
+    /// settled frame, and is frozen from now on.
+    pub(super) fn lock_drew(&mut self, surface: SurfaceId) {
+        let Some(root) = self.surfaces.get(&surface).map(|s| s.root) else {
+            return;
+        };
+        if let Some(drawn) = self.lock_settled.get_mut(&root) {
+            drawn.insert(surface);
+        }
+    }
+
     /// Unmounts the content kept for surface node `root`'s closing pose
     /// (it closed, or opened again and logic sent its content anew).
     pub(super) fn drop_closing_content(&mut self, root: NodeId) {
@@ -146,7 +171,15 @@ impl Renderer {
                 ExitKind::Close => {
                     self.closed.insert(id);
                     self.spec_dirty.insert(id);
-                    self.drop_closing_content(id);
+                    // (lock-int) A lock's goes when it no longer settles
+                    // (`refresh_specs`).
+                    if self
+                        .specs
+                        .get(&id)
+                        .is_none_or(|s| s.kind != strand_scene::NodeKind::Lock)
+                    {
+                        self.drop_closing_content(id);
+                    }
                 }
             }
         }

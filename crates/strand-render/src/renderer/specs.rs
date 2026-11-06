@@ -703,9 +703,12 @@ impl Renderer {
             // Surface poses: `enter` plays when it opens, `exit` before it
             // closes (it stays open until the pose settles).
             let reported = self.specs.get(&id).map(|s| s.open);
+            let was_closing = self.specs.get(&id).is_some_and(|s| s.closing);
             let reduced = self.anim.reduced();
             if spec.open {
                 self.closed.remove(&id);
+                // (lock-int) Opened again: a lock that settled draws anew.
+                self.lock_settled.remove(&id);
                 if self.anim.exiting(id) == Some(ExitKind::Close) {
                     self.anim.cancel_exit(id);
                     // Its pose may have sized it: the next layout lets go.
@@ -778,6 +781,11 @@ impl Renderer {
                 // asked for again from one still leaving.
                 spec.closing = spec.open && spec.kind == NodeKind::Lock;
             }
+            // (lock-int) A lock that closes now its exit has played out
+            // settles on that exit's last frame until its surface goes.
+            if spec.kind == NodeKind::Lock && was_closing && !spec.open {
+                self.lock_settled.entry(id).or_default();
+            }
             if !spec.open && reported == Some(true) {
                 // (popup-reopen) It closes now (its closing pose, if it
                 // had one, has ended): opened again, it enters from its
@@ -794,9 +802,15 @@ impl Renderer {
             // Content kept for a closing pose that is not playing (it
             // opened again, or closes at once after all) goes now; a
             // lock's stays while its content's exits play.
+            // (lock-int) A settled lock keeps it while a surface shows it.
+            if self.lock_settled.contains_key(&id) && !self.surfaces.values().any(|s| s.root == id)
+            {
+                self.lock_settled.remove(&id);
+            }
             if self.closing_content.contains_key(&id)
                 && self.anim.exiting(id) != Some(ExitKind::Close)
                 && !spec.closing
+                && !self.lock_settled.contains_key(&id)
             {
                 self.drop_closing_content(id);
             }
@@ -1037,6 +1051,7 @@ impl Renderer {
         self.held_reach.retain(|id, _| live.contains(id));
         self.opening.retain(|id| live.contains(id));
         self.closing_content.retain(|id, _| live.contains(id));
+        self.lock_settled.retain(|id, _| live.contains(id));
         self.spec_wanted.retain(|id, _| live.contains(id));
         if !requests.is_empty() && self.request_text(&requests) {
             // Shaped inline: size the surfaces with it at once.

@@ -653,6 +653,12 @@ impl Host {
         self.windows.get(&surface).and_then(|w| w.bounds).is_some()
     }
 
+    /// What wakes the main loop to hand surface changes over (`waking`).
+    #[cfg_attr(not(feature = "faults"), allow(dead_code))]
+    pub(crate) fn waker(&self) -> Option<calloop::ping::Ping> {
+        self.wake.clone()
+    }
+
     fn wake_if_changed(&self) {
         if self.renderer.has_surface_changes()
             && let Some(p) = &self.wake

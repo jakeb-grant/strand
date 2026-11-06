@@ -569,6 +569,8 @@ impl<H: SurfaceHost + 'static> CompositorHandler for State<H> {
         // (hypr-057) Shown: its idle inhibitor (idle.rs).
         self.sync_idle_inhibitor(id);
         self.mark(id);
+        // (lock-int) An exit may wait for this frame to show.
+        self.lock_frame_shown(id);
     }
 
     fn surface_enter(
@@ -685,6 +687,8 @@ impl<H: SurfaceHost + 'static> Dispatch2<WpPresentationFeedback, State<H>> for F
                     }
                     state.clock.presented(self.surface, presentation);
                     state.sync_idle_inhibitor(self.surface);
+                    // (lock-int) An exit may wait for this frame to show.
+                    state.lock_frame_shown(self.surface);
                 }
             }
             wp_presentation_feedback::Event::Discarded => {
@@ -695,6 +699,9 @@ impl<H: SurfaceHost + 'static> Dispatch2<WpPresentationFeedback, State<H>> for F
                     }
                     state.clock.discarded(self.surface);
                     state.sync_idle_inhibitor(self.surface);
+                    // (lock-int) Nothing newer comes to a lock that
+                    // settled: an exit waits for it no more.
+                    state.lock_frame_shown(self.surface);
                 }
             }
             _ => {}

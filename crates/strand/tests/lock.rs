@@ -4288,6 +4288,73 @@ fn the_locks_still_stays_drawn_as_it_plays_out() {
     vm.until("HEADLESS-1", "unlocked", Shot::desktop);
 }
 
+/// (lock-int) Between the exit's end and the unlock the lock keeps the
+/// exit's last frame on screen: the still, with no pose of its own, and
+/// the card gone. `lock_slow_close` hands render's report that the lock
+/// closed to strand-surface 400 ms late (a busy main loop), so whatever
+/// the lock draws in that gap stays up long enough for grim: every shot
+/// from the Return to the unlock shows the still, none the lock's `bg`
+/// alone. Before, render drew the lock with nothing kept in it the frame
+/// after it closed, and that frame could show for a moment before the
+/// unlock landed (the owner's "blip to dark"): here it would show for the
+/// whole hold. The unlock still comes from the exit, not the cap.
+#[test]
+fn the_locks_last_frame_stays_until_the_unlock() {
+    let test = "lock_exit_settled";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let config = exit_config_on(
+        &still_config(),
+        "exit { opacity: 0 }",
+        "ease(linear, 200ms)",
+    );
+    let mut vm = Vm::with(test, "lock_slow_close", &config);
+    let still = |s: &Shot| s.desktop_pixels() >= 320 * 6 && s.desktop_in_row(10) < s.w / 2;
+    vm.strand.cli(&["set", "lock.locked", "true"]);
+    vm.until("HEADLESS-1", "the card and the still", |s| {
+        near(s.corner(), LOCK_BG) && near(s.px(360, 200), CARD) && still(s)
+    });
+    vm.keys.type_text(PASSWORD);
+    vm.until("HEADLESS-1", "the typed password", |s| {
+        near(s.corner(), LOCK_TYPED)
+    });
+    vm.keys.enter("");
+    vm.until_log("the lock plays its way out");
+    let deadline = Instant::now() + WAIT;
+    let (mut shots, mut held) = (0, 0);
+    loop {
+        let s = vm.sway.shot("HEADLESS-1");
+        let log = vm.strand.log_text();
+        if log.contains("session lock: Unlocked") || s.desktop() {
+            break;
+        }
+        assert!(
+            still(&s),
+            "a shot before the unlock lost the still ({} desktop pixels, {} of the lock's bg): {}\n{log}",
+            s.desktop_pixels(),
+            s.pixels_of(LOCK_BG),
+            s.describe(),
+        );
+        shots += 1;
+        if log.contains("STRAND_FAULT lock_slow_close") {
+            held += 1;
+        }
+        assert!(Instant::now() < deadline, "never unlocked\n{log}");
+    }
+    vm.until("HEADLESS-1", "unlocked", Shot::desktop);
+    let log = vm.strand.log_text();
+    eprintln!("lock exit, settled: {shots} shots before the unlock, {held} in the hold");
+    assert!(
+        held >= 2,
+        "too few shots in the hold to tell ({held} of {shots})\n{log}"
+    );
+    assert!(
+        log.contains("lock: the exit ended after ") && !log.contains("ms cap: unlocking"),
+        "the exit did not end by itself:\n{log}"
+    );
+}
+
 /// (lock-polish review) A `screens: focused` lock whose monitor is
 /// unplugged as it plays its way out: its spec stays, but its content
 /// went with the output, so nothing is left to play and the exit ends

@@ -529,6 +529,81 @@ fn only_a_token_unlocks_whatever_the_shell_does() {
     assert_eq!(shot(&sway, "HEADLESS-1")[0], RED);
 }
 
+/// (lock-int) A lock that plays its way out unlocks once its last frame
+/// shows, not the moment its nodes close: the content commits the exit's
+/// last frame, render reports the lock closed before the compositor has
+/// presented that frame, and the session stays locked (input still going
+/// nowhere) until the frame's presentation comes, then unlocks, well
+/// inside `LOCK_EXIT_CAP`. Before, the unlock went with the close, and
+/// the compositor could show a frame from before the end (or render's
+/// next one) and then the desktop: the owner's flash.
+#[test]
+fn an_exit_unlocks_once_its_last_frame_shows() {
+    let test = "an_exit_unlocks_once_its_last_frame_shows";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let mut desk = desktop(&sway, 1);
+    let mut lock = locker(&sway);
+    let spec = |open: bool, closing: bool| {
+        let mut s = lock_spec(open);
+        s.open_two_way = true;
+        s.closing = closing;
+        s
+    };
+    lock.state_mut()
+        .apply_surface_change(LOCK, SurfaceChange::Created(spec(true, false)));
+    wait_lock(&mut lock, LockState::Locked);
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    let content = lock.state().lock_content().unwrap();
+
+    let since = std::time::Instant::now();
+    assert!(lock.state_mut().unlock_after_exit(token()));
+    assert!(lock.state().lock_leaving(), "the exit plays");
+    // Render holds the lock open while its exit plays.
+    lock.state_mut().apply_surface_change(
+        LOCK,
+        SurfaceChange::Updated {
+            spec: spec(true, true),
+            recreate: false,
+        },
+    );
+    // The exit's last frame, committed: its presentation comes with a
+    // later dispatch (paints run at a dispatch's end).
+    lock.state_mut().host_mut().fill = [0x40, 0x40, 0x40];
+    lock.state_mut().host_mut().painted.remove(&content);
+    lock.state_mut().repaint(content);
+    let painted = lock
+        .dispatch_until(WAIT, |s| s.host().painted.contains(&content))
+        .unwrap();
+    assert!(painted, "the exit's last frame was never painted");
+    // Render says the lock closed.
+    lock.state_mut().apply_surface_change(
+        LOCK,
+        SurfaceChange::Updated {
+            spec: spec(false, false),
+            recreate: false,
+        },
+    );
+    assert!(
+        !lock.state().host().locks.contains(&LockState::Unlocked),
+        "unlocked before the lock's last frame showed: {:?}",
+        lock.state().host().locks
+    );
+    assert!(lock.state().is_locked() && lock.state().lock_leaving());
+    wait_lock(&mut lock, LockState::Unlocked);
+    let took = since.elapsed();
+    assert!(
+        took < strand_surface::LOCK_EXIT_CAP,
+        "unlocked by the cap ({took:?}), not by the frame showing"
+    );
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    assert_eq!(shot(&sway, "HEADLESS-1")[0], RED, "the desktop again");
+}
+
 /// Keys typed while locked reach the content surface (a virtual
 /// keyboard), and a lock with no spec (`State::lock`, the binary's
 /// fallback when no lock is compiled) still gets a content surface.

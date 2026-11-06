@@ -4,7 +4,10 @@
 //! open while what left plays its `exit`, and says so
 //! (`SurfaceSpec::closing`), so strand-surface holds the unlock until the
 //! spec closes. What left with no pose of its own stays drawn as it was
-//! until then: the lock leaves as one screen, never empty.
+//! until then: the lock leaves as one screen, never empty. (lock-int)
+//! Closed, the lock keeps its exit's end on screen until its surface goes
+//! (the session unlocks): no frame after it draws the lock's background
+//! alone.
 
 mod common;
 
@@ -96,7 +99,8 @@ const CARD: [u8; 4] = [0xe0, 0xe0, 0xe0, 0xff];
 /// The card fades out while the box under it, which has no pose, stays
 /// drawn;
 /// the lock's spec stays open and says it is closing until the card's
-/// exit ends, then closes, and what it kept unmounts.
+/// exit ends, then closes; what it kept stays mounted while its surface
+/// shows it (lock-int) and unmounts once that goes.
 #[test]
 fn a_lock_stays_open_while_its_content_plays_out() {
     let (mut r, mut buf, [lock, still, card]) = lock(true);
@@ -145,7 +149,74 @@ fn a_lock_stays_open_while_its_content_plays_out() {
             && matches!(c, SurfaceChange::Updated { spec, .. } if !spec.open && !spec.closing)),
         "strand-surface hears it closed"
     );
+    assert!(r.tree().ghost_count() > 0, "the still kept while shown");
+    r.detach_surface(LOCK);
+    r.update();
     assert_eq!(r.tree().ghost_count(), 0, "what it kept unmounted");
+}
+
+/// (lock-int) Closed once its exit has played, the lock keeps its last
+/// frame until its surface goes: the frame after the close draws the
+/// exit's end (the box with no pose, the card gone), and none after that
+/// draws anything or wants to, so the compositor never shows the lock's
+/// background alone in the moment before the unlock lands. Before, the
+/// frame after the close unmounted the box and drew the lock's blue alone
+/// (the owner's "blip to dark": a near-black `bg` under a still of the
+/// desktop). Opened again, it draws anew.
+#[test]
+fn a_closed_lock_keeps_its_exits_end_until_it_goes() {
+    // The lock's #2050d0, as the buffer holds it (BGRA).
+    const BLUE: [u8; 4] = [0xd0, 0x50, 0x20, 0xff];
+    let (mut r, mut buf, [lock, still, card]) = lock(true);
+    close(&mut r, lock, &[still, card]);
+    let mut k = 1;
+    while r.surface_spec(lock).is_some_and(|s| s.open) {
+        buf.paint_at(&mut r, LOCK, 1, frame(k));
+        k += 1;
+        assert!(k < 200, "the lock never closed");
+    }
+    assert_eq!(buf.px(10, 100), GREEN);
+    assert_eq!(buf.px(160, 100), GREEN, "the card gone");
+    // The frames after the close: each keeps the exit's end, whatever it
+    // drew (a whole new buffer each time here, as a presented frame is).
+    for j in 0..4 {
+        let mut fresh = Buffer::new(320, 200, Scale::ONE);
+        let wanted = r.wants_frame(LOCK);
+        let d = fresh.paint_at(&mut r, LOCK, 0, frame(k + j));
+        if d.is_empty() {
+            assert!(j > 0, "the settled frame is drawn once");
+            assert!(
+                !wanted,
+                "frame {j} after the close: wanted with nothing to draw"
+            );
+            continue;
+        }
+        assert_eq!(j, 0, "frame {j} after the close drew again: {d:?}");
+        assert_eq!(
+            fresh.px(10, 100),
+            GREEN,
+            "the frame after the close lost the box"
+        );
+        assert_ne!(fresh.px(10, 100), BLUE);
+        assert_eq!(fresh.px(160, 100), GREEN, "the card stays gone");
+    }
+    assert!(!r.wants_frame(LOCK), "frozen until it goes");
+    // Opened again (the lock asked for again): it draws anew.
+    let again = NodeId::new(100, 0);
+    let mut d = SceneDiff::new();
+    d.create(again, NodeKind::Box, Some(lock), u32::MAX);
+    d.set(again, Prop::Bg, color("#ff0000"))
+        .set(again, Prop::Size, num(20.0));
+    d.set(lock, Prop::Open, PropValue::Bool(true));
+    assert!(r.apply(d).is_empty());
+    assert!(r.wants_frame(LOCK), "opened again, it draws");
+    let mut fresh = Buffer::new(320, 200, Scale::ONE);
+    assert!(!fresh.paint_at(&mut r, LOCK, 0, frame(k + 10)).is_empty());
+    assert_eq!(
+        fresh.px(10, 100),
+        BLUE,
+        "the kept box gone for logic's content"
+    );
 }
 
 /// A lock whose content has no exit closes in the diff that closes it:
@@ -318,5 +389,7 @@ fn an_exit_under_a_node_with_none_plays() {
     );
     let spec = r.surface_spec(lock).cloned().unwrap();
     assert!(!spec.open && !spec.closing, "closed once it has played out");
+    r.detach_surface(LOCK);
+    r.update();
     assert_eq!(r.tree().ghost_count(), 0, "what it kept unmounted");
 }
