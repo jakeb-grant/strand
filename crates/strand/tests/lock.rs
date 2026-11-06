@@ -3442,6 +3442,7 @@ fn a_lock_whose_gpu_stalls_goes_on_on_the_cpu() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+    let drew = renewed.elapsed();
     // (lock-int review) The renewal is no focus loss: the state the lock
     // is bound to stays true (the keyboard's leave of the old surface
     // closed the new one's lock, and the field was cleared), and nothing
@@ -3459,7 +3460,7 @@ fn a_lock_whose_gpu_stalls_goes_on_on_the_cpu() {
         "lock gpu stall: renewed {} ms after the fault armed, its first CPU frame {} ms after \
          that; the middle of the password was typed {} the renewal",
         renewed.duration_since(armed).as_millis(),
-        renewed.elapsed().as_millis(),
+        drew.as_millis(),
         if before { "before" } else { "after" }
     );
     let log = vm.strand.log_text();
@@ -3961,6 +3962,84 @@ fn the_exit_cap_unlocks_an_exit_that_does_not_settle() {
              pose 8 s)\n{log}"
         );
     }
+}
+
+/// (lock-int, second review) The GPU thread stalls under a presented lock
+/// as it plays its way out (`gpu_stall_exit`: it stops for good after the
+/// first frame it presents once the password was accepted), the card's
+/// exit 8 s long, past the cap. The renewal lands inside the exit, on a
+/// fresh surface drawn on the CPU, and the session stays locked until the
+/// unlock, which comes no sooner than the renewal: no shot grabbed back to
+/// back from the Return shows the desktop before it. (The renewal ends the
+/// exit there today: render reaps the exits of a surface that goes, so the
+/// unlock follows the renewal rather than the cap; decisions.md lock-int.
+/// Either end passes.)
+#[test]
+fn a_lock_whose_gpu_stalls_as_it_plays_out_stays_locked_until_it_unlocks() {
+    let test = "lock_gpu_stall_exit";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let source = exit_config_on(GLOW_CONFIG, "exit { opacity: 0 }", "ease(linear, 8s)");
+    let mut vm = Vm::gpu(test, "gpu_stall_exit", &source);
+    vm.lock();
+    vm.until_locked("HEADLESS-1", "the card", true, |s| near(s.card(), CARD));
+    let mut on = false;
+    let old = vm.until_presented(&mut on);
+    vm.keys.type_text(PASSWORD);
+    let at = Instant::now();
+    vm.keys.enter("");
+    let deadline = Instant::now() + WAIT;
+    let mut shots = 0;
+    loop {
+        let s = vm.sway.shot("HEADLESS-1");
+        if s.desktop() {
+            break;
+        }
+        if let Some((x, y)) = s.desktop_anywhere() {
+            panic!(
+                "the desktop showed at {x},{y} before the unlock: {}\n{}",
+                s.describe(),
+                vm.strand.log_text()
+            );
+        }
+        shots += 1;
+        assert!(
+            Instant::now() < deadline,
+            "never unlocked\n{}",
+            vm.strand.log_text()
+        );
+    }
+    let took = at.elapsed();
+    let log = vm.strand.log_text();
+    let exit = log.find("the lock plays its way out");
+    let armed = log.find("STRAND_FAULT gpu_stall_exit");
+    let renewed = log.find(&format!(
+        "lock: surface {old} is drawn on the CPU from now on, as surface "
+    ));
+    let unlocked = log.find("session lock: Unlocked");
+    assert!(
+        matches!(
+            (exit, armed, renewed, unlocked),
+            (Some(e), Some(a), Some(r), Some(u)) if e < a && a < r && r < u
+        ),
+        "the stall's renewal did not land inside the exit (exit {exit:?}, armed {armed:?}, \
+         renewed {renewed:?}, unlocked {unlocked:?}):\n{log}"
+    );
+    assert!(
+        log.contains(&format!(
+            "lock: the GPU failed surface {old} (its GPU thread stalled)"
+        )),
+        "{log}"
+    );
+    let end = log
+        .lines()
+        .find(|l| l.contains("lock: the exit ended after ") || l.contains("ms cap: unlocking"))
+        .unwrap_or_else(|| panic!("the exit never ended:\n{log}"));
+    eprintln!(
+        "lock gpu stall in the exit: {shots} shots locked, unlocked {took:?} after the Return \
+         ({end})"
+    );
 }
 
 /// (lock-polish) Keys typed while the lock plays its way out go nowhere:

@@ -329,8 +329,10 @@ monitor, the keyboard always).
   whether it starts open or closed; a handler in an `if` or `match`
   branch, a `for` row or a `popup` that mounts later may run after one
   written below it.
-  A `popup` mounts its content each time it opens, and the `lock`'s
-  handlers run as below. (decisions.md panel-change-closed)
+  A `popup` and the `lock` mount their content each time they open
+  (the lock's `enter` poses play at every lock; decisions.md
+  lock-polish), and the `lock`'s handlers run as below.
+  (decisions.md panel-change-closed)
 - **`popup { … }`** is an element, not a top-level surface: it is
   anchored to its parent element, shows while its `open` is true, nests
   (a popup may hold popups), and has `on dismiss` (Escape or a click

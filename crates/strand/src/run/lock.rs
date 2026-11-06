@@ -1619,11 +1619,20 @@ pub(crate) mod faults {
 
     /// (lock-gpu) A lock surface's frame was presented by the GPU
     /// thread: `gpu_stall` stops that thread for good at its next reply
-    /// ([`gpu_waker`]), a GPU that hangs under a presented lock.
+    /// ([`gpu_waker`]), a GPU that hangs under a presented lock;
+    /// `gpu_stall_exit` does so only once the lock plays its way out
+    /// (`leaving`), so its renewal lands inside the exit.
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
-    pub(crate) fn lock_presented() {
-        if on("gpu_stall") && !GPU_STALL.swap(true, Ordering::AcqRel) {
-            log::warn!("STRAND_FAULT gpu_stall");
+    pub(crate) fn lock_presented(leaving: bool) {
+        let fault = if on("gpu_stall") {
+            "gpu_stall"
+        } else if leaving && on("gpu_stall_exit") {
+            "gpu_stall_exit"
+        } else {
+            return;
+        };
+        if !GPU_STALL.swap(true, Ordering::AcqRel) {
+            log::warn!("STRAND_FAULT {fault}");
         }
     }
 
@@ -1751,7 +1760,7 @@ pub(crate) mod faults {
     pub(crate) fn marked(_: bool) {}
     #[inline(always)]
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
-    pub(crate) fn lock_presented() {}
+    pub(crate) fn lock_presented(_: bool) {}
     #[inline(always)]
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
     pub(crate) fn gpu_waker() {}

@@ -1930,8 +1930,9 @@ Public interfaces:
     that dirtied it, noting the value and running no handler, then once
     more on resume: it runs for what it missed and for a change in the
     tick that opens it, compared with the tick before (decisions.md
-    panel-change-closed). A `popup` unmounts instead, and the lock's
-    content and logic use plain `suspend`. The instance, not render,
+    panel-change-closed). A `popup`'s and (lock-polish) the `lock`'s
+    content unmount instead; the lock's logic (`lock_logic`) uses
+    plain `suspend`. The instance, not render,
     sends `show`/`hide`.
   - Runtime errors are located values (`RuntimeError`), the span the
     innermost failing operation's. `Instance::origin(node)` maps a scene

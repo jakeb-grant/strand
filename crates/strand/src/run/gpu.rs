@@ -583,7 +583,7 @@ mod host {
                     }
                     GpuReply::Presented { surface, .. } => {
                         if self.attached.get(surface).is_some_and(|a| a.lock) {
-                            super::super::lock::faults::lock_presented();
+                            super::super::lock::faults::lock_presented(state.lock_leaving());
                         }
                         if let Some(p) = self.presented.get_mut(surface) {
                             p.in_flight = false;
