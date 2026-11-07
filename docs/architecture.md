@@ -248,7 +248,8 @@ optional one.
 
 ```
 No Strand dependency:
-  strand-scene            shared vocabulary: ids, geometry, colour, scene protocol, Painter
+  strand-scene            shared vocabulary: ids, geometry, colour, scene protocol, Painter,
+                          key patterns and text markup (shared by checker, VM and render)
   strand-core             the reactive graph; its `ipc` (serde_json) is shared by
                           strand, strand-services and strand-dev
   strand-watch            EventSink, CompositorEvent; portal follow
@@ -1339,6 +1340,15 @@ is being saved, so the idle-wakeup windows hold.
     `NodeEvent::Claim { handler, key }`, which the host hands to
     `Instance::claim`: that claim's handler alone runs, never `route`'s
     bubbling through observers.
+  - **Markup** (doc-formats). `strand_scene::markup::parse(text, level,
+    limit)` is the one reading of a text's `markup:` (`Level::Basic`,
+    `Level::Html`): the shown text, its styled runs (bold, italic,
+    underline, strike, mono, link; ordered, never overlapping) and the
+    links' hrefs as written. Render maps the runs to `TextSpan`s (passing
+    `MAX_TEXT_BYTES` as the limit); the VM's `plain(markup)` and
+    `links(markup)` call it with no limit. The named character references
+    are a generated static table (`scripts/gen-html-entities.py`), since
+    the compiler builds to wasm. Pure, linear in its input, never fails.
   - **Virtualised lists.** On a `list` whose direct child is a `for`,
     logic sets `Prop::RowCount` and `Prop::RowFirst`, and `Create`/
     `Remove` carry `window: true` for rows the window mounts or unmounts
