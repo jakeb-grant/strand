@@ -13,6 +13,7 @@ pub mod geometry;
 pub mod id;
 pub mod input;
 pub mod keys;
+pub mod markup;
 pub mod motion;
 pub mod paint;
 pub mod placement;

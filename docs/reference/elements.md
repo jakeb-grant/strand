@@ -789,7 +789,7 @@ Also every prop and event of [`node`](#node).
 | `max_lines` | `int` | At most this many lines. |
 | `marks` | `[Range]` | Character ranges to highlight: `marks: h.ranges`. |
 | `mark_color` | `paint` | The paint of `marks`. |
-| `markup` | `Markup` | `basic` renders simple markup. |
+| `markup` | `Markup` | Tags in the text as styles: `basic` for notification bodies, `html` for HTML fragments (summaries, release notes); `none` shows them as written. |
 | `roll` | `bool` | Rolls the digits when the number changes: `roll: true`. |
 | `text_stroke` | `length, paint` | An outline around the letters: `text_stroke: 1, $bg`. |
 | `fill` | `paint` | The paint of the letters: `fill: linear(…)`. |

@@ -1246,6 +1246,38 @@ fn markup_basic_paints_spans() {
     assert_matches_ref("layout_markup", &buf, TOLERANCE);
 }
 
+/// (doc-formats) `markup: html` reads an HTML fragment: a bold heading,
+/// paragraphs and lists as lines, code in a monospace face, struck text
+/// struck through, a link in `$accent`, a script dropped and `&mdash;`
+/// decoded. (The pixel tests' one vendored font has no monospace face, so
+/// `code` falls back to it here; strand-text's
+/// `strikethrough_and_mono_spans_shape` shows the family override with
+/// the system's DejaVu Sans Mono.)
+#[test]
+fn markup_html_paints_blocks() {
+    let (d, root) = panel(300, 200, |b, root| {
+        let row = b.node(NodeKind::Row, Some(root), vec![(Prop::Pad, num(8.0))]);
+        b.node(
+            NodeKind::Text,
+            Some(row),
+            vec![
+                (
+                    Prop::Text,
+                    text(
+                        "<h2>Release 1.2</h2>\n<p>Faster <code>startup</code> &mdash; \
+                         <s>fewer</s> no crashes.</p>\n<p>See <a href=\"https://example.org\">\
+                         the notes</a>.</p><script>alert(1)</script>\n\
+                         <ul><li>one</li><li>two</li></ul><ol start=\"3\"><li>three</li></ol>",
+                    ),
+                ),
+                (Prop::Markup, kw("html")),
+            ],
+        );
+    });
+    let (_r, buf) = show(d, root, 300, 200, Scale::ONE);
+    assert_matches_ref("layout_markup_html", &buf, TOLERANCE);
+}
+
 /// The design's launcher: a content-sized panel holding `col { width }`
 /// over a `list { max_height: 420 }` of 2,000 rows. The list's cap is what
 /// its column sees (it does not grow to every row), the surface asks for a

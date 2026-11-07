@@ -3978,3 +3978,34 @@ page   = "site/how-to/dbus-and-actions.md"
 text   = "record `type` of your own or a list is read from JSON or XML"
 source = ['docs/spec.md "JSON or XML (the root element as `T`)"']
 proof  = "crates/strand/src/run/exec.rs::tests::a_commands_xml_is_read_as_its_declared_type"
+
+# --- html-text (doc-formats) ---
+[[claim]]
+page   = "site/how-to/html-text.md"
+text   = "Malformed HTML never fails: an unclosed tag ends at the end of the"
+source = ['crates/strand-scene/src/markup/mod.rs "never fails, and the work is linear in the input."']
+proof  = "crates/strand-scene/src/markup/tests.rs::malformed_html_never_fails_and_stays_linear"
+
+[[claim]]
+page   = "site/how-to/html-text.md"
+text   = "- **Tables are rows.** Each row is one line, its cells joined by ` · `."
+source = ['crates/strand-scene/src/markup/mod.rs "self.out.push_str(" · ");"']
+proof  = "crates/strand-scene/src/markup/tests.rs::html_tables_are_rows"
+
+[[claim]]
+page   = "site/how-to/html-text.md"
+text   = "`t.links(html)` is the targets of its links, in order, as written: a"
+source = ['crates/strand-compiler/src/schema/builtin.schema "The links `markup: m` finds, in order, as written"']
+proof  = "crates/strand-compiler/tests/flex.rs::text_plain_and_links_read_markup"
+
+[[claim]]
+page   = "site/how-to/html-text.md"
+text   = "text unchanged. The level is required, so a search never drops text you"
+source = ['crates/strand-compiler/src/schema/builtin.schema "fn plain(markup: Markup) -> text"']
+proof  = "crates/strand-compiler/tests/checker.rs::markup_html_and_plain_are_checked (plain() without it is check::missing_arg)"
+
+[[claim]]
+page   = "site/how-to/notifications.md"
+text   = "it shows any other tag as written, so `Vec<T>` in a body reads right."
+source = ['crates/strand-scene/src/markup/mod.rs "`Vec<T>`, `<span>`) is kept as text"']
+proof  = "crates/strand-scene/src/markup/tests.rs::basic_is_unchanged"
