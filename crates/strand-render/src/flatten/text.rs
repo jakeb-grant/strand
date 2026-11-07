@@ -254,9 +254,8 @@ pub(super) fn marks(
         .map(|range| TextSpan {
             range,
             weight: color.is_none().then_some(700),
-            italic: false,
-            underline: false,
             color,
+            ..TextSpan::default()
         })
         .collect()
 }

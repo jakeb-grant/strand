@@ -20,6 +20,7 @@ pub use engine::{FontConfig, MAX_FONT_PX, MAX_TEXT_BYTES, SUBPIXEL_STEPS, TextEn
 pub use worker::{HookGate, TextError, TextWorker, Waker, set_idle_hook};
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use strand_scene::{Color, Font, LogicalSize, Rect, Scale};
 
@@ -72,6 +73,14 @@ pub struct TextSpan {
     /// Underlines these glyphs (markup `<u>` and links): the run carries
     /// the line in [`GlyphRun::underline`].
     pub underline: bool,
+    /// (doc-formats) Strikes these glyphs through (markup `<s>`): the run
+    /// carries the line in [`GlyphRun::strike`].
+    pub strikethrough: bool,
+    /// (doc-formats) Overrides the font family of these glyphs: a family
+    /// or a CSS-style list (`"JetBrains Mono, monospace"`, markup
+    /// `<code>`), with a generic family appended when it names none, as
+    /// [`TextStyle::font`]'s is.
+    pub family: Option<Arc<str>>,
     /// Overrides the paint colour of these glyphs ([`GlyphRun::color`]).
     pub color: Option<Color>,
 }
@@ -128,6 +137,9 @@ pub struct GlyphRun {
     /// The underline of an underlined span, physical pixels relative to
     /// the layout origin; painted in the run's colour.
     pub underline: Option<Rect>,
+    /// (doc-formats) The line through a struck span, as
+    /// [`GlyphRun::underline`], from the font's strikeout metrics.
+    pub strike: Option<Rect>,
 }
 
 /// A caret stop: a cluster boundary of the shaped text, where a text

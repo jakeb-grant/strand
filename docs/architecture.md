@@ -2078,7 +2078,12 @@ text, style, max_width, scale }` → `TextLayout` (size, glyph runs,
 caret stops). `TextStyle` (font, line height, alignment, ellipsis,
 `max_lines`, `spans`) is documented in `strand-text/src/lib.rs`; weight
 picks a face by CSS font matching and synthesises bold only for 600+ on
-a face lighter than 600. Render draws the last delivered layout.
+a face lighter than 600. A `TextSpan` sets a range's weight, italic,
+colour, underline, strikethrough and (doc-formats) font family (a CSS
+list, a generic appended when it names none, as for the style's font);
+each `GlyphRun` carries its span's `underline` and `strike` rects, which
+render paints in the run's colour. Render draws the last delivered
+layout.
 
 Contracts render relies on:
 

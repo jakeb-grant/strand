@@ -115,6 +115,7 @@ pub fn parse(src: &str, link: Option<Color>) -> (String, Vec<TextSpan>) {
                 italic: st.italic,
                 underline: st.underline || st.link,
                 color: if st.link { link } else { None },
+                ..TextSpan::default()
             });
         }
         *run = out.len();
