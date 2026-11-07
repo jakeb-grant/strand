@@ -167,7 +167,11 @@ fn lock_filter() -> Vec<PropValue> {
 /// still before its first frame as `strand run` feeds a lock
 /// (`first_feed_demand`): returns it before that frame.
 fn lock_scene(logical: (f32, f32)) -> (Renderer, Buffer, [NodeId; 2]) {
-    let scale = Scale::new(180).unwrap();
+    lock_scene_at(logical, Scale::new(180).unwrap())
+}
+
+/// [`lock_scene`] at `scale`.
+fn lock_scene_at(logical: (f32, f32), scale: Scale) -> (Renderer, Buffer, [NodeId; 2]) {
     let (mut r, buf, ids) = scene(logical, scale, lock_filter(), true);
     r.update();
     let frame = still(buf.size.w, buf.size.h);
@@ -479,6 +483,17 @@ fn blur_ready_report() {
                 }
             }
         }
+        drop(r);
+
+        // The laptop's screen (1920 × 1200 at scale 1): the frame that
+        // first shows the copy, on the CPU.
+        let (mut r, mut buf, _) = lock_scene_at((1920.0, 1200.0), Scale::ONE);
+        buf.paint_at(&mut r, S, 0, at(0));
+        let (g0, _) = r.build_times();
+        let t = Instant::now();
+        buf.paint_at(&mut r, S, 1, at(1));
+        add("1920x1200@1 cpu frame 2", ms(t.elapsed()));
+        add("1920x1200@1 cpu frame 2: group", ms(r.build_times().0 - g0));
         drop(r);
 
         // The filters alone at the group's size (960 × 540, σ 13.5).

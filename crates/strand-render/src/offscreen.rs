@@ -713,8 +713,35 @@ pub fn blur(px: &mut [u8], w: usize, h: usize, sigma: f32) {
 /// [`blur`], reading `edges` past the pixels' edges ([left, top, right,
 /// bottom]).
 pub(crate) fn blur_edge(px: &mut [u8], w: usize, h: usize, sigma: f32, edges: [Edge; 4]) {
+    blur_edge_lanes(px, w, h, sigma, edges);
+}
+
+/// (blur-ready) Work, in pixels times taps, from which a blur is split
+/// into bands of rows on the raster's helpers ([`crate::raster::share`]):
+/// about a millisecond of one core's, ten times a helper's start.
+const BANDED_WORK: usize = 1 << 22;
+
+/// [`blur_edge`]; returns the threads that ran it (1: on the calling
+/// thread alone).
+///
+/// (blur-ready) A large blur runs in bands of output rows on the
+/// raster's helpers, each band as the whole blur runs (its rows' row
+/// passes into a ring, then each output row's column pass in kernel
+/// order), so every pixel's sums are the same, in the same order, and
+/// the pixels are the same byte for byte. A band also reads the `r`
+/// rows above and below it, which the bands beside it overwrite: those
+/// come from a copy taken before the bands start. The helpers are
+/// joined before it returns (idle is zero work), and the heap is each
+/// band's ring and the copied rows, freed on return.
+pub(crate) fn blur_edge_lanes(
+    px: &mut [u8],
+    w: usize,
+    h: usize,
+    sigma: f32,
+    edges: [Edge; 4],
+) -> usize {
     if !(sigma.is_finite() && sigma > 0.0) || w == 0 || h == 0 || px.len() < w * h * 4 {
-        return;
+        return 1;
     }
     let r = (3.0 * sigma).ceil() as usize;
     let kernel: Vec<f32> = {
@@ -727,13 +754,97 @@ pub(crate) fn blur_edge(px: &mut [u8], w: usize, h: usize, sigma: f32, edges: [E
         let sum: f32 = k.iter().sum();
         k.into_iter().map(|v| v / sum).collect()
     };
+    let stride = w * 4;
+    let px = &mut px[..h * stride];
+    // Bands of at least 2r rows (each also passes the 2r rows around
+    // it), one per thread that may run.
+    #[cfg(test)]
+    let worth = w * h * (2 * r + 1) >= BANDED_WORK || ALWAYS_BAND.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    let worth = w * h * (2 * r + 1) >= BANDED_WORK;
+    let lanes = if worth {
+        crate::raster::threads().min(h / (2 * r).max(1))
+    } else {
+        1
+    };
+    if lanes < 2 {
+        blur_band(px, &[], &[], (0, h), w, h, r, &kernel, edges);
+        return 1;
+    }
+    let rows = h.div_ceil(lanes);
+    let bands: Vec<(usize, usize)> = (0..h)
+        .step_by(rows)
+        .map(|y0| (y0, (y0 + rows).min(h)))
+        .collect();
+    // The rows each band reads that the others write, copied first.
+    let halos: Vec<(Vec<u8>, Vec<u8>)> = bands
+        .iter()
+        .map(|&(y0, y1)| {
+            let (lo, hi) = (y0.saturating_sub(r), (y1 + r).min(h));
+            (
+                px[lo * stride..y0 * stride].to_vec(),
+                px[y1 * stride..hi * stride].to_vec(),
+            )
+        })
+        .collect();
+    let slices: Vec<std::sync::Mutex<&mut [u8]>> = px
+        .chunks_mut(rows * stride)
+        .map(std::sync::Mutex::new)
+        .collect();
+    let mut states = vec![(); bands.len()];
+    #[cfg(test)]
+    let tids = std::sync::Mutex::new(Vec::new());
+    let ran = crate::raster::share(&mut states, bands.len(), |_, i| {
+        #[cfg(test)]
+        if let Ok(mut t) = tids.lock() {
+            // SAFETY: gettid has no preconditions.
+            t.push(unsafe { libc::gettid() } as i64);
+        }
+        let mut band = slices[i]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (above, below) = &halos[i];
+        blur_band(&mut band, above, below, bands[i], w, h, r, &kernel, edges);
+    });
+    #[cfg(test)]
+    LAST_TIDS.with(|t| *t.borrow_mut() = tids.into_inner().unwrap_or_default());
+    ran
+}
+
+#[cfg(test)]
+thread_local! {
+    /// (tests) The threads the last banded filter called on this thread
+    /// ran its bands on.
+    static LAST_TIDS: RefCell<Vec<i64>> = const { RefCell::new(Vec::new()) };
+    /// (tests) This thread's filters split whatever their work, so small
+    /// buffers test the bands.
+    static ALWAYS_BAND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The blur of output rows `y0..y1` (`band`, whose input pixels it
+/// overwrites in place), reading the input rows above it from `above`
+/// (rows `y0 − r..y0`, clamped) and below it from `below` (rows
+/// `y1..y1 + r`, clamped): the whole blur with `y0 = 0` and `y1 = h`.
+#[allow(clippy::too_many_arguments)]
+fn blur_band(
+    band: &mut [u8],
+    above: &[u8],
+    below: &[u8],
+    (y0, y1): (usize, usize),
+    w: usize,
+    h: usize,
+    r: usize,
+    kernel: &[f32],
+    edges: [Edge; 4],
+) {
+    let stride = w * 4;
+    let (lo, hi) = (y0.saturating_sub(r), (y1 + r).min(h));
     // Rows are blurred into a ring of the `2r + 1` rows the column pass
     // reads (f32, as the columns need them), and each output row is
     // written back in place once its rows are in: a row read for the ring
     // is always below every row written so far. The heap is the ring,
     // not a copy of the whole group.
-    let ring_rows = (2 * r + 1).min(h);
-    let stride = w * 4;
+    let ring_rows = (2 * r + 1).min(hi - lo);
     let mut ring = vec![0f32; ring_rows * stride];
     let mut out = vec![0f32; stride];
     // (lock-blur) A row padded by `r` pixels each side (zero, or its edge
@@ -741,11 +852,17 @@ pub(crate) fn blur_edge(px: &mut [u8], w: usize, h: usize, sigma: f32, edges: [E
     // which the compiler vectorises: the same sums in the same order as
     // one pixel at a time (a tap past a transparent edge adds zero).
     let mut padded = vec![0f32; stride + 2 * r * 4];
-    let mut next = 0;
-    for y in 0..h {
+    let mut next = lo;
+    for y in y0..y1 {
         let last = (y + r).min(h - 1);
         while next <= last {
-            let row = &px[next * stride..(next + 1) * stride];
+            let row = if next < y0 {
+                &above[(next - lo) * stride..(next - lo + 1) * stride]
+            } else if next >= y1 {
+                &below[(next - y1) * stride..(next - y1 + 1) * stride]
+            } else {
+                &band[(next - y0) * stride..(next - y0 + 1) * stride]
+            };
             for (d, s) in padded[r * 4..r * 4 + stride].iter_mut().zip(row) {
                 *d = *s as f32;
             }
@@ -792,7 +909,7 @@ pub(crate) fn blur_edge(px: &mut [u8], w: usize, h: usize, sigma: f32, edges: [E
                 *o += k * v;
             }
         }
-        let dst = &mut px[y * stride..(y + 1) * stride];
+        let dst = &mut band[(y - y0) * stride..(y - y0 + 1) * stride];
         for (d, acc) in dst.chunks_exact_mut(4).zip(out.chunks_exact(4)) {
             let a = acc[3].round().clamp(0.0, 255.0);
             d[3] = a as u8;
@@ -929,22 +1046,101 @@ pub(crate) fn upscale(
 /// column an offset in 0..1) to premultiplied pixels whose red and blue
 /// are swapped (the raster's BGRA order).
 pub fn color_matrix(px: &mut [u8], m: &[f32; 20]) {
-    for p in px.chunks_exact_mut(4) {
-        let a = p[3] as f32 / 255.0;
-        let un = |c: u8| if a > 0.0 { c as f32 / 255.0 / a } else { 0.0 };
-        // Stored b, g, r, a.
-        let v = [un(p[2]), un(p[1]), un(p[0]), a];
-        let row = |i: usize| {
-            let r = &m[i * 5..i * 5 + 5];
-            (r[0] * v[0] + r[1] * v[1] + r[2] * v[2] + r[3] * v[3] + r[4]).clamp(0.0, 1.0)
-        };
-        let (r, g, b, na) = (row(0), row(1), row(2), row(3));
-        let q = |c: f32| (c * na * 255.0).round().clamp(0.0, 255.0) as u8;
-        p[0] = q(b);
-        p[1] = q(g);
-        p[2] = q(r);
-        p[3] = (na * 255.0).round() as u8;
+    color_matrix_lanes(px, m);
+}
+
+/// (blur-ready) Pixels from which a colour matrix is split into bands
+/// on the raster's helpers: about a millisecond of one core's.
+const MATRIX_BANDED: usize = 1 << 18;
+
+/// [`color_matrix`]; returns the threads that ran it.
+///
+/// (blur-ready) Each pixel goes through the same float operations as
+/// before, so the pixels are the same byte for byte; what changed is how
+/// often they run. A straight channel `c / 255 / a` is looked up in a
+/// table of the same expression, filled one alpha at a time as the
+/// pixels show it (a blurred still is mostly opaque: one row of 256); a
+/// transparent pixel, whose result depends only on the matrix's offsets,
+/// is worked out once; and a large buffer is split into bands on the
+/// raster's helpers, joined before it returns.
+pub(crate) fn color_matrix_lanes(px: &mut [u8], m: &[f32; 20]) -> usize {
+    let n = px.len() / 4;
+    let px = &mut px[..n * 4];
+    let mut clear = [0u8; 4];
+    matrix_pixel(&mut clear, m, None);
+    #[cfg(test)]
+    let worth = n >= MATRIX_BANDED || ALWAYS_BAND.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    let worth = n >= MATRIX_BANDED;
+    let lanes = if worth {
+        crate::raster::threads().min(n.max(1))
+    } else {
+        1
+    };
+    if lanes < 2 {
+        matrix_band(px, m, clear);
+        return 1;
     }
+    let per = n.div_ceil(lanes) * 4;
+    let slices: Vec<std::sync::Mutex<&mut [u8]>> =
+        px.chunks_mut(per).map(std::sync::Mutex::new).collect();
+    let mut states = vec![(); slices.len()];
+    crate::raster::share(&mut states, slices.len(), |_, i| {
+        let mut band = slices[i]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        matrix_band(&mut band, m, clear);
+    })
+}
+
+/// [`color_matrix`] over `px` on this thread, `clear` its result for a
+/// transparent pixel.
+fn matrix_band(px: &mut [u8], m: &[f32; 20], clear: [u8; 4]) {
+    // `c / 255 / a` by alpha and channel, each alpha's row filled when a
+    // pixel first shows it (zeroed by the allocator, so the rows never
+    // shown take no pages).
+    let mut table = vec![0f32; 256 * 256];
+    let mut filled = [false; 256];
+    for p in px.chunks_exact_mut(4) {
+        let alpha = p[3] as usize;
+        if alpha == 0 {
+            p.copy_from_slice(&clear);
+            continue;
+        }
+        let row = &mut table[alpha * 256..(alpha + 1) * 256];
+        if !filled[alpha] {
+            let a = p[3] as f32 / 255.0;
+            for (c, v) in row.iter_mut().enumerate() {
+                *v = c as f32 / 255.0 / a;
+            }
+            filled[alpha] = true;
+        }
+        matrix_pixel(p, m, Some(row));
+    }
+}
+
+/// One pixel of [`color_matrix`]: `un`, its alpha's row of `c / 255 /
+/// a` (computed here when `None`).
+#[inline(always)]
+fn matrix_pixel(p: &mut [u8], m: &[f32; 20], un: Option<&[f32]>) {
+    let a = p[3] as f32 / 255.0;
+    let un = |c: u8| match un {
+        Some(row) if a > 0.0 => row[c as usize],
+        _ if a > 0.0 => c as f32 / 255.0 / a,
+        _ => 0.0,
+    };
+    // Stored b, g, r, a.
+    let v = [un(p[2]), un(p[1]), un(p[0]), a];
+    let row = |i: usize| {
+        let r = &m[i * 5..i * 5 + 5];
+        (r[0] * v[0] + r[1] * v[1] + r[2] * v[2] + r[3] * v[3] + r[4]).clamp(0.0, 1.0)
+    };
+    let (r, g, b, na) = (row(0), row(1), row(2), row(3));
+    let q = |c: f32| (c * na * 255.0).round().clamp(0.0, 255.0) as u8;
+    p[0] = q(b);
+    p[1] = q(g);
+    p[2] = q(r);
+    p[3] = (na * 255.0).round() as u8;
 }
 
 /// A CPU raster node's pixels (S-effects: particles, grain, graphs,
@@ -1340,6 +1536,276 @@ mod tests {
             blur(&mut px, w, h, sigma);
             assert!(px == whole, "{w}×{h} σ {sigma}");
         }
+    }
+
+    /// The blur as it was before blur-ready: the whole of it on one
+    /// thread, a ring of row passes and each output row's column pass.
+    fn blur_edge_serial(px: &mut [u8], w: usize, h: usize, sigma: f32, edges: [Edge; 4]) {
+        if !(sigma.is_finite() && sigma > 0.0) || w == 0 || h == 0 || px.len() < w * h * 4 {
+            return;
+        }
+        let r = (3.0 * sigma).ceil() as usize;
+        let kernel: Vec<f32> = {
+            let k: Vec<f32> = (0..=2 * r)
+                .map(|i| {
+                    let x = i as f32 - r as f32;
+                    (-(x * x) / (2.0 * sigma * sigma)).exp()
+                })
+                .collect();
+            let sum: f32 = k.iter().sum();
+            k.into_iter().map(|v| v / sum).collect()
+        };
+        let ring_rows = (2 * r + 1).min(h);
+        let stride = w * 4;
+        let mut ring = vec![0f32; ring_rows * stride];
+        let mut out = vec![0f32; stride];
+        let mut padded = vec![0f32; stride + 2 * r * 4];
+        let mut next = 0;
+        for y in 0..h {
+            let last = (y + r).min(h - 1);
+            while next <= last {
+                let row = &px[next * stride..(next + 1) * stride];
+                for (d, s) in padded[r * 4..r * 4 + stride].iter_mut().zip(row) {
+                    *d = *s as f32;
+                }
+                let (first, end) = (&row[..4], &row[stride - 4..]);
+                for x in 0..r {
+                    for c in 0..4 {
+                        if edges[0] == Edge::Repeat {
+                            padded[x * 4 + c] = first[c] as f32;
+                        }
+                        if edges[2] == Edge::Repeat {
+                            padded[(r + w + x) * 4 + c] = end[c] as f32;
+                        }
+                    }
+                }
+                let slot = &mut ring[(next % ring_rows) * stride..(next % ring_rows + 1) * stride];
+                slot.fill(0.0);
+                for (i, k) in kernel.iter().enumerate() {
+                    let src = &padded[i * 4..i * 4 + stride];
+                    for (o, v) in slot.iter_mut().zip(src) {
+                        *o += k * v;
+                    }
+                }
+                next += 1;
+            }
+            out.fill(0.0);
+            for (i, k) in kernel.iter().enumerate() {
+                let sy = y as isize + i as isize - r as isize;
+                let past = match sy {
+                    _ if sy < 0 => Some(edges[1]),
+                    _ if sy >= h as isize => Some(edges[3]),
+                    _ => None,
+                };
+                if past == Some(Edge::Transparent) {
+                    continue;
+                }
+                let sy = sy.clamp(0, h as isize - 1) as usize;
+                let slot = sy % ring_rows;
+                let src = &ring[slot * stride..(slot + 1) * stride];
+                for (o, v) in out.iter_mut().zip(src) {
+                    *o += k * v;
+                }
+            }
+            let dst = &mut px[y * stride..(y + 1) * stride];
+            for (d, acc) in dst.chunks_exact_mut(4).zip(out.chunks_exact(4)) {
+                let a = acc[3].round().clamp(0.0, 255.0);
+                d[3] = a as u8;
+                for c in 0..3 {
+                    d[c] = acc[c].round().clamp(0.0, a) as u8;
+                }
+            }
+        }
+    }
+
+    /// Premultiplied noise (`w × h`), some pixels transparent.
+    fn noise(w: usize, h: usize, seed: u32) -> Vec<u8> {
+        let mut seed = seed | 1;
+        let mut px = vec![0u8; w * h * 4];
+        for p in px.chunks_exact_mut(4) {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let a = if seed & 7 == 0 { 0 } else { (seed >> 24) as u8 };
+            for (c, v) in p[..3].iter_mut().enumerate() {
+                *v = ((seed >> (c * 8)) as u8).min(a);
+            }
+            p[3] = a;
+        }
+        px
+    }
+
+    /// (blur-ready) The blur split into bands on the raster's helpers is
+    /// the serial blur byte for byte: every edge mode, sizes from 1 × 1
+    /// to a reduced 4K group (the lock's: 960 × 540 at σ 13.5), heights
+    /// below the ring and just past the bands' threshold, odd widths,
+    /// sigmas from half a pixel to 64. Small buffers are split as large
+    /// ones are, whatever their work.
+    #[test]
+    fn banded_blur_is_the_serial_blur() {
+        crate::raster::unbudgeted();
+        ALWAYS_BAND.with(|b| b.set(true));
+        let small = [0.5f32, 1.9, 3.0, 13.5, 27.0, 64.0];
+        let cases: [((usize, usize), &[f32]); 9] = [
+            ((1, 1), &small),
+            ((3, 1000), &small),
+            ((1000, 3), &small),
+            ((31, 50), &small),
+            // 2r rows a band at σ 13.5 (r = 41): two bands, then three,
+            // and at the other sigmas up to 4 (a band of 1 row at 0.5).
+            ((17, 164), &[13.5]),
+            ((19, 247), &[13.5]),
+            ((33, 333), &[0.5, 1.9, 3.0, 13.5, 27.0, 64.0]),
+            ((1, 400), &[3.0, 13.5]),
+            ((960, 540), &[13.5]),
+        ];
+        let modes = [Edge::Transparent, Edge::Repeat];
+        let mut banded = 0;
+        for (n, ((w, h), sigmas)) in cases.into_iter().enumerate() {
+            let src = noise(w, h, 0x2545_f491 ^ n as u32);
+            // Every edge combination where bands meet them; the large
+            // group with none and all repeating.
+            let combos: Vec<usize> = if (w, h) == (960, 540) {
+                vec![15]
+            } else {
+                (0..16).collect()
+            };
+            for &sigma in sigmas {
+                for &e in &combos {
+                    let edges: [Edge; 4] = std::array::from_fn(|i| modes[(e >> i) & 1]);
+                    let mut want = src.clone();
+                    blur_edge_serial(&mut want, w, h, sigma, edges);
+                    let mut got = src.clone();
+                    let ran = blur_edge_lanes(&mut got, w, h, sigma, edges);
+                    banded += usize::from(ran > 1);
+                    let first = want.iter().zip(&got).position(|(a, b)| a != b);
+                    assert_eq!(
+                        first.map(|i| (i / 4 % w, i / 4 / w, want[i], got[i])),
+                        None,
+                        "{w}×{h} σ {sigma} edges {edges:?} on {ran} threads"
+                    );
+                }
+            }
+        }
+        ALWAYS_BAND.with(|b| b.set(false));
+        if crate::raster::threads() > 1 {
+            assert!(banded > 100, "only {banded} blurs ran in bands");
+        }
+    }
+
+    /// (blur-ready) A large blur (the lock's group: 960 × 540 at σ 13.5)
+    /// runs on the raster's helpers; a small one on the calling thread.
+    /// Once it returns, none of the helpers is left.
+    #[test]
+    fn a_large_blur_runs_on_the_raster_lanes() {
+        crate::raster::unbudgeted();
+        let mut px = noise(960, 540, 7);
+        let ran = blur_edge_lanes(&mut px, 960, 540, 13.5, [Edge::Repeat; 4]);
+        let want = crate::raster::threads().min(540 / 82);
+        assert_eq!(ran, want, "the lock's group's blur");
+        let tids = LAST_TIDS.with(|t| t.borrow().clone());
+        // SAFETY: gettid has no preconditions.
+        let me = unsafe { libc::gettid() } as i64;
+        for tid in tids.into_iter().filter(|t| *t != me) {
+            let task = format!("/proc/self/task/{tid}");
+            let gone = (0..200).any(|_| {
+                let gone = !std::path::Path::new(&task).exists();
+                if !gone {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                gone
+            });
+            assert!(gone, "helper {tid} outlived the blur");
+        }
+        let mut px = noise(64, 64, 9);
+        assert_eq!(blur_edge_lanes(&mut px, 64, 64, 13.5, [Edge::Repeat; 4]), 1);
+    }
+
+    /// The colour matrix as it was before blur-ready, pixel by pixel.
+    fn color_matrix_serial(px: &mut [u8], m: &[f32; 20]) {
+        for p in px.chunks_exact_mut(4) {
+            let a = p[3] as f32 / 255.0;
+            let un = |c: u8| if a > 0.0 { c as f32 / 255.0 / a } else { 0.0 };
+            let v = [un(p[2]), un(p[1]), un(p[0]), a];
+            let row = |i: usize| {
+                let r = &m[i * 5..i * 5 + 5];
+                (r[0] * v[0] + r[1] * v[1] + r[2] * v[2] + r[3] * v[3] + r[4]).clamp(0.0, 1.0)
+            };
+            let (r, g, b, na) = (row(0), row(1), row(2), row(3));
+            let q = |c: f32| (c * na * 255.0).round().clamp(0.0, 255.0) as u8;
+            p[0] = q(b);
+            p[1] = q(g);
+            p[2] = q(r);
+            p[3] = (na * 255.0).round() as u8;
+        }
+    }
+
+    /// (blur-ready) The colour matrix with its table, its transparent
+    /// pixel worked out once and its bands is the per-pixel one byte for
+    /// byte: every alpha, channels at and under it and a few over it,
+    /// for brightness, grayscale, saturate, a glow's alpha gain and a
+    /// matrix with offsets, on one thread and split.
+    #[test]
+    fn color_matrix_is_the_reference_for_every_alpha() {
+        use crate::effects::filter;
+        crate::raster::unbudgeted();
+        let mut gain = strand_scene::effect::IDENTITY_MATRIX;
+        gain[18] = 2.0;
+        let mut offsets = filter::saturate(1.4);
+        offsets[4] = 0.1;
+        offsets[9] = -0.05;
+        offsets[14] = 0.3;
+        offsets[19] = 0.2;
+        let matrices = [
+            filter::brightness(0.6),
+            filter::grayscale(1.0),
+            filter::saturate(2.0),
+            gain,
+            offsets,
+        ];
+        let mut px = Vec::new();
+        let mut seed = 0x9e37_79b9u32;
+        for a in 0..=255u32 {
+            for _ in 0..64 {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                let c = |s: u32| (s % (a + 1)) as u8;
+                px.extend_from_slice(&[c(seed), c(seed >> 8), c(seed >> 16), a as u8]);
+            }
+            // At and over the alpha (a compositor can send them).
+            let over = (a + 1).min(255) as u8;
+            px.extend_from_slice(&[a as u8, a as u8, a as u8, a as u8]);
+            px.extend_from_slice(&[over, 0, 255, a as u8]);
+        }
+        for m in &matrices {
+            let mut want = px.clone();
+            color_matrix_serial(&mut want, m);
+            for split in [false, true] {
+                ALWAYS_BAND.with(|b| b.set(split));
+                let mut got = px.clone();
+                let ran = color_matrix_lanes(&mut got, m);
+                let first = want.iter().zip(&got).position(|(a, b)| a != b);
+                assert_eq!(
+                    first.map(|i| (&px[i / 4 * 4..i / 4 * 4 + 4], want[i], got[i])),
+                    None,
+                    "{m:?} on {ran} threads"
+                );
+            }
+            ALWAYS_BAND.with(|b| b.set(false));
+        }
+    }
+
+    /// (blur-ready) A full-screen colour matrix (3840 × 2160) runs on the
+    /// raster's helpers; a small one on the calling thread.
+    #[test]
+    fn a_full_screen_colour_matrix_runs_on_the_raster_lanes() {
+        crate::raster::unbudgeted();
+        let m = crate::effects::filter::brightness(0.6);
+        let mut px = vec![255u8; 3840 * 2160 * 4];
+        assert_eq!(color_matrix_lanes(&mut px, &m), crate::raster::threads());
+        let mut px = vec![255u8; 64 * 64 * 4];
+        assert_eq!(color_matrix_lanes(&mut px, &m), 1);
     }
 
     #[test]

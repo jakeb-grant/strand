@@ -24,7 +24,7 @@ file fixes boundaries; each crate is free inside its own boundary.
 | State writer (`strand-state-write`, per `FileWriter`) | `strand-theme` (`writer.rs`) | Batched atomic writes of the last palette and portal settings | Block logic (a failure is a WARN) |
 | Introspection asks (`strand-introspect`, per uncached ask; `strand lsp` only) | `strand-introspect` (`Cache::properties_or_ask`) | One D-Bus introspection call, remembered for `TTL` | Block the LSP (it answers from memory or not at all) |
 | Action commands (`strand-exec`, one per running command) | the binary's `run/exec.rs` | A declared action's command, or a command output's capture, with its timeout and kill grace | Block logic (results are taken after a tick) |
-| Raster helpers (`strand-raster`, scoped to one CPU frame) | `strand-render` (`raster/`) | A large frame's cells, drawn in parallel and joined before the frame ends | Outlive the frame |
+| Raster helpers (`strand-raster`, scoped to one CPU frame or one filter) | `strand-render` (`raster/`, `offscreen.rs`) | A large frame's cells, drawn in parallel and joined before the frame ends; a large blur's and colour matrix's bands of rows, joined before the filter returns (decisions.md blur-ready) | Outlive the frame or the filter |
 | Short-lived waiters | `overlay.rs` (`strand-editor`), services' `custom.rs` (`strand-kill`), `wm/screen.rs` (`strand-screenshot`) | Reap `$EDITOR`; SIGKILL a dropped `permit exec` group after its grace; one screen shot until its frame or `SHOT_WAIT` | Anything but that wait |
 | Report writer (`strand-report`, per saved report) | the binary's `report/bundle.rs` | One glitch report's bundle and pruning ("Glitch reports"); outcome via a shared slot and a ping | Touch Wayland, the scene or the rings; block logic or main |
 
@@ -1235,7 +1235,10 @@ is being saved, so the idle-wakeup windows hold.
   or `update`, never by a wake of its own, so an idle shell does zero
   work between ticks. A paint of at least `PARALLEL_CELLS` cells draws
   them on up to `MAX_THREADS` threads, joined before `paint` returns;
-  each cell is drawn alone, so the thread changes no pixel.
+  each cell is drawn alone, so the thread changes no pixel. A large
+  blur (and a large colour matrix) runs in bands of rows on the same
+  helpers, each band summing each pixel as the whole filter does, joined
+  before the filter returns (decisions.md blur-ready).
   `Renderer::last_paint_times` says where a paint spent its time.
   Painting a surface moves other surfaces' holds on by the time it took
   (`Renderer::pause_holds`, at most `MAX_HOLD_PAUSE` in all), except a
