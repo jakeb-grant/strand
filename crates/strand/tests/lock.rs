@@ -5128,7 +5128,7 @@ fn presented_in(log: &str) -> Vec<u32> {
 
 /// (lock-4k) The owner's desk: every monitor's lock surface is committed
 /// after the lock request on every lock, the first after `strand run`
-/// started and the two after it, each output once (how many stills it had is printed);
+/// started and the two after it, each output once, with all four stills;
 /// on the GPU, each presented lock surface's hand-off is logged with what
 /// it took, and the GPU thread's longest silence once per lock. Prints
 /// the numbers (decisions.md lock-4k).
@@ -5150,6 +5150,9 @@ fn desk_commits(test: &str, gpu: bool) {
             })
             .unwrap_or("no")
             .to_string();
+        // (lock-4k) A still at its own size is copied in rows, so the 4K
+        // ones come within the stills' wait too.
+        assert_eq!(stills, "4 of 4", "lock {round}: every still:\n{log}");
         let commits = first_commits(&log, &outputs);
         let mut line = format!("lock {round}: {stills} stills; first commits {commits:?} ms");
         if gpu {

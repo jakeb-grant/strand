@@ -66,7 +66,9 @@ use calloop::channel::Sender;
 use strand_render::{FeedDemand, FeedKind, ThumbnailFrame};
 use strand_scene::{NodeId, NodeKind, Prop, PropValue, SurfaceId};
 use strand_services::audio::{LevelTap, LevelTarget, tap_levels};
-use strand_services::wm::capture::{CaptureFrame, CaptureTap, capture_window, downscale};
+use strand_services::wm::capture::{
+    CaptureFrame, CaptureTap, capture_window, downscale, downscaled_size,
+};
 use strand_services::wm::screen::{ScreenShot, capture_screen};
 
 /// What a producer sends for its node, with its tap's number.
@@ -659,7 +661,19 @@ impl Feeds {
 }
 
 /// (lockmon) A still scaled down to cover `max`, as a thumbnail's frame.
+/// (lock-4k) A still that covers `max` at its own size (every lock's:
+/// its demand is its screen's size) is shared, not copied: a still is
+/// tight premultiplied BGRA already, so `downscale` would copy it byte
+/// for byte, 33 MB at 3840 × 2160, twice per monitor on the lock's
+/// first frame.
 fn scaled(f: &CaptureFrame, max: (u32, u32)) -> ThumbnailFrame {
+    if downscaled_size(f.width, f.height, max) == (f.width, f.height) {
+        return ThumbnailFrame {
+            width: f.width,
+            height: f.height,
+            pixels: f.pixels.clone(),
+        };
+    }
     let f = downscale(&f.pixels, f.width, f.height, f.width * 4, false, max);
     ThumbnailFrame {
         width: f.width,
@@ -762,6 +776,32 @@ mod tests {
                 max,
             },
         }
+    }
+
+    /// (lock-4k) A still that covers its demand at its own size (a
+    /// lock's: its screen's size, or no demand, or more than the still)
+    /// is shared with the thumbnail, not copied; a smaller demand is
+    /// scaled down as before.
+    #[test]
+    fn a_still_at_its_own_size_is_shared_not_copied() {
+        let (w, h) = (8u32, 6u32);
+        let f = CaptureFrame {
+            width: w,
+            height: h,
+            pixels: (0..w * h * 4).map(|i| i as u8).collect(),
+        };
+        for max in [(w, h), (0, 0), (w * 2, h * 3), (w, 1)] {
+            let t = scaled(&f, max);
+            assert_eq!((t.width, t.height), (w, h), "{max:?}");
+            assert!(
+                std::sync::Arc::ptr_eq(&t.pixels, &f.pixels),
+                "{max:?}: copied"
+            );
+        }
+        let t = scaled(&f, (4, 3));
+        let d = downscale(&f.pixels, w, h, w * 4, false, (4, 3));
+        assert_eq!((t.width, t.height), (4, 3));
+        assert_eq!(&t.pixels[..], &d.pixels[..]);
     }
 
     #[test]

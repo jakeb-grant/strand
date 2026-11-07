@@ -209,9 +209,31 @@ fn deliver(tap: u64, frame: Option<&CaptureFrame>) {
     }
 }
 
+/// The size [`downscale`] scales a `w × h` frame to, to cover `max`
+/// (never up; `(0, 0)` or a zero side: its own size).
+pub fn downscaled_size(w: u32, h: u32, max: (u32, u32)) -> (u32, u32) {
+    let k = if max.0 == 0 || max.1 == 0 {
+        1.0
+    } else {
+        (max.0 as f64 / w as f64)
+            .max(max.1 as f64 / h as f64)
+            .min(1.0)
+    };
+    (
+        ((w as f64 * k).round() as u32).clamp(1, w.max(1)),
+        ((h as f64 * k).round() as u32).clamp(1, h.max(1)),
+    )
+}
+
 /// `src` (`w × h`, `stride` bytes a row, ARGB8888 or XRGB8888 in memory)
 /// as a tight premultiplied BGRA frame scaled down (box filter) to cover
 /// `max`.
+///
+/// (lock-4k) At its own size (a screen's still taken whole, a thumbnail
+/// at most its source's size) each pixel is its own box: the rows are
+/// copied ([`own_size`]), with the same stride, alpha and short-buffer
+/// results as the box filter, which took a 3840 × 2160 still's whole
+/// 500 ms stills wait in a debug build.
 pub fn downscale(
     src: &[u8],
     w: u32,
@@ -220,17 +242,14 @@ pub fn downscale(
     opaque: bool,
     max: (u32, u32),
 ) -> CaptureFrame {
-    let k = if max.0 == 0 || max.1 == 0 {
-        1.0
-    } else {
-        (max.0 as f64 / w as f64)
-            .max(max.1 as f64 / h as f64)
-            .min(1.0)
-    };
-    let (dw, dh) = (
-        ((w as f64 * k).round() as u32).clamp(1, w.max(1)),
-        ((h as f64 * k).round() as u32).clamp(1, h.max(1)),
-    );
+    let (dw, dh) = downscaled_size(w, h, max);
+    if (dw, dh) == (w, h) {
+        return CaptureFrame {
+            width: w,
+            height: h,
+            pixels: own_size(src, w, h, stride, opaque),
+        };
+    }
     let mut out = vec![0u8; (dw * dh * 4) as usize];
     for y in 0..dh {
         let (y0, y1) = (y * h / dh, ((y + 1) * h).div_ceil(dh).max(y * h / dh + 1));
@@ -265,6 +284,38 @@ pub fn downscale(
         height: dh,
         pixels: out.into(),
     }
+}
+
+/// (lock-4k) [`downscale`] of `src` at its own size: each row's `w`
+/// pixels copied out of `stride` bytes (one copy when the rows are tight
+/// and whole), a pixel the buffer is too short for left zero, and the
+/// alpha set opaque for XRGB (`opaque`), straight into the frame's
+/// shared buffer.
+fn own_size(src: &[u8], w: u32, h: u32, stride: u32, opaque: bool) -> Arc<[u8]> {
+    let (row, stride) = (w as usize * 4, stride as usize);
+    let n = row * h as usize;
+    let mut out: Arc<[u8]> = match src.get(..n) {
+        Some(whole) if stride == row => Arc::from(whole),
+        _ => {
+            let mut out: Arc<[u8]> = std::iter::repeat_n(0u8, n).collect();
+            if let Some(buf) = Arc::get_mut(&mut out) {
+                for (y, dst) in buf.chunks_exact_mut(row).enumerate() {
+                    let from = y * stride;
+                    let have = src.len().saturating_sub(from).min(row) / 4 * 4;
+                    if let (Some(d), Some(s)) = (dst.get_mut(..have), src.get(from..from + have)) {
+                        d.copy_from_slice(s);
+                    }
+                }
+            }
+            out
+        }
+    };
+    if opaque && let Some(buf) = Arc::get_mut(&mut out) {
+        for p in buf.chunks_exact_mut(4) {
+            p[3] = 255;
+        }
+    }
+    out
 }
 
 /// A session's shm buffer.
@@ -830,6 +881,69 @@ mod tests {
         let f = downscale(&src, 4, 2, 16, false, (0, 0));
         assert_eq!((f.width, f.height), (4, 2));
         assert_eq!(f.pixels[3], 7, "ARGB keeps its alpha");
+    }
+
+    /// The per-pixel box filter `downscale` ran at every size, kept as
+    /// the oracle for its own-size copy.
+    fn per_pixel(src: &[u8], w: u32, h: u32, stride: u32, opaque: bool) -> Vec<u8> {
+        let mut out = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let i = (y * stride + x * 4) as usize;
+                let o = ((y * w + x) * 4) as usize;
+                if let Some(p) = src.get(i..i + 4) {
+                    out[o..o + 4].copy_from_slice(p);
+                }
+                if opaque {
+                    out[o + 3] = 255;
+                }
+            }
+        }
+        out
+    }
+
+    /// (lock-4k) At its own size `downscale` copies rows, byte for byte
+    /// what the per-pixel box filter gave: ARGB as it is, XRGB with its
+    /// alpha made opaque, a padded stride, a buffer too short (whole
+    /// rows and part of a pixel missing: zero, opaque or not), a 1 × 1.
+    #[test]
+    fn downscale_at_its_own_size_is_the_per_pixel_loop() {
+        // Distinct bytes, the padding past each row's pixels marked.
+        let image = |w: u32, h: u32, stride: u32| -> Vec<u8> {
+            (0..h * stride)
+                .map(|i| {
+                    if i % stride < w * 4 {
+                        (i.wrapping_mul(37) ^ (i >> 3)) as u8
+                    } else {
+                        0xee
+                    }
+                })
+                .collect()
+        };
+        let cases: [(u32, u32, u32, usize); 7] = [
+            (7, 5, 28, 0),
+            (7, 5, 40, 0),
+            (7, 5, 28, 41),
+            (7, 5, 40, 75),
+            (1, 1, 4, 0),
+            (1, 1, 4, 2),
+            (16, 9, 64, 0),
+        ];
+        for (w, h, stride, short) in cases {
+            let mut src = image(w, h, stride);
+            src.truncate(src.len() - short);
+            for opaque in [false, true] {
+                for max in [(0, 0), (w, h), (w * 3, 1), (1, h)] {
+                    let f = downscale(&src, w, h, stride, opaque, max);
+                    assert_eq!((f.width, f.height), (w, h), "{w}x{h} to {max:?}");
+                    assert_eq!(
+                        &f.pixels[..],
+                        &per_pixel(&src, w, h, stride, opaque)[..],
+                        "{w}x{h} stride {stride} short {short} opaque {opaque} max {max:?}"
+                    );
+                }
+            }
+        }
     }
 
     /// Scaling in the buffer's orientation (to the cover box turned the
