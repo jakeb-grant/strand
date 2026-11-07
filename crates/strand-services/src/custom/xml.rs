@@ -45,9 +45,11 @@ pub const MAX_ATTRIBUTES: usize = 64;
 /// The most nodes roxmltree is asked to build.
 const MAX_NODES: u32 = 1_000_000;
 
-/// `text` (trimmed, starting with `<`) as an XML document's root, or why
-/// it is not one. `budget` bounds what declared entities may expand to.
-pub fn parse(text: &str, budget: usize) -> Result<Data, String> {
+/// `text` (trimmed, starting with `<`) as an XML document's root and
+/// where the root element starts in it (0 when no declaration, DOCTYPE
+/// or comment precedes it), or why it is not one. `budget` bounds what
+/// declared entities may expand to.
+pub fn parse(text: &str, budget: usize) -> Result<(Data, usize), String> {
     prescan(text.as_bytes(), budget)?;
     let options = roxmltree::ParsingOptions {
         allow_dtd: true,
@@ -56,7 +58,8 @@ pub fn parse(text: &str, budget: usize) -> Result<Data, String> {
         entity_resolver: None,
     };
     let doc = roxmltree::Document::parse_with_options(text, options).map_err(|e| e.to_string())?;
-    Ok(convert(text, doc.root_element()))
+    let root = doc.root_element();
+    Ok((convert(text, root), root.range().start))
 }
 
 // --- The pre-scan -----------------------------------------------------------
@@ -852,43 +855,90 @@ mod tests {
             rw: false,
             text,
         };
+        let one = |d: &Document, f: FieldSpec| d.fields(&[f]).remove(0);
         let html = "<div><h2>Hi</h2><p>Today <b>3</b> updates</p></div>";
         let span = "<span foreground=\"#e06c75\">CPU 92%</span>";
         for doc in [html, span] {
             let d = Document::parse(doc);
             assert!(matches!(d, Document::Xml(..)));
             // `text`: a key the document lacks reads it as written.
-            assert_eq!(
-                d.field(&field("body", TextField::Required)),
-                Some(text(doc))
-            );
+            assert_eq!(one(&d, field("body", TextField::Required)), Some(text(doc)));
             // `text?` keeps null for a missing key, as with JSON; other
             // types read the element tree.
-            assert_eq!(d.field(&field("body", TextField::Optional)), None);
-            assert_eq!(d.field(&field("body", TextField::No)), None);
+            assert_eq!(one(&d, field("body", TextField::Optional)), None);
+            assert_eq!(one(&d, field("body", TextField::No)), None);
         }
         // A key the document holds reads the element, as before.
         let span = Document::parse(span);
         assert_eq!(
-            span.field(&field("foreground", TextField::Required)),
+            one(&span, field("foreground", TextField::Required)),
             Some(text("#e06c75"))
         );
         // One element of text alone: as written for `text` and `text?`,
         // its text for anything else (`<value>42</value>` as an `int`).
         let bold = Document::parse("<b>CPU</b>");
         for t in [TextField::Required, TextField::Optional] {
-            assert_eq!(bold.field(&field("label", t)), Some(text("<b>CPU</b>")));
+            assert_eq!(one(&bold, field("label", t)), Some(text("<b>CPU</b>")));
         }
-        assert_eq!(
-            bold.field(&field("label", TextField::No)),
-            Some(text("CPU"))
-        );
+        assert_eq!(one(&bold, field("label", TextField::No)), Some(text("CPU")));
         // A feed's fields read as they did.
         let feed = Document::parse(fixture!("rss.xml"));
         assert_eq!(
-            feed.field(&field("title", TextField::Required)),
+            one(&feed, field("title", TextField::Required)),
             Some(text("Example Linux: Recent news"))
         );
+    }
+
+    /// A document that holds any field's key is data, not a fragment: a
+    /// `text` field whose key it lacks is absent (a feed with no
+    /// `subtitle` does not show its source; a listen line leaves the
+    /// field alone), and a document with a declaration or DOCTYPE is
+    /// never read as written, so `<string>` from a SOAP-style endpoint
+    /// is its text.
+    #[test]
+    fn a_document_holding_a_field_is_data_not_markup() {
+        use crate::custom::{FieldSpec, TextField};
+        let field = |name: &str, text: TextField| FieldSpec {
+            name: name.into(),
+            key: key(name),
+            rw: false,
+            text,
+        };
+        let fs = [
+            field("title", TextField::Required),
+            field("state", TextField::Required),
+        ];
+        let status = Document::parse("<status state=\"play\"/>");
+        assert_eq!(status.fields(&fs), vec![None, Some(text("play"))]);
+        let feed = Document::parse(fixture!("rss.xml"));
+        let got = feed.fields(&[
+            field("title", TextField::Required),
+            field("subtitle", TextField::Required),
+        ]);
+        assert_eq!(got[0], Some(text("Example Linux: Recent news")));
+        assert_eq!(got[1], None);
+        // Nothing found: the fragment, as written.
+        let span = "<span foreground=\"red\">92%</span>";
+        assert_eq!(
+            Document::parse(span).fields(&fs),
+            vec![Some(text(span)), Some(text(span))]
+        );
+        // A prolog makes it data: the element's text, and a missing key
+        // absent.
+        for doc in [
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?><string xmlns=\"http://tempuri.org/\">EUR 1.0842</string>",
+            "<!DOCTYPE string><string>EUR 1.0842</string>",
+            "<!-- rate --><string>EUR 1.0842</string>",
+        ] {
+            let d = Document::parse(doc);
+            assert_eq!(
+                d.fields(&[field("rate", TextField::Required)]),
+                vec![Some(text("EUR 1.0842"))],
+                "{doc}"
+            );
+        }
+        let d = Document::parse("<?xml version=\"1.0\"?><div><p>Hi</p></div>");
+        assert_eq!(d.fields(&[field("body", TextField::Required)]), vec![None]);
     }
 
     #[test]
@@ -898,7 +948,7 @@ mod tests {
             assert!(matches!(Document::parse(t), Document::Xml(..)), "{name}");
         }
         let dbus = xml(fixture!("dbus-doctype.xml"));
-        let doc = Document::Xml(dbus, "".into());
+        let doc = Document::Xml(dbus, None);
         assert_eq!(
             doc.get(&key("method.annotation.value")),
             Some(text("org.example.Device.GeneralError")),

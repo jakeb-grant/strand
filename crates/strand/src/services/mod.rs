@@ -3885,6 +3885,17 @@ service shelf {
             );
         }
 
+        /// (doc-formats) An XML listen line is a partial update, as a JSON
+        /// one is: a `text` field the line leaves out keeps its value
+        /// rather than taking the line as written.
+        #[test]
+        fn a_listen_line_of_xml_updates_only_its_fields() {
+            let src = "permit exec \"sh\"\nservice ev from listen [\"sh\", \"-c\", \"echo '<s cpu=\\\"5\\\" label=\\\"CPU\\\"/>'; sleep 0.3; echo '<s cpu=\\\"7\\\"/>'; sleep 30\"] { cpu: int; label: text }\nbar B { text ev.label }\n";
+            let mut live = Live::boot(src, Buses::none());
+            live.until("both lines read", |l| l.value("ev", "cpu") == Value::int(7));
+            assert_eq!(live.value("ev", "label"), Value::text("CPU"));
+        }
+
         /// (doc-formats) A JSON API's RFC 3339 dates (GitHub's releases,
         /// a top-level array) read as `Date`s.
         #[test]
@@ -4079,20 +4090,28 @@ service shelf {
             let html = "<div><h2>Hi</h2><p>Today <b>3</b> updates</p></div>";
             save(&file, &format!("{html}\n"));
             let src = format!(
-                "service motd from file \"{}\" {{ body: text; note: text?; h2: text }}\nbar B {{ text motd.body {{ markup: html }} }}\n",
-                file.display()
+                "service motd from file \"{f}\" {{ body: text; note: text? }}\nservice head from file \"{f}\" {{ body: text; h2: text }}\nbar B {{\n  text motd.body {{ markup: html }}\n  text join(\" \", head.body, head.h2)\n}}\n",
+                f = file.display()
             );
             let mut live = Live::boot(&src, Buses::none());
             live.until("the fragment read", |l| {
                 l.value("motd", "body") == Value::text(html)
+                    && l.value("head", "h2") == Value::text("Hi")
             });
             assert_eq!(live.value("motd", "note"), Value::Null);
-            assert_eq!(live.value("motd", "h2"), Value::text("Hi"));
+            // A document holding one field's key is data: the other
+            // field's missing key is absent, not the document.
+            assert_eq!(live.value("head", "body"), Value::text(""));
             save(&file, "<b>CPU</b> \n");
             live.until("the bold kept", |l| {
                 l.value("motd", "body") == Value::text("<b>CPU</b>")
             });
             assert_eq!(live.value("motd", "note"), Value::text("<b>CPU</b>"));
+            // A declaration makes it data: the element's text.
+            save(&file, "<?xml version=\"1.0\"?><string>EUR 1.08</string>\n");
+            live.until("the value read", |l| {
+                l.value("motd", "body") == Value::text("EUR 1.08")
+            });
             drop(live);
             let _ = std::fs::remove_dir_all(&dir);
         }

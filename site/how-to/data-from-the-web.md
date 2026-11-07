@@ -164,7 +164,14 @@ isPermaLink="false">x</guid>` and a bare `<guid>x</guid>` read, the
 second with `isPermaLink` null.
 `angle`, `length` and `duration` read plain numbers (degrees, pixels,
 seconds), as XML has no numbers of its own. An optional field that is
-blank is `null`, unless it is `text`.
+blank is `null`, unless it is `text`. An empty element read as a list,
+such as GPX's `<trkseg></trkseg>`, is an empty list, and read as a
+record it has its fields' defaults.
+
+A list of records takes a single object or element only when it holds
+one of the record's fields. An API that answers with an error object,
+such as `{"message": "API rate limit exceeded"}`, where you declared
+`[Release]` gives no list and `strand watch` reports it.
 
 When something does not convert, the field reads as its type's
 default, an item that does not convert is left out of its list, and
@@ -176,11 +183,14 @@ default, an item that does not convert is left out of its list, and
 A command or a file can also hold markup meant to be shown, not data:
 an HTML fragment, or the Pango `<span foreground="#e06c75">92%</span>`
 that bar scripts print. A field typed `text` reads such a document as
-written, tags and all, when it has nothing at the field's key or is a
-single element of text, such as `<b>CPU</b>`; show it with `markup:
-html` or `markup: basic`. A `text?` field reads `null` for a key the
-document lacks, as it would in JSON, so a feed's optional fields stay
-empty rather than showing the feed.
+written, tags and all, when it holds none of the service's fields or is
+a single element of text, such as `<b>CPU</b>`; show it with `markup:
+html` or `markup: basic`. A document that holds any of the fields is
+data: a `text` field it lacks is empty, and a `from listen` line keeps
+that field's last value. So is a document that starts with an XML
+declaration (`<?xml …?>`) or a DOCTYPE: its element gives its text. A
+`text?` field reads `null` for a key the document lacks, as it would in
+JSON.
 
 ## Dates
 
@@ -188,10 +198,14 @@ A `Date` field reads:
 
 - RFC 3339 and ISO 8601: `2026-11-03T09:47:53Z`, `2026-11-03`;
 - RFC 2822, as RSS writes it: `Tue, 03 Nov 2026 09:47:53 +0000`;
-- `20261107`, as `date +%Y%m%d` prints it, whether text or a number;
-- Unix time: seconds, or milliseconds from 1e11 on.
+- `20261107`, as `date +%Y%m%d` prints it, whether text or a number,
+  and `20261107195510` from `date +%Y%m%d%H%M%S`;
+- `2026-11-07 19:55:10 UTC`, as `date -u '+%F %T %Z'` prints it, and
+  `20261107T195510`, as iCalendar writes a local time;
+- Unix time, by its count of digits: seconds have 9 to 11, milliseconds
+  13, microseconds 16 (journald) and nanoseconds 19.
 
-Fewer than eight digits are no date, so `2026` and `0` never become
+Any other count of digits is no date, so `2026` and `0` never become
 1970.
 
 A date with a time is moved into your local time zone and kept to the

@@ -44,8 +44,8 @@
 //! writes them), else plain text. Text starting with `<` that is not XML
 //! (an HTML page served in place of a feed) is text, never pairs, and
 //! the source logs why once until a document is something else. A
-//! `text` field reads XML as written where the element tree has nothing
-//! for it ([`Document::field`]). A field's key path walks a JSON object (a
+//! `text` field reads an XML fragment as written where the element tree
+//! has nothing for it ([`Document::fields`]). A field's key path walks a JSON object (a
 //! first key the top level lacks is searched for below it) or an XML
 //! root element by [`lookup`] (exact names, then attributes and local
 //! names; the last segment's matches all, several a list: [`xml::get`]);
@@ -217,11 +217,11 @@ pub struct FieldSpec {
     pub rw: bool,
     /// (doc-formats) Whether its declared type is `text`, which this
     /// crate otherwise never sees: such a field reads XML as written
-    /// ([`Document::field`]).
+    /// ([`Document::fields`]).
     pub text: TextField,
 }
 
-/// (doc-formats) A field's declared type as far as [`Document::field`]
+/// (doc-formats) A field's declared type as far as [`Document::fields`]
 /// needs it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TextField {
@@ -414,8 +414,10 @@ pub enum Document {
     Json(serde_json::Value),
     /// (doc-formats) An XML document's root element as data
     /// ([`xml`]), and the document as written (trimmed), which a `text`
-    /// field may read ([`Document::field`]).
-    Xml(Data, Arc<str>),
+    /// field may read ([`Document::fields`]): `None` when anything
+    /// precedes the root element (an XML declaration, a DOCTYPE, a
+    /// comment), which a markup fragment never has.
+    Xml(Data, Option<Arc<str>>),
     Pairs(Vec<(String, String)>),
     Text(String),
     /// (doc-formats) Text starting with `<` that is not XML, and why:
@@ -436,7 +438,7 @@ impl Document {
         }
         if t.starts_with('<') {
             return match xml::parse(t, MAX_DOCUMENT) {
-                Ok(root) => Document::Xml(root, t.into()),
+                Ok((root, start)) => Document::Xml(root, (start == 0).then(|| t.into())),
                 Err(why) => Document::NotXml {
                     text: t.to_string(),
                     why,
@@ -522,26 +524,38 @@ impl Document {
         }
     }
 
-    /// (doc-formats) The value of the field `f` ([`Document::get`] at its
-    /// key), except that a `text` field reads XML as written, markup and
-    /// all, where the element tree has nothing better for it: when the
-    /// document is one element of text alone (`<b>CPU</b>`), and, for
-    /// `text` but not `text?`, when the document holds nothing at its
-    /// key (an HTML fragment in a file, `<span foreground="red">92%</span>`
-    /// from a script). Markup a source prints so stays markup for
-    /// `markup:`, as any text document does; `text?` keeps null for a
-    /// key the document lacks, as with JSON.
-    pub fn field(&self, f: &FieldSpec) -> Option<Data> {
-        let got = self.get(&f.key);
-        match (self, f.text) {
-            (Document::Xml(Data::Text(_), written), TextField::Optional | TextField::Required) => {
-                Some(Data::Text(written.clone()))
-            }
-            (Document::Xml(_, written), TextField::Required) if got.is_none() => {
-                Some(Data::Text(written.clone()))
-            }
-            _ => got,
-        }
+    /// (doc-formats) The values of the fields `fs` ([`Document::get`] at
+    /// each key), except that a `text` field reads an XML fragment as
+    /// written, markup and all, where the element tree has nothing better
+    /// for it: when the document is one element of text alone
+    /// (`<b>CPU</b>`), and, for `text` but not `text?`, when the
+    /// document holds nothing at the key of any of `fs` (an HTML
+    /// fragment in a file, `<span foreground="red">92%</span>` from a
+    /// script). Markup a source prints so stays markup for `markup:`,
+    /// as any text document does; `text?` keeps null for a key the
+    /// document lacks, as with JSON. A document that holds some field is
+    /// data, so a key it lacks is absent there: a feed without a
+    /// `subtitle` does not show its own source, and a `from listen` line
+    /// that updates some fields leaves a `text` one alone. A document
+    /// with an XML declaration or a DOCTYPE is data, never a fragment
+    /// ([`Document::Xml`]).
+    pub fn fields(&self, fs: &[FieldSpec]) -> Vec<Option<Data>> {
+        let got: Vec<Option<Data>> = fs.iter().map(|f| self.get(&f.key)).collect();
+        let Document::Xml(root, Some(written)) = self else {
+            return got;
+        };
+        let alone = matches!(root, Data::Text(_));
+        let none = got.iter().all(Option::is_none);
+        fs.iter()
+            .zip(got)
+            .map(|(f, got)| match f.text {
+                TextField::Optional | TextField::Required if alone => {
+                    Some(Data::Text(written.clone()))
+                }
+                TextField::Required if none => Some(Data::Text(written.clone())),
+                _ => got,
+            })
+            .collect()
     }
 }
 
@@ -635,8 +649,8 @@ pub fn json_data(v: &serde_json::Value) -> Data {
 /// Merge `doc` into `state`: every field the document holds; the others
 /// keep their values (a `listen` line may be a partial update).
 fn merge_doc(spec: &Spec, doc: &Document, state: &mut Custom) {
-    for (i, f) in spec.fields.iter().enumerate() {
-        if let Some(v) = doc.field(f) {
+    for (i, v) in doc.fields(&spec.fields).into_iter().enumerate() {
+        if let Some(v) = v {
             state.set(i, v);
         }
     }
@@ -646,8 +660,8 @@ fn merge_doc(spec: &Spec, doc: &Document, state: &mut Custom) {
 /// result) is the source's state, so a field it no longer holds reads
 /// null (its type's default), not its last value.
 fn replace_doc(spec: &Spec, doc: &Document, state: &mut Custom) {
-    for (i, f) in spec.fields.iter().enumerate() {
-        state.set(i, doc.field(f).unwrap_or(Data::Null));
+    for (i, v) in doc.fields(&spec.fields).into_iter().enumerate() {
+        state.set(i, v.unwrap_or(Data::Null));
     }
 }
 
@@ -2054,10 +2068,10 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
                     // (services-round) The line itself, before any merge.
                     let id = cx.state().spec;
                     if hears_lines(id) {
-                        let values = spec
-                            .fields
-                            .iter()
-                            .map(|f| doc.field(f).unwrap_or(Data::Null))
+                        let values = doc
+                            .fields(&spec.fields)
+                            .into_iter()
+                            .map(|v| v.unwrap_or(Data::Null))
                             .collect();
                         if !cx.emit(CustomEvent::Line(Data::List(values))) {
                             return Ok(());

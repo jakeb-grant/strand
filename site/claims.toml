@@ -3933,9 +3933,9 @@ proof  = "crates/strand-compiler/src/vm/clock.rs::tests::dates_from_text_read_ev
 
 [[claim]]
 page   = "site/how-to/data-from-the-web.md"
-text   = "Unix time: seconds, or milliseconds from 1e11 on."
-source = ['crates/strand-compiler/src/schema/builtin.schema "milliseconds from 1e11"']
-proof  = "crates/strand-compiler/src/vm/clock.rs::tests::date_from_unix_reads_seconds_and_milliseconds_and_refuses_the_impossible"
+text   = "Unix time, by its count of digits: seconds have 9 to 11, milliseconds"
+source = ['crates/strand-compiler/src/schema/builtin.schema "by its count of digits"']
+proof  = "crates/strand-compiler/src/vm/clock.rs::tests::a_number_reads_as_its_digits"
 
 [[claim]]
 page   = "site/how-to/data-from-the-web.md"

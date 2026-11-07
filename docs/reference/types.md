@@ -262,7 +262,7 @@ Keyed by `id`.
 
 A date and time of day, such as `clock.today`. Filled from a document it
 also reads RFC 3339 / ISO 8601, RFC 2822, `YYYYMMDD` and Unix time
-(seconds, or milliseconds from 1e11), from text or a number alike;
+(seconds to nanoseconds, by its count of digits), from text or a number alike;
 prefer `Date?` where a source may leave it out.
 
 | Field | Type | |

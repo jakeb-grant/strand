@@ -330,7 +330,7 @@ A field typed `Date` reads the date text files and APIs write, not only
 a record of `year`, `month` and `day`: `"2026-11-07T19:59:32Z"` (RFC
 3339), `"Sat, 07 Nov 2026 19:59:32 +0000"` (RFC 2822, as RSS writes
 it), `"2026-11-07"` (a date with no time of day), and Unix time as a
-number, seconds or milliseconds. An instant is shown in your own time
+number, seconds or finer (told apart by the count of digits). An instant is shown in your own time
 zone. Make it `Date?` when the source may leave it out or write
 something else: a date that cannot be read is then `null`, and
 `strand watch` says what it held.

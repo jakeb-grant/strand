@@ -303,32 +303,43 @@ pub fn date_value(r: RecordId, (d, time): DateParts) -> Value {
 }
 
 /// The wall time in `zone` of an instant, to the minute (seconds and
-/// fractions dropped, not rounded).
-fn in_zone<Tz: chrono::TimeZone>(t: DateTime<Tz>, zone: Zone) -> DateParts {
-    let utc = t.with_timezone(&Utc);
-    let wall = match zone {
-        Zone::Fixed(off) => utc.with_timezone(&off).naive_local(),
-        Zone::Local => utc.with_timezone(&Local).naive_local(),
+/// fractions dropped, not rounded). `None` when the wall time is past
+/// what chrono holds (an instant on its first or last day moved by an
+/// offset): chrono's own `naive_local` would panic there.
+fn in_zone<Tz: chrono::TimeZone>(t: DateTime<Tz>, zone: Zone) -> Option<DateParts> {
+    let utc = t.naive_utc();
+    let offset = match zone {
+        Zone::Fixed(off) => off,
+        Zone::Local => {
+            chrono::Offset::fix(&chrono::TimeZone::offset_from_utc_datetime(&Local, &utc))
+        }
     };
-    (wall.date(), Some((wall.hour(), wall.minute())))
+    let wall = utc.checked_add_offset(offset)?;
+    Some((wall.date(), Some((wall.hour(), wall.minute()))))
 }
 
 /// (doc-formats) Date text as a document writes it, read in `zone`;
 /// the input is trimmed and the first form that parses wins:
 ///
-/// 1. digit text (`[-]digits[.digits]`): 9 to 11 integer digits are Unix
-///    seconds, 12 or more Unix milliseconds, exactly 8 ISO basic
-///    `YYYYMMDD`; fewer are refused (`2026` is not 1970);
+/// 1. digit text (`[-]digits[.digits]`), by its count of integer
+///    digits ([`digit_date`]): 8 are ISO basic `YYYYMMDD`, 12
+///    `YYYYMMDDHHMM` and 14 `YYYYMMDDHHMMSS` (the wall time as written),
+///    9 to 11 Unix seconds, 13 milliseconds, 16 microseconds, 19
+///    nanoseconds; any other count is refused (`2026` is not 1970);
 /// 2. RFC 3339 / ISO 8601 with `Z` or an offset, also without seconds,
 ///    with `+hhmm` or `+hh` (PostgreSQL), or in the basic form
 ///    `20261107T195510Z`;
 /// 3. RFC 2822 (RSS), again without a leading weekday when chrono
 ///    refuses it (a full or a wrong weekday);
-/// 4. a naive `YYYY-MM-DD[T ]HH:MM[:SS[.f]]`: the wall time as written;
+/// 4. a naive `YYYY-MM-DD[T ]HH:MM[:SS[.f]]`, or the basic
+///    `YYYYMMDDTHHMM[SS]` (iCalendar's local and floating times): the
+///    wall time as written;
 /// 5. `YYYY-MM-DD`: the date alone, with no time of day.
 ///
-/// An instant is moved to `zone` and cut to the minute. Anything else
-/// (ctime, `08:04 PM`) is `None`; nothing panics.
+/// A trailing ` UTC` (`date -u '+%F %T %Z'`, Go's RFC 1123) reads as
+/// `Z`. An instant is moved to `zone` and cut to the minute; one whose
+/// wall time is past chrono's range is `None`. Anything else (ctime,
+/// `08:04 PM`) is `None`; nothing panics.
 pub fn date_from_text(t: &str, zone: Zone) -> Option<DateParts> {
     let t = t.trim();
     if t.is_empty() || t.len() > 64 {
@@ -337,8 +348,20 @@ pub fn date_from_text(t: &str, zone: Zone) -> Option<DateParts> {
     if let Some(d) = digit_date(t, zone) {
         return d;
     }
+    // ` UTC` reads as `Z`: the forms below then take it.
+    let utc = ["UTC", "utc"]
+        .iter()
+        .find_map(|z| t.strip_suffix(z)?.strip_suffix(' '));
+    let t: std::borrow::Cow<'_, str> = match utc {
+        Some(rest) if rest.contains(',') || rest.contains(char::is_alphabetic) => {
+            format!("{rest} +0000").into()
+        }
+        Some(rest) => format!("{}Z", rest.trim_end()).into(),
+        None => t.into(),
+    };
+    let t = &*t;
     if let Ok(d) = DateTime::parse_from_rfc3339(t) {
-        return Some(in_zone(d, zone));
+        return in_zone(d, zone);
     }
     // A zone written `Z` reads as `+0000` for the fallbacks below.
     let zoned = match t.strip_suffix(['Z', 'z']) {
@@ -355,11 +378,11 @@ pub fn date_from_text(t: &str, zone: Zone) -> Option<DateParts> {
         "%Y%m%dT%H%M%#z",
     ] {
         if let Ok(d) = DateTime::parse_from_str(&zoned, f) {
-            return Some(in_zone(d, zone));
+            return in_zone(d, zone);
         }
     }
     if let Ok(d) = DateTime::parse_from_rfc2822(t) {
-        return Some(in_zone(d, zone));
+        return in_zone(d, zone);
     }
     // `Saturday, 07 Nov 2026 …`, `Mon, 08 Nov 2026 …` (a Sunday): the
     // date and time decide, not the weekday.
@@ -367,13 +390,15 @@ pub fn date_from_text(t: &str, zone: Zone) -> Option<DateParts> {
         && word.chars().all(|c| c.is_ascii_alphabetic())
         && let Ok(d) = DateTime::parse_from_rfc2822(rest.trim_start())
     {
-        return Some(in_zone(d, zone));
+        return in_zone(d, zone);
     }
     for f in [
         "%Y-%m-%dT%H:%M",
         "%Y-%m-%d %H:%M",
         "%Y-%m-%dT%H:%M:%S%.f",
         "%Y-%m-%d %H:%M:%S%.f",
+        "%Y%m%dT%H%M%S",
+        "%Y%m%dT%H%M",
     ] {
         if let Ok(d) = NaiveDateTime::parse_from_str(t, f) {
             return Some((d.date(), Some((d.hour(), d.minute()))));
@@ -385,19 +410,39 @@ pub fn date_from_text(t: &str, zone: Zone) -> Option<DateParts> {
 }
 
 /// Digit text: `Some(parsed)` when it is all digits (see
-/// [`date_from_text`]), `None` when it is something else to try.
+/// [`date_from_text`]), `None` when it is something else to try. The
+/// count of integer digits decides what it is, never its size alone, so
+/// `date +%Y%m%d%H%M%S`, journald's microseconds and a nanosecond
+/// clock are not read as milliseconds of another century.
 fn digit_date(t: &str, zone: Zone) -> Option<Option<DateParts>> {
+    let negative = t.starts_with('-');
     let body = t.strip_prefix('-').unwrap_or(t);
     let (int, frac) = body.split_once('.').unwrap_or((body, ""));
     let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
     if int.is_empty() || !digits(int) || !digits(frac) {
         return None;
     }
+    let calendar = !negative && frac.is_empty();
+    let wall = |f: &str| {
+        NaiveDateTime::parse_from_str(int, f)
+            .ok()
+            .map(|d| (d.date(), Some((d.hour(), d.minute()))))
+    };
+    let unix = |per_second: f64| {
+        t.parse::<f64>()
+            .ok()
+            .and_then(|n| date_from_unix(n / per_second, zone))
+    };
     Some(match int.len() {
-        8 if frac.is_empty() && !t.starts_with('-') => NaiveDate::parse_from_str(t, "%Y%m%d")
+        8 if calendar => NaiveDate::parse_from_str(int, "%Y%m%d")
             .ok()
             .map(|d| (d, None)),
-        9.. => t.parse::<f64>().ok().and_then(|n| date_from_unix(n, zone)),
+        12 if calendar => wall("%Y%m%d%H%M"),
+        14 if calendar => wall("%Y%m%d%H%M%S"),
+        9..=11 => unix(1.0),
+        13 => unix(1e3),
+        16 => unix(1e6),
+        19 => unix(1e9),
         _ => None,
     })
 }
@@ -414,20 +459,18 @@ pub fn date_from_number(n: f64, zone: Zone) -> Option<DateParts> {
     digit_date(&n.to_string(), zone).flatten()
 }
 
-/// (doc-formats) Unix time, read in `zone`: |n| from 1e11 is
-/// milliseconds, anything smaller seconds (the two cannot be confused
-/// between 1973 and 5138). Not a number, or out of chrono's range, is
-/// `None`.
-pub fn date_from_unix(n: f64, zone: Zone) -> Option<DateParts> {
-    if !n.is_finite() {
+/// Unix seconds, read in `zone`. Not a number, or out of chrono's
+/// range, is `None`.
+fn date_from_unix(secs: f64, zone: Zone) -> Option<DateParts> {
+    if !secs.is_finite() {
         return None;
     }
-    let secs = if n.abs() >= 1e11 { n / 1000.0 } else { n }.floor();
+    let secs = secs.floor();
     if secs.abs() > 1e15 {
         return None;
     }
     let utc = DateTime::<Utc>::from_timestamp(secs as i64, 0)?;
-    Some(in_zone(utc, zone))
+    in_zone(utc, zone)
 }
 
 /// A `Date`'s fields in the schema's order.
@@ -733,7 +776,21 @@ mod tests {
             ),
             ("2026-11-07T21:30-05", ymd(2026, 11, 8, Some((3, 30)))),
             ("20261107T195510Z", ymd(2026, 11, 7, Some((20, 55)))),
-            // Naive: the wall time as written.
+            // A trailing ` UTC`: `date -u '+%F %T %Z'`, Go's RFC 1123.
+            ("2026-11-07 19:55:10 UTC", ymd(2026, 11, 7, Some((20, 55)))),
+            (
+                "Sat, 07 Nov 2026 09:05:00 UTC",
+                ymd(2026, 11, 7, Some((10, 5))),
+            ),
+            // Naive: the wall time as written, also in the basic form
+            // iCalendar writes under a TZID.
+            ("20261107T195510", ymd(2026, 11, 7, Some((19, 55)))),
+            ("20261107T1955", ymd(2026, 11, 7, Some((19, 55)))),
+            // Digit text by its count of digits: `date +%Y%m%d%H%M%S`,
+            // the Wayback CDX timestamp, journald's microseconds.
+            ("20261107195510", ymd(2026, 11, 7, Some((19, 55)))),
+            ("202611071955", ymd(2026, 11, 7, Some((19, 55)))),
+            ("1794081310891234", ymd(2026, 11, 7, Some((20, 55)))),
             ("2026-11-07T21:30", ymd(2026, 11, 7, Some((21, 30)))),
             ("2026-11-07 19:55:10", ymd(2026, 11, 7, Some((19, 55)))),
             // A date alone.
@@ -783,15 +840,10 @@ mod tests {
     }
 
     #[test]
-    fn date_from_unix_reads_seconds_and_milliseconds_and_refuses_the_impossible() {
+    fn date_from_unix_reads_seconds_and_refuses_the_impossible() {
         assert_eq!(
             date_from_unix(1_794_084_315.0, plus_one()),
             ymd(2026, 11, 7, Some((21, 45)))
-        );
-        // USGS: 13 digits of milliseconds are 2026, not year 58822.
-        assert_eq!(
-            date_from_unix(1_794_081_310_891.0, plus_one()),
-            ymd(2026, 11, 7, Some((20, 55)))
         );
         assert_eq!(
             date_from_unix(0.0, plus_one()),
@@ -811,6 +863,40 @@ mod tests {
         assert!(date_from_unix(1_794_084_315.0, Zone::Local).is_some());
     }
 
+    /// An instant on chrono's first or last day, moved by a zone's
+    /// offset past it, is no date: chrono's `naive_local` panicked there.
+    #[test]
+    fn an_instant_at_the_edge_of_the_range_is_no_date_in_a_zone() {
+        let minus = Zone::Fixed(FixedOffset::west_opt(7 * 3600).unwrap());
+        for (text, zone) in [
+            ("-262143-01-01T00:30Z", minus),
+            ("+262142-12-31T23:30Z", plus_one()),
+            ("-262143-01-01T00:30:00+00:00", minus),
+        ] {
+            assert_eq!(date_from_text(text, zone), None, "{text}");
+        }
+        // The same through Unix seconds: the first and last minutes
+        // chrono holds. (No digit count of a document's number reaches
+        // them any more: 11 digits of seconds end in the year 5138.)
+        let first = NaiveDate::MIN.and_hms_opt(0, 30, 0).unwrap().and_utc();
+        let last = NaiveDate::MAX.and_hms_opt(23, 30, 0).unwrap().and_utc();
+        assert_eq!(date_from_unix(first.timestamp() as f64, minus), None);
+        assert_eq!(date_from_unix(last.timestamp() as f64, plus_one()), None);
+        for n in [-8_334_601_313_400_000.0, 8_210_266_875_000_000.0] {
+            assert_ne!(
+                date_from_number(n, minus).map(|d| d.0),
+                Some(NaiveDate::MIN)
+            );
+            let _ = date_from_number(n, Zone::Local);
+        }
+        // Whatever the local zone is, nothing panics.
+        for text in ["-262143-01-01T00:30Z", "+262142-12-31T23:30Z"] {
+            let _ = date_from_text(text, Zone::Local);
+        }
+        let _ = date_from_unix(first.timestamp() as f64, Zone::Local);
+        let _ = date_from_unix(last.timestamp() as f64, Zone::Local);
+    }
+
     /// A number reads as its digits do: `20261107` printed by `date
     /// +%Y%m%d` is a JSON number to the document, and must not be 1970.
     #[test]
@@ -821,6 +907,15 @@ mod tests {
             (1_794_084_315.9, ymd(2026, 11, 7, Some((21, 45)))),
             (1_794_081_310_891.0, ymd(2026, 11, 7, Some((20, 55)))),
             (-100_000_000.0, ymd(1966, 10, 31, Some((15, 13)))),
+            // Compact date-times are the wall time as written.
+            (202_611_071_955.0, ymd(2026, 11, 7, Some((19, 55)))),
+            (20_261_107_195_510.0, ymd(2026, 11, 7, Some((19, 55)))),
+            // journald's microseconds, a nanosecond clock.
+            (1_794_081_310_891_234.0, ymd(2026, 11, 7, Some((20, 55)))),
+            (
+                1_794_081_310_891_234_567.0,
+                ymd(2026, 11, 7, Some((20, 55))),
+            ),
         ] {
             assert_eq!(date_from_number(n, plus_one()), want, "{n}");
         }
@@ -830,6 +925,14 @@ mod tests {
             12_345.6,
             20_261_307.0,
             -20_261_107.0,
+            // 12 and 14 digits that are no date-time, and counts that are
+            // no unit (15, 17, 18, 20 digits).
+            202_613_071_955.0,
+            20_261_107_256_510.0,
+            179_408_131_089_123.0,
+            17_940_813_108_912_345.0,
+            179_408_131_089_123_456.0,
+            17_940_813_108_912_345_678.0,
             f64::NAN,
             f64::INFINITY,
             1e300,
