@@ -5138,6 +5138,7 @@ fn desk_commits(test: &str, gpu: bool) {
     }
     let (mut vm, outputs) = Vm::desk(test, "", gpu);
     let mut report = Vec::new();
+    let mut late = Vec::new();
     for round in 0..3 {
         let log = vm.desk_lock(&outputs, gpu);
         let stills = log
@@ -5154,6 +5155,17 @@ fn desk_commits(test: &str, gpu: bool) {
         // ones come within the stills' wait too.
         assert_eq!(stills, "4 of 4", "lock {round}: every still:\n{log}");
         let commits = first_commits(&log, &outputs);
+        let waits = ms_of(&log, "'s first frame waited ");
+        assert!(
+            waits.iter().all(|ms| *ms <= LOCK_TEXT_WAIT),
+            "lock {round}: a first frame held past {LOCK_TEXT_WAIT} ms for its text: \
+             {waits:?}\n{log}"
+        );
+        for (o, ms) in outputs.iter().zip(&commits) {
+            if *ms > DESK_COMMIT_GATE {
+                late.push(format!("lock {round} output {o} first committed {ms} ms"));
+            }
+        }
         let mut line = format!("lock {round}: {stills} stills; first commits {commits:?} ms");
         if gpu {
             let offs = hand_offs(&log);
@@ -5191,6 +5203,112 @@ fn desk_commits(test: &str, gpu: bool) {
         }
     }
     eprintln!("{test}:\n  {}", report.join("\n  "));
+    desk_gate(&late);
+}
+
+/// (lock-4k) The most a lock's first frame is held for its text
+/// (strand-render's `LOCK_FIRST_FRAME_TEXT_WAIT`), as its log says.
+const LOCK_TEXT_WAIT: u64 = 100;
+
+/// (lock-4k) The most a desk lock surface's first commit may come after
+/// the lock request in the lock VM, in ms. Hyprland shows its dead-lock
+/// screen on an output with no lock surface a second after the request
+/// (`misc:lockdead_screen_delay`), and sway has no such timer, so
+/// Strand's log is the judge. The four outputs' first frames are painted
+/// one after another on the main thread, and in the VM's debug build a
+/// 3840 × 2160 one takes about 220 ms (44 to 54 ms on the desk's release
+/// build), so the last output's commit comes 530 to 640 ms after the
+/// request with nothing held at all: the gate is above that, generously
+/// for a slower runner, and below the second, which a first frame held
+/// for its text as before (another 500 ms) passes.
+const DESK_COMMIT_GATE: u64 = 900;
+
+/// (lock-4k) The desk's wall-clock gate, checked after the functional
+/// asserts: every first commit `late` past [`DESK_COMMIT_GATE`].
+fn desk_gate(late: &[String]) {
+    if !late.is_empty() {
+        panic!(
+            "GATE_MISS: {} after the lock request (gate {DESK_COMMIT_GATE} ms)",
+            late.join("; ")
+        );
+    }
+}
+
+/// (lock-4k) A cold text worker on the lock (`text_slow`: once the
+/// session is locked, its reply is held 2 s) holds no monitor's lock
+/// surface past a short wait: every output's first commit comes inside a
+/// second of the request (functional: the hold must end), with no
+/// fallback and no missed first frame; the clock's text shows once it
+/// comes, and the password unlocks. Before, a lock's first frame waited
+/// 500 ms for its text, moved on by every other output's paint, past
+/// the second.
+#[test]
+fn a_lock_whose_text_is_slow_still_commits_in_time() {
+    let test = "lock_text_slow";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let (mut vm, outputs) = Vm::desk(test, "text_slow", false);
+    vm.strand.cli(&["set", "lock.locked", "true"]);
+    vm.until("HEADLESS-1", "the lock's card", Shot::desk_card);
+    let deadline = Instant::now() + WAIT;
+    while vm.strand.log_text().matches(" first committed ").count() < outputs.len() {
+        assert!(
+            Instant::now() < deadline,
+            "not every output's lock was committed:\n{}",
+            vm.strand.log_text()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let log = vm.strand.log_text();
+    assert!(
+        log.contains("STRAND_FAULT text_slow"),
+        "the fault fired:\n{log}"
+    );
+    let commits = first_commits(&log, &outputs);
+    assert!(
+        commits.iter().all(|ms| *ms < 1000),
+        "a lock surface past a second: {commits:?}\n{log}"
+    );
+    let waits = ms_of(&log, "'s first frame waited ");
+    assert!(
+        !waits.is_empty(),
+        "a first frame waited for its text:\n{log}"
+    );
+    assert!(
+        waits.iter().all(|ms| *ms <= LOCK_TEXT_WAIT),
+        "a first frame held past {LOCK_TEXT_WAIT} ms for its text: {waits:?}\n{log}"
+    );
+    assert!(!log.contains(FIRST_FRAME_MISSED), "{log}");
+    assert!(
+        !log.contains("lock: showing the built-in password field"),
+        "{log}"
+    );
+    // The clock's white text on the card, once it came.
+    let shot = vm.until("HEADLESS-1", "the clock's text", |s| {
+        s.pixels_of([0xff, 0xff, 0xff]) > 200
+    });
+    let lines: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("lock: ") || l.contains("STRAND_FAULT"))
+        .collect();
+    eprintln!(
+        "lock text slow: first commits {commits:?} ms; text waits {waits:?} ms; {} white \
+         pixels; the lock's log:\n  {}",
+        shot.pixels_of([0xff, 0xff, 0xff]),
+        lines.join("\n  ")
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    vm.keys.enter(PASSWORD);
+    vm.until_log(": unlocking");
+    vm.until("HEADLESS-1", "unlocked", Shot::desktop);
+    let late: Vec<String> = outputs
+        .iter()
+        .zip(&commits)
+        .filter(|(_, ms)| **ms > DESK_COMMIT_GATE)
+        .map(|(o, ms)| format!("output {o} first committed {ms} ms"))
+        .collect();
+    desk_gate(&late);
 }
 
 #[test]

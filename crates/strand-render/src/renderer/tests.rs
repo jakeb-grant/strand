@@ -1322,3 +1322,101 @@ fn a_surface_that_closes_leaves_no_jelly_moving() {
         "the closed panel's jelly is left moving"
     );
 }
+
+/// A text worker that answers nothing until the sender is dropped.
+fn held_worker() -> (TextBackend, std::sync::mpsc::Sender<()>) {
+    use std::sync::{Mutex, mpsc};
+    let data = std::fs::read(test_font_path()).unwrap();
+    let (open, gate) = mpsc::channel::<()>();
+    let gate = Mutex::new(Some(gate));
+    let waker: strand_text::Waker = Box::new(move || {
+        let held = gate.lock().ok().and_then(|mut g| g.take());
+        if let Some(gate) = held {
+            let _ = gate.recv();
+        }
+    });
+    let worker = strand_text::TextWorker::spawn_with_waker(
+        FontConfig::isolated(vec![Arc::new(data)]),
+        Some(waker),
+    )
+    .unwrap();
+    worker
+        .request(strand_text::TextRequest {
+            key: strand_text::TextKey(u64::MAX),
+            text: "warm-up".into(),
+            style: Default::default(),
+            max_width: None,
+            scale: Scale::from_integer(7).unwrap(),
+        })
+        .unwrap();
+    (TextBackend::Worker(worker), open)
+}
+
+/// A `kind` root with a text, on surface 1 configured just now with the
+/// runtime's 500 ms first-frame wait, its text held by the worker; a
+/// panel on surface 2. The time just before the configure, and the
+/// renderer (with the worker's gate, to keep it held).
+fn held_first_frame(kind: NodeKind) -> (Renderer, Instant, std::sync::mpsc::Sender<()>) {
+    let (backend, open) = held_worker();
+    let mut r = Renderer::new(backend);
+    r.set_first_frame_wait(Duration::from_millis(500));
+    let (root, txt, other) = (NodeId::new(0, 0), NodeId::new(1, 0), NodeId::new(2, 0));
+    let mut d = SceneDiff::new();
+    d.create(root, kind, None, 0)
+        .set(root, Prop::Width, PropValue::Number(200.0))
+        .set(root, Prop::Height, PropValue::Number(100.0))
+        .set(root, Prop::Open, PropValue::Bool(true))
+        .create(txt, NodeKind::Text, Some(root), 0)
+        .set(txt, Prop::Text, PropValue::Text("12:59".into()))
+        .create(other, NodeKind::Panel, None, 0);
+    assert!(r.apply(d).is_empty());
+    r.take_surface_changes();
+    r.set_surface_bounds(SurfaceId(1), Some(LogicalSize::new(200.0, 100.0)));
+    r.attach_surface(SurfaceId(1), root);
+    r.attach_surface(SurfaceId(2), other);
+    let at = Instant::now();
+    r.configure_surface(SurfaceId(1), Size::new(200, 100), Scale::ONE);
+    (r, at, open)
+}
+
+/// (lock-4k) A lock's first frame waits at most
+/// `LOCK_FIRST_FRAME_TEXT_WAIT` (100 ms) for its text, whatever the
+/// first-frame wait (the runtime's 500 ms), and another surface's paint
+/// does not move that wait on. Before, it waited 500 ms, moved on by up
+/// to a second of other surfaces' paints: the owner's first lock after
+/// start showed Hyprland's dead-lock screen on the monitor whose text was
+/// cold.
+#[test]
+fn a_locks_first_frame_waits_briefly_for_text() {
+    let (mut r, at, _open) = held_first_frame(NodeKind::Lock);
+    let s = SurfaceId(1);
+    assert!(!r.wants_frame(s), "held for its text");
+    let first = r.frame_deadline(s).expect("held for its text");
+    let most = Instant::now() + LOCK_FIRST_FRAME_TEXT_WAIT;
+    assert!(
+        first <= most && first >= at + LOCK_FIRST_FRAME_TEXT_WAIT,
+        "held until {:?} after the configure",
+        first - at
+    );
+    // Surface 2 painted for 300 ms meanwhile.
+    r.pause_holds(SurfaceId(2), Instant::now() - Duration::from_millis(300));
+    assert_eq!(r.frame_deadline(s), Some(first), "moved on");
+}
+
+/// (lock-4k) A panel's first frame keeps the first-frame wait (500 ms),
+/// and another surface's paint moves it on, as before: the short wait is
+/// a lock's only.
+#[test]
+fn a_layers_first_frame_keeps_its_text_wait() {
+    let (mut r, at, _open) = held_first_frame(NodeKind::Panel);
+    let s = SurfaceId(1);
+    let first = r.frame_deadline(s).expect("held for its text");
+    assert!(
+        first >= at + Duration::from_millis(500),
+        "held {:?}",
+        first - at
+    );
+    r.pause_holds(SurfaceId(2), Instant::now() - Duration::from_millis(300));
+    let moved = r.frame_deadline(s).expect("still held");
+    assert!(moved >= first + Duration::from_millis(300), "not moved on");
+}

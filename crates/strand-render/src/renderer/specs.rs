@@ -569,6 +569,10 @@ impl Renderer {
         let now = Instant::now();
         for (id, root) in ids {
             let wanted = self.wanted_size(id, root);
+            // (lock-4k) A lock's first frame waits for nothing longer
+            // than its short text wait.
+            let first = self.first_wait(id);
+            let lock = self.lock_rooted(id);
             // (gpu-first review 2) A surface the GPU thread presents is
             // held too: its new size is pending surface state that only a
             // present commits, so the thread presents its last frame
@@ -616,10 +620,10 @@ impl Renderer {
                 // nothing shows meanwhile, and a busy main thread (other
                 // surfaces painting at boot) can delay the configure
                 // past one round trip.
-                let wait = if s.painted {
-                    self.resize_wait
-                } else {
-                    self.resize_wait.max(self.first_frame_wait)
+                let wait = match (s.painted, lock) {
+                    (true, _) => self.resize_wait,
+                    (false, false) => self.resize_wait.max(first),
+                    (false, true) => first,
                 };
                 s.size_hold = Some((target, now + wait));
                 s.size_paused = Duration::ZERO;

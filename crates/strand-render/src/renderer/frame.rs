@@ -998,16 +998,20 @@ impl Renderer {
             self.opening.remove(&root);
         }
         s.valid = true;
-        // (lock-4k) How long a lock's first frame was held for its text.
+        // (lock-4k) How long a lock's first frame was held for its text:
+        // until it came or the hold ran out, whichever was first (what
+        // the main thread painted after that is not the hold's).
         #[cfg(feature = "gpu")]
         if !s.painted
             && lock
             && let Some(t) = s.text_held_since.take()
         {
+            let now = Instant::now();
+            let until = s.wait_until.map_or(now, |u| u.min(now));
             log::info!(
                 "lock: surface {}'s first frame waited {} ms for its text",
                 surface.0,
-                t.elapsed().as_millis()
+                until.saturating_duration_since(t).as_millis()
             );
         }
         s.painted = true;
@@ -1111,6 +1115,17 @@ impl Renderer {
         };
         for (id, s) in &mut self.surfaces {
             if *id == painted {
+                continue;
+            }
+            // (lock-4k) A lock's first frame waits its own short while,
+            // never moved on: the compositor's dead-lock timer runs from
+            // the lock request whatever Strand paints meanwhile.
+            if !s.painted
+                && self
+                    .tree
+                    .get(s.root)
+                    .is_some_and(|n| n.kind == strand_scene::NodeKind::Lock)
+            {
                 continue;
             }
             if !s.painted

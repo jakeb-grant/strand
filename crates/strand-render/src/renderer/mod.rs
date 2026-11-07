@@ -110,6 +110,17 @@ pub const QUERY_WAIT: Duration = Duration::from_millis(30);
 /// at the old size, then the new one (a one-frame size pop).
 pub const RESIZE_WAIT: Duration = Duration::from_millis(50);
 
+/// (lock-4k) The most a lock surface's first frame waits for its text,
+/// whatever the first-frame wait (`Renderer::set_first_frame_wait`), and
+/// other surfaces' paints never move it (`Renderer::pause_holds`). A
+/// compositor's timer for its dead-lock screen starts at the lock request
+/// (Hyprland's `misc:lockdead_screen_delay`, a second) and an output with
+/// no lock surface mapped by then shows it: a warm text worker answers
+/// well inside this (a lock's first frames take 7 to 41 ms in the lock
+/// VM), and a cold one's first lock costs at most a tenth of that second,
+/// its text a frame later.
+pub const LOCK_FIRST_FRAME_TEXT_WAIT: Duration = Duration::from_millis(100);
+
 /// How far other surfaces' paints may move a first-frame or size hold
 /// on in all (`Renderer::pause_holds`): a hold whose configure never
 /// matches (a compositor clamping the size) still runs out while

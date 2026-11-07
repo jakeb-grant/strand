@@ -361,6 +361,27 @@ impl Renderer {
         }
     }
 
+    /// (lock-4k) How long `surface`'s first frame waits for its text: the
+    /// first-frame wait, at most [`LOCK_FIRST_FRAME_TEXT_WAIT`] for a
+    /// lock's.
+    ///
+    /// [`LOCK_FIRST_FRAME_TEXT_WAIT`]: super::LOCK_FIRST_FRAME_TEXT_WAIT
+    pub(super) fn first_wait(&self, surface: SurfaceId) -> Duration {
+        if self.lock_rooted(surface) {
+            self.first_frame_wait.min(super::LOCK_FIRST_FRAME_TEXT_WAIT)
+        } else {
+            self.first_frame_wait
+        }
+    }
+
+    /// (lock-4k) `surface` shows a lock (its root is a `lock`).
+    pub(super) fn lock_rooted(&self, surface: SurfaceId) -> bool {
+        self.surfaces
+            .get(&surface)
+            .and_then(|s| self.tree.get(s.root))
+            .is_some_and(|n| n.kind == strand_scene::NodeKind::Lock)
+    }
+
     /// Tells the renderer a surface's buffer size and scale before its first
     /// paint, so text can be shaped ahead of the first frame.
     ///
@@ -369,7 +390,7 @@ impl Renderer {
     /// hotplug) for up to the first-frame wait; see
     /// [`Renderer::frame_deadline`].
     pub fn configure_surface(&mut self, surface: SurfaceId, size: Size, scale: Scale) {
-        let wait = self.first_frame_wait;
+        let wait = self.first_wait(surface);
         if let Some(s) = self.surfaces.get_mut(&surface) {
             s.resize(size, scale);
             // (growth) The configure it awaited came (at that size or

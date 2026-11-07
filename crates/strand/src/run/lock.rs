@@ -1606,6 +1606,15 @@ pub(crate) mod faults {
         if LOCKED.load(Ordering::Acquire) && on("text_panic") {
             panic!("STRAND_FAULT text_panic");
         }
+        // (lock-4k) `text_slow`: once the session is locked, the worker's
+        // reply is held 2 s, once (a cold worker's first shaping of the
+        // lock's font at a new scale, made long enough that no first
+        // frame waits it out), and every reply behind it.
+        static SLOW: AtomicBool = AtomicBool::new(false);
+        if LOCKED.load(Ordering::Acquire) && on("text_slow") && !SLOW.swap(true, Ordering::AcqRel) {
+            log::warn!("STRAND_FAULT text_slow");
+            std::thread::sleep(Duration::from_secs(2));
+        }
     }
 
     /// The lock's own frame never comes (`lock_no_frame`).

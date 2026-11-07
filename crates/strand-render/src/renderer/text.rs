@@ -410,11 +410,19 @@ impl Renderer {
         self.pending.clear();
         // Repaint in full, but keep showing the old frame (rather than one
         // without text) until the text is back, as for a first frame.
-        let until = Instant::now() + self.first_frame_wait;
-        for s in self.surfaces.values_mut() {
+        let now = Instant::now();
+        let waits: Vec<(SurfaceId, Duration)> = self
+            .surfaces
+            .keys()
+            .map(|id| (*id, self.first_wait(*id)))
+            .collect();
+        for (id, wait) in waits {
+            let Some(s) = self.surfaces.get_mut(&id) else {
+                continue;
+            };
             s.valid = false;
             s.painted = false;
-            s.wait_until = Some(until);
+            s.wait_until = Some(now + wait);
             s.wait_paused = Duration::ZERO;
             s.mark_layout();
         }

@@ -1186,7 +1186,9 @@ is being saved, so the idle-wakeup windows hold.
      only a non-empty result with exactly that damage and the converted
      `opaque_region`; on a failed commit call `invalidate`. A surface
      that has never painted holds its first frame for its text up to
-     50 ms (`set_first_frame_wait`): arm a timer for
+     50 ms (`set_first_frame_wait`), a lock's (its root a `lock`) at
+     most `LOCK_FIRST_FRAME_TEXT_WAIT` (100 ms) whatever that is set to,
+     its size hold too (decisions.md lock-4k): arm a timer for
      `frame_deadline(surface)`. An idle surface holds a frame for new
      text up to `NEW_TEXT_WAIT` (16 ms); a surface in motion paints at
      once and the glyphs follow (decisions.md wave2-exit).
@@ -1236,7 +1238,9 @@ is being saved, so the idle-wakeup windows hold.
   each cell is drawn alone, so the thread changes no pixel.
   `Renderer::last_paint_times` says where a paint spent its time.
   Painting a surface moves other surfaces' holds on by the time it took
-  (`Renderer::pause_holds`, at most `MAX_HOLD_PAUSE` in all). A
+  (`Renderer::pause_holds`, at most `MAX_HOLD_PAUSE` in all), except a
+  lock's first frame's: the compositor's dead-lock timer runs from the
+  lock request whatever Strand paints (decisions.md lock-4k). A
   `popup`'s spec gets `parent` and `anchor_rect` (`None` until that box
   is laid out; decisions.md popup-boot-wake); `tooltip: expr` makes a
   render-owned popup after `TOOLTIP_DELAY`.
