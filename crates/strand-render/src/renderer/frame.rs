@@ -999,19 +999,31 @@ impl Renderer {
         }
         s.valid = true;
         // (lock-4k) How long a lock's first frame was held for its text:
-        // until it came or the hold ran out, whichever was first (what
-        // the main thread painted after that is not the hold's).
+        // until it came or the hold ran out, whichever was first, and
+        // which of the two; then how long after the hold began the frame
+        // was painted (the rest is the main thread's other work, not the
+        // hold's).
         #[cfg(feature = "gpu")]
         if !s.painted
             && lock
             && let Some(t) = s.text_held_since.take()
         {
             let now = Instant::now();
-            let until = s.wait_until.map_or(now, |u| u.min(now));
+            let came = s
+                .text_came
+                .take()
+                .filter(|c| s.wait_until.is_none_or(|u| *c <= u));
+            let until = came.or(s.wait_until).map_or(now, |u| u.min(now));
             log::info!(
-                "lock: surface {}'s first frame waited {} ms for its text",
+                "lock: surface {}'s first frame waited {} ms for its text ({}), painted {} ms after it began waiting",
                 surface.0,
-                until.saturating_duration_since(t).as_millis()
+                until.saturating_duration_since(t).as_millis(),
+                if came.is_some() || !s.awaiting_text {
+                    "it came"
+                } else {
+                    "drawn without it"
+                },
+                now.saturating_duration_since(t).as_millis()
             );
         }
         s.painted = true;

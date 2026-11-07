@@ -456,6 +456,7 @@ impl<H: SurfaceHost + 'static> State<H> {
     }
 
     pub(super) fn cancel_deadline(&mut self, id: SurfaceId) {
+        self.deadlines.remove(&id);
         if let Some(t) = self.deadline_timers.remove(&id) {
             self.handle.remove(t);
         }
@@ -466,6 +467,9 @@ impl<H: SurfaceHost + 'static> State<H> {
     pub(super) fn arm_deadline(&mut self, id: SurfaceId, at: Instant) {
         self.cancel_deadline(id);
         self.arm_timer(id, at, false);
+        if self.deadline_timers.contains_key(&id) {
+            self.deadlines.insert(id, at);
+        }
     }
 
     /// (m4-audit) Marks `id` again at `at` if its frame has not settled
@@ -485,6 +489,9 @@ impl<H: SurfaceHost + 'static> State<H> {
             Timer::from_deadline(at),
             move |_, _, state: &mut State<H>| {
                 state.timers(give_up).remove(&id);
+                if !give_up {
+                    state.deadlines.remove(&id);
+                }
                 state.mark(id);
                 TimeoutAction::Drop
             },

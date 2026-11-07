@@ -171,6 +171,10 @@ struct SurfaceState {
     /// (lock-4k) Since when its first frame has been held for text
     /// (`awaiting_text` within its first-frame wait), for a lock's log.
     text_held_since: Option<Instant>,
+    /// (lock-4k) When the text that held it came (`awaiting_text` turned
+    /// false while held), so the log can tell that from a hold that ran
+    /// out.
+    text_came: Option<Instant>,
     /// Until when a painted surface holds a frame for text with no layout
     /// at all (a new node): set when such text shows up, cleared when
     /// none is left.

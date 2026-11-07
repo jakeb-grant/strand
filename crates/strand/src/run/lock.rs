@@ -1606,10 +1606,15 @@ pub(crate) mod faults {
         if LOCKED.load(Ordering::Acquire) && on("text_panic") {
             panic!("STRAND_FAULT text_panic");
         }
-        // (lock-4k) `text_slow`: once the session is locked, the worker's
-        // reply is held 2 s, once (a cold worker's first shaping of the
+        // (lock-4k) `text_slow`: once the session is locked, the first
+        // wake through this waker (the text worker's next reply, as a
+        // rule) is held 2 s, once (a cold worker's first shaping of the
         // lock's font at a new scale, made long enough that no first
-        // frame waits it out), and every reply behind it.
+        // frame waits it out). It holds the waker's shared lock
+        // meanwhile, so the text worker's later replies, the image
+        // worker's wakes and the renderer's timer's wait too; the first
+        // frames' holds are the surface manager's calloop timers, which
+        // do not.
         static SLOW: AtomicBool = AtomicBool::new(false);
         if LOCKED.load(Ordering::Acquire) && on("text_slow") && !SLOW.swap(true, Ordering::AcqRel) {
             log::warn!("STRAND_FAULT text_slow");

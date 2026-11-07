@@ -994,6 +994,8 @@ pub struct State<H: SurfaceHost + 'static> {
     stats: Stats,
     expiry_timer: Option<RegistrationToken>,
     deadline_timers: HashMap<SurfaceId, RegistrationToken>,
+    /// (lock-4k) When each armed deadline in `deadline_timers` is due.
+    deadlines: HashMap<SurfaceId, Instant>,
     /// (m4-audit) Surfaces whose frame callback or presentation is
     /// awaited with new content waiting: marked again at
     /// [`THROTTLE_GIVE_UP`] unless the frame settles first.
@@ -1246,6 +1248,7 @@ impl<H: SurfaceHost + 'static> SurfaceManager<H> {
             stats: Stats::default(),
             expiry_timer: None,
             deadline_timers: HashMap::new(),
+            deadlines: HashMap::new(),
             give_up_timers: HashMap::new(),
             wsi_fifo,
             session_lock: session_lock::SessionLock::new(session_lock),
@@ -1628,8 +1631,19 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     fn flush(&mut self) {
         self.flush_scheduled = false;
-        let dirty = std::mem::take(&mut self.dirty);
-        for id in dirty {
+        let mut dirty = std::mem::take(&mut self.dirty);
+        let mut due = BTreeSet::new();
+        loop {
+            let now = Instant::now();
+            let Some(id) = next_to_draw(&mut dirty, &self.deadlines, &due, now) else {
+                break;
+            };
+            if self.deadlines.get(&id).is_some_and(|at| *at <= now) {
+                // (lock-4k) Held, and its hold ran out while the others
+                // painted: drawn now, not after the whole flush.
+                self.cancel_deadline(id);
+                due.insert(id);
+            }
             self.draw(id);
         }
         if let Err(e) = self.conn.flush() {
@@ -1821,5 +1835,83 @@ mod hook_tests {
             host.lock_changed(state);
         }
         assert_eq!(host.surface_pose(SurfaceId(1)), None);
+    }
+}
+
+/// (lock-4k) The next surface a flush draws: one held for its frame
+/// (`deadlines`, by when it is due) whose hold has run out by `now`,
+/// earliest first, so a surface held for its text is not painted after
+/// every other marked surface's paint when its hold ended during the
+/// first of them (a lock's four first frames, painted in turn: the held
+/// one committed last, behind 600 ms of others' paints, in the lock VM);
+/// else the first marked. A hold that ran out is drawn once per flush
+/// (`done`: those drawn so already), so one held again cannot loop it.
+fn next_to_draw(
+    dirty: &mut BTreeSet<SurfaceId>,
+    deadlines: &HashMap<SurfaceId, Instant>,
+    done: &BTreeSet<SurfaceId>,
+    now: Instant,
+) -> Option<SurfaceId> {
+    let due = deadlines
+        .iter()
+        .filter(|(id, at)| **at <= now && !done.contains(*id))
+        .min_by_key(|(id, at)| (**at, **id))
+        .map(|(id, _)| *id);
+    if let Some(id) = due {
+        dirty.remove(&id);
+        return Some(id);
+    }
+    dirty.pop_first()
+}
+
+#[cfg(test)]
+mod flush_tests {
+    use super::*;
+
+    /// (lock-4k) A held surface whose hold ran out during a flush is
+    /// drawn next, before the marked surfaces still waiting, and only
+    /// once; one still held waits its turn as a timer's.
+    #[test]
+    fn a_hold_that_ran_out_is_drawn_next() {
+        let now = Instant::now();
+        let (a, b, c, d) = (SurfaceId(1), SurfaceId(2), SurfaceId(3), SurfaceId(4));
+        let mut dirty: BTreeSet<SurfaceId> = [b, c, d].into();
+        let mut deadlines = HashMap::new();
+        deadlines.insert(a, now - Duration::from_millis(5));
+        deadlines.insert(d, now + Duration::from_millis(50));
+        let mut done = BTreeSet::new();
+        let mut order = Vec::new();
+        while let Some(id) = next_to_draw(&mut dirty, &deadlines, &done, now) {
+            order.push(id);
+            // The flush cancels the timer of a due one it draws.
+            if deadlines.get(&id).is_some_and(|t| *t <= now) {
+                deadlines.remove(&id);
+                done.insert(id);
+            }
+        }
+        assert_eq!(order, vec![a, b, c, d]);
+        // Two run out: the earlier first, then the marked ones.
+        let mut dirty: BTreeSet<SurfaceId> = [c].into();
+        let deadlines: HashMap<SurfaceId, Instant> = [
+            (d, now - Duration::from_millis(1)),
+            (b, now - Duration::from_millis(9)),
+        ]
+        .into();
+        let mut done = BTreeSet::new();
+        let mut order = Vec::new();
+        while let Some(id) = next_to_draw(&mut dirty, &deadlines, &done, now) {
+            order.push(id);
+            if deadlines.contains_key(&id) {
+                done.insert(id);
+            }
+        }
+        assert_eq!(order, vec![b, d, c], "each once, the earliest first");
+        // (review) One held at the flush's start, drawn then, is drawn
+        // again when its hold runs out in the same flush: the case the
+        // lock's first frames are.
+        let mut dirty: BTreeSet<SurfaceId> = [c].into();
+        let deadlines: HashMap<SurfaceId, Instant> = [(a, now)].into();
+        let done = BTreeSet::new();
+        assert_eq!(next_to_draw(&mut dirty, &deadlines, &done, now), Some(a));
     }
 }

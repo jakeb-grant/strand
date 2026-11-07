@@ -259,6 +259,13 @@ impl Renderer {
                 {
                     s.text_held_since = Some(now);
                 }
+                if !s.painted
+                    && !s.awaiting_text
+                    && s.text_held_since.is_some()
+                    && s.text_came.is_none()
+                {
+                    s.text_came = Some(now);
+                }
                 let idle = s
                     .painted_at
                     .is_none_or(|t| now.saturating_duration_since(t) >= window);

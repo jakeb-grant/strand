@@ -3911,3 +3911,62 @@ fn a_filter_blur_looks_the_same_on_either_backend() {
         );
     }
 }
+
+/// A `kind` root of 800 × 400 (a large frame) with a card whose `enter`
+/// plays from its first frame, the device up: whether that first frame
+/// asked for the GPU.
+fn animated_first_frame_promotes(kind: NodeKind) -> bool {
+    let mut b = Builder::default();
+    let root = b.node(
+        kind,
+        None,
+        vec![
+            (Prop::Width, num(800.0)),
+            (Prop::Height, num(400.0)),
+            (Prop::Open, PropValue::Bool(false)),
+            (Prop::Bg, color("#2050d0")),
+        ],
+    );
+    let mut r = renderer();
+    up_without_a_device(&mut r);
+    assert!(r.apply(b.diff).is_empty());
+    r.take_surface_changes();
+    // Opened by the diff that mounts its card: the card enters with it.
+    let card = NodeId::new(50, 0);
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Open, PropValue::Bool(true))
+        .create(card, NodeKind::Box, Some(root), 0)
+        .set(card, Prop::Width, num(400.0))
+        .set(card, Prop::Height, num(300.0))
+        .set(card, Prop::Bg, color("#ffffff"))
+        .set(
+            card,
+            Prop::Enter,
+            PropValue::Pose(vec![(Prop::Opacity, num(0.0)), (Prop::Y, num(40.0))]),
+        );
+    assert!(r.apply(d).is_empty());
+    r.take_surface_changes();
+    r.set_surface_bounds(S, Some(LogicalSize::new(800.0, 400.0)));
+    r.attach_surface(S, root);
+    r.configure_surface(S, Size::new(800, 400), Scale::ONE);
+    let _ = r.take_backend_changes();
+    let mut buf = Buffer::new(800, 400, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, Duration::from_secs(1));
+    assert!(r.animating(S), "the card enters on the first frame");
+    r.take_backend_changes()
+        .iter()
+        .any(|c| matches!(c, BackendChange::Promote(s) if *s == S))
+}
+
+/// (lock-4k) A first frame that is large and in motion already asks for
+/// the GPU at that frame, a lock's or a panel's (the gpu-first rule needs
+/// a spring in flight, not a still frame before it); the CPU still draws
+/// it, and the host lends a lock surface at its first pump after the
+/// commit. The plan's I5 (promote a lock at its animated first frame)
+/// rested on the opposite reading, so it was not built (decisions.md
+/// lock-4k): this test pins what it found.
+#[test]
+fn an_animated_first_frame_asks_for_the_gpu_lock_or_not() {
+    assert!(animated_first_frame_promotes(NodeKind::Lock), "a lock");
+    assert!(animated_first_frame_promotes(NodeKind::Panel), "a panel");
+}

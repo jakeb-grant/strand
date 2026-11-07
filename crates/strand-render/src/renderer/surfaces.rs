@@ -297,6 +297,7 @@ impl Renderer {
                 text_deadline: None,
                 awaiting_text: false,
                 text_held_since: None,
+                text_came: None,
                 new_text_until: None,
                 painted_at: None,
                 dirty: true,
