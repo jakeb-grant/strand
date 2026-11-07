@@ -335,6 +335,14 @@ zone. Make it `Date?` when the source may leave it out or write
 something else: a date that cannot be read is then `null`, and
 `strand watch` says what it held.
 
+A file or a command's output can be XML too: an RSS feed, an nmap scan,
+a GPX track. Each element is a record whose fields are its attributes
+and its child elements, found by name (`creator` finds `dc:creator`),
+and a field typed as a list takes every element of its name, so `type
+Post { title: text?; link: text; pubDate: Date?; category: [text] }` and
+`posts: [Post] = item` read a feed's items. The site's "Data from the
+web and from tools" page has the recipes.
+
 **`from dir`** lists a directory's files and watches it:
 `service walls from dir "~/Pictures/walls" { files: [File] }` gives
 `walls.files`, each file's `path`, `name`, `modified` date and `size`,
@@ -409,7 +417,7 @@ command again each time `query` changes, ending the run before if it
 has not finished. While it runs, `.pending` is true and the last answer
 stays shown; if the program fails, `.error` says how. A `text` result is
 what the program printed; a number, an enum, a record or a list is read
-from it as a `from poll` service reads a command's output (JSON or
+from it as a `from poll` service reads a command's output (JSON, XML or
 `key=value` lines into the type's fields). In a handler, `let r = await
 calc(q)` waits for it.
 

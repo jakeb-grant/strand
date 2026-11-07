@@ -3529,13 +3529,15 @@ service shelf {
                 first[0].message
             );
             // Another value that does not convert: not reported again.
-            save(&file, r##"{"level": [1], "tint": "#ff0000"}"##);
+            // (doc-formats: a list now reads as its first item, so an
+            // object stands in for it.)
+            save(&file, r##"{"level": {"n": 1}, "tint": "#ff0000"}"##);
             live.until("the second save read", |l| {
                 l.real
                     .custom
                     .debug_state(&l.rt)
                     .iter()
-                    .any(|s| s.contains("List"))
+                    .any(|s| s.contains("Record"))
             });
             assert_eq!(live.value("m", "lvl"), Value::int(0));
             assert!(mismatches(&live).is_empty());
@@ -3596,6 +3598,315 @@ service shelf {
             let stopped = mismatches(&live);
             assert_eq!(stopped.len(), 1, "{stopped:?}");
             assert!(stopped[0].resolved && stopped[0].message == back[0].message);
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// (doc-formats) The site's recipes (site/how-to/
+        /// data-from-the-web.md), copied here so the page cannot drift
+        /// from what is tested.
+        const POST: &str = "type Post { title: text?; link: text; pubDate: Date?; date: Date?; description: text?; creator: text?; category: [text] }\n";
+        const ENTRY: &str = "type Link { href: text; rel: text? }\ntype Entry { title: text; id: text; updated: Date?; published: Date?; link: [Link]; summary: text?; content: text? }\n";
+
+        fn fixture(name: &str) -> String {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../strand-services/tests/fixtures/xml")
+                .join(name);
+            std::fs::read_to_string(path).unwrap()
+        }
+
+        fn items(v: &Value) -> Vec<Value> {
+            match v {
+                Value::List(l) => l.iter().cloned().collect(),
+                v => panic!("not a list: {v:?}"),
+            }
+        }
+
+        fn year(live: &Live, d: Option<&Value>) -> Option<Value> {
+            let types = &live.build.program.types;
+            d.and_then(|d| d.field(types, "year")).cloned()
+        }
+
+        /// (doc-formats) An RSS 2.0 file read into a declared list:
+        /// RFC 2822 dates, `dc:creator` by its local name, one category
+        /// or several, a missing title null; a rewrite in place is
+        /// followed.
+        #[test]
+        fn an_rss_file_fills_a_typed_list_with_dates() {
+            let dir = temp("rss");
+            let file = dir.join("news.xml");
+            let rss = fixture("rss.xml");
+            save(&file, &rss);
+            let src = format!(
+                "{POST}service news from file \"{}\" {{ posts: [Post] = item; title: text = channel.title }}\nbar B {{ text news.title }}\n",
+                file.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("the feed read", |l| {
+                l.value("news", "title") == Value::text("Example Linux: Recent news")
+            });
+            let types = live.build.program.types.clone();
+            let posts = items(&live.value("news", "posts"));
+            assert_eq!(posts.len(), 3);
+            let f = |p: &Value, n: &str| p.field(&types, n).cloned();
+            assert_eq!(
+                f(&posts[0], "title"),
+                Some(Value::text("Update to libfoo ≥ 2.1 before upgrading"))
+            );
+            assert_eq!(
+                f(&posts[1], "title"),
+                Some(Value::text("Bar & baz <now> merged"))
+            );
+            assert_eq!(f(&posts[2], "title"), Some(Value::Null), "no title");
+            assert_eq!(f(&posts[0], "creator"), Some(Value::text("Ada Example")));
+            assert_eq!(
+                year(&live, posts[0].field(&types, "pubDate")),
+                Some(Value::int(2026))
+            );
+            let month = posts[2]
+                .field(&types, "pubDate")
+                .and_then(|d| d.field(&types, "month"))
+                .cloned();
+            assert_eq!(month, Some(Value::int(5)));
+            assert_eq!(f(&posts[0], "date"), Some(Value::Null));
+            assert_eq!(
+                f(&posts[0], "category"),
+                Some(Value::list(vec![Value::text("security")]))
+            );
+            assert_eq!(
+                f(&posts[1], "category"),
+                Some(Value::list(vec![
+                    Value::text("tools"),
+                    Value::text("packaging")
+                ]))
+            );
+            assert_eq!(f(&posts[2], "category"), Some(Value::list(vec![])));
+            assert!(
+                f(&posts[0], "description")
+                    .and_then(|d| d.as_text().map(|t| t.starts_with("<p>The <a href")))
+                    .unwrap_or(false),
+                "escaped HTML is its text"
+            );
+            // Rewritten in place (not replaced).
+            std::fs::write(&file, rss.replace("Example Linux: Recent news", "Renamed")).unwrap();
+            live.until("the rewrite followed", |l| {
+                l.value("news", "title") == Value::text("Renamed")
+            });
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// (doc-formats) An Atom feed a command prints, polled: entries
+        /// with their links as a list of records (the alternate one found
+        /// by `rel`, not by its place) and RFC 3339 dates.
+        #[test]
+        fn an_atom_poll_reads_entries_with_links_and_dates() {
+            let dir = temp("atom");
+            let file = dir.join("releases.atom");
+            save(&file, &fixture("atom.xml"));
+            let src = format!(
+                "{ENTRY}permit exec \"cat\"\nservice rel from poll [\"cat\", \"{}\"] every 30s {{ entries: [Entry] = entry; title: text }}\nexport let alt = rel.entries.first?.link?.find(l => (l.rel ?? \"alternate\") == \"alternate\")?.href ?? \"none\"\nbar B {{ text alt }}\n",
+                file.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("the feed polled", |l| {
+                l.value("rel", "title") == Value::text("Release notes from tool")
+            });
+            let types = live.build.program.types.clone();
+            let entries = items(&live.value("rel", "entries"));
+            assert_eq!(entries.len(), 2);
+            let links = items(entries[0].field(&types, "link").unwrap());
+            assert_eq!(links.len(), 2);
+            assert_eq!(links[1].field(&types, "rel"), Some(&Value::text("related")));
+            assert_eq!(
+                year(&live, entries[0].field(&types, "updated")),
+                Some(Value::int(2026))
+            );
+            assert_eq!(entries[0].field(&types, "published"), Some(&Value::Null));
+            assert!(matches!(
+                entries[1].field(&types, "published"),
+                Some(Value::Record(..))
+            ));
+            assert_eq!(
+                live.inst.get("svc.alt").unwrap(),
+                Value::text("https://github.com/example/tool/releases/tag/v0.57.1")
+            );
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// (doc-formats) A line a `from listen` command prints in XML is a
+        /// document, attributes and children by name.
+        #[test]
+        fn a_listen_line_of_xml_is_a_document() {
+            let src = "permit exec \"sh\"\nservice ev from listen [\"sh\", \"-c\", \"echo '<event kind=\\\"added\\\"><n>3</n><when>1794084315</when></event>'; sleep 30\"] { kind: text; n: int; when: Date? }\nbar B { text ev.kind }\n";
+            let mut live = Live::boot(src, Buses::none());
+            live.until("the line read", |l| l.value("ev", "n") == Value::int(3));
+            assert_eq!(live.value("ev", "kind"), Value::text("added"));
+            assert_eq!(
+                year(&live, Some(&live.value("ev", "when"))),
+                Some(Value::int(2026))
+            );
+        }
+
+        /// (doc-formats) A JSON API's RFC 3339 dates (GitHub's releases,
+        /// a top-level array) read as `Date`s.
+        #[test]
+        fn a_json_api_s_rfc3339_dates_read_as_dates() {
+            let dir = temp("gh");
+            let file = dir.join("releases.json");
+            save(
+                &file,
+                r#"[{"tag_name": "v0.52.1", "published_at": "2026-11-03T09:47:31Z", "draft": false},
+                    {"tag_name": "v0.52.0", "published_at": "2026-10-20T08:00:00Z", "draft": false}]"#,
+            );
+            let src = format!(
+                "type Release {{ tag_name: text; published_at: Date }}\nservice gh from file \"{}\" {{ releases: [Release] }}\nexport let newest = gh.releases.sort_by(r => r.published_at).last?.tag_name ?? \"none\"\nbar B {{ text newest }}\n",
+                file.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("the releases read", |l| {
+                items(&l.value("gh", "releases")).len() == 2
+            });
+            let types = live.build.program.types.clone();
+            let releases = items(&live.value("gh", "releases"));
+            let month = releases[1]
+                .field(&types, "published_at")
+                .and_then(|d| d.field(&types, "month"))
+                .cloned();
+            assert_eq!(month, Some(Value::int(10)));
+            assert_eq!(live.inst.get("svc.newest").unwrap(), Value::text("v0.52.1"));
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// (doc-formats) Not only feeds: RDF items beside the channel
+        /// (the RSS recipe's type), ECB's nested `Cube`s with a date-only
+        /// time and rates in attributes, OPML's recursive outlines, GPX's
+        /// track points.
+        #[test]
+        fn rdf_ecb_opml_and_gpx_read_into_declared_types() {
+            let dir = temp("xmls");
+            for name in ["rdf.xml", "ecb.xml", "opml.xml", "gpx.xml"] {
+                save(&dir.join(name), &fixture(name));
+            }
+            let at = |n: &str| dir.join(n).display().to_string();
+            let src = format!(
+                "{POST}type Rate {{ currency: text; rate: float }}\ntype RateDay {{ time: Date; Cube: [Rate] }}\ntype Outline {{ text: text; xmlUrl: text?; outline: [Outline] }}\ntype Point {{ lat: angle; lon: angle; ele: float; time: Date }}\n\
+                 service rdf from file \"{}\" {{ posts: [Post] = item }}\n\
+                 service ecb from file \"{}\" {{ day: RateDay = Cube.Cube }}\n\
+                 service opml from file \"{}\" {{ feeds: [Outline] = body.outline }}\n\
+                 service gpx from file \"{}\" {{ points: [Point] = trkpt }}\n\
+                 bar B {{ text join(\" \", rdf.posts.len, ecb.day.Cube.len, opml.feeds.len, gpx.points.len) }}\n",
+                at("rdf.xml"),
+                at("ecb.xml"),
+                at("opml.xml"),
+                at("gpx.xml"),
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("all four read", |l| {
+                items(&l.value("rdf", "posts")).len() == 2
+                    && !items(&l.value("opml", "feeds")).is_empty()
+                    && items(&l.value("gpx", "points")).len() == 2
+                    && matches!(l.value("ecb", "day"), Value::Record(..))
+            });
+            let types = live.build.program.types.clone();
+            let f = |v: &Value, n: &str| v.field(&types, n).cloned().unwrap();
+            let posts = items(&live.value("rdf", "posts"));
+            assert_eq!(
+                f(&posts[0], "title"),
+                Value::text("A rock fell from the sky")
+            );
+            assert_eq!(f(&posts[0], "creator"), Value::text("editor"));
+            assert_eq!(f(&posts[0], "pubDate"), Value::Null);
+            assert_eq!(
+                year(&live, posts[0].field(&types, "date")),
+                Some(Value::int(2026))
+            );
+            let day = live.value("ecb", "day");
+            assert_eq!(f(&f(&day, "time"), "hour"), Value::Null, "a date alone");
+            assert_eq!(f(&f(&day, "time"), "day"), Value::int(6));
+            let rates = items(&f(&day, "Cube"));
+            assert_eq!(rates.len(), 3);
+            assert_eq!(f(&rates[0], "currency"), Value::text("USD"));
+            assert_eq!(f(&rates[0], "rate"), Value::float(1.1165));
+            let feeds = items(&live.value("opml", "feeds"));
+            assert_eq!(feeds.len(), 2);
+            assert_eq!(items(&f(&feeds[0], "outline")).len(), 2);
+            assert_eq!(
+                f(&feeds[1], "xmlUrl"),
+                Value::text("https://example.org/loose.rss")
+            );
+            let points = items(&live.value("gpx", "points"));
+            assert_eq!(
+                f(&points[0], "lon"),
+                Value::Num(14.357, strand_compiler::vm::Num::Deg)
+            );
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// (doc-formats) An HTML page served where a feed was expected is
+        /// text: a list of records over it does not convert, and that is
+        /// reported, never a silent empty list. A date inside an item
+        /// that does not convert is reported with its path.
+        #[test]
+        fn a_page_that_is_not_xml_is_reported() {
+            let dir = temp("notxml");
+            let file = dir.join("feed.xml");
+            save(
+                &file,
+                "<!doctype html>\n<html><head><title>Making sure you're not a bot!</title></head><body><p>Loading<br>…</p></body></html>\n",
+            );
+            let src = format!(
+                "{POST}service news from file \"{}\" {{ posts: [Post] = item }}\nbar B {{ text join(\" \", news.posts.len) }}\n",
+                file.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            let report = |l: &Live| -> Vec<strand_services::ServiceDiagnostic> {
+                l.real
+                    .services
+                    .take_diagnostics()
+                    .into_iter()
+                    .filter(|d| d.message.contains("`news.posts`"))
+                    .collect()
+            };
+            let seen = std::cell::RefCell::new(Vec::new());
+            live.until("the page reported", |l| {
+                seen.borrow_mut().extend(report(l));
+                !seen.borrow().is_empty()
+            });
+            let first = seen.take();
+            assert!(
+                first[0].message.contains("<!doctype html>") && first[0].message.contains("[Post]"),
+                "{}",
+                first[0].message
+            );
+            assert_eq!(live.value("news", "posts"), Value::list(vec![]));
+            // A feed whose one item's date is ctime: the item reads, the
+            // date is null, and the report names where (a list of one
+            // item: its key, then the field).
+            save(
+                &file,
+                "<rss><channel><item><link>x</link><pubDate>Sat Nov  7 20:45:15 2026</pubDate></item></channel></rss>",
+            );
+            live.until("the feed read", |l| {
+                items(&l.value("news", "posts")).len() == 1
+            });
+            let seen = std::cell::RefCell::new(Vec::new());
+            live.until("the date reported", |l| {
+                seen.borrow_mut()
+                    .extend(report(l).into_iter().filter(|d| !d.resolved));
+                !seen.borrow().is_empty()
+            });
+            let date = seen.take();
+            assert!(
+                date[0].message.contains(
+                    "`item.pubDate` holds \"Sat Nov  7 20:45:15 2026\", which is not a `Date?`"
+                ),
+                "{}",
+                date[0].message
+            );
             drop(live);
             let _ = std::fs::remove_dir_all(&dir);
         }

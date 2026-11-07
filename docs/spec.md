@@ -745,6 +745,47 @@ monitor, the keyboard always).
   `strand set` and `strand call` read date text the same way. A
   `key=value` line's key starts with no digit, so a date or a time
   printed alone is text, not a pair.
+- (doc-formats) **Documents.** A file, a poll's output, a listen line
+  and an action's output are each one document: JSON when it parses as
+  JSON; else XML when, a UTF-8 BOM removed and trimmed, it starts with
+  `<` and parses as XML; else `key=value` (or `key: value`) lines when
+  every line is one (blank and `#` lines aside); else text. Text
+  starting with `<` that is not XML (an HTML page) is text, never pairs,
+  and the service logs why once. XML nested deeper than 128 elements,
+  with more than 64 attributes on an element, or with a DTD declaring a
+  parameter entity, an external entity or an entity whose value holds
+  `&`, `%` or `<`, or whose entities expand past the document's size
+  cap, is not read as XML; a DTD is otherwise allowed, and nothing
+  outside the document is ever fetched.
+- An XML document's root element is the document (its name is not a
+  key segment). An element with neither attributes nor child elements
+  is its text (CDATA and entities decoded, ends trimmed, inner line
+  breaks kept); any other is a record of its attributes (`@name`), then
+  its child elements and non-blank text runs (`#text`) in document
+  order. Names keep the prefix the document writes (`dc:creator`).
+- A name `n` in a key path or a declared type's field finds, in order,
+  the first of: child elements named exactly `n`; the attribute `@n`;
+  child elements `p:n` with any prefix; attributes `@p:n`; and, for
+  `text`, the element's own text. A key path's first segment is searched
+  for depth first when the root lacks it (`= item` finds RSS's and
+  RSS 1.0's items alike); each later one is read in the first match of
+  the one before (a number picks that match); the last segment's
+  matches are the value, several of them a list. A string key (`=
+  "dc:creator"`, `= "@state"`, `= "#text"`) is one exact segment.
+- The declared type decides, for every document: a list type over one
+  value is a list of it if it converts (else it does not convert), a
+  missing key `[]`; a single type over a list reads its first item; an
+  XML element read as text, a number, a bool, an enum, a path or a
+  `Date` is its text (its own and its descendants' in document order,
+  whitespace collapsed where it has child elements), and one with no
+  text does not convert; a JSON object is never text; `length`,
+  `angle` and `duration` read plain number text as a number (px, deg,
+  seconds); a record's fields are found by the lookup above, a list
+  field taking every match; blank text read as an optional type other
+  than `text` is null. A value inside a field's (a list's item, a
+  record's field) that held something and does not convert is reported
+  once with its path (`` `news.posts`: `item[0].pubDate` holds … ``),
+  the item left out or the field its default.
 - A `from listen` service has one event, `line(doc)`: each line the
   command prints, `doc` holding that line's fields alone (the service's
   own record: a field the line leaves out is null when its type is
@@ -843,8 +884,9 @@ monitor, the keyboard always).
   `File` or `Date` (section 5.6; decisions.md services-round), or a list
   of these, or any of these optional; any other (a live handle such as
   `Window` or `Canvas`, a font) is a load error. A record or list is read from
-  JSON, a record also from `key=value` lines, as section 5.6 reads a
-  document; nothing printed is `null` for an optional `T`. The
+  JSON or XML (the root element as `T`), a record also from `key=value`
+  lines, as section 5.6 reads a document; nothing printed is `null` for
+  an optional `T`. The
   parameters, the command and `permit exec` are as above.
   - In a binding (`let r = calc(query)`, `text calc(query) ?? "…"`) the
     call is a load, as `apps.search(q)` is: it runs when first read,

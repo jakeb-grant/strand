@@ -902,11 +902,22 @@ mod tests {
         Arc<strand_compiler::lower::Program>,
         strand_compiler::ty::Ty,
     ) {
+        program_with(
+            "type Probe { load: float; name: text }\nenum Level { low, high }\n",
+            ty,
+        )
+    }
+
+    /// An action `probe() -> ty` beside the declarations `decls`.
+    fn program_with(
+        decls: &str,
+        ty: &str,
+    ) -> (
+        Arc<strand_compiler::lower::Program>,
+        strand_compiler::ty::Ty,
+    ) {
         let mut map = strand_compiler::SourceMap::new();
-        let src = format!(
-            "type Probe {{ load: float; name: text }}\nenum Level {{ low, high }}\n\
-             permit exec \"sh\"\naction probe() -> {ty} [\"sh\"]\n"
-        );
+        let src = format!("{decls}permit exec \"sh\"\naction probe() -> {ty} [\"sh\"]\n");
         map.add("p.strand", src);
         let c = strand_compiler::compile(&map);
         assert_eq!(c.errors(), 0, "{:?}", c.diagnostics);
@@ -971,6 +982,56 @@ mod tests {
                 Value::int(2),
                 Value::int(3)
             ]))
+        );
+    }
+
+    /// (doc-formats) `nmap -oX -` through `-> Scan`: XML read as the
+    /// declared type, the whole root as it; a Unix-seconds attribute as a
+    /// `Date`; one host's ports and several hosts as lists.
+    #[test]
+    fn a_commands_xml_is_read_as_its_declared_type() {
+        use strand_compiler::vm::Value;
+        let (p, t) = program_with(
+            "type State { state: text }\ntype Service { name: text; product: text? }\n\
+             type Port { protocol: text; portid: int; state: State; service: Service? }\n\
+             type Ports { port: [Port] }\ntype Address { addr: text; addrtype: text }\n\
+             type Host { starttime: Date; status: State; address: [Address]; ports: Ports? }\n\
+             type Scan { start: Date; version: text; host: [Host] }\n",
+            "Scan",
+        );
+        let nmap = include_str!("../../../strand-services/tests/fixtures/xml/nmap.xml");
+        let scan = crate::services::custom::read_output(&p.types, &t, nmap).unwrap();
+        let types = &p.types;
+        let f = |v: &Value, n: &str| v.field(types, n).cloned().unwrap();
+        let list = |v: Value| match v {
+            Value::List(l) => l.iter().cloned().collect::<Vec<_>>(),
+            v => panic!("{v:?}"),
+        };
+        assert_eq!(f(&f(&scan, "start"), "year"), Value::int(2026));
+        assert_eq!(f(&scan, "version"), Value::text("7.98"));
+        let hosts = list(f(&scan, "host"));
+        assert_eq!(hosts.len(), 2);
+        assert_eq!(f(&f(&hosts[0], "status"), "state"), Value::text("up"));
+        assert_eq!(list(f(&hosts[0], "address")).len(), 2);
+        let ports = list(f(&f(&hosts[0], "ports"), "port"));
+        assert_eq!(ports.len(), 2);
+        assert_eq!(f(&ports[0], "portid"), Value::int(22));
+        assert_eq!(f(&f(&ports[0], "state"), "state"), Value::text("open"));
+        assert_eq!(
+            f(&f(&ports[1], "service"), "product"),
+            Value::text("lighttpd")
+        );
+        assert_eq!(f(&hosts[1], "ports"), Value::Null, "a host down has none");
+        assert_eq!(
+            list(f(&hosts[1], "address")).len(),
+            1,
+            "one is a list of one"
+        );
+        // `-> text` is still what it printed.
+        let (p, t) = program("text");
+        assert_eq!(
+            crate::services::custom::read_output(&p.types, &t, "<a>1</a>"),
+            Ok(Value::text("<a>1</a>"))
         );
     }
 

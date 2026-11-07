@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Hand-written in the shape of a GitHub releases Atom feed. -->
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xml:lang="en-US">
+  <id>tag:github.com,2008:https://github.com/example/tool/releases</id>
+  <link type="application/atom+xml" rel="self" href="https://github.com/example/tool/releases.atom"/>
+  <link type="text/html" rel="alternate" href="https://github.com/example/tool/releases"/>
+  <title>Release notes from tool</title>
+  <updated>2026-11-03T09:45:48Z</updated>
+  <entry>
+    <id>tag:github.com,2008:Repository/1/v0.57.1</id>
+    <updated>2026-11-03T09:47:53Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/example/tool/releases/tag/v0.57.1"/>
+    <link rel="related" href="https://github.com/example/tool/compare/v0.57.0...v0.57.1"/>
+    <title>v0.57.1</title>
+    <content type="html">&lt;p&gt;A small update.&lt;/p&gt;
+&lt;ul&gt;&lt;li&gt;fix black screens on nvidia&lt;/li&gt;&lt;/ul&gt;</content>
+    <author>
+      <name>octocat</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.example.com/u/1?s=60"/>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/1/v0.57.0</id>
+    <updated>2026-10-20T08:00:00Z</updated>
+    <published>2026-10-20T07:30:00+02:00</published>
+    <link rel="alternate" type="text/html" href="https://github.com/example/tool/releases/tag/v0.57.0"/>
+    <title>v0.57.0</title>
+    <content type="html">&lt;p&gt;Lua config.&lt;/p&gt;</content>
+    <author>
+      <name>octocat</name>
+    </author>
+  </entry>
+</feed>

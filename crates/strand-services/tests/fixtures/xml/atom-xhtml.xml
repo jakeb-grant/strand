@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hand-written: an Atom entry whose summary and content are XHTML (mixed content). -->
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example Weblog</title>
+  <entry>
+    <id>tag:example.com,2026:/blog/1</id>
+    <link href="/blog/2026/10/25/one"/>
+    <title>One</title>
+    <updated>2026-10-25T12:25:32.000Z</updated>
+    <summary type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Hello <a href="/x">big</a>
+      world.</p></div></summary>
+    <content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>First <em>para</em>.</p><ol><li>one</li><li>two</li></ol></div></content>
+  </entry>
+</feed>

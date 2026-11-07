@@ -108,6 +108,44 @@ impl Data {
                 }
                 w.write_char(']')
             }
+            // (doc-formats) An XML element's repeated names, kept in
+            // place in the record, are one array at the first one's
+            // place: JSON's objects have each key once.
+            Data::Record { ty, fields } if ty == crate::custom::ELEMENT => {
+                let mut groups: Vec<(&str, Vec<&Data>)> = Vec::new();
+                let mut at: std::collections::HashMap<&str, usize> = Default::default();
+                for (name, d) in fields {
+                    match at.get(&**name) {
+                        Some(&i) => groups[i].1.push(d),
+                        None => {
+                            at.insert(name, groups.len());
+                            groups.push((name, vec![d]));
+                        }
+                    }
+                }
+                w.write_char('{')?;
+                for (i, (name, ds)) in groups.iter().enumerate() {
+                    if i > 0 {
+                        w.write_char(',')?;
+                    }
+                    json_text(w, name)?;
+                    w.write_char(':')?;
+                    match ds.as_slice() {
+                        [d] => d.write_json(w, keep)?,
+                        ds => {
+                            w.write_char('[')?;
+                            for (j, d) in ds.iter().enumerate() {
+                                if j > 0 {
+                                    w.write_char(',')?;
+                                }
+                                d.write_json(w, keep)?;
+                            }
+                            w.write_char(']')?;
+                        }
+                    }
+                }
+                w.write_char('}')
+            }
             Data::Record { fields, .. } => {
                 w.write_char('{')?;
                 for (i, (name, d)) in fields.iter().enumerate() {
@@ -544,6 +582,25 @@ mod tests {
         );
         let v: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v[0]["name"], "Speakers");
+    }
+
+    /// (doc-formats) An XML element's record keeps repeated names in
+    /// place; as JSON they are one array where the first one stood, so a
+    /// report or replay holds valid JSON with every value.
+    #[test]
+    fn element_records_write_grouped_json() {
+        let d = crate::custom::Document::parse(
+            "<item a=\"1\"><category>x</category><title>t</title><category>y</category>tail</item>",
+        )
+        .into_data();
+        let mut s = String::new();
+        d.write_json(&mut s, &mut |_| true).unwrap();
+        assert_eq!(
+            s,
+            r##"{"@a":"1","category":["x","y"],"title":"t","#text":"tail"}"##
+        );
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["category"][1], "y");
     }
 
     #[test]

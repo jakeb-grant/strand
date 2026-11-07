@@ -2986,6 +2986,20 @@ itself.
   `strand_auth::Password`s in `Zeroizing` buffers. No-code services
   (`from dbus`, `file`, `dir`, `listen`, `poll`) run on the same
   contract as `custom::Custom`, one store per declaration;
+  (doc-formats) a source's output is a `custom::Document` (`Json`,
+  `Xml` (the root element as `Data`), `Pairs`, `Text`, and `NotXml`,
+  text starting with `<` that is not XML, with why, logged once by its
+  source), read by key path through `Document::get` and whole through
+  `Document::into_data` (an action's `-> T`). An XML element is a
+  `Data::Record` whose `ty` is `custom::ELEMENT` (`"<element>"`, which
+  no identifier can be), holding `@attribute`s, then child elements
+  and `#text` runs in document order; `custom::lookup(record, name)`
+  is the one name rule (exact, `@name`, `p:name`, `@p:name`, then an
+  element's text for `text`) used by key paths and by the binary's
+  record conversion, and `custom::element_text` an element's text
+  content. `custom::xml` bounds what roxmltree is given (depth 128, 64
+  attributes, DTD entities) before it parses; `Data::write_json` writes
+  an element's repeated names as one array;
   `Client::restart`, `stop_now` and `unregister` serve their reloads,
   and commands run in their own process group, ended whole.
   Hooks the binary sets: `keyboard::focused` (from
@@ -3019,7 +3033,10 @@ itself.
   `write` refuses a non-`rw` field written whole. An async call made
   while nothing reads the service waits for a reader (decisions.md
   wave4-a3). `CustomHost` serves no-code services (`custom::coerce`
-  to the declared types; a `from listen` service's `line` event).
+  to the declared types, which decide a list or one value and an
+  element's text or its fields, `custom::coerce_noting` also naming
+  the first value inside that did not convert, with its path; a `from
+  listen` service's `line` event).
   No reload waits on a bus (`custom::dbus_check`).
   `services::set_text` is `strand set`
   (a signed number steps from the current value). `Composite` routes by

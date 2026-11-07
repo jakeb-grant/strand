@@ -37,12 +37,19 @@
 //!   ([`list_dir`]).
 //!
 //! A document ([`Document`]) is JSON when it parses as JSON, else
-//! `key=value` (or `key: value`) lines when every line is one (blank and
-//! `#` comment lines aside; a value's double or single quotes removed,
-//! as os-release(5) writes them), else plain text. A field's key path
-//! walks a JSON object (a first key the top level lacks is searched for
-//! below it); in lines it is the key; a scalar document (a number, a
-//! word) is every field's value.
+//! (doc-formats) XML when it starts with `<` and parses as XML (bounded
+//! first: [`xml`]), else `key=value` (or `key: value`) lines when every
+//! line is one (blank and `#` comment lines aside; a key starting with
+//! no digit; a value's double or single quotes removed, as os-release(5)
+//! writes them), else plain text. Text starting with `<` that is not XML
+//! (an HTML page served in place of a feed) is text, never pairs, and
+//! the source logs why once. A field's key path walks a JSON object (a
+//! first key the top level lacks is searched for below it) or an XML
+//! root element by [`lookup`] (exact names, then attributes and local
+//! names; the last segment's matches all, several a list: [`xml::get`]);
+//! in lines it is the key; a scalar document (a number, a word, an
+//! element of text alone) is every field's value. A string key (`=
+//! "dc:creator"`, `= "@state"`) is one exact segment.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -53,9 +60,12 @@ use tokio::io::AsyncBufReadExt;
 use zbus::zvariant::{OwnedValue, Value as ZValue};
 
 use crate::dbus::{self, Daemon, DaemonEvent};
+
+pub mod xml;
 use crate::{
     CallSig, Cx, Data, DataError, Event, FromCall, Msg, ServiceError, Store, Write, service,
 };
+pub use xml::{ELEMENT, element_text, is_element, lookup};
 
 /// The schema text of the [`Custom`] store. Never added to the
 /// language's schema: each declaration is its own record there.
@@ -309,16 +319,35 @@ impl Custom {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Document {
     Json(serde_json::Value),
+    /// (doc-formats) An XML document's root element as data
+    /// ([`xml`]).
+    Xml(Data),
     Pairs(Vec<(String, String)>),
     Text(String),
+    /// (doc-formats) Text starting with `<` that is not XML, and why:
+    /// read as [`Document::Text`] is, the reason logged once by its
+    /// source.
+    NotXml {
+        text: String,
+        why: String,
+    },
 }
 
 impl Document {
     /// See the module docs.
     pub fn parse(text: &str) -> Document {
-        let t = text.trim();
+        let t = text.strip_prefix('\u{feff}').unwrap_or(text).trim();
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
             return Document::Json(v);
+        }
+        if t.starts_with('<') {
+            return match xml::parse(t, MAX_DOCUMENT) {
+                Ok(root) => Document::Xml(root),
+                Err(why) => Document::NotXml {
+                    text: t.to_string(),
+                    why,
+                },
+            };
         }
         // Blank lines and `#` comment lines (os-release(5), hostname(5))
         // are not lines of the document's pairs.
@@ -354,6 +383,32 @@ impl Document {
         matches!(self, Document::Text(t) if t.is_empty())
     }
 
+    /// (doc-formats) Why text starting with `<` was not read as XML.
+    pub fn not_xml(&self) -> Option<&str> {
+        match self {
+            Document::NotXml { why, .. } => Some(why),
+            _ => None,
+        }
+    }
+
+    /// (doc-formats) The whole document as data, as an action's `-> T`
+    /// reads it: JSON as [`json_data`], pairs as a record of their
+    /// texts, XML as its root, text as itself.
+    pub fn into_data(self) -> Data {
+        match self {
+            Document::Json(v) => json_data(&v),
+            Document::Xml(root) => root,
+            Document::Pairs(pairs) => Data::Record {
+                ty: "".into(),
+                fields: pairs
+                    .into_iter()
+                    .map(|(k, v)| (k.into(), Data::text(v)))
+                    .collect(),
+            },
+            Document::Text(t) | Document::NotXml { text: t, .. } => Data::text(t),
+        }
+    }
+
     /// The value at `key` (see the module docs); `None`: not in it.
     pub fn get(&self, key: &[String]) -> Option<Data> {
         match self {
@@ -368,9 +423,22 @@ impl Document {
                     .or_else(|| p.iter().find(|(n, _)| n.eq_ignore_ascii_case(&k)))
                     .map(|(_, v)| Data::text(v.as_str()))
             }
-            Document::Text(t) => Some(Data::text(t.as_str())),
+            Document::Xml(root) => xml::get(root, key),
+            Document::Text(t) | Document::NotXml { text: t, .. } => Some(Data::text(t.as_str())),
         }
     }
+}
+
+/// (doc-formats) Log once why `doc` (of the service `name`) is not
+/// XML, when that differs from what `last` said.
+fn note_not_xml(name: &str, doc: &Document, last: &mut Option<String>) {
+    let why = doc.not_xml().map(str::to_string);
+    if let Some(w) = &why
+        && why != *last
+    {
+        log::warn!("`{name}`: not XML ({w}); read as text");
+    }
+    *last = why;
 }
 
 /// A pair's value without the quotes around it, as os-release(5) writes
@@ -1403,6 +1471,7 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
     let mut watch = watch_file(path)
         .map_err(|e| ServiceError(format!("cannot watch {}: {e}", path.display())))?;
     let mut last: Option<Document> = None;
+    let mut not_xml = None;
     let mut first = true;
     loop {
         // Read (first, or after a change to the file itself).
@@ -1420,7 +1489,10 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
         if first || doc != last {
             let mut state = cx.state().clone();
             match &doc {
-                Some(d) => replace_doc(spec, d, &mut state),
+                Some(d) => {
+                    note_not_xml(&spec.name, d, &mut not_xml);
+                    replace_doc(spec, d, &mut state);
+                }
                 // Gone: every field null until it is back.
                 None => state.values.iter_mut().for_each(|v| v.value = Data::Null),
             }
@@ -1805,6 +1877,7 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
     // go. A line after a quiet frame is sent at once.
     let mut pending: Option<Custom> = None;
     let mut next_send = tokio::time::Instant::now();
+    let mut not_xml = None;
     loop {
         tokio::select! {
             line = lines.next() => match line {
@@ -1813,6 +1886,7 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
                         continue;
                     }
                     let doc = Document::parse(&l);
+                    note_not_xml(&spec.name, &doc, &mut not_xml);
                     // (services-round) The line itself, before any merge.
                     let id = cx.state().spec;
                     if hears_lines(id) {
@@ -1930,6 +2004,7 @@ async fn run_poll(
     // When the last poll began: shown again sooner than `every` after it
     // (a hover popup flickering), the next poll still waits for `every`.
     let mut last: Option<tokio::time::Instant> = None;
+    let mut not_xml = None;
     loop {
         if first && cx.period(every).is_none() {
             cx.ready();
@@ -1980,6 +2055,7 @@ async fn run_poll(
         };
         if let Some(doc) = doc {
             let mut state = cx.state().clone();
+            note_not_xml(&spec.name, &doc, &mut not_xml);
             replace_doc(spec, &doc, &mut state);
             if !cx.update(|s| *s = state) {
                 return Ok(());
