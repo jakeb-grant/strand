@@ -5247,13 +5247,17 @@ const LOCK_TEXT_WAIT: u64 = 100;
 /// screen on an output with no lock surface a second after the request
 /// (`misc:lockdead_screen_delay`), and sway has no such timer, so
 /// Strand's log is the judge. The four outputs' first frames are painted
-/// one after another on the main thread, and in the VM's debug build a
-/// 3840 × 2160 one takes about 220 ms (44 to 54 ms on the desk's release
-/// build), so the last output's commit comes 530 to 640 ms after the
-/// request with nothing held at all: the gate is above that, generously
-/// for a slower runner, and below the second, which a first frame held
-/// for its text as before (another 500 ms) passes.
-const DESK_COMMIT_GATE: u64 = 900;
+/// one after another on the main thread in the VM's debug build: a
+/// 3840 × 2160 one takes about 220 ms on the laptop and about 600 ms on
+/// GitHub's runner (44 to 54 ms on the desk's release build), so the last
+/// output commits 530 to 640 ms after the request on the laptop and 1.5
+/// to 1.8 s on GitHub with nothing held at all. The gate is generous for
+/// that runner and catches only a lock held for seconds; the holds and
+/// copies this track removed have deterministic guards
+/// (`a_locks_first_frame_waits_briefly_for_text`,
+/// `a_still_at_its_own_size_is_shared_not_copied`,
+/// `a_hold_that_ran_out_is_drawn_next`) and the logged text waits.
+const DESK_COMMIT_GATE: u64 = 3000;
 
 /// (lock-4k) The desk's wall-clock gates, checked after the functional
 /// asserts: every first commit `late` past [`DESK_COMMIT_GATE`], and the
