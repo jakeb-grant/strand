@@ -3863,3 +3863,46 @@ page   = "site/how-to/dbus-and-actions.md"
 text   = "`key=value` lines. A result cannot be a dictionary yet"
 source = ['crates/strand-compiler/src/check/tree.rs "cannot hold a dictionary yet: `{shown}`"']
 proof  = "crates/strand-compiler/tests/negative/dict_in_service_field.strand (a command's output)"
+
+# --- monitor-layouts (blocks-more) ---
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "`outputs.all` lists every connected monitor, on or off, and"
+source = ['crates/strand-compiler/src/schema/builtin.schema "/// Every output, on or off, keyed by `name`."', 'crates/strand-compiler/src/schema/builtin.schema "/// Applies `changes` together, as one configuration."']
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_best_guess_layout_is_written_with_the_list_operations_there_are"
+
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "keeps the order it finds among equals, and `false`"
+source = ['crates/strand-core/src/keyed/ops.rs "/// `.sort_by(cmp)`: a stable sort (ties keep source order). A comparator"', 'crates/strand-compiler/src/vm/builtins.rs "(Value::Bool(x), Value::Bool(y)) => x.cmp(y),"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_best_guess_layout_is_written_with_the_list_operations_there_are (DP-3, DP-4 keep their order, eDP-1 goes last)"
+
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "on its side is 2160 / 1.5 = 1440 wide, so the next one starts at"
+source = ['crates/strand-compiler/src/schema/members.rs "The items added up (`xs.sum()`), or what `of` gives for each"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_best_guess_layout_is_written_with_the_list_operations_there_are (DP-4 at x 1440 after a rotated 4K head at scale 1.5)"
+
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "`scale` and `transform`) stays as it is."
+source = ['''crates/strand-compiler/src/schema/builtin.schema "/// One output's part of a configuration; a null field keeps its value."''']
+proof  = "read: OutputChange's doc"
+
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "when the set changes. `on change` never runs for the first value, so"
+source = ['docs/spec.md "**never** runs for the first value (at boot or mount), for a value a"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::on_change_over_an_identity_fires_on_a_switch (never at boot)"
+
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "and keep with your dotfiles: an edit applies live, and Strand writes a"
+source = ['docs/spec.md "- Edits to the file apply live, as per-field writes."', 'crates/strand-core/src/settings.rs "fn merge_tables(old: &mut toml_edit::ArrayOfTables, new: &toml_edit::Array) {"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::settings_records_read_and_write_table_forms"
+
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "good layouts with a notice naming it, so a typo never reaches your"
+source = ['crates/strand-compiler/src/vm/persist.rs "return Err(format!("unknown field {key:?}"));"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::settings_records_read_and_write_table_forms"

@@ -7318,6 +7318,104 @@ fn settings_records_read_and_write_table_forms() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (monitor-layout) The best-guess arrangement site/how-to/monitor-layouts.md
+/// shows, as written there: the laptop's panel last, the others left to
+/// right in `outputs.all` order, each one's x the sum of the logical
+/// widths before it (a rotated head is as wide as its mode is tall, a
+/// scaled one narrower), y 0, every head on at its preferred mode.
+const BEST_GUESS_SRC: &str = "\
+fn wide(o: Output) -> int {
+  let m = o.preferred ?? o.mode
+  let w = match o.transform {
+    rotate_90 => m?.height ?? 0
+    rotate_270 => m?.height ?? 0
+    flipped_90 => m?.height ?? 0
+    flipped_270 => m?.height ?? 0
+    _ => m?.width ?? 0
+  }
+  (w / o.scale).round()
+}
+let order = outputs.all.sort_by(o => o.name.starts_with(\"eDP\"))
+let guess = order.map(o => OutputChange(
+  name: o.name, enabled: true, mode: o.preferred,
+  x: order.take(order.index_of(p => p.name == o.name) ?? 0).sum(p => wide(p)), y: 0))
+bar B {
+  text guess.map(c => join(\"@\", c.name, c.x ?? -1, c.y ?? -1, c.enabled ?? false, c.mode?.width ?? 0)).join(\" \")
+  box { on click { outputs.apply(guess) } }
+}
+";
+
+/// (monitor-layout) No list operation was added for the best guess:
+/// `sort_by`, `take`, `index_of` and `sum` already write it, and
+/// `outputs.apply(guess)` type-checks (decisions.md monitor-layout).
+#[test]
+fn a_best_guess_layout_is_written_with_the_list_operations_there_are() {
+    let mut shell = boot(&[("t.strand", BEST_GUESS_SRC)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+        let mode = |w: i64, h: i64| {
+            host.record(
+                "OutputMode",
+                &[
+                    ("width", Value::int(w)),
+                    ("height", Value::int(h)),
+                    ("refresh", Value::float(60.0)),
+                ],
+            )
+        };
+        let output = |name: &str, on: bool, m: Option<Value>, pref: Value, scale: f64, t: &str| {
+            host.record(
+                "Output",
+                &[
+                    ("name", Value::text(name)),
+                    ("enabled", Value::Bool(on)),
+                    ("mode", m.unwrap_or(Value::Null)),
+                    ("preferred", pref),
+                    ("scale", Value::float(scale)),
+                    ("transform", host.variant("OutputTransform", t)),
+                ],
+            )
+        };
+        let all = Value::list(vec![
+            output(
+                "eDP-1",
+                true,
+                Some(mode(1920, 1200)),
+                mode(1920, 1200),
+                1.25,
+                "normal",
+            ),
+            output(
+                "DP-3",
+                true,
+                Some(mode(3840, 2160)),
+                mode(3840, 2160),
+                1.5,
+                "rotate_90",
+            ),
+            output("DP-4", false, None, mode(2560, 1440), 1.0, "normal"),
+        ]);
+        host.set(rt, "outputs.all", all).unwrap();
+    });
+    // DP-3 rotated: 2160 / 1.5 = 1440 wide; DP-4: 2560; eDP-1 last.
+    assert_eq!(
+        shell.scene.texts(),
+        ["DP-3@0@0@true@3840 DP-4@1440@0@true@2560 eDP-1@4000@0@true@1920"]
+    );
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    let calls = shell.host.take_actions();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(
+        (calls[0].target.as_str(), calls[0].name.as_str()),
+        ("outputs", "apply")
+    );
+    let Value::List(changes) = &calls[0].args[0] else {
+        panic!("{calls:?}")
+    };
+    assert_eq!(changes.len(), 3);
+}
+
 /// (dictionary) `strand get` and `strand set` reach one entry by a key
 /// path segment: the rest of the path after the dictionary is one key,
 /// read by the key type. `get` of an absent entry is null; `set` inserts

@@ -1837,7 +1837,10 @@ monitor, the keyboard always).
   result is its value (`init` for an empty list). Its type is `init`'s:
   `xs.reduce(0, (a, x) => a + x.n)` is an `int` when `x.n` is, and a
   `float` when `f` gives fractions (a whole-number `init` follows `f`,
-  as an untyped `state` does).
+  as an untyped `state` does). A running total needs no operation of its
+  own: `xs.take(i).sum(x => x.w)` is the total before item `i`, as the
+  best-guess monitor layout in site/how-to/monitor-layouts.md writes it
+  (decisions.md monitor-layout).
 - A `text`'s members (`len`, `slice`, `index_of`, `split`, …) count
   characters (Unicode scalar values), not bytes: `"héllo".len` is 5,
   `s.slice(from, to)` is the characters from `from` up to `to` (a
