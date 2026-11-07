@@ -41,6 +41,15 @@ service hypr from poll ["curl", "-sf", "--max-time", "10", "https://github.com/h
   entries: [Entry] = entry
 }
 
+// One list of every feed's items, newest first. A summary is HTML:
+// `markup: html` shows it, and `plain(html)` reads it in logic.
+type Story { title: text; link: text; when: Date?; summary: text? }
+export let news = (arch.posts.map(p => Story(title: p.title ?? p.link, link: p.link, when: p.pubDate ?? p.date, summary: p.description))
+  + blog.posts.map(p => Story(title: p.title ?? p.link, link: p.link, when: p.pubDate ?? p.date, summary: p.description))
+  + hypr.entries.map(e => Story(title: e.title, link: e.link.find(l => (l.rel ?? "alternate") == "alternate")?.href ?? e.id, when: e.updated ?? e.published, summary: e.content ?? e.summary)))
+  .sort_by(s => s.when).reverse()
+export let nvidia = hypr.entries.filter(e => (e.content?.plain(html) ?? "").lower().contains("nvidia"))
+
 // Not a feed: the ECB's euro rates, in attributes of nested `Cube`s.
 type Rate { currency: text; rate: float }
 type RateDay { time: Date; Cube: [Rate] }
@@ -84,15 +93,15 @@ bar Top {
 }
 
 component News {
-  col { pad: $space.3; gap: $space.2; bg: $surface; radius: $radius.lg
-    for p in arch.posts.take(5) key p.link {
-      text join("  ", p.pubDate?.format("%d %b") ?? "", p.title ?? p.link)
+  col { width: 420; pad: $space.3; gap: $space.3; bg: $surface; radius: $radius.lg
+    if sources.nvidia.len > 0 {
+      text join(" ", sources.nvidia.len, "releases mention NVIDIA") { color: $accent }
     }
-    for p in blog.posts.take(5) key p.link {
-      text join("  ", p.date?.format("%d %b") ?? "", p.title ?? p.link)
-    }
-    for e in hypr.entries.take(3) key e.id {
-      text join("  ", e.updated?.format("%d %b") ?? "", e.title)
+    for s in sources.news.take(8) key s.link {
+      col { gap: $space.1
+        text join("  ", s.when?.format("%d %b") ?? "", s.title)
+        text s.summary ?? "" { markup: html; max_lines: 3; color: $fg.muted }
+      }
     }
   }
 }
@@ -100,6 +109,13 @@ component News {
 
 A polled command runs only while something shown reads its service,
 so nothing is fetched for a shell that does not show it.
+
+`sources.news` puts the three feeds into one `Story` type, joins the
+lists with `+` and sorts them by date, so the popup shows the newest
+items of all of them together. A feed's summary is HTML, which
+`markup: html` shows as paragraphs and lists, and `plain(html)` turns
+into the text that logic searches; [Showing HTML text](html-text.md)
+has the rest.
 
 ## How a document is read
 

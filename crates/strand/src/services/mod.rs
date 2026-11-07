@@ -3190,6 +3190,8 @@ service shelf {
             inst: Instance,
             build: Build,
             now: Duration,
+            /// The scene every tick's diff built, for what a test shows.
+            scene: SceneMirror,
         }
 
         fn build(src: &str, prev: Option<&Build>) -> Build {
@@ -3224,6 +3226,7 @@ service shelf {
                     inst,
                     build: b,
                     now: Duration::ZERO,
+                    scene: SceneMirror::new(),
                 };
                 live.tick(Duration::ZERO);
                 live
@@ -3234,6 +3237,7 @@ service shelf {
                 self.now += by;
                 let u = self.inst.tick(self.now);
                 assert!(u.errors.is_empty(), "{:?}", u.errors);
+                self.scene.apply(&u.diff).unwrap();
             }
 
             fn value(&self, service: &str, field: &str) -> Value {
@@ -3730,6 +3734,101 @@ service shelf {
             assert_eq!(
                 live.inst.get("svc.alt").unwrap(),
                 Value::text("https://github.com/example/tool/releases/tag/v0.57.1")
+            );
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// (doc-formats) The site's news list ("Data from the web and from
+        /// tools"): an RSS file and an Atom file put into one `Story` type,
+        /// joined with `+` and sorted newest first by their dates; a
+        /// summary's HTML read by `plain(html)` and `links(html)` in
+        /// logic and shown by a `text` with `markup: html`; releases
+        /// searched by their HTML content. `STORY` is the page's, less its
+        /// RSS 1.0 feed.
+        #[test]
+        fn a_news_list_from_two_feeds_shows_and_searches_html_summaries() {
+            const STORY: &str = "type Story { title: text; link: text; when: Date?; summary: text? }\n\
+                let news = (arch.posts.map(p => Story(title: p.title ?? p.link, link: p.link, when: p.pubDate ?? p.date, summary: p.description))\n\
+                  + hypr.entries.map(e => Story(title: e.title, link: e.link.find(l => (l.rel ?? \"alternate\") == \"alternate\")?.href ?? e.id, when: e.updated ?? e.published, summary: e.content ?? e.summary)))\n\
+                  .sort_by(s => s.when).reverse()\n\
+                let nvidia = hypr.entries.filter(e => (e.content?.plain(html) ?? \"\").lower().contains(\"nvidia\"))\n";
+            let dir = temp("news");
+            let rss = dir.join("news.xml");
+            let atom = dir.join("releases.atom");
+            save(&rss, &fixture("rss.xml"));
+            save(&atom, &fixture("atom.xml"));
+            let src = format!(
+                "{POST}{ENTRY}{STORY}service arch from file \"{}\" {{ posts: [Post] = item }}\n\
+                 service hypr from file \"{}\" {{ entries: [Entry] = entry }}\n\
+                 export let titles = news.map(s => s.title)\n\
+                 export let first = news.first?.summary?.plain(html)\n\
+                 export let libfoo = news.find(s => s.title.contains(\"libfoo\"))?.summary?.plain(html)\n\
+                 export let hrefs = news.map(s => (s.summary ?? \"\").links(html)).find(l => l.len > 0) ?? []\n\
+                 export let found = nvidia.map(e => e.title)\n\
+                 bar B {{ col {{ for s in news.take(2) key s.link {{ text s.summary ?? \"\" {{ markup: html; max_lines: 3 }} }} }} }}\n",
+                rss.display(),
+                atom.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until(
+                "both feeds read",
+                |l| matches!(l.inst.get("svc.titles"), Ok(Value::List(t)) if t.len() == 5),
+            );
+            let titles = items(&live.inst.get("svc.titles").unwrap());
+            assert_eq!(
+                titles,
+                [
+                    "Bar & baz <now> merged",
+                    "v0.57.1",
+                    "Update to libfoo ≥ 2.1 before upgrading",
+                    "v0.57.0",
+                    "https://example.org/news/untitled/",
+                ]
+                .map(Value::text),
+                "newest first across both feeds"
+            );
+            assert_eq!(
+                live.inst.get("svc.first").unwrap(),
+                Value::text("Two tools became one.")
+            );
+            assert_eq!(
+                live.inst.get("svc.libfoo").unwrap(),
+                Value::text("The libfoo package moved.\n\nRun the upgrade twice.")
+            );
+            assert_eq!(
+                live.inst.get("svc.hrefs").unwrap(),
+                Value::list(vec![Value::text("https://example.org/libfoo")])
+            );
+            assert_eq!(
+                live.inst.get("svc.found").unwrap(),
+                Value::list(vec![Value::text("v0.57.1")])
+            );
+            // The summaries reach render as written, with `markup: html`
+            // (render's `plain_matches_what_markup_shows` holds what it
+            // shows to `plain(html)`).
+            let shown: Vec<(String, Option<strand_scene::PropValue>)> = live
+                .scene
+                .of_kind(strand_scene::NodeKind::Text)
+                .into_iter()
+                .filter_map(|n| match live.scene.prop(n, strand_scene::Prop::Text) {
+                    Some(strand_scene::PropValue::Text(t)) => Some((
+                        t.clone(),
+                        live.scene.prop(n, strand_scene::Prop::Markup).cloned(),
+                    )),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                shown,
+                [
+                    "<p>Two tools became one.</p>",
+                    "<p>A small update.</p>\n<ul><li>fix black screens on nvidia</li></ul>",
+                ]
+                .map(|t| (
+                    t.to_string(),
+                    Some(strand_scene::PropValue::Keyword("html".into()))
+                ))
             );
             drop(live);
             let _ = std::fs::remove_dir_all(&dir);
