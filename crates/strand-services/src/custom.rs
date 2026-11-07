@@ -914,12 +914,23 @@ async fn run_dbus(
         if !cx.update(|s| *s = state) {
             return Ok(());
         }
+        // The first read is complete (the first frame need not wait);
+        // (service-ready) its values hold only while the daemon is there
+        // to answer: with no owner, `ready` stays false until one comes.
         cx.ready();
+        if daemon.owner().is_none() {
+            cx.unready();
+        }
         loop {
             tokio::select! {
                 ev = daemon.next() => match ev {
                     None => return Err(ServiceError("the bus connection ended".into())),
-                    Some(DaemonEvent::Owner) => break,
+                    Some(DaemonEvent::Owner) => {
+                        // Not ready until the new owner (if any) is read;
+                        // the values it clears are boot values again.
+                        cx.unready();
+                        break;
+                    }
                     Some(DaemonEvent::Signal(m)) => {
                         let Some(c) = dbus::properties_changed(&m) else { continue };
                         if c.path != path {

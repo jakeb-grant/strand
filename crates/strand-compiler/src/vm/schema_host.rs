@@ -294,6 +294,14 @@ impl SchemaHost {
                     .borrow_mut()
                     .insert((name.to_string(), e.name.clone()), q);
             }
+            // (service-ready) Its `ready`: the mock's services have
+            // answered from the start ([`SchemaHost::set_ready`]).
+            let ready = rt.signal(Value::Bool(true));
+            rt.set_name(ready.id(), format!("{name}.{}", crate::schema::READY));
+            self.fields.borrow_mut().insert(
+                (name.to_string(), crate::schema::READY.to_string()),
+                Field::Plain(ready),
+            );
         });
         self.services.borrow_mut().insert(name.to_string(), r);
         let tys = def.fields.iter().map(|f| f.ty.clone()).collect();
@@ -347,10 +355,20 @@ impl SchemaHost {
         }
     }
 
+    /// (service-ready) Whether `service` has answered: its `ready`, true
+    /// from the start in the mock (and in `strand export`, whose files
+    /// wait for it). Tests set it false and back to play a service that
+    /// starts late, fails or loses its source.
+    pub fn set_ready(&self, rt: &Runtime, service: &str, ready: bool) -> Result<(), Error> {
+        self.signal(service, crate::schema::READY)?
+            .set(rt, Value::Bool(ready))
+    }
+
     /// [`SchemaHost::set`] for a value the service reports at boot (the
     /// portal's boot read): readers update, but `on change` handlers
-    /// take it as their baseline instead of firing ("never at boot").
-    /// Only plain fields; a path inside a record is set as by `set`.
+    /// take it as their baseline instead of firing ("never at boot"), a
+    /// keyed list's as a reload's replacement, as the real host's.
+    /// A path inside a record is set as by `set`.
     pub fn set_initial(&self, rt: &Runtime, path: &str, value: Value) -> Result<(), Error> {
         let mut parts = path.split('.');
         let (Some(service), Some(field), None) = (parts.next(), parts.next(), parts.next()) else {
@@ -358,7 +376,10 @@ impl SchemaHost {
         };
         match self.field(service, field)? {
             Field::Plain(sig) => sig.set_reloaded(rt, value).map(|_| ()),
-            Field::Keyed(..) => self.set(rt, path, value),
+            Field::Keyed(k, _) => {
+                let items = value.as_list().map(<[Value]>::to_vec).unwrap_or_default();
+                k.replace_all_reloaded(rt, items).map(|_| ())
+            }
         }
     }
 
@@ -755,6 +776,12 @@ impl ServiceHost for SchemaHost {
             Field::Plain(s) => s.get(rt),
             Field::Keyed(_, list) => list.get(rt),
         }
+    }
+
+    fn ready(&self, rt: &Runtime, service: &str) -> bool {
+        self.signal(service, crate::schema::READY)
+            .and_then(|s| s.get(rt))
+            .map_or(true, |v| v.truthy())
     }
 
     fn read_builtin(&self, rt: &Runtime, service: &str, field: &str) -> Result<Value, Error> {

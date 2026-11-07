@@ -2426,12 +2426,15 @@ service shelf {
   items: [TallyItem]
   /// Adds an item.
   action add(name: text)
+  /// Ends the run with an error (a daemon going away).
+  action fail()
 }
 ";
 
         #[derive(Call, Debug)]
         pub enum ShelfAction {
             Add(String),
+            Fail,
         }
 
         /// A service whose first report (before `ready()`) holds a keyed
@@ -2469,16 +2472,22 @@ service shelf {
                 });
                 cx.ready();
                 while let Some(m) = cx.recv().await {
-                    if let Msg::Action(ShelfAction::Add(name)) = m {
-                        cx.update(|s| {
-                            let id = s.items.len() as i64 + 1;
-                            s.items.push(Item {
-                                id,
-                                name,
-                                level: 0.0,
+                    match m {
+                        Msg::Action(ShelfAction::Add(name)) => {
+                            cx.update(|s| {
+                                let id = s.items.len() as i64 + 1;
+                                s.items.push(Item {
+                                    id,
+                                    name,
+                                    level: 0.0,
+                                });
+                                s.dark = !s.dark;
                             });
-                            s.dark = !s.dark;
-                        });
+                        }
+                        Msg::Action(ShelfAction::Fail) => {
+                            return Err(ServiceError("the shelf went away".into()));
+                        }
+                        _ => {}
                     }
                 }
                 Ok(())
@@ -2489,6 +2498,10 @@ service shelf {
         /// a change, through the store host: neither a keyed field's list
         /// nor a plain field fires (`on change` never fires at boot, nor
         /// when a service starts late); a later change fires both.
+        /// (service-ready) A handler naming `shelf.ready` too runs once
+        /// when the report is in (one flush after it), again for a real
+        /// change, and once more when a run that failed is replaced and
+        /// has answered; never for the boot report itself.
         #[test]
         fn on_change_skips_a_services_boot_report() {
             let rt = Runtime::new();
@@ -2498,24 +2511,30 @@ service shelf {
             let (mut inst, mut scene) = mount(
                 &rt,
                 &schema_text,
-                "export state items = 0\nexport state darks = 0\non change shelf.items { items = items + 1 }\non change shelf.dark { darks = darks + 1 }\nbar B { text join(\" \", shelf.items.count(i => true), shelf.dark) }\n",
+                "export state items = 0\nexport state darks = 0\nexport state readies = 0\non change shelf.items { items = items + 1 }\non change shelf.dark { darks = darks + 1 }\non change shelf.items, shelf.ready { if shelf.ready { readies = readies + 1 } }\nbar B { text join(\" \", shelf.items.count(i => true), shelf.dark, shelf.ready) }\n",
                 shelf.dynamic(),
             );
+            let now = std::cell::Cell::new(Duration::ZERO);
             let mut step = |inst: &mut Instance| {
                 services.pump(&rt);
-                let u = inst.tick(Duration::ZERO);
+                let u = inst.tick(now.get());
                 assert!(u.errors.is_empty(), "{:?}", u.errors);
                 scene.apply(&u.diff).unwrap();
-                scene.texts()
+                scene.texts().join(" ")
             };
             // The shell runs (its handlers have their baselines) before the
             // service's boot read lands, as with a slow D-Bus service.
             for _ in 0..3 {
-                step(&mut inst);
+                assert_eq!(
+                    step(&mut inst),
+                    "0 false false",
+                    "not ready before its report"
+                );
             }
+            assert_eq!(inst.value_of("svc", "readies").unwrap(), Value::int(0));
             SHELF_GO.notify_one();
             let deadline = Instant::now() + Duration::from_secs(5);
-            while !step(&mut inst).contains(&"2 true".to_string()) {
+            while !step(&mut inst).contains("2 true true") {
                 assert!(Instant::now() < deadline, "the boot report never landed");
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -2524,6 +2543,11 @@ service shelf {
             }
             assert_eq!(inst.value_of("svc", "items").unwrap(), Value::int(0));
             assert_eq!(inst.value_of("svc", "darks").unwrap(), Value::int(0));
+            assert_eq!(
+                inst.value_of("svc", "readies").unwrap(),
+                Value::int(1),
+                "once, when ready lands"
+            );
             shelf
                 .dynamic()
                 .action(
@@ -2535,13 +2559,126 @@ service shelf {
                 )
                 .unwrap();
             let deadline = Instant::now() + Duration::from_secs(5);
-            while !step(&mut inst).contains(&"3 false".to_string()) {
+            while !step(&mut inst).contains("3 false true") {
                 assert!(Instant::now() < deadline, "the change never landed");
                 std::thread::sleep(Duration::from_millis(5));
             }
             step(&mut inst);
             assert_eq!(inst.value_of("svc", "items").unwrap(), Value::int(1));
             assert_eq!(inst.value_of("svc", "darks").unwrap(), Value::int(1));
+            assert_eq!(inst.value_of("svc", "readies").unwrap(), Value::int(2));
+            // The run fails: not ready at once; its values stay.
+            shelf
+                .dynamic()
+                .action(&rt, "fail", None, &[], Default::default())
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !step(&mut inst).contains("3 false false") {
+                assert!(Instant::now() < deadline, "the failure never landed");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(!shelf.running());
+            // After the retry's backoff a new run reports at boot again
+            // (two items, dark): a baseline, so only the ready handler
+            // runs, once.
+            SHELF_GO.notify_one();
+            now.set(Duration::from_secs(2));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !step(&mut inst).contains("2 true true") {
+                assert!(Instant::now() < deadline, "the new run never answered");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            for _ in 0..5 {
+                step(&mut inst);
+            }
+            assert_eq!(shelf.starts(), 2);
+            assert_eq!(inst.value_of("svc", "items").unwrap(), Value::int(1));
+            assert_eq!(inst.value_of("svc", "darks").unwrap(), Value::int(1));
+            assert_eq!(inst.value_of("svc", "readies").unwrap(), Value::int(3));
+            inst.shutdown();
+            services.shutdown();
+        }
+
+        pub const EARLY_SCHEMA: &str = "
+/// A service whose boot read is in at once.
+service early {
+  /// Whether it is dark.
+  dark: bool
+  /// The items, keyed by `id`.
+  items: [TallyItem]
+}
+";
+
+        /// A service that reports and says it is ready as soon as it
+        /// starts: its boot read lands inside the first frame's hold.
+        #[service(name = "early", schema = EARLY_SCHEMA)]
+        #[derive(Store, Clone, Debug, Default, PartialEq)]
+        pub struct Early {
+            /// Whether it is dark.
+            pub dark: bool,
+            /// The items.
+            #[store(keyed)]
+            pub items: Vec<Item>,
+        }
+
+        impl Early {
+            async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
+                cx.update(|s| {
+                    s.dark = true;
+                    s.items = vec![Item {
+                        id: 1,
+                        name: "a".into(),
+                        level: 0.0,
+                    }];
+                });
+                cx.ready();
+                while cx.recv().await.is_some() {}
+                Ok(())
+            }
+        }
+
+        /// (service-ready) As `strand run` boots: the config mounted, the
+        /// first frame held for the services' first reads (several pumps,
+        /// no flush between them), then the first tick. A boot read that
+        /// lands inside the hold is still a baseline, and `ready` still
+        /// turns true afterwards as a change: the handler naming it runs
+        /// exactly once.
+        #[test]
+        fn ready_is_a_change_after_a_boot_read_inside_the_hold() {
+            let rt = Runtime::new();
+            let services = Services::new(&rt, Buses::none(), || {});
+            let early = services.register::<Early>(&rt);
+            let (mut inst, mut scene) = mount(
+                &rt,
+                &format!("{SCHEMA}{EARLY_SCHEMA}"),
+                "export state ups = 0\nexport state lists = 0\non change early.items, early.ready { if early.ready { ups = ups + 1 } }\non change early.items { lists = lists + 1 }\nbar B { text join(\" \", early.items.count(i => true), early.ready) }\n",
+                early.dynamic(),
+            );
+            assert!(early.running(), "mounting the config started it");
+            assert!(services.wait_ready(&rt, Duration::from_secs(5)));
+            assert_eq!(
+                early.cells().snapshot(&rt).map(|s| s.items.len()),
+                Ok(1),
+                "its boot read came in during the hold"
+            );
+            let mut step = || {
+                services.pump(&rt);
+                let u = inst.tick(Duration::ZERO);
+                assert!(u.errors.is_empty(), "{:?}", u.errors);
+                scene.apply(&u.diff).unwrap();
+                scene.texts().join(" ")
+            };
+            assert_eq!(step(), "1 false", "the first frame: ready is not in yet");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while step() != "1 true" {
+                assert!(Instant::now() < deadline, "ready never landed");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            for _ in 0..5 {
+                step();
+            }
+            assert_eq!(inst.value_of("svc", "ups").unwrap(), Value::int(1));
+            assert_eq!(inst.value_of("svc", "lists").unwrap(), Value::int(0));
             inst.shutdown();
             services.shutdown();
         }

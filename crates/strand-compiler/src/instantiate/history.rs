@@ -1011,7 +1011,9 @@ fn recorder(
                     let mut last = last.borrow_mut();
                     let mut polled: Option<Duration> = None;
                     for (i, (svc, field)) in inputs.iter().enumerate() {
-                        let now = field.as_ref().and_then(|f| host.read(rt, svc, f).ok());
+                        let now = field
+                            .as_ref()
+                            .and_then(|f| crate::vm::host::read_member(&*host, rt, svc, f).ok());
                         let changed = now.is_none() || last[i] != now;
                         last[i] = now;
                         if changed && let Some(p) = host.sampled(rt, svc) {

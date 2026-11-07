@@ -351,7 +351,7 @@ impl Ctx {
             let Some(f) = f else { continue };
             match self.vm.host.read_keyed(rt, s, f) {
                 Some(k) => out.push(Value::int(k.snapshot(rt)?.version() as i64)),
-                None => out.push(self.vm.host.read(rt, s, f)?),
+                None => out.push(crate::vm::host::read_member(&*self.vm.host, rt, s, f)?),
             }
         }
         for n in &r.nodes {

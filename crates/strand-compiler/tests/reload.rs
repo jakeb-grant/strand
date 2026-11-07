@@ -2223,3 +2223,71 @@ fn a_settings_file_keeps_its_enums_by_name_through_a_reload() {
     drop(shell);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// (service-ready) `after 0s while svc.ready`, the one-shot form: it runs
+/// once when the service has answered, not again on a reload, nor when
+/// the service drops out and comes back. `on change battery.ready` runs
+/// for each real change, never for the boot value or a reload.
+#[test]
+fn a_one_shot_on_ready_runs_once_and_not_on_reload() {
+    let src = |sep: &str| {
+        format!(
+            "state runs = 0\nstate flips = 0\nafter 0s while battery.ready {{ runs += 1 }}\non change battery.ready {{ flips += 1 }}\nbar Top {{ text join(\"{sep}\", runs, flips, battery.ready) }}\n"
+        )
+    };
+    let mut shell = boot_on(&[("t.strand", &src(" "))], Storage::none(), |rt, host| {
+        screens(rt, host, &["DP-1"]);
+        host.set_ready(rt, "battery", false).unwrap();
+    });
+    shell.at(0.5);
+    assert_eq!(shell.scene.texts(), ["0 0 false"]);
+    shell.host.set_ready(&shell.rt, "battery", true).unwrap();
+    shell.at(1.0);
+    shell.at(1.1);
+    assert_eq!(shell.scene.texts(), ["1 1 true"]);
+    shell.reload(&[("t.strand", &src(", "))]);
+    shell.at(2.0);
+    assert_eq!(shell.scene.texts(), ["1, 1, true"], "a reload runs nothing");
+    shell.host.set_ready(&shell.rt, "battery", false).unwrap();
+    shell.at(3.0);
+    shell.host.set_ready(&shell.rt, "battery", true).unwrap();
+    shell.at(4.0);
+    shell.at(4.1);
+    assert_eq!(shell.scene.texts(), ["1, 3, true"], "one-shot; each flip");
+}
+
+/// A keyed list a service reports at boot (`SchemaHost::set_initial`) is
+/// a baseline for `on change`, as the real host's boot report is; a
+/// later `set` fires.
+#[test]
+fn a_keyed_boot_report_is_a_baseline() {
+    let src = "state fired = 0\non change notifications.popups { fired += 1 }\nbar Top { text join(\" \", notifications.popups.count(n => true), fired) }\n";
+    let mut shell = boot(&[("t.strand", src)]);
+    shell.at(0.5);
+    let host = shell.host.clone();
+    let n = |id: i64| {
+        host.record(
+            "Notification",
+            &[("id", Value::int(id)), ("summary", Value::text("hi"))],
+        )
+    };
+    let list = Value::list(vec![n(1), n(2)]);
+    shell
+        .host
+        .set_initial(&shell.rt, "notifications.popups", list)
+        .unwrap();
+    shell.at(1.0);
+    shell.at(1.1);
+    assert_eq!(
+        shell.scene.texts(),
+        ["2 0"],
+        "the boot report is a baseline"
+    );
+    let list = Value::list(vec![n(1)]);
+    shell
+        .host
+        .set(&shell.rt, "notifications.popups", list)
+        .unwrap();
+    shell.at(2.0);
+    assert_eq!(shell.scene.texts(), ["1 1"]);
+}

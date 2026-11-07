@@ -82,8 +82,20 @@ pub trait ServiceHost {
     /// nothing.
     fn stop(&self, _rt: &Runtime, _name: &str) {}
 
-    /// The value of `service.field`, tracked.
+    /// The value of `service.field`, tracked. `ready` never comes here:
+    /// the VM reads it from [`ServiceHost::ready`] ([`read_member`]).
     fn read(&self, rt: &Runtime, service: &str, field: &str) -> Result<Value, Error>;
+
+    /// (service-ready) `service.ready`, tracked: a run of the service is up
+    /// and has answered (spec.md 5.6). False before its first report,
+    /// after it said its values no longer hold, and while no run is up;
+    /// it turns true one flush after the boot values, as a change, so an
+    /// `on change` naming it runs then. [`ServiceHost::sources`] with
+    /// `Some("ready")` gives the cell it reads. The default: always true
+    /// (a host whose values are there from the start).
+    fn ready(&self, _rt: &Runtime, _service: &str) -> bool {
+        true
+    }
 
     /// The core nodes a read of `service.field` depends on (`None`: of
     /// the service as a whole, as a method call such as `clock.format(p)`
@@ -307,3 +319,17 @@ impl std::fmt::Display for PathSeg {
 
 /// A load started by [`ServiceHost::fetch`].
 pub type Fetch = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, Error>>>>;
+
+/// `service.field` as the VM reads it: `ready` from
+/// [`ServiceHost::ready`], every other field from [`ServiceHost::read`].
+pub fn read_member(
+    host: &dyn ServiceHost,
+    rt: &Runtime,
+    service: &str,
+    field: &str,
+) -> Result<Value, Error> {
+    if field == crate::schema::READY {
+        return Ok(Value::Bool(host.ready(rt, service)));
+    }
+    host.read(rt, service, field)
+}

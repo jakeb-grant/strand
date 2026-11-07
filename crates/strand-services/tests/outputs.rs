@@ -432,3 +432,70 @@ fn without_a_compositor_outputs_is_unavailable_and_fails_as_events() {
     s.shutdown();
     outputs::configure(None);
 }
+
+/// (service-ready) The compositor going away: `ready` turns false before
+/// the list is cleared, so no reader ever sees `all` empty while `ready`
+/// is true, and the cleared list is a boot value (an `on change` of the
+/// list takes it as its baseline instead of firing).
+#[test]
+fn a_lost_compositor_is_unready_before_its_heads_clear() {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    let _serial = serial();
+    let Some(sway) = Sway::start("outputs-unready") else {
+        return;
+    };
+    let h = Harness::start(&sway);
+    assert!(!h.b.outputs.ready(&h.rt), "not in the flush of its report");
+    h.until("ready", |h| h.b.outputs.ready(&h.rt));
+    assert!(!h.all().is_empty());
+    // `outputs.all`'s length, read tracked as a binding reads it.
+    let all = <outputs::Outputs as Store>::FIELDS
+        .iter()
+        .position(|f| f.name == "all")
+        .unwrap();
+    let heads = move |rt: &Runtime, c: &strand_services::Client<outputs::Outputs>| match c
+        .cells()
+        .read(
+        rt, all,
+    )? {
+        Data::List(l) => Ok(l.len()),
+        d => panic!("{d:?}"),
+    };
+    let client = h.b.outputs.clone();
+    let seen: Rc<RefCell<Vec<(bool, usize)>>> = Rc::default();
+    let log = seen.clone();
+    let _watch = h.rt.effect(move |rt| {
+        let ready = client.ready(rt);
+        let n = heads(rt, &client)?;
+        log.borrow_mut().push((ready, n));
+        Ok(())
+    });
+    let client = h.b.outputs.clone();
+    let changes = Rc::new(Cell::new(0));
+    let fired = changes.clone();
+    let _on_change = h.rt.on_change(
+        move |rt| heads(rt, &client),
+        move |_, _| {
+            fired.set(fired.get() + 1);
+            Ok(())
+        },
+    );
+    h.rt.flush();
+    drop(sway);
+    h.until("the heads cleared", |h| h.all().is_empty());
+    for _ in 0..5 {
+        h.s.pump(&h.rt);
+        h.rt.flush();
+    }
+    assert!(!h.b.outputs.ready(&h.rt));
+    let seen = seen.borrow();
+    assert!(
+        !seen.iter().any(|&(ready, n)| ready && n == 0),
+        "the empty list was seen while ready: {seen:?}"
+    );
+    assert_eq!(seen.last(), Some(&(false, 0)), "{seen:?}");
+    assert_eq!(changes.get(), 0, "the clear is not a change");
+    h.s.shutdown();
+    outputs::configure(None);
+}

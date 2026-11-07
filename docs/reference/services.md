@@ -4,6 +4,12 @@
 
 A service is a live value: read it and the shell updates when it changes (spec.md, section 8.1). It starts the first time a program reads it and stops a few seconds after nothing does. A field marked `rw` can be written (assignment, `<->`, `strand set`); an `action` is called only from a handler; `on name.event(…)` handles an event. The records they hand out are in [types.md](types.md).
 
+## Every service
+
+| Field | Type | |
+| --- | --- | --- |
+| `ready` | `bool` | A run of the service is up and has answered: false before its first report, while its source is gone (a `from dbus` daemon, the compositor), and while no run is up (failed and backing off, or stopped). It turns true one flush after the service's first values, as a change, so `on change svc.x, svc.ready` runs once the values are real (spec.md 8.4). It means *reported*, not *settled*. Unlike `available` or `present`, which say whether a backend or device exists and are part of the report, every service has it, the config's own included. Read-only. |
+
 ## `apps`
 
 Installed apps, from the desktop entries in every `applications/`

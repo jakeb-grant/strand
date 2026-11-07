@@ -328,6 +328,12 @@ impl<'a> Completer<'a> {
             .reference_at(self.file, rs as u32)
             .filter(|r| r.span.end as usize == dot)
             .map(|r| r.target.clone());
+        // (service-ready) A service itself: its `ready` too.
+        let service = match &target {
+            Some(Target::Service(_)) => true,
+            Some(Target::Def(d)) => matches!(p.def(*d).kind, DefKind::Service(_)),
+            _ => false,
+        };
         match (&base, target) {
             (_, Some(Target::File(f))) => {
                 for (path, d) in p.exports() {
@@ -363,6 +369,17 @@ impl<'a> Completer<'a> {
         }
         if let Some((ty, state)) = base {
             self.members_of(&ty, range, writable, state);
+        }
+        if service && !writable {
+            let name = strand_compiler::schema::READY;
+            self.push(
+                name.to_string(),
+                CompletionItemKind::FIELD,
+                Some(format!("{name}: bool")),
+                Some("The service has answered: a run is up and its values are in (every service has it)."),
+                Some((range, name.to_string())),
+                "0",
+            );
         }
     }
 
@@ -905,6 +922,8 @@ mod tests {
         let at = src.find(".\n").unwrap() as u32 + 1;
         let first = complete(&an, file, at);
         assert!(first.iter().any(|i| i.label == "percent"), "{first:?}");
+        // (service-ready) Every service's own field.
+        assert!(first.iter().any(|i| i.label == "ready"), "{first:?}");
         let memo = an.inserted().unwrap();
         let again = complete(&an, file, at);
         assert_eq!(first.len(), again.len());

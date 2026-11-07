@@ -652,6 +652,22 @@ impl<'a> Checker<'a> {
         self.types.record_mut(rid).fields = fields;
     }
 
+    /// (service-ready) A declared service's member named `ready`: every
+    /// service has that field already.
+    fn reserved_ready(&mut self, span: Span, what: &str) {
+        self.error(
+            "check::reserved_field",
+            format!("a service cannot declare {what} named `ready`"),
+            span,
+            "every service has `ready` already",
+        )
+        .help = Some(
+            "`svc.ready` is true once the service has answered; rename this one (`is_ready`, \
+             `loaded`)"
+                .into(),
+        );
+    }
+
     fn service_fields(&mut self, s: &'a ast::Service) {
         let Some(&id) = self.item_defs.get(&(self.module, s.name.span)) else {
             return;
@@ -665,6 +681,10 @@ impl<'a> Checker<'a> {
             // (M6) `action hold(profile: text) = HoldProfile`: a method
             // handlers call (`ppd.hold("performance")`).
             if let ItemKind::Action(a) = &item.kind {
+                if a.name.name == crate::schema::READY {
+                    self.reserved_ready(a.name.span, "an action");
+                    continue;
+                }
                 if methods.iter().any(|m| m.name == a.name.name) {
                     self.error(
                         "check::redeclared",
@@ -700,6 +720,10 @@ impl<'a> Checker<'a> {
             let ItemKind::Field(f) = &item.kind else {
                 continue;
             };
+            if f.name.name == crate::schema::READY {
+                self.reserved_ready(f.name.span, "a field");
+                continue;
+            }
             if fields.iter().any(|g| g.name == f.name.name) {
                 self.error(
                     "check::redeclared",

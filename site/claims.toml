@@ -1612,6 +1612,24 @@ proof  = "crates/strand-compiler/tests/instantiate.rs::on_change_skips_boot_and_
 
 [[claim]]
 page   = "site/concepts/state.md"
+text   = "Every service has `ready`, true once it has answered."
+source = ['docs/spec.md "Every service, builtin or declared, has a read-only"', 'crates/strand-compiler/src/vm/host.rs "fn ready(&self, _rt: &Runtime, _service: &str) -> bool"']
+proof  = "crates/strand/src/services/mod.rs::on_change_skips_a_services_boot_report; crates/strand-compiler/tests/checker.rs::every_service_has_a_read_only_ready"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "in, and again after it restarts:"
+source = ['docs/spec.md "reconciles the starting state, every change, and each restart."']
+proof  = "crates/strand/src/services/mod.rs::on_change_skips_a_services_boot_report (once when ready lands, once after a failed run is replaced); ::ready_is_a_change_after_a_boot_read_inside_the_hold"
+
+[[claim]]
+page   = "site/concepts/state.md"
+text   = "says the service has reported, not that its values have"
+source = ['docs/spec.md "`ready` means *reported*, not *settled*"']
+proof  = "read"
+
+[[claim]]
+page   = "site/concepts/state.md"
 text   = "runs once, 1.2 s after the last change."
 source = ['docs/spec.md "**`on change a after T { … }`** debounces: it runs once, `T` after the last change."']
 proof  = "crates/strand-compiler/tests/instantiate.rs::on_change_skips_boot_and_debounces"
@@ -2065,6 +2083,12 @@ page   = "site/concepts/surfaces.md"
 text   = "A save that changes it waits until you unlock."
 source = ['docs/spec.md "| Anything inside `lock` | Deferred until unlock | Yes |"']
 proof  = "crates/strand-compiler/tests/reload.rs::a_lock_edit_is_deferred_while_shown"
+
+[[claim]]
+page   = "site/concepts/services.md"
+text   = "of it is up and has answered, and false before its first values, while"
+source = ['docs/spec.md "`ready: bool`: a run of it is up and has answered."', 'crates/strand-services/src/client.rs "False before the first report, after"']
+proof  = "crates/strand-services/tests/custom.rs::a_dbus_declaration_is_ready_while_its_daemon_answers; ::file_and_poll_declarations_are_ready_after_their_first_read; crates/strand-services/tests/outputs.rs::a_lost_compositor_is_unready_before_its_heads_clear"
 
 [[claim]]
 page   = "site/concepts/services.md"

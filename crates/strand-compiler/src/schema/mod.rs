@@ -133,6 +133,13 @@ pub struct TokenSchema {
     pub palette: bool,
 }
 
+/// (service-ready) The field every service has, builtin or declared: a
+/// run of it is up and has answered (spec.md 5.6). It is not in the
+/// service records' fields; the checker types `svc.ready` as `bool` and
+/// the VM reads it from [`crate::vm::host::ServiceHost::ready`]. A schema
+/// or config member of a service named so is an error.
+pub const READY: &str = "ready";
+
 /// Everything the language knows before reading a config.
 #[derive(Clone, Debug, Default)]
 pub struct Schema {

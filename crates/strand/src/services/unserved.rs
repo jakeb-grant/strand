@@ -71,7 +71,16 @@ impl ServiceHost for UnservedHost {
         self.fallback.read(rt, service, field)
     }
 
+    /// (service-ready) Never: what it shows is the schema's defaults.
+    fn ready(&self, _rt: &Runtime, _service: &str) -> bool {
+        false
+    }
+
     fn sources(&self, rt: &Runtime, service: &str, field: Option<&str>) -> Vec<NodeId> {
+        if field == Some(strand_compiler::schema::READY) {
+            // A constant: nothing to depend on.
+            return Vec::new();
+        }
         self.fallback.sources(rt, service, field)
     }
 

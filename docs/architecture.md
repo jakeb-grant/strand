@@ -1816,6 +1816,16 @@ Public interfaces:
     through the graph (a `Signal<Value>` per field) so bindings depend on
     exactly that field. `read_keyed` publishes a list field as a keyed
     collection, so a `for` over it follows its `VecDiff`s.
+  - (service-ready) `ready(rt, service) -> bool`, tracked: every
+    service's `ready` (spec.md 5.6), which no schema declares; the
+    checker types `svc.ready` as `bool` (`schema::READY`) and the VM
+    reads it here, never through `read` (`vm::host::read_member`).
+    `sources(rt, service, Some("ready"))` gives its cell. The default is
+    `true`; the mock's is a settable cell per service
+    (`SchemaHost::set_ready`, true from the start, so `strand export`'s
+    files never wait); `StoreHost` and the config's own services answer
+    from their `Client`'s live cell, `Composite` routes it as `read`,
+    and an unserved plugin service is never ready.
   - `sources(rt, service, field)` and `action_writes(rt, service)`: the
     core nodes a read depends on and an action can write, declared
     before the first flush (a superset is fine).
@@ -2894,7 +2904,10 @@ itself.
   field index and generation so the logic thread ignores the echo and
   drops a refused optimistic value), `ready()` (ends the boot phase:
   earlier updates are boot values `on change` takes as baseline; also
-  ends the first frame's wait), `recv()`/`blocking_recv()`/`try_recv()`
+  ends the first frame's wait), `unready()` (service-ready: the values
+  no longer hold, sent before an update that clears them; later updates
+  are boot values again until the next `ready()`),
+  `recv()`/`blocking_recv()`/`try_recv()`
   of `Msg::{Write, Action, Call, Visible, Watch, Keep}`
   (`#[non_exhaustive]`; `None` once stopped), `visible()`, `kept()`,
   `period(visible)` (how often a polled service samples now; `Ticker`
@@ -2916,6 +2929,13 @@ itself.
   `register_as`; `pump(rt)` applies waiting envelopes outside handlers;
   `wait_ready(rt, limit)` / `wait_ready_of`; `report` and
   `take_diagnostics`; `shutdown()`. `Client<S>` (`src/client.rs`):
+  `ready(rt)`/`ready_cell()` (service-ready: the language's `ready`, a
+  `Signal<bool>` per client, separate from the run's boot-hold flag; it
+  is set true by the first pump after a flush has passed since the run's
+  `Ready` arrived, as an ordinary write, so the boot values' rebaseline
+  is spent and `on change svc.ready` runs; `Ready` wakes the loop once
+  for that pump. It is set false at once on `Unready`, when the run
+  ends and when it is stopped);
   `acquire`/`release` (reader count: the first acquire starts it; the
   last release sends `Visible(false)` and arms a `STOP_GRACE` (5 s)
   core timer that stops it; `release` disposes nothing, so it is safe in

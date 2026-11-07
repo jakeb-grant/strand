@@ -574,3 +574,117 @@ fn a_busy_dir_is_listed_at_most_every_relist() {
     services.shutdown();
     custom::forget(id);
 }
+
+/// (service-ready) A `from dbus` declaration is ready once its first
+/// `GetAll` is in, not while its daemon is gone (its values null), and
+/// ready again once a new daemon has been read.
+#[test]
+fn a_dbus_declaration_is_ready_while_its_daemon_answers() {
+    const PPD: &str = "net.hadess.PowerProfiles";
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let Some(ppd) = DbusMock::start(&bus, "power_profiles_daemon", true, None, PPD) else {
+        return;
+    };
+    let rt = Runtime::new();
+    let services = Services::new(&rt, bus.buses(), || {});
+    let client = services.register_as::<Custom>(&rt, "ppd");
+    let id = custom::register(Spec {
+        name: "ppd".into(),
+        source: Source::Dbus {
+            system: true,
+            name: PPD.into(),
+            path: None,
+        },
+        fields: vec![FieldSpec {
+            name: "profile".into(),
+            key: vec!["ActiveProfile".into()],
+            rw: false,
+        }],
+        actions: Vec::new(),
+    });
+    client.seed(&rt, |s| *s = Custom::seeded(id, 1)).unwrap();
+    client.acquire(&rt);
+    let profile = || {
+        client
+            .cells()
+            .values
+            .with_untracked(&rt, |v| v.get(&0i64).map(|v| v.value.clone()))
+            .ok()
+            .flatten()
+    };
+    assert!(!client.ready(&rt), "not before its first read");
+    until(&rt, &services, "ready", || client.ready(&rt));
+    assert_eq!(profile(), Some(Data::Text("balanced".into())));
+    drop(ppd);
+    until(&rt, &services, "not ready without the daemon", || {
+        !client.ready(&rt)
+    });
+    until(&rt, &services, "the values cleared", || {
+        profile() == Some(Data::Null)
+    });
+    assert!(!client.ready(&rt), "still not ready: nobody answers");
+    assert!(client.running(), "the run waits for the daemon");
+    let Some(_ppd) = DbusMock::start(&bus, "power_profiles_daemon", true, None, PPD) else {
+        return;
+    };
+    until(&rt, &services, "ready again", || client.ready(&rt));
+    assert_eq!(profile(), Some(Data::Text("balanced".into())));
+    client.release(&rt);
+    services.shutdown();
+    custom::forget(id);
+}
+
+/// (service-ready) A `from file` declaration is ready once its first
+/// read is in, a `from poll` one once its first poll is; a run that is
+/// stopped is not.
+#[test]
+fn file_and_poll_declarations_are_ready_after_their_first_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("mood.json");
+    std::fs::write(&path, r#"{"level": 1}"#).unwrap();
+    for (name, source) in [
+        ("mood", Source::File { path: path.clone() }),
+        (
+            "polled",
+            Source::Poll {
+                target: custom::PollTarget::Command(vec![
+                    "sh".into(),
+                    "-c".into(),
+                    r#"sleep 0.2; echo '{"level": 1}'"#.into(),
+                ]),
+                every: Duration::from_secs(60),
+            },
+        ),
+    ] {
+        let rt = Runtime::new();
+        let services = Services::new(&rt, Buses::none(), || {});
+        let client = services.register_as::<Custom>(&rt, name);
+        let id = custom::register(Spec {
+            name: name.into(),
+            source,
+            fields: vec![FieldSpec {
+                name: "level".into(),
+                key: vec!["level".into()],
+                rw: false,
+            }],
+            actions: Vec::new(),
+        });
+        client.seed(&rt, |s| *s = Custom::seeded(id, 1)).unwrap();
+        client.acquire(&rt);
+        assert!(!client.ready(&rt), "{name}: not before its first read");
+        until(&rt, &services, "ready", || client.ready(&rt));
+        let level = client
+            .cells()
+            .values
+            .with_untracked(&rt, |v| v.get(&0i64).map(|v| v.value.clone()))
+            .ok()
+            .flatten();
+        assert_eq!(level, Some(Data::Int(1)), "{name}: ready with its value");
+        client.stop_now(&rt);
+        assert!(!client.ready(&rt), "{name}: stopped, not ready");
+        services.shutdown();
+        custom::forget(id);
+    }
+}

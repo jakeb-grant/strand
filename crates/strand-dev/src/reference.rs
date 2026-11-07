@@ -532,6 +532,20 @@ fn services(s: &Schema) -> String {
          handler; `on name.event(…)` handles an event. The records they hand out \
          are in [types.md](types.md).\n\n",
     );
+    // (service-ready) The field no schema declares: every service's own.
+    o.push_str(
+        "## Every service\n\n\
+         | Field | Type | |\n\
+         | --- | --- | --- |\n\
+         | `ready` | `bool` | A run of the service is up and has answered: false before its \
+         first report, while its source is gone (a `from dbus` daemon, the compositor), and \
+         while no run is up (failed and backing off, or stopped). It turns true one flush \
+         after the service's first values, as a change, so `on change svc.x, svc.ready` runs \
+         once the values are real (spec.md 8.4). It means *reported*, not *settled*. Unlike \
+         `available` or `present`, which say whether a backend or device exists and are \
+         part of the report, every service has it, the config's own included. \
+         Read-only. |\n\n",
+    );
     for (name, id) in &s.services {
         let r = s.types.record(*id);
         let _ = writeln!(o, "## `{name}`\n");

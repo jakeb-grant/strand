@@ -693,14 +693,23 @@ impl ServiceHost for CustomHost {
         }
     }
 
+    fn ready(&self, rt: &Runtime, service: &str) -> bool {
+        let client = self.entries.borrow().get(service).map(|e| e.client.clone());
+        client.is_some_and(|c| c.ready(rt))
+    }
+
     fn sources(&self, _rt: &Runtime, service: &str, field: Option<&str>) -> Vec<NodeId> {
         let entries = self.entries.borrow();
         let Some(e) = entries.get(service) else {
             return Vec::new();
         };
+        let ready = e.client.ready_cell().id();
+        if field == Some(strand_compiler::schema::READY) {
+            return vec![ready];
+        }
         match field.and_then(|f| e.decl.fields.iter().position(|d| d.name == f)) {
             Some(i) => vec![e.values[i].id()],
-            None => e.values.iter().map(|m| m.id()).collect(),
+            None => e.values.iter().map(|m| m.id()).chain([ready]).collect(),
         }
     }
 

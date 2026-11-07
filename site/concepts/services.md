@@ -81,6 +81,13 @@ UDisks2, power-profiles-daemon, the backlight), the service's
 `available` field says whether it answers, so a config can hide what
 cannot work. A missing daemon never stops the shell.
 
+Every service, built in or your own, also has `ready`: true once a run
+of it is up and has answered, and false before its first values, while
+its source is gone, and while it is not running. A placeholder reads it
+(`if !workspaces.ready { … }`), and so does a handler that should act on
+the first answer as well as on later changes (see
+[Events and timers](state.md#events-and-timers)).
+
 ## A control panel and a pairing dialog
 
 A panel of controls that would otherwise need a tool each: the power

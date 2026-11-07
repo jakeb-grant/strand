@@ -279,9 +279,14 @@ impl ServiceHost for StoreHost {
         }
     }
 
+    fn ready(&self, rt: &Runtime, _service: &str) -> bool {
+        self.svc.ready(rt)
+    }
+
     fn sources(&self, _rt: &Runtime, _service: &str, field: Option<&str>) -> Vec<NodeId> {
         let mut out = Vec::new();
         match field {
+            Some(strand_compiler::schema::READY) => out.push(self.svc.ready_id()),
             Some(f) => {
                 if let Ok(i) = self.index(f) {
                     self.ids(i, &mut out);
@@ -291,6 +296,7 @@ impl ServiceHost for StoreHost {
                 for i in 0..self.fields.len() {
                     self.ids(i, &mut out);
                 }
+                out.push(self.svc.ready_id());
             }
         }
         out

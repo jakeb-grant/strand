@@ -126,6 +126,12 @@ are `Async`.
   does not flash at boot or on save. A `state` fed only by `on change`
   so holds its starting value until the first real change; to show the
   value from the start, read it with a `let`.
+- Every service has `ready`, true once it has answered. Name it in the
+  handler and the handler also runs when the service's first values are
+  in, and again after it restarts:
+  `on change outputs.all, outputs.ready after 1500ms { if outputs.ready { … } }`.
+  `ready` says the service has reported, not that its values have
+  settled, so a handler that keeps something in step debounces.
 - `on change a after 1.2s { … }` runs once, 1.2 s after the last change.
 - When a watched path moves to another item, its new value is the new
   baseline and `on change` does not run: `on change

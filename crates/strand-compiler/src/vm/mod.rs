@@ -817,7 +817,7 @@ impl Vm {
         service: &str,
         field: &str,
     ) -> Result<Value, Error> {
-        let v = self.host.read(rt, service, field)?;
+        let v = host::read_member(&*self.host, rt, service, field)?;
         if service == "system"
             && field == "dark"
             && self.other_mode_active()

@@ -270,6 +270,10 @@ impl ServiceHost for Composite {
         self.route(service).read(rt, service, field)
     }
 
+    fn ready(&self, rt: &Runtime, service: &str) -> bool {
+        self.route(service).ready(rt, service)
+    }
+
     fn sources(&self, rt: &Runtime, service: &str, field: Option<&str>) -> Vec<NodeId> {
         self.route(service).sources(rt, service, field)
     }

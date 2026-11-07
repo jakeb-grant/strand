@@ -4103,3 +4103,52 @@ fn an_element_handler_with_no_element_is_an_error() {
         assert_eq!(errors_of(&on_box(good)), Vec::<String>::new(), "{good}");
     }
 }
+
+/// (service-ready) Every service has `ready: bool`, builtin or declared,
+/// read-only; a declared field or action of that name is
+/// `check::reserved_field` with a rename hint, and a service schema
+/// declaring one is refused.
+#[test]
+fn every_service_has_a_read_only_ready() {
+    one(
+        "service mood from file \"~/mood.json\" { level: int = level }\nlet both: bool = battery.ready && mood.ready\nbar B { text both ? \"up\" : \"…\" }\n",
+    );
+    for bad in [
+        "service mood from file \"~/mood.json\" { ready: bool = ready }\nbar B { }\n",
+        "service ppd from dbus system \"net.hadess.PowerProfiles\" { profile: text = ActiveProfile\n action ready() = Ready }\nbar B { }\n",
+    ] {
+        let errs = errors_of(bad);
+        assert!(
+            errs.iter().any(|e| e.starts_with("check::reserved_field")
+                && e.contains("named `ready`")
+                && e.contains("rename")),
+            "{bad}: {errs:?}"
+        );
+    }
+    for bad in [
+        "bar B { box { on click { battery.ready = true } } }\n",
+        "service mood from file \"~/mood.json\" { level: int = level }\nbar B { box { on click { mood.ready = false } } }\n",
+    ] {
+        let errs = errors_of(bad);
+        assert!(
+            errs.iter()
+                .any(|e| e.starts_with("check::read_only") && e.contains("`ready`")),
+            "{bad}: {errs:?}"
+        );
+    }
+    // An item of a service is not a service: no `ready` there.
+    assert!(
+        codes("bar B { text workspaces.all.first?.ready ?? false ? \"a\" : \"b\" }\n")
+            .contains(&"check::unknown_field")
+    );
+    let schema = strand_compiler::schema::Schema::builtin_with(&[
+        "/// A thing.\nservice thing {\n  /// Its own.\n  ready: bool\n}\n",
+    ]);
+    let Err((_, errs)) = schema else {
+        panic!("a service schema declaring `ready` loaded");
+    };
+    assert!(
+        errs.iter().any(|e| e.message.contains("reserved")),
+        "{errs:?}"
+    );
+}

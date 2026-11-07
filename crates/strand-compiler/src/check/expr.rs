@@ -1280,6 +1280,18 @@ impl<'a> Checker<'a> {
         optional: bool,
         span: Span,
     ) -> hir::Expr {
+        // (service-ready) Every service's own field, builtin or declared.
+        if name.name == crate::schema::READY && self.is_service_expr(&base) {
+            return hir::Expr {
+                kind: ExprKind::Field {
+                    base: Box::new(base),
+                    name: name.name.clone(),
+                    optional,
+                },
+                ty: Ty::BOOL,
+                span,
+            };
+        }
         let (ty, nullable) = match base.ty.clone() {
             Ty::Error | Ty::Any => (Ty::Error, false),
             Ty::Null => {
@@ -1318,6 +1330,16 @@ impl<'a> Checker<'a> {
             },
             ty,
             span,
+        }
+    }
+
+    /// A service itself: a builtin one (`battery`) or the config's own
+    /// (`service ppd from dbus …`).
+    pub(crate) fn is_service_expr(&self, e: &hir::Expr) -> bool {
+        match &e.kind {
+            ExprKind::Service(_) => true,
+            ExprKind::Def(d) => matches!(self.defs[d.0 as usize].kind, DefKind::Service(_)),
+            _ => false,
         }
     }
 
@@ -3949,6 +3971,15 @@ impl<'a> Checker<'a> {
                 }
                 if let ExprKind::Node(_) = base.kind {
                     return Err(NotWritable::BoundProp(name.clone()));
+                }
+                if name == crate::schema::READY
+                    && self.is_service_expr(base)
+                    && let Ty::Record(r) = base.ty.non_null()
+                {
+                    return Err(NotWritable::ReadOnlyField {
+                        owner: self.types.record(*r).name.clone(),
+                        field: name.clone(),
+                    });
                 }
                 let rec = match base.ty.non_null() {
                     Ty::Record(r) => Some(self.types.record(*r)),

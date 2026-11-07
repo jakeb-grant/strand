@@ -705,7 +705,11 @@ impl Outputs {
         if let Err(e) = &r {
             // What it showed no longer holds, and what it was asked to do
             // will not be done: each is `failed`, as an action reaching no
-            // run is.
+            // run is. The service is not ready first (service-ready), so
+            // no reader takes the cleared list for a change while `ready`
+            // is true: a `file` written from `outputs.all` waits instead
+            // of writing an empty list.
+            cx.unready();
             cx.update(|s| {
                 s.all.clear();
                 s.available = false;

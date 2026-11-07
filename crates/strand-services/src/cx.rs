@@ -45,6 +45,9 @@ pub enum Envelope<P> {
     Warning(String),
     /// The first read is complete.
     Ready,
+    /// The values no longer hold ([`Cx::unready`]): the service is not
+    /// ready again until its next [`Envelope::Ready`].
+    Unready,
     /// The body returned (with its error, if any).
     Ended(Result<(), String>),
 }
@@ -408,13 +411,31 @@ impl<S: Service> Cx<S> {
 
     /// The first read is complete: until now updates were boot values
     /// (`on change` takes them as its baseline), from now on they are
-    /// changes. Ends the first frame's wait for this service.
+    /// changes. Ends the first frame's wait for this service. The
+    /// service's `ready` field turns true one flush later, as a change
+    /// (after its boot values have been taken as baselines). Called
+    /// again after [`Cx::unready`], it is ready again.
     pub fn ready(&mut self) -> bool {
         if self.ready {
             return true;
         }
         self.ready = true;
         self.out.send(Envelope::Ready)
+    }
+
+    /// The values no longer hold (the source went away and the service is
+    /// about to clear them, or will read them afresh): the service's
+    /// `ready` turns false at once, and updates from now on are boot
+    /// values again (`on change` takes them as its baseline) until the
+    /// next [`Cx::ready`]. Call it *before* the update that clears, so no
+    /// reader sees the cleared values as a change while `ready` is true.
+    /// `false` once stopped.
+    pub fn unready(&mut self) -> bool {
+        if !self.ready {
+            return !self.stopped();
+        }
+        self.ready = false;
+        self.out.send(Envelope::Unready)
     }
 
     /// Tell the user something they must act on (another notification

@@ -754,6 +754,16 @@ monitor, the keyboard always).
 - A custom service starts when the program first reads it and stops
   5 s after its last reader leaves, as builtin services do (section
   8.1). Changing its declaration restarts only that service.
+- (service-ready) Every service, builtin or declared, has a read-only
+  `ready: bool`: a run of it is up and has answered. A `from file` or
+  `from dir` service is ready once its first read is in, a `from poll`
+  one after its first poll, a `from listen` one once its command runs,
+  and a `from dbus` one once its properties are read and while the
+  daemon owns its name (false while it is gone, true again once a new
+  one has been read). The name is reserved: a declared field or action
+  named `ready` is a load error (`check::reserved_field`), and a
+  service schema declaring one is refused. Section 8.4 says when it
+  changes.
 - **Plugin services.** A service may also come from a plugin: a binary
   built from `strand`'s library with services of its own (git-only and
   marked unstable). Its schema is a
@@ -2039,7 +2049,21 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   runs on a new copy, and `on change audio.sink.volume, x` runs when `x`
   changes in the same tick as a sink switch. The watched expressions
   must be reactive (state, settings, services, or `let`s that read
-  them). In a closed `bar`, `panel`, `osd` or `window` it waits, and
+  them). (service-ready) A handler that should also act on a service's
+  first answer, or again after a failed run is replaced, names the
+  service's `ready` (section 5.6): it is false until the values are in
+  and turns true one flush later, as a change, so `on change
+  outputs.all, outputs.ready after 1500ms { if outputs.ready { … } }`
+  reconciles the starting state, every change, and each restart.
+  `ready` means *reported*, not *settled* (docks enumerate late,
+  daemons restore volumes after login), so a reconciling handler
+  debounces. It turns false at once when the run ends or its source
+  goes; a handler that names both a list and `ready` does not run for a
+  list a failing service clears, since that is a boot value again,
+  while one that names only `ready` does. Other idioms: a one-shot once
+  the answer is real, `after 0s while battery.ready { … }`, and a
+  placeholder, `if !workspaces.ready { Skeleton } else { Strip }`. In a
+  closed `bar`, `panel`, `osd` or `window` it waits, and
   when the surface opens runs once for what it missed and for a change
   made in the tick that opens it (section 5.1, which also says where
   the first opening is not seen, and how a `popup` and the `lock`
@@ -2593,7 +2617,12 @@ people can edit by hand.
   configuration and `clipboard` for its data control), false too while
   a failed service waits to try again, so a config can hide what cannot
   work (decisions.md m6-owner-fixes, gaps 18 and 20; m6-service-gaps,
-  gap 30; drives; power-media-kbd).
+  gap 30; drives; power-media-kbd). Every service's `ready` (section
+  5.6) is false from the moment a run fails until a new run has
+  answered; a service whose source goes while it runs (the compositor's
+  connection, a `from dbus` daemon) turns `ready` false before it
+  clears what it showed, so no reader sees the cleared values as a
+  change (decisions.md service-ready).
 
 ## 13. The command line and IPC
 

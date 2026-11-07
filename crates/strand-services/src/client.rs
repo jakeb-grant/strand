@@ -48,7 +48,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use strand_core::{ActionCtx, Error, NodeId, Runtime, Scope, Timer, VecDiff};
+use strand_core::{ActionCtx, Error, NodeId, Runtime, Scope, Signal, Timer, VecDiff};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::bus::Buses;
@@ -489,11 +489,16 @@ impl Services {
     /// [`Client::unregister`] takes it away again.
     pub fn register_as<S: Service>(&self, rt: &Runtime, name: &str) -> Client<S> {
         let made = self.0.anchor.run(rt, |rt| {
-            rt.untrack(|rt| rt.scope(|rt| S::Cells::new(rt, S::NAME, &S::default())))
+            rt.untrack(|rt| {
+                rt.scope(|rt| (S::Cells::new(rt, S::NAME, &S::default()), rt.signal(false)))
+            })
         });
-        let (scope, cells) = match made {
-            Ok((scope, cells)) => (Some(scope), cells),
-            Err(_) => (None, S::Cells::new(rt, S::NAME, &S::default())),
+        let (scope, (cells, live)) = match made {
+            Ok((scope, made)) => (Some(scope), made),
+            Err(_) => (
+                None,
+                (S::Cells::new(rt, S::NAME, &S::default()), rt.signal(false)),
+            ),
         };
         let id = self.0.next_id.get();
         self.0.next_id.set(id + 1);
@@ -520,6 +525,8 @@ impl Services {
             reports: Cell::new(0),
             last_error: RefCell::new(None),
             last_notice: RefCell::new(None),
+            live,
+            ready_at: Cell::new(None),
         });
         self.0
             .members
@@ -788,6 +795,15 @@ struct ClientInner<S: Service> {
     last_error: RefCell<Option<String>>,
     /// The notice last reported ([`ServiceDiagnostic`]).
     last_notice: RefCell<Option<String>>,
+    /// (service-ready) The language's `svc.ready`: a run is up and has
+    /// said it is ready. Turns true one flush after the run's
+    /// [`Envelope::Ready`] ([`ClientInner::settle_ready`]), false at once
+    /// on [`Envelope::Unready`], when the run ends and when it is stopped.
+    live: Signal<bool>,
+    /// The tick a run's [`Envelope::Ready`] arrived in, until `live` is
+    /// set for it: set only once a flush has passed since, so the boot
+    /// values' rebaseline is spent before `ready` changes.
+    ready_at: Cell<Option<u64>>,
 }
 
 impl Registry {
@@ -1084,7 +1100,36 @@ impl<S: Service> ClientInner<S> {
         });
     }
 
-    fn stop(&self) {
+    /// Stop the run ([`ClientInner::stop_run`]); `ready` turns false.
+    fn stop(&self, rt: &Runtime) {
+        self.unready(rt);
+        self.stop_run();
+    }
+
+    /// `ready` is false from now on, and a pending true is dropped.
+    fn unready(&self, rt: &Runtime) {
+        self.ready_at.set(None);
+        // A disposed cell (the client unregistered) has no readers.
+        let _ = self.live.set(rt, false);
+    }
+
+    /// (service-ready) A run said it is ready, and a flush has passed
+    /// since (its boot values' rebaseline is spent): `ready` turns true,
+    /// as an ordinary change. Whether it did.
+    fn settle_ready(&self, rt: &Runtime) -> bool {
+        let Some(at) = self.ready_at.get() else {
+            return false;
+        };
+        if rt.tick_seq() <= at {
+            return false;
+        }
+        self.ready_at.set(None);
+        let live = self.run.borrow().as_ref().is_some_and(|r| !r.ended);
+        live && self.live.set(rt, true).is_ok()
+    }
+
+    /// Stop the run, without the runtime (shutdown): its channels go.
+    fn stop_run(&self) {
         let run = self.run.borrow_mut().take();
         if let Some(mut run) = run {
             *run.stopped.lock().unwrap_or_else(|e| e.into_inner()) = true;
@@ -1130,7 +1175,7 @@ impl<S: Service> ClientInner<S> {
                         // (no wakeup later for a service nobody reads).
                         c.disarm_retry(rt);
                         c.failures.set(0);
-                        c.stop();
+                        c.stop(rt);
                         // A notice from a failed run no longer holds for
                         // a service nobody uses (its rows leave the
                         // overlay).
@@ -1185,7 +1230,7 @@ impl<S: Service> ClientInner<S> {
                         c.retry.set(None);
                         let ended = c.run.borrow().as_ref().is_some_and(|r| r.ended);
                         if (c.refs.get() > 0 || c.kept.get().is_some()) && ended {
-                            c.stop();
+                            c.stop(rt);
                             c.start(rt);
                         }
                     }
@@ -1216,6 +1261,8 @@ impl<S: Service> ClientInner<S> {
         if was {
             return;
         }
+        // No run is up: the service is not ready.
+        self.unready(rt);
         // Writes it never answered never will be.
         self.cells.forget_echoes(rt);
         // (m6-owner-fixes, review of the integration) Nor will the
@@ -1306,7 +1353,7 @@ impl<S: Service> ClientInner<S> {
                     self.name
                 )));
             }
-            self.stop();
+            self.stop(rt);
         }
         let idle = self.run.borrow().is_none();
         let held = idle && self.refs.get() == 0;
@@ -1364,7 +1411,7 @@ impl<S: Service> Member for ClientInner<S> {
     }
 
     fn stop_now(&self) {
-        self.stop();
+        self.stop_run();
         self.resolve();
     }
 
@@ -1534,7 +1581,7 @@ impl<S: Service> ClientInner<S> {
 
     /// Applies every envelope the run has sent.
     fn pump_envelopes(&self, rt: &Runtime) -> bool {
-        let mut any = false;
+        let mut any = self.settle_ready(rt);
         loop {
             let next = match self.run.borrow().as_ref() {
                 Some(run) => run.rx.try_recv(),
@@ -1600,7 +1647,17 @@ impl<S: Service> ClientInner<S> {
                     if resolves {
                         self.resolve();
                     }
+                    // `ready` turns true after the next flush, which
+                    // takes the boot values as baselines; the loop is
+                    // woken for the pump that sets it (once, not polled).
+                    if self.run.borrow().is_some() {
+                        self.ready_at.set(Some(rt.tick_seq()));
+                        if let Some(reg) = self.reg.upgrade() {
+                            reg.wake.wake();
+                        }
+                    }
                 }
+                Envelope::Unready => self.unready(rt),
                 Envelope::Ended(r) => {
                     match &r {
                         Err(e) => self.diagnose(rt, e, false),
@@ -1660,7 +1717,7 @@ impl<S: Service> Client<S> {
             // Ended by itself: a new reader starts it again.
             Some(true) => {
                 self.0.disarm_retry(rt);
-                self.0.stop();
+                self.0.stop(rt);
                 self.0.start(rt);
             }
             None => {
@@ -1768,7 +1825,7 @@ impl<S: Service> Client<S> {
                     return;
                 }
                 self.0.disarm_retry(rt);
-                self.0.stop();
+                self.0.stop(rt);
                 self.0.start(rt);
             }
             (None, _) => {
@@ -1828,7 +1885,7 @@ impl<S: Service> Client<S> {
     pub fn restart(&self, rt: &Runtime) {
         self.0.disarm_retry(rt);
         self.0.failures.set(0);
-        self.0.stop();
+        self.0.stop(rt);
         self.0.cells.forget_echoes(rt);
         if self.0.refs.get() > 0 || self.0.kept.get().is_some() {
             self.0.disarm_stop(rt);
@@ -1845,7 +1902,7 @@ impl<S: Service> Client<S> {
         self.0.disarm_retry(rt);
         self.0.disarm_stop(rt);
         self.0.failures.set(0);
-        self.0.stop();
+        self.0.stop(rt);
         self.0.resolve();
         self.0.cells.forget_echoes(rt);
     }
@@ -1869,6 +1926,20 @@ impl<S: Service> Client<S> {
     /// Its name ([`Services::register_as`]).
     pub fn name(&self) -> &str {
         &self.0.name
+    }
+
+    /// (service-ready) The language's `svc.ready`, read tracked: a run
+    /// is up and has said it is ready ([`Cx::ready`]), and a flush has
+    /// passed since its boot values. False before the first report, after
+    /// [`Cx::unready`], and while no run is up.
+    pub fn ready(&self, rt: &Runtime) -> bool {
+        self.0.live.get(rt).unwrap_or(false)
+    }
+
+    /// The cell [`Client::ready`] reads (the edges a reader of `ready`
+    /// is ranked by).
+    pub fn ready_cell(&self) -> Signal<bool> {
+        self.0.live
     }
 
     /// The service is running: started, not stopped, and its body has
@@ -2150,6 +2221,10 @@ pub trait DynService {
     fn release_field(&self, field: usize);
     fn readers(&self) -> u32;
     fn running(&self) -> bool;
+    /// (service-ready) [`Client::ready`], tracked.
+    fn ready(&self, rt: &Runtime) -> bool;
+    /// The cell [`DynService::ready`] reads.
+    fn ready_id(&self) -> NodeId;
     fn starts(&self) -> u64;
     /// Called with every keyed change and event applied from now on.
     fn observe(&self, f: Observer);
@@ -2447,6 +2522,14 @@ impl<S: Service> DynService for Client<S> {
 
     fn running(&self) -> bool {
         Client::running(self)
+    }
+
+    fn ready(&self, rt: &Runtime) -> bool {
+        Client::ready(self, rt)
+    }
+
+    fn ready_id(&self) -> NodeId {
+        self.0.live.id()
     }
 
     fn starts(&self) -> u64 {

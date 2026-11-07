@@ -1046,7 +1046,12 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
     for (item, line) in &items {
         let line = *line;
         match item {
-            RawItem::Record { name, members, .. } => {
+            RawItem::Record {
+                name,
+                members,
+                service,
+                ..
+            } => {
                 if refused.contains(name) {
                     continue;
                 }
@@ -1057,6 +1062,22 @@ pub(super) fn extend(schema: &mut Schema, text: &str) -> Result<(), Vec<SchemaEr
                 let mut methods = Vec::new();
                 let mut events = Vec::new();
                 for m in members {
+                    // (service-ready) Every service has its own `ready`.
+                    let (member, line) = match m {
+                        RawMember::Field { name, line, .. }
+                        | RawMember::Event { name, line, .. } => (name, *line),
+                        RawMember::Method(sig) => (&sig.name, sig.line),
+                    };
+                    if *service && member == crate::schema::READY {
+                        errors.push(SchemaError {
+                            line,
+                            message: format!(
+                                "`{name}.ready` is reserved: every service has a `ready` field \
+                                 (spec.md 5.6)"
+                            ),
+                        });
+                        continue;
+                    }
                     match m {
                         RawMember::Field { name, ty, rw, line } => {
                             match resolve(schema, ty, *line) {
