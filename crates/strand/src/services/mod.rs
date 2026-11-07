@@ -3735,6 +3735,43 @@ service shelf {
             let _ = std::fs::remove_dir_all(&dir);
         }
 
+        /// (doc-formats) A file grown past the 4 MiB cap keeps its last
+        /// value (never a value read from a cut-short document); back
+        /// under it, it is read again. A Latin-1 feed reads its accents.
+        #[test]
+        fn a_file_over_the_cap_keeps_its_value_and_latin1_reads() {
+            let dir = temp("over");
+            let file = dir.join("news.xml");
+            save(&file, "<rss><channel><title>first</title></channel></rss>");
+            let src = format!(
+                "service news from file \"{}\" {{ title: text = channel.title }}\nbar B {{ text news.title }}\n",
+                file.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("the first read", |l| {
+                l.value("news", "title") == Value::text("first")
+            });
+            // Over the cap: cut at it, the document would end inside a
+            // comment after a new title.
+            let mut big = "<rss><channel><title>cut</title><!--".to_string();
+            big.push_str(&" ".repeat(strand_services::custom::MAX_DOCUMENT));
+            big.push_str("--></channel></rss>");
+            std::fs::write(&file, &big).unwrap();
+            let read_again = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            live.until("a second passed", |_| {
+                std::time::Instant::now() > read_again
+            });
+            assert_eq!(live.value("news", "title"), Value::text("first"));
+            let mut latin = b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><rss><channel><title>Caf\xe9 \x93Ola\x94</title></channel></rss>".to_vec();
+            latin.push(b'\n');
+            std::fs::write(&file, &latin).unwrap();
+            live.until("the Latin-1 feed read", |l| {
+                l.value("news", "title") == Value::text("Café “Ola”")
+            });
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
         /// (doc-formats) A line a `from listen` command prints in XML is a
         /// document, attributes and children by name.
         #[test]

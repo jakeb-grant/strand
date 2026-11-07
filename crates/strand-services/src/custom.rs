@@ -94,8 +94,82 @@ service custom {
 /// How long a polled command may run before it is killed.
 pub const POLL_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Longest document read (a file, a line, a command's output).
-pub const MAX_DOCUMENT: usize = 1 << 20;
+/// Longest document read (a file, a line, a command's output):
+/// (doc-formats) 4 MiB, room for a large feed or a CLI's XML; a larger
+/// one is refused whole, never cut (a cut document is not one).
+pub const MAX_DOCUMENT: usize = 1 << 22;
+
+/// (doc-formats) A document's bytes as text: UTF-8 when they are; else,
+/// when an XML declaration at its start names ISO-8859-1 (Latin-1),
+/// windows-1252 or US-ASCII, windows-1252, as browsers read all three
+/// (a feed declaring Latin-1 often holds 1252's quotes); else UTF-8
+/// with what is not replaced by U+FFFD.
+pub fn decode_document(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+    if let Ok(t) = std::str::from_utf8(bytes) {
+        return std::borrow::Cow::Borrowed(t);
+    }
+    if declares_latin1(bytes) {
+        return std::borrow::Cow::Owned(bytes.iter().map(|b| windows_1252(*b)).collect());
+    }
+    String::from_utf8_lossy(bytes)
+}
+
+/// The encoding an XML declaration at the start of `bytes` names is one
+/// read as windows-1252.
+fn declares_latin1(bytes: &[u8]) -> bool {
+    let head = &bytes[..bytes.len().min(256)];
+    let start = head
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(0);
+    let head = &head[start..];
+    if !head.starts_with(b"<?xml") {
+        return false;
+    }
+    let Some(end) = head.windows(2).position(|w| w == b"?>") else {
+        return false;
+    };
+    let decl = String::from_utf8_lossy(&head[..end]).to_ascii_lowercase();
+    let Some(at) = decl.find("encoding") else {
+        return false;
+    };
+    let rest = decl[at + "encoding".len()..].trim_start();
+    let Some(rest) = rest.strip_prefix('=') else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    let Some(quote) = rest.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+        return false;
+    };
+    let name = rest[1..].split(quote).next().unwrap_or("");
+    matches!(
+        name,
+        "iso-8859-1"
+            | "iso8859-1"
+            | "iso_8859-1"
+            | "latin1"
+            | "latin-1"
+            | "l1"
+            | "windows-1252"
+            | "cp1252"
+            | "us-ascii"
+            | "ascii"
+    )
+}
+
+/// One windows-1252 byte as its character (the five bytes 1252 leaves
+/// undefined as the C1 control of their value, as WHATWG does).
+fn windows_1252(b: u8) -> char {
+    const HIGH: [u16; 32] = [
+        0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160,
+        0x2039, 0x0152, 0x8D, 0x017D, 0x8F, 0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013,
+        0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x9D, 0x017E, 0x0178,
+    ];
+    match b {
+        0x80..=0x9F => char::from_u32(u32::from(HIGH[usize::from(b - 0x80)])).unwrap_or('\u{FFFD}'),
+        _ => char::from(b),
+    }
+}
 
 /// The shortest interval a command is polled at (each poll forks it): a
 /// shorter `every` runs at this. The checker warns about one
@@ -1102,10 +1176,21 @@ async fn run_dbus(
 /// thread.
 const READ_WAIT: Duration = Duration::from_secs(5);
 
-/// Read `path` as a document (`None`: it is not there). Opened without
-/// blocking, and only a regular file is read (sysfs and procfs
-/// attributes are): a FIFO or a device would block the reader.
-fn read_doc(path: &Path) -> Result<Option<Document>, String> {
+/// What reading a file found.
+#[derive(Debug, PartialEq)]
+enum Got {
+    /// It is not there.
+    Gone,
+    Doc(Document),
+    /// (doc-formats) More than [`MAX_DOCUMENT`] bytes (its size, as far
+    /// as it is known): refused whole, never cut.
+    Over(u64),
+}
+
+/// Read `path` as a document. Opened without blocking, and only a
+/// regular file is read (sysfs and procfs attributes are): a FIFO or a
+/// device would block the reader.
+fn read_doc(path: &Path) -> Result<Got, String> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     let f = match std::fs::OpenOptions::new()
@@ -1114,21 +1199,24 @@ fn read_doc(path: &Path) -> Result<Option<Document>, String> {
         .open(path)
     {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Got::Gone),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
-    let executable = match f.metadata() {
+    let (executable, size) = match f.metadata() {
         Ok(m) if m.is_file() => {
             use std::os::unix::fs::PermissionsExt;
-            m.permissions().mode() & 0o111 != 0
+            (m.permissions().mode() & 0o111 != 0, m.len())
         }
         Ok(_) => return Err(format!("{}: not a regular file", path.display())),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
     let mut buf = Vec::new();
-    f.take(MAX_DOCUMENT as u64)
+    f.take(MAX_DOCUMENT as u64 + 1)
         .read_to_end(&mut buf)
         .map_err(|e| format!("{}: {e}", path.display()))?;
+    if buf.len() > MAX_DOCUMENT {
+        return Ok(Got::Over(size.max(buf.len() as u64)));
+    }
     // `from poll "/usr/local/bin/gpu-temp" every 5s` reads a path as a
     // file; a program there was meant to run: say so rather than parse
     // its bytes.
@@ -1139,11 +1227,32 @@ fn read_doc(path: &Path) -> Result<Option<Document>, String> {
             path.display()
         ));
     }
-    Ok(Some(Document::parse(&String::from_utf8_lossy(&buf))))
+    Ok(Got::Doc(Document::parse(&decode_document(&buf))))
+}
+
+/// (doc-formats) Log once that the service `name`'s file is too large,
+/// when its size differs from what `last` said; a read document clears
+/// it.
+fn note_over(name: &str, path: &Path, got: &Got, last: &mut Option<u64>) {
+    let over = match got {
+        Got::Over(n) => Some(*n),
+        _ => None,
+    };
+    if let Some(n) = over
+        && over != *last
+    {
+        log::warn!(
+            "`{name}`: {} is {n} bytes, more than the {} MiB a document may be; \
+             its last value is kept",
+            path.display(),
+            MAX_DOCUMENT >> 20
+        );
+    }
+    *last = over;
 }
 
 /// [`read_doc`] off the services thread, at most [`READ_WAIT`].
-async fn read_doc_bounded(path: &Path) -> Result<Option<Document>, ServiceError> {
+async fn read_doc_bounded(path: &Path) -> Result<Got, ServiceError> {
     let p = path.to_path_buf();
     match tokio::time::timeout(READ_WAIT, tokio::task::spawn_blocking(move || read_doc(&p))).await {
         Ok(Ok(r)) => r.map_err(ServiceError),
@@ -1472,11 +1581,12 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
         .map_err(|e| ServiceError(format!("cannot watch {}: {e}", path.display())))?;
     let mut last: Option<Document> = None;
     let mut not_xml = None;
+    let mut over = None;
     let mut first = true;
     loop {
         // Read (first, or after a change to the file itself).
-        let mut doc = read_doc_bounded(path).await?;
-        if !first && doc.as_ref().is_some_and(Document::is_blank) {
+        let mut got = read_doc_bounded(path).await?;
+        if !first && matches!(&got, Got::Doc(d) if d.is_blank()) {
             // A file emptied by a change is most often a write in
             // progress (`echo 5 > f`, a plain rewrite: truncated, then
             // written), which `MODIFY` shows between the two: read it
@@ -1484,9 +1594,18 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
             // default and back (a file left empty is read empty then).
             tokio::time::sleep(FILE_SETTLE).await;
             let _ = watch.drain();
-            doc = read_doc_bounded(path).await?;
+            got = read_doc_bounded(path).await?;
         }
-        if first || doc != last {
+        note_over(&spec.name, path, &got, &mut over);
+        // Too large: the last value stays (none yet: the defaults).
+        let doc = match got {
+            Got::Gone => Some(None),
+            Got::Doc(d) => Some(Some(d)),
+            Got::Over(_) => None,
+        };
+        if let Some(doc) = doc
+            && (first || doc != last)
+        {
             let mut state = cx.state().clone();
             match &doc {
                 Some(d) => {
@@ -1859,7 +1978,7 @@ fn decode(mut line: Vec<u8>) -> String {
     }
     match String::from_utf8(line) {
         Ok(s) => s,
-        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        Err(e) => decode_document(e.as_bytes()).into_owned(),
     }
 }
 
@@ -1977,7 +2096,7 @@ async fn poll_command(argv: &[String]) -> Option<Document> {
             log::warn!("`{}` failed ({status})", argv[0]);
             return None;
         }
-        Some(Document::parse(&String::from_utf8_lossy(&out)))
+        Some(Document::parse(&decode_document(&out)))
     };
     match tokio::time::timeout(POLL_TIMEOUT, run).await {
         Ok(d) => d,
@@ -2005,6 +2124,7 @@ async fn run_poll(
     // (a hover popup flickering), the next poll still waits for `every`.
     let mut last: Option<tokio::time::Instant> = None;
     let mut not_xml = None;
+    let mut over = None;
     loop {
         if first && cx.period(every).is_none() {
             cx.ready();
@@ -2038,8 +2158,8 @@ async fn run_poll(
         // command's group) at once, writes are refused meanwhile.
         let fetch = async {
             match target {
-                PollTarget::Command(argv) => Ok(poll_command(argv).await),
-                PollTarget::File(path) => read_doc_bounded(path).await,
+                PollTarget::Command(argv) => Ok(poll_command(argv).await.map(Got::Doc)),
+                PollTarget::File(path) => read_doc_bounded(path).await.map(Some),
             }
         };
         tokio::pin!(fetch);
@@ -2053,7 +2173,12 @@ async fn run_poll(
                 },
             }
         };
-        if let Some(doc) = doc {
+        // A file too large keeps the last value (as a command's output
+        // past the cap does), said once per size.
+        if let (PollTarget::File(path), Some(got)) = (target, &doc) {
+            note_over(&spec.name, path, got, &mut over);
+        }
+        if let Some(Got::Doc(doc)) = doc {
             let mut state = cx.state().clone();
             note_not_xml(&spec.name, &doc, &mut not_xml);
             replace_doc(spec, &doc, &mut state);
@@ -2263,7 +2388,7 @@ mod tests {
             .expect("the read blocked on the FIFO")
             .unwrap_err();
         assert!(e.contains("not a regular file"), "{e}");
-        assert_eq!(read_doc(&dir.join("none")), Ok(None));
+        assert_eq!(read_doc(&dir.join("none")), Ok(Got::Gone));
         // A program (executable, a script or ELF) is not read as a
         // document; an executable data file (a vfat mount) still is.
         {
@@ -2279,11 +2404,111 @@ mod tests {
             let data = dir.join("data");
             std::fs::write(&data, "temp=40\n").unwrap();
             std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o755)).unwrap();
-            assert!(read_doc(&data).unwrap().is_some());
+            assert!(matches!(read_doc(&data), Ok(Got::Doc(_))));
         }
         std::fs::write(dir.join("doc"), "{\"a\": 1}").unwrap();
-        assert!(read_doc(&dir.join("doc")).unwrap().is_some());
+        assert!(matches!(read_doc(&dir.join("doc")), Ok(Got::Doc(_))));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (doc-formats) A file over [`MAX_DOCUMENT`] is refused whole, its
+    /// size said, never read cut short; one of exactly the cap is read.
+    #[test]
+    fn an_oversized_file_is_refused_not_cut() {
+        let dir = std::env::temp_dir().join(format!("strand-custom-over-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Valid JSON either way: cut at the cap, it would read `a` as 1.
+        let mut big = b"{\"a\": 1".to_vec();
+        big.resize(MAX_DOCUMENT, b' ');
+        big.extend_from_slice(b", \"b\": 2}");
+        std::fs::write(dir.join("big"), &big).unwrap();
+        assert_eq!(read_doc(&dir.join("big")), Ok(Got::Over(big.len() as u64)));
+        let mut log = None;
+        note_over("s", &dir.join("big"), &Got::Over(5), &mut log);
+        assert_eq!(log, Some(5));
+        note_over("s", &dir.join("big"), &Got::Gone, &mut log);
+        assert_eq!(log, None, "a read clears it, so the next is said again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (doc-formats) The cap is 4 MiB, and a document of exactly that
+    /// many bytes reads whole (an XML one too).
+    #[test]
+    fn a_document_just_under_the_cap_is_read() {
+        assert_eq!(MAX_DOCUMENT, 4 * 1024 * 1024);
+        let dir = std::env::temp_dir().join(format!("strand-custom-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut json = b"{\"a\": 1".to_vec();
+        json.resize(MAX_DOCUMENT - 1, b' ');
+        json.push(b'}');
+        std::fs::write(dir.join("json"), &json).unwrap();
+        let Ok(Got::Doc(d)) = read_doc(&dir.join("json")) else {
+            panic!("not read")
+        };
+        assert_eq!(d.get(&key("a")), Some(Data::Int(1)));
+        let item = "<item><title>t</title></item>\n";
+        let n = (MAX_DOCUMENT - 20) / item.len();
+        let xml = format!("<rss>{}</rss>", item.repeat(n));
+        assert!(xml.len() <= MAX_DOCUMENT && xml.len() > MAX_DOCUMENT - 100);
+        std::fs::write(dir.join("xml"), &xml).unwrap();
+        let Ok(Got::Doc(d)) = read_doc(&dir.join("xml")) else {
+            panic!("not read")
+        };
+        let Some(Data::List(items)) = d.get(&key("item")) else {
+            panic!("no items")
+        };
+        assert_eq!(items.len(), n);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (doc-formats) Bytes that are not UTF-8 under an XML declaration
+    /// naming Latin-1 or windows-1252 are read as windows-1252; without
+    /// one they stay lossy UTF-8; UTF-8 is never re-read.
+    #[test]
+    fn a_latin1_feed_decodes() {
+        let feed = b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n<rss><item><title>Caf\xe9 \x93news\x94 \x80 5</title></item></rss>";
+        assert_eq!(
+            decode_document(feed),
+            "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n<rss><item><title>Café “news” € 5</title></item></rss>"
+        );
+        let d = Document::parse(&decode_document(feed));
+        assert_eq!(
+            d.get(&key("item.title")),
+            Some(Data::text("Café “news” € 5"))
+        );
+        for decl in [
+            "encoding='windows-1252'",
+            "encoding = \"latin1\"",
+            "encoding=\"US-ASCII\"",
+        ] {
+            let doc = format!("  <?xml version=\"1.0\" {decl} ?><a>").into_bytes();
+            let mut doc = doc;
+            doc.extend_from_slice(b"\xe9</a>");
+            assert!(decode_document(&doc).ends_with("<a>é</a>"), "{decl}");
+        }
+        // No declaration, or another encoding: lossy UTF-8.
+        assert_eq!(decode_document(b"<a>\xe9</a>"), "<a>\u{FFFD}</a>");
+        assert_eq!(
+            decode_document(b"<?xml version=\"1.0\" encoding=\"KOI8-R\"?><a>\xe9</a>"),
+            "<?xml version=\"1.0\" encoding=\"KOI8-R\"?><a>\u{FFFD}</a>"
+        );
+        // UTF-8 stays UTF-8 whatever it declares.
+        let utf8 = "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><a>é</a>";
+        assert_eq!(decode_document(utf8.as_bytes()), utf8);
+        // Every byte has a character; the undefined five are C1's.
+        let all: Vec<u8> = (0..=255).collect();
+        let mut doc = b"<?xml encoding=\"cp1252\"?>".to_vec();
+        doc.extend_from_slice(&all);
+        assert_eq!(decode_document(&doc).chars().count(), 25 + 256);
+        assert_eq!(windows_1252(0x81), '\u{81}');
+        assert_eq!(windows_1252(0x9F), 'Ÿ');
+        // A listen line decodes the same way.
+        assert_eq!(
+            decode(feed.to_vec()),
+            String::from_utf8(decode_document(feed).as_bytes().to_vec()).unwrap()
+        );
     }
 
     /// Directory events re-read the file only when they name it; the

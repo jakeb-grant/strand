@@ -663,7 +663,7 @@ pub(super) fn capture(
         };
     }
     Captured {
-        out: Ok(String::from_utf8_lossy(&out).into_owned()),
+        out: Ok(strand_services::custom::decode_document(&out).into_owned()),
         exit,
     }
 }

@@ -757,6 +757,13 @@ monitor, the keyboard always).
   `&`, `%` or `<`, or whose entities expand past the document's size
   cap, is not read as XML; a DTD is otherwise allowed, and nothing
   outside the document is ever fetched.
+- A document is at most 4 MiB: a file larger is not read (cut short it
+  would not be the document) and its fields keep their last values,
+  logged once per size; a command printing more is ended and its
+  output ignored; a longer listen line is skipped. Bytes that are not
+  UTF-8 are read as windows-1252 when an XML declaration at the start
+  names ISO-8859-1, Latin-1, windows-1252 or US-ASCII (as browsers
+  do), and otherwise with U+FFFD in place of what is not UTF-8.
 - An XML document's root element is the document (its name is not a
   key segment). An element with neither attributes nor child elements
   is its text (CDATA and entities decoded, ends trimmed, inner line
@@ -904,7 +911,7 @@ monitor, the keyboard always).
     no one keeps (neither awaited nor stored) is ended at the end of
     that step.
   - Every call runs at once on a thread of its own, never queued behind
-    another. Its stdout is read, at most 1 MiB (more ends it, an error);
+    another. Its stdout is read, at most 4 MiB (more ends it, an error);
     stderr is strand's own log. It has 10 s, as a `from poll` command
     has: one still running then (or still holding its output open, a
     child it left in the background) has its process group ended as a

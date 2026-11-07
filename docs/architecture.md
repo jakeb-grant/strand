@@ -2999,7 +2999,10 @@ itself.
   record conversion, and `custom::element_text` an element's text
   content. `custom::xml` bounds what roxmltree is given (depth 128, 64
   attributes, DTD entities) before it parses; `Data::write_json` writes
-  an element's repeated names as one array;
+  an element's repeated names as one array; a document is at most
+  `custom::MAX_DOCUMENT` (4 MiB), a larger file refused whole, and
+  `custom::decode_document` (also the binary's for an action's output)
+  turns its bytes into text, windows-1252 under a Latin-1 declaration;
   `Client::restart`, `stop_now` and `unregister` serve their reloads,
   and commands run in their own process group, ended whole.
   Hooks the binary sets: `keyboard::focused` (from
