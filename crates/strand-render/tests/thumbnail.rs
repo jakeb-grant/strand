@@ -173,3 +173,72 @@ fn only_visible_thumbnails_ask_for_frames() {
     // A frame for a node that is no thumbnail does nothing.
     r.feed_frame(NodeId::new(999, 0), Some(window_frame()));
 }
+
+/// Two `cover` thumbnails of one window in 80 × 80 boxes.
+fn twins() -> (Renderer, [NodeId; 2], Buffer) {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(180.0)),
+            (Prop::Height, num(100.0)),
+            (Prop::Bg, color("#1e1e2e")),
+            (Prop::Pad, num(10.0)),
+        ],
+    );
+    let row = b.node(NodeKind::Row, Some(root), vec![(Prop::Gap, num(10.0))]);
+    let ids: Vec<NodeId> = (0..2)
+        .map(|_| {
+            b.node(
+                NodeKind::Thumbnail,
+                Some(row),
+                vec![
+                    (Prop::Source, text("0x55aa")),
+                    (Prop::Fit, PropValue::Keyword("cover".into())),
+                    (Prop::Width, num(80.0)),
+                    (Prop::Height, num(80.0)),
+                ],
+            )
+        })
+        .collect();
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    (r, [ids[0], ids[1]], Buffer::new(180, 100, Scale::ONE))
+}
+
+/// (blur-ready) Thumbnails fed one frame (a lock's sharp still and its
+/// blurred copy are) share one pixmap: drawn once, kept once, and drawn
+/// as two pixmaps of it would be. Before a frame, the two share one
+/// blank pixmap. Fed different frames, each draws its own.
+#[test]
+fn thumbnails_of_one_frame_share_one_pixmap() {
+    let (mut r, ids, mut buf) = twins();
+    buf.paint_at(&mut r, S, 0, T0);
+    let (built, one) = r.raster_nodes();
+    assert_eq!(built, 1, "one blank pixmap before a frame");
+    assert!(one >= 70 * 70 * 4, "{one} bytes");
+    let frame = window_frame();
+    for id in ids {
+        r.feed_frame(id, Some(frame.clone()));
+    }
+    let at = settle(&mut r, &mut buf, 16);
+    assert_eq!(
+        r.raster_nodes(),
+        (2, one),
+        "the frame drawn once and kept once"
+    );
+    let shared = buf.pixels.clone();
+    // Each fed a frame of its own (equal pixels): two pixmaps, drawn
+    // the same.
+    for id in ids {
+        r.feed_frame(id, Some(window_frame()));
+    }
+    settle(&mut r, &mut buf, at);
+    assert_eq!(r.raster_nodes(), (4, 2 * one), "a pixmap each");
+    assert!(
+        buf.pixels == shared,
+        "the shared pixmap draws as its own do"
+    );
+}

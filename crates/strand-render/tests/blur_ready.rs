@@ -278,12 +278,13 @@ fn the_lock_like_scene_builds_its_group_once_in_the_frame_that_shows_it() {
 }
 
 /// (raster pixmaps, groups) built by the layout before the first frame
-/// (two blank pixmaps: no frame yet), by the first frame (the sharp
-/// still's pixmap; the copy is at 0) and by the frame that first shows
-/// the copy (its pixmap and its group).
-const LAID_OUT: (u64, u64) = (2, 0);
+/// (one blank pixmap, which both thumbnails share: no frame yet), by the
+/// first frame (the still's pixmap; the copy is at 0) and by the frame
+/// that first shows the copy (its group: the copy shares the still's
+/// pixmap). Before blur-ready: (2, 0), (1, 0) and (1, 1), a pixmap each.
+const LAID_OUT: (u64, u64) = (1, 0);
 const FIRST: (u64, u64) = (1, 0);
-const SHOWN: (u64, u64) = (1, 1);
+const SHOWN: (u64, u64) = (0, 1);
 /// The first GPU frame uploads the sharp still's pixmap and the group.
 const FIRST_GPU_UPLOADS: usize = 2;
 

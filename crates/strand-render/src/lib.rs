@@ -65,7 +65,7 @@ pub use layout::{
     MAX_CONTENT_SIZE, RootSize, ScrollState, WINDOW_NEED, WINDOW_OVERSCAN, edge_shift,
 };
 pub use media::thumbnail::Frame as ThumbnailFrame;
-pub use offscreen::{OFFSCREEN_BYTES, RasterProps, RasterSource};
+pub use offscreen::{OFFSCREEN_BYTES, RasterContent, RasterProps, RasterSource};
 /// (blur-ready) The CPU filters, for measurements of their cost.
 #[doc(hidden)]
 pub use offscreen::{blur, color_matrix};

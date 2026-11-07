@@ -1150,6 +1150,25 @@ pub trait RasterSource: std::fmt::Debug + Send + Sync {
     /// `w × h` physical pixels at `scale`), at `time`.
     fn draw(&self, pixels: &mut [PremulRgba8], w: u32, h: u32, scale: f32, time: TimeContext);
 
+    /// (blur-ready) [`RasterSource::draw`] in the raster's order, red and
+    /// blue swapped (each pixel's `r` holds its blue): by default drawn,
+    /// then swapped. A source that can write that order directly saves
+    /// the pass over its pixels.
+    fn draw_bgra(&self, pixels: &mut [PremulRgba8], w: u32, h: u32, scale: f32, time: TimeContext) {
+        self.draw(pixels, w, h, scale, time);
+        for p in pixels {
+            std::mem::swap(&mut p.r, &mut p.b);
+        }
+    }
+
+    /// (blur-ready) What its pixels are drawn from, apart from the node
+    /// and its size: nodes whose sources name the same content, drawn at
+    /// the same size and scale, share one pixmap (two `thumbnail`s of one
+    /// screen's still). `None` (the default): its own.
+    fn content(&self) -> Option<RasterContent> {
+        None
+    }
+
     /// How often it changes: its clock's rate.
     fn rate(&self) -> Rate;
 
@@ -1168,6 +1187,16 @@ pub trait RasterSource: std::fmt::Debug + Send + Sync {
     fn state(&self, _props: &RasterProps<'_>) -> u64 {
         0
     }
+}
+
+/// (blur-ready) What a [`RasterSource`]'s pixels are drawn from
+/// ([`RasterSource::content`]): a hash of it, and the bytes it names by
+/// address, if any, held weakly so the address is not handed to other
+/// bytes while a pixmap is shared under it.
+#[derive(Clone, Debug)]
+pub struct RasterContent {
+    pub key: u64,
+    pub pin: Option<Weak<[u8]>>,
 }
 
 /// (M4) What a [`RasterSource`] reads of its node: its props as resolved
@@ -1232,11 +1261,43 @@ pub enum RasterLayer {
 /// A raster pixmap kept: the key it was drawn at, and its pixels.
 type Kept = (u64, Arc<Pixmap>);
 
+/// (blur-ready) A pixmap shared by content: the bytes the content names
+/// (pinned) and the pixmap.
+#[derive(Debug)]
+struct Shared {
+    pin: Option<Weak<[u8]>>,
+    pixmap: Weak<Pixmap>,
+}
+
+impl Shared {
+    /// Its pixmap, while some node keeps it and the bytes it was drawn
+    /// from are the ones `pin` names.
+    fn take(&self, pin: &Option<Weak<[u8]>>) -> Option<Arc<Pixmap>> {
+        let same = match (&self.pin, pin) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Weak::ptr_eq(a, b) && a.strong_count() > 0,
+            _ => false,
+        };
+        same.then(|| self.pixmap.upgrade()).flatten()
+    }
+
+    /// Whether it can still be shared: its pixmap kept and its bytes
+    /// alive (a dead entry's pin would keep their memory).
+    fn live(&self) -> bool {
+        self.pixmap.strong_count() > 0 && self.pin.as_ref().is_none_or(|p| p.strong_count() > 0)
+    }
+}
+
 /// Raster sources by node, and each node's last pixmaps.
 #[derive(Debug, Default)]
 pub struct RasterNodes {
     sources: HashMap<NodeId, Arc<dyn RasterSource>>,
     drawn: RefCell<HashMap<(NodeId, RasterLayer), Kept>>,
+    /// (blur-ready) Pixmaps drawn from a source's content
+    /// ([`RasterSource::content`]), by that content, size and scale: a
+    /// node whose source names it takes the pixmap another drew. Weak,
+    /// so a pixmap lives exactly as long as a node keeps it.
+    shared: RefCell<HashMap<u64, Shared>>,
     builds: RefCell<u64>,
     /// (blur-ready) Wall-clock time spent drawing pixmaps so far
     /// (advisory; measurements read it).
@@ -1258,12 +1319,14 @@ impl RasterNodes {
             }
         }
         self.drawn.get_mut().remove(&(node, RasterLayer::Own));
+        self.shared.get_mut().retain(|_, s| s.live());
     }
 
     /// Drops nodes `keep` rejects.
     pub fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         self.sources.retain(|id, _| keep(*id));
         self.drawn.get_mut().retain(|(id, _), _| keep(*id));
+        self.shared.get_mut().retain(|_, s| s.live());
     }
 
     /// Drops `node`'s last pixmap of `layer` when nothing draws it: its
@@ -1272,6 +1335,7 @@ impl RasterNodes {
     pub fn unused(&self, node: NodeId, layer: RasterLayer) {
         if layer == RasterLayer::Grain || !self.sources.contains_key(&node) {
             self.drawn.borrow_mut().remove(&(node, layer));
+            self.shared.borrow_mut().retain(|_, s| s.live());
         }
     }
 
@@ -1290,13 +1354,22 @@ impl RasterNodes {
         self.build_time.get()
     }
 
-    /// Bytes of the pixmaps kept.
+    /// Bytes of the pixmaps kept (a pixmap kept by several nodes once).
     pub fn bytes(&self) -> usize {
-        self.drawn
-            .borrow()
+        let drawn = self.drawn.borrow();
+        let mut seen = std::collections::HashSet::new();
+        drawn
             .values()
+            .filter(|(_, p)| seen.insert(Arc::as_ptr(p) as usize))
             .map(|(_, p)| p.width() as usize * p.height() as usize * 4)
             .sum()
+    }
+
+    /// (blur-ready) Pixmaps shared by content that can still be shared
+    /// (tests).
+    #[cfg(test)]
+    fn shared(&self) -> usize {
+        self.shared.borrow().values().filter(|s| s.live()).count()
     }
 
     /// `node`'s own pixels at `w × h` and `time`: the last pixmap if its key
@@ -1360,20 +1433,47 @@ impl RasterNodes {
         {
             return Some((key, pm.clone()));
         }
+        // (blur-ready) Content another node drew at this size: its pixmap.
+        let content = source.content().map(|c| {
+            let mut k = DefaultHasher::new();
+            (c.key, w, h, scale.to_bits()).hash(&mut k);
+            (k.finish(), c.pin)
+        });
+        if let Some((shared, pin)) = &content {
+            let found = self.shared.borrow().get(shared).and_then(|s| s.take(pin));
+            if let Some(pm) = found {
+                self.drawn
+                    .borrow_mut()
+                    .insert((node, layer), (key, pm.clone()));
+                return Some((key, pm));
+            }
+        }
         let started = std::time::Instant::now();
         let mut pm = Pixmap::new(w16, h16);
-        source.draw(pm.data_mut(), w, h, scale, time);
         // The raster draws red and blue swapped (BGRA buffers).
-        for p in pm.data_mut() {
-            std::mem::swap(&mut p.r, &mut p.b);
-        }
+        source.draw_bgra(pm.data_mut(), w, h, scale, time);
         let pm = Arc::new(pm);
         *self.builds.borrow_mut() += 1;
         self.build_time
             .set(self.build_time.get() + started.elapsed());
-        self.drawn
+        let old = self
+            .drawn
             .borrow_mut()
             .insert((node, layer), (key, pm.clone()));
+        if let Some((shared, pin)) = content {
+            let mut map = self.shared.borrow_mut();
+            map.insert(
+                shared,
+                Shared {
+                    pin,
+                    pixmap: Arc::downgrade(&pm),
+                },
+            );
+            // The pixmap it kept before goes now, and with it any entry
+            // it was the last to keep.
+            drop(old);
+            map.retain(|_, s| s.live());
+        }
         Some((key, pm))
     }
 }
@@ -1806,6 +1906,86 @@ mod tests {
         assert_eq!(color_matrix_lanes(&mut px, &m), crate::raster::threads());
         let mut px = vec![255u8; 64 * 64 * 4];
         assert_eq!(color_matrix_lanes(&mut px, &m), 1);
+    }
+
+    /// A source of one colour, drawn from `bytes` (its content).
+    #[derive(Debug)]
+    struct Fill {
+        bytes: Arc<[u8]>,
+    }
+
+    impl RasterSource for Fill {
+        fn draw(&self, pixels: &mut [PremulRgba8], _: u32, _: u32, _: f32, _: TimeContext) {
+            for p in pixels {
+                *p = PremulRgba8 {
+                    r: self.bytes[0],
+                    g: 0,
+                    b: 0,
+                    a: 255,
+                };
+            }
+        }
+
+        fn rate(&self) -> Rate {
+            Rate::Refresh
+        }
+
+        fn content(&self) -> Option<RasterContent> {
+            Some(RasterContent {
+                key: Arc::as_ptr(&self.bytes) as *const u8 as usize as u64,
+                pin: Some(Arc::downgrade(&self.bytes)),
+            })
+        }
+    }
+
+    /// (blur-ready) Nodes whose sources name one content share one
+    /// pixmap at one size (drawn once, kept once), and draw their own at
+    /// another; the pixmap lives as long as a node keeps it, and once
+    /// none does, nothing keeps the content's bytes either.
+    #[test]
+    fn a_shared_pixmap_is_freed_with_its_last_node() {
+        let bytes: Arc<[u8]> = Arc::from(vec![200u8; 4]);
+        let mut nodes = RasterNodes::default();
+        let (a, b, c) = (NodeId::new(1, 0), NodeId::new(2, 0), NodeId::new(3, 0));
+        for n in [a, b, c] {
+            nodes.set(
+                n,
+                Some(Arc::new(Fill {
+                    bytes: bytes.clone(),
+                })),
+            );
+        }
+        let t = TimeContext::default();
+        let get = |_: strand_scene::Prop| None;
+        let props = RasterProps {
+            get: &get,
+            color: strand_scene::Color::WHITE,
+            parts: &[],
+            files: None,
+            boot: Duration::ZERO,
+            slack: Duration::ZERO,
+            still: false,
+            commit: true,
+        };
+        let (_, pa) = nodes.pixmap(a, 40, 30, 1.0, t, &props).unwrap();
+        let (_, pb) = nodes.pixmap(b, 40, 30, 1.0, t, &props).unwrap();
+        let (_, pc) = nodes.pixmap(c, 20, 30, 1.0, t, &props).unwrap();
+        assert!(Arc::ptr_eq(&pa, &pb), "one pixmap at one size");
+        assert!(!Arc::ptr_eq(&pa, &pc), "its own at another");
+        assert_eq!(nodes.builds(), 2);
+        assert_eq!(nodes.bytes(), (40 * 30 + 20 * 30) * 4, "kept once");
+        assert_eq!(pa.data()[0].b, 200, "in the raster's order");
+        let shared = Arc::downgrade(&pa);
+        drop((pa, pb, pc));
+        nodes.retain(|n| n == b);
+        assert!(shared.upgrade().is_some(), "kept while a node keeps it");
+        assert_eq!(nodes.shared(), 1);
+        nodes.retain(|_| false);
+        assert!(shared.upgrade().is_none(), "freed with its last node");
+        assert_eq!(nodes.bytes(), 0);
+        assert_eq!(nodes.shared(), 0);
+        drop(nodes);
+        assert_eq!(Arc::weak_count(&bytes), 0, "nothing pins the content");
     }
 
     #[test]

@@ -23,7 +23,7 @@ use vello_cpu::color::PremulRgba8;
 
 use crate::clock::Rate;
 use crate::image::Fit;
-use crate::offscreen::{RasterProps, RasterSource};
+use crate::offscreen::{RasterContent, RasterProps, RasterSource};
 
 /// A captured frame as a thumbnail takes it: premultiplied BGRA rows,
 /// `width × height`, packed (what `wm::capture` delivers).
@@ -122,6 +122,13 @@ fn covered(px: [u8; 4], k: f32) -> PremulRgba8 {
 
 /// Draws `f` into the `w × h` buffer by `fit`, bilinearly.
 pub(crate) fn draw_frame(pixels: &mut [PremulRgba8], w: u32, h: u32, f: &Frame, fit: Fit) {
+    draw_frame_in(pixels, w, h, f, fit, false);
+}
+
+/// [`draw_frame`]; with `bgra`, red and blue swapped (the raster's
+/// order, each pixel's `r` holding its blue), as if drawn and then
+/// swapped.
+fn draw_frame_in(pixels: &mut [PremulRgba8], w: u32, h: u32, f: &Frame, fit: Fit, bgra: bool) {
     let stride = f.width as usize * 4;
     if f.width == 0
         || f.height == 0
@@ -154,11 +161,14 @@ pub(crate) fn draw_frame(pixels: &mut [PremulRgba8], w: u32, h: u32, f: &Frame, 
             let src = f.pixels.get(from..from + n * 4).unwrap_or_default();
             let at = (y * w + x0) as usize;
             let dst = pixels.get_mut(at..at + n).unwrap_or_default();
+            // (blur-ready) In the raster's order a captured pixel is its
+            // own bytes, alpha raised to its largest channel.
+            let (r, b) = if bgra { (0, 2) } else { (2, 0) };
             for (out, p) in dst.iter_mut().zip(src.chunks_exact(4)) {
                 *out = PremulRgba8 {
-                    r: p[2],
+                    r: p[r],
                     g: p[1],
-                    b: p[0],
+                    b: p[b],
                     a: p[3].max(p[0]).max(p[1]).max(p[2]),
                 };
             }
@@ -181,7 +191,11 @@ pub(crate) fn draw_frame(pixels: &mut [PremulRgba8], w: u32, h: u32, f: &Frame, 
                 px[k] = (top + (bottom - top) * row.t).round().clamp(0.0, 255.0) as u8;
             }
             if let Some(out) = pixels.get_mut(line + x as usize) {
-                *out = covered(px, (col.cover * row.cover) as f32);
+                let mut p = covered(px, (col.cover * row.cover) as f32);
+                if bgra {
+                    std::mem::swap(&mut p.r, &mut p.b);
+                }
+                *out = p;
             }
         }
     }
@@ -195,6 +209,51 @@ impl RasterSource for ThumbnailSource {
         if let Some(f) = &s.frame {
             draw_frame(pixels, w, h, f, s.fit);
         }
+    }
+
+    /// (blur-ready) Drawn in the raster's order directly: no pass to swap
+    /// red and blue (and none over a blank pixmap, before a frame).
+    fn draw_bgra(
+        &self,
+        pixels: &mut [PremulRgba8],
+        w: u32,
+        h: u32,
+        _scale: f32,
+        _time: TimeContext,
+    ) {
+        let Ok(s) = self.inner.lock() else {
+            return;
+        };
+        if let Some(f) = &s.frame {
+            draw_frame_in(pixels, w, h, f, s.fit, true);
+        }
+    }
+
+    /// (blur-ready) Its frame (by the address of its pixels, pinned) and
+    /// fit: thumbnails fed one frame (a lock's sharp still and its
+    /// blurred copy) share its pixmap; with none, the blank one.
+    fn content(&self) -> Option<RasterContent> {
+        let s = self.inner.lock().ok()?;
+        let mut h = DefaultHasher::new();
+        let pin = s.frame.as_ref().map(|f| {
+            (
+                "frame",
+                Arc::as_ptr(&f.pixels) as *const u8 as usize,
+                f.pixels.len(),
+                f.width,
+                f.height,
+                s.fit,
+            )
+                .hash(&mut h);
+            Arc::downgrade(&f.pixels)
+        });
+        if pin.is_none() {
+            "blank".hash(&mut h);
+        }
+        Some(RasterContent {
+            key: h.finish(),
+            pin,
+        })
     }
 
     fn rate(&self) -> Rate {
@@ -383,6 +442,44 @@ mod tests {
                 None,
                 "{fw}x{fh} into {w}x{h} by {fit:?}"
             );
+        }
+    }
+
+    /// (blur-ready) Drawn in the raster's order, a frame is what the RGBA
+    /// draw swapped gives, byte for byte: copied at its own size (cropped
+    /// or padded), sampled scaled, letterboxed and on fractions of a
+    /// pixel, with pixels whose alpha is below a channel.
+    #[test]
+    fn bgra_draw_is_the_rgba_draw_swapped() {
+        let blank = PremulRgba8 {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 0,
+        };
+        let cases = [
+            ((64, 36), (64, 36), Fit::Cover),
+            ((64, 36), (64, 36), Fit::Contain),
+            ((64, 40), (64, 36), Fit::Cover),
+            ((60, 30), (64, 36), Fit::None),
+            ((61, 36), (64, 36), Fit::None),
+            ((64, 36), (64, 36), Fit::Fill),
+            ((64, 36), (96, 54), Fit::Cover),
+            ((64, 36), (40, 40), Fit::Contain),
+            ((64, 36), (41, 23), Fit::Cover),
+            ((33, 17), (100, 61), Fit::Fill),
+            ((1, 1), (9, 4), Fit::Contain),
+        ];
+        for ((fw, fh), (w, h), fit) in cases {
+            let f = noisy(fw, fh);
+            let mut want = vec![blank; (w * h) as usize];
+            draw_frame(&mut want, w, h, &f, fit);
+            for p in &mut want {
+                std::mem::swap(&mut p.r, &mut p.b);
+            }
+            let mut got = vec![blank; (w * h) as usize];
+            draw_frame_in(&mut got, w, h, &f, fit, true);
+            assert!(want == got, "{fw}x{fh} into {w}x{h} by {fit:?}");
         }
     }
 
