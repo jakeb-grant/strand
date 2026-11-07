@@ -2110,8 +2110,8 @@ proof  = "read"
 
 [[claim]]
 page   = "site/concepts/services.md"
-text   = "A file (JSON, `key=value` lines or plain text)"
-source = ['docs/spec.md "`from file path { fields }` reads a file, again whenever it changes"', 'crates/strand/src/services/custom.rs "any other type reads the output as a document (JSON,"', 'crates/strand/src/services/custom.rs "`key=value` lines, else text) and converts it"']
+text   = "A file (JSON, XML, `key=value` lines or plain text)"
+source = ['docs/spec.md "`from file path { fields }` reads a file, again whenever it changes"', 'crates/strand/src/services/custom.rs "any other type reads the output as a document (JSON,"', 'crates/strand/src/services/custom.rs "XML, `key=value` lines, else text) and converts it"']
 proof  = "read"
 
 [[claim]]
@@ -3833,3 +3833,148 @@ page   = "site/how-to/dbus-and-actions.md"
 text   = "`key=value` lines. A result cannot be a dictionary yet"
 source = ['crates/strand-compiler/src/check/tree.rs "cannot hold a dictionary yet: `{shown}`"']
 proof  = "crates/strand-compiler/tests/negative/dict_in_service_field.strand (a command's output)"
+
+# --- doc-formats ---
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "Strand has no HTTP client"
+source = ['docs/design.md "Strand has no HTTP client of its own"']
+proof  = "read: crates/strand-services/Cargo.toml has no HTTP client crate"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "A polled command runs only while something shown reads its service"
+source = ['docs/spec.md "A custom service starts when the program first reads it and stops 5 s after its last reader leaves"']
+proof  = "crates/strand/src/services/mod.rs::tests::custom_services::poll_runs_only_while_read_and_listen_reads_lines"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "**JSON** when it parses as JSON"
+source = ['crates/strand-services/src/custom.rs "is JSON when it parses as JSON, else"']
+proof  = "crates/strand-services/src/custom.rs::tests::documents_are_json_lines_or_text"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "else **XML** when it starts with `<` and parses as XML"
+source = ['docs/spec.md "else XML when, a UTF-8 BOM removed and trimmed, it starts with"']
+proof  = "crates/strand-services/src/custom/xml.rs::tests::one_line_xml_is_not_pairs_and_html_stays_text"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "Text that starts with `<` but is not XML, such as an HTML page a site"
+source = ['docs/spec.md "Text starting with `<` that is not XML (an HTML page) is text, never pairs"']
+proof  = "crates/strand/src/services/mod.rs::tests::custom_services::a_page_that_is_not_xml_is_reported"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "`creator` finds `<dc:creator>`"
+source = ['docs/spec.md "child elements `p:n` with any prefix; attributes `@p:n`"']
+proof  = "crates/strand/src/services/custom.rs::tests::type_fields_match_by_local_name"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "`text` is the element's own text, when it has no field of that"
+source = ['''docs/spec.md "for `text`, the element's own text"''']
+proof  = "crates/strand-services/src/custom/xml.rs::tests::xml_names_match_exact_then_by_local_part"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "a key in quotes is one name exactly as written"
+source = ['docs/grammar.md "is one key segment exactly as written, never split on"']
+proof  = "crates/strand-services/src/custom/xml.rs::tests::xml_names_match_exact_then_by_local_part"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "The root element is the document, so a key starts below it."
+source = ['''docs/spec.md "An XML document's root element is the document"''']
+proof  = "crates/strand-services/src/custom/xml.rs::tests::xml_key_paths_find_items_anywhere"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "item` finds the items under RSS 2.0's `channel` and beside RSS 1.0's"
+source = ['''docs/spec.md "finds RSS's and"''']
+proof  = "crates/strand/src/services/mod.rs::tests::custom_services::rdf_ecb_opml_and_gpx_read_into_declared_types"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "A field typed as a list takes"
+source = ['docs/spec.md "a list type over one"']
+proof  = "crates/strand/src/services/custom.rs::tests::a_list_type_wraps_one_value_and_a_single_type_takes_the_first"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "`<title>` is a `text` and `<size units=\"bytes\">42</size>` an `int`"
+source = ['docs/spec.md "XML element read as text, a number, a bool, an enum, a path or a"']
+proof  = "crates/strand/src/services/custom.rs::tests::an_element_reads_as_its_text"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "`angle`, `length` and `duration` read plain numbers"
+source = ['docs/spec.md "`angle` and `duration` read plain number text as a number"']
+proof  = "crates/strand/src/services/custom.rs::tests::number_types_read_number_text"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "blank is `null`, unless it is `text`."
+source = ['docs/spec.md "blank text read as an optional type other"']
+proof  = "crates/strand/src/services/custom.rs::tests::blank_optional_values_are_null"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "which is not a `Date?`"
+source = ['docs/spec.md "once with its path"']
+proof  = "crates/strand/src/services/custom.rs::tests::a_nested_field_that_does_not_convert_is_reported, crates/strand/src/services/mod.rs::tests::custom_services::a_page_that_is_not_xml_is_reported"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "RFC 2822, as RSS writes it"
+source = ['crates/strand-compiler/src/vm/clock.rs "pub fn date_from_text"']
+proof  = "crates/strand-compiler/src/vm/clock.rs::tests::dates_from_text_read_every_standard_form"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "Unix time: seconds, or milliseconds from 1e11 on."
+source = ['crates/strand-compiler/src/schema/builtin.schema "milliseconds from 1e11"']
+proof  = "crates/strand-compiler/src/vm/clock.rs::tests::date_from_unix_reads_seconds_and_milliseconds_and_refuses_the_impossible"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "A date with a time is moved into your local time zone and kept to the"
+source = ['docs/design.md "in the local zone to the minute"']
+proof  = "crates/strand-compiler/src/vm/clock.rs::tests::instants_move_to_the_zone_and_drop_seconds"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "A document is at most 4 MiB. A larger file keeps its last value,"
+source = ['crates/strand-services/src/custom.rs "pub const MAX_DOCUMENT: usize = 1 << 22;"']
+proof  = "crates/strand/src/services/mod.rs::tests::custom_services::a_file_over_the_cap_keeps_its_value_and_latin1_reads"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "Strand never fetches anything a document points to."
+source = ['docs/spec.md "nothing   outside the document is ever fetched"']
+proof  = "crates/strand-services/src/custom/xml.rs::tests::a_doctype_is_read_and_its_entities_bounded"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "An XML document declared as ISO-8859-1 or windows-1252 is decoded"
+source = ['crates/strand-services/src/custom.rs "pub fn decode_document"']
+proof  = "crates/strand-services/src/custom.rs::tests::a_latin1_feed_decodes"
+
+[[claim]]
+page   = "site/concepts/services.md"
+text   = "A document can be XML as well as JSON"
+source = ['docs/spec.md "(doc-formats) **Documents.**"']
+proof  = "crates/strand/src/services/mod.rs::tests::custom_services::an_rss_file_fills_a_typed_list_with_dates"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "a colour, an enum or a `Date` is read from the printed text"
+source = ['docs/spec.md "`strand set` and `strand call` read date text the same way"']
+proof  = "crates/strand/src/run/exec.rs::tests::an_action_reads_a_date_it_prints"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "record `type` of your own or a list is read from JSON or XML"
+source = ['docs/spec.md "JSON or XML (the root element as `T`)"']
+proof  = "crates/strand/src/run/exec.rs::tests::a_commands_xml_is_read_as_its_declared_type"
