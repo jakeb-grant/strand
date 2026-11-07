@@ -67,11 +67,21 @@ pub(crate) use host::GpuHost;
 /// for the GPU and renews its surfaces on the CPU (decisions.md
 /// lock-gpu). It times the thread's silence from the later of the
 /// request's sending and the thread's last answer, never the queue of
-/// other outputs' requests ahead of it. Well above the slowest single
-/// answer a working GPU gave (the owner's Arc B390, see decisions.md),
-/// and well under what a user takes for a hung lock.
+/// other outputs' requests ahead of it.
+///
+/// (lock-4k) Two seconds, from 500 ms: a renewal leaves its output with
+/// no lock surface until the new one's first frame, and Hyprland shows
+/// its dead-lock screen on such an output once the lock is a second old,
+/// so a renewal on a thread that was only slow costs more than waiting
+/// for it; and the lock shows its CPU frame meanwhile, its keys and
+/// password carrying on. Positive evidence (a failed frame, a lost
+/// device, the thread's end, the built-in field) renews at once whatever
+/// this is. A working thread's longest silence with a lock request
+/// waiting was 173 to 267 ms on the lock VM's desk (decisions.md
+/// lock-4k). It is the renderer's `HAND_OFF_MOST`: the most a hand-off
+/// holds a lock's clock is the silence strand allows it.
 #[cfg(feature = "gpu")]
-pub(crate) const LOCK_GPU_BOUND: std::time::Duration = std::time::Duration::from_millis(500);
+pub(crate) const LOCK_GPU_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// (gpu-first) The renderer asks for the device as the shell starts
 /// (decisions.md gpu-first): the first pump starts the `Gpu` thread
@@ -906,6 +916,7 @@ mod host {
                     let (size, scale) = geometry(state, id);
                     let ahead = self.waiting_requests();
                     if lock {
+                        super::super::lock::faults::lock_lent();
                         self.silence.asked();
                         if let Some(asked) = state.lock_asked() {
                             log::info!(
@@ -1696,6 +1707,62 @@ mod host {
             assert!(!host.lock_stalled);
             assert!(!host.lock_stall(now));
             assert!(host.lock_stall(now + super::super::LOCK_GPU_BOUND));
+        }
+
+        /// (lock-4k) A thread that answers a lock surface's attach 1.2 s
+        /// after it was sent (a slow GPU, or the main thread reading it
+        /// late) is no stall: before, the 500 ms bound renewed it, and
+        /// the renewal left its output without a lock surface. The bound
+        /// is the renderer's most a hand-off holds the lock's clock.
+        #[test]
+        fn a_slow_answer_under_the_bound_is_no_stall() {
+            use std::time::{Duration, Instant};
+            let (ping, _source) = calloop::ping::make_ping().unwrap();
+            let mut host = GpuHost::new(ping);
+            let t0 = Instant::now();
+            host.attached.insert(
+                SurfaceId(1),
+                Attachment {
+                    lent: true,
+                    lock: true,
+                    asked: Some(t0),
+                    ..Attachment::default()
+                },
+            );
+            let slow = t0 + Duration::from_millis(1200);
+            assert!(!host.lock_stall(slow), "a slow answer taken for a stall");
+            assert!(!host.lock_stalled);
+            host.answer(slow);
+            host.attached.get_mut(&SurfaceId(1)).unwrap().asked = None;
+            assert!(!host.lock_stall(slow + Duration::from_secs(10)));
+            assert_eq!(super::super::LOCK_GPU_BOUND, Duration::from_secs(2));
+            assert_eq!(super::super::LOCK_GPU_BOUND, strand_render::HAND_OFF_MOST);
+        }
+
+        /// (lock-4k) Positive evidence renews a lock surface at once,
+        /// whatever the bound: the built-in field showing on it gives it
+        /// up the moment its attach was sent, with no stall judged.
+        #[test]
+        fn positive_evidence_renews_at_once() {
+            let (ping, _source) = calloop::ping::make_ping().unwrap();
+            let mut host = GpuHost::new(ping);
+            let t0 = std::time::Instant::now();
+            let a = Attachment {
+                lent: true,
+                lock: true,
+                asked: Some(t0),
+                ..Attachment::default()
+            };
+            host.attached.insert(SurfaceId(1), a);
+            assert!(!host.lock_stall(t0));
+            assert_eq!(
+                lock_gives_up(&host.attached[&SurfaceId(1)], false, true),
+                Some("the built-in password field shows")
+            );
+            assert_eq!(
+                lock_gives_up(&host.attached[&SurfaceId(1)], false, false),
+                None
+            );
         }
 
         /// (lock-gpu) The loop wakes at a lock surface's bound with nothing

@@ -2432,7 +2432,9 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   hand-off to the GPU thread: its first presented frame, and the one
   after it, are drawn one period after the frame shown before them,
   and every later one behind the time asked by the time lost
-  (`Renderer::presented_lag`). (lock-4k) `Renderer::hand_off_took`
+  (`Renderer::presented_lag`), by at most `strand_render::HAND_OFF_MOST`
+  (2 s, lock-4k), which the binary's `LOCK_GPU_BOUND` equals (a unit
+  test in `run/gpu.rs` holds them together). (lock-4k) `Renderer::hand_off_took`
   is what the hand-off lost uncapped, for the log only, and
   `State::lock_asked() -> Option<Instant>` is when the lock asked for
   or held was asked for (right after `ext_session_lock_manager_v1.lock`),
@@ -2686,7 +2688,8 @@ for a lock's content surface, renewed instead of taken back (below).
   scale (a commit of the old size after the ack would be a protocol
   error), and acks a configure at its size at once. The binary
   (`GpuHost`) renews every lock surface the thread holds when the thread
-  answers nothing for `LOCK_GPU_BOUND` (500 ms) while a lock surface's
+  answers nothing for `LOCK_GPU_BOUND` (2 s since lock-4k; 500 ms
+  before) while a lock surface's
   `Attach` or frame waits on it: each request is timed from its sending
   or the thread's last reply of any kind, whichever is later, since the
   thread works through its requests in order (the bound times the

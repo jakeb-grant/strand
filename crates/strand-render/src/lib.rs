@@ -68,8 +68,6 @@ pub use media::thumbnail::Frame as ThumbnailFrame;
 pub use offscreen::{OFFSCREEN_BYTES, RasterProps, RasterSource};
 pub use raster::RasterTimes;
 pub use renderer::FrameSummary;
-#[cfg(feature = "gpu")]
-pub use renderer::GPU_WAIT;
 pub use renderer::{
     BUSY_WINDOW, DAMAGE_HISTORY, ESTIMATE_WAIT, EXIT_STALL, MAX_GHOSTS_PER_PARENT, NEW_TEXT_WAIT,
     QUERY_WAIT, RESIZE_WAIT, Renderer, TOOLTIP_DELAY, TextBackend, resize_share,
@@ -78,4 +76,6 @@ pub use renderer::{
     FeedDemand, FeedKind, ListFrames, LockSettle, PaintTimes, ScrollInput, ScrollKind, ScrollMove,
     THUMBNAIL_STEP,
 };
+#[cfg(feature = "gpu")]
+pub use renderer::{GPU_WAIT, HAND_OFF_MOST};
 pub use tree::{Node, PropEntry, SceneError, SceneTree};

@@ -3641,9 +3641,10 @@ fn a_locks_hand_off_hold_never_takes_in_the_wait_after_it() {
 }
 
 /// (lock-int re-check) While something moves, a hand-off holds a lock's
-/// clock by at most 500 ms (the GPU silence strand allows a lock surface's
-/// request): a gap past that after the first presented frame is not the
-/// hand-off's, and the frame after it jumps by the rest.
+/// clock by at most `HAND_OFF_MOST` (the GPU silence strand allows a lock
+/// surface's request; 2 s since lock-4k): a gap past that after the first
+/// presented frame is not the hand-off's, and the frame after it jumps by
+/// the rest.
 #[test]
 fn a_locks_hand_off_hold_is_bounded() {
     let mut b = Builder::default();
@@ -3696,10 +3697,36 @@ fn a_locks_hand_off_hold_is_bounded() {
         ran: vec![],
     });
     r.paint_gpu(S, ms(3096)).expect("the glide goes on");
-    assert_eq!(r.presented_lag(S), Duration::from_millis(500));
+    assert_eq!(r.presented_lag(S), strand_render::HAND_OFF_MOST);
     let second = r.frame_time(S).unwrap();
-    assert_eq!(second, ms(2596));
+    assert_eq!(second, ms(3096) - strand_render::HAND_OFF_MOST);
     assert!(second > first);
+}
+
+/// (lock-4k) A hand-off under the bound holds the lock's clock for all of
+/// it: the first presented frame asked 900 ms after the CPU's last one
+/// goes on from that frame, the animation never jumping over the hand-off
+/// (less the surface's frame period, here next to nothing). Before, the
+/// hold stopped at 500 ms and the frame jumped by the other 400, which on
+/// the lock VM's desk every hand-off did.
+#[test]
+fn a_hand_off_under_the_bound_holds_the_clock_for_all_of_it() {
+    let (mut r, cpu) = handed_off_glide();
+    let frame = Duration::from_nanos(1_000_000_000 / 60);
+    let gap = Duration::from_millis(900);
+    r.paint_gpu(S, cpu + gap).expect("the glide goes on");
+    let held = r.presented_lag(S);
+    assert!(
+        held <= gap && held + frame > gap,
+        "held {held:?} of a {gap:?} hand-off"
+    );
+    assert_eq!(r.hand_off_took(S), held, "nothing cut off");
+    let shown = r.frame_time(S).unwrap();
+    assert!(
+        shown < cpu + frame && shown >= cpu,
+        "drawn at {:?} after the CPU's last frame",
+        shown - cpu
+    );
 }
 
 /// A lock root with a card gliding for ten seconds, its first frame and

@@ -42,7 +42,7 @@ mod tooltip;
 mod wake;
 
 #[cfg(feature = "gpu")]
-pub use backend::GPU_WAIT;
+pub use backend::{GPU_WAIT, HAND_OFF_MOST};
 
 pub use feed::{FeedDemand, FeedKind, THUMBNAIL_STEP};
 pub use frame::PaintTimes;

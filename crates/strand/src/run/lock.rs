@@ -1671,10 +1671,32 @@ pub(crate) mod faults {
         }
     }
 
+    /// (lock-4k) `gpu_slow` is armed: a lock surface was lent to the GPU
+    /// thread.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    static GPU_SLOW: AtomicBool = AtomicBool::new(false);
+
+    /// (lock-4k) A lock surface was lent to the GPU thread, its `Attach`
+    /// about to be sent: `gpu_slow` arms the thread's next wake.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn lock_lent() {
+        if on("gpu_slow") {
+            GPU_SLOW.store(true, Ordering::Release);
+        }
+    }
+
     /// (lock-gpu) On the GPU thread, after each reply: once `gpu_stall`
-    /// is armed it never returns.
+    /// is armed it never returns. (lock-4k) Once `gpu_slow` is armed it
+    /// stops 1.2 s, once, after the reply it just sent and before the
+    /// next request (the other outputs' attaches, or the lock's first
+    /// frame), as a slow GPU would: a silence under the bound.
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
     pub(crate) fn gpu_waker() {
+        static SLOWED: AtomicBool = AtomicBool::new(false);
+        if GPU_SLOW.load(Ordering::Acquire) && !SLOWED.swap(true, Ordering::AcqRel) {
+            log::warn!("STRAND_FAULT gpu_slow");
+            std::thread::sleep(Duration::from_millis(1200));
+        }
         if GPU_STALL.load(Ordering::Acquire) {
             loop {
                 std::thread::sleep(Duration::from_secs(3600));
@@ -1860,6 +1882,9 @@ pub(crate) mod faults {
     #[inline(always)]
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
     pub(crate) fn gpu_waker() {}
+    #[inline(always)]
+    #[cfg(feature = "gpu")]
+    pub(crate) fn lock_lent() {}
     #[inline(always)]
     #[cfg(feature = "gpu")]
     pub(crate) fn main_busy(_: impl FnOnce() -> bool) {}

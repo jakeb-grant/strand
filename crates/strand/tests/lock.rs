@@ -3543,6 +3543,14 @@ fn a_lock_whose_gpu_stalls_goes_on_on_the_cpu() {
         drew.as_millis(),
         if before { "before" } else { "after" }
     );
+    // (lock-4k) Given up on at the bound, 2 s of the thread's silence
+    // (the test sees the fault's line up to a poll late, hence 1900),
+    // and not much past it.
+    let after = renewed.duration_since(armed);
+    assert!(
+        after >= Duration::from_millis(1900) && after < Duration::from_millis(2600),
+        "renewed {after:?} after the fault armed, not at the 2 s bound:\n{log}"
+    );
     let log = vm.strand.log_text();
     assert!(
         log.contains(&format!(
@@ -4047,13 +4055,12 @@ fn the_exit_cap_unlocks_an_exit_that_does_not_settle() {
 /// (lock-int, second review) The GPU thread stalls under a presented lock
 /// as it plays its way out (`gpu_stall_exit`: it stops for good after the
 /// first frame it presents once the password was accepted), the card's
-/// exit 8 s long, past the cap. The renewal lands inside the exit, on a
-/// fresh surface drawn on the CPU, and the session stays locked until the
-/// unlock, which comes no sooner than the renewal: no shot grabbed back to
-/// back from the Return shows the desktop before it. (The renewal ends the
-/// exit there today: render reaps the exits of a surface that goes, so the
-/// unlock follows the renewal rather than the cap; decisions.md lock-int.
-/// Either end passes.)
+/// exit 8 s long, past the cap. The session stays locked until the
+/// unlock: no shot grabbed back to back from the Return shows the desktop
+/// before it. (lock-4k) The stall's bound (2 s) is past the exit's cap
+/// (1 s), so nothing is renewed while it plays out: the unlock comes at
+/// the cap, as for any exit that never finishes. (Before, with a 500 ms
+/// bound, the renewal landed inside the exit and ended it there.)
 #[test]
 fn a_lock_whose_gpu_stalls_as_it_plays_out_stays_locked_until_it_unlocks() {
     let test = "lock_gpu_stall_exit";
@@ -4094,31 +4101,32 @@ fn a_lock_whose_gpu_stalls_as_it_plays_out_stays_locked_until_it_unlocks() {
     let log = vm.strand.log_text();
     let exit = log.find("the lock plays its way out");
     let armed = log.find("STRAND_FAULT gpu_stall_exit");
-    let renewed = log.find(&format!(
-        "lock: surface {old} is drawn on the CPU from now on, as surface "
-    ));
     let unlocked = log.find("session lock: Unlocked");
     assert!(
         matches!(
-            (exit, armed, renewed, unlocked),
-            (Some(e), Some(a), Some(r), Some(u)) if e < a && a < r && r < u
+            (exit, armed, unlocked),
+            (Some(e), Some(a), Some(u)) if e < a && a < u
         ),
-        "the stall's renewal did not land inside the exit (exit {exit:?}, armed {armed:?}, \
-         renewed {renewed:?}, unlocked {unlocked:?}):\n{log}"
+        "the stall did not come inside the exit (exit {exit:?}, armed {armed:?}, unlocked \
+         {unlocked:?}):\n{log}"
+    );
+    let before = &log[..unlocked.unwrap_or(log.len())];
+    assert!(
+        !before.contains(&format!(
+            "lock: surface {old} is drawn on the CPU from now on"
+        )) && !before.contains("answered nothing for"),
+        "renewed inside the exit, before the bound:\n{log}"
     );
     assert!(
-        log.contains(&format!(
-            "lock: the GPU failed surface {old} (its GPU thread stalled)"
-        )),
-        "{log}"
+        log.contains("lock: the exit was still playing at its 1000 ms cap: unlocking"),
+        "the cap did not unlock:\n{log}"
     );
-    let end = log
-        .lines()
-        .find(|l| l.contains("lock: the exit ended after ") || l.contains("ms cap: unlocking"))
-        .unwrap_or_else(|| panic!("the exit never ended:\n{log}"));
+    assert!(
+        took >= Duration::from_millis(900),
+        "unlocked {took:?} after the Return, before the cap\n{log}"
+    );
     eprintln!(
-        "lock gpu stall in the exit: {shots} shots locked, unlocked {took:?} after the Return \
-         ({end})"
+        "lock gpu stall in the exit: {shots} shots locked, unlocked {took:?} after the Return"
     );
 }
 
@@ -5177,6 +5185,11 @@ fn desk_commits(test: &str, gpu: bool) {
             }
             let silence = ms_of(&log, "longest silence with a lock request waiting was ");
             assert_eq!(silence.len(), 1, "lock {round}: one silence line:\n{log}");
+            // (lock-4k) A working thread is never given up on.
+            assert!(
+                ms_of(&log, " renewed ").is_empty() && !log.contains("answered nothing for"),
+                "lock {round}: a working GPU thread's lock was renewed:\n{log}"
+            );
             line += &format!(
                 "; hand-offs (surface, held, took) {offs:?} ms; longest GPU silence {} ms; \
                  lent {:?} ms after the request; attaches {:?} ms; first presented {:?} ms; \
@@ -5232,6 +5245,48 @@ fn desk_gate(late: &[String]) {
             late.join("; ")
         );
     }
+}
+
+/// (lock-4k) A GPU thread slow to answer is no stall (`gpu_slow`: after
+/// the reply it sends once the lock's surfaces are lent, the thread stops
+/// 1.2 s before the next of the desk's four attaches): the lock waits for
+/// it, renewing nothing, the hand-off goes on, and the password unlocks.
+/// Before, the 500 ms bound renewed every lock surface, leaving each
+/// output without one until the new one's first frame (Hyprland's
+/// dead-lock screen once the lock is a second old).
+#[test]
+fn a_slow_gpu_attach_is_no_stall() {
+    let test = "lock_gpu_slow";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let (mut vm, outputs) = Vm::desk(test, "gpu_slow", true);
+    let log = vm.desk_lock(&outputs, true);
+    assert!(
+        log.contains("STRAND_FAULT gpu_slow"),
+        "the fault fired:\n{log}"
+    );
+    assert!(
+        !log.contains("answered nothing for") && ms_of(&log, " renewed ").is_empty(),
+        "a slow thread taken for a stalled one:\n{log}"
+    );
+    assert!(
+        !log.contains("is drawn on the CPU from now on"),
+        "a lock surface was renewed:\n{log}"
+    );
+    let silence = ms_of(&log, "longest silence with a lock request waiting was ");
+    assert!(
+        silence.iter().any(|ms| *ms >= 1000),
+        "the fault left a lock request waiting through its silence: {silence:?}\n{log}"
+    );
+    let offs = hand_offs(&log);
+    assert!(!offs.is_empty(), "the lock went on to the GPU:\n{log}");
+    eprintln!(
+        "lock gpu slow: longest silence {silence:?} ms; first commits {:?} ms; attaches {:?} ms; \
+         hand-offs (surface, held, took) {offs:?} ms",
+        first_commits(&log, &outputs),
+        ms_of(&log, "'s attach was answered "),
+    );
 }
 
 /// (lock-4k) A cold text worker on the lock (`text_slow`: once the

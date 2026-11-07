@@ -520,10 +520,14 @@ const UNTIMED: usize = 4;
 
 /// (lock-int re-check) The most a lock's hand-off to the GPU thread holds
 /// its clock ([`HandOff`]): the GPU thread's silence strand allows a lock
-/// surface's request (its `LOCK_GPU_BOUND`). A hand-off that cost more was
-/// a stall, and its frame jumps by the rest; a gap longer than that is
-/// idle time, never held.
-const HAND_OFF_MOST: Duration = Duration::from_millis(500);
+/// surface's request (its `LOCK_GPU_BOUND`, which a test in strand holds
+/// to this). A hand-off that cost more was a stall, and its frame jumps
+/// by the rest; a gap longer than that is idle time, never held.
+///
+/// (lock-4k) Two seconds, with the bound: a hand-off under it was the
+/// GPU's start, never a stall, and its animation goes on from its last
+/// CPU frame rather than jumping over the time it took.
+pub const HAND_OFF_MOST: Duration = Duration::from_secs(2);
 
 /// One surface as the GPU backend sees it.
 #[derive(Debug, Default)]
