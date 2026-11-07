@@ -756,6 +756,11 @@ pub(crate) fn blur_edge_lanes(
     };
     let stride = w * 4;
     let px = &mut px[..h * stride];
+    // Asked once, on this thread, for every band.
+    #[cfg(target_arch = "x86_64")]
+    let wide = wide();
+    #[cfg(not(target_arch = "x86_64"))]
+    let wide = false;
     // Bands of at least 2r rows (each also passes the 2r rows around
     // it), one per thread that may run.
     #[cfg(test)]
@@ -768,7 +773,7 @@ pub(crate) fn blur_edge_lanes(
         1
     };
     if lanes < 2 {
-        blur_band(px, &[], &[], (0, h), w, h, r, &kernel, edges);
+        blur_band(px, &[], &[], (0, h), w, h, r, &kernel, edges, wide);
         return 1;
     }
     let rows = h.div_ceil(lanes);
@@ -804,7 +809,9 @@ pub(crate) fn blur_edge_lanes(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (above, below) = &halos[i];
-        blur_band(&mut band, above, below, bands[i], w, h, r, &kernel, edges);
+        blur_band(
+            &mut band, above, below, bands[i], w, h, r, &kernel, edges, wide,
+        );
     });
     #[cfg(test)]
     LAST_TIDS.with(|t| *t.borrow_mut() = tids.into_inner().unwrap_or_default());
@@ -819,14 +826,83 @@ thread_local! {
     /// (tests) This thread's filters split whatever their work, so small
     /// buffers test the bands.
     static ALWAYS_BAND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// (tests) This thread's colour matrices use their table whatever
+    /// their size, so small buffers test it.
+    static ALWAYS_TABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// (tests) This thread's blurs run the build for any x86-64 CPU,
+    /// not the AVX2 one.
+    static NARROW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// (tests) The colour matrix tables this thread has built.
+    static TABLES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The blur of output rows `y0..y1` (`band`, whose input pixels it
 /// overwrites in place), reading the input rows above it from `above`
 /// (rows `y0 − r..y0`, clamped) and below it from `below` (rows
 /// `y1..y1 + r`, clamped): the whole blur with `y0 = 0` and `y1 = h`.
+///
+/// (blur-ready review) On a CPU with AVX2 it runs compiled for it: the
+/// same multiplies and adds (never fused) in the same order, eight lanes
+/// at a time rather than four, so the same bytes
+/// (`the_avx2_blur_is_the_blur`).
 #[allow(clippy::too_many_arguments)]
 fn blur_band(
+    band: &mut [u8],
+    above: &[u8],
+    below: &[u8],
+    rows: (usize, usize),
+    w: usize,
+    h: usize,
+    r: usize,
+    kernel: &[f32],
+    edges: [Edge; 4],
+    wide: bool,
+) {
+    #[cfg(target_arch = "x86_64")]
+    if wide {
+        // SAFETY: `wide` is true only when this CPU has AVX2 ([`wide`]).
+        unsafe { blur_band_avx2(band, above, below, rows, w, h, r, kernel, edges) };
+        return;
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = wide;
+    blur_band_body::<32>(band, above, below, rows, w, h, r, kernel, edges);
+}
+
+/// Whether the blur runs its AVX2 build: the CPU has it (and, in tests,
+/// the calling thread has not turned it off).
+#[cfg(target_arch = "x86_64")]
+fn wide() -> bool {
+    #[cfg(test)]
+    if NARROW.with(std::cell::Cell::get) {
+        return false;
+    }
+    std::arch::is_x86_feature_detected!("avx2")
+}
+
+/// [`blur_band_body`] compiled for AVX2.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+fn blur_band_avx2(
+    band: &mut [u8],
+    above: &[u8],
+    below: &[u8],
+    rows: (usize, usize),
+    w: usize,
+    h: usize,
+    r: usize,
+    kernel: &[f32],
+    edges: [Edge; 4],
+) {
+    blur_band_body::<64>(band, above, below, rows, w, h, r, kernel, edges);
+}
+
+/// [`blur_band`]'s work, inlined into each build of it, summing `L`
+/// floats at a time ([`convolve`]).
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn blur_band_body<const L: usize>(
     band: &mut [u8],
     above: &[u8],
     below: &[u8],
@@ -851,7 +927,11 @@ fn blur_band(
     // pixel repeated), so the row pass runs tap by tap over whole rows,
     // which the compiler vectorises: the same sums in the same order as
     // one pixel at a time (a tap past a transparent edge adds zero).
+    // (blur-ready review) Both passes sum a few dozen outputs through
+    // every tap in registers ([`convolve`]), in the same order.
     let mut padded = vec![0f32; stride + 2 * r * 4];
+    // The taps of the row being summed: weight and where its row starts.
+    let mut taps: Vec<(f32, usize)> = Vec::with_capacity(2 * r + 1);
     let mut next = lo;
     for y in y0..y1 {
         let last = (y + r).min(h - 1);
@@ -880,18 +960,13 @@ fn blur_band(
                 }
             }
             let slot = &mut ring[(next % ring_rows) * stride..(next % ring_rows + 1) * stride];
-            slot.fill(0.0);
-            for (i, k) in kernel.iter().enumerate() {
-                let src = &padded[i * 4..i * 4 + stride];
-                for (o, v) in slot.iter_mut().zip(src) {
-                    *o += k * v;
-                }
-            }
+            taps.extend(kernel.iter().enumerate().map(|(i, k)| (*k, i * 4)));
+            convolve::<L>(slot, &padded, &taps);
+            taps.clear();
             next += 1;
         }
         // The column pass for row `y`, tap by tap in kernel order (the
         // same sums, in the same order, as one pixel at a time).
-        out.fill(0.0);
         for (i, k) in kernel.iter().enumerate() {
             let sy = y as isize + i as isize - r as isize;
             let past = match sy {
@@ -903,12 +978,10 @@ fn blur_band(
                 continue;
             }
             let sy = sy.clamp(0, h as isize - 1) as usize;
-            let slot = sy % ring_rows;
-            let src = &ring[slot * stride..(slot + 1) * stride];
-            for (o, v) in out.iter_mut().zip(src) {
-                *o += k * v;
-            }
+            taps.push((*k, (sy % ring_rows) * stride));
         }
+        convolve::<L>(&mut out, &ring, &taps);
+        taps.clear();
         let dst = &mut band[(y - y0) * stride..(y - y0 + 1) * stride];
         for (d, acc) in dst.chunks_exact_mut(4).zip(out.chunks_exact(4)) {
             let a = acc[3].round().clamp(0.0, 255.0);
@@ -918,6 +991,40 @@ fn blur_band(
                 d[c] = acc[c].round().clamp(0.0, a) as u8;
             }
         }
+    }
+}
+
+/// `out[j] = Σ k · src[at + j]` over `taps` (`(k, at)`), in their order,
+/// for every `j` in `out`: `L` outputs at a time, each summed in a
+/// register through every tap before it is stored, so the sums are the
+/// tap-by-tap sums over whole rows (from 0, in tap order) and each output
+/// is stored once rather than read and written at every tap.
+///
+/// The inner loop indexes rather than zips: as fast optimised, and as
+/// fast as the loops it replaced in the debug builds the lock VM's tests
+/// run, where zipping an array and a slice cost a quarter more.
+#[inline(always)]
+#[allow(clippy::needless_range_loop)]
+fn convolve<const L: usize>(out: &mut [f32], src: &[f32], taps: &[(f32, usize)]) {
+    let n = out.len();
+    let whole = n - n % L;
+    for (c, chunk) in out[..whole].chunks_exact_mut(L).enumerate() {
+        let j = c * L;
+        let mut acc = [0f32; L];
+        for &(k, at) in taps {
+            let s = &src[at + j..at + j + L];
+            for t in 0..L {
+                acc[t] += k * s[t];
+            }
+        }
+        chunk.copy_from_slice(&acc);
+    }
+    for (j, o) in out.iter_mut().enumerate().skip(whole) {
+        let mut a = 0f32;
+        for &(k, at) in taps {
+            a += k * src[at + j];
+        }
+        *o = a;
     }
 }
 
@@ -1053,6 +1160,12 @@ pub fn color_matrix(px: &mut [u8], m: &[f32; 20]) {
 /// on the raster's helpers: about a millisecond of one core's.
 const MATRIX_BANDED: usize = 1 << 18;
 
+/// (blur-ready review) Pixels in a band from which a colour matrix looks
+/// its straight channels up in a table (256 KB, zeroed, its rows filled
+/// as alphas show up): with every alpha present, filling it costs what
+/// about 22,000 pixels worked out one at a time do.
+const MATRIX_TABLE: usize = 1 << 15;
+
 /// [`color_matrix`]; returns the threads that ran it.
 ///
 /// (blur-ready) Each pixel goes through the same float operations as
@@ -1077,11 +1190,20 @@ pub(crate) fn color_matrix_lanes(px: &mut [u8], m: &[f32; 20]) -> usize {
     } else {
         1
     };
+    let per = n.div_ceil(lanes) * 4;
+    // The table pays for itself once a band's pixels outnumber what its
+    // rows cost to fill (256 divisions an alpha, three a pixel without
+    // it) with every alpha shown: below that, a small group (an icon
+    // under `grayscale(1)`, a glow's matrix on a line of text) works
+    // each pixel out as it always did.
+    #[cfg(test)]
+    let table = per / 4 >= MATRIX_TABLE || ALWAYS_TABLE.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    let table = per / 4 >= MATRIX_TABLE;
     if lanes < 2 {
-        matrix_band(px, m, clear);
+        matrix_band(px, m, clear, table);
         return 1;
     }
-    let per = n.div_ceil(lanes) * 4;
     let slices: Vec<std::sync::Mutex<&mut [u8]>> =
         px.chunks_mut(per).map(std::sync::Mutex::new).collect();
     let mut states = vec![(); slices.len()];
@@ -1089,16 +1211,27 @@ pub(crate) fn color_matrix_lanes(px: &mut [u8], m: &[f32; 20]) -> usize {
         let mut band = slices[i]
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        matrix_band(&mut band, m, clear);
+        matrix_band(&mut band, m, clear, table);
     })
 }
 
 /// [`color_matrix`] over `px` on this thread, `clear` its result for a
-/// transparent pixel.
-fn matrix_band(px: &mut [u8], m: &[f32; 20], clear: [u8; 4]) {
+/// transparent pixel, with the table of `c / 255 / a` when `table`.
+fn matrix_band(px: &mut [u8], m: &[f32; 20], clear: [u8; 4], table: bool) {
+    if !table {
+        for p in px.chunks_exact_mut(4) {
+            if p[3] == 0 {
+                p.copy_from_slice(&clear);
+            } else {
+                matrix_pixel(p, m, None);
+            }
+        }
+        return;
+    }
+    #[cfg(test)]
+    TABLES.with(|t| t.set(t.get() + 1));
     // `c / 255 / a` by alpha and channel, each alpha's row filled when a
-    // pixel first shows it (zeroed by the allocator, so the rows never
-    // shown take no pages).
+    // pixel first shows it.
     let mut table = vec![0f32; 256 * 256];
     let mut filled = [false; 256];
     for p in px.chunks_exact_mut(4) {
@@ -1766,7 +1899,7 @@ mod tests {
             // Every edge combination where bands meet them; the large
             // group with none and all repeating.
             let combos: Vec<usize> = if (w, h) == (960, 540) {
-                vec![15]
+                vec![0, 15]
             } else {
                 (0..16).collect()
             };
@@ -1791,6 +1924,47 @@ mod tests {
         if crate::raster::threads() > 1 {
             assert!(banded > 100, "only {banded} blurs ran in bands");
         }
+    }
+
+    /// (blur-ready review) The blur's AVX2 build is its build for any
+    /// x86-64 CPU byte for byte, whole and in bands, at every edge mode.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn the_avx2_blur_is_the_blur() {
+        if !std::arch::is_x86_feature_detected!("avx2") {
+            return;
+        }
+        crate::raster::unbudgeted();
+        let modes = [Edge::Transparent, Edge::Repeat];
+        for (n, (w, h, sigma)) in [
+            (1, 1, 0.5f32),
+            (7, 300, 3.0),
+            (131, 97, 13.5),
+            (960, 540, 13.5),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let src = noise(w, h, 0x51ed_270b ^ n as u32);
+            for e in [0usize, 5, 10, 15] {
+                let edges: [Edge; 4] = std::array::from_fn(|i| modes[(e >> i) & 1]);
+                for split in [false, true] {
+                    ALWAYS_BAND.with(|b| b.set(split));
+                    let mut narrow = src.clone();
+                    NARROW.with(|b| b.set(true));
+                    blur_edge_lanes(&mut narrow, w, h, sigma, edges);
+                    NARROW.with(|b| b.set(false));
+                    let mut wide = src.clone();
+                    blur_edge_lanes(&mut wide, w, h, sigma, edges);
+                    let first = narrow.iter().zip(&wide).position(|(a, b)| a != b);
+                    assert_eq!(
+                        first, None,
+                        "{w}×{h} σ {sigma} edges {edges:?} split {split}"
+                    );
+                }
+            }
+        }
+        ALWAYS_BAND.with(|b| b.set(false));
     }
 
     /// (blur-ready) A large blur (the lock's group: 960 × 540 at σ 13.5)
@@ -1881,18 +2055,20 @@ mod tests {
         for m in &matrices {
             let mut want = px.clone();
             color_matrix_serial(&mut want, m);
-            for split in [false, true] {
+            for (split, table) in [(false, false), (false, true), (true, false), (true, true)] {
                 ALWAYS_BAND.with(|b| b.set(split));
+                ALWAYS_TABLE.with(|b| b.set(table));
                 let mut got = px.clone();
                 let ran = color_matrix_lanes(&mut got, m);
                 let first = want.iter().zip(&got).position(|(a, b)| a != b);
                 assert_eq!(
                     first.map(|i| (&px[i / 4 * 4..i / 4 * 4 + 4], want[i], got[i])),
                     None,
-                    "{m:?} on {ran} threads"
+                    "{m:?} on {ran} threads, table {table}"
                 );
             }
             ALWAYS_BAND.with(|b| b.set(false));
+            ALWAYS_TABLE.with(|b| b.set(false));
         }
     }
 
@@ -1906,6 +2082,24 @@ mod tests {
         assert_eq!(color_matrix_lanes(&mut px, &m), crate::raster::threads());
         let mut px = vec![255u8; 64 * 64 * 4];
         assert_eq!(color_matrix_lanes(&mut px, &m), 1);
+    }
+
+    /// (blur-ready review) A small colour matrix (an icon, a line of
+    /// text's glow) builds no table, whose 256 KB and row fills would
+    /// cost it more than its pixels do; a large one builds one.
+    #[test]
+    fn a_small_colour_matrix_builds_no_table() {
+        let m = crate::effects::filter::grayscale(1.0);
+        let tables = || TABLES.with(std::cell::Cell::get);
+        let before = tables();
+        for (w, h) in [(16, 16), (48, 48), (200, 40), (128, 128)] {
+            let mut px = noise(w, h, 5);
+            assert_eq!(color_matrix_lanes(&mut px, &m), 1);
+        }
+        assert_eq!(tables(), before, "a small matrix built a table");
+        let mut px = noise(256, 256, 5);
+        assert_eq!(color_matrix_lanes(&mut px, &m), 1);
+        assert_eq!(tables(), before + 1, "a 256 × 256 matrix uses its table");
     }
 
     /// A source of one colour, drawn from `bytes` (its content).
