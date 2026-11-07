@@ -1391,33 +1391,50 @@ pub enum RasterLayer {
     Grain,
 }
 
-/// A raster pixmap kept: the key it was drawn at, and its pixels.
-type Kept = (u64, Arc<Pixmap>);
+/// A raster pixmap kept: the key it was drawn at, its pixels, and (a
+/// pixmap shared by content) the pin of the bytes it was drawn from.
+type Kept = (u64, Arc<Pixmap>, Option<Arc<Pin>>);
 
-/// (blur-ready) A pixmap shared by content: the bytes the content names
-/// (pinned) and the pixmap.
+/// (blur-ready) The bytes a shared pixmap was drawn from, by a `Weak` of
+/// them ([`RasterContent::pin`]), so their address is not handed to
+/// other bytes while it is shared under it. Held by the nodes that keep
+/// the pixmap (their [`Kept`]) and by nothing else: a `Weak` keeps its
+/// target's whole allocation (a 4K still's 33 MB) after the last strong
+/// reference goes, so it is dropped with the last node, never left in
+/// the map until a later paint prunes it.
+#[derive(Debug)]
+struct Pin(Option<Weak<[u8]>>);
+
+/// (blur-ready) A pixmap shared by content: the pin of the bytes it was
+/// drawn from, and the pixmap, both weakly (a dead entry keeps neither).
 #[derive(Debug)]
 struct Shared {
-    pin: Option<Weak<[u8]>>,
+    pin: Weak<Pin>,
     pixmap: Weak<Pixmap>,
 }
 
 impl Shared {
-    /// Its pixmap, while some node keeps it and the bytes it was drawn
-    /// from are the ones `pin` names.
-    fn take(&self, pin: &Option<Weak<[u8]>>) -> Option<Arc<Pixmap>> {
-        let same = match (&self.pin, pin) {
+    /// Its pixmap and pin, while some node keeps them and the bytes it
+    /// was drawn from are the ones `pin` names.
+    fn take(&self, pin: &Option<Weak<[u8]>>) -> Option<(Arc<Pixmap>, Arc<Pin>)> {
+        let held = self.pin.upgrade()?;
+        let same = match (&held.0, pin) {
             (None, None) => true,
             (Some(a), Some(b)) => Weak::ptr_eq(a, b) && a.strong_count() > 0,
             _ => false,
         };
-        same.then(|| self.pixmap.upgrade()).flatten()
+        same.then(|| self.pixmap.upgrade().map(|p| (p, held)))
+            .flatten()
     }
 
-    /// Whether it can still be shared: its pixmap kept and its bytes
-    /// alive (a dead entry's pin would keep their memory).
+    /// Whether it can still be shared: a node keeps it and its bytes are
+    /// alive.
     fn live(&self) -> bool {
-        self.pixmap.strong_count() > 0 && self.pin.as_ref().is_none_or(|p| p.strong_count() > 0)
+        self.pixmap.strong_count() > 0
+            && self
+                .pin
+                .upgrade()
+                .is_some_and(|p| p.0.as_ref().is_none_or(|b| b.strong_count() > 0))
     }
 }
 
@@ -1493,8 +1510,8 @@ impl RasterNodes {
         let mut seen = std::collections::HashSet::new();
         drawn
             .values()
-            .filter(|(_, p)| seen.insert(Arc::as_ptr(p) as usize))
-            .map(|(_, p)| p.width() as usize * p.height() as usize * 4)
+            .filter(|(_, p, _)| seen.insert(Arc::as_ptr(p) as usize))
+            .map(|(_, p, _)| p.width() as usize * p.height() as usize * 4)
             .sum()
     }
 
@@ -1561,7 +1578,7 @@ impl RasterNodes {
         )
             .hash(&mut k);
         let key = k.finish();
-        if let Some((old, pm)) = self.drawn.borrow().get(&(node, layer))
+        if let Some((old, pm, _)) = self.drawn.borrow().get(&(node, layer))
             && *old == key
         {
             return Some((key, pm.clone()));
@@ -1574,10 +1591,10 @@ impl RasterNodes {
         });
         if let Some((shared, pin)) = &content {
             let found = self.shared.borrow().get(shared).and_then(|s| s.take(pin));
-            if let Some(pm) = found {
+            if let Some((pm, held)) = found {
                 self.drawn
                     .borrow_mut()
-                    .insert((node, layer), (key, pm.clone()));
+                    .insert((node, layer), (key, pm.clone(), Some(held)));
                 return Some((key, pm));
             }
         }
@@ -1589,16 +1606,17 @@ impl RasterNodes {
         *self.builds.borrow_mut() += 1;
         self.build_time
             .set(self.build_time.get() + started.elapsed());
-        let old = self
-            .drawn
-            .borrow_mut()
-            .insert((node, layer), (key, pm.clone()));
-        if let Some((shared, pin)) = content {
+        let content = content.map(|(shared, pin)| (shared, Arc::new(Pin(pin))));
+        let old = self.drawn.borrow_mut().insert(
+            (node, layer),
+            (key, pm.clone(), content.as_ref().map(|(_, p)| p.clone())),
+        );
+        if let Some((shared, held)) = content {
             let mut map = self.shared.borrow_mut();
             map.insert(
                 shared,
                 Shared {
-                    pin,
+                    pin: Arc::downgrade(&held),
                     pixmap: Arc::downgrade(&pm),
                 },
             );
@@ -2178,8 +2196,51 @@ mod tests {
         assert!(shared.upgrade().is_none(), "freed with its last node");
         assert_eq!(nodes.bytes(), 0);
         assert_eq!(nodes.shared(), 0);
-        drop(nodes);
+        assert!(nodes.shared.borrow().is_empty(), "no dead entry is left");
         assert_eq!(Arc::weak_count(&bytes), 0, "nothing pins the content");
+    }
+
+    /// (blur-ready review) A shared pixmap that outlives its nodes (the
+    /// last display list or a group's pin keeps it while the nodes go)
+    /// leaves no pin on its content: once the frame's bytes are dropped
+    /// they are freed, with no paint after (an idle shell after an
+    /// unlock), not kept whole by a `Weak` until one.
+    #[test]
+    fn a_shared_pixmap_kept_past_its_nodes_pins_no_content() {
+        let bytes: Arc<[u8]> = Arc::from(vec![200u8; 4]);
+        let mut nodes = RasterNodes::default();
+        let (a, b) = (NodeId::new(1, 0), NodeId::new(2, 0));
+        for n in [a, b] {
+            nodes.set(
+                n,
+                Some(Arc::new(Fill {
+                    bytes: bytes.clone(),
+                })),
+            );
+        }
+        let t = TimeContext::default();
+        let get = |_: strand_scene::Prop| None;
+        let props = RasterProps {
+            get: &get,
+            color: strand_scene::Color::WHITE,
+            parts: &[],
+            files: None,
+            boot: Duration::ZERO,
+            slack: Duration::ZERO,
+            still: false,
+            commit: true,
+        };
+        let (_, pa) = nodes.pixmap(a, 40, 30, 1.0, t, &props).unwrap();
+        let (_, pb) = nodes.pixmap(b, 40, 30, 1.0, t, &props).unwrap();
+        assert!(Arc::ptr_eq(&pa, &pb));
+        drop(pb);
+        // The nodes go while the pixmap is still kept elsewhere.
+        nodes.retain(|_| false);
+        // Nothing but the frame's own holders keeps its bytes: dropped,
+        // they are freed with no call on `nodes` after.
+        assert_eq!(Arc::weak_count(&bytes), 0, "no pin outlives the nodes");
+        assert_eq!(nodes.shared(), 0, "nothing is shared without a node");
+        drop(pa);
     }
 
     #[test]
