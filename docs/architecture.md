@@ -2428,7 +2428,12 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   hand-off to the GPU thread: its first presented frame, and the one
   after it, are drawn one period after the frame shown before them,
   and every later one behind the time asked by the time lost
-  (`Renderer::presented_lag`).
+  (`Renderer::presented_lag`). (lock-4k) `Renderer::hand_off_took`
+  is what the hand-off lost uncapped, for the log only, and
+  `State::lock_asked() -> Option<Instant>` is when the lock asked for
+  or held was asked for (right after `ext_session_lock_manager_v1.lock`),
+  from which each lock surface's first commit, each renewal and each
+  lend to the GPU thread are logged.
 - *Drag and drop* (`src/dnd.rs`, as `manager::dnd`): a
   `wl_data_device` per seat yields `InputEvent::Drag*` (external
   payloads read through calloop without blocking, at most

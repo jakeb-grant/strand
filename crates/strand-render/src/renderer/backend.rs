@@ -571,6 +571,13 @@ struct Surf {
     /// its presented frames is drawn: the time its hand-off held its clock,
     /// at most [`HAND_OFF_MOST`], and zero again once nothing moves.
     lag: Duration,
+    /// (lock-4k) The time its hand-off lost in all, uncapped: the lag
+    /// it would hold without [`HAND_OFF_MOST`]. Logged beside the lag.
+    took: Duration,
+    /// (lock-4k) What [`HAND_OFF_MOST`] has cut off the hand-off's lag
+    /// so far: the second presented frame's gap is measured on the
+    /// clock as held, so this is added back to give [`Surf::took`].
+    cut: Duration,
     /// (lock-int re-check) Its last presented frame drew something that
     /// moves on (a motion or a clock); true from a switch of backend, so
     /// a hand-off's first presented frame is held.
@@ -908,6 +915,8 @@ impl Renderer {
         s.shown = None;
         // (lock-int review) A lock's clock is held across its hand-off.
         s.lag = Duration::ZERO;
+        s.took = Duration::ZERO;
+        s.cut = Duration::ZERO;
         s.moved = true;
         s.hand_off = if lock && backend == Backend::GpuPresent {
             HandOff::Attached
@@ -1688,17 +1697,36 @@ impl Renderer {
         } else if matches!(g.hand_off, HandOff::Attached | HandOff::Presented)
             && let Some(last) = last
         {
-            g.lag = at.saturating_sub(last + period).min(HAND_OFF_MOST);
+            let raw = at.saturating_sub(last + period);
+            // (lock-4k) What the hand-off took, uncapped: this gap is
+            // measured on the clock as held, so what the cap cut off
+            // before is added back.
+            g.took = raw + g.cut;
+            g.lag = raw.min(HAND_OFF_MOST);
+            g.cut += raw - g.lag;
         }
         if g.hand_off == HandOff::Presented {
             g.hand_off = HandOff::Idle;
             log::info!(
-                "lock: surface {}'s clock was held {} ms across its hand-off to the GPU",
+                "lock: surface {}'s clock was held {} ms across its hand-off to the GPU \
+                 (the hand-off took {} ms)",
                 surface.0,
-                g.lag.as_millis()
+                g.lag.as_millis(),
+                g.took.as_millis()
             );
         }
         at.saturating_sub(g.lag)
+    }
+
+    /// (lock-4k) The time `surface`'s hand-off to the GPU thread lost
+    /// in all, uncapped (zero for any other surface): what
+    /// [`Renderer::presented_lag`] would be without its bound. Measured
+    /// for the log; nothing is drawn by it.
+    pub fn hand_off_took(&self, surface: SurfaceId) -> Duration {
+        self.gpu
+            .surfaces
+            .get(&surface)
+            .map_or(Duration::ZERO, |s| s.took)
     }
 
     /// (lock-int review) How far behind the time asked `surface`'s

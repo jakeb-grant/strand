@@ -204,6 +204,9 @@ struct Sway {
     display: String,
     ipc: PathBuf,
     outputs: usize,
+    /// (lock-4k) Where the next output goes: the right edge of the
+    /// others, in logical pixels.
+    right: u32,
 }
 
 impl Drop for Sway {
@@ -252,6 +255,7 @@ impl Sway {
             display: String::new(),
             ipc: PathBuf::new(),
             outputs: 1,
+            right: 1280,
         };
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -293,21 +297,37 @@ impl Sway {
 
     /// A new 1280×720 output to the right of the others: its name.
     fn plug(&mut self) -> String {
+        self.plug_mode((1280, 720), 1.0)
+    }
+
+    /// (lock-4k) A new output of `mode` at `scale` to the right of the
+    /// others: its name.
+    fn plug_mode(&mut self, mode: (u32, u32), scale: f64) -> String {
         self.msg(&["create_output"]).expect("create_output");
         self.outputs += 1;
         let name = format!("HEADLESS-{}", self.outputs);
-        let x = (1280 * (self.outputs - 1)).to_string();
+        let x = self.right;
+        self.set_mode(&name, mode, scale, x);
+        name
+    }
+
+    /// (lock-4k) Output `name` at `mode` and `scale`, its left edge at
+    /// logical `x`; the next output goes to its right.
+    fn set_mode(&mut self, name: &str, (w, h): (u32, u32), scale: f64, x: u32) {
+        let mode = format!("{w}x{h}");
         self.msg(&[
             "output",
-            &name,
+            name,
             "resolution",
-            "1280x720",
+            &mode,
+            "scale",
+            &scale.to_string(),
             "position",
-            &x,
+            &x.to_string(),
             "0",
         ])
-        .expect("place the new output");
-        name
+        .expect("place the output");
+        self.right = x + (f64::from(w) / scale).round() as u32;
     }
 
     /// Unplugs output `name` (a headless output's `unplug`).
@@ -4919,4 +4939,263 @@ fn a_lock_from_a_gpu_presented_launcher_shows_the_desktop_at_rest() {
          (icon {icon} px, glyph {glyph} px)\n{log}"
     );
     assert!(log.contains(SETTLED), "it settled within its cap:\n{log}");
+}
+
+// ---- the owner's desk (lock-4k) -----------------------------------------------
+
+/// (lock-4k) A lock shaped as the owner's opens: a still of the desktop
+/// and, over it, a blurred and dimmed copy fading in over 420 ms; a card
+/// springing from the size of a bar's island to the middle, fading in as
+/// it grows, with a clock in a large monospace font, a text and the
+/// password field. Modelled on that lock, not copied from it.
+fn desk_config() -> String {
+    r##"export state locked = false
+export state zero = 1
+lock Gate {
+  state secret = ""
+  open: <-> locked
+  bg: #11111b
+  thumbnail screen { width: screen.width; height: screen.height; fit: cover }
+  thumbnail screen { width: screen.width; height: screen.height; fit: cover
+    filter: blur(36), brightness(0.6)
+    opacity: 1 ~ 420ms
+    enter { opacity: 0 }
+    exit { opacity: 0 }
+  }
+  col { width: screen.width; height: screen.height; align: center
+    stack {
+      width: 420 ~ spring(380, 0.86)
+      height: 268 ~ spring(380, 0.86)
+      y: (screen.height / 2 - 134) ~ spring(380, 0.86)
+      opacity: 1 ~ 420ms
+      enter { width: 640; height: 34; y: 0; opacity: 0 }
+      exit { width: 640; height: 34; y: 0; opacity: 0 }
+      bg: #2050d0
+      radius: 12
+      col { width: 100%; height: 100%; align: center; pad: 30, 28, 22, 28
+        text clock.format("%H:%M") { font: "DejaVu Sans Mono" 64px 600; color: #ffffff }
+        text pct(10 / zero) { color: #ffffff }
+        input { type: password; text: <-> secret; focus: true
+          on activate { if secret != "" { auth.submit(secret) }; secret = "" }
+        }
+      }
+    }
+  }
+}
+"##
+    .to_string()
+}
+
+/// (lock-4k) The desk's outputs: HEADLESS-1 at 1920 × 1200, then
+/// 1920 × 1080, then two 3840 × 2160 at scale 1.5, left to right.
+const DESK: [((u32, u32), f64); 4] = [
+    ((1920, 1200), 1.0),
+    ((1920, 1080), 1.0),
+    ((3840, 2160), 1.5),
+    ((3840, 2160), 1.5),
+];
+
+impl Shot {
+    /// (lock-4k) [`desk_config`]'s card shows, grown: a point inside its
+    /// lower left, clear of its text and field.
+    fn desk_card(&self) -> bool {
+        near(self.px(self.w / 2 - 190, self.h / 2 + 120), LOCK_BG)
+    }
+}
+
+impl Vm {
+    /// (lock-4k) [`desk_config`] on the desk's outputs ([`DESK`]), with
+    /// the GPU as [`Vm::gpu`] has it when `gpu`; the outputs' names.
+    fn desk(tag: &str, faults: &str, gpu: bool) -> (Vm, Vec<String>) {
+        let mut sway = Sway::start(tag);
+        let (mode, scale) = DESK[0];
+        sway.set_mode("HEADLESS-1", mode, scale, 0);
+        let mut outputs = vec!["HEADLESS-1".to_string()];
+        for (mode, scale) in &DESK[1..] {
+            outputs.push(sway.plug_mode(*mode, *scale));
+        }
+        let desktop = Desktop::start(&sway);
+        let keys = Keyboard::new(&sway);
+        let mut strand = Strand::prepare(&sway, &sway.display.clone(), faults, &desk_config());
+        if gpu {
+            strand.env.retain(|(k, _)| k != "STRAND_LOG");
+            strand.env.push(("STRAND_LOG".into(), "info,damage".into()));
+            strand.env.push(("STRAND_GPU_SOFTWARE".into(), "1".into()));
+        }
+        strand.run();
+        let vm = Vm {
+            sway,
+            _desktop: desktop,
+            keys,
+            strand,
+        };
+        for o in &outputs {
+            vm.until(o, "the desktop", Shot::desktop);
+        }
+        if gpu {
+            vm.until_log("GPU: the device is up");
+        }
+        (vm, outputs)
+    }
+
+    /// (lock-4k) Locks [`desk_config`]'s lock, lets its opening play, and
+    /// unlocks it with the password: the log of that lock, from the
+    /// request to its end (`GpuHost`'s longest silence when `gpu`).
+    fn desk_lock(&mut self, outputs: &[String], gpu: bool) -> String {
+        let from = self.strand.log_text().len();
+        self.strand.cli(&["set", "lock.locked", "false"]);
+        self.strand.cli(&["set", "lock.locked", "true"]);
+        self.until("HEADLESS-1", "the lock's card", Shot::desk_card);
+        let deadline = Instant::now() + WAIT;
+        while self.strand.log_text()[from..]
+            .matches(" first committed ")
+            .count()
+            < outputs.len()
+        {
+            assert!(
+                Instant::now() < deadline,
+                "not every output's lock was committed:\n{}",
+                self.strand.log_text()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // The opening plays out.
+        std::thread::sleep(Duration::from_millis(1500));
+        self.keys.enter(PASSWORD);
+        let ended = if gpu {
+            "longest silence with a lock request waiting"
+        } else {
+            ": unlocking"
+        };
+        while !self.strand.log_text()[from..].contains(ended) {
+            assert!(
+                Instant::now() < deadline + WAIT,
+                "the lock never ended ({ended:?}):\n{}",
+                self.strand.log_text()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        self.until("HEADLESS-1", "unlocked", Shot::desktop);
+        std::thread::sleep(Duration::from_millis(300));
+        self.strand.log_text()[from..].to_string()
+    }
+}
+
+/// (lock-4k) The ms of each line of `log` holding `what`, the number
+/// right after it.
+fn ms_of(log: &str, what: &str) -> Vec<u64> {
+    log.lines()
+        .filter_map(|l| l.split(what).nth(1))
+        .filter_map(|r| r.trim_start().split(' ').next()?.parse().ok())
+        .collect()
+}
+
+/// (lock-4k) Each output's lock surface's first commit in a lock's `log`,
+/// in ms after the lock request, by output (exactly one each).
+fn first_commits(log: &str, outputs: &[String]) -> Vec<u64> {
+    outputs
+        .iter()
+        .map(|o| {
+            let ms = ms_of(log, &format!(" on {o} first committed "));
+            assert_eq!(ms.len(), 1, "{o}: one first commit per lock:\n{log}");
+            ms[0]
+        })
+        .collect()
+}
+
+/// (lock-4k) The hand-off lines of a lock's `log`: each presented lock
+/// surface's clock held, and what its hand-off took, in ms.
+fn hand_offs(log: &str) -> Vec<(u32, u64, u64)> {
+    log.lines()
+        .filter_map(|l| {
+            let r = l.split("lock: surface ").nth(1)?;
+            let (id, r) = r.split_once("'s clock was held ")?;
+            let (held, r) = r.split_once(" ms across its hand-off to the GPU")?;
+            let took = r.split("(the hand-off took ").nth(1)?.split(' ').next()?;
+            Some((id.parse().ok()?, held.parse().ok()?, took.parse().ok()?))
+        })
+        .collect()
+}
+
+/// (lock-4k) The surfaces a lock's `log` says were attached to present.
+fn presented_in(log: &str) -> Vec<u32> {
+    log.lines()
+        .filter_map(|l| l.split("GPU: surface ").nth(1))
+        .filter_map(|r| r.strip_suffix(" attached (Present)"))
+        .filter_map(|id| id.parse().ok())
+        .collect()
+}
+
+/// (lock-4k) The owner's desk: every monitor's lock surface is committed
+/// after the lock request on every lock, the first after `strand run`
+/// started and the two after it, each output once (how many stills it had is printed);
+/// on the GPU, each presented lock surface's hand-off is logged with what
+/// it took, and the GPU thread's longest silence once per lock. Prints
+/// the numbers (decisions.md lock-4k).
+fn desk_commits(test: &str, gpu: bool) {
+    if !in_lock_vm(test) {
+        return;
+    }
+    let (mut vm, outputs) = Vm::desk(test, "", gpu);
+    let mut report = Vec::new();
+    for round in 0..3 {
+        let log = vm.desk_lock(&outputs, gpu);
+        let stills = log
+            .lines()
+            .find_map(|l| {
+                l.split("lock: ")
+                    .nth(1)?
+                    .split(" screen stills before")
+                    .next()
+            })
+            .unwrap_or("no")
+            .to_string();
+        let commits = first_commits(&log, &outputs);
+        let mut line = format!("lock {round}: {stills} stills; first commits {commits:?} ms");
+        if gpu {
+            let offs = hand_offs(&log);
+            for id in presented_in(&log) {
+                assert!(
+                    offs.iter().any(|(s, ..)| *s == id),
+                    "lock {round}: surface {id} was presented with no hand-off line:\n{log}"
+                );
+            }
+            let silence = ms_of(&log, "longest silence with a lock request waiting was ");
+            assert_eq!(silence.len(), 1, "lock {round}: one silence line:\n{log}");
+            line += &format!(
+                "; hand-offs (surface, held, took) {offs:?} ms; longest GPU silence {} ms; \
+                 lent {:?} ms after the request; attaches {:?} ms; first presented {:?} ms; \
+                 renewals {:?} ms",
+                silence[0],
+                ms_of(&log, " lent to the GPU thread "),
+                ms_of(&log, "'s attach was answered "),
+                ms_of(&log, "'s first presented frame was presented "),
+                ms_of(&log, " renewed ")
+            );
+        }
+        line += &format!(
+            "; text waits {:?} ms",
+            ms_of(&log, "'s first frame waited ")
+        );
+        report.push(line);
+        if round == 0 {
+            // The first lock after start, line by line, for the record.
+            let lines: Vec<&str> = log
+                .lines()
+                .filter(|l| l.contains("lock: ") || l.contains("GPU: ") || l.contains("gpu-frame"))
+                .collect();
+            eprintln!("{test}: the first lock's log:\n  {}", lines.join("\n  "));
+        }
+    }
+    eprintln!("{test}:\n  {}", report.join("\n  "));
+}
+
+#[test]
+fn every_monitors_lock_is_committed_after_the_request() {
+    desk_commits("desk_commits", false);
+}
+
+#[test]
+fn every_monitors_lock_is_committed_after_the_request_on_the_gpu() {
+    desk_commits("desk_commits_gpu", true);
 }

@@ -1404,6 +1404,133 @@ fn a_lock_surface_is_handed_off_after_its_first_frame_and_renewed_on_the_cpu() {
     assert!(lock.state().lock_contents().is_empty());
 }
 
+/// (lock-4k) The log lines of this process, kept for the test that reads
+/// them (the VM runs these tests one at a time).
+static LOGGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+struct Capture;
+
+impl log::Log for Capture {
+    fn enabled(&self, m: &log::Metadata<'_>) -> bool {
+        m.level() <= log::Level::Info
+    }
+    fn log(&self, r: &log::Record<'_>) {
+        if let Ok(mut l) = LOGGED.lock() {
+            l.push(r.args().to_string());
+        }
+    }
+    fn flush(&self) {}
+}
+
+/// The `lock:` lines logged since the last call.
+fn lock_lines() -> Vec<String> {
+    static ON: std::sync::Once = std::sync::Once::new();
+    ON.call_once(|| {
+        let _ = log::set_logger(&Capture);
+        log::set_max_level(log::LevelFilter::Info);
+    });
+    std::mem::take(&mut *LOGGED.lock().unwrap())
+        .into_iter()
+        .filter(|l| l.starts_with("lock: "))
+        .collect()
+}
+
+/// The ms of each line of `lines` saying `what`, as `... {what} M ms ...`.
+fn ms_after(lines: &[String], what: &str) -> Vec<u64> {
+    lines
+        .iter()
+        .filter_map(|l| l.split(what).nth(1))
+        .filter_map(|r| r.trim().split(' ').next()?.parse().ok())
+        .collect()
+}
+
+/// (lock-4k) Each lock surface logs its first commit once, from the lock
+/// request (where the compositor's timer for its dead-lock screen
+/// starts): the content and the other output's solid, one line each. A
+/// renewal logs the lock's age at it, and the renewed surface its own
+/// first commit, marked renewed.
+#[test]
+fn each_lock_surface_logs_its_first_commit_from_the_request() {
+    let test = "each_lock_surface_logs_its_first_commit_from_the_request";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let Some(sway) = Sway::start(test) else {
+        return;
+    };
+    let second = sway.create_output();
+    let mut desk = desktop(&sway, 2);
+    let mut lock = locker(&sway);
+    lock_lines();
+    lock.state_mut()
+        .apply_surface_change(LOCK, SurfaceChange::Created(lock_spec(true)));
+    wait_lock(&mut lock, LockState::Locked);
+    let content = lock.state().lock_content().expect("a content surface");
+    let painted = lock
+        .dispatch_until(WAIT, |s| {
+            s.surface(content).is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(painted, "the content is painted");
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    let lines = lock_lines();
+    let first: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains("first committed"))
+        .collect();
+    assert_eq!(first.len(), 2, "one line per output: {lines:#?}");
+    assert!(
+        first.iter().any(|l| l.starts_with(&format!(
+            "lock: surface {} on HEADLESS-1 first committed ",
+            content.0
+        ))),
+        "{lines:#?}"
+    );
+    assert!(
+        first
+            .iter()
+            .any(|l| l.starts_with(&format!("lock: the solid on {second} first committed "))),
+        "{lines:#?}"
+    );
+    assert_eq!(ms_after(&lines, "first committed").len(), 2, "{lines:#?}");
+    assert!(!lines.iter().any(|l| l.contains("renewed")), "{lines:#?}");
+    let new = lock
+        .state_mut()
+        .renew_lock_content(content)
+        .expect("renewed");
+    let painted = lock
+        .dispatch_until(WAIT, |s| {
+            s.surface(new).is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(painted, "the renewed content is painted");
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+    let lines = lock_lines();
+    let renewed = ms_after(
+        &lines,
+        &format!("surface {} on HEADLESS-1 renewed", content.0),
+    );
+    assert_eq!(renewed.len(), 1, "{lines:#?}");
+    let again: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains("first committed"))
+        .collect();
+    assert_eq!(again.len(), 1, "only the renewed surface's: {lines:#?}");
+    assert!(
+        again[0].starts_with(&format!(
+            "lock: surface {} on HEADLESS-1 first committed ",
+            new.0
+        )) && again[0].ends_with(" ms after the lock request (renewed)"),
+        "{lines:#?}"
+    );
+    assert!(
+        ms_after(&lines, "first committed")[0] >= renewed[0],
+        "{lines:#?}"
+    );
+    assert!(lock.state_mut().unlock(token()));
+    settle(&mut lock, &mut desk, Duration::from_millis(300));
+}
+
 /// (lock-gpu) A presented lock surface whose output changes size is
 /// renewed at the new size, never resized under the GPU thread's commits
 /// (a commit at the old size after the ack would end the connection): the

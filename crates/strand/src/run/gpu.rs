@@ -133,6 +133,12 @@ mod host {
         commit_paced: bool,
         /// (lock-gpu) When what is in flight was sent.
         sent_at: Option<std::time::Instant>,
+        /// (lock-4k) A lock surface's first presented frame: when it was
+        /// sent, until its `Presented` (logged then); `None` before it
+        /// goes and after.
+        first_out: Option<std::time::Instant>,
+        /// (lock-4k) Its first frame went.
+        first_sent: bool,
     }
 
     /// A surface attached (asked or answered).
@@ -153,6 +159,74 @@ mod host {
         lock: bool,
         /// (lock-gpu) When its `Attach` was sent, until answered.
         asked: Option<std::time::Instant>,
+        /// (lock-4k) How many requests were waiting on the thread when its
+        /// `Attach` was sent (attaches and frames not answered yet).
+        ahead: usize,
+    }
+
+    /// (lock-4k) The GPU thread's longest silence while a lock request
+    /// waited on it, in one lock: from the later of that request's sending
+    /// and the thread's last answer ([`waiting_since`]) to the next
+    /// answer. Logged once the lock ends; the bound ([`super::LOCK_GPU_BOUND`])
+    /// is judged against it.
+    #[derive(Debug, Default)]
+    struct Silence {
+        /// The longest so far; `None` until a lock request was sent in
+        /// this lock.
+        longest: Option<std::time::Duration>,
+    }
+
+    /// (lock-4k) The times the thread sent its replies, numbered in
+    /// order from 1 ([`GpuHost::reply_sent`]).
+    #[derive(Debug, Default)]
+    struct Stamps {
+        sent: u64,
+        at: std::collections::VecDeque<(u64, std::time::Instant)>,
+    }
+
+    impl Stamps {
+        /// The thread sent its next reply at `at`.
+        fn stamp(&mut self, at: std::time::Instant) {
+            self.sent += 1;
+            self.at.push_back((self.sent, at));
+        }
+
+        /// When reply `n` was sent, if stamped; earlier ones go (read
+        /// before their stamp came).
+        fn take(&mut self, n: u64) -> Option<std::time::Instant> {
+            while self.at.front().is_some_and(|(k, _)| *k < n) {
+                self.at.pop_front();
+            }
+            match self.at.front() {
+                Some((k, t)) if *k == n => {
+                    let t = *t;
+                    self.at.pop_front();
+                    Some(t)
+                }
+                _ => None,
+            }
+        }
+    }
+
+    impl Silence {
+        /// A lock request was sent.
+        fn asked(&mut self) {
+            self.longest.get_or_insert(std::time::Duration::ZERO);
+        }
+
+        /// The thread answered (or the lock ended) at `now`, the oldest
+        /// lock request then waiting having waited since `waiting`.
+        fn heard(&mut self, waiting: Option<std::time::Instant>, now: std::time::Instant) {
+            if let (Some(w), Some(l)) = (waiting, &mut self.longest) {
+                *l = (*l).max(now.saturating_duration_since(w));
+            }
+        }
+
+        /// The longest silence of the lock that ended, if a lock request
+        /// went to the thread in it; ready for the next lock.
+        fn take(&mut self) -> Option<std::time::Duration> {
+            self.longest.take()
+        }
     }
 
     /// The `Gpu` and what the main thread knows of the surfaces it draws.
@@ -181,6 +255,16 @@ mod host {
         /// past [`super::LOCK_GPU_BOUND`]: no lock content is attached to
         /// it until it answers again or ends.
         lock_stalled: bool,
+        /// (lock-4k) The thread's longest silence under the current lock.
+        silence: Silence,
+        /// (lock-4k) When the running thread sent each reply, stamped by
+        /// its waker on the thread: a reply read late (the main thread
+        /// busy) is timed from when it was sent.
+        stamps: std::sync::Arc<std::sync::Mutex<Stamps>>,
+        /// (lock-4k) Replies read from the running thread.
+        read: u64,
+        /// (lock-4k) A lock was asked for or held at the last pump.
+        locked: bool,
     }
 
     impl std::fmt::Debug for GpuHost {
@@ -211,6 +295,10 @@ mod host {
                 presented: BTreeMap::new(),
                 answered: None,
                 lock_stalled: false,
+                silence: Silence::default(),
+                stamps: Default::default(),
+                read: 0,
+                locked: false,
             }
         }
 
@@ -232,8 +320,15 @@ mod host {
             let ping = self.ping.clone();
             self.answered = None;
             self.lock_stalled = false;
+            self.stamps = Default::default();
+            self.read = 0;
+            let stamps = std::sync::Arc::clone(&self.stamps);
             self.gpu.insert(Gpu::spawn(
                 Box::new(move || {
+                    // (lock-4k) Called once after each reply is sent.
+                    if let Ok(mut s) = stamps.lock() {
+                        s.stamp(std::time::Instant::now());
+                    }
                     // (lock-gpu) The lock VM's `gpu_stall`: the thread
                     // stops here for good once armed.
                     super::super::lock::faults::gpu_waker();
@@ -292,6 +387,7 @@ mod host {
             // owner's laptop) and was given up on with its answer unread.
             // What this pump sends is judged at the next, after its answer.
             self.lock_safety(state);
+            self.lock_ended(state);
             self.released(state);
             for change in state.host_mut().renderer.take_backend_changes() {
                 self.change(state, change);
@@ -398,9 +494,62 @@ mod host {
         /// (lock-gpu) The running thread answered at `now`: it is alive, so
         /// what it was sent before is timed from now, and a lock may use
         /// it again.
+        #[cfg(test)]
         fn answer(&mut self, now: std::time::Instant) {
+            self.answer_sent(now, now);
+        }
+
+        /// [`Self::answer`] of a reply the thread sent at `sent`: the
+        /// longest silence is measured to `sent`.
+        fn answer_sent(&mut self, sent: std::time::Instant, now: std::time::Instant) {
+            let waiting = self.lock_waiting();
+            self.silence.heard(waiting, sent);
             self.answered = Some(now);
             self.lock_stalled = false;
+        }
+
+        /// (lock-4k) When the thread sent the reply just read: its stamp,
+        /// or now if the waker has not stamped it yet.
+        fn reply_sent(&mut self) -> std::time::Instant {
+            self.read += 1;
+            let now = std::time::Instant::now();
+            self.stamps
+                .lock()
+                .ok()
+                .and_then(|mut s| s.take(self.read))
+                .map_or(now, |t| t.min(now))
+        }
+
+        /// (lock-4k) Since when the thread's oldest unanswered lock
+        /// request has waited on it ([`waiting_since`]).
+        fn lock_waiting(&self) -> Option<std::time::Instant> {
+            self.attached
+                .iter()
+                .filter_map(|(id, a)| waiting_since(a, self.presented.get(id), self.answered))
+                .min()
+        }
+
+        /// (lock-4k) Requests waiting on the thread: attaches and frames
+        /// not answered yet.
+        fn waiting_requests(&self) -> usize {
+            self.attached.values().filter(|a| a.asked.is_some()).count()
+                + self.presented.values().filter(|p| p.in_flight).count()
+        }
+
+        /// (lock-4k) Once a lock ends, the thread's longest silence while
+        /// a lock request waited on it, if one went to it.
+        fn lock_ended(&mut self, state: &State<Host>) {
+            let active = state.lock_active();
+            if std::mem::replace(&mut self.locked, active) && !active {
+                let waiting = self.lock_waiting();
+                self.silence.heard(waiting, std::time::Instant::now());
+                if let Some(l) = self.silence.take() {
+                    log::info!(
+                        "lock: the GPU thread's longest silence with a lock request waiting was {} ms",
+                        l.as_millis()
+                    );
+                }
+            }
         }
 
         /// (lock-gpu) Lock content `id` goes from the GPU thread to a fresh
@@ -507,12 +656,24 @@ mod host {
         fn replies(&mut self, state: &mut State<Host>) -> bool {
             let mut changed = false;
             while let Some(reply) = self.gpu.as_mut().and_then(Gpu::try_recv) {
-                self.answer(std::time::Instant::now());
+                let sent = self.reply_sent();
+                self.answer_sent(sent, std::time::Instant::now());
                 match &reply {
                     GpuReply::Attached { surface, mode } => {
                         let id = *surface;
                         let presenting = *mode == GpuMode::Present;
                         if let Some(a) = self.attached.get_mut(&id) {
+                            if a.lock
+                                && let Some(t) = a.asked
+                            {
+                                log::info!(
+                                    "lock: surface {}'s attach was answered {} ms after it was sent \
+                                     ({} requests were waiting on the thread ahead of it)",
+                                    id.0,
+                                    sent.saturating_duration_since(t).as_millis(),
+                                    a.ahead
+                                );
+                            }
                             a.asked = None;
                         }
                         if !presenting
@@ -578,6 +739,8 @@ mod host {
                                     commit_owed: false,
                                     commit_paced: false,
                                     sent_at: None,
+                                    first_out: None,
+                                    first_sent: false,
                                 },
                             );
                         }
@@ -603,6 +766,14 @@ mod host {
                         if let Some(p) = self.presented.get_mut(surface) {
                             p.in_flight = false;
                             p.sent_at = None;
+                            if let Some(t) = p.first_out.take() {
+                                log::info!(
+                                    "lock: surface {}'s first presented frame was presented {} ms \
+                                     after it was sent",
+                                    surface.0,
+                                    sent.saturating_duration_since(t).as_millis()
+                                );
+                            }
                             // Shown now: its `damage` line, as a CPU
                             // frame's at its commit (a presented frame
                             // is whole).
@@ -733,12 +904,25 @@ mod host {
                         }
                     }
                     let (size, scale) = geometry(state, id);
+                    let ahead = self.waiting_requests();
+                    if lock {
+                        self.silence.asked();
+                        if let Some(asked) = state.lock_asked() {
+                            log::info!(
+                                "lock: surface {} lent to the GPU thread {} ms after the lock \
+                                 request ({ahead} requests waiting on the thread ahead of it)",
+                                id.0,
+                                asked.elapsed().as_millis()
+                            );
+                        }
+                    }
                     self.attached.insert(
                         id,
                         Attachment {
                             lent: handles.is_some(),
                             lock,
                             asked: lock.then(std::time::Instant::now),
+                            ahead,
                             ..Attachment::default()
                         },
                     );
@@ -829,6 +1013,12 @@ mod host {
                     gpu.send(GpuRequest::Frame(frame));
                     p.in_flight = true;
                     p.sent_at = Some(std::time::Instant::now());
+                    if !std::mem::replace(&mut p.first_sent, true)
+                        && self.attached.get(id).is_some_and(|a| a.lock)
+                    {
+                        p.first_out = p.sent_at;
+                        self.silence.asked();
+                    }
                     p.sent = Some((size, scale));
                     p.drew_nothing = None;
                     state.host_mut().painted(*id, &Damage::full(size));
@@ -935,12 +1125,23 @@ mod host {
         p: Option<&Presented>,
         answered: Option<std::time::Instant>,
     ) -> Option<std::time::Instant> {
+        Some(waiting_since(a, p, answered)? + super::LOCK_GPU_BOUND)
+    }
+
+    /// (lock-4k) Since when lock surface `a` has waited on the thread's
+    /// silence: the later of its oldest unanswered request's sending and
+    /// the thread's last answer (`None` as for [`lock_deadline`]).
+    fn waiting_since(
+        a: &Attachment,
+        p: Option<&Presented>,
+        answered: Option<std::time::Instant>,
+    ) -> Option<std::time::Instant> {
         if !a.lock || a.releasing {
             return None;
         }
         let frame = p.filter(|p| p.in_flight).and_then(|p| p.sent_at);
         let sent = [a.asked, frame].into_iter().flatten().min()?;
-        Some(sent.max(answered.unwrap_or(sent)) + super::LOCK_GPU_BOUND)
+        Some(sent.max(answered.unwrap_or(sent)))
     }
 
     /// (lock-gpu) Why the host gives up on the GPU for lock surface `a`,
@@ -1070,7 +1271,64 @@ mod host {
                 commit_owed: false,
                 commit_paced: false,
                 sent_at,
+                first_out: None,
+                first_sent: false,
             }
+        }
+
+        /// (lock-4k) The longest-silence tracker reports the largest gap
+        /// between a lock request's wait starting (its sending, or the
+        /// thread's last answer if later) and the thread's next answer,
+        /// over a lock; nothing for a lock that sent the thread nothing.
+        #[test]
+        fn the_longest_silence_is_the_widest_gap_to_an_answer() {
+            use std::time::{Duration, Instant};
+            let (ping, _source) = calloop::ping::make_ping().unwrap();
+            let mut host = GpuHost::new(ping);
+            let ms = Duration::from_millis;
+            let t0 = Instant::now();
+            assert_eq!(host.silence.take(), None, "nothing sent: no line");
+            // Two outputs' attaches sent at t0, answered at 120 and 380 ms:
+            // the second waited on the thread's silence from 120 ms.
+            let attach = || Attachment {
+                lent: true,
+                lock: true,
+                asked: Some(t0),
+                ..Attachment::default()
+            };
+            host.attached.insert(SurfaceId(1), attach());
+            host.attached.insert(SurfaceId(2), attach());
+            host.silence.asked();
+            host.answer(t0 + ms(120));
+            host.attached.get_mut(&SurfaceId(1)).unwrap().asked = None;
+            host.answer(t0 + ms(380));
+            host.attached.get_mut(&SurfaceId(2)).unwrap().asked = None;
+            // An answer with nothing waiting is no silence.
+            host.answer(t0 + ms(2000));
+            // A frame sent at 2100 ms, answered at 2150.
+            let mut p = presented(Some(t0 + ms(2100)));
+            p.in_flight = true;
+            host.presented.insert(SurfaceId(1), p);
+            host.answer(t0 + ms(2150));
+            host.presented.get_mut(&SurfaceId(1)).unwrap().in_flight = false;
+            assert_eq!(host.silence.take(), Some(ms(260)));
+            assert_eq!(host.silence.take(), None, "taken once per lock");
+            // A reply read late is timed from when the thread sent it.
+            host.attached.get_mut(&SurfaceId(2)).unwrap().asked = Some(t0 + ms(3000));
+            host.silence.asked();
+            host.answer_sent(t0 + ms(3100), t0 + ms(3900));
+            assert_eq!(host.silence.take(), Some(ms(100)));
+            // Stamps are matched to replies in order; one read before its
+            // stamp came is now, and its late stamp is dropped.
+            let mut st = Stamps::default();
+            st.stamp(t0);
+            st.stamp(t0 + ms(5));
+            assert_eq!(st.take(1), Some(t0));
+            assert_eq!(st.take(3), None);
+            st.stamp(t0 + ms(9));
+            assert_eq!(st.take(4), None);
+            st.stamp(t0 + ms(12));
+            assert_eq!(st.take(4), Some(t0 + ms(12)));
         }
 
         #[test]
@@ -1177,6 +1435,8 @@ mod host {
                     commit_owed: false,
                     commit_paced: false,
                     sent_at: None,
+                    first_out: None,
+                    first_sent: false,
                 },
             );
             let w = host.wait(&r).expect("woken at the hold's end");
@@ -1232,6 +1492,8 @@ mod host {
                     commit_owed: false,
                     commit_paced: false,
                     sent_at: None,
+                    first_out: None,
+                    first_sent: false,
                 },
             );
             assert_eq!(

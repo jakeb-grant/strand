@@ -252,6 +252,13 @@ impl Renderer {
                 s.awaiting_text = !waiting.is_empty();
                 // A surface in motion holds nothing (see BUSY_WINDOW).
                 let now = Instant::now();
+                if !s.painted
+                    && s.awaiting_text
+                    && s.text_held_since.is_none()
+                    && s.wait_until.is_some_and(|t| now < t)
+                {
+                    s.text_held_since = Some(now);
+                }
                 let idle = s
                     .painted_at
                     .is_none_or(|t| now.saturating_duration_since(t) >= window);

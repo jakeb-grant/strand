@@ -274,6 +274,12 @@ pub(super) struct SessionLock {
     cpu_outputs: BTreeSet<u32>,
     /// (lock-polish) The lock plays its way out, a token held.
     leaving: Option<Leaving>,
+    /// (lock-4k) When the current lock was asked for (right after
+    /// `ext_session_lock_manager_v1.lock`): the compositor's timer for its
+    /// dead-lock screen starts there (Hyprland's
+    /// `misc:lockdead_screen_delay`, a second), so each lock surface's
+    /// first commit and each renewal is logged from it.
+    asked: Option<Instant>,
 }
 
 impl SessionLock {
@@ -293,6 +299,7 @@ impl SessionLock {
             asked_again: false,
             cpu_outputs: BTreeSet::new(),
             leaving: None,
+            asked: None,
         }
     }
 }
@@ -479,6 +486,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             return Err(LockError::Unsupported);
         };
         let lock = manager.lock(&self.qh, LockTag);
+        self.session_lock.asked = Some(Instant::now());
         self.session_lock.phase = Phase::Pending(lock);
         self.sync_lock_surfaces();
         Ok(())
@@ -799,6 +807,44 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.session_lock.phase.lock().is_some()
     }
 
+    /// (lock-4k) When the lock asked for or held was asked for: right
+    /// after `ext_session_lock_manager_v1.lock` went out, where the
+    /// compositor's timer for its dead-lock screen starts. `None` with no
+    /// lock asked for or held.
+    pub fn lock_asked(&self) -> Option<Instant> {
+        self.session_lock
+            .asked
+            .filter(|_| self.session_lock.phase.lock().is_some())
+    }
+
+    /// (lock-4k) Output `global`'s connector name, else its monitor id.
+    fn lock_output_name(&self, global: Option<u32>) -> String {
+        global
+            .and_then(|g| {
+                let id = self.monitors.id_of(g)?;
+                let m = self.monitors.get(id)?;
+                Some(m.connector.clone().unwrap_or_else(|| id.to_string()))
+            })
+            .unwrap_or_else(|| "an output gone".to_string())
+    }
+
+    /// (lock-4k) A lock surface (`what`) on `output` committed its first
+    /// buffer: it is mapped from now on. Logged once per lock surface,
+    /// from the lock request (`renewed`: a surface that replaced one the
+    /// GPU thread held). A second or more there and Hyprland showed its
+    /// dead-lock screen on that output meanwhile.
+    pub(super) fn lock_first_committed(&self, what: &str, output: Option<u32>, renewed: bool) {
+        let Some(asked) = self.lock_asked() else {
+            return;
+        };
+        log::info!(
+            "lock: {what} on {} first committed {} ms after the lock request{}",
+            self.lock_output_name(output),
+            asked.elapsed().as_millis(),
+            if renewed { " (renewed)" } else { "" }
+        );
+    }
+
     /// The surface whose keys the lock takes by default while a lock is
     /// asked for or held: the content on the focused output (else the
     /// first output that has one). (lockmon) Every monitor may show
@@ -849,6 +895,17 @@ impl<H: SurfaceHost + 'static> State<H> {
             (s.node, s.placement.clone())
         };
         let focused = self.keyboard_focus == Some(surface);
+        // (lock-4k) Its output has no lock surface from here until the
+        // new one's first commit: past a second from the request, that is
+        // Hyprland's dead-lock screen.
+        if let Some(asked) = self.lock_asked() {
+            log::info!(
+                "lock: surface {} on {} renewed {} ms after the lock request",
+                surface.0,
+                self.lock_output_name(Some(global)),
+                asked.elapsed().as_millis()
+            );
+        }
         self.session_lock.cpu_outputs.insert(global);
         self.session_lock.contents.remove(&global);
         self.destroy_surface(surface);
@@ -1401,8 +1458,12 @@ impl<H: SurfaceHost + 'static> State<H> {
         s.wl.attach(Some(&buffer.1), 0, 0);
         s.wl.damage_buffer(0, 0, bw, bh);
         s.wl.commit();
+        let first = s.buffer.is_none();
         if let Some((_, old)) = s.buffer.replace(buffer) {
             old.destroy();
+        }
+        if first {
+            self.lock_first_committed("the solid", Some(global), false);
         }
     }
 

@@ -157,6 +157,9 @@ struct SurfaceState {
     /// Some text on the surface is being shaped and has no layout for
     /// the surface's own scale and width yet.
     awaiting_text: bool,
+    /// (lock-4k) Since when its first frame has been held for text
+    /// (`awaiting_text` within its first-frame wait), for a lock's log.
+    text_held_since: Option<Instant>,
     /// Until when a painted surface holds a frame for text with no layout
     /// at all (a new node): set when such text shows up, cleared when
     /// none is left.

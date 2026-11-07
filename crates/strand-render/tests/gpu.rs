@@ -3702,6 +3702,85 @@ fn a_locks_hand_off_hold_is_bounded() {
     assert!(second > first);
 }
 
+/// A lock root with a card gliding for ten seconds, its first frame and
+/// the glide's first painted on the CPU at `t0` and 16 ms on, then
+/// promoted and attached to present.
+fn handed_off_glide() -> (Renderer, Duration) {
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Lock,
+        None,
+        vec![
+            (Prop::Width, num(200.0)),
+            (Prop::Height, num(100.0)),
+            (Prop::Open, PropValue::Bool(true)),
+        ],
+    );
+    let card = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![(Prop::Width, num(40.0)), (Prop::Height, num(40.0))],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.take_surface_changes();
+    r.set_surface_bounds(S, Some(LogicalSize::new(200.0, 100.0)));
+    r.attach_surface(S, root);
+    r.configure_surface(S, Size::new(200, 100), Scale::ONE);
+    let mut buf = Buffer::new(200, 100, Scale::ONE);
+    let t0 = Duration::from_secs(1);
+    buf.paint_at(&mut r, S, 0, t0);
+    let mut d = SceneDiff::new();
+    d.push(SceneOp::SetProp {
+        id: card,
+        prop: Prop::X,
+        value: num(150.0),
+        transition: Transition::Duration {
+            duration: Duration::from_secs(10),
+            easing: Easing::Linear,
+        },
+    });
+    assert!(r.apply(d).is_empty());
+    buf.paint_at(&mut r, S, 1, t0 + Duration::from_millis(16));
+    r.promote_now(S);
+    r.set_backend(S, Backend::GpuPresent);
+    let _ = r.take_backend_changes();
+    (r, t0 + Duration::from_millis(16))
+}
+
+/// (lock-4k) A hand-off reports its whole gap: the first presented frame
+/// asked 900 ms after the CPU's last one took about 900 ms (less the
+/// surface's frame period, which here, painted back to back, is next to
+/// nothing), whatever the clock holds of it (the bound cuts what it
+/// holds; the log says both), and the frame after it, measured on the
+/// held clock, still reports it whole. Before, only the held time
+/// existed.
+#[test]
+fn a_hand_off_reports_its_whole_gap() {
+    let (mut r, cpu) = handed_off_glide();
+    let frame = Duration::from_nanos(1_000_000_000 / 60);
+    let gap = Duration::from_millis(900);
+    let at = cpu + gap;
+    let id = r.paint_gpu(S, at).expect("the glide goes on").id;
+    let took = r.hand_off_took(S);
+    assert!(took <= gap && took + frame > gap, "{took:?}");
+    let held = r.presented_lag(S);
+    assert!(held <= took && held > Duration::ZERO, "{held:?}");
+    r.deliver_gpu(GpuReply::Presented {
+        surface: S,
+        frame: id,
+        at: Instant::now(),
+        waited: Duration::ZERO,
+        ran: vec![],
+    });
+    r.paint_gpu(S, at).expect("the glide goes on");
+    let again = r.hand_off_took(S);
+    assert!(
+        again <= took && again + frame > took,
+        "the whole gap, on the held clock: {took:?}, then {again:?}"
+    );
+}
+
 /// Stripes in a box at `at` under `filter: blur(sigma), brightness(0.6)`
 /// on a bar.
 fn filter_blur_scene(at: (f32, f32, f32, f32), sigma: f32) -> SceneDiff {

@@ -998,6 +998,18 @@ impl Renderer {
             self.opening.remove(&root);
         }
         s.valid = true;
+        // (lock-4k) How long a lock's first frame was held for its text.
+        #[cfg(feature = "gpu")]
+        if !s.painted
+            && lock
+            && let Some(t) = s.text_held_since.take()
+        {
+            log::info!(
+                "lock: surface {}'s first frame waited {} ms for its text",
+                surface.0,
+                t.elapsed().as_millis()
+            );
+        }
         s.painted = true;
         // (eval-coverage) The change's FLIP scope was drawn: it closes
         // now if its texts are shaped, or at the flatten they are.

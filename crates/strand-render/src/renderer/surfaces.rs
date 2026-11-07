@@ -296,6 +296,7 @@ impl Renderer {
                 wait_paused: Duration::ZERO,
                 text_deadline: None,
                 awaiting_text: false,
+                text_held_since: None,
                 new_text_until: None,
                 painted_at: None,
                 dirty: true,

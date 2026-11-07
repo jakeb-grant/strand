@@ -307,7 +307,16 @@ impl<H: SurfaceHost + 'static> State<H> {
         if s.commit_seq == 1 {
             // Mapped: popups waiting for it as their parent come now.
             let node = s.node;
+            // (lock-4k) A lock surface maps at its first buffer: how long
+            // after the lock request, for the compositor's dead-lock timer.
+            let lock = match &s.role {
+                Role::Lock(l) => Some((s.output, l.cpu_only())),
+                _ => None,
+            };
             self.reconcile_children(node);
+            if let Some((output, renewed)) = lock {
+                self.lock_first_committed(&format!("surface {}", id.0), output, renewed);
+            }
         }
     }
 
