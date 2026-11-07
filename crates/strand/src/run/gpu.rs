@@ -267,6 +267,12 @@ mod host {
         lock_stalled: bool,
         /// (lock-4k) The thread's longest silence under the current lock.
         silence: Silence,
+        /// (lock-4k) When the running thread sent the last reply read
+        /// (its stamp): the silence is timed from it, never from when the
+        /// main thread read it (`answered`, which the stall judgement
+        /// uses), so replies read late in one batch are each timed from
+        /// the one the thread sent before.
+        heard: Option<std::time::Instant>,
         /// (lock-4k) When the running thread sent each reply, stamped by
         /// its waker on the thread: a reply read late (the main thread
         /// busy) is timed from when it was sent.
@@ -306,6 +312,7 @@ mod host {
                 answered: None,
                 lock_stalled: false,
                 silence: Silence::default(),
+                heard: None,
                 stamps: Default::default(),
                 read: 0,
                 locked: false,
@@ -329,6 +336,7 @@ mod host {
         fn spawn(&mut self) -> &Gpu {
             let ping = self.ping.clone();
             self.answered = None;
+            self.heard = None;
             self.lock_stalled = false;
             self.stamps = Default::default();
             self.read = 0;
@@ -514,6 +522,9 @@ mod host {
         fn answer_sent(&mut self, sent: std::time::Instant, now: std::time::Instant) {
             let waiting = self.lock_waiting();
             self.silence.heard(waiting, sent);
+            // Stamps come in the thread's order; one read before its
+            // stamp came is `now`, so keep the latest.
+            self.heard = Some(self.heard.map_or(sent, |h| h.max(sent)));
             self.answered = Some(now);
             self.lock_stalled = false;
         }
@@ -531,11 +542,12 @@ mod host {
         }
 
         /// (lock-4k) Since when the thread's oldest unanswered lock
-        /// request has waited on it ([`waiting_since`]).
+        /// request has waited on its silence ([`waiting_since`], from the
+        /// thread's last sent reply, `heard`).
         fn lock_waiting(&self) -> Option<std::time::Instant> {
             self.attached
                 .iter()
-                .filter_map(|(id, a)| waiting_since(a, self.presented.get(id), self.answered))
+                .filter_map(|(id, a)| waiting_since(a, self.presented.get(id), self.heard))
                 .min()
         }
 
@@ -1329,6 +1341,18 @@ mod host {
             host.silence.asked();
             host.answer_sent(t0 + ms(3100), t0 + ms(3900));
             assert_eq!(host.silence.take(), Some(ms(100)));
+            // Two replies read late in one batch: A sent 10 ms after its
+            // attach, B 1.5 s after A, both read at 6000 ms. B waited on
+            // the thread's silence from A's sending, not from the read.
+            let t1 = t0 + ms(4000);
+            host.attached.get_mut(&SurfaceId(1)).unwrap().asked = Some(t1);
+            host.attached.get_mut(&SurfaceId(2)).unwrap().asked = Some(t1);
+            host.silence.asked();
+            host.answer_sent(t1 + ms(10), t1 + ms(2000));
+            host.attached.get_mut(&SurfaceId(1)).unwrap().asked = None;
+            host.answer_sent(t1 + ms(1510), t1 + ms(2000));
+            host.attached.get_mut(&SurfaceId(2)).unwrap().asked = None;
+            assert_eq!(host.silence.take(), Some(ms(1500)));
             // Stamps are matched to replies in order; one read before its
             // stamp came is now, and its late stamp is dropped.
             let mut st = Stamps::default();

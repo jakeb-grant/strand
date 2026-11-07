@@ -3808,6 +3808,36 @@ fn a_hand_off_reports_its_whole_gap() {
     );
 }
 
+/// (lock-4k review) A hand-off past the bound reports what it took, not
+/// what the clock held: a 3 s gap holds `HAND_OFF_MOST` of it and says
+/// about 3 s, at its first presented frame and the one after (where the
+/// held clock alone would give the cap, or the second frame's own gap).
+#[test]
+fn a_hand_off_past_the_bound_reports_what_it_took() {
+    let (mut r, cpu) = handed_off_glide();
+    let frame = Duration::from_nanos(1_000_000_000 / 60);
+    let gap = Duration::from_secs(3);
+    assert!(gap > strand_render::HAND_OFF_MOST);
+    let at = cpu + gap;
+    let id = r.paint_gpu(S, at).expect("the glide goes on").id;
+    assert_eq!(r.presented_lag(S), strand_render::HAND_OFF_MOST);
+    let took = r.hand_off_took(S);
+    assert!(took <= gap && took + frame > gap, "took {took:?}");
+    r.deliver_gpu(GpuReply::Presented {
+        surface: S,
+        frame: id,
+        at: Instant::now(),
+        waited: Duration::ZERO,
+        ran: vec![],
+    });
+    r.paint_gpu(S, at + frame).expect("the glide goes on");
+    let again = r.hand_off_took(S);
+    assert!(
+        again <= took + frame && again + frame > took,
+        "the whole gap past the cap: {took:?}, then {again:?}"
+    );
+}
+
 /// Stripes in a box at `at` under `filter: blur(sigma), brightness(0.6)`
 /// on a bar.
 fn filter_blur_scene(at: (f32, f32, f32, f32), sigma: f32) -> SceneDiff {

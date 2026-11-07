@@ -5176,14 +5176,21 @@ fn desk_commits(test: &str, gpu: bool) {
         // (lock-4k) A first frame held for its text is drawn once its
         // hold runs out, not after every other monitor's first paint:
         // HEADLESS-1, held on a cold first lock, is not the last to
-        // commit (it was, 631 ms against the others' 173 to 615).
-        assert!(
-            commits[0] < commits.iter().copied().max().unwrap_or(0),
-            "lock {round}: HEADLESS-1 committed after every other monitor: {commits:?}\n{log}"
-        );
+        // commit (it was, 631 ms against the others' 173 to 615). It
+        // rests on the other three paints outlasting the 100 ms hold
+        // (about 600 ms in the debug VM), so it is a wall-clock gate,
+        // checked at the end; `manager::next_to_draw`'s unit test is the
+        // functional guard.
+        if commits[0] >= commits.iter().copied().max().unwrap_or(0) {
+            late.push(format!(
+                "lock {round}: HEADLESS-1 committed after every other monitor: {commits:?} ms"
+            ));
+        }
         for (o, ms) in outputs.iter().zip(&commits) {
             if *ms > DESK_COMMIT_GATE {
-                late.push(format!("lock {round} output {o} first committed {ms} ms"));
+                late.push(format!(
+                    "lock {round} output {o} first committed {ms} ms after the lock request"
+                ));
             }
         }
         let mut line = format!("lock {round}: {stills} stills; first commits {commits:?} ms");
@@ -5248,12 +5255,13 @@ const LOCK_TEXT_WAIT: u64 = 100;
 /// for its text as before (another 500 ms) passes.
 const DESK_COMMIT_GATE: u64 = 900;
 
-/// (lock-4k) The desk's wall-clock gate, checked after the functional
-/// asserts: every first commit `late` past [`DESK_COMMIT_GATE`].
+/// (lock-4k) The desk's wall-clock gates, checked after the functional
+/// asserts: every first commit `late` past [`DESK_COMMIT_GATE`], and the
+/// desk test's commit order.
 fn desk_gate(late: &[String]) {
     if !late.is_empty() {
         panic!(
-            "GATE_MISS: {} after the lock request (gate {DESK_COMMIT_GATE} ms)",
+            "GATE_MISS: {} (first commit gate {DESK_COMMIT_GATE} ms)",
             late.join("; ")
         );
     }
@@ -5375,7 +5383,7 @@ fn a_lock_whose_text_is_slow_still_commits_in_time() {
         .iter()
         .zip(&commits)
         .filter(|(_, ms)| **ms > DESK_COMMIT_GATE)
-        .map(|(o, ms)| format!("output {o} first committed {ms} ms"))
+        .map(|(o, ms)| format!("output {o} first committed {ms} ms after the lock request"))
         .collect();
     desk_gate(&late);
 }
