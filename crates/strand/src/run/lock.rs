@@ -1225,6 +1225,16 @@ impl Guard {
         if state.host().lock.fallback_shown() {
             return;
         }
+        // (lock-4k) The heartbeat's answer is read before the watchdog
+        // judges it: a main thread held past the watchdog (a 3840 × 2160
+        // first GPU frame took 3.2 s in GitHub's debug lock VM) finds
+        // logic's answer waiting, not a silence.
+        if let Some((seq, _)) = self.waiting
+            && BEAT.load(Ordering::Acquire) >= seq
+        {
+            self.waiting = None;
+            self.next_beat = Some(now + BEAT_EVERY);
+        }
         let reason = self
             .reason(state, now, since, logic_gone)
             .or_else(|| state.host_mut().lock.pending.take());
@@ -1245,20 +1255,13 @@ impl Guard {
             state.poll();
         }
         follow_color(state);
-        // The heartbeat.
-        match self.waiting {
-            Some((seq, _)) if BEAT.load(Ordering::Acquire) >= seq => {
-                self.waiting = None;
-                self.next_beat = Some(now + BEAT_EVERY);
+        // The heartbeat (its answer was read above).
+        if self.waiting.is_none() && self.next_beat.is_none_or(|t| now >= t) {
+            self.seq += 1;
+            if to_logic.send(ToLogic::Beat(self.seq)).is_ok() {
+                self.waiting = Some((self.seq, now));
+                faults::beat_sent(self.seq);
             }
-            Some(_) => {}
-            None if self.next_beat.is_none_or(|t| now >= t) => {
-                self.seq += 1;
-                if to_logic.send(ToLogic::Beat(self.seq)).is_ok() {
-                    self.waiting = Some((self.seq, now));
-                }
-            }
-            None => {}
         }
     }
 
@@ -1653,6 +1656,18 @@ pub(crate) mod faults {
         }
     }
 
+    /// (lock-4k) A heartbeat went to logic: `beat_busy` holds the main
+    /// thread a second past the watchdog on the third, once, as a 3840 ×
+    /// 2160 first GPU frame held it 3.2 s in GitHub's debug lock VM, while
+    /// logic answers at once.
+    pub(crate) fn beat_sent(seq: u64) {
+        static DONE: AtomicBool = AtomicBool::new(false);
+        if seq >= 3 && on("beat_busy") && !DONE.swap(true, Ordering::AcqRel) {
+            log::warn!("STRAND_FAULT beat_busy");
+            std::thread::sleep(super::WATCHDOG + Duration::from_secs(1));
+        }
+    }
+
     /// (lock-4k) `main_busy` is armed: the GPU thread has presented a
     /// lock surface's frame.
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
@@ -1893,6 +1908,8 @@ pub(crate) mod faults {
     #[inline(always)]
     #[cfg(feature = "gpu")]
     pub(crate) fn main_busy(_: impl FnOnce() -> bool) {}
+    #[inline(always)]
+    pub(crate) fn beat_sent(_: u64) {}
     #[inline(always)]
     pub(crate) fn unmount_lock(_: &mut super::State<super::Host>) {}
     #[inline(always)]

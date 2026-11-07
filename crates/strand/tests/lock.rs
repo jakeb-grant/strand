@@ -3378,6 +3378,39 @@ fn a_lock_that_animates_is_presented_and_never_alternates() {
     );
 }
 
+/// (lock-4k) A main thread held past the watchdog right after it sent a
+/// heartbeat is no stopped logic (`beat_busy`: on the lock's third
+/// heartbeat the main thread sleeps a second past the watchdog, as a 3840
+/// × 2160 first GPU frame held it 3.2 s in GitHub's debug lock VM, while
+/// logic answers at once). The answer is read before the watchdog judges,
+/// so the config's lock stays up and the password unlocks it.
+#[test]
+fn a_busy_main_thread_is_no_stopped_logic() {
+    let test = "lock_beat_busy";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::start(test, "beat_busy");
+    vm.lock();
+    vm.content();
+    vm.until_log("STRAND_FAULT beat_busy");
+    // A heartbeat past the hold, answered.
+    std::thread::sleep(Duration::from_secs(2));
+    let log = vm.strand.log_text();
+    assert!(
+        !log.contains("did not answer") && !log.contains("showing the built-in password field"),
+        "a busy main thread taken for stopped logic:\n{log}"
+    );
+    vm.content();
+    vm.keys.enter(PASSWORD);
+    vm.until_log(": unlocking");
+    vm.until(
+        "HEADLESS-1",
+        "unlocked by the right password",
+        Shot::desktop,
+    );
+}
+
 /// (lock-4k) A main thread held past the GPU bound while a lock frame is
 /// in flight is no stall (`main_busy`: once the GPU has presented the
 /// lock, the main thread sleeps twice the bound right after a pump sent
