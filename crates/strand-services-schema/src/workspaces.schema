@@ -19,6 +19,12 @@ record Workspace key id {
   windows: [Window]
   /// Switches to it: `on click { ws.focus() }`.
   action focus()
+  /// `ws.move_to(screen)` moves it, with its windows, to `screen`, the
+  /// focus staying on the workspace that had it (on the compositors'
+  /// IPC: Hyprland, sway, niri). Moving it to the screen it is on does
+  /// nothing, so a placement can run again; a screen that is not on
+  /// fails it.
+  action move_to(screen: Screen)
 }
 
 /// Workspaces, from `ext-workspace-v1`; Hyprland, niri and sway IPC fill

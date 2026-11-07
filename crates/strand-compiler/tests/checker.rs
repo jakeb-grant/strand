@@ -1477,6 +1477,22 @@ fn workspace_and_window_members_check() {
         codes("bar B { text \"x\" { on click { workspaces.focus(true) } } }\n"),
         ["check::type_mismatch"]
     );
+    // (ws-move) `ws.move_to(screen)` takes a screen, in a loop as well.
+    assert_eq!(
+        codes(
+            "bar B {\n  text \"place\" { on click {\n    \
+             for ws in workspaces.all.filter(w => w.name == \"1\") { ws.move_to(screen) }\n    \
+             for s in screens.all.filter(s => s.name == \"DP-1\") { workspaces.focused?.move_to(s) }\n  \
+             } }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        codes(
+            "bar B { text \"x\" { on click { for ws in workspaces.all { ws.move_to(\"DP-1\") } } } }\n"
+        ),
+        ["check::type_mismatch"]
+    );
 }
 
 /// Gaps 17 (m6-w2-services): a power menu over the builtin `session`

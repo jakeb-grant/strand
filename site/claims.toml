@@ -3919,3 +3919,22 @@ page   = "site/how-to/dbus-and-actions.md"
 text   = "UPower signals the lid, so a `from dbus` service follows it."
 source = ['crates/strand-services/tests/custom.rs "fn the_lid_recipe_follows_upower() {"']
 proof  = "crates/strand-services/tests/custom.rs::the_lid_recipe_follows_upower (dbusmock's upower template: LidIsClosed, OnBattery followed)"
+
+# --- ws-move (blocks-more) ---
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "`ws.move_to(screen)` moves a workspace, with its windows, to a screen,"
+source = ['crates/strand-services-schema/src/workspaces.schema "action move_to(screen: Screen)"', 'crates/strand-services/src/wm/mod.rs "UnknownScreen(String),"']
+proof  = "crates/strand/tests/compositor_matrix.rs::a_workspace_is_moved_to_another_screen; crates/strand-services/tests/sway.rs::sway_moves_a_workspace_to_another_output"
+
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "and a workspace on that screen already is left alone, so placing"
+source = ['crates/strand-services/src/wm/sway.rs "pub(crate) fn in_place(&self, action: &WmAction) -> bool {"']
+proof  = "crates/strand-services/tests/sway.rs::sway_moves_a_workspace_to_another_output (the same move again: nothing sent, nothing changes)"
+
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "them again does nothing. Each call is its own request, so a `for`"
+source = ['crates/strand-services/src/wm/service.rs "WorkspaceAction::MoveTo { item, screen } => WmAction::MoveWorkspace {"']
+proof  = "crates/strand-services/tests/wm_services.rs::the_compositor_stores_follow_hyprland (two moves in a row both sent)"

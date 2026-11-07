@@ -557,6 +557,32 @@ impl State {
         }
     }
 
+    /// (ws-move) The workspace `id` (made) when output `screen` is on
+    /// (`outputs`, which the adapter reads before a move), and whether it
+    /// is on that output already.
+    fn move_target(&self, id: i64, screen: &str) -> Result<&swayipc_types::Workspace, WmError> {
+        let ws = self
+            .workspaces
+            .iter()
+            .find(|w| w.id == id)
+            .ok_or(WmError::UnknownWorkspace(id))?;
+        if !self.outputs.iter().any(|o| o.active && o.name == screen) {
+            return Err(WmError::UnknownScreen(screen.to_string()));
+        }
+        Ok(ws)
+    }
+
+    /// (ws-move) An action already done: a workspace moved to the output
+    /// it is on, answered `Ok` without a command.
+    pub(crate) fn in_place(&self, action: &WmAction) -> bool {
+        match action {
+            WmAction::MoveWorkspace { workspace, screen } => self
+                .move_target(*workspace, screen)
+                .is_ok_and(|w| w.output == *screen),
+            _ => false,
+        }
+    }
+
     /// The sway command for an action.
     pub(crate) fn command_for(&self, action: &WmAction) -> Result<String, WmError> {
         let window = |id: &str| -> Result<i64, WmError> {
@@ -600,6 +626,33 @@ impl State {
                 window(id)?,
                 quoted(&self.workspace_name(*workspace)?)?
             ),
+            // (ws-move) sway's `move workspace to output` moves the
+            // workspace of the window the criteria pick (else the focused
+            // one) and then focuses it, so the focus goes back in the same
+            // command. An empty workspace exists only while it is shown,
+            // and has no window to pick: it is switched to first.
+            WmAction::MoveWorkspace { workspace, screen } => {
+                let ws = self.move_target(*workspace, screen)?;
+                let output = quoted(screen)?;
+                let on = self.windows.iter().find(|(w, _)| *w == Some(ws.id));
+                let mut command = match on {
+                    Some((_, node)) => {
+                        format!("[con_id={}] move workspace to output {output}", node.id)
+                    }
+                    None if ws.focused => format!("move workspace to output {output}"),
+                    None => format!(
+                        "{}; move workspace to output {output}",
+                        Self::switch_to(&ws.name)?
+                    ),
+                };
+                if let Some(back) = self.workspaces.iter().find(|w| w.focused)
+                    && back.id != ws.id
+                {
+                    command.push_str("; ");
+                    command.push_str(&Self::switch_to(&back.name)?);
+                }
+                command
+            }
             // Every keyboard, as `keyboard.layout` follows any.
             WmAction::SwitchLayout(LayoutSwitch::Next) => {
                 "input type:keyboard xkb_switch_layout next".to_string()
@@ -963,6 +1016,17 @@ async fn session(
                     }
                 }
                 Some((action, reply)) => {
+                    // (ws-move) A move names an output that is on now.
+                    if matches!(action, WmAction::MoveWorkspace { .. }) {
+                        state.outputs = extra(conn.request(CommandType::GetOutputs, "").await)?
+                            .unwrap_or_default();
+                    }
+                    if state.in_place(&action) {
+                        if let Some(r) = reply {
+                            let _ = r.send(Ok(()));
+                        }
+                        continue;
+                    }
                     let mut refused_syntax = None;
                     let result = match state.command_for(&action) {
                         Ok(c) => match conn
@@ -1211,6 +1275,87 @@ mod tests {
     /// output <outputs…>` lines, with `set` variables (longest name
     /// first), quotes, continued lines; blocks, comments, bindings and
     /// other `workspace` commands are not assignments.
+    /// (ws-move) `ws.move_to(screen)`: by a window on the workspace, else
+    /// the focused one, else switched to (an empty workspace shown on
+    /// another output); the focus goes back to the workspace that had it
+    /// in the same command. One on that output already is done without a
+    /// command; an output that is off or gone fails it.
+    #[test]
+    fn a_workspace_is_moved_to_an_output() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/sway-1.9/tree.json"
+        );
+        let text = std::fs::read_to_string(path).unwrap();
+        let tree: Node = decode(text.into_bytes()).unwrap();
+        let mut state = State::default();
+        state.set_tree(&tree);
+        let node = state.windows[0].1.clone();
+        state.windows = vec![(Some(4), node.clone())];
+        let ws = |id: i64, name: &str, output: &str, focused: bool| {
+            serde_json::json!({"id": id, "num": 1, "name": name, "layout": "splith",
+                "visible": true, "focused": focused, "urgent": false,
+                "representation": null, "orientation": "horizontal", "output": output,
+                "rect": {"x": 0, "y": 0, "width": 1280, "height": 720}})
+        };
+        state.workspaces = decode(
+            serde_json::json!([
+                ws(4, "1", "HEADLESS-1", false),
+                ws(9, "2: \"web\"", "HEADLESS-2", true),
+                ws(11, "3", "HEADLESS-3", false),
+            ])
+            .to_string()
+            .into_bytes(),
+        )
+        .unwrap();
+        let out = |name: &str, active: bool| SwayOutput {
+            name: name.into(),
+            active,
+            ..Default::default()
+        };
+        state.outputs = vec![
+            out("HEADLESS-1", true),
+            out("HEADLESS-2", true),
+            out("HEADLESS-3", true),
+            out("HEADLESS-4", false),
+        ];
+        let mv = |workspace: i64, screen: &str| WmAction::MoveWorkspace {
+            workspace,
+            screen: screen.into(),
+        };
+        let back = r#"workspace --no-auto-back-and-forth "2: \"web\"""#;
+        assert_eq!(
+            state.command_for(&mv(4, "HEADLESS-2")).unwrap(),
+            format!(
+                r#"[con_id={}] move workspace to output "HEADLESS-2"; {back}"#,
+                node.id
+            )
+        );
+        assert_eq!(
+            state.command_for(&mv(9, "HEADLESS-1")).unwrap(),
+            r#"move workspace to output "HEADLESS-1""#
+        );
+        assert_eq!(
+            state.command_for(&mv(11, "HEADLESS-2")).unwrap(),
+            format!(
+                r#"workspace --no-auto-back-and-forth "3"; move workspace to output "HEADLESS-2"; {back}"#
+            )
+        );
+        assert!(state.in_place(&mv(4, "HEADLESS-1")));
+        assert!(!state.in_place(&mv(4, "HEADLESS-2")));
+        assert!(!state.in_place(&WmAction::FocusWorkspace(4)));
+        for gone in ["HEADLESS-4", "HEADLESS-9"] {
+            assert_eq!(
+                state.command_for(&mv(4, gone)),
+                Err(WmError::UnknownScreen(gone.into()))
+            );
+        }
+        assert_eq!(
+            state.command_for(&mv(77, "HEADLESS-2")),
+            Err(WmError::UnknownWorkspace(77))
+        );
+    }
+
     #[test]
     fn assignments_are_read_from_the_config() {
         let config = r#"

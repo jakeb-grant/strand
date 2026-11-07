@@ -434,6 +434,35 @@ impl State {
         }
     }
 
+    /// (ws-move) Whether workspace `id` is on output `screen` already;
+    /// an output is on while niri puts workspaces on it.
+    fn move_target(&self, id: i64, screen: &str) -> Result<bool, WmError> {
+        let ws = self
+            .workspaces
+            .iter()
+            .find(|w| w.id as i64 == id)
+            .ok_or(WmError::UnknownWorkspace(id))?;
+        if !self
+            .workspaces
+            .iter()
+            .any(|w| w.output.as_deref() == Some(screen))
+        {
+            return Err(WmError::UnknownScreen(screen.to_string()));
+        }
+        Ok(ws.output.as_deref() == Some(screen))
+    }
+
+    /// (ws-move) An action already done: a workspace moved to the output
+    /// it is on, answered `Ok` without a request.
+    pub(crate) fn in_place(&self, action: &WmAction) -> bool {
+        match action {
+            WmAction::MoveWorkspace { workspace, screen } => {
+                self.move_target(*workspace, screen) == Ok(true)
+            }
+            _ => false,
+        }
+    }
+
     /// The `Action` request for an action.
     pub(crate) fn action_for(&self, action: &WmAction) -> Result<Value, WmError> {
         let window = |id: &str| -> Result<u64, WmError> {
@@ -505,6 +534,15 @@ impl State {
                     "window_id": window(id)?,
                     "reference": {"Id": workspace},
                     "focus": false,
+                }}})
+            }
+            // (ws-move) By id, to an output that has workspaces (every
+            // output niri uses keeps one, an empty one at least).
+            WmAction::MoveWorkspace { workspace, screen } => {
+                self.move_target(*workspace, screen)?;
+                json!({"Action": {"MoveWorkspaceToMonitor": {
+                    "output": screen,
+                    "reference": {"Id": workspace},
                 }}})
             }
             WmAction::SwitchLayout(LayoutSwitch::Next) => {
@@ -761,6 +799,11 @@ async fn session(
                 Some((_, reply)) if !up => {
                     if let Some(r) = reply {
                         let _ = r.send(Err(WmError::NotConnected));
+                    }
+                }
+                Some((action, reply)) if state.in_place(&action) => {
+                    if let Some(r) = reply {
+                        let _ = r.send(Ok(()));
                     }
                 }
                 Some((action, reply)) => {
@@ -1143,6 +1186,40 @@ mod tests {
         assert!(
             s.action_for(&WmAction::SwitchLayout(LayoutSwitch::Index(300)))
                 .is_err()
+        );
+    }
+
+    /// (ws-move) `ws.move_to(screen)` by id, to an output niri puts
+    /// workspaces on; one there already is done without a request.
+    #[test]
+    fn a_workspace_is_moved_to_an_output() {
+        let mut s = State::default();
+        for (id, output) in [(1, "DP-1"), (2, "DP-1"), (3, "HDMI-A-1")] {
+            s.workspaces.push(NWorkspace {
+                id,
+                output: Some(output.into()),
+                ..Default::default()
+            });
+        }
+        let mv = |workspace: i64, screen: &str| WmAction::MoveWorkspace {
+            workspace,
+            screen: screen.into(),
+        };
+        assert_eq!(
+            s.action_for(&mv(2, "HDMI-A-1")).unwrap(),
+            json!({"Action": {"MoveWorkspaceToMonitor": {
+                "output": "HDMI-A-1", "reference": {"Id": 2}
+            }}})
+        );
+        assert!(!s.in_place(&mv(2, "HDMI-A-1")));
+        assert!(s.in_place(&mv(2, "DP-1")));
+        assert_eq!(
+            s.action_for(&mv(9, "HDMI-A-1")),
+            Err(WmError::UnknownWorkspace(9))
+        );
+        assert_eq!(
+            s.action_for(&mv(2, "DP-9")),
+            Err(WmError::UnknownScreen("DP-9".into()))
         );
     }
 

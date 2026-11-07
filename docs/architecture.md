@@ -3063,8 +3063,11 @@ itself.
   `WmSubscription::request(action) -> WmReply`, answered `Ok` or a
   `WmError`; a request dropped unanswered reads as `NotConnected`.
   Window actions (`focus`, `close`, `minimize`, `maximize` and
-  `fullscreen` as toggles, `move_to`) and workspace focus by id, number
-  or name are translated per adapter (Hyprland in both dialects, sway,
+  `fullscreen` as toggles, `move_to`), workspace focus by id, number
+  or name, and (ws-move) a workspace's move to a screen
+  (`WmAction::MoveWorkspace`, failing `WmError::UnknownScreen` for a
+  screen that is not on; `WorkspaceAction::MoveTo` takes the `Screen`
+  record as a `ScreenName`) are translated per adapter (Hyprland in both dialects, sway,
   niri, the protocols); unsupported combinations answer `Unsupported`.
   `wm::detect()` picks the `Backend` (Hyprland, niri behind the
   default-on `niri` feature, sway through swayipc-types). The protocol

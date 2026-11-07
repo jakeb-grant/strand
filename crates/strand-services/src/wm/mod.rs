@@ -69,8 +69,8 @@ pub use protocol::{
 use protocol::{ProtocolSender, WindowOp};
 pub use schema::{WINDOWS_SCHEMA, WM_SCHEMA, WORKSPACES_SCHEMA};
 pub use service::{
-    FocusFollower, WindowAction, WindowItem, WindowRect, Windows, WindowsCells, Wm, WmCells,
-    WmEvent, WorkspaceAction, WorkspaceItem, Workspaces, WorkspacesCells, configure,
+    FocusFollower, ScreenName, WindowAction, WindowItem, WindowRect, Windows, WindowsCells, Wm,
+    WmCells, WmEvent, WorkspaceAction, WorkspaceItem, Workspaces, WorkspacesCells, configure,
     follow_focused_screen, hub,
 };
 
@@ -120,6 +120,18 @@ pub enum WmAction {
     /// (services-round) `keyboard.next_layout()` and
     /// `keyboard.set_layout(i)`: switch every keyboard's layout.
     SwitchLayout(LayoutSwitch),
+    /// (ws-move) `ws.move_to(screen)`: move the workspace with this id,
+    /// with its windows, to the screen (connector) named `screen`, the
+    /// focus staying on the workspace that had it. One already there is
+    /// `Ok` without a request; one not made yet is
+    /// [`WmError::UnknownWorkspace`], a screen not lit
+    /// [`WmError::UnknownScreen`].
+    MoveWorkspace {
+        /// The workspace's id.
+        workspace: i64,
+        /// The screen's name (its connector, `DP-1`).
+        screen: String,
+    },
 }
 
 /// (services-round) Which layout [`WmAction::SwitchLayout`] switches to.
@@ -145,6 +157,9 @@ pub enum WmError {
     UnknownWorkspaceName(String),
     /// No window has this id.
     UnknownWindow(String),
+    /// (ws-move) No screen that is on has this name: unplugged, off, or
+    /// not there yet.
+    UnknownScreen(String),
     /// The compositor refused, with its message.
     Rejected(String),
     /// The socket failed.
@@ -159,6 +174,7 @@ impl std::fmt::Display for WmError {
             Self::UnknownWorkspace(id) => write!(f, "no workspace {id}"),
             Self::UnknownWorkspaceName(name) => write!(f, "no workspace named {name:?}"),
             Self::UnknownWindow(id) => write!(f, "no window {id}"),
+            Self::UnknownScreen(name) => write!(f, "no screen {name:?}"),
             Self::Rejected(msg) => write!(f, "the compositor refused: {msg}"),
             Self::Io(msg) => write!(f, "compositor IPC: {msg}"),
         }
@@ -967,6 +983,17 @@ fn route(
             return fail(
                 req.reply,
                 unsupported("no compositor IPC (the standard protocols cannot switch layouts)"),
+            );
+        }
+        // (ws-move) `ext-workspace-v1`'s `assign` is not used: every
+        // compositor that offers it has an adapter (decisions.md ws-move).
+        WmAction::MoveWorkspace { .. } => {
+            return fail(
+                req.reply,
+                unsupported(
+                    "no compositor IPC (the standard protocols cannot move a workspace \
+                     to a screen)",
+                ),
             );
         }
     };

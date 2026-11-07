@@ -154,6 +154,33 @@ A key a monitor's line does not have, `scael = 1.5`, keeps the last
 good layouts with a notice naming it, so a typo never reaches your
 monitors.
 
+## Workspaces on their monitors
+
+Once the monitors are arranged, put workspaces where you want them:
+`ws.move_to(screen)` moves a workspace, with its windows, to a screen,
+on Hyprland, sway and niri.
+
+```strand file=workspaces.strand
+// workspaces.strand: workspaces 1 to 5 on the big monitor while it is on
+let lit = screens.all.map(s => s.name).join(" ")
+on change lit after 1500ms {
+  for s in screens.all.filter(s => s.name == "DP-3") {
+    for ws in workspaces.all.filter(w => (number(w.name) ?? 0) <= 5) { ws.move_to(s) }
+  }
+}
+```
+
+- **`lit`** changes when a screen is turned on or off, so the
+  workspaces are placed when the set changes, not on every switch: a
+  workspace you move by hand stays where you put it.
+- **`ws.move_to(s)`** leaves the focus on the workspace that had it,
+  and a workspace on that screen already is left alone, so placing
+  them again does nothing. Each call is its own request, so a `for`
+  moves every one.
+- **A workspace not made yet** is not moved: your compositor's own
+  rules place it when it is made (`workspace 3 output DP-3` in sway,
+  a workspace rule in Hyprland).
+
 ## Variations
 
 - **The panel off when docked.** Save the docked layout with the

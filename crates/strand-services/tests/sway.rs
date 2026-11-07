@@ -1155,3 +1155,150 @@ async fn sways_mode_window_rects_and_moves() {
     assert_ne!(from, Some(ws2));
     service.abort();
 }
+
+/// (ws-move) `ws.move_to(screen)` on a real sway with two outputs: a
+/// workspace kept by a window lands on the other output with it, the
+/// focus staying where it was; the same move again is `Ok` and changes
+/// nothing; the focused workspace moves with the focus; an empty one
+/// shown on another output is moved and, no longer shown there, let go
+/// as sway lets go of every empty workspace it does not show; an output
+/// that is not there fails it.
+#[tokio::test]
+async fn sway_moves_a_workspace_to_another_output() {
+    let Some(sway) = Sway::start("sway_moves_a_workspace_to_another_output") else {
+        return;
+    };
+    let (sink, mut c) = Collector::new();
+    let (req_tx, req_rx) = unbounded_channel();
+    let config = WmConfig {
+        backend: Some(Backend::Sway {
+            socket: sway.ipc.clone(),
+        }),
+        wayland: None,
+        ..Default::default()
+    };
+    let service = tokio::spawn(wm::run(config, sink, req_rx));
+    c.until("boot", |m| {
+        m.sources.connected && m.focused_workspace.as_ref().is_some_and(|w| w.name == "1")
+    })
+    .await;
+    sway.msg(&["create_output"]);
+    c.until("a second output with its workspace", |m| {
+        m.workspaces
+            .iter()
+            .any(|(_, w)| w.screen == "HEADLESS-2" && w.active)
+    })
+    .await;
+    let mv = |workspace: i64, screen: &str| {
+        let (r, done) = WmRequest::new(WmAction::MoveWorkspace {
+            workspace,
+            screen: screen.into(),
+        });
+        req_tx.send(r).unwrap();
+        done
+    };
+    // sway's own report: (name, output, visible, focused), by name.
+    let theirs = || {
+        let v: serde_json::Value =
+            serde_json::from_str(&sway.msg(&["-t", "get_workspaces"])).unwrap();
+        let mut out: Vec<(String, String, bool, bool)> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| {
+                (
+                    w["name"].as_str().unwrap().to_string(),
+                    w["output"].as_str().unwrap().to_string(),
+                    w["visible"].as_bool().unwrap(),
+                    w["focused"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        out.sort();
+        out
+    };
+    eprintln!("sway before: {:?}", theirs());
+
+    // The empty workspace shown on HEADLESS-2, moved off focus: gone.
+    let shown = c
+        .mirror
+        .workspaces
+        .iter()
+        .map(|(_, w)| w)
+        .find(|w| w.screen == "HEADLESS-2")
+        .unwrap()
+        .clone();
+    assert_eq!(mv(shown.id, "HEADLESS-1").await, Ok(()));
+    c.until("the empty one let go, the focus on 1", |m| {
+        m.workspace(&shown.name).is_none()
+            && m.focused_workspace.as_ref().is_some_and(|w| w.name == "1")
+    })
+    .await;
+    eprintln!("sway after the empty move: {:?}", theirs());
+
+    // A window keeps workspace 1; the focus goes to 5, made on
+    // HEADLESS-1 (sway made a 3 on HEADLESS-2 for the one let go).
+    let _win = TestWindow::open(&sway.socket(), "strand-ws-move", "moved");
+    c.until("the window on 1", |m| {
+        m.window_by_app("strand-ws-move").is_some() && m.workspace("1").is_some_and(|w| w.occupied)
+    })
+    .await;
+    sway.msg(&["workspace", "5"]);
+    c.until("5 focused", |m| {
+        m.focused_workspace.as_ref().is_some_and(|w| w.name == "5")
+    })
+    .await;
+    let one = c.mirror.workspace("1").unwrap().id;
+    assert_eq!(c.mirror.workspace("1").unwrap().screen, "HEADLESS-1");
+    assert_eq!(mv(one, "HEADLESS-2").await, Ok(()));
+    c.until("1 on HEADLESS-2, the focus still on 5", |m| {
+        m.workspace("1").is_some_and(|w| w.screen == "HEADLESS-2")
+            && m.focused_workspace.as_ref().is_some_and(|w| w.name == "5")
+            && m.window_by_app("strand-ws-move")
+                .is_some_and(|w| w.workspace == Some(one))
+    })
+    .await;
+    let after = theirs();
+    eprintln!("sway after moving 1: {after:?}");
+    assert!(
+        after.contains(&("1".into(), "HEADLESS-2".into(), true, false))
+            && !after.iter().any(|w| w.0 == "3"),
+        "1 shown on HEADLESS-2 in place of the empty 3, not focused: {after:?}"
+    );
+    assert!(
+        after.contains(&("5".into(), "HEADLESS-1".into(), true, true)),
+        "5 still focused: {after:?}"
+    );
+
+    // Again: done already, nothing sent, nothing changes.
+    assert_eq!(mv(one, "HEADLESS-2").await, Ok(()));
+    assert_eq!(c.quiet_for(Duration::from_millis(300)).await, 0);
+    assert_eq!(theirs(), after);
+
+    // The focused workspace, empty: moved, the focus with it; HEADLESS-1
+    // gets a new workspace of sway's.
+    let five = c.mirror.workspace("5").unwrap().id;
+    assert_eq!(mv(five, "HEADLESS-2").await, Ok(()));
+    c.until("5 on HEADLESS-2 and focused", |m| {
+        m.workspace("5").is_some_and(|w| w.screen == "HEADLESS-2")
+            && m.focused_workspace.as_ref().is_some_and(|w| w.name == "5")
+    })
+    .await;
+    let last = theirs();
+    eprintln!("sway after moving 5: {last:?}");
+    assert!(
+        last.contains(&("5".into(), "HEADLESS-2".into(), true, true))
+            && last.iter().any(|w| w.1 == "HEADLESS-1" && w.2),
+        "5 shown and focused on HEADLESS-2, a workspace of sway's on HEADLESS-1: {last:?}"
+    );
+
+    assert_eq!(
+        mv(one, "HEADLESS-9").await,
+        Err(WmError::UnknownScreen("HEADLESS-9".into()))
+    );
+    assert_eq!(
+        mv(4242, "HEADLESS-1").await,
+        Err(WmError::UnknownWorkspace(4242))
+    );
+    service.abort();
+}
