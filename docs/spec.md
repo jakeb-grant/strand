@@ -711,7 +711,12 @@ monitor, the keyboard always).
   { fields }` declares a service backed by a D-Bus object. Its fields
   are checked against the object's introspection. A field written
   `name: type rw = Property` is writable (section 8.1); without `rw` it
-  is read-only.
+  is read-only. (dbus-unfollowed) A field bound to a property that its
+  introspection annotates as never signalling its changes
+  (`org.freedesktop.DBus.Property.EmitsChangedSignal` `false`, on the
+  property or its interface) is a warning, `check::dbus_unfollowed`: the
+  field would keep the value it read at start; `const` and
+  `invalidates` are followed.
 - `from file path { fields }` reads a file, again whenever it changes
   (a file a change leaves empty is read again 50 ms later, since a
   rewrite in place truncates before it writes); `from listen command`

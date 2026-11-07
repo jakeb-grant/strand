@@ -9,7 +9,9 @@
 //! It depends on zbus alone (no service runtime), so the LSP can link it
 //! (decisions.md, wave4-a3). The introspection XML is read with a small
 //! scanner of its own: only `<interface name>`, `<property name type
-//! access>`, `<method name>` and its `<arg type direction>`s matter.
+//! access>`, `<method name>` and its `<arg type direction>`s matter, and
+//! (dbus-unfollowed) the `org.freedesktop.DBus.Property.EmitsChangedSignal`
+//! annotation on a property or its interface.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -32,6 +34,42 @@ pub struct Property {
     pub readable: bool,
     /// It can be written (`access="readwrite"` or `"write"`).
     pub writable: bool,
+    /// (dbus-unfollowed) Whether its changes are signalled.
+    pub emits: Emits,
+}
+
+/// (dbus-unfollowed) Whether a property's changes are signalled, as its
+/// `org.freedesktop.DBus.Property.EmitsChangedSignal` annotation says
+/// (on the property, else on its interface; `true` when neither has
+/// one, as the specification says).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Emits {
+    /// `PropertiesChanged` carries each new value.
+    #[default]
+    True,
+    /// `PropertiesChanged` names it without its value: read it again.
+    Invalidates,
+    /// It never changes while the object exists.
+    Const,
+    /// It changes without any signal: a value read once goes stale.
+    False,
+}
+
+/// The annotation saying whether a property's changes are signalled.
+pub const EMITS_CHANGED: &str = "org.freedesktop.DBus.Property.EmitsChangedSignal";
+
+impl Emits {
+    /// The annotation's value as an [`Emits`]; `None` for a value the
+    /// specification does not define.
+    pub fn from_annotation(value: &str) -> Option<Emits> {
+        Some(match value {
+            "true" => Emits::True,
+            "invalidates" => Emits::Invalidates,
+            "const" => Emits::Const,
+            "false" => Emits::False,
+            _ => return None,
+        })
+    }
 }
 
 /// (M6) One method of an object, as its introspection data declares it.
@@ -54,9 +92,28 @@ pub fn default_path(name: &str) -> String {
 }
 
 /// The properties `xml` (introspection data) declares, in order.
+/// (dbus-unfollowed) Each with the `EmitsChangedSignal` annotation
+/// written inside it, else the one written directly inside its
+/// interface (before or after the properties), else [`Emits::True`].
 pub fn parse(xml: &str) -> Vec<Property> {
-    let mut out = Vec::new();
+    let mut out: Vec<Property> = Vec::new();
     let mut interface: Option<String> = None;
+    // The interface's own annotation, and its properties not annotated
+    // themselves (indices into `out`), applied when it closes.
+    let mut default: Option<Emits> = None;
+    let mut plain: Vec<usize> = Vec::new();
+    // The property whose children are being read, and how deep inside a
+    // method or signal (whose annotations are their own) the scan is.
+    let mut property: Option<usize> = None;
+    let mut member = 0usize;
+    let close = |out: &mut Vec<Property>, default: &mut Option<Emits>, plain: &mut Vec<usize>| {
+        if let Some(e) = default.take() {
+            for &i in plain.iter() {
+                out[i].emits = e;
+            }
+        }
+        plain.clear();
+    };
     let mut rest = xml;
     while let Some(i) = rest.find('<') {
         rest = &rest[i + 1..];
@@ -70,20 +127,29 @@ pub fn parse(xml: &str) -> Vec<Property> {
             continue;
         }
         if let Some(t) = tag.strip_prefix('/') {
-            if t.trim() == "interface" {
-                interface = None;
+            match t.trim() {
+                "interface" => {
+                    close(&mut out, &mut default, &mut plain);
+                    interface = None;
+                }
+                "property" => property = None,
+                "method" | "signal" => member = member.saturating_sub(1),
+                _ => {}
             }
             continue;
         }
+        let closed = tag.trim_end().ends_with('/');
         let (kind, attrs) = tag.split_once(char::is_whitespace).unwrap_or((tag, ""));
         let kind = kind.trim_end_matches('/');
         match kind {
             "interface" => {
+                close(&mut out, &mut default, &mut plain);
                 interface = attr(attrs, "name");
-                if tag.trim_end().ends_with('/') {
+                if closed {
                     interface = None;
                 }
             }
+            "method" | "signal" if !closed => member += 1,
             "property" => {
                 let (Some(iface), Some(name), Some(signature)) =
                     (&interface, attr(attrs, "name"), attr(attrs, "type"))
@@ -97,11 +163,30 @@ pub fn parse(xml: &str) -> Vec<Property> {
                     signature,
                     readable: access.contains("read"),
                     writable: access.contains("write"),
+                    emits: Emits::True,
                 });
+                plain.push(out.len() - 1);
+                property = (!closed).then_some(out.len() - 1);
+            }
+            "annotation" if member == 0 && interface.is_some() => {
+                if attr(attrs, "name").as_deref() != Some(EMITS_CHANGED) {
+                    continue;
+                }
+                let Some(e) = attr(attrs, "value").and_then(|v| Emits::from_annotation(&v)) else {
+                    continue;
+                };
+                match property {
+                    Some(i) => {
+                        out[i].emits = e;
+                        plain.retain(|&p| p != i);
+                    }
+                    None => default = Some(e),
+                }
             }
             _ => {}
         }
     }
+    close(&mut out, &mut default, &mut plain);
     out
 }
 
@@ -704,6 +789,7 @@ mod tests {
                 signature: "s".into(),
                 readable: true,
                 writable: true,
+                emits: Emits::True,
             }
         );
         assert_eq!(p[1].signature, "aa{sv}");
@@ -735,5 +821,66 @@ mod tests {
                 ("net.hadess.PowerProfiles", "Ping", vec![]),
             ]
         );
+    }
+
+    /// (dbus-unfollowed) `EmitsChangedSignal` on a property, on its
+    /// interface (written before or after the properties, the property's
+    /// own winning), `const` and `invalidates`; none is `true`; one on a
+    /// method or signal, or another interface's, is not the property's.
+    #[test]
+    fn emits_changed_signal_is_read_from_the_property_or_its_interface() {
+        let xml = r#"<node>
+  <interface name="org.freedesktop.login1.Manager">
+    <property name="Docked" type="b" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/>
+    </property>
+    <property name="IdleHint" type="b" access="read"/>
+    <property name="HandleLidSwitch" type="s" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="const"/>
+    </property>
+    <property name="Seat" type="s" access="read">
+      <annotation name="other.Thing" value="false"/>
+    </property>
+    <method name="Lock">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/>
+    </method>
+    <signal name="PrepareForSleep">
+      <arg type="b"/>
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/>
+    </signal>
+  </interface>
+  <interface name="org.example.Late">
+    <property name="Level" type="u" access="read"/>
+    <property name="Name" type="s" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="invalidates"/>
+    </property>
+    <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/>
+  </interface>
+  <interface name="org.example.Plain">
+    <property name="Level" type="u" access="read"/>
+  </interface>
+</node>"#;
+        let p = parse(xml);
+        let got: Vec<(&str, &str, Emits)> = p
+            .iter()
+            .map(|p| (p.interface.as_str(), p.name.as_str(), p.emits))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("org.freedesktop.login1.Manager", "Docked", Emits::False),
+                ("org.freedesktop.login1.Manager", "IdleHint", Emits::True),
+                (
+                    "org.freedesktop.login1.Manager",
+                    "HandleLidSwitch",
+                    Emits::Const
+                ),
+                ("org.freedesktop.login1.Manager", "Seat", Emits::True),
+                ("org.example.Late", "Level", Emits::False),
+                ("org.example.Late", "Name", Emits::Invalidates),
+                ("org.example.Plain", "Level", Emits::True),
+            ]
+        );
+        assert_eq!(Emits::from_annotation("sometimes"), None);
     }
 }

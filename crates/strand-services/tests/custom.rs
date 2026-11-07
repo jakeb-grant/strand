@@ -21,7 +21,7 @@ use strand_services::custom::{
 };
 use strand_services::testing::{DbusMock, PrivateBus};
 use strand_services::{Applied, Buses, Data, Services};
-use support::{connect, mock_calls, tokio, until};
+use support::{connect, mock, mock_calls, tokio, until};
 
 /// (M6) `action hold(profile: text, reason: text, app: text) =
 /// HoldProfile` and `action release(cookie: int) = ReleaseProfile` on
@@ -120,6 +120,91 @@ fn a_dbus_declarations_actions_call_its_methods() {
     );
     // The refused action left the service running: it still reads.
     assert!(client.running(), "the service stopped");
+    client.release(&rt);
+    services.shutdown();
+    custom::forget(id);
+}
+
+/// (dbus-unfollowed) The lid recipe of guide level 5 and
+/// site/how-to/dbus-and-actions.md, `service upower from dbus system
+/// "org.freedesktop.UPower" { lid_closed: bool = LidIsClosed; lid_present:
+/// bool = LidIsPresent; on_battery: bool = OnBattery }`, on dbusmock's
+/// `upower` template: read at start, then each change UPower signals
+/// (`PropertiesChanged`, which the declaration follows; it never polls)
+/// is followed: the lid closing, opening, and the charger going.
+#[test]
+fn the_lid_recipe_follows_upower() {
+    const UPOWER: &str = "org.freedesktop.UPower";
+    const ROOT: &str = "/org/freedesktop/UPower";
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let Some(_upower) = DbusMock::start(&bus, "upower", true, None, UPOWER) else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let rt = Runtime::new();
+    let services = Services::new(&rt, bus.buses(), || {});
+    let client = services.register_as::<Custom>(&rt, "upower");
+    let field = |name: &str, key: &str| FieldSpec {
+        name: name.into(),
+        key: vec![key.into()],
+        rw: false,
+    };
+    let id = custom::register(Spec {
+        name: "upower".into(),
+        source: Source::Dbus {
+            system: true,
+            name: UPOWER.into(),
+            path: None,
+        },
+        fields: vec![
+            field("lid_closed", "LidIsClosed"),
+            field("lid_present", "LidIsPresent"),
+            field("on_battery", "OnBattery"),
+        ],
+        actions: Vec::new(),
+    });
+    client.seed(&rt, |s| *s = Custom::seeded(id, 3)).unwrap();
+    client.acquire(&rt);
+    let read = |i: i64| {
+        client
+            .cells()
+            .values
+            .with_untracked(&rt, |v| v.get(&i).map(|v| v.value.clone()))
+            .ok()
+            .flatten()
+    };
+    let lid = || (read(0), read(1), read(2));
+    let b = |v: bool| Some(Data::Bool(v));
+    until(&rt, &services, "the lid is read", || {
+        lid() == (b(false), b(true), b(false))
+    });
+    let set = |key: &str, v: bool| {
+        let mut props = std::collections::HashMap::new();
+        props.insert(key, zbus::zvariant::Value::from(v));
+        mock(
+            &tokio,
+            &conn,
+            UPOWER,
+            ROOT,
+            "UpdateProperties",
+            &(UPOWER, props),
+        );
+    };
+    set("LidIsClosed", true);
+    until(&rt, &services, "the lid closing is followed", || {
+        lid() == (b(true), b(true), b(false))
+    });
+    set("LidIsClosed", false);
+    until(&rt, &services, "the lid opening is followed", || {
+        lid() == (b(false), b(true), b(false))
+    });
+    set("OnBattery", true);
+    until(&rt, &services, "the charger going is followed", || {
+        lid() == (b(false), b(true), b(true))
+    });
     client.release(&rt);
     services.shutdown();
     custom::forget(id);

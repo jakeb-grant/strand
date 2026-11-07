@@ -902,8 +902,22 @@ pub fn bus_properties(
             name: p.name,
             signature: p.signature,
             writable: p.writable,
+            emits: bus_emits(p.emits),
         })
         .collect()
+}
+
+/// (dbus-unfollowed) strand-introspect's [`strand_introspect::Emits`]
+/// as the compiler's check reads it.
+pub fn bus_emits(e: strand_introspect::Emits) -> strand_compiler::check::dbus::Emits {
+    use strand_compiler::check::dbus::Emits as To;
+    use strand_introspect::Emits as From;
+    match e {
+        From::True => To::True,
+        From::Invalidates => To::Invalidates,
+        From::Const => To::Const,
+        From::False => To::False,
+    }
 }
 
 impl strand_compiler::check::dbus::Introspect for BusIntrospector {
@@ -1326,6 +1340,7 @@ mod tests {
                     signature: "d".into(),
                     readable: true,
                     writable: false,
+                    emits: strand_introspect::Emits::True,
                 }])
             },
         ));
@@ -1410,6 +1425,7 @@ mod tests {
                     signature: "s".into(),
                     readable: true,
                     writable: true,
+                    emits: strand_introspect::Emits::True,
                 }])
             },
         ));
@@ -1451,6 +1467,57 @@ mod tests {
         assert!(out.build.is_none(), "the running program is unchanged");
         assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
         assert!(out.cleared, "the warning is resolved");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (dbus-unfollowed) From the introspection XML to the warning: a
+    /// field bound to a property whose interface says
+    /// `EmitsChangedSignal=false` (after its properties, as logind
+    /// writes it) is `check::dbus_unfollowed` at boot, the config still
+    /// loading; a property annotated `const` is silent.
+    #[test]
+    fn a_never_signalled_property_from_introspection_is_warned_about() {
+        use strand_compiler::reconcile::loader::Loader;
+        let dir = std::env::temp_dir().join(format!("strand-dbus-emits-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.strand");
+        std::fs::write(
+            &file,
+            "service login from dbus system \"org.freedesktop.login1\" \"/org/freedesktop/login1\" {\n  docked: bool = Docked\n  lid: text = HandleLidSwitch\n}\nbar B { text login.docked ? login.lid : \"\" }\n",
+        )
+        .unwrap();
+        const XML: &str = r#"<node>
+  <interface name="org.freedesktop.login1.Manager">
+    <property name="Docked" type="b" access="read"/>
+    <property name="HandleLidSwitch" type="s" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="const"/>
+    </property>
+    <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/>
+  </interface>
+</node>"#;
+        let cache = Arc::new(strand_introspect::Cache::with_fetch(
+            Duration::from_secs(60),
+            |_, _, _| Ok(strand_introspect::parse(XML)),
+        ));
+        let (check, waits) = dbus_check_on(cache, None, || {});
+        let mut loader =
+            Loader::new(&dir, crate::services::schema().clone(), None).with_check(check);
+        let boot = loader.boot();
+        waits.stop_waiting();
+        assert!(boot.build.is_some(), "{:?}", boot.diagnostics);
+        let shown: Vec<(String, String)> = boot
+            .diagnostics
+            .iter()
+            .map(|d| (d.code.to_string(), d.message.clone()))
+            .collect();
+        assert_eq!(
+            shown,
+            [(
+                "check::dbus_unfollowed".to_string(),
+                "`org.freedesktop.login1`'s `Docked` sends no change signal: `login.docked` keeps the value it read at start".to_string()
+            )]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

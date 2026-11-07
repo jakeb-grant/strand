@@ -3906,3 +3906,16 @@ page   = "site/how-to/monitor-layouts.md"
 text   = "good layouts with a notice naming it, so a typo never reaches your"
 source = ['crates/strand-compiler/src/vm/persist.rs "return Err(format!("unknown field {key:?}"));"']
 proof  = "crates/strand-compiler/tests/instantiate.rs::settings_records_read_and_write_table_forms"
+
+# --- dbus-unfollowed (blocks-more) ---
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "to such a property, `check::dbus_unfollowed`, because it would keep the"
+source = ['crates/strand-compiler/src/check/dbus.rs ""check::dbus_unfollowed","', 'crates/strand-introspect/src/lib.rs "pub const EMITS_CHANGED: &str = "org.freedesktop.DBus.Property.EmitsChangedSignal";"']
+proof  = "crates/strand/src/services/custom.rs::a_never_signalled_property_from_introspection_is_warned_about; crates/strand-compiler/tests/checker.rs::a_property_that_never_signals_is_warned_about"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "UPower signals the lid, so a `from dbus` service follows it."
+source = ['crates/strand-services/tests/custom.rs "fn the_lid_recipe_follows_upower() {"']
+proof  = "crates/strand-services/tests/custom.rs::the_lid_recipe_follows_upower (dbusmock's upower template: LidIsClosed, OnBattery followed)"

@@ -1800,6 +1800,7 @@ fn dbus_services_are_checked_against_introspection() {
         name: name.into(),
         signature: sig.into(),
         writable,
+        ..Default::default()
     };
     let ppd = Fake(Some(Ok(vec![
         prop("ActiveProfile", "s", true),
@@ -2207,6 +2208,7 @@ fn dbus_actions_are_checked_against_introspection() {
                 name: "ActiveProfile".into(),
                 signature: "s".into(),
                 writable: true,
+                ..Default::default()
             }]))
         }
         fn methods(&self, _: bool, _: &str, _: &str) -> Option<Result<Vec<BusMethod>, String>> {
@@ -2636,6 +2638,7 @@ fn unread_methods_leave_actions_unchecked_with_a_warning() {
                 name: "ActiveProfile".into(),
                 signature: "s".into(),
                 writable: true,
+                ..Default::default()
             }]))
         }
         fn methods(&self, _: bool, _: &str, _: &str) -> Option<Result<Vec<BusMethod>, String>> {
@@ -2649,6 +2652,69 @@ fn unread_methods_leave_actions_unchecked_with_a_warning() {
     assert_eq!(d.len(), 1, "{d:?}");
     assert_eq!(d[0].code, "check::dbus_unchecked");
     assert!(d[0].message.contains("timed out"), "{}", d[0].message);
+}
+
+/// (dbus-unfollowed) A field bound to a property annotated
+/// `EmitsChangedSignal=false` (logind's `Docked`) is a warning naming
+/// the field, with a way out; a `const` property, one signalled with
+/// `invalidates` and one with no annotation are silent.
+#[test]
+fn a_property_that_never_signals_is_warned_about() {
+    use strand_compiler::check::dbus::{BusProperty, Emits, Introspect, check};
+    struct Logind;
+    impl Introspect for Logind {
+        fn properties(
+            &self,
+            system: bool,
+            name: &str,
+            _: &str,
+        ) -> Option<Result<Vec<BusProperty>, String>> {
+            assert!(system);
+            assert_eq!(name, "org.freedesktop.login1");
+            let prop = |name: &str, sig: &str, emits: Emits| BusProperty {
+                interface: "org.freedesktop.login1.Manager".into(),
+                name: name.into(),
+                signature: sig.into(),
+                writable: false,
+                emits,
+            };
+            Some(Ok(vec![
+                prop("Docked", "b", Emits::False),
+                prop("HandleLidSwitch", "s", Emits::Const),
+                prop("PreparingForSleep", "b", Emits::Invalidates),
+                prop("IdleHint", "b", Emits::True),
+            ]))
+        }
+    }
+    let run = |fields: &str| {
+        let src = format!(
+            "service login from dbus system \"org.freedesktop.login1\" \"/org/freedesktop/login1\" {{ {fields} }}\nbar B {{ text \"x\" }}\n"
+        );
+        let (out, _) = compile_files(&[("a.strand", src)]);
+        assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+        check(&out.program, &Logind)
+    };
+    let d = run("docked: bool = Docked; idle: bool = IdleHint");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].code, "check::dbus_unfollowed");
+    assert!(!d[0].is_error(), "a warning: the config still loads");
+    assert_eq!(
+        d[0].message,
+        "`org.freedesktop.login1`'s `Docked` sends no change signal: `login.docked` keeps the value it read at start"
+    );
+    assert!(
+        d[0].help
+            .as_deref()
+            .is_some_and(|h| h.contains("from poll")),
+        "{:?}",
+        d[0].help
+    );
+    assert!(
+        run(
+            "lid: text = HandleLidSwitch; sleeping: bool = PreparingForSleep; idle: bool = IdleHint"
+        )
+        .is_empty()
+    );
 }
 
 /// (M6, the review of the owner's ruling) A command `permit exec` does

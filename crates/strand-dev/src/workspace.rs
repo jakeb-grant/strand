@@ -673,6 +673,18 @@ impl strand_compiler::check::dbus::Introspect for Introspector {
                     name: p.name,
                     signature: p.signature,
                     writable: p.writable,
+                    emits: match p.emits {
+                        strand_introspect::Emits::True => strand_compiler::check::dbus::Emits::True,
+                        strand_introspect::Emits::Invalidates => {
+                            strand_compiler::check::dbus::Emits::Invalidates
+                        }
+                        strand_introspect::Emits::Const => {
+                            strand_compiler::check::dbus::Emits::Const
+                        }
+                        strand_introspect::Emits::False => {
+                            strand_compiler::check::dbus::Emits::False
+                        }
+                    },
                 })
                 .collect()
         }))
