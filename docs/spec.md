@@ -736,10 +736,12 @@ monitor, the keyboard always).
   that parses winning: digit text of 9 to 11 digits as Unix seconds, 12
   or more as Unix milliseconds, exactly 8 as `YYYYMMDD` (fewer is no
   date); RFC 3339 / ISO 8601 with a zone (also without seconds, with
-  `+hhmm`, or `20261107T195510Z`); RFC 2822, a leading weekday ignored
+  `+hhmm` or `+hh`, or `20261107T195510Z`); RFC 2822, a leading weekday ignored
   when it is wrong or written in full; a naive `YYYY-MM-DD[T
   ]HH:MM[:SS]`, the wall time as written; `YYYY-MM-DD`, hour and minute
-  null. A number is Unix time, milliseconds from 1e11. An instant is
+  null. A number reads as its digits written out do, so `20261107`
+  printed alone (which a document reads as a JSON number) is 7
+  November 2026, and `2026` or `0` is no date. An instant is
   moved to the local zone and cut to the minute. Other text does not
   convert: the default and one report, or null for `Date?`.
   `strand set` and `strand call` read date text the same way. A
@@ -751,7 +753,7 @@ monitor, the keyboard always).
   `<` and parses as XML; else `key=value` (or `key: value`) lines when
   every line is one (blank and `#` lines aside); else text. Text
   starting with `<` that is not XML (an HTML page) is text, never pairs,
-  and the service logs why once. XML nested deeper than 128 elements,
+  and the service logs why once, until a document is something else. XML nested deeper than 128 elements,
   with more than 64 attributes on an element, or with a DTD declaring a
   parameter entity, an external entity or an entity whose value holds
   `&`, `%` or `<`, or whose entities expand past the document's size
@@ -775,7 +777,9 @@ monitor, the keyboard always).
   child elements `p:n` with any prefix; attributes `@p:n`; and, for
   `text`, the element's own text. A key path's first segment is searched
   for depth first when the root lacks it (`= item` finds RSS's and
-  RSS 1.0's items alike); each later one is read in the first match of
+  RSS 1.0's items alike), and the first element found holding it gives
+  its matches (a GPX track's points across two `<trkseg>`s are read as
+  `[Seg]`, each with its `trkpt`s); each later one is read in the first match of
   the one before (a number picks that match); the last segment's
   matches are the value, several of them a list. A string key (`=
   "dc:creator"`, `= "@state"`, `= "#text"`) is one exact segment.
@@ -783,16 +787,30 @@ monitor, the keyboard always).
   value is a list of it if it converts (else it does not convert), a
   missing key `[]`; a single type over a list reads its first item; an
   XML element read as text, a number, a bool, an enum, a path or a
-  `Date` is its text (its own and its descendants' in document order,
-  whitespace collapsed where it has child elements), and one with no
-  text does not convert; a JSON object is never text; `length`,
+  `Date` is its text (its own and its descendants' in document order;
+  where it has child elements, whitespace collapsed and the runs,
+  trimmed, joined by a space except before closing and after opening
+  punctuation, so `H<sub>2</sub>O` reads `H 2 O`), and one with no
+  text does not convert; a JSON object is never text; a record type
+  with a field named `text` reads text (an element of text alone,
+  `<guid>x</guid>` beside `<guid isPermaLink="false">x</guid>`) as
+  that field, its other fields absent; `length`,
   `angle` and `duration` read plain number text as a number (px, deg,
   seconds); a record's fields are found by the lookup above, a list
   field taking every match; blank text read as an optional type other
   than `text` is null. A value inside a field's (a list's item, a
   record's field) that held something and does not convert is reported
   once with its path (`` `news.posts`: `item[0].pubDate` holds … ``),
-  the item left out or the field its default.
+  the item left out or the field its default; the whole field failing
+  later replaces that report.
+- A field typed `text` reads an XML document as written, markup and
+  all, when the document is one element of text alone (`<b>CPU</b>`)
+  or, for `text` but not `text?`, when it holds nothing at the field's
+  key (an HTML fragment in a file, `<span foreground="red">92%</span>`
+  printed by a script): markup a source prints stays markup for
+  `markup:` (section 6.2), as it does in a text document. `text?` reads
+  null for a key the document lacks, as with JSON; other types read the
+  element tree; an action's `-> text` is what it printed.
 - A `from listen` service has one event, `line(doc)`: each line the
   command prints, `doc` holding that line's fields alone (the service's
   own record: a field the line leaves out is null when its type is

@@ -56,6 +56,7 @@ fn a_dbus_declarations_actions_call_its_methods() {
             name: "profile".into(),
             key: vec!["ActiveProfile".into()],
             rw: false,
+            text: Default::default(),
         }],
         actions: vec![
             ActionSpec {
@@ -152,6 +153,7 @@ fn a_fast_listen_command_wakes_the_logic_thread_once_a_frame() {
             name: "t".into(),
             key: vec!["t".into()],
             rw: false,
+            text: Default::default(),
         }],
         actions: Vec::new(),
     });
@@ -220,11 +222,13 @@ fn a_heard_listen_command_sends_every_line() {
                 name: "t".into(),
                 key: vec!["t".into()],
                 rw: false,
+                text: Default::default(),
             },
             FieldSpec {
                 name: "odd".into(),
                 key: vec!["odd".into()],
                 rw: false,
+                text: Default::default(),
             },
         ],
         actions: Vec::new(),
@@ -335,6 +339,7 @@ fn a_dir_is_listed_and_followed() {
             name: "files".into(),
             key: vec!["files".into()],
             rw: false,
+            text: Default::default(),
         }],
         actions: Vec::new(),
     });
@@ -448,6 +453,7 @@ fn a_file_rewritten_in_place_never_shows_it_empty() {
             name: "level".into(),
             key: vec!["level".into()],
             rw: false,
+            text: Default::default(),
         }],
         actions: Vec::new(),
     });
@@ -546,6 +552,7 @@ fn a_busy_dir_is_listed_at_most_every_relist() {
             name: "files".into(),
             key: vec!["files".into()],
             rw: false,
+            text: Default::default(),
         }],
         actions: Vec::new(),
     });

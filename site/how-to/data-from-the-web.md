@@ -14,7 +14,7 @@ dates in their usual forms read as `Date`s.
 permit exec "curl", "nmap"
 
 // GitHub's API answers JSON: a list of releases.
-type Release { tag_name: text; published_at: Date; html_url: text }
+type Release { tag_name: text; published_at: Date?; html_url: text }
 service gh from poll ["curl", "-sf", "--max-time", "10", "https://api.github.com/repos/hyprwm/Hyprland/releases?per_page=5"] every 1h {
   releases: [Release]
 }
@@ -52,7 +52,7 @@ export let nvidia = hypr.entries.filter(e => (e.content?.plain(html) ?? "").lowe
 
 // Not a feed: the ECB's euro rates, in attributes of nested `Cube`s.
 type Rate { currency: text; rate: float }
-type RateDay { time: Date; Cube: [Rate] }
+type RateDay { time: Date?; Cube: [Rate] }
 service ecb from poll ["curl", "-sf", "--max-time", "10", "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"] every 6h {
   day: RateDay = Cube.Cube
 }
@@ -61,7 +61,8 @@ service ecb from poll ["curl", "-sf", "--max-time", "10", "https://www.ecb.europ
 type HostState { state: text }
 type Host { status: HostState }
 type Scan { host: [Host] }
-action scan(net: text) -> Scan ["nmap", "-sn", "-oX", "-", net]
+// `-n` skips reverse DNS: an action has 10 s to answer.
+action scan(net: text) -> Scan ["nmap", "-sn", "-n", "-oX", "-", net]
 ```
 
 ```strand file=bar.strand
@@ -147,19 +148,39 @@ fields, found by name:
 The root element is the document, so a key starts below it. A key's
 first name is searched for further down when the root has none: `=
 item` finds the items under RSS 2.0's `channel` and beside RSS 1.0's.
+The first element found holding that name gives all its matches, not
+every one in the document: a GPX track paused once has two
+`<trkseg>`s, so `= trkpt` reads the first one's points, and a list of
+a `type Seg { trkpt: [Point] }` reads both.
 
 The type you declare decides the shape. A field typed as a list takes
 every element of its name, one or many; a single type takes the first.
 An element read as `text`, a number or a `Date` is its text, so
 `<title>` is a `text` and `<size units="bytes">42</size>` an `int`;
 read as a record, the same element gives its attributes and children.
+A record type with a `text` field reads an element either way: with
+`type Guid { isPermaLink: bool?; text: text }`, both `<guid
+isPermaLink="false">x</guid>` and a bare `<guid>x</guid>` read, the
+second with `isPermaLink` null.
 `angle`, `length` and `duration` read plain numbers (degrees, pixels,
 seconds), as XML has no numbers of its own. An optional field that is
 blank is `null`, unless it is `text`.
 
 When something does not convert, the field reads as its type's
-default and `strand watch` says which value it was and where, such as
+default, an item that does not convert is left out of its list, and
+`strand watch` says which value it was and where, such as
 `` `arch.posts`: `item[2].pubDate` holds "…", which is not a `Date?` ``.
+
+## Markup as written
+
+A command or a file can also hold markup meant to be shown, not data:
+an HTML fragment, or the Pango `<span foreground="#e06c75">92%</span>`
+that bar scripts print. A field typed `text` reads such a document as
+written, tags and all, when it has nothing at the field's key or is a
+single element of text, such as `<b>CPU</b>`; show it with `markup:
+html` or `markup: basic`. A `text?` field reads `null` for a key the
+document lacks, as it would in JSON, so a feed's optional fields stay
+empty rather than showing the feed.
 
 ## Dates
 
@@ -167,7 +188,11 @@ A `Date` field reads:
 
 - RFC 3339 and ISO 8601: `2026-11-03T09:47:53Z`, `2026-11-03`;
 - RFC 2822, as RSS writes it: `Tue, 03 Nov 2026 09:47:53 +0000`;
+- `20261107`, as `date +%Y%m%d` prints it, whether text or a number;
 - Unix time: seconds, or milliseconds from 1e11 on.
+
+Fewer than eight digits are no date, so `2026` and `0` never become
+1970.
 
 A date with a time is moved into your local time zone and kept to the
 minute. A date alone, such as `2026-11-06`, has no `hour`.

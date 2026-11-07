@@ -5,7 +5,9 @@ notification bodies come as HTML. A `text` shows it with `markup:
 html`, and logic reads the same text without its tags with `plain`, to
 search it, shorten it or count it. Strand never fetches anything
 itself: the text comes from a service, a file or a command, as any text
-does.
+does. A file or a command holding an HTML fragment parses as XML when it
+is well-formed, and a `text` field still reads it as written; see
+[Markup as written](data-from-the-web.md#markup-as-written).
 
 ## The file
 

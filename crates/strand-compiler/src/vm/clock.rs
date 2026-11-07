@@ -320,7 +320,8 @@ fn in_zone<Tz: chrono::TimeZone>(t: DateTime<Tz>, zone: Zone) -> DateParts {
 ///    seconds, 12 or more Unix milliseconds, exactly 8 ISO basic
 ///    `YYYYMMDD`; fewer are refused (`2026` is not 1970);
 /// 2. RFC 3339 / ISO 8601 with `Z` or an offset, also without seconds,
-///    with `+hhmm`, or in the basic form `20261107T195510Z`;
+///    with `+hhmm` or `+hh` (PostgreSQL), or in the basic form
+///    `20261107T195510Z`;
 /// 3. RFC 2822 (RSS), again without a leading weekday when chrono
 ///    refuses it (a full or a wrong weekday);
 /// 4. a naive `YYYY-MM-DD[T ]HH:MM[:SS[.f]]`: the wall time as written;
@@ -344,13 +345,14 @@ pub fn date_from_text(t: &str, zone: Zone) -> Option<DateParts> {
         Some(rest) => format!("{rest}+0000"),
         None => t.to_string(),
     };
+    // `%#z`: an offset of `+hh`, `+hhmm` or `+hh:mm`.
     for f in [
-        "%Y-%m-%dT%H:%M%z",
-        "%Y-%m-%d %H:%M%z",
-        "%Y-%m-%dT%H:%M:%S%.f%z",
-        "%Y-%m-%d %H:%M:%S%.f%z",
-        "%Y%m%dT%H%M%S%z",
-        "%Y%m%dT%H%M%z",
+        "%Y-%m-%dT%H:%M%#z",
+        "%Y-%m-%d %H:%M%#z",
+        "%Y-%m-%dT%H:%M:%S%.f%#z",
+        "%Y-%m-%d %H:%M:%S%.f%#z",
+        "%Y%m%dT%H%M%S%#z",
+        "%Y%m%dT%H%M%#z",
     ] {
         if let Ok(d) = DateTime::parse_from_str(&zoned, f) {
             return Some(in_zone(d, zone));
@@ -400,10 +402,22 @@ fn digit_date(t: &str, zone: Zone) -> Option<Option<DateParts>> {
     })
 }
 
-/// (doc-formats) Unix time as a document's number holds it, read in
-/// `zone`: |n| from 1e11 is milliseconds, anything smaller seconds (the
-/// two cannot be confused between 1973 and 5138). Not a number, or out
-/// of chrono's range, is `None`.
+/// (doc-formats) A document's number as a date, read in `zone`: as its
+/// digits written out are by [`date_from_text`], so a command printing
+/// `20261107` (which a document reads as a JSON number) is 7 November
+/// 2026 and `2026` or `0` is no date, as the same digits in quotes are.
+pub fn date_from_number(n: f64, zone: Zone) -> Option<DateParts> {
+    if !n.is_finite() {
+        return None;
+    }
+    // f64's `Display` writes every digit, never an exponent.
+    digit_date(&n.to_string(), zone).flatten()
+}
+
+/// (doc-formats) Unix time, read in `zone`: |n| from 1e11 is
+/// milliseconds, anything smaller seconds (the two cannot be confused
+/// between 1973 and 5138). Not a number, or out of chrono's range, is
+/// `None`.
 pub fn date_from_unix(n: f64, zone: Zone) -> Option<DateParts> {
     if !n.is_finite() {
         return None;
@@ -712,6 +726,12 @@ mod tests {
             ("1970-01-01T00:00+00:00", ymd(1970, 1, 1, Some((1, 0)))),
             ("2026-11-07T20:37Z", ymd(2026, 11, 7, Some((21, 37)))),
             ("2026-11-07T20:37:15+0100", ymd(2026, 11, 7, Some((20, 37)))),
+            // PostgreSQL's offset of hours alone.
+            (
+                "2026-11-07 21:30:00.123456+01",
+                ymd(2026, 11, 7, Some((21, 30))),
+            ),
+            ("2026-11-07T21:30-05", ymd(2026, 11, 8, Some((3, 30)))),
             ("20261107T195510Z", ymd(2026, 11, 7, Some((20, 55)))),
             // Naive: the wall time as written.
             ("2026-11-07T21:30", ymd(2026, 11, 7, Some((21, 30)))),
@@ -789,6 +809,35 @@ mod tests {
         }
         // The local zone is read without panicking (UTC on wasm).
         assert!(date_from_unix(1_794_084_315.0, Zone::Local).is_some());
+    }
+
+    /// A number reads as its digits do: `20261107` printed by `date
+    /// +%Y%m%d` is a JSON number to the document, and must not be 1970.
+    #[test]
+    fn a_number_reads_as_its_digits() {
+        for (n, want) in [
+            (20_261_107.0, ymd(2026, 11, 7, None)),
+            (1_794_084_315.0, ymd(2026, 11, 7, Some((21, 45)))),
+            (1_794_084_315.9, ymd(2026, 11, 7, Some((21, 45)))),
+            (1_794_081_310_891.0, ymd(2026, 11, 7, Some((20, 55)))),
+            (-100_000_000.0, ymd(1966, 10, 31, Some((15, 13)))),
+        ] {
+            assert_eq!(date_from_number(n, plus_one()), want, "{n}");
+        }
+        for n in [
+            2026.0,
+            0.0,
+            12_345.6,
+            20_261_307.0,
+            -20_261_107.0,
+            f64::NAN,
+            f64::INFINITY,
+            1e300,
+            -1e300,
+            1e-300,
+        ] {
+            assert_eq!(date_from_number(n, plus_one()), None, "{n}");
+        }
     }
 
     #[test]

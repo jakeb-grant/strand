@@ -1057,6 +1057,17 @@ mod tests {
                 .1
                 .is_err_and(|e| e.contains("not a `Date`"))
         );
+        // `date +%Y%m%d` prints digits the document reads as a JSON
+        // number: they are still YYYYMMDD, not Unix seconds (1970), and
+        // fewer digits are no date.
+        let (p, v) = read("Date", "20261107\n");
+        let v = v.unwrap();
+        assert_eq!(v.field(&p.types, "year"), Some(&Value::int(2026)));
+        assert_eq!(v.field(&p.types, "month"), Some(&Value::int(11)));
+        assert_eq!(v.field(&p.types, "day"), Some(&Value::int(7)));
+        assert!(read("Date", "2026\n").1.is_err());
+        let (p, v) = read("Date", "1794084315\n");
+        assert_eq!(v.unwrap().field(&p.types, "year"), Some(&Value::int(2026)));
     }
 
     /// (flex) A real command's output answers its call: run on a thread,

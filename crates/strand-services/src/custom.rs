@@ -43,7 +43,9 @@
 //! no digit; a value's double or single quotes removed, as os-release(5)
 //! writes them), else plain text. Text starting with `<` that is not XML
 //! (an HTML page served in place of a feed) is text, never pairs, and
-//! the source logs why once. A field's key path walks a JSON object (a
+//! the source logs why once until a document is something else. A
+//! `text` field reads XML as written where the element tree has nothing
+//! for it ([`Document::field`]). A field's key path walks a JSON object (a
 //! first key the top level lacks is searched for below it) or an XML
 //! root element by [`lookup`] (exact names, then attributes and local
 //! names; the last segment's matches all, several a list: [`xml::get`]);
@@ -213,6 +215,23 @@ pub struct FieldSpec {
     pub name: String,
     pub key: Vec<String>,
     pub rw: bool,
+    /// (doc-formats) Whether its declared type is `text`, which this
+    /// crate otherwise never sees: such a field reads XML as written
+    /// ([`Document::field`]).
+    pub text: TextField,
+}
+
+/// (doc-formats) A field's declared type as far as [`Document::field`]
+/// needs it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextField {
+    /// Not text.
+    #[default]
+    No,
+    /// `text?`.
+    Optional,
+    /// `text`.
+    Required,
 }
 
 /// (M6) One `action name(params) = Method` of a `from dbus` declaration.
@@ -394,8 +413,9 @@ impl Custom {
 pub enum Document {
     Json(serde_json::Value),
     /// (doc-formats) An XML document's root element as data
-    /// ([`xml`]).
-    Xml(Data),
+    /// ([`xml`]), and the document as written (trimmed), which a `text`
+    /// field may read ([`Document::field`]).
+    Xml(Data, Arc<str>),
     Pairs(Vec<(String, String)>),
     Text(String),
     /// (doc-formats) Text starting with `<` that is not XML, and why:
@@ -416,7 +436,7 @@ impl Document {
         }
         if t.starts_with('<') {
             return match xml::parse(t, MAX_DOCUMENT) {
-                Ok(root) => Document::Xml(root),
+                Ok(root) => Document::Xml(root, t.into()),
                 Err(why) => Document::NotXml {
                     text: t.to_string(),
                     why,
@@ -471,7 +491,7 @@ impl Document {
     pub fn into_data(self) -> Data {
         match self {
             Document::Json(v) => json_data(&v),
-            Document::Xml(root) => root,
+            Document::Xml(root, _) => root,
             Document::Pairs(pairs) => Data::Record {
                 ty: "".into(),
                 fields: pairs
@@ -497,22 +517,47 @@ impl Document {
                     .or_else(|| p.iter().find(|(n, _)| n.eq_ignore_ascii_case(&k)))
                     .map(|(_, v)| Data::text(v.as_str()))
             }
-            Document::Xml(root) => xml::get(root, key),
+            Document::Xml(root, _) => xml::get(root, key),
             Document::Text(t) | Document::NotXml { text: t, .. } => Some(Data::text(t.as_str())),
+        }
+    }
+
+    /// (doc-formats) The value of the field `f` ([`Document::get`] at its
+    /// key), except that a `text` field reads XML as written, markup and
+    /// all, where the element tree has nothing better for it: when the
+    /// document is one element of text alone (`<b>CPU</b>`), and, for
+    /// `text` but not `text?`, when the document holds nothing at its
+    /// key (an HTML fragment in a file, `<span foreground="red">92%</span>`
+    /// from a script). Markup a source prints so stays markup for
+    /// `markup:`, as any text document does; `text?` keeps null for a
+    /// key the document lacks, as with JSON.
+    pub fn field(&self, f: &FieldSpec) -> Option<Data> {
+        let got = self.get(&f.key);
+        match (self, f.text) {
+            (Document::Xml(Data::Text(_), written), TextField::Optional | TextField::Required) => {
+                Some(Data::Text(written.clone()))
+            }
+            (Document::Xml(_, written), TextField::Required) if got.is_none() => {
+                Some(Data::Text(written.clone()))
+            }
+            _ => got,
         }
     }
 }
 
-/// (doc-formats) Log once why `doc` (of the service `name`) is not
-/// XML, when that differs from what `last` said.
-fn note_not_xml(name: &str, doc: &Document, last: &mut Option<String>) {
-    let why = doc.not_xml().map(str::to_string);
-    if let Some(w) = &why
-        && why != *last
+/// (doc-formats) Log why `doc` (of the service `name`) is not XML, once
+/// until a document is something else again (`last`: the one before was
+/// not XML either). Not once per reason: roxmltree's reasons hold a
+/// position, so a `from listen` stream of `<6>…` kernel lines would log
+/// every line.
+fn note_not_xml(name: &str, doc: &Document, last: &mut bool) {
+    let why = doc.not_xml();
+    if let Some(w) = why
+        && !*last
     {
         log::warn!("`{name}`: not XML ({w}); read as text");
     }
-    *last = why;
+    *last = why.is_some();
 }
 
 /// A pair's value without the quotes around it, as os-release(5) writes
@@ -591,7 +636,7 @@ pub fn json_data(v: &serde_json::Value) -> Data {
 /// keep their values (a `listen` line may be a partial update).
 fn merge_doc(spec: &Spec, doc: &Document, state: &mut Custom) {
     for (i, f) in spec.fields.iter().enumerate() {
-        if let Some(v) = doc.get(&f.key) {
+        if let Some(v) = doc.field(f) {
             state.set(i, v);
         }
     }
@@ -602,7 +647,7 @@ fn merge_doc(spec: &Spec, doc: &Document, state: &mut Custom) {
 /// null (its type's default), not its last value.
 fn replace_doc(spec: &Spec, doc: &Document, state: &mut Custom) {
     for (i, f) in spec.fields.iter().enumerate() {
-        state.set(i, doc.get(&f.key).unwrap_or(Data::Null));
+        state.set(i, doc.field(f).unwrap_or(Data::Null));
     }
 }
 
@@ -1580,7 +1625,7 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
     let mut watch = watch_file(path)
         .map_err(|e| ServiceError(format!("cannot watch {}: {e}", path.display())))?;
     let mut last: Option<Document> = None;
-    let mut not_xml = None;
+    let mut not_xml = false;
     let mut over = None;
     let mut first = true;
     loop {
@@ -1996,7 +2041,7 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
     // go. A line after a quiet frame is sent at once.
     let mut pending: Option<Custom> = None;
     let mut next_send = tokio::time::Instant::now();
-    let mut not_xml = None;
+    let mut not_xml = false;
     loop {
         tokio::select! {
             line = lines.next() => match line {
@@ -2012,7 +2057,7 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
                         let values = spec
                             .fields
                             .iter()
-                            .map(|f| doc.get(&f.key).unwrap_or(Data::Null))
+                            .map(|f| doc.field(f).unwrap_or(Data::Null))
                             .collect();
                         if !cx.emit(CustomEvent::Line(Data::List(values))) {
                             return Ok(());
@@ -2123,7 +2168,7 @@ async fn run_poll(
     // When the last poll began: shown again sooner than `every` after it
     // (a hover popup flickering), the next poll still waits for `every`.
     let mut last: Option<tokio::time::Instant> = None;
-    let mut not_xml = None;
+    let mut not_xml = false;
     let mut over = None;
     loop {
         if first && cx.period(every).is_none() {

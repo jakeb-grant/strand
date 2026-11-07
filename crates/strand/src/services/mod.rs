@@ -4043,6 +4043,56 @@ service shelf {
                 "{}",
                 date[0].message
             );
+            // The page served again: the whole field fails now, which
+            // replaces the open report of the date inside it.
+            save(
+                &file,
+                "<!doctype html>\n<html><body><p>Checking<br>again</p></body></html>\n",
+            );
+            let seen = std::cell::RefCell::new(Vec::new());
+            live.until("the page reported again", |l| {
+                seen.borrow_mut().extend(report(l));
+                seen.borrow()
+                    .iter()
+                    .any(|d| !d.resolved && d.message.contains("Checking"))
+            });
+            assert!(
+                seen.borrow()
+                    .iter()
+                    .any(|d| d.resolved && d.message.contains("pubDate")),
+                "the date's report resolved: {:?}",
+                seen.borrow()
+            );
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// (doc-formats) Markup a source prints stays markup for a `text`
+        /// field: an HTML fragment in a file reads as written for a key
+        /// it lacks (it parses as XML, rooted at `div`), a status
+        /// script's `<b>…</b>` keeps its tags, and `text?` reads null for
+        /// a missing key, as with JSON.
+        #[test]
+        fn markup_in_a_document_reads_as_written_for_text() {
+            let dir = temp("markup");
+            let file = dir.join("motd.html");
+            let html = "<div><h2>Hi</h2><p>Today <b>3</b> updates</p></div>";
+            save(&file, &format!("{html}\n"));
+            let src = format!(
+                "service motd from file \"{}\" {{ body: text; note: text?; h2: text }}\nbar B {{ text motd.body {{ markup: html }} }}\n",
+                file.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("the fragment read", |l| {
+                l.value("motd", "body") == Value::text(html)
+            });
+            assert_eq!(live.value("motd", "note"), Value::Null);
+            assert_eq!(live.value("motd", "h2"), Value::text("Hi"));
+            save(&file, "<b>CPU</b> \n");
+            live.until("the bold kept", |l| {
+                l.value("motd", "body") == Value::text("<b>CPU</b>")
+            });
+            assert_eq!(live.value("motd", "note"), Value::text("<b>CPU</b>"));
             drop(live);
             let _ = std::fs::remove_dir_all(&dir);
         }

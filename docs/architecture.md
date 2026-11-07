@@ -1737,8 +1737,9 @@ Public interfaces:
   build is sent on, so the disk write is never on the save-to-pixels
   path (decisions.md m5-open-reload).
 - **Dates from text** (`strand_compiler::vm::clock`, doc-formats):
-  `date_from_text(text, Zone)` and `date_from_unix(n, Zone)` read a
-  document's date text and Unix time into `DateParts` (a date and its
+  `date_from_text(text, Zone)`, `date_from_number(n, Zone)` (a number
+  read as its digits are) and `date_from_unix(n, Zone)` read a
+  document's date text, numbers and Unix time into `DateParts` (a date and its
   hour and minute, if any) in the zone given, never calling `Local`
   themselves; `is_date(types, r)` says whether `r` is the schema's
   `Date`, and `date_value(r, parts)` builds one.
@@ -3002,16 +3003,19 @@ itself.
   (`from dbus`, `file`, `dir`, `listen`, `poll`) run on the same
   contract as `custom::Custom`, one store per declaration;
   (doc-formats) a source's output is a `custom::Document` (`Json`,
-  `Xml` (the root element as `Data`), `Pairs`, `Text`, and `NotXml`,
-  text starting with `<` that is not XML, with why, logged once by its
-  source), read by key path through `Document::get` and whole through
-  `Document::into_data` (an action's `-> T`). An XML element is a
+  `Xml` (the root element as `Data`, and the document as written),
+  `Pairs`, `Text`, and `NotXml`, text starting with `<` that is not
+  XML, with why, logged once by its source), read by key path through
+  `Document::get`, a field's value through `Document::field` (a
+  `FieldSpec` whose `text: TextField` the binary sets from the declared
+  type reads XML as written where the tree has nothing for it), and
+  whole through `Document::into_data` (an action's `-> T`). An XML element is a
   `Data::Record` whose `ty` is `custom::ELEMENT` (`"<element>"`, which
   no identifier can be), holding `@attribute`s, then child elements
   and `#text` runs in document order; `custom::lookup(record, name)`
   is the one name rule (exact, `@name`, `p:name`, `@p:name`, then an
-  element's text for `text`) used by key paths and by the binary's
-  record conversion, and `custom::element_text` an element's text
+  element's text for `text`) used by XML key paths and by the binary's
+  record conversion (a JSON key path stays exact), and `custom::element_text` an element's text
   content. `custom::xml` bounds what roxmltree is given (depth 128, 64
   attributes, DTD entities) before it parses; `Data::write_json` writes
   an element's repeated names as one array; a document is at most

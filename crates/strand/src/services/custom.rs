@@ -40,7 +40,7 @@ use strand_compiler::vm::schema_host::default_value;
 use strand_compiler::vm::{Num, Value, clock};
 use strand_core::{Error, Memo, NodeId, Runtime, Scope, Signal};
 use strand_services::custom::{
-    self, ActionSpec, Custom, CustomAction, CustomValue, FieldSpec, Source, Spec,
+    self, ActionSpec, Custom, CustomAction, CustomValue, FieldSpec, Source, Spec, TextField,
 };
 use strand_services::{Client, Data, ServiceDiagnostic, Services, Step, ToData};
 
@@ -135,15 +135,17 @@ impl LineSink {
             // logged once until another does not.
             let note = nested.map(|n| {
                 let at = n.path.trim_start_matches('.');
-                format!("`{at}` holds {}, which is not a `{}`", n.held, n.ty)
+                let then = if at.ends_with(']') {
+                    "the item is left out"
+                } else {
+                    "it reads as the type's default"
+                };
+                format!("`{at}` holds {}, which is not a `{}`; {then}", n.held, n.ty)
             });
             if let Some(note) = &note
                 && t.nested.borrow().as_ref() != Some(note)
             {
-                log::warn!(
-                    "`{}.line`: {note}; it reads as the type's default",
-                    t.service
-                );
+                log::warn!("`{}.line`: {note}", t.service);
             }
             *t.nested.borrow_mut() = note;
             let (queue, service) = (t.queue, t.service.clone());
@@ -205,6 +207,16 @@ impl std::fmt::Debug for CustomHost {
     }
 }
 
+/// (doc-formats) Whether a field of type `ty` is text, as the service
+/// side reads XML for it (`Document::field`).
+fn text_field(ty: Option<&Ty>) -> TextField {
+    match ty {
+        Some(Ty::Prim(Prim::Text)) => TextField::Required,
+        Some(Ty::Optional(t)) if matches!(**t, Ty::Prim(Prim::Text)) => TextField::Optional,
+        _ => TextField::No,
+    }
+}
+
 /// `~/x` from the home directory, `x` from `dir`.
 fn resolve(path: &str, dir: Option<&Path>) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/")
@@ -219,8 +231,9 @@ fn resolve(path: &str, dir: Option<&Path>) -> PathBuf {
     }
 }
 
-/// The service-side spec of `decl`.
-pub fn spec_of(decl: &CustomService, config_dir: Option<&Path>) -> Spec {
+/// The service-side spec of `decl`, its fields' declared types `types`
+/// (in its fields' order; a missing one is not text).
+pub fn spec_of(decl: &CustomService, config_dir: Option<&Path>, types: &[Ty]) -> Spec {
     let source = match &decl.source {
         SourceSpec::Dbus { system, name, path } => Source::Dbus {
             system: *system,
@@ -250,10 +263,12 @@ pub fn spec_of(decl: &CustomService, config_dir: Option<&Path>) -> Spec {
         fields: decl
             .fields
             .iter()
-            .map(|f| FieldSpec {
+            .enumerate()
+            .map(|(i, f)| FieldSpec {
                 name: f.name.clone(),
                 key: f.key.clone(),
                 rw: f.rw,
+                text: text_field(types.get(i)),
             })
             .collect(),
         actions: decl
@@ -485,9 +500,10 @@ fn go(
         // (doc-formats) A list from one value: a list of it, if it
         // converts.
         (Ty::List(item, _), d) => go(types, item, d, path, nested).map(|v| Value::list(vec![v])),
-        // (doc-formats) Unix time: seconds, or milliseconds from 1e11.
+        // (doc-formats) A number as its digits read: Unix seconds or
+        // milliseconds, `YYYYMMDD`, or (fewer digits) no date.
         (Ty::Record(r), Data::Int(_) | Data::Float(_)) if clock::is_date(types, *r) => {
-            let parts = clock::date_from_unix(number(d)?, clock::Zone::Local)?;
+            let parts = clock::date_from_number(number(d)?, clock::Zone::Local)?;
             Some(clock::date_value(*r, parts))
         }
         (Ty::Record(r), Data::Record { .. }) => {
@@ -525,6 +541,19 @@ fn go(
                 })
                 .collect();
             Some(Value::record(*r, values))
+        }
+        // (doc-formats) Text read as a record with a `text` field: that
+        // field, the others absent, as an element of text alone would
+        // be with attributes (`<guid>x</guid>` beside `<guid
+        // isPermaLink="false">x</guid>`).
+        (Ty::Record(r), Data::Text(_))
+            if types.record(*r).fields.iter().any(|f| f.name == "text") =>
+        {
+            let element = Data::Record {
+                ty: custom::ELEMENT.into(),
+                fields: vec![("#text".into(), d.clone())],
+            };
+            go(types, ty, &element, path, nested)
         }
         (ty, Data::Text(t)) => strand_compiler::instantiate::parse_text(types, ty, t.trim()),
         // Anything else does not convert: the type's default.
@@ -578,23 +607,30 @@ struct Mismatch {
 impl Mismatch {
     /// The field read `d`, which converted or not, a value inside it
     /// perhaps not (`nested`). No value yet (null) says nothing. A field
-    /// that converts resolves a report of its own value; one inside it
-    /// that does not is then reported, once.
+    /// that converts wholly resolves the open report. Its own value not
+    /// converting, or one inside it, is reported once until then, and
+    /// replaces an open report of the other kind (the whole field
+    /// failing after a value inside it did, or the reverse).
     fn saw(&self, types: &TypeTable, ty: &Ty, d: &Data, converted: bool, nested: Option<&Nested>) {
         let message = match (converted, nested) {
             (true, None) => return self.resolve(),
-            (true, Some(n)) => {
-                if matches!(*self.reported.borrow(), Some((false, _))) {
-                    self.resolve();
-                }
-                (
-                    true,
-                    format!(
-                        "`{}`: `{}{}` holds {}, which is not a `{}`; it reads as the type's default",
-                        self.field, self.key, n.path, n.held, n.ty,
-                    ),
-                )
-            }
+            (true, Some(n)) => (
+                true,
+                format!(
+                    "`{}`: `{}{}` holds {}, which is not a `{}`; {}",
+                    self.field,
+                    self.key,
+                    n.path,
+                    n.held,
+                    n.ty,
+                    // A list's item is left out; a record's field defaults.
+                    if n.path.ends_with(']') {
+                        "the item is left out"
+                    } else {
+                        "it reads as the type's default"
+                    },
+                ),
+            ),
             (false, _) if matches!(d, Data::Null) => return,
             (false, _) => (
                 false,
@@ -607,9 +643,14 @@ impl Mismatch {
                 ),
             ),
         };
-        if self.reported.borrow().is_some() {
+        // One report of each kind until the field converts wholly: a
+        // second bad value of the same kind is not news.
+        if matches!(&*self.reported.borrow(), Some((nested, _)) if *nested == message.0) {
             return;
         }
+        // The other kind (the whole field failing after a value inside
+        // it did, or the reverse): the open report is over.
+        self.resolve();
         self.services.report(ServiceDiagnostic {
             service: self.service.clone(),
             message: message.1.clone(),
@@ -699,7 +740,12 @@ impl CustomHost {
         decl: &CustomService,
         types: &TypeTable,
     ) -> Entry {
-        let spec = custom::register(spec_of(decl, self.config_dir.borrow().as_deref()));
+        let typing = Typing::of(decl, types);
+        let spec = custom::register(spec_of(
+            decl,
+            self.config_dir.borrow().as_deref(),
+            &typing.fields,
+        ));
         // (history) A `from poll` samples on a clock: a value it takes
         // while hidden and kept is a poll.
         client.polls(match &decl.source {
@@ -710,7 +756,7 @@ impl CustomHost {
         if let Err(e) = client.seed(rt, |s| *s = Custom::seeded(spec, n)) {
             log::warn!("{}: {e}", decl.name);
         }
-        let typing = Rc::new(RefCell::new(Typing::of(decl, types)));
+        let typing = Rc::new(RefCell::new(typing));
         let mut mismatches = Vec::with_capacity(n);
         let (scope, (epoch, values, line)) = rt.scope(|rt| {
             let epoch = rt.signal(0u64);
@@ -848,7 +894,14 @@ impl ServiceHost for CustomHost {
                 drop(entries);
                 return self.declare(rt, decl, types);
             };
-            e.decl.source == decl.source && e.decl.fields == decl.fields
+            // (doc-formats) A field becoming text, or no longer, reads
+            // XML differently on the service side: a restart.
+            let text = |fields: &[Ty]| -> Vec<TextField> {
+                fields.iter().map(|t| text_field(Some(t))).collect()
+            };
+            e.decl.source == decl.source
+                && e.decl.fields == decl.fields
+                && text(&e.typing.borrow().fields) == text(&Typing::of(decl, types).fields)
         };
         if !same {
             // Not just renumbered: the declaration changed after all.
@@ -1486,6 +1539,12 @@ mod tests {
         let wttr = field(r#"{"weather": [{"date": "2026-11-07"}]}"#, "date");
         assert_eq!(n(&wttr, "day"), Some(Value::int(7)));
         assert_eq!(n(&wttr, "hour"), Some(Value::Null));
+        // A number reads as its digits do: 8 are YYYYMMDD, fewer no date.
+        let ymd = field(r#"{"date": 20261107}"#, "date");
+        assert_eq!(n(&ymd, "year"), Some(Value::int(2026)));
+        assert_eq!(n(&ymd, "day"), Some(Value::int(7)));
+        assert_eq!(coerce(types, &date, &Data::Int(2026)), None);
+        assert_eq!(coerce(types, &date, &Data::Int(0)), None);
     }
 
     /// (doc-formats) The types a test config declares.
@@ -1592,6 +1651,59 @@ type Guid { isPermaLink: bool; text: text }
             "updated",
         );
         assert!(matches!(c(&date, &updated), Some(Value::Record(..))));
+    }
+
+    /// (doc-formats) The type decides text or record whatever the
+    /// element's shape: one of text alone reads into a record with a
+    /// `text` field as that field, as its siblings with an attribute do
+    /// (RSS's bare `<guid>`, `<category>` without `domain`, fontconfig's
+    /// `<dir>` without `prefix`, Atom's `<title>` without `type`).
+    #[test]
+    fn text_alone_reads_into_a_record_with_a_text_field() {
+        let types = &typed(
+            "type Guid { isPermaLink: bool?; text: text }
+type Dir { prefix: text?; text: text }
+type Size { units: text?; text: int }
+type Named { name: text }
+",
+        );
+        let c = |ty: &Ty, d: &Data| coerce(types, ty, d);
+        let guid = xml_at("<i><guid>https://x/1</guid></i>", "guid");
+        let g = c(&user(types, "Guid"), &guid).unwrap();
+        assert_eq!(g.field(types, "text"), Some(&Value::text("https://x/1")));
+        assert_eq!(g.field(types, "isPermaLink"), Some(&Value::Null));
+        // fontconfig: four `<dir>`s, one with an attribute; all four read.
+        let conf = "<fontconfig><dir>/usr/share/fonts</dir><dir>/usr/local/share/fonts</dir><dir prefix=\"xdg\">fonts</dir><dir>~/.fonts</dir></fontconfig>";
+        let dirs = Ty::List(Box::new(user(types, "Dir")), false);
+        let Some(Value::List(l)) = c(&dirs, &xml_at(conf, "dir")) else {
+            panic!("dirs")
+        };
+        let read: Vec<_> = l
+            .iter()
+            .map(|d| {
+                (
+                    d.field(types, "text").cloned(),
+                    d.field(types, "prefix").cloned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            read,
+            vec![
+                (Some(Value::text("/usr/share/fonts")), Some(Value::Null)),
+                (
+                    Some(Value::text("/usr/local/share/fonts")),
+                    Some(Value::Null)
+                ),
+                (Some(Value::text("fonts")), Some(Value::text("xdg"))),
+                (Some(Value::text("~/.fonts")), Some(Value::Null)),
+            ]
+        );
+        // The `text` field keeps its own type.
+        let size = c(&user(types, "Size"), &Data::text(" 42 ")).unwrap();
+        assert_eq!(size.field(types, "text"), Some(&Value::int(42)));
+        // A record with no `text` field still does not read text.
+        assert_eq!(c(&user(types, "Named"), &Data::text("x")), None);
     }
 
     /// (doc-formats) A declared type's fields find their names exactly,

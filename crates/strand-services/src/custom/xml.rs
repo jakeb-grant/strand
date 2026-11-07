@@ -10,9 +10,11 @@
 //! declares a parameter entity, an external entity, an entity whose
 //! value holds `&`, `%` or `<`, or entities whose references expand past
 //! the document budget. The scan skips comments, CDATA, processing
-//! instructions and quoted values, and stops (leaving roxmltree to say
-//! why) at the first one that is not terminated, so it reads each byte
-//! a bounded number of times.
+//! instructions and quoted values, reads a DTD's internal subset token
+//! for token as roxmltree does (so it skips nothing roxmltree reads),
+//! and refuses the document at a construct it cannot follow, which
+//! roxmltree would refuse too; it reads each byte a bounded number of
+//! times.
 //!
 //! The root element is the document: an element with neither
 //! attributes nor child elements is its text (CDATA and entities
@@ -145,8 +147,10 @@ fn prescan(b: &[u8], budget: usize) -> Result<(), String> {
                 };
                 match next {
                     Some(n) => i = n,
-                    // Not terminated: roxmltree stops there too.
-                    None => return Ok(()),
+                    // Not terminated, or a DTD roxmltree refuses: no
+                    // XML. Refused here rather than trusting roxmltree
+                    // to stop at the same place.
+                    None => return Err(format!("it is not well-formed XML at byte {i}")),
                 }
             }
             _ => i += 1,
@@ -205,9 +209,22 @@ fn tag<'a>(
     Ok(None)
 }
 
-/// A DOCTYPE whose body starts at `i`: its internal subset's entity
-/// declarations read (and refused as the module docs say). The index
-/// after its `>`.
+/// XML's white space, as roxmltree skips it (`\x0c` is not).
+fn is_space(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | b'\n' | b'\r')
+}
+
+fn skip_space(b: &[u8], mut i: usize) -> usize {
+    while b.get(i).copied().is_some_and(is_space) {
+        i += 1;
+    }
+    i
+}
+
+/// A DOCTYPE whose body starts at `i`, read as roxmltree reads it (its
+/// name and external ID, then `[` or `>`), its internal subset's entity
+/// declarations noted (and refused as the module docs say). The index
+/// after its `>`; `None`: roxmltree refuses it too.
 fn doctype<'a>(
     b: &'a [u8],
     mut i: usize,
@@ -219,10 +236,7 @@ fn doctype<'a>(
                 Some(n) => i = n,
                 None => return Ok(None),
             },
-            b'[' => match subset(b, i + 1, entities)? {
-                Some(n) => i = n,
-                None => return Ok(None),
-            },
+            b'[' => return subset(b, i + 1, entities),
             b'>' => return Ok(Some(i + 1)),
             _ => i += 1,
         }
@@ -230,62 +244,54 @@ fn doctype<'a>(
     Ok(None)
 }
 
-/// An internal subset starting at `i`: the index after its `]`.
+/// An internal subset starting at `i`, tokenised exactly as roxmltree's
+/// `parse_doctype` does: so a declaration the scan skips is one
+/// roxmltree skips, and anything it does not know ends the scan where
+/// roxmltree refuses the document. `<!ELEMENT`, `<!ATTLIST` and
+/// `<!NOTATION` end at the first `>`, quotes or not (roxmltree's
+/// `consume_decl`). The index after the subset's `]>`.
 fn subset<'a>(
     b: &'a [u8],
     mut i: usize,
     entities: &mut Entities<'a>,
 ) -> Result<Option<usize>, String> {
-    while i < b.len() {
-        let next = if starts(b, i, b"<!--") {
+    loop {
+        i = skip_space(b, i);
+        let next = if starts(b, i, b"<!ENTITY") {
+            entity(b, i + 8, entities)?
+        } else if starts(b, i, b"<!--") {
             after(b, i + 4, b"-->")
         } else if starts(b, i, b"<?") {
             after(b, i + 2, b"?>")
-        } else if starts(b, i, b"<!ENTITY") {
-            entity(b, i + 8, entities)?
-        } else if starts(b, i, b"<!") {
-            declaration_end(b, i + 2)
+        } else if starts(b, i, b"]") {
+            let end = skip_space(b, i + 1);
+            return Ok((b.get(end) == Some(&b'>')).then_some(end + 1));
+        } else if starts(b, i, b"<!ELEMENT")
+            || starts(b, i, b"<!ATTLIST")
+            || starts(b, i, b"<!NOTATION")
+        {
+            after(b, i + 2, b">")
+        } else if b.get(i) == Some(&b'%') {
+            return Err("its DTD uses a parameter entity".into());
         } else {
-            match b[i] {
-                b']' => return Ok(Some(i + 1)),
-                b'%' => return Err("its DTD uses a parameter entity".into()),
-                _ => Some(i + 1),
-            }
+            None
         };
         match next {
             Some(n) => i = n,
             None => return Ok(None),
         }
     }
-    Ok(None)
 }
 
-/// The index after a declaration's `>`, quoted values skipped.
-fn declaration_end(b: &[u8], mut i: usize) -> Option<usize> {
-    while i < b.len() {
-        match b[i] {
-            b'"' | b'\'' => i = quoted(b, i)?,
-            b'>' => return Some(i + 1),
-            _ => i += 1,
-        }
-    }
-    None
-}
-
-/// `<!ENTITY name "value">` from after `<!ENTITY`: an internal entity
-/// whose value is plain text is declared; anything else is refused.
+/// `<!ENTITY name "value">` from after `<!ENTITY`, read as roxmltree
+/// reads it: an internal entity whose value is plain text is declared;
+/// anything else is refused.
 fn entity<'a>(
     b: &'a [u8],
     mut i: usize,
     entities: &mut Entities<'a>,
 ) -> Result<Option<usize>, String> {
-    let skip_ws = |b: &[u8], mut i: usize| {
-        while b.get(i).is_some_and(u8::is_ascii_whitespace) {
-            i += 1;
-        }
-        i
-    };
-    i = skip_ws(b, i);
+    i = skip_space(b, i);
     if b.get(i) == Some(&b'%') {
         return Err("its DTD declares a parameter entity".into());
     }
@@ -294,7 +300,7 @@ fn entity<'a>(
         i += 1;
     }
     let name = &b[start..i];
-    i = skip_ws(b, i);
+    i = skip_space(b, i);
     match b.get(i) {
         Some(b'"' | b'\'') => {
             let Some(end) = quoted(b, i) else {
@@ -307,8 +313,12 @@ fn entity<'a>(
                     String::from_utf8_lossy(name)
                 ));
             }
-            entities.declared.insert(name, value.len());
-            Ok(declaration_end(b, end))
+            // roxmltree expands the first declaration of a name (as XML
+            // says); the larger is counted, whichever that is.
+            let len = entities.declared.entry(name).or_insert(0);
+            *len = (*len).max(value.len());
+            let close = skip_space(b, end);
+            Ok((b.get(close) == Some(&b'>')).then_some(close + 1))
         }
         None => Ok(None),
         Some(_) => Err(format!(
@@ -628,7 +638,7 @@ mod tests {
 
     fn xml(text: &str) -> Data {
         match Document::parse(text) {
-            Document::Xml(root) => root,
+            Document::Xml(root, _) => root,
             other => panic!("not XML: {other:?}"),
         }
     }
@@ -695,7 +705,7 @@ mod tests {
         // A BOM goes.
         assert!(matches!(
             Document::parse("\u{feff}<r><a>1</a></r>"),
-            Document::Xml(_)
+            Document::Xml(..)
         ));
     }
 
@@ -818,7 +828,7 @@ mod tests {
         );
         assert!(matches!(
             Document::parse("<title>a=b</title>"),
-            Document::Xml(_)
+            Document::Xml(..)
         ));
         // An HTML page served for a feed: text, saying why.
         let page = Document::parse(
@@ -831,14 +841,64 @@ mod tests {
         assert!(matches!(Document::parse("a=<b>\nc=d"), Document::Pairs(_)));
     }
 
+    /// Markup a source prints stays markup for a `text` field: an HTML
+    /// fragment, a status script's `<span>`, `<b>CPU</b>`.
+    #[test]
+    fn a_text_field_reads_markup_as_written() {
+        use crate::custom::{FieldSpec, TextField};
+        let field = |name: &str, text: TextField| FieldSpec {
+            name: name.into(),
+            key: key(name),
+            rw: false,
+            text,
+        };
+        let html = "<div><h2>Hi</h2><p>Today <b>3</b> updates</p></div>";
+        let span = "<span foreground=\"#e06c75\">CPU 92%</span>";
+        for doc in [html, span] {
+            let d = Document::parse(doc);
+            assert!(matches!(d, Document::Xml(..)));
+            // `text`: a key the document lacks reads it as written.
+            assert_eq!(
+                d.field(&field("body", TextField::Required)),
+                Some(text(doc))
+            );
+            // `text?` keeps null for a missing key, as with JSON; other
+            // types read the element tree.
+            assert_eq!(d.field(&field("body", TextField::Optional)), None);
+            assert_eq!(d.field(&field("body", TextField::No)), None);
+        }
+        // A key the document holds reads the element, as before.
+        let span = Document::parse(span);
+        assert_eq!(
+            span.field(&field("foreground", TextField::Required)),
+            Some(text("#e06c75"))
+        );
+        // One element of text alone: as written for `text` and `text?`,
+        // its text for anything else (`<value>42</value>` as an `int`).
+        let bold = Document::parse("<b>CPU</b>");
+        for t in [TextField::Required, TextField::Optional] {
+            assert_eq!(bold.field(&field("label", t)), Some(text("<b>CPU</b>")));
+        }
+        assert_eq!(
+            bold.field(&field("label", TextField::No)),
+            Some(text("CPU"))
+        );
+        // A feed's fields read as they did.
+        let feed = Document::parse(fixture!("rss.xml"));
+        assert_eq!(
+            feed.field(&field("title", TextField::Required)),
+            Some(text("Example Linux: Recent news"))
+        );
+    }
+
     #[test]
     fn a_doctype_is_read_and_its_entities_bounded() {
         for name in ["nmap.xml", "dbus-doctype.xml", "fontconfig.xml"] {
             let (_, t) = FIXTURES.iter().find(|(n, _)| *n == name).unwrap();
-            assert!(matches!(Document::parse(t), Document::Xml(_)), "{name}");
+            assert!(matches!(Document::parse(t), Document::Xml(..)), "{name}");
         }
         let dbus = xml(fixture!("dbus-doctype.xml"));
-        let doc = Document::Xml(dbus);
+        let doc = Document::Xml(dbus, "".into());
         assert_eq!(
             doc.get(&key("method.annotation.value")),
             Some(text("org.example.Device.GeneralError")),
@@ -869,12 +929,57 @@ mod tests {
         let refs = "&e;".repeat(MAX_DOCUMENT / 10_000 + 1);
         let over = format!("<!DOCTYPE r [ <!ENTITY e \"{big}\"> ]><r a=\"&e;\">{refs}</r>");
         assert!(refused(&over).contains("expand"), "{}", refused(&over));
+        // A name declared twice: roxmltree expands the first, so the
+        // larger counts.
+        let twice = format!("<!DOCTYPE r [ <!ENTITY e \"{big}\"><!ENTITY e \"\"> ]><r>{refs}</r>");
+        assert!(refused(&twice).contains("expand"), "{}", refused(&twice));
         // Under it, entities read, in attributes too.
         let under = "<!DOCTYPE r [ <!ENTITY e \"ab\"> ]><r a=\"&e;\">&e;&e;</r>";
         assert_eq!(
             xml(under),
             element(vec![("@a", text("ab")), ("#text", text("abab"))])
         );
+    }
+
+    /// The scan reads a DTD's declarations where roxmltree does: an
+    /// `<!ATTLIST` ends at its first `>`, quotes or not, so a quote in
+    /// one hides neither the elements after the DTD nor an entity.
+    #[test]
+    fn the_scan_reads_a_dtd_as_roxmltree_does() {
+        let refused = |t: String| {
+            std::thread::Builder::new()
+                .stack_size(256 * 1024)
+                .spawn(move || Document::parse(&t).not_xml().map(str::to_string))
+                .unwrap()
+                .join()
+                .unwrap()
+                .unwrap_or_default()
+        };
+        let deep = "<a>".repeat(20_000);
+        // An unmatched quote: roxmltree ends the ATTLIST at `>` and
+        // recurses into every `<a>`.
+        let lone = format!("<!DOCTYPE r [<!ATTLIST r a CDATA '>]><r>{deep}");
+        assert!(refused(lone).contains("deeper"));
+        // A quote matched two declarations on: the ENTITY between is
+        // declared all the same.
+        let big = "x".repeat(10_000);
+        let refs = "&e;".repeat(MAX_DOCUMENT / 10_000 + 1);
+        let hidden = format!(
+            "<!DOCTYPE r [<!ATTLIST r a CDATA '><!ENTITY e \"{big}\"><!ATTLIST r b CDATA '>]><r>{refs}</r>"
+        );
+        assert!(refused(hidden).contains("expand"));
+        // What roxmltree refuses in a DTD the scan refuses too.
+        for t in [
+            "<!DOCTYPE r [<!ATTLIST r a CDATA \"x>y\">]><r/>",
+            "<!DOCTYPE r [<!ENTITY e \"x\" junk>]><r/>",
+            "<!DOCTYPE r [ junk ]><r/>",
+            "<!DOCTYPE r [ ] junk><r/>",
+        ] {
+            assert!(!refused(t.to_string()).is_empty(), "{t}");
+        }
+        // Declarations roxmltree reads still read.
+        let ok = "<!DOCTYPE r [\n <!ELEMENT r (#PCDATA)>\n <!ATTLIST r a CDATA #IMPLIED>\n <!-- c -->\n <?pi x?>\n <!NOTATION n SYSTEM \"n\">\n <!ENTITY e 'v'>\n] >\n<r>&e;</r>";
+        assert!(matches!(Document::parse(ok), Document::Xml(Data::Text(t), _) if &*t == "v"));
     }
 
     #[test]
@@ -915,7 +1020,7 @@ mod tests {
             .join()
             .unwrap();
         assert!(r.0.is_some_and(|w| w.contains("deeper")));
-        assert!(matches!(r.1, Document::Xml(_)), "128 levels read");
+        assert!(matches!(r.1, Document::Xml(..)), "128 levels read");
         let attrs: String = (0..5000).map(|i| format!(" a{i}=\"{i}\"")).collect();
         let many = Document::parse(&format!("<r{attrs}/>"));
         assert!(many.not_xml().is_some_and(|w| w.contains("attributes")));
@@ -924,11 +1029,11 @@ mod tests {
             .collect();
         assert!(matches!(
             Document::parse(&format!("<r{ok}/>")),
-            Document::Xml(_)
+            Document::Xml(..)
         ));
         // 262k siblings in about 1 MiB.
         let siblings = format!("<r>{}</r>", "<a/>".repeat(262_000));
-        let Document::Xml(Data::Record { fields, .. }) = Document::parse(&siblings) else {
+        let Document::Xml(Data::Record { fields, .. }, _) = Document::parse(&siblings) else {
             panic!("siblings")
         };
         assert_eq!(fields.len(), 262_000);
@@ -960,13 +1065,13 @@ mod tests {
             let d = Document::parse(&t);
             assert!(matches!(
                 d,
-                Document::Xml(_)
+                Document::Xml(..)
                     | Document::NotXml { .. }
                     | Document::Text(_)
                     | Document::Json(_)
                     | Document::Pairs(_)
             ),);
-            if let Document::Xml(root) = &d {
+            if let Document::Xml(root, _) = &d {
                 let _ = get(root, &key("item.0.title"));
                 let _ = element_text(root);
             }
@@ -992,7 +1097,7 @@ mod tests {
         for (name, t) in FIXTURES {
             let d = Document::parse(t);
             assert!(
-                matches!(d, Document::Xml(Data::Record { .. })),
+                matches!(d, Document::Xml(Data::Record { .. }, _)),
                 "{name}: {d:?}"
             );
         }
