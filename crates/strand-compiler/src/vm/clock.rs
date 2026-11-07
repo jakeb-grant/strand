@@ -285,6 +285,137 @@ pub fn datetime_record(r: RecordId, d: NaiveDateTime) -> Value {
     Value::record(r, date_fields(d.date(), Some((d.hour(), d.minute()))))
 }
 
+/// Whether `r` is the schema's own `Date` record (not a config `type`
+/// of that name).
+pub fn is_date(types: &TypeTable, r: RecordId) -> bool {
+    let def = types.record(r);
+    def.name == "Date" && matches!(def.origin, crate::ty::Origin::Schema)
+}
+
+/// A date with its time of day, if any (hour, minute), as a document's
+/// date text reads into a `Date` (decisions.md doc-formats): what
+/// [`date_from_text`] and [`date_from_unix`] return.
+pub type DateParts = (NaiveDate, Option<(u32, u32)>);
+
+/// A `Date` record of `parts`.
+pub fn date_value(r: RecordId, (d, time): DateParts) -> Value {
+    Value::record(r, date_fields(d, time))
+}
+
+/// The wall time in `zone` of an instant, to the minute (seconds and
+/// fractions dropped, not rounded).
+fn in_zone<Tz: chrono::TimeZone>(t: DateTime<Tz>, zone: Zone) -> DateParts {
+    let utc = t.with_timezone(&Utc);
+    let wall = match zone {
+        Zone::Fixed(off) => utc.with_timezone(&off).naive_local(),
+        Zone::Local => utc.with_timezone(&Local).naive_local(),
+    };
+    (wall.date(), Some((wall.hour(), wall.minute())))
+}
+
+/// (doc-formats) Date text as a document writes it, read in `zone`;
+/// the input is trimmed and the first form that parses wins:
+///
+/// 1. digit text (`[-]digits[.digits]`): 9 to 11 integer digits are Unix
+///    seconds, 12 or more Unix milliseconds, exactly 8 ISO basic
+///    `YYYYMMDD`; fewer are refused (`2026` is not 1970);
+/// 2. RFC 3339 / ISO 8601 with `Z` or an offset, also without seconds,
+///    with `+hhmm`, or in the basic form `20261107T195510Z`;
+/// 3. RFC 2822 (RSS), again without a leading weekday when chrono
+///    refuses it (a full or a wrong weekday);
+/// 4. a naive `YYYY-MM-DD[T ]HH:MM[:SS[.f]]`: the wall time as written;
+/// 5. `YYYY-MM-DD`: the date alone, with no time of day.
+///
+/// An instant is moved to `zone` and cut to the minute. Anything else
+/// (ctime, `08:04 PM`) is `None`; nothing panics.
+pub fn date_from_text(t: &str, zone: Zone) -> Option<DateParts> {
+    let t = t.trim();
+    if t.is_empty() || t.len() > 64 {
+        return None;
+    }
+    if let Some(d) = digit_date(t, zone) {
+        return d;
+    }
+    if let Ok(d) = DateTime::parse_from_rfc3339(t) {
+        return Some(in_zone(d, zone));
+    }
+    // A zone written `Z` reads as `+0000` for the fallbacks below.
+    let zoned = match t.strip_suffix(['Z', 'z']) {
+        Some(rest) => format!("{rest}+0000"),
+        None => t.to_string(),
+    };
+    for f in [
+        "%Y-%m-%dT%H:%M%z",
+        "%Y-%m-%d %H:%M%z",
+        "%Y-%m-%dT%H:%M:%S%.f%z",
+        "%Y-%m-%d %H:%M:%S%.f%z",
+        "%Y%m%dT%H%M%S%z",
+        "%Y%m%dT%H%M%z",
+    ] {
+        if let Ok(d) = DateTime::parse_from_str(&zoned, f) {
+            return Some(in_zone(d, zone));
+        }
+    }
+    if let Ok(d) = DateTime::parse_from_rfc2822(t) {
+        return Some(in_zone(d, zone));
+    }
+    // `Saturday, 07 Nov 2026 …`, `Mon, 08 Nov 2026 …` (a Sunday): the
+    // date and time decide, not the weekday.
+    if let Some((word, rest)) = t.split_once(',')
+        && word.chars().all(|c| c.is_ascii_alphabetic())
+        && let Ok(d) = DateTime::parse_from_rfc2822(rest.trim_start())
+    {
+        return Some(in_zone(d, zone));
+    }
+    for f in [
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S%.f",
+    ] {
+        if let Ok(d) = NaiveDateTime::parse_from_str(t, f) {
+            return Some((d.date(), Some((d.hour(), d.minute()))));
+        }
+    }
+    NaiveDate::parse_from_str(t, "%Y-%m-%d")
+        .ok()
+        .map(|d| (d, None))
+}
+
+/// Digit text: `Some(parsed)` when it is all digits (see
+/// [`date_from_text`]), `None` when it is something else to try.
+fn digit_date(t: &str, zone: Zone) -> Option<Option<DateParts>> {
+    let body = t.strip_prefix('-').unwrap_or(t);
+    let (int, frac) = body.split_once('.').unwrap_or((body, ""));
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    if int.is_empty() || !digits(int) || !digits(frac) {
+        return None;
+    }
+    Some(match int.len() {
+        8 if frac.is_empty() && !t.starts_with('-') => NaiveDate::parse_from_str(t, "%Y%m%d")
+            .ok()
+            .map(|d| (d, None)),
+        9.. => t.parse::<f64>().ok().and_then(|n| date_from_unix(n, zone)),
+        _ => None,
+    })
+}
+
+/// (doc-formats) Unix time as a document's number holds it, read in
+/// `zone`: |n| from 1e11 is milliseconds, anything smaller seconds (the
+/// two cannot be confused between 1973 and 5138). Not a number, or out
+/// of chrono's range, is `None`.
+pub fn date_from_unix(n: f64, zone: Zone) -> Option<DateParts> {
+    if !n.is_finite() {
+        return None;
+    }
+    let secs = if n.abs() >= 1e11 { n / 1000.0 } else { n }.floor();
+    if secs.abs() > 1e15 {
+        return None;
+    }
+    let utc = DateTime::<Utc>::from_timestamp(secs as i64, 0)?;
+    Some(in_zone(utc, zone))
+}
+
 /// A `Date`'s fields in the schema's order.
 fn date_fields(d: NaiveDate, time: Option<(u32, u32)>) -> Vec<Value> {
     let (hour, minute) = match time {
@@ -520,5 +651,163 @@ mod tests {
             let r = date_method(&t, &today, "add", &args);
             assert!(r.is_err(), "{args:?} gave {r:?}");
         }
+    }
+
+    fn plus_one() -> Zone {
+        Zone::Fixed(FixedOffset::east_opt(3600).unwrap())
+    }
+
+    fn ymd(y: i32, m: u32, d: u32, time: Option<(u32, u32)>) -> Option<DateParts> {
+        Some((NaiveDate::from_ymd_opt(y, m, d).unwrap(), time))
+    }
+
+    /// (doc-formats) Every form the samples hold (edge/dates.txt), read
+    /// under +01:00.
+    #[test]
+    fn dates_from_text_read_every_standard_form() {
+        let cases = [
+            // RFC 2822, as RSS writes it.
+            (
+                "Wed, 21 Oct 2026 19:29:36 +0000",
+                ymd(2026, 10, 21, Some((20, 29))),
+            ),
+            (
+                "Fri, 06 Nov 2026 18:19:19 -0000",
+                ymd(2026, 11, 6, Some((19, 19))),
+            ),
+            (
+                "Thu, 14 May 2026 19:25:26 GMT",
+                ymd(2026, 5, 14, Some((20, 25))),
+            ),
+            (
+                "Sat, 7 Nov 2026 09:05:00 GMT",
+                ymd(2026, 11, 7, Some((10, 5))),
+            ),
+            (
+                "Sat, 07 Nov 2026 09:05 EST",
+                ymd(2026, 11, 7, Some((15, 5))),
+            ),
+            ("07 Nov 2026 09:05:00 +0100", ymd(2026, 11, 7, Some((9, 5)))),
+            (
+                "Saturday, 07 Nov 2026 09:05:00 +0000",
+                ymd(2026, 11, 7, Some((10, 5))),
+            ),
+            // A wrong weekday: 8 Nov 2026 is a Sunday.
+            (
+                "Mon, 08 Nov 2026 09:05:00 +0000",
+                ymd(2026, 11, 8, Some((10, 5))),
+            ),
+            // RFC 3339 / ISO 8601.
+            ("2026-11-07T19:59:32Z", ymd(2026, 11, 7, Some((20, 59)))),
+            (
+                "2026-11-07T12:32:00-06:00",
+                ymd(2026, 11, 7, Some((19, 32))),
+            ),
+            ("2026-11-07T20:13:03.040Z", ymd(2026, 11, 7, Some((21, 13)))),
+            (
+                "2026-10-24T06:49:28.599056Z",
+                ymd(2026, 10, 24, Some((7, 49))),
+            ),
+            ("2026-11-07 19:59:32Z", ymd(2026, 11, 7, Some((20, 59)))),
+            ("1970-01-01T00:00+00:00", ymd(1970, 1, 1, Some((1, 0)))),
+            ("2026-11-07T20:37Z", ymd(2026, 11, 7, Some((21, 37)))),
+            ("2026-11-07T20:37:15+0100", ymd(2026, 11, 7, Some((20, 37)))),
+            ("20261107T195510Z", ymd(2026, 11, 7, Some((20, 55)))),
+            // Naive: the wall time as written.
+            ("2026-11-07T21:30", ymd(2026, 11, 7, Some((21, 30)))),
+            ("2026-11-07 19:55:10", ymd(2026, 11, 7, Some((19, 55)))),
+            // A date alone.
+            ("2026-11-07", ymd(2026, 11, 7, None)),
+            ("20261107", ymd(2026, 11, 7, None)),
+            ("  2026-11-07\n", ymd(2026, 11, 7, None)),
+            // Unix seconds and milliseconds.
+            ("1794084315", ymd(2026, 11, 7, Some((21, 45)))),
+            ("1794084315.9", ymd(2026, 11, 7, Some((21, 45)))),
+            ("1794081310891", ymd(2026, 11, 7, Some((20, 55)))),
+            ("-100000000", ymd(1966, 10, 31, Some((15, 13)))),
+        ];
+        for (text, want) in cases {
+            assert_eq!(date_from_text(text, plus_one()), want, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn dates_from_text_refuse_the_rest_and_never_panic() {
+        for text in [
+            "Sat Nov  7 20:45:15 2026",
+            "08:04 PM",
+            "05-AUG-10 16:58:37",
+            "2026",
+            "",
+            "   ",
+            "2026-13-01",
+            "2026-02-30",
+            "99999999999999999999",
+            "-99999999999999999999.5",
+            "iso8601",
+            "20261307",
+            "-20261107",
+            "1.2.3",
+            ".5",
+            "-",
+            "Mon,",
+            "2026-11-07T25:00",
+            "\u{0}\u{ffff}",
+            "+999999-01-01T00:00:00Z",
+        ] {
+            assert_eq!(date_from_text(text, plus_one()), None, "{text:?}");
+        }
+        // Long input is refused without being looked at.
+        assert_eq!(date_from_text(&"1".repeat(100_000), plus_one()), None);
+        assert_eq!(date_from_text(&"Mon, ".repeat(10_000), Zone::Local), None);
+    }
+
+    #[test]
+    fn date_from_unix_reads_seconds_and_milliseconds_and_refuses_the_impossible() {
+        assert_eq!(
+            date_from_unix(1_794_084_315.0, plus_one()),
+            ymd(2026, 11, 7, Some((21, 45)))
+        );
+        // USGS: 13 digits of milliseconds are 2026, not year 58822.
+        assert_eq!(
+            date_from_unix(1_794_081_310_891.0, plus_one()),
+            ymd(2026, 11, 7, Some((20, 55)))
+        );
+        assert_eq!(
+            date_from_unix(0.0, plus_one()),
+            ymd(1970, 1, 1, Some((1, 0)))
+        );
+        for n in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1e300,
+            -1e300,
+            1e18,
+        ] {
+            assert_eq!(date_from_unix(n, plus_one()), None, "{n}");
+        }
+        // The local zone is read without panicking (UTC on wasm).
+        assert!(date_from_unix(1_794_084_315.0, Zone::Local).is_some());
+    }
+
+    #[test]
+    fn instants_move_to_the_zone_and_drop_seconds() {
+        assert_eq!(
+            date_from_text("2026-11-07T23:59:59Z", plus_one()),
+            ymd(2026, 11, 8, Some((0, 59)))
+        );
+        let minus = Zone::Fixed(FixedOffset::west_opt(6 * 3600).unwrap());
+        assert_eq!(
+            date_from_text("2026-11-07T03:00:59.999Z", minus),
+            ymd(2026, 11, 6, Some((21, 0)))
+        );
+        // The record built from it: the schema's `Date`, by field.
+        let t = types();
+        let r = t.find_schema_record("Date").unwrap();
+        assert!(is_date(&t, r));
+        let v = date_value(r, ymd(2026, 11, 7, None).unwrap());
+        assert_eq!(v.field(&t, "weekday"), Some(&Value::int(6)));
+        assert_eq!(v.field(&t, "hour"), Some(&Value::Null));
     }
 }

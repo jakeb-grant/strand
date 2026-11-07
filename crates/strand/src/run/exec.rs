@@ -974,6 +974,30 @@ mod tests {
         );
     }
 
+    /// (doc-formats) `action now() -> Date ["date", "-Iseconds"]`: the
+    /// date text a command prints reads as a `Date`.
+    #[test]
+    fn an_action_reads_a_date_it_prints() {
+        use strand_compiler::vm::Value;
+        let read = |ty: &str, out: &str| {
+            let (p, t) = program(ty);
+            let v = crate::services::custom::read_output(&p.types, &t, out);
+            (p, v)
+        };
+        let (p, v) = read("Date", "2026-11-07T21:05:09+01:00\n");
+        let v = v.unwrap();
+        assert_eq!(v.field(&p.types, "year"), Some(&Value::int(2026)));
+        assert!(matches!(v.field(&p.types, "hour"), Some(Value::Num(..))));
+        let (p, v) = read("Date", "2026-11-07\n");
+        assert_eq!(v.unwrap().field(&p.types, "hour"), Some(&Value::Null));
+        assert_eq!(read("Date?", "\n").1, Ok(Value::Null));
+        assert!(
+            read("Date", "soon")
+                .1
+                .is_err_and(|e| e.contains("not a `Date`"))
+        );
+    }
+
     /// (flex) A real command's output answers its call: run on a thread,
     /// read on the logic thread as the declared type; a failing command
     /// is the call's error; a dropped call's command is ended.

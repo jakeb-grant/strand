@@ -326,6 +326,15 @@ removed, but only when every other line is a pair: one line that is
 neither makes the whole file text again, and every field reads all of
 it. A field without `= key` reads the key with its own name.
 
+A field typed `Date` reads the date text files and APIs write, not only
+a record of `year`, `month` and `day`: `"2026-11-07T19:59:32Z"` (RFC
+3339), `"Sat, 07 Nov 2026 19:59:32 +0000"` (RFC 2822, as RSS writes
+it), `"2026-11-07"` (a date with no time of day), and Unix time as a
+number, seconds or milliseconds. An instant is shown in your own time
+zone. Make it `Date?` when the source may leave it out or write
+something else: a date that cannot be read is then `null`, and
+`strand watch` says what it held.
+
 **`from dir`** lists a directory's files and watches it:
 `service walls from dir "~/Pictures/walls" { files: [File] }` gives
 `walls.files`, each file's `path`, `name`, `modified` date and `size`,

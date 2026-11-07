@@ -260,7 +260,9 @@ Keyed by `id`.
 
 ### `Date`
 
-A date and time of day, such as `clock.today`.
+A date and time of day, such as `clock.today`. Filled from a document it
+also reads RFC 3339 / ISO 8601, RFC 2822 and Unix time (seconds, or
+milliseconds from 1e11); prefer `Date?` where a source may leave it out.
 
 | Field | Type | |
 | --- | --- | --- |

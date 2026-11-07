@@ -727,9 +727,24 @@ monitor, the keyboard always).
   whenever an entry is added, removed, renamed or rewritten (changes
   within 50 ms listed once, and a directory that keeps changing at
   most every 500 ms), never on a clock. A directory that does not exist yet reads as no
-  document (every field its default) until it is made. `File` is the
-  one builtin record (with the `Date` it holds) a service's fields may
-  hold besides your own `type`s.
+  document (every field its default) until it is made. `File` and
+  `Date` are the builtin records a service's fields may hold besides
+  your own `type`s.
+- (doc-formats) A `Date` filled from a document (a field, a field of a
+  declared `type` at any depth, a list item, a listen line, `-> Date`)
+  reads a record of its fields or date text, trimmed, the first form
+  that parses winning: digit text of 9 to 11 digits as Unix seconds, 12
+  or more as Unix milliseconds, exactly 8 as `YYYYMMDD` (fewer is no
+  date); RFC 3339 / ISO 8601 with a zone (also without seconds, with
+  `+hhmm`, or `20261107T195510Z`); RFC 2822, a leading weekday ignored
+  when it is wrong or written in full; a naive `YYYY-MM-DD[T
+  ]HH:MM[:SS]`, the wall time as written; `YYYY-MM-DD`, hour and minute
+  null. A number is Unix time, milliseconds from 1e11. An instant is
+  moved to the local zone and cut to the minute. Other text does not
+  convert: the default and one report, or null for `Date?`.
+  `strand set` and `strand call` read date text the same way. A
+  `key=value` line's key starts with no digit, so a date or a time
+  printed alone is text, not a pair.
 - A `from listen` service has one event, `line(doc)`: each line the
   command prints, `doc` holding that line's fields alone (the service's
   own record: a field the line leaves out is null when its type is

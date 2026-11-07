@@ -7266,3 +7266,37 @@ fn strand_get_and_set_reach_one_entry_of_a_dictionary() {
     shell.flush();
     assert_eq!(shell.scene.texts(), ["1=mail,2=code,3=chat"]);
 }
+
+/// (doc-formats) Date text (RFC 3339, RFC 2822, Unix time) reads as the
+/// schema's `Date`: `strand set`, `strand call` and a document's text
+/// all go through `parse_text`.
+#[test]
+fn parse_text_reads_a_date() {
+    use strand_compiler::instantiate::parse_text;
+    use strand_compiler::ty::Ty;
+    let types = &strand_compiler::schema::Schema::builtin().types;
+    let date = Ty::Record(types.find_schema_record("Date").unwrap());
+    let field = |v: &Value, f: &str| v.field(types, f).cloned();
+    let day = parse_text(types, &date, "2026-11-07").unwrap();
+    assert_eq!(field(&day, "year"), Some(Value::int(2026)));
+    assert_eq!(field(&day, "month"), Some(Value::int(11)));
+    assert_eq!(field(&day, "day"), Some(Value::int(7)));
+    assert_eq!(field(&day, "weekday"), Some(Value::int(6)));
+    assert_eq!(field(&day, "hour"), Some(Value::Null));
+    // A naive time is the wall time as written, whatever the zone.
+    let at = parse_text(types, &date, "2026-11-07T21:30").unwrap();
+    assert_eq!(field(&at, "hour"), Some(Value::int(21)));
+    assert_eq!(field(&at, "minute"), Some(Value::int(30)));
+    // Instants convert (to the local zone): a year is all that is sure.
+    for t in [
+        "Wed, 21 Oct 2026 19:29:36 +0000",
+        "2026-06-07T12:00:00Z",
+        "1794084315",
+    ] {
+        let v = parse_text(types, &date, t).unwrap_or_else(|| panic!("{t}"));
+        assert_eq!(field(&v, "year"), Some(Value::int(2026)), "{t}");
+    }
+    assert_eq!(parse_text(types, &date, "tomorrow"), None);
+    let maybe = Ty::Optional(Box::new(date));
+    assert_eq!(parse_text(types, &maybe, "null"), Some(Value::Null));
+}

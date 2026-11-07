@@ -34,7 +34,7 @@ use strand_compiler::lower::CustomService;
 use strand_compiler::ty::{Prim, Ty, TypeTable};
 use strand_compiler::vm::host::{ActionCtx, ActionTarget, PathSeg, ServiceHost};
 use strand_compiler::vm::schema_host::default_value;
-use strand_compiler::vm::{Num, Value};
+use strand_compiler::vm::{Num, Value, clock};
 use strand_core::{Error, Memo, NodeId, Runtime, Scope, Signal};
 use strand_services::custom::{
     self, ActionSpec, Custom, CustomAction, CustomValue, FieldSpec, Source, Spec,
@@ -336,6 +336,11 @@ pub fn coerce(types: &TypeTable, ty: &Ty, d: &Data) -> Option<Value> {
                 .filter_map(|i| coerce(types, item, i))
                 .collect(),
         )),
+        // (doc-formats) Unix time: seconds, or milliseconds from 1e11.
+        (Ty::Record(r), Data::Int(_) | Data::Float(_)) if clock::is_date(types, *r) => {
+            let parts = clock::date_from_unix(number(d)?, clock::Zone::Local)?;
+            Some(clock::date_value(*r, parts))
+        }
         (Ty::Record(r), Data::Record { fields, .. }) => {
             let def = types.record(*r);
             let values = def
@@ -1115,6 +1120,7 @@ mod tests {
         let variant = Ty::Enum(types.find_enum("Variant").unwrap());
         let range = Ty::Record(types.find_record("Range").unwrap());
         let ints = Ty::List(Box::new(Ty::INT), false);
+        let date = Ty::Record(types.find_schema_record("Date").unwrap());
         let record = |end: Data| Data::Record {
             ty: "Range".into(),
             fields: vec![("end".into(), end)],
@@ -1150,6 +1156,7 @@ mod tests {
             urgency.clone(),
             ints.clone(),
             range.clone(),
+            date.clone(),
             Ty::Optional(Box::new(Ty::INT)),
             Ty::Any,
         ];
@@ -1246,6 +1253,53 @@ mod tests {
             c(&Ty::Optional(Box::new(Ty::INT)), Data::Null),
             Some(Value::Null)
         );
+        // (doc-formats) A `Date` from date text and from Unix time.
+        for d in [
+            Data::text("2026-11-07T19:59:32Z"),
+            Data::text(" Sat, 07 Nov 2026 19:59:32 +0000 "),
+            Data::text("1794084315"),
+            Data::Int(1_794_084_315),
+            Data::Float(1_794_081_310_891.0),
+        ] {
+            let v = c(&date, d.clone());
+            assert!(matches!(v, Some(Value::Record(..))), "{d:?} gave {v:?}");
+        }
+        assert_eq!(c(&date, Data::Float(f64::NAN)), None);
+        assert_eq!(c(&date, Data::Bool(true)), None);
+        // Garbage in a `Date?` is no date: the memo's default, null.
+        let maybe = Ty::Optional(Box::new(date.clone()));
+        assert_eq!(c(&maybe, Data::text("08:04 PM")), None);
+        assert_eq!(default_value(types, &maybe), Value::Null);
+    }
+
+    /// (doc-formats) A `Date` field filled from JSON APIs: GitHub's RFC
+    /// 3339 `published_at`, USGS's Unix milliseconds, wttr.in's date
+    /// alone.
+    #[test]
+    fn a_date_field_reads_text_and_unix_time() {
+        let types = &Schema::builtin().types;
+        let date = Ty::Record(types.find_schema_record("Date").unwrap());
+        let field = |doc: &str, key: &str| {
+            let k: Vec<String> = key.split('.').map(str::to_string).collect();
+            let d = custom::Document::parse(doc).get(&k).unwrap();
+            coerce(types, &date, &d).unwrap_or_else(|| panic!("{key} in {doc}"))
+        };
+        let n = |v: &Value, f: &str| v.field(types, f).cloned();
+        let gh = field(
+            r#"{"tag_name": "v0.52.1", "published_at": "2026-11-03T09:47:31Z"}"#,
+            "published_at",
+        );
+        assert_eq!(n(&gh, "year"), Some(Value::int(2026)));
+        assert_eq!(n(&gh, "month"), Some(Value::int(11)));
+        assert!(matches!(n(&gh, "minute"), Some(Value::Num(..))));
+        let usgs = field(
+            r#"{"features": [{"properties": {"mag": 4.6, "time": 1794081310891}}]}"#,
+            "time",
+        );
+        assert_eq!(n(&usgs, "year"), Some(Value::int(2026)), "{usgs:?}");
+        let wttr = field(r#"{"weather": [{"date": "2026-11-07"}]}"#, "date");
+        assert_eq!(n(&wttr, "day"), Some(Value::int(7)));
+        assert_eq!(n(&wttr, "hour"), Some(Value::Null));
     }
 
     /// (services-round) A `from dir` service's listing converts into the

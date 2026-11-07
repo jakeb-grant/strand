@@ -1726,6 +1726,14 @@ Public interfaces:
   a config broken at boot starts from it; `store_cache()` runs after the
   build is sent on, so the disk write is never on the save-to-pixels
   path (decisions.md m5-open-reload).
+- **Dates from text** (`strand_compiler::vm::clock`, doc-formats):
+  `date_from_text(text, Zone)` and `date_from_unix(n, Zone)` read a
+  document's date text and Unix time into `DateParts` (a date and its
+  hour and minute, if any) in the zone given, never calling `Local`
+  themselves; `is_date(types, r)` says whether `r` is the schema's
+  `Date`, and `date_value(r, parts)` builds one.
+  `instantiate::parse_text` reads a `Date` with them, and the binary's
+  `custom::coerce` reads a number as one.
 - **Diagnostics** (`strand_compiler::diagnostic`): `Diagnostic {
   severity, code, message, labels, help, suggestions }`.
   `Severity::Note` is never a load notice. Editors and the overlay read

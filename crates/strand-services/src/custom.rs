@@ -334,8 +334,13 @@ impl Document {
             .map(|l| {
                 let (k, v) = l.split_once('=').or_else(|| l.split_once(':'))?;
                 let k = k.trim();
-                (!k.is_empty() && !k.contains(char::is_whitespace))
-                    .then(|| (k.to_string(), unquote(v.trim())))
+                // (doc-formats) A key starts with no digit: a time
+                // (`12:30`) or a date (`2026-11-07T21:05:09+01:00`) is
+                // text, not a pair.
+                let key = !k.is_empty()
+                    && !k.starts_with(|c: char| c.is_ascii_digit())
+                    && !k.contains(char::is_whitespace);
+                key.then(|| (k.to_string(), unquote(v.trim())))
             })
             .collect();
         match pairs {
@@ -2016,6 +2021,11 @@ mod tests {
         assert_eq!(t.get(&key("profile")), Some(Data::text("performance")));
         let words = Document::parse("hello world\nsecond line");
         assert!(matches!(words, Document::Text(_)));
+        // (doc-formats) A date or a time printed alone is text, not a
+        // pair keyed by its first digits.
+        for t in ["2026-11-07T21:05:09+01:00", "12:30", "20261107T195510Z"] {
+            assert_eq!(Document::parse(t), Document::Text(t.into()), "{t}");
+        }
     }
 
     /// os-release(5) and hostname(5): `#` comment lines are not lines of
