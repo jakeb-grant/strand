@@ -27,6 +27,7 @@
 - [A bar with a calendar popup](how-to/calendar-popup.md)
 - [An app launcher](how-to/launcher.md)
 - [A notification stack](how-to/notifications.md)
+- [Showing HTML text](how-to/html-text.md)
 - [A volume and brightness OSD](how-to/osd.md)
 - [A morphing island](how-to/island.md)
 - [A theme from your wallpaper](how-to/wallpaper-theme.md)
