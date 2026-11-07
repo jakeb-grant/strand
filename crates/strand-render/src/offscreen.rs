@@ -1484,8 +1484,10 @@ impl RasterNodes {
     /// props any more), its grain when it has none.
     pub fn unused(&self, node: NodeId, layer: RasterLayer) {
         if layer == RasterLayer::Grain || !self.sources.contains_key(&node) {
-            self.drawn.borrow_mut().remove(&(node, layer));
-            self.shared.borrow_mut().retain(|_, s| s.live());
+            // Only a pixmap let go can leave a shared entry with no node.
+            if self.drawn.borrow_mut().remove(&(node, layer)).is_some() {
+                self.shared.borrow_mut().retain(|_, s| s.live());
+            }
         }
     }
 
