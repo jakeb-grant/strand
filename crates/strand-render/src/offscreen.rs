@@ -150,6 +150,9 @@ pub struct Offscreen {
     tick: u64,
     frame: u64,
     builds: u64,
+    /// (blur-ready) Wall-clock time spent drawing groups so far
+    /// (advisory; measurements read it).
+    build_time: Duration,
     idle: Option<Duration>,
     /// This frame's groups, by their layer (its `Arc`'s address).
     current: HashMap<usize, Drawn>,
@@ -171,6 +174,11 @@ impl Offscreen {
     /// Groups drawn so far (tests: a frame reusing a group draws none).
     pub fn builds(&self) -> u64 {
         self.builds
+    }
+
+    /// (blur-ready) Wall-clock time spent drawing groups so far.
+    pub fn build_time(&self) -> Duration {
+        self.build_time
     }
 
     /// Groups kept.
@@ -315,6 +323,7 @@ impl Offscreen {
                     None => {
                         let behind = crate::backdrop::read(items, i, pass, region);
                         let pins = pins(&behind, &self.current);
+                        let started = std::time::Instant::now();
                         let Some(drawn) = crate::backdrop::render(
                             items,
                             i,
@@ -329,6 +338,7 @@ impl Offscreen {
                             continue;
                         };
                         self.builds += 1;
+                        self.build_time += started.elapsed();
                         self.insert(key, drawn, pins)
                     }
                 };
@@ -368,6 +378,7 @@ impl Offscreen {
             let drawn = match self.get(key) {
                 Some(d) => d,
                 None => {
+                    let started = std::time::Instant::now();
                     let Some(drawn) = render_group(
                         inner,
                         layer,
@@ -382,6 +393,7 @@ impl Offscreen {
                         continue;
                     };
                     self.builds += 1;
+                    self.build_time += started.elapsed();
                     let pins = pins(inner, &self.current);
                     self.insert(key, drawn, pins)
                 }
@@ -1030,6 +1042,9 @@ pub struct RasterNodes {
     sources: HashMap<NodeId, Arc<dyn RasterSource>>,
     drawn: RefCell<HashMap<(NodeId, RasterLayer), Kept>>,
     builds: RefCell<u64>,
+    /// (blur-ready) Wall-clock time spent drawing pixmaps so far
+    /// (advisory; measurements read it).
+    build_time: std::cell::Cell<Duration>,
 }
 
 impl RasterNodes {
@@ -1072,6 +1087,11 @@ impl RasterNodes {
     /// Pixmaps drawn so far (tests).
     pub fn builds(&self) -> u64 {
         *self.builds.borrow()
+    }
+
+    /// (blur-ready) Wall-clock time spent drawing pixmaps so far.
+    pub fn build_time(&self) -> Duration {
+        self.build_time.get()
     }
 
     /// Bytes of the pixmaps kept.
@@ -1144,6 +1164,7 @@ impl RasterNodes {
         {
             return Some((key, pm.clone()));
         }
+        let started = std::time::Instant::now();
         let mut pm = Pixmap::new(w16, h16);
         source.draw(pm.data_mut(), w, h, scale, time);
         // The raster draws red and blue swapped (BGRA buffers).
@@ -1152,6 +1173,8 @@ impl RasterNodes {
         }
         let pm = Arc::new(pm);
         *self.builds.borrow_mut() += 1;
+        self.build_time
+            .set(self.build_time.get() + started.elapsed());
         self.drawn
             .borrow_mut()
             .insert((node, layer), (key, pm.clone()));

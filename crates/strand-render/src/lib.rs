@@ -66,6 +66,9 @@ pub use layout::{
 };
 pub use media::thumbnail::Frame as ThumbnailFrame;
 pub use offscreen::{OFFSCREEN_BYTES, RasterProps, RasterSource};
+/// (blur-ready) The CPU filters, for measurements of their cost.
+#[doc(hidden)]
+pub use offscreen::{blur, color_matrix};
 pub use raster::RasterTimes;
 pub use renderer::FrameSummary;
 pub use renderer::{

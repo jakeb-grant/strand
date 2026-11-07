@@ -785,6 +785,16 @@ impl Renderer {
         (self.extras.rasters.builds(), self.extras.rasters.bytes())
     }
 
+    /// (blur-ready) Wall-clock time spent so far drawing offscreen groups
+    /// and raster nodes' pixmaps (advisory: measurements of a frame's
+    /// parts read it).
+    pub fn build_times(&self) -> (Duration, Duration) {
+        (
+            self.raster.offscreen().build_time(),
+            self.extras.rasters.build_time(),
+        )
+    }
+
     /// Decodes images and icons inline with icons from `theme` (offline
     /// renders and tests; a worker-backed renderer decodes off-thread).
     pub fn set_icon_theme_inline(&mut self, theme: &str) {
