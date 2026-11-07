@@ -323,7 +323,7 @@ impl Offscreen {
                     None => {
                         let behind = crate::backdrop::read(items, i, pass, region);
                         let pins = pins(&behind, &self.current);
-                        let started = std::time::Instant::now();
+                        let started = Instant::now();
                         let Some(drawn) = crate::backdrop::render(
                             items,
                             i,
@@ -378,7 +378,7 @@ impl Offscreen {
             let drawn = match self.get(key) {
                 Some(d) => d,
                 None => {
-                    let started = std::time::Instant::now();
+                    let started = Instant::now();
                     let Some(drawn) = render_group(
                         inner,
                         layer,
@@ -1600,7 +1600,7 @@ impl RasterNodes {
                 return Some((key, pm));
             }
         }
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let mut pm = Pixmap::new(w16, h16);
         // The raster draws red and blue swapped (BGRA buffers).
         source.draw_bgra(pm.data_mut(), w, h, scale, time);
