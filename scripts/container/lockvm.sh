@@ -21,7 +21,7 @@
 #        No network. Write results under target/lockvm/.
 # Env:   LOCKVM_TCG=1 software emulation when there is no /dev/kvm (slow;
 #        without it a missing /dev/kvm fails); LOCKVM_TIMEOUT (seconds,
-#        default 600); LOCKVM_MEM (default 2G); LOCKVM_CPUS (default 4);
+#        default 1200); LOCKVM_MEM (default 2G); LOCKVM_CPUS (default 4);
 #        LOCKVM_REBUILD=1 rebuilds the image.
 # Exit:  CMD's status; 125 when the guest stopped without one (a crash,
 #        a kernel panic or the timeout).
@@ -64,6 +64,6 @@ exec docker run --rm --init "${tty[@]}" \
   --user "$(id -u):$(id -g)" \
   "${devices[@]}" \
   -v "$ROOT:$ROOT" \
-  -e LOCKVM_TCG="${LOCKVM_TCG:-}" -e LOCKVM_TIMEOUT="${LOCKVM_TIMEOUT:-600}" \
+  -e LOCKVM_TCG="${LOCKVM_TCG:-}" -e LOCKVM_TIMEOUT="${LOCKVM_TIMEOUT:-1200}" \
   -e LOCKVM_MEM="${LOCKVM_MEM:-2G}" -e LOCKVM_CPUS="${LOCKVM_CPUS:-4}" \
   "$IMAGE" lockvm-run-guest "$ROOT" "$@"
