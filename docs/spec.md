@@ -976,6 +976,13 @@ monitor, the keyboard always).
 - **Inherited props** (`font`, `weight`, `color`) set on any node
   apply to every descendant that does not set its own. These three are
   the only inherited props.
+- **Markup** (decisions.md doc-formats). A `text`'s `markup:` says how
+  tags in its text show: `none` (the default) as written; `basic` as the
+  freedesktop notification markup (`b`, `i`, `u`, `a`, `img`'s alt, other
+  tags kept as text); `html` as an HTML fragment (blocks as line breaks,
+  lists marked, inline styles, links in `$accent`, scripts, styles and
+  unknown tags dropped). Both decode HTML's character references. An
+  `input` ignores it.
 
 ### 6.3 Conditional style
 
@@ -1846,6 +1853,11 @@ monitor, the keyboard always).
   index of `part`'s first occurrence, as an `int?`. `number(t)` reads a
   decimal number from a text, spaces around it allowed, and is `null`
   when the text is not one (decisions.md flex).
+- `t.plain(m)` is the text `markup: m` shows, without its styles, and
+  `t.links(m)` its links' targets in order, as written, both read by the
+  one converter the renderer uses; `m` is a `Markup` and required, and
+  `none` gives the text unchanged and no links (decisions.md
+  doc-formats).
 
 A bare number where a length is expected is logical pixels: `width: 90`
 is `width: 90px`. Where an angle is expected it is degrees, and where a

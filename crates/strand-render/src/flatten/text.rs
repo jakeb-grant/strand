@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use strand_scene::markup::Level;
 use strand_scene::{
     Color, Font, LogicalRect, NodeId, NodeKind, Prop, PropValue, Rect, Scale, TokenScope,
 };
@@ -291,9 +292,20 @@ pub(super) fn natural_spec<'v>(
         Some(PropValue::Color(c)) => Some(c),
         _ => None,
     };
-    let (shown, mut spans) = match get(Prop::Markup) {
-        Some(PropValue::Keyword(k)) if k == "basic" => crate::markup::parse(text, accent()),
-        _ => (text.clone(), Vec::new()),
+    let level = match get(Prop::Markup) {
+        Some(PropValue::Keyword(k)) if k == "basic" => Some(Level::Basic),
+        Some(PropValue::Keyword(k)) if k == "html" => Some(Level::Html),
+        _ => None,
+    };
+    let (shown, mut spans) = match level {
+        Some(level) => {
+            let mono = match scope.lookup("font.mono") {
+                Some(PropValue::Font(f)) => crate::markup::mono_family(Some(&f.family)),
+                _ => crate::markup::mono_family(None),
+            };
+            crate::markup::spans(text, level, accent(), &mono)
+        }
+        None => (text.clone(), Vec::new()),
     };
     spans.extend(marks(&shown, get(Prop::Marks), || {
         match get(Prop::MarkColor) {
@@ -450,4 +462,57 @@ pub fn natural_texts(
     }
     walk(tree, node, &inh, scale, laid, &mut out);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use strand_scene::TokenTable;
+    use strand_scene::markup::parse;
+
+    use super::*;
+
+    /// (doc-formats) What flatten shapes for `markup: basic` and `html` is
+    /// exactly `strand_scene::markup::parse`'s text, which logic's
+    /// `plain(markup)` returns: one implementation.
+    #[test]
+    fn plain_matches_what_markup_shows() {
+        let fixtures = [
+            include_str!("../../../strand-scene/tests/fixtures/markup/notification-bodies.txt"),
+            include_str!("../../../strand-scene/tests/fixtures/markup/calendar-google.html"),
+            include_str!("../../../strand-scene/tests/fixtures/markup/calendar-outlook.html"),
+            include_str!("../../../strand-scene/tests/fixtures/markup/release-note.html"),
+            include_str!("../../../strand-scene/tests/fixtures/markup/summary-quake.html"),
+            include_str!("../../../strand-scene/tests/fixtures/markup/summary-table.html"),
+            include_str!("../../../strand-scene/tests/fixtures/markup/summary-social.html"),
+            include_str!("../../../strand-scene/tests/fixtures/markup/summary-blog.html"),
+        ];
+        let table = TokenTable::default();
+        let tables = [&table];
+        let scope = TokenScope::new(&tables);
+        let font = Font::default();
+        let mut checked = 0;
+        for src in fixtures.iter().flat_map(|f| f.split("-----\n")) {
+            for (kw, level) in [("basic", Level::Basic), ("html", Level::Html)] {
+                let props = [
+                    (Prop::Text, PropValue::Text(src.to_string())),
+                    (Prop::Markup, PropValue::Keyword(kw.into())),
+                ];
+                let get = |p: Prop| props.iter().find(|(k, _)| *k == p).map(|(_, v)| v);
+                let (spec, _, _) = natural_spec(&get, &scope, &font, Scale::ONE).unwrap();
+                assert_eq!(spec.text, parse(src, level, None).text, "{kw}: {src}");
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 2 * 14);
+        // `none` (and no markup) shows the text as written.
+        let props = [(Prop::Text, PropValue::Text("<b>x</b>".into()))];
+        let get = |p: Prop| props.iter().find(|(k, _)| *k == p).map(|(_, v)| v);
+        assert_eq!(
+            natural_spec(&get, &scope, &font, Scale::ONE)
+                .unwrap()
+                .0
+                .text,
+            "<b>x</b>"
+        );
+    }
 }
