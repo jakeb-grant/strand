@@ -47,18 +47,75 @@ pub fn decode_bytes_dropping(types: &TypeTable, ty: &Ty, bytes: &[u8]) -> Option
 /// (dictionary) A dictionary is a table: a `[name]` section or an inline
 /// `{ … }`, each key read as `K` (one bad entry fails the field, the
 /// message naming its key).
+/// (settings-tables) A record is a table too, a `[name]` section or an
+/// inline `{ … }`, and a list of records an array of inline tables or an
+/// array of tables, `[[name]]`, each wherever the type puts one (a
+/// section's own keys read the same way). A key the record does not
+/// have fails the field, as a bad value does, the message naming where
+/// it is (`mons[0]: unknown field "scael"`).
 pub fn decode_item(types: &TypeTable, ty: &Ty, item: &toml_edit::Item) -> Result<Value, String> {
-    if let (Ty::Dict(k, v), Some(t)) = (ty.non_null(), item.as_table()) {
-        return decode_entries(
+    match (ty.non_null(), item) {
+        (Ty::Dict(k, v), toml_edit::Item::Table(t)) => decode_entries(
             types,
             k,
             t.iter().map(|(key, i)| (key, decode_item(types, v, i))),
-        );
+        ),
+        (Ty::Record(r), toml_edit::Item::Table(t)) => decode_record(types, *r, t),
+        (Ty::List(e, _), toml_edit::Item::ArrayOfTables(a)) => Ok(Value::list(
+            a.iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    match e.non_null() {
+                        Ty::Record(r) => decode_record(types, *r, t),
+                        Ty::Dict(k, v) => decode_entries(
+                            types,
+                            k,
+                            t.iter().map(|(key, i)| (key, decode_item(types, v, i))),
+                        ),
+                        _ => Err(format!("expected {}", types.show(e))),
+                    }
+                    .map_err(|m| at_index(i, m))
+                })
+                .collect::<Result<_, _>>()?,
+        )),
+        _ => match item.as_value() {
+            Some(v) => decode_toml(types, ty, v),
+            None if matches!(ty, Ty::Optional(_)) => Ok(Value::Null),
+            None => Err(format!("expected {}", types.show(ty))),
+        },
     }
-    match item.as_value() {
-        Some(v) => decode_toml(types, ty, v),
-        None if matches!(ty, Ty::Optional(_)) => Ok(Value::Null),
-        None => Err(format!("expected {}", types.show(ty))),
+}
+
+/// (settings-tables) A record's fields from a table or an inline table:
+/// a field it leaves out is the field's default, a key no field has
+/// fails, and so does a field that does not fit, prefixed with its name.
+fn decode_record(
+    types: &TypeTable,
+    r: crate::ty::RecordId,
+    t: &dyn toml_edit::TableLike,
+) -> Result<Value, String> {
+    let def = types.record(r);
+    if let Some((key, _)) = t.iter().find(|(key, _)| def.field(key).is_none()) {
+        return Err(format!("unknown field {key:?}"));
+    }
+    let mut fields = Vec::with_capacity(def.fields.len());
+    for f in &def.fields {
+        fields.push(match t.get(&f.name) {
+            Some(i) => decode_item(types, &f.ty, i).map_err(|m| match m.starts_with('[') {
+                true => format!("{}{m}", f.name),
+                false => format!("{}: {m}", f.name),
+            })?,
+            None => super::builtins::default_of(types, &f.ty),
+        });
+    }
+    Ok(Value::record(r, fields))
+}
+
+/// An element's error, `[1]: …`.
+fn at_index(i: usize, m: String) -> String {
+    match m.starts_with('[') {
+        true => format!("[{i}]{m}"),
+        false => format!("[{i}]: {m}"),
     }
 }
 
@@ -128,20 +185,11 @@ fn decode_toml(types: &TypeTable, ty: &Ty, v: &toml_edit::Value) -> Result<Value
         }
         (Ty::List(t, _), T::Array(a)) => Value::list(
             a.iter()
-                .map(|i| decode_toml(types, t, i))
+                .enumerate()
+                .map(|(i, x)| decode_toml(types, t, x).map_err(|m| at_index(i, m)))
                 .collect::<Result<_, _>>()?,
         ),
-        (Ty::Record(r), T::InlineTable(t)) => {
-            let def = types.record(*r);
-            let mut fields = Vec::with_capacity(def.fields.len());
-            for f in &def.fields {
-                fields.push(match t.get(&f.name) {
-                    Some(v) => decode_toml(types, &f.ty, v)?,
-                    None => super::builtins::default_of(types, &f.ty),
-                });
-            }
-            Value::record(*r, fields)
-        }
+        (Ty::Record(r), T::InlineTable(t)) => decode_record(types, *r, t)?,
         // (dictionary) An inline table, `{ "DP-1" = "…" }`.
         (Ty::Dict(k, t), T::InlineTable(table)) => decode_entries(
             types,
@@ -667,6 +715,157 @@ mod tests {
         assert_eq!(
             decode_item(&t, &by, &item("after = { urgent = 1 }", "after")),
             Err("key \"urgent\": expected one of low, normal, critical".to_string())
+        );
+    }
+
+    /// (settings-tables) `type Mon { id: text; scale: float; mode: Mode? }`,
+    /// `type Mode { width: int; height: int }` and `type Profile { mons:
+    /// [Mon]; lid: text?; order: [text] }`, as a config declares them.
+    fn profile_types() -> (TypeTable, Ty, Ty) {
+        let mut t = types();
+        let field = |name: &str, ty: Ty| crate::ty::FieldDef {
+            name: name.into(),
+            ty,
+            rw: false,
+        };
+        let mut mode = crate::ty::RecordDef::new("Mode", crate::ty::Origin::Schema);
+        mode.fields = vec![field("width", Ty::INT), field("height", Ty::INT)];
+        let mode = t.add_record(mode);
+        let mut mon = crate::ty::RecordDef::new("Mon", crate::ty::Origin::Schema);
+        mon.fields = vec![
+            field("id", Ty::TEXT),
+            field("scale", Ty::FLOAT),
+            field("mode", Ty::Record(mode).optional()),
+        ];
+        let mon = Ty::Record(t.add_record(mon));
+        let mut profile = crate::ty::RecordDef::new("Profile", crate::ty::Origin::Schema);
+        profile.fields = vec![
+            field("mons", Ty::list(mon.clone())),
+            field("lid", Ty::TEXT.optional()),
+            field("order", Ty::list(Ty::TEXT)),
+        ];
+        let profile = Ty::Record(t.add_record(profile));
+        (t, mon, profile)
+    }
+
+    /// (settings-tables) A record reads from a `[section]` and a list of
+    /// records from `[[name]]`, wherever the type puts them (a dictionary
+    /// of profiles, each with its monitors as an array of tables, a
+    /// monitor's optional mode a sub-table), the same as from inline
+    /// tables; what is left out is its default. A key the record does not
+    /// have fails the value, naming where it is, as a bad value does.
+    #[test]
+    fn records_read_from_sections_and_arrays_of_tables() {
+        let (t, mon, profile) = profile_types();
+        let profiles = Ty::dict(Ty::TEXT, profile.clone());
+        let item = |s: &str, name: &str| {
+            let doc: toml_edit::DocumentMut = s.parse().unwrap();
+            doc[name].clone()
+        };
+        let tables = "\
+[profiles.desk]
+lid = \"BOE\"
+order = [\"DP-1\", \"eDP-1\"]
+
+[[profiles.desk.mons]]
+id = \"Dell\"
+scale = 1.5
+[profiles.desk.mons.mode]
+width = 3840
+height = 2160
+
+[[profiles.desk.mons]]
+id = \"BOE\"
+scale = 1
+
+[profiles.couch]
+[[profiles.couch.mons]]
+id = \"BOE\"
+scale = 1.25
+";
+        let inline = "\
+[profiles]
+desk = { lid = \"BOE\", order = [\"DP-1\", \"eDP-1\"], mons = [{ id = \"Dell\", scale = 1.5, mode = { width = 3840, height = 2160 } }, { id = \"BOE\", scale = 1.0 }] }
+couch = { mons = [{ id = \"BOE\", scale = 1.25 }] }
+";
+        let from_tables = decode_item(&t, &profiles, &item(tables, "profiles"));
+        assert_eq!(
+            from_tables,
+            decode_item(&t, &profiles, &item(inline, "profiles"))
+        );
+        let Ok(Value::Dict(d)) = &from_tables else {
+            panic!("{from_tables:?}")
+        };
+        let Some(Value::Record(couch)) = d.get(&Value::text("couch")) else {
+            panic!("{d:?}")
+        };
+        // Left out: `lid` is null, `order` empty, a monitor's `mode` null.
+        assert_eq!(couch.fields[1], Value::Null);
+        assert_eq!(couch.fields[2], Value::list(Vec::new()));
+        let Value::List(mons) = &couch.fields[0] else {
+            panic!("{couch:?}")
+        };
+        let Value::Record(m) = &mons[0] else {
+            panic!("{mons:?}")
+        };
+        assert_eq!(
+            m.fields,
+            [Value::text("BOE"), Value::float(1.25), Value::Null]
+        );
+        // A section where a record goes, an array of tables where a list
+        // of records goes, at the top.
+        assert!(
+            decode_item(
+                &t,
+                &profile,
+                &item("[p]\nlid = \"x\"\n[[p.mons]]\nid = \"a\"\n", "p")
+            )
+            .is_ok()
+        );
+        let list = Ty::list(mon.clone());
+        assert_eq!(
+            decode_item(
+                &t,
+                &list,
+                &item("[[m]]\nid = \"a\"\nscale = 2\n[[m]]\nid = \"b\"\n", "m")
+            )
+            .map(|v| match v {
+                Value::List(l) => l.len(),
+                _ => 0,
+            }),
+            Ok(2)
+        );
+        // An unknown key, or a value that does not fit, names where it is.
+        for (bad, said) in [
+            (
+                tables.replace("scale = 1.25", "scael = 1.25"),
+                "\"couch\": mons[0]: unknown field \"scael\"",
+            ),
+            (
+                tables.replace("height = 2160", "height = \"tall\""),
+                "\"desk\": mons[0]: mode: height: expected int",
+            ),
+            (
+                tables.replace("lid = \"BOE\"", "lid = \"BOE\"\nenabeld = false"),
+                "\"desk\": unknown field \"enabeld\"",
+            ),
+            (
+                inline.replace("scale = 1.0", "scale = 1.0, on = true"),
+                "\"desk\": mons[1]: unknown field \"on\"",
+            ),
+        ] {
+            assert_eq!(
+                decode_item(&t, &profiles, &item(&bad, "profiles")),
+                Err(said.to_string()),
+                "{bad}"
+            );
+        }
+        // TOML 1.1's inline table over several lines, with a trailing
+        // comma, reads too (toml_edit 0.25 parses TOML 1.1).
+        let spread = "m = {\n  id = \"a\",   # the left one\n  scale = 2,\n}\n";
+        assert_eq!(
+            decode_item(&t, &mon, &item(spread, "m")),
+            decode_item(&t, &mon, &item("m = { id = \"a\", scale = 2.0 }", "m"))
         );
     }
 

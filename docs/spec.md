@@ -2476,8 +2476,12 @@ new program with the running one.
   pairs in key order, `[[3,"0x55"],[5,"0x7a"]]` (an `int` key a
   number, an enum key its variant's name), so the same entries are the
   same stored value and the same default however a literal ordered
-  them. A store edited by hand may hold pairs in any order (of two with
-  one key the later wins) or an object of key texts, `{"3": "0x55"}`.
+  them. The reader also takes pairs in any order (of two with one key
+  the later wins) and an object of key texts, `{"3": "0x55"}`, but a
+  store is not for editing by hand: its header holds a checksum of the
+  value, so a store edited by hand reads as corrupt (it is moved aside,
+  and the cell gets the default and a warning). Values people edit
+  belong in a settings file (section 11).
   An entry whose enum key the config no longer declares is dropped as
   the store is read, with the line a reload gives (10.1), at each start
   until the cell is next written; anything else that does not read as the type, a list of
@@ -2549,6 +2553,16 @@ people can edit by hand.
   diagnostic naming the key: `prefs.toml: wallpapers: "DP-1": expected
   path; keeping its last good value`. A deleted table springs back to
   its default, as a deleted key does.
+- (settings-tables) **A record** may be written as an inline table,
+  `size = { w = 3, h = 4 }`, or as a `[size]` section, and **a list of
+  records** as an array of inline tables or as TOML's array of tables,
+  one `[[pins]]` section per element; so may a record wherever a type
+  puts one, a dictionary's values and a record's own fields among them:
+  `profiles: [text: Profile]` reads `[profiles.desk]` with its monitors
+  as `[[profiles.desk.mons]]`. A field the record leaves out is its
+  default. A key the record does not have is a bad value, so a typo
+  does not pass for the default: `monitors.toml: profiles: "desk":
+  mons[0]: unknown field "scael"; keeping its last good value`.
 - **Writes** (`<->`, handler assignments, `strand set prefs.compact
   true`) are saved after 250 ms of quiet and keep the file's comments,
   spacing and order. A dictionary is written key by key into the table
@@ -2556,7 +2570,16 @@ people can edit by hand.
   place and comment, a removed one is deleted, a new one goes at the
   table's end; a field the file does not have yet is written as its own
   `[name]` section, after the file's other keys. A record written as an
-  inline table keeps the spacing of each field the same way. They follow
+  inline table keeps the spacing of each field the same way.
+  (settings-tables) A record goes back into the form the file has it
+  in: a `[section]` stays a section, merged key by key, and a new record
+  among records written as sections is a section shaped like them. A
+  list, inline or `[[name]]`, is merged by value: an element that reads
+  the same as one the file has keeps that one's text and the comments on
+  it, in the new order; any other (a changed element among them) is
+  written afresh, and one no longer in the list goes with its comments.
+  A value that reads the same as what the file says (`1` for `1.0`, keys
+  in another order) is left as written. Writes follow
   symbolic links and replace the file through a temporary file and a
   rename. A read-only target (such as a file in `/nix/store`) gets the
   write in an overlay in the state directory instead, with a

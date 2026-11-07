@@ -109,3 +109,48 @@ write in an overlay in Strand's state directory instead, with a notice.
   prefs.wallpapers.DP-1 ~/walls/new.jpg`. `strand get prefs.wallpapers`
   prints them all. A bad entry keeps the whole field's last good value,
   with a notice naming its key.
+- **Records and lists of them.** A field can hold a record of your own
+  `type` (as [the dock](../../docs/guide/level-5.md#5-a-dock) declares
+  `Pin`), a list of records, or a dictionary of them. Pinned apps, in the order you keep
+  them:
+
+  ```strand file=pins.strand
+  // pins.strand: pinned apps kept in pins.toml; a click moves one to the front
+  type Pin { id: text; hidden: bool }
+  state pins from "pins.toml" { apps: [Pin] = [] }
+
+  bar Pins {
+    edge: bottom; height: 32
+    bg: $surface; font: $font.ui; color: $fg
+    row { pad: 0, $space.3; gap: $space.3; align: center
+      for p in pins.apps.filter(p => !p.hidden) key p.id {
+        text p.id { on click { pins.apps = [p] + pins.apps.filter(q => q.id != p.id) } }
+      }
+    }
+  }
+  ```
+
+  In the file, a list of records can be one `[[apps]]` section per
+  element, and a record a `[section]` of its own, as well as the inline
+  `{ … }` form:
+
+  ```toml
+  # Pinned apps, in your order.
+  [[apps]]
+  id = "firefox"   # the browser
+
+  # the terminal
+  [[apps]]
+  id = "kitty"
+  ```
+
+  A field you leave out of a record is its default, here `hidden =
+  false`. A key the record does not have, such as `hiden = true`, keeps
+  the field's last good value with a notice naming where it is, so a
+  typo never passes for the default. Strand writes the list back in the
+  form the file has, matching elements by value: when the click moves
+  the terminal to the front, each pin keeps the comments written on it,
+  and an element you changed is written afresh. A dictionary of records
+  works the same way: `profiles: [text: Profile]` reads
+  `[profiles.desk]`, with a list inside it as
+  `[[profiles.desk.mons]]`.

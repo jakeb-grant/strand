@@ -7219,6 +7219,105 @@ fn a_settings_dictionary_writes_back_key_by_key() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (settings-tables) Display profiles in a settings file: a dictionary
+/// of records, each a `[profiles.name]` section with its monitors as
+/// `[[profiles.name.mons]]`.
+const PROFILES_SRC: &str = "type Mon { id: text; scale: float }\ntype Profile { mons: [Mon]; lid: text? }\nstate mon from \"monitors.toml\" { profiles: [text: Profile] = [] }\nstate seen = 0\non change mon.profiles { seen += 1 }\nbar B {\n  text mon.profiles.entries.map(e => join(\":\", e.key, e.value.lid ?? \"-\", e.value.mons.map(m => join(\"@\", m.id, m.scale)).join(\"+\"))).join(\",\")\n  text join(\" \", \"seen\", seen)\n  box { on click { mon.profiles[\"desk\"] = Profile(mons: [Mon(id: \"Dell\", scale: 2.0), Mon(id: \"BOE\", scale: 1.25)], lid: \"BOE\") } }\n}\n";
+
+/// (settings-tables) A settings field of records reads TOML's table
+/// forms, a hand edit applies live (`on change` sees it), a key a record
+/// does not have keeps the field's last good value with a notice naming
+/// where it is, and a write of one profile goes back into the sections
+/// the file has, every other profile as it was written.
+#[test]
+fn settings_records_read_and_write_table_forms() {
+    let dir = temp_dir("settings-tables");
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let file = config.join("monitors.toml");
+    let couch = "# just the laptop\n[profiles.couch]\n[[profiles.couch.mons]]\nid = \"BOE\"   # alone\nscale = 1\n";
+    std::fs::write(
+        &file,
+        format!("[profiles.desk]\nlid = \"BOE\"\n\n[[profiles.desk.mons]]\nid = \"Dell\"   # left\nscale = 1.5\n\n{couch}"),
+    )
+    .unwrap();
+    let storage = Storage::in_dirs(dir.join("state"), &config);
+    let mut shell = boot_with(&[("t.strand", PROFILES_SRC)], dp1, storage.clone());
+    assert!(settings_notices(&shell.boot_diagnostics, &config).is_empty());
+    assert_eq!(
+        shell.scene.texts(),
+        ["couch:-:BOE@1,desk:BOE:Dell@1.5", "seen 0"]
+    );
+    let reload = |shell: &mut Shell, text: &str| {
+        std::fs::write(&file, text).unwrap();
+        assert!(shell.inst.reload_settings(&file));
+        settings_notices(&shell.flush().diagnostics, &config)
+    };
+    // A hand edit applies live, and `on change` sees it.
+    let notes = reload(
+        &mut shell,
+        &format!(
+            "[profiles.desk]\nlid = \"BOE\"\n[[profiles.desk.mons]]\nid = \"Dell\"\nscale = 2\n[[profiles.desk.mons]]\nid = \"LG\"\nscale = 1\n\n{couch}"
+        ),
+    );
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(
+        shell.scene.texts(),
+        ["couch:-:BOE@1,desk:BOE:Dell@2+LG@1", "seen 1"]
+    );
+    // A typo keeps the last good value, with a notice naming it.
+    let notes = reload(
+        &mut shell,
+        &format!("[profiles.desk]\n[[profiles.desk.mons]]\nid = \"Dell\"\nscael = 2\n\n{couch}"),
+    );
+    assert_eq!(
+        notes,
+        [
+            "monitors.toml: profiles: \"desk\": mons[0]: unknown field \"scael\"; keeping its last good value"
+        ]
+    );
+    assert_eq!(
+        shell.scene.texts(),
+        ["couch:-:BOE@1,desk:BOE:Dell@2+LG@1", "seen 1"]
+    );
+    // A write of one profile from the shell.
+    let before = format!(
+        "# at the desk\n[profiles.desk]\nlid = \"BOE\"\n\n# the big one\n[[profiles.desk.mons]]\nid = \"Dell\"   # left\nscale = 1.5\n\n{couch}"
+    );
+    assert!(reload(&mut shell, &before).is_empty());
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    assert_eq!(
+        shell.scene.texts(),
+        ["couch:-:BOE@1,desk:BOE:Dell@2+BOE@1.25", "seen 3"]
+    );
+    shell.at(1.0);
+    assert!(
+        storage
+            .settings
+            .as_ref()
+            .unwrap()
+            .sync(Duration::from_secs(5))
+    );
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(
+        written,
+        format!(
+            "# at the desk\n[profiles.desk]\nlid = \"BOE\"\n\n[[profiles.desk.mons]]\nid = \"Dell\"\nscale = 2.0\n\n[[profiles.desk.mons]]\nid = \"BOE\"\nscale = 1.25\n\n{couch}"
+        )
+    );
+    // And it reads back as it was.
+    assert!(shell.inst.reload_settings(&file));
+    assert!(settings_notices(&shell.flush().diagnostics, &config).is_empty());
+    assert_eq!(
+        shell.scene.texts()[0],
+        "couch:-:BOE@1,desk:BOE:Dell@2+BOE@1.25"
+    );
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// (dictionary) `strand get` and `strand set` reach one entry by a key
 /// path segment: the rest of the path after the dictionary is one key,
 /// read by the key type. `get` of an absent entry is null; `set` inserts
