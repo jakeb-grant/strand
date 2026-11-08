@@ -515,21 +515,24 @@ fn probe_read_only(target: &Path) -> bool {
 /// key ([`merge_item`]), so its comments, spacing and order stay too.
 /// (settings-tables) So is a record written over a `[section]`, and a
 /// list of records written over an array of tables, `[[name]]`, is
-/// merged by value ([`merge_tables`]).
+/// merged by value ([`merge_tables`]). (settings-tables follow-up) The
+/// file's comments above anything a write removes stay, above what
+/// follows it ([`Orphans`]).
 fn apply_edits(doc: &mut DocumentMut, edits: &[Edit]) {
+    let mut orphans = Orphans::default();
     for (name, item) in edits {
         match item {
-            None => {
-                doc.remove(name);
-            }
+            None => remove_key(doc.as_table_mut(), name, ROOT, &mut orphans),
             Some(new) => match doc.get_mut(name) {
                 Some(old) => {
                     // Anything else the user wrote under that name (a
                     // table where a value goes now): replaced as a new
                     // key, with the key's default spacing (its own decor
                     // belongs to a `[header]`).
-                    if !merge_item(old, new) {
-                        doc.remove(name);
+                    if !merge_item(old, new, &mut orphans) {
+                        if let Some(gone) = doc.remove(name) {
+                            orphans.lift(&gone);
+                        }
                         doc.insert(name, new.clone());
                     }
                 }
@@ -539,7 +542,11 @@ fn apply_edits(doc: &mut DocumentMut, edits: &[Edit]) {
             },
         }
     }
+    orphans.settle(doc);
 }
+
+/// The root table's place, before every table in the file.
+const ROOT: isize = isize::MIN;
 
 /// Write `new` over `old` in place, keeping what the user wrote around
 /// it: a value keeps its decor (spacing and trailing comment); a table
@@ -552,7 +559,7 @@ fn apply_edits(doc: &mut DocumentMut, edits: &[Edit]) {
 /// stays an array of tables, merged by value ([`merge_tables`]). `false`
 /// when `old` cannot take `new` in place (a table where a value goes, or
 /// a value where a section was) and is to be replaced as a new key.
-fn merge_item(old: &mut Item, new: &Item) -> bool {
+fn merge_item(old: &mut Item, new: &Item, orphans: &mut Orphans) -> bool {
     if same_item(old, new) {
         return true;
     }
@@ -562,7 +569,7 @@ fn merge_item(old: &mut Item, new: &Item) -> bool {
             true
         }
         (Item::Table(o), Item::Table(n)) => {
-            merge_table(o, n);
+            merge_table(o, n, orphans);
             true
         }
         // A section's entries into the inline table the user wrote: it
@@ -575,7 +582,7 @@ fn merge_item(old: &mut Item, new: &Item) -> bool {
         // (settings-tables) A record into the section the user wrote: it
         // stays a section.
         (Item::Table(o), Item::Value(toml_edit::Value::InlineTable(n))) => {
-            merge_table(o, &n.clone().into_table());
+            merge_table(o, &n.clone().into_table(), orphans);
             true
         }
         // A list of records into the array of tables the user wrote. An
@@ -584,7 +591,7 @@ fn merge_item(old: &mut Item, new: &Item) -> bool {
         (Item::ArrayOfTables(o), Item::Value(toml_edit::Value::Array(n)))
             if !n.is_empty() && n.iter().all(toml_edit::Value::is_inline_table) =>
         {
-            merge_tables(o, n);
+            merge_tables(o, n, orphans);
             true
         }
         _ => false,
@@ -592,22 +599,25 @@ fn merge_item(old: &mut Item, new: &Item) -> bool {
 }
 
 /// [`merge_item`] for a section: a key `new` no longer has is removed
-/// (with its comment), one both have is written in place, a new one is
-/// appended at the section's end ([`fresh_in`]).
-fn merge_table(old: &mut toml_edit::Table, new: &toml_edit::Table) {
+/// (with its own comment, [`remove_key`]), one both have is written in
+/// place, a new one is appended at the section's end ([`fresh_in`]).
+fn merge_table(old: &mut toml_edit::Table, new: &toml_edit::Table, orphans: &mut Orphans) {
+    let at = old.position().unwrap_or(ROOT);
     let gone: Vec<String> = old
         .iter()
         .map(|(k, _)| k.to_string())
         .filter(|k| !new.contains_key(k))
         .collect();
     for k in gone {
-        old.remove(&k);
+        remove_key(old, &k, at, orphans);
     }
     for (k, n) in new.iter() {
         match old.get_mut(k) {
             Some(o) => {
-                if !merge_item(o, n) {
-                    old.remove(k);
+                if !merge_item(o, n, orphans) {
+                    if let Some(gone) = old.remove(k) {
+                        orphans.lift(&gone);
+                    }
                     let n = fresh_in(old, n);
                     old.insert(k, n);
                 }
@@ -617,6 +627,38 @@ fn merge_table(old: &mut toml_edit::Table, new: &toml_edit::Table) {
                 old.insert(k, n);
             }
         }
+    }
+}
+
+/// (settings-tables follow-up) Remove `k` from `table` (at `at` in the
+/// file) with its own comments ([`split_lead`]); the file's comments
+/// above it go above the next value of the table, or, after its last,
+/// above what follows the table in the file. A section's are lifted
+/// ([`Orphans::lift`]).
+fn remove_key(table: &mut toml_edit::Table, k: &str, at: isize, orphans: &mut Orphans) {
+    let next = table
+        .iter()
+        .skip_while(|(name, _)| *name != k)
+        .skip(1)
+        .find(|(_, i)| i.is_value())
+        .map(|(name, _)| name.to_string());
+    let Some((key, item)) = table.remove_entry(k) else {
+        return;
+    };
+    if !item.is_value() {
+        orphans.lift(&item);
+        return;
+    }
+    let (lead, _) = split_lead(raw(key.leaf_decor().prefix()));
+    if !has_comment(lead) {
+        return;
+    }
+    match next.as_deref().and_then(|n| table.key_mut(n)) {
+        Some(mut n) => {
+            let prefix = fold(lead, raw(n.leaf_decor().prefix()));
+            n.leaf_decor_mut().set_prefix(prefix);
+        }
+        None => orphans.0.push((at, lead.to_string())),
     }
 }
 
@@ -659,25 +701,134 @@ fn merge_inline(old: &mut toml_edit::InlineTable, new: &toml_edit::InlineTable) 
     }
 }
 
-/// (settings-tables) The old element a new one keeps, by value: the
-/// first unused one that reads the same, else (for a record) the first
-/// unused one whose every key the new one has with the same value (an
-/// element that left fields to their defaults). Never by position, so an
-/// element's comments never go to another.
-fn pick_old<'a>(
-    olds: impl Iterator<Item = (usize, ElementRef<'a>)> + Clone,
-    taken: &[bool],
-    new: &toml_edit::Value,
-) -> Option<usize> {
-    let free = olds.filter(|(i, _)| !taken[*i]);
-    free.clone()
-        .find(|(_, o)| o.same(new))
-        .or_else(|| {
-            let n = new.as_inline_table()?;
-            free.clone()
-                .find(|(_, o)| o.table().is_some_and(|o| covers(n, o)))
-        })
-        .map(|(i, _)| i)
+/// (settings-tables) The old element each new one keeps, by value, in
+/// rounds, each over what the ones before left: one that reads the same;
+/// a record whose every key the new one has with the same value (an
+/// element that left fields to their defaults); (settings-tables
+/// follow-up) a record with most of its keys' values in the new one, the
+/// most first (an element changed in a field or two); and one in the
+/// same gap, between the same kept neighbours (an element changed in
+/// place), the most shared first. Never by position alone, so an element
+/// inserted where none was removed takes no other's comments.
+fn match_elements(olds: &[ElementRef<'_>], news: &[&toml_edit::Value]) -> Vec<Option<usize>> {
+    let mut picked: Vec<Option<usize>> = vec![None; news.len()];
+    let mut used = vec![false; olds.len()];
+    let same = |o: ElementRef<'_>, n: &toml_edit::Value| o.same(n);
+    let covered = |o: ElementRef<'_>, n: &toml_edit::Value| {
+        n.as_inline_table()
+            .is_some_and(|n| o.table().is_some_and(|o| covers(n, o)))
+    };
+    for test in [
+        &same as &dyn Fn(ElementRef<'_>, &toml_edit::Value) -> bool,
+        &covered,
+    ] {
+        for (j, n) in news.iter().enumerate() {
+            if picked[j].is_some() {
+                continue;
+            }
+            if let Some(i) = (0..olds.len()).find(|&i| !used[i] && test(olds[i], n)) {
+                picked[j] = Some(i);
+                used[i] = true;
+            }
+        }
+    }
+    // Records that share most of their values, the most first.
+    let len = |t: Option<&dyn toml_edit::TableLike>| t.map_or(0, |t| t.len());
+    let mut pairs = Vec::new();
+    for (j, n) in news.iter().enumerate() {
+        if picked[j].is_some() {
+            continue;
+        }
+        let keys = len(n.as_inline_table().map(|t| t as &dyn toml_edit::TableLike));
+        for (i, o) in olds.iter().enumerate() {
+            let score = shared(*o, n);
+            if !used[i] && 2 * score > keys.max(len(o.table())) {
+                pairs.push((std::cmp::Reverse(score), j, i));
+            }
+        }
+    }
+    pairs.sort_unstable();
+    for (_, j, i) in pairs {
+        if picked[j].is_none() && !used[i] {
+            picked[j] = Some(i);
+            used[i] = true;
+        }
+    }
+    // Each run of new elements left between two kept ones takes the old
+    // ones left between them, in order, those that share the most first.
+    let mut j = 0;
+    while j < news.len() {
+        if picked[j].is_some() {
+            j += 1;
+            continue;
+        }
+        let start = j;
+        while j < news.len() && picked[j].is_none() {
+            j += 1;
+        }
+        let before = picked[..start].iter().rev().find_map(|p| *p);
+        let after = picked[j..].iter().find_map(|p| *p);
+        let free: Vec<usize> = (0..olds.len())
+            .filter(|&i| !used[i] && before.is_none_or(|b| b < i) && after.is_none_or(|a| i < a))
+            .collect();
+        for (n, i) in in_order(&news[start..j], &free, olds) {
+            picked[start + n] = Some(i);
+            used[i] = true;
+        }
+    }
+    picked
+}
+
+/// (settings-tables follow-up) The pairs of `news` and the old elements
+/// `free` (in the file's order) that keep both orders and share the most:
+/// the weight of a pair is one more than the values it shares, so as many
+/// pair as can.
+fn in_order(
+    news: &[&toml_edit::Value],
+    free: &[usize],
+    olds: &[ElementRef<'_>],
+) -> Vec<(usize, usize)> {
+    let (k, l) = (news.len(), free.len());
+    if k == 0 || l == 0 {
+        return Vec::new();
+    }
+    let weight = |x: usize, y: usize| 1 + shared(olds[free[y]], news[x]);
+    // best[x][y]: the most the first x new and first y old can make.
+    let mut best = vec![vec![0usize; l + 1]; k + 1];
+    for x in 1..=k {
+        for y in 1..=l {
+            best[x][y] = best[x - 1][y]
+                .max(best[x][y - 1])
+                .max(best[x - 1][y - 1] + weight(x - 1, y - 1));
+        }
+    }
+    let mut out = Vec::new();
+    let (mut x, mut y) = (k, l);
+    while x > 0 && y > 0 {
+        if best[x][y] == best[x - 1][y] {
+            x -= 1;
+        } else if best[x][y] == best[x][y - 1] {
+            y -= 1;
+        } else {
+            out.push((x - 1, free[y - 1]));
+            x -= 1;
+            y -= 1;
+        }
+    }
+    out.reverse();
+    out
+}
+
+/// How many of `old`'s keys `new` has with the same value; 0 for a
+/// value that is not a record.
+fn shared(old: ElementRef<'_>, new: &toml_edit::Value) -> usize {
+    match (old.table(), new.as_inline_table()) {
+        (Some(o), Some(n)) => o
+            .iter()
+            .filter(|(k, x)| toml_edit::TableLike::get(n, k).is_some_and(|y| same_item(x, y)))
+            .count(),
+        _ => 0,
+    }
 }
 
 /// An element of an array or of an array of tables.
@@ -704,32 +855,77 @@ impl<'a> ElementRef<'a> {
 }
 
 /// (settings-tables) A list of records into the array of tables the
-/// user wrote, by value ([`pick_old`]): a record that takes an old table
-/// keeps it, its comments and text (merged key by key), in the new
-/// order; any other is a new table shaped like the first old one
-/// ([`shaped`]); an old table no record took is removed with its
-/// comments.
-fn merge_tables(old: &mut toml_edit::ArrayOfTables, new: &toml_edit::Array) {
+/// user wrote, by value ([`match_elements`]): a record that takes an old
+/// table keeps it, its comments and text (merged key by key, so a changed
+/// one keeps its keys, their order and comments, only the changed values
+/// replaced), in the new order; any other is a new table shaped like the
+/// first old one ([`shaped`]); an old table no record took is removed
+/// with its own comments. (settings-tables follow-up) The text above a
+/// table is split at its last blank line ([`split_lead`]): the comments
+/// right above it are its own and go where it goes; the part before is
+/// the file's, a place that stays where it is, the k-th table printed
+/// taking the k-th place. A removed table's place goes with it, unless a
+/// new table takes it, and the file's comments in it go above what
+/// follows ([`Orphans`]).
+fn merge_tables(old: &mut toml_edit::ArrayOfTables, new: &toml_edit::Array, orphans: &mut Orphans) {
     let olds: Vec<toml_edit::Table> = old.iter().cloned().collect();
     let like = olds.first().cloned().unwrap_or_default();
-    let mut taken = vec![false; olds.len()];
+    let news: Vec<&toml_edit::Value> = new.iter().filter(|v| v.is_inline_table()).collect();
+    let refs: Vec<ElementRef<'_>> = olds.iter().map(ElementRef::Table).collect();
+    let picked = match_elements(&refs, &news);
+    let (leads, owns): (Vec<String>, Vec<String>) = olds
+        .iter()
+        .map(|t| {
+            let (lead, own) = split_lead(raw(t.decor().prefix()));
+            (lead.to_string(), own.to_string())
+        })
+        .unzip();
     let mut out = toml_edit::ArrayOfTables::new();
-    for n in new.iter() {
+    for (n, pick) in news.iter().zip(&picked) {
         let Some(nt) = n.as_inline_table() else {
             continue;
         };
-        let refs = olds.iter().map(ElementRef::Table).enumerate();
-        match pick_old(refs, &taken, n) {
+        match *pick {
             Some(i) => {
-                taken[i] = true;
                 let mut t = olds[i].clone();
-                merge_table(&mut t, &nt.clone().into_table());
+                t.decor_mut().set_prefix(owns[i].clone());
+                merge_table(&mut t, &nt.clone().into_table(), orphans);
                 out.push(t);
             }
             None => out.push(shaped(nt, &like)),
         }
     }
     keep_order(&mut out);
+    // The places: a removed table's goes, the last ones first, unless a
+    // new table takes it.
+    let removed: Vec<usize> = (0..olds.len())
+        .filter(|i| !picked.contains(&Some(*i)))
+        .collect();
+    let fresh = picked.iter().filter(|p| p.is_none()).count();
+    let dropped = &removed[removed.len().min(fresh)..];
+    let mut places = Vec::new();
+    for (i, lead) in leads.iter().enumerate() {
+        if !dropped.contains(&i) {
+            places.push(lead.as_str());
+        } else if has_comment(lead) {
+            orphans
+                .0
+                .push((olds[i].position().unwrap_or(ROOT), lead.clone()));
+        }
+    }
+    // A table past the places is set apart as its siblings are.
+    let spare = places
+        .iter()
+        .skip(1)
+        .rev()
+        .find(|l| !has_comment(l))
+        .copied()
+        .unwrap_or("\n");
+    for (k, t) in out.iter_mut().enumerate() {
+        let lead = places.get(k).copied().unwrap_or(spare);
+        let own = raw(t.decor().prefix()).to_string();
+        t.decor_mut().set_prefix(format!("{lead}{own}"));
+    }
     *old = out;
 }
 
@@ -783,7 +979,168 @@ fn place_at(t: &mut toml_edit::Table, at: isize) {
     }
 }
 
-/// (settings-tables) Two arrays merged by value ([`pick_old`]): an
+/// The text of a decor's prefix or suffix ("" when it is the default).
+fn raw(r: Option<&toml_edit::RawString>) -> &str {
+    r.and_then(toml_edit::RawString::as_str).unwrap_or("")
+}
+
+/// (settings-tables follow-up) The text above a table or key, split at
+/// its last blank line: the part up to it is the file's (a header, a
+/// commented-out block, the line that sets a table apart) and stays where
+/// it is; the comment lines right above the table or key are its own.
+fn split_lead(prefix: &str) -> (&str, &str) {
+    let mut at = 0;
+    let mut end = 0;
+    for line in prefix.split_inclusive('\n') {
+        end += line.len();
+        if line.ends_with('\n') && line.trim().is_empty() {
+            at = end;
+        }
+    }
+    prefix.split_at(at)
+}
+
+fn has_comment(s: &str) -> bool {
+    s.lines().any(|l| l.trim_start().starts_with('#'))
+}
+
+/// `lead`, the file's comments from above something removed, put above
+/// `prefix`, whose blank lines it already ends with.
+fn fold(lead: &str, prefix: &str) -> String {
+    if !has_comment(lead) {
+        return prefix.to_string();
+    }
+    let mut rest = prefix;
+    while let Some(line) = rest.split_inclusive('\n').next()
+        && line.ends_with('\n')
+        && line.trim().is_empty()
+    {
+        rest = &rest[line.len()..];
+    }
+    format!("{lead}{rest}")
+}
+
+/// (settings-tables follow-up) The file's comments a write lifted from
+/// above what it removed, each with the place in the file it was at.
+/// [`Orphans::settle`] puts each above the first table printed after
+/// that place, or at the file's end.
+#[derive(Default)]
+struct Orphans(Vec<(isize, String)>);
+
+impl Orphans {
+    /// Keep the file's comments above `item`, a section or array of
+    /// tables a write removes ([`split_lead`]).
+    fn lift(&mut self, item: &Item) {
+        if let Some((at, prefix)) = first_printed(item) {
+            let (lead, _) = split_lead(prefix);
+            if has_comment(lead) {
+                self.0.push((at, lead.to_string()));
+            }
+        }
+    }
+
+    fn settle(mut self, doc: &mut DocumentMut) {
+        // The last first, so that two above one table keep their order.
+        self.0.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+        for (at, lead) in self.0 {
+            match printed_after(doc.as_table(), at) {
+                Some(path) => {
+                    if let Some(t) = table_at(doc.as_table_mut(), &path) {
+                        let prefix = fold(&lead, raw(t.decor().prefix()));
+                        t.decor_mut().set_prefix(prefix);
+                    }
+                }
+                None => {
+                    let trailing = format!("{}\n{}", lead.trim_end(), raw(Some(doc.trailing())));
+                    doc.set_trailing(trailing);
+                }
+            }
+        }
+    }
+}
+
+/// The place and prefix of the first table `item` prints.
+fn first_printed(item: &Item) -> Option<(isize, &str)> {
+    fn first(t: &toml_edit::Table) -> Option<(isize, &str)> {
+        if t.is_implicit() && t.get_values().is_empty() {
+            t.iter()
+                .filter_map(|(_, i)| first_printed(i))
+                .min_by_key(|(at, _)| *at)
+        } else {
+            Some((t.position()?, raw(t.decor().prefix())))
+        }
+    }
+    match item {
+        Item::Table(t) => first(t),
+        Item::ArrayOfTables(a) => a.get(0).and_then(first),
+        _ => None,
+    }
+}
+
+/// One step down to a table: a key, and the element of an array of
+/// tables.
+type Step = (String, Option<usize>);
+
+/// The path to the first table printed after `at`, as the document
+/// prints them: by place, a table with none at the place of the one
+/// before it, ties in order.
+fn printed_after(root: &toml_edit::Table, at: isize) -> Option<Vec<Step>> {
+    fn walk(
+        t: &toml_edit::Table,
+        path: &mut Vec<Step>,
+        last: &mut isize,
+        array: bool,
+        found: &mut Vec<(isize, Vec<Step>)>,
+    ) {
+        if let Some(p) = t.position() {
+            *last = p;
+        }
+        let shown = array || !(t.is_implicit() && t.get_values().is_empty());
+        if !path.is_empty() && !t.is_dotted() && shown {
+            found.push((*last, path.clone()));
+        }
+        for (k, i) in t.iter() {
+            match i {
+                Item::Table(c) => {
+                    path.push((k.to_string(), None));
+                    walk(c, path, last, false, found);
+                    path.pop();
+                }
+                Item::ArrayOfTables(a) => {
+                    for (n, c) in a.iter().enumerate() {
+                        path.push((k.to_string(), Some(n)));
+                        walk(c, path, last, true, found);
+                        path.pop();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(root, &mut Vec::new(), &mut 0, false, &mut found);
+    found
+        .into_iter()
+        .filter(|(p, _)| *p > at)
+        .min_by_key(|(p, _)| *p)
+        .map(|(_, path)| path)
+}
+
+fn table_at<'a>(
+    mut t: &'a mut toml_edit::Table,
+    path: &[Step],
+) -> Option<&'a mut toml_edit::Table> {
+    for (k, n) in path {
+        let item = t.get_mut(k)?;
+        t = match n {
+            Some(n) => item.as_array_of_tables_mut()?.get_mut(*n)?,
+            None => item.as_table_mut()?,
+        };
+    }
+    Some(t)
+}
+
+/// (settings-tables) Two arrays merged by value ([`match_elements`]): an
 /// element that takes an old one keeps its text and the comments on its
 /// lines (the comment after an element's comma is its own, though the
 /// parser files it with the next element), in the new order; any other
@@ -791,15 +1148,16 @@ fn place_at(t: &mut toml_edit::Table, at: isize) {
 /// over lines. An array on one line has no comments, so its spacing
 /// stays by position.
 fn merge_array(old: &mut toml_edit::Array, new: &toml_edit::Array) {
-    let raw = |r: Option<&toml_edit::RawString>| {
-        r.and_then(toml_edit::RawString::as_str)
-            .unwrap_or("")
-            .to_string()
-    };
     let olds: Vec<toml_edit::Value> = old.iter().cloned().collect();
-    let prefixes: Vec<String> = olds.iter().map(|v| raw(v.decor().prefix())).collect();
-    let suffixes: Vec<String> = olds.iter().map(|v| raw(v.decor().suffix())).collect();
-    let trailing = raw(Some(old.trailing()));
+    let prefixes: Vec<String> = olds
+        .iter()
+        .map(|v| raw(v.decor().prefix()).to_string())
+        .collect();
+    let suffixes: Vec<String> = olds
+        .iter()
+        .map(|v| raw(v.decor().suffix()).to_string())
+        .collect();
+    let trailing = raw(Some(old.trailing())).to_string();
     let lines = !olds.is_empty()
         && prefixes
             .iter()
@@ -812,28 +1170,27 @@ fn merge_array(old: &mut toml_edit::Array, new: &toml_edit::Array) {
         Some(at) => (p[..=at].to_string(), p[at + 1..].to_string()),
         None => (String::new(), p.to_string()),
     };
-    let mut taken = vec![false; olds.len()];
+    let news: Vec<&toml_edit::Value> = new.iter().collect();
+    let refs: Vec<ElementRef<'_>> = olds.iter().map(ElementRef::Value).collect();
+    let picked = match_elements(&refs, &news);
     let mut out = toml_edit::Array::new();
     let (opener, indent) = split(prefixes.first().map_or("", String::as_str));
     let mut carry = opener;
-    for (k, n) in new.iter().enumerate() {
-        let refs = olds.iter().map(ElementRef::Value).enumerate();
-        let pick = pick_old(refs, &taken, n);
-        let mut v = match pick {
+    for (k, (n, pick)) in news.iter().zip(&picked).enumerate() {
+        let mut v = match *pick {
             Some(i) => {
-                taken[i] = true;
                 let mut v = olds[i].clone();
                 merge_value(&mut v, n);
                 v
             }
             None => {
-                let mut v = n.clone();
+                let mut v = (*n).clone();
                 v.decor_mut().clear();
                 v
             }
         };
         if lines {
-            let (lead, tail) = match pick {
+            let (lead, tail) = match *pick {
                 Some(i) => {
                     let next = prefixes.get(i + 1).unwrap_or(&trailing);
                     (split(&prefixes[i]).1, split(next).0)
@@ -876,10 +1233,19 @@ fn fresh_in(table: &toml_edit::Table, new: &Item) -> Item {
 
 /// `new` as a section shaped like `like`: a field `like` has as a section
 /// is a section, a list of records it has as `[[…]]` an array of tables,
-/// anything else a value.
+/// anything else a value; (settings-tables follow-up) the keys `like`
+/// has in its order, then the others.
 fn shaped(new: &toml_edit::InlineTable, like: &toml_edit::Table) -> toml_edit::Table {
     let mut out = toml_edit::Table::new();
-    for (k, v) in new.iter() {
+    let order = like
+        .iter()
+        .map(|(k, _)| k)
+        .filter(|k| new.contains_key(k))
+        .chain(new.iter().map(|(k, _)| k).filter(|k| !like.contains_key(k)));
+    for k in order {
+        let Some(v) = new.get(k) else {
+            continue;
+        };
         let item = match (v, like.get(k)) {
             (toml_edit::Value::InlineTable(t), Some(Item::Table(l))) => Item::Table(shaped(t, l)),
             (toml_edit::Value::Array(a), Some(Item::ArrayOfTables(l)))

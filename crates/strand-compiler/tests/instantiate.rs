@@ -7230,7 +7230,8 @@ const PROFILES_SRC: &str = "type Mon { id: text; scale: float }\ntype Profile { 
 /// forms, a hand edit applies live (`on change` sees it), a key a record
 /// does not have keeps the field's last good value with a notice naming
 /// where it is, and a write of one profile goes back into the sections
-/// the file has, every other profile as it was written.
+/// the file has, every other profile as it was written, and the monitor
+/// it changed keeps its comments (settings-tables follow-up).
 #[test]
 fn settings_records_read_and_write_table_forms() {
     let dir = temp_dir("settings-tables");
@@ -7306,7 +7307,7 @@ fn settings_records_read_and_write_table_forms() {
     assert_eq!(
         written,
         format!(
-            "# at the desk\n[profiles.desk]\nlid = \"BOE\"\n\n[[profiles.desk.mons]]\nid = \"Dell\"\nscale = 2.0\n\n[[profiles.desk.mons]]\nid = \"BOE\"\nscale = 1.25\n\n{couch}"
+            "# at the desk\n[profiles.desk]\nlid = \"BOE\"\n\n# the big one\n[[profiles.desk.mons]]\nid = \"Dell\"   # left\nscale = 2.0\n\n[[profiles.desk.mons]]\nid = \"BOE\"\nscale = 1.25\n\n{couch}"
         )
     );
     // And it reads back as it was.

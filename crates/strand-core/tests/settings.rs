@@ -1421,16 +1421,20 @@ fn toml_field(name: &str) -> FieldSpec<V> {
 /// (settings-tables) Write `value` (the TOML of a key `x`) to `field` of
 /// `file` as it reads `before`, and return the file as written.
 fn write_toml(name: &str, before: &str, field: &str, value: &str) -> String {
+    write_toml_among(name, before, &[field], field, value)
+}
+
+/// [`write_toml`] in a file that declares a TOML field for each of
+/// `fields` (and `compact`).
+fn write_toml_among(name: &str, before: &str, fields: &[&str], field: &str, value: &str) -> String {
     let tmp = TempDir::new(name);
     let file = tmp.config("prefs.toml");
     fs::write(&file, before).unwrap();
     let rt = Runtime::new();
     let store = tmp.store();
-    let s = rt.settings_file(
-        &store,
-        &file,
-        vec![toml_field(field), flag("compact", false)],
-    );
+    let mut specs: Vec<FieldSpec<V>> = fields.iter().map(|f| toml_field(f)).collect();
+    specs.push(flag("compact", false));
+    let s = rt.settings_file(&store, &file, specs);
     rt.flush();
     let d = write(
         &rt,
@@ -1641,6 +1645,15 @@ order = [
 ",
         "{out}"
     );
+    // (settings-tables follow-up) One changed in place, where no other
+    // was, keeps the comment on its line.
+    let out = write_toml(
+        "array-replace",
+        before,
+        "order",
+        "x = [\"HDMI-A-1\", \"eDP-1\"]",
+    );
+    assert_eq!(out, before.replace("\"DP-1\"", "\"HDMI-A-1\""), "{out}");
     // A record nested in a section keeps its inline array as it was.
     let before = "\
 [profiles.desk]
@@ -1686,4 +1699,234 @@ h = 4
         "{out}"
     );
     assert!(!out.contains("lid"), "{out}");
+}
+
+/// (settings-tables follow-up) A hand-kept file with a header, a section
+/// and `[[profiles]]` elements each with comments (above the table,
+/// after a key, between keys).
+const KEPT: &str = "\
+# Monitor profiles, kept in chezmoi.
+# The shell writes saved layouts back here.
+
+compact = true   # a small bar
+
+# The panel.
+[size]   # in cells
+w = 3    # wide
+
+# ---- notes on the panel
+
+# tall
+h = 4
+
+# Saved layouts, one per place.
+
+# At the desk.
+[[profiles]]
+name = \"desk\"   # the docked set
+# the Dell, turned
+x = 0
+scale = 1.5     # 4K at 150%
+
+# On the couch.
+[[profiles]]
+name = \"couch\"
+x = 1440        # right of the Dell
+
+scale = 1.25
+
+# The TV.
+[[profiles]]
+name = \"tv\"
+x = 0
+scale = 2.0
+";
+
+const DESK: &str = "{ name = \"desk\", x = 0, scale = 1.5 }";
+const COUCH: &str = "{ name = \"couch\", x = 1440, scale = 1.25 }";
+const TV: &str = "{ name = \"tv\", x = 0, scale = 2.0 }";
+
+fn write_kept(name: &str, field: &str, value: &str) -> String {
+    write_toml_among(name, KEPT, &["profiles", "size"], field, value)
+}
+
+/// (settings-tables follow-up) A write keeps every comment and blank line
+/// outside what it changed: an element changed in a field keeps its
+/// comments, keys and their order, only the value replaced; a new element
+/// is written in the shape of its siblings; a removed element's own
+/// comments go with it, and the file's comments above it (a blank line
+/// apart) stay; a reordered list keeps the file's comments where they
+/// are and each element's own with it.
+#[test]
+fn a_write_keeps_every_comment_it_did_not_change() {
+    // One field of one element.
+    let out = write_kept(
+        "kept-change",
+        "profiles",
+        &format!("x = [{{ name = \"desk\", x = 0, scale = 1.75 }}, {COUCH}, {TV}]"),
+    );
+    assert_eq!(out, KEPT.replace("scale = 1.5 ", "scale = 1.75 "), "{out}");
+    // One more, written like its siblings, keys in their order.
+    let out = write_kept(
+        "kept-add",
+        "profiles",
+        &format!("x = [{DESK}, {COUCH}, {TV}, {{ scale = 1.0, name = \"lab\", x = 0 }}]"),
+    );
+    assert_eq!(
+        out,
+        format!("{KEPT}\n[[profiles]]\nname = \"lab\"\nx = 0\nscale = 1.0\n"),
+        "{out}"
+    );
+    // The first one gone: its comment goes, the file's above it stays.
+    let out = write_kept("kept-remove", "profiles", &format!("x = [{COUCH}, {TV}]"));
+    let removed = "\
+# At the desk.
+[[profiles]]
+name = \"desk\"   # the docked set
+# the Dell, turned
+x = 0
+scale = 1.5     # 4K at 150%
+
+";
+    assert_eq!(out, KEPT.replace(removed, ""), "{out}");
+    // Reordered: the file's comments stay in place, each element's own
+    // go with it.
+    let out = write_kept(
+        "kept-reorder",
+        "profiles",
+        &format!("x = [{TV}, {DESK}, {COUCH}]"),
+    );
+    let (head, _) = KEPT.split_once("# At the desk.").unwrap();
+    assert_eq!(
+        out,
+        format!(
+            "{head}\
+# The TV.
+[[profiles]]
+name = \"tv\"
+x = 0
+scale = 2.0
+
+# At the desk.
+[[profiles]]
+name = \"desk\"   # the docked set
+# the Dell, turned
+x = 0
+scale = 1.5     # 4K at 150%
+
+# On the couch.
+[[profiles]]
+name = \"couch\"
+x = 1440        # right of the Dell
+
+scale = 1.25
+"
+        ),
+        "{out}"
+    );
+    // A key gone from a section: its own comment goes, the file's note
+    // above it stays.
+    let out = write_kept("kept-key", "size", "x = { w = 3 }");
+    assert_eq!(out, KEPT.replace("# tall\nh = 4\n\n", ""), "{out}");
+}
+
+/// (settings-tables follow-up) The file's header above the first table
+/// stays when that table changes or goes, also when the element is a
+/// record of two fields that changes in one (it changed in place: no
+/// other element was there, or a new one shares less with it), and when
+/// a dictionary entry goes.
+#[test]
+fn a_header_above_the_first_table_stays() {
+    let before = "\
+# Profiles, kept in chezmoi.
+
+# At the desk.
+[[profiles]]
+name = \"desk\"   # docked
+scale = 1.5
+
+[[profiles]]
+name = \"couch\"
+scale = 1.25
+";
+    let out = write_toml(
+        "header-change",
+        before,
+        "profiles",
+        "x = [{ name = \"desk\", scale = 1.75 }, { name = \"couch\", scale = 1.25 }]",
+    );
+    assert_eq!(out, before.replace("1.5", "1.75"), "{out}");
+    let out = write_toml(
+        "header-replace",
+        before,
+        "profiles",
+        "x = [{ name = \"office\", scale = 1.0 }, { name = \"couch\", scale = 1.25 }]",
+    );
+    assert_eq!(
+        out,
+        before
+            .replace("\"desk\"", "\"office\"")
+            .replace("1.5", "1.0"),
+        "{out}"
+    );
+    // One added before it in the same gap takes none of its comments:
+    // the changed one shares more with what it was.
+    let out = write_toml(
+        "header-add-change",
+        before,
+        "profiles",
+        "x = [{ name = \"lab\", scale = 2.0 }, { name = \"desk\", scale = 1.75 }, { name = \"couch\", scale = 1.25 }]",
+    );
+    assert_eq!(
+        out,
+        "\
+# Profiles, kept in chezmoi.
+
+[[profiles]]
+name = \"lab\"
+scale = 2.0
+
+# At the desk.
+[[profiles]]
+name = \"desk\"   # docked
+scale = 1.75
+
+[[profiles]]
+name = \"couch\"
+scale = 1.25
+",
+        "{out}"
+    );
+    let out = write_toml(
+        "header-remove",
+        before,
+        "profiles",
+        "x = [{ name = \"couch\", scale = 1.25 }]",
+    );
+    assert_eq!(
+        out, "# Profiles, kept in chezmoi.\n\n[[profiles]]\nname = \"couch\"\nscale = 1.25\n",
+        "{out}"
+    );
+    let before = "\
+# Display profiles, kept in chezmoi.
+
+# At the desk.
+[profiles.desk]
+lid = \"a\"
+
+# On the couch.
+[profiles.couch]
+lid = \"b\"
+";
+    let out = write_toml(
+        "header-entry",
+        before,
+        "profiles",
+        "[x]\ncouch = { lid = \"b\" }\n",
+    );
+    assert_eq!(
+        out,
+        "# Display profiles, kept in chezmoi.\n\n# On the couch.\n[profiles.couch]\nlid = \"b\"\n",
+        "{out}"
+    );
 }

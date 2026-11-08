@@ -149,7 +149,9 @@ bar Displays {
 The settings file holds one section per set of monitors, each monitor
 a `[[…]]` table under it. It is yours to edit and keep with your
 dotfiles: an edit applies live, and Strand writes a saved profile back
-into the sections the file has, keeping the comments on every other one.
+into the sections the file has, keeping every comment: the other
+profiles stay as you wrote them, and a monitor whose place changed
+keeps its own comments, only its numbers rewritten.
 
 ```toml
 # Monitor profiles, one per set of monitors.

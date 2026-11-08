@@ -2811,8 +2811,14 @@ people can edit by hand.
   among records written as sections is a section shaped like them. A
   list, inline or `[[name]]`, is merged by value: an element that reads
   the same as one the file has keeps that one's text and the comments on
-  it, in the new order; any other (a changed element among them) is
-  written afresh, and one no longer in the list goes with its comments.
+  it, in the new order; (settings-tables follow-up) so does one changed
+  in a field or two, or changed in place where no other element was,
+  only its changed values replaced; any other is written afresh in the
+  shape of its siblings, and one no longer in the list goes with its own
+  comments. Every other comment and blank line stays: the comments right
+  above a table or key are its own, and what is above a blank line over
+  them (a header, a commented-out block) is the file's and stays where it
+  is, above what follows when the table or key under it goes.
   A value that reads the same as what the file says (`1` for `1.0`, keys
   in another order) is left as written. Writes follow
   symbolic links and replace the file through a temporary file and a

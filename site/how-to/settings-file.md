@@ -150,8 +150,10 @@ write in an overlay in Strand's state directory instead, with a notice.
   typo never passes for the default. Strand writes the list back in the
   form the file has, matching elements by value: when the click moves
   the terminal to the front, each pin keeps the comments written on it,
-  and an element you changed is written afresh. A comment above an
-  element's `[[apps]]` is that element's and moves with it. A
+  and an element you changed keeps them too, only its changed values
+  rewritten. A comment right above an element's `[[apps]]` is that
+  element's and moves with it; one with a blank line under it, such as
+  a header at the top of the file, stays where it is. A
   dictionary of records works the same way: `profiles: [text: Profile]`
   reads `[profiles.desk]`, with a list inside it as
   `[[profiles.desk.mons]]`.
