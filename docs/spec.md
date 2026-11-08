@@ -1872,8 +1872,8 @@ monitor, the keyboard always).
   decimal number from a text, spaces around it allowed, and is `null`
   when the text is not one (decisions.md flex). (json-fn) `json(v)`
   writes any plain-data value as compact JSON, records by their fields
-  in order, enums by name, colours as `hex`, durations in
-  milliseconds (docs/reference/functions.md; decisions.md json-fn), for
+  in order, enums by name, colours as `"#rrggbb"` (`"#rrggbbaa"` when
+  translucent), durations in milliseconds (docs/reference/functions.md; decisions.md json-fn), for
   a file a tool reads or an action's one argument.
 
 A bare number where a length is expected is logical pixels: `width: 90`
@@ -2388,7 +2388,10 @@ from a service, a compositor fragment from `outputs.all`.
   are defaults, so a `??` fallback is not written either. It is written
   once every one has answered. A service with no run up (failed, backing
   off) makes it a standing notice naming that service; one starting is
-  no news. A top-level `file` holds the services it reads. The positional path resolves as
+  no news, and so is one that is up but not ready (a declared `from
+  dbus` service whose daemon is absent waits for it with no notice). A
+  builtin whose backend is absent (`battery` without UPower) is ready
+  with its defaults, and is written. A top-level `file` holds the services it reads. The positional path resolves as
   a settings file's does (section 11): `~/…` from `$HOME`, an absolute
   path as given, anything else against the config directory, never the
   working directory of `strand run`. One path mounted from two places
@@ -2422,7 +2425,11 @@ from a service, a compositor fragment from `outputs.all`.
   standing notice, until the file is quiet for 1 s; it then runs once
   for the last content, and a fourth round right after that run holds
   it again without one. The next write that no run caused runs it as
-  usual. A failure is a notice and a `strand watch` event,
+  usual. A write while held that comes more than 1 s after the last run
+  ended shows the text changes on its own (a player's position, once a
+  second): the hold goes at once, and its writes are no rounds until
+  the file is quiet for 2 s. While held, the notice stands: a held
+  write does not take it away. A failure is a notice and a `strand watch` event,
   and the last good file stays. A file's standing notice (an unowned
   target, a failing `run`) lasts until its next write lands, and a
   `strand watch` started later hears it.
@@ -2655,7 +2662,15 @@ people can edit by hand.
   as `[[profiles.desk.mons]]`. A field the record leaves out is its
   default. A key the record does not have is a bad value, so a typo
   does not pass for the default: `monitors.toml: profiles: "desk":
-  mons[0]: unknown field "scael"; keeping its last good value`.
+  mons[0]: unknown field "scael"; keeping its last good value`. One bad
+  entry holds the whole field, so a removed record field the file still
+  names (or a typo in one profile) holds every profile at its last good
+  value. **A field whose value in the file is bad is not written**: a
+  write of it stays live, with a notice (`monitors.toml: profiles: not
+  saved while its value in the file is bad; fix it there`), since
+  writing it would replace what the user wrote there, other entries of
+  a dictionary among it; once the file reads again, it wins. Other
+  fields are saved as usual.
 - **Writes** (`<->`, handler assignments, `strand set prefs.compact
   true`) are saved after 250 ms of quiet and keep the file's comments,
   spacing and order. A dictionary is written key by key into the table
@@ -2711,10 +2726,13 @@ people can edit by hand.
   work (decisions.md m6-owner-fixes, gaps 18 and 20; m6-service-gaps,
   gap 30; drives; power-media-kbd). Every service's `ready` (section
   5.6) is false from the moment a run fails until a new run has
-  answered; a service whose source goes while it runs (the compositor's
-  connection, a `from dbus` daemon) turns `ready` false before it
-  clears what it showed, so no reader sees the cleared values as a
-  change (decisions.md service-ready).
+  answered; a service whose source goes while it runs (`outputs`: the
+  compositor's connection or its output manager; a declared `from
+  dbus` service: its daemon) turns `ready` false before it clears what
+  it showed, so no reader sees the cleared values as a change
+  (decisions.md service-ready). A builtin D-Bus service (`battery`,
+  `network`, …) whose daemon goes stays ready and reads it again: what
+  it shows then is a change.
 
 ## 13. The command line and IPC
 

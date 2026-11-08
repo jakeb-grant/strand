@@ -222,7 +222,8 @@ pub fn check(program: &hir::Program, intro: &dyn Introspect) -> Vec<Diagnostic> 
                     )
                     .with_label_in(s.file, f.key_span, "never signalled");
                     d.help = Some(
-                        "read it from a source that signals its changes, or poll it with                          `from poll` (`busctl get-property …` every few seconds)"
+                        "read it from a source that signals its changes, or poll it with \
+                         `from poll` (`busctl get-property …` every few seconds)"
                             .into(),
                     );
                     out.push(d);

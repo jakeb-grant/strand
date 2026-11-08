@@ -538,8 +538,10 @@ fn services(s: &Schema) -> String {
          | Field | Type | |\n\
          | --- | --- | --- |\n\
          | `ready` | `bool` | A run of the service is up and has answered: false before its \
-         first report, while its source is gone (a `from dbus` daemon, the compositor), and \
-         while no run is up (failed and backing off, or stopped). It turns true one flush \
+         first report, while its source is gone (a declared `from dbus` service's daemon, \
+         the compositor or its output manager for `outputs`), and while no run is up \
+         (failed and backing off, or stopped); a builtin D-Bus service whose daemon goes \
+         stays ready and shows what it reads again, as a change. It turns true one flush \
          after the service's first values, as a change, so `on change svc.x, svc.ready` runs \
          once the values are real (spec.md 8.4). It means *reported*, not *settled*. Unlike \
          `available` or `present`, which say whether a backend or device exists and are \

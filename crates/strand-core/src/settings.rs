@@ -270,7 +270,8 @@ pub enum SettingsIssue {
         overlay: PathBuf,
     },
     /// A write could not be saved (the value stays live). A file with a
-    /// syntax error is not overwritten.
+    /// syntax error is not overwritten, nor (settings-tables) a field
+    /// whose value in the file is bad (the notice names the field).
     WriteFailed(Arc<str>),
     /// The overlay is not valid TOML: it was moved aside to `moved_to` and
     /// the overlay starts empty.
@@ -316,7 +317,11 @@ impl fmt::Display for SettingsNotice {
                 self.file,
                 overlay.display()
             ),
-            SettingsIssue::WriteFailed(m) => write!(f, "{}: not saved: {m}", self.file),
+            SettingsIssue::WriteFailed(m) => match &self.field {
+                // (settings-tables) A field's write held back.
+                Some(field) => write!(f, "{}: {field}: {m}", self.file),
+                None => write!(f, "{}: not saved: {m}", self.file),
+            },
             SettingsIssue::CorruptOverlay { moved_to, error } => write!(
                 f,
                 "{}: not valid TOML ({error}); moved aside to {}, starting empty",
@@ -1198,6 +1203,10 @@ struct Field<V> {
     /// Not read yet (boot, or added or reset by a redeclare): no last good
     /// value but the snapshot's, nothing to compare a change against.
     fresh: Cell<bool>,
+    /// (settings-tables) The file's value for it is bad (the last read
+    /// did not decode): a write would replace what the user is fixing,
+    /// a dictionary's other entries among it, so it is not saved there.
+    bad: Cell<bool>,
 }
 
 impl<V: Clone> Field<V> {
@@ -1444,6 +1453,7 @@ impl<V: Clone + PartialEq + 'static> Inner<V> {
                         }
                     },
                 };
+                f.bad.set(read.is_none());
                 if let Some(v) = read {
                     let changed = *f.seen.borrow() != v;
                     if changed && !fresh && f.overlay.borrow().is_some() {
@@ -1593,6 +1603,24 @@ impl<V: Clone + PartialEq + 'static> Inner<V> {
             }
             let item = f.encode(&v);
             let has_overlay = f.overlay.borrow().is_some();
+            // (settings-tables) The file's value is bad: writing over it
+            // would drop what the user wrote there (a dictionary's other
+            // entries, merged key by key, would go). The value stays live
+            // and is not saved; once the file reads again, it wins.
+            if f.bad.get() && !read_only && !has_overlay {
+                f.live.replace(v.clone());
+                f.shown.replace(v);
+                if let Some(rt) = rt {
+                    self.notice(
+                        rt,
+                        Some(&f.name),
+                        SettingsIssue::WriteFailed(Arc::from(
+                            "not saved while its value in the file is bad; fix it there",
+                        )),
+                    );
+                }
+                continue;
+            }
             if read_only || has_overlay {
                 redirected |= !has_overlay;
                 f.overlay.replace(Some(v.clone()));
@@ -1659,6 +1687,7 @@ impl<V: Clone + PartialEq + 'static> Inner<V> {
             file_seq: Cell::new(0),
             overlay_seq: Cell::new(0),
             fresh: Cell::new(true),
+            bad: Cell::new(false),
             name: s.name,
             spec: RefCell::new(Spec {
                 ty: s.ty,
@@ -1688,6 +1717,7 @@ impl<V: Clone + PartialEq + 'static> Sibling for Inner<V> {
                 f.overlay.replace(v);
                 f.overlay_seq.set(seq);
             } else {
+                f.bad.set(false);
                 f.seen.replace(v.clone());
                 // The writer updated the shared snapshot already.
                 f.snapped.replace(v.clone());

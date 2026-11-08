@@ -836,6 +836,14 @@ impl State {
             WmAction::MoveWorkspace { workspace, screen } => {
                 self.move_target(*workspace, screen)?;
                 let target = self.workspace_target(*workspace)?;
+                // The classic dispatcher splits its argument at the first
+                // space: a name with one would name another workspace
+                // (review round 1).
+                if !lua && target.contains(char::is_whitespace) {
+                    return Err(WmError::Unsupported(
+                        "the classic `moveworkspacetomonitor` cannot name a workspace whose name has a space",
+                    ));
+                }
                 Ok(if lua {
                     format!(
                         "dispatch hl.dsp.workspace.move({{ workspace = {}, monitor = {} }})",
@@ -1539,6 +1547,24 @@ mod tests {
             );
         }
         assert!(!s.in_place(&mv(2, "DP-9")), "a failure is sent to fail");
+        // A named workspace with a space: the classic dispatcher would
+        // read `name:my` as the workspace, so it is refused there.
+        let mut s = s;
+        s.workspaces.push(HWorkspace {
+            id: -1337,
+            name: "my web".into(),
+            monitor: "DP-1".into(),
+            ..Default::default()
+        });
+        assert!(matches!(
+            s.dispatch_for(&mv(-1337, "HDMI-A-1"), Dialect::Classic),
+            Err(WmError::Unsupported(_))
+        ));
+        assert_eq!(
+            s.dispatch_for(&mv(-1337, "HDMI-A-1"), Dialect::Lua)
+                .unwrap(),
+            r#"dispatch hl.dsp.workspace.move({ workspace = "name:my web", monitor = "HDMI-A-1" })"#
+        );
     }
 
     #[test]

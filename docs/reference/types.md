@@ -520,7 +520,7 @@ with `outputs.apply`.
 | Field | Type | |
 | --- | --- | --- |
 | `name` | `text` | Its connector name, such as `DP-1`: the same as `Screen.name` while it is on. |
-| `id` | `text` | The monitor's identity: make, model and description (without the connector some compositors append; a make or model it does not give is `Unknown`, as `wl_output` says), with ` #2` for a second identical one (those on first). The same as `Screen.id` while it is on, and kept when it moves to another port: what a saved layout names a monitor by. |
+| `id` | `text` | The monitor's identity: make, model and description (without the connector some compositors append; a make or model it does not give is `Unknown`, as `wl_output` says), with ` #2` for a second identical one (those on first). The same as `Screen.id` while it is on, and kept when it moves to another port: what a saved layout names a monitor by. A monitor keeps its ` #n` while it is connected, turned off or on; which of two identical ones is ` #2` can change when Strand restarts. |
 | `description` | `text` | A readable description of it. |
 | `make` | `text` | Its maker, or "" when the compositor does not say. |
 | `model` | `text` | Its model, or "" when the compositor does not say. |

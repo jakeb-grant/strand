@@ -179,7 +179,9 @@ transform = "normal"
 
 A key a monitor's table does not have, `scael = 1.5`, keeps the last
 good profiles with a notice naming it, so a typo never reaches your
-monitors.
+monitors. Until you fix it, **Save this profile** saves nothing (it
+says so): saving would write the profiles the shell holds over the
+file, and the ones it could not read would go.
 
 ## A file for your compositor
 
@@ -224,9 +226,11 @@ file "~/.cache/monitors.json" {
 - **It follows the monitors.** The text reads `outputs.all`, so the
   file is written again whenever a monitor is moved, turned or
   plugged in, at most twice a second.
-- **It waits for `outputs`.** Until the monitors are in, `outputs.all`
-  is empty, so the file is not written at all and the last session's
-  lines stay.
+- **It waits for `outputs`.** A file is not written while a service it
+  reads is not ready: until the monitors are in, and while the
+  compositor is going away, the last session's lines stay. Once
+  `outputs` is ready, what it says is written, an empty list too (a
+  compositor with no monitors).
 - **Names, not ids, in code.** The connector names are what the file
   is for now, and it is rewritten when they change. The `id`s, which
   hold text from the monitor itself, go into JSON, where `json` quotes
@@ -244,9 +248,9 @@ on Hyprland, sway and niri.
 ```strand file=workspaces.strand
 // workspaces.strand: workspaces 1 to 5 on the big monitor while it is on
 let big = screens.all.find(s => s.id.starts_with("Dell Inc. | DELL U2720Q"))
-on change big?.name after 1500ms {
+on change big?.name, screens.ready, workspaces.ready after 1500ms {
   for s in screens.all.filter(s => s.name == big?.name) {
-    for ws in workspaces.all.filter(w => (number(w.name) ?? 0) <= 5) { ws.move_to(s) }
+    for ws in workspaces.all.filter(w => (number(w.name) ?? 99) <= 5) { ws.move_to(s) }
   }
 }
 ```
@@ -255,7 +259,11 @@ on change big?.name after 1500ms {
   as its output), so it is found on whichever port it is plugged into.
   `on change big?.name` places the workspaces when it is connected or
   moves to another port, not on every switch: a workspace you move by
-  hand stays where you put it.
+  hand stays where you put it. Naming `screens.ready` and
+  `workspaces.ready` places them when the shell starts too, since
+  `on change` never runs for the first value.
+- **`number(w.name) ?? 99`**: a named workspace (`web`, a special
+  one) has no number, and counts as 99, so only 1 to 5 move.
 - **`ws.move_to(s)`** leaves the focus on the workspace that had it,
   and a workspace on that screen already is left alone, so placing
   them again does nothing. Each call is its own request, so a `for`
@@ -294,6 +302,9 @@ panel off (`on = false`) for the dock instead.
 - **Two monitors of one model** have different `id`s when their
   descriptions differ (most carry the serial number). Two that are
   described alike get ` #2` on the second, the monitors that are on
-  numbered first.
+  numbered first. A monitor keeps its number while it is connected,
+  turned off or on, so a profile that turns one of the two off names
+  the same one afterwards; which one is ` #2` can change when Strand
+  restarts, as for `Screen.id`.
 - **Only a profile, never a guess.** Apply only when `mons != null`,
   and a set nobody saved stays as the compositor arranged it.

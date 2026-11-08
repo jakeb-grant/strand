@@ -452,6 +452,75 @@ fn a_file_with_a_syntax_error_is_not_overwritten() {
     assert_eq!(get(&rt, &s, "compact"), V::Bool(true));
 }
 
+/// (settings-tables) A field whose value in the file is bad is not
+/// written over: a dictionary of records held at its default by one
+/// stale key would otherwise lose every other entry the user wrote. The
+/// value stays live with a notice naming the field; the other fields
+/// are saved; once the file reads again, it wins.
+#[test]
+fn a_field_whose_file_value_is_bad_is_not_overwritten() {
+    let tmp = TempDir::new("bad-held");
+    let file = tmp.config("prefs.toml");
+    let text = "# mine\naccent = \"#ff0000\"\ncompact = \"yes\"\n";
+    fs::write(&file, text).unwrap();
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let s = prefs(&rt, &store, &file);
+    rt.flush();
+    rt.take_diagnostics();
+    let d = write(
+        &rt,
+        &s,
+        &store,
+        "compact",
+        V::Bool(true),
+        Duration::from_millis(10),
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), text, "the file is kept");
+    let notices = settings_notices(&d);
+    assert!(
+        matches!(&notices[..], [n] if n.field.as_deref() == Some("compact")
+            && matches!(n.issue, SettingsIssue::WriteFailed(_))
+            && n.to_string().contains("compact: not saved while its value in the file is bad")),
+        "{d:?}"
+    );
+    assert_eq!(
+        get(&rt, &s, "compact"),
+        V::Bool(true),
+        "the value stays live"
+    );
+    // Another field still saves, and leaves the bad one as written.
+    write(
+        &rt,
+        &s,
+        &store,
+        "accent",
+        V::Color("#00ff00".into()),
+        Duration::from_millis(400),
+    );
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "# mine\naccent = \"#00ff00\"\ncompact = \"yes\"\n"
+    );
+    // The user's fix wins over the unsaved value, and writes save again.
+    fs::write(&file, "# mine\naccent = \"#00ff00\"\ncompact = false\n").unwrap();
+    s.reload(&rt);
+    rt.flush();
+    assert_eq!(get(&rt, &s, "compact"), V::Bool(false));
+    write(
+        &rt,
+        &s,
+        &store,
+        "compact",
+        V::Bool(true),
+        Duration::from_millis(800),
+    );
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "# mine\naccent = \"#00ff00\"\ncompact = true\n"
+    );
+}
+
 #[test]
 fn the_runtime_overlay_wins_over_the_file_and_says_so() {
     let tmp = TempDir::new("overlay");

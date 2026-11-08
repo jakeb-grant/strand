@@ -3982,7 +3982,7 @@ proof  = "crates/strand/tests/screens_focus.rs::an_outputs_id_is_its_screens_id_
 [[claim]]
 page   = "site/how-to/monitor-profiles.md"
 text   = "described alike get ` #2` on the second, the monitors that are on numbered first."
-source = ['crates/strand-services/src/outputs.rs "/// strand-surface does (its second ` #2`): those on first, in order, then"']
+source = ['crates/strand-services/src/outputs.rs "/// what no other output holds. New ones are numbered those on first, in"']
 proof  = "crates/strand-services/src/outputs.rs::tests::identical_heads_are_numbered_the_ones_on_first"
 
 [[claim]]
@@ -3993,7 +3993,7 @@ proof  = "crates/strand/tests/screens_focus.rs::the_monitor_profiles_page_arrang
 
 [[claim]]
 page   = "site/how-to/monitor-profiles.md"
-text   = "is empty, so the file is not written at all and the last session's lines stay."
+text   = "reads is not ready: until the monitors are in, and while the compositor is going away, the last session's lines stay."
 source = ['docs/spec.md "has `ready` false (section 5.6): its values"']
 proof  = "crates/strand-compiler/tests/instantiate.rs::the_monitor_profiles_page_works_together (both files wait until `outputs` is ready)"
 

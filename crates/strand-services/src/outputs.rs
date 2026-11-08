@@ -222,21 +222,60 @@ pub fn output_id(make: &str, model: &str, description: &str, connector: &str) ->
 }
 
 /// Fills each output's `id`, numbering identical monitors as
-/// strand-surface does (its second ` #2`): those on first, in order, then
-/// those off, so an id agrees with `Screen.id` for every monitor shown.
+/// strand-surface does (its second ` #2`), so an id agrees with
+/// `Screen.id` for every monitor shown. An output comes with the id it
+/// had at the last snapshot (empty when new) and keeps it: turning one of
+/// two identical monitors off or on, or unplugging one, renumbers neither
+/// (review round 1). A monitor turned on whose id another one on holds,
+/// or a new one, takes the lowest number no monitor on holds, as
+/// strand-surface's `Monitors::plug` reclaims a record; one off takes
+/// what no other output holds. New ones are numbered those on first, in
+/// the compositor's order, then those off.
 fn number_ids(all: &mut [Output]) {
-    let mut order: Vec<usize> = (0..all.len()).collect();
-    order.sort_by_key(|&i| !all[i].enabled);
-    let mut seen: HashMap<String, usize> = HashMap::new();
-    for i in order {
-        let o = &all[i];
-        let base = output_id(&o.make, &o.model, &o.description, &o.name);
-        let n = seen.entry(base.clone()).or_insert(0);
-        *n += 1;
-        all[i].id = match *n {
-            1 => base,
-            n => format!("{base} #{n}"),
-        };
+    let bases: Vec<String> = all
+        .iter()
+        .map(|o| output_id(&o.make, &o.model, &o.description, &o.name))
+        .collect();
+    let nth = |base: &str, n: usize| match n {
+        1 => base.to_string(),
+        n => format!("{base} #{n}"),
+    };
+    // The number of the id an output had, when it is still of its base.
+    let prior: Vec<Option<usize>> = all
+        .iter()
+        .zip(&bases)
+        .map(|(o, base)| match o.id.strip_prefix(base.as_str())? {
+            "" => Some(1),
+            rest => rest.strip_prefix(" #")?.parse().ok().filter(|&n| n >= 2),
+        })
+        .collect();
+    let mut held: Vec<Option<usize>> = vec![None; all.len()];
+    // Held so far: by those on only, while they are numbered.
+    let taken = |held: &[Option<usize>], i: usize, n: usize| {
+        held.iter()
+            .enumerate()
+            .any(|(j, h)| *h == Some(n) && bases[j] == bases[i])
+    };
+    let on: Vec<usize> = (0..all.len()).filter(|&i| all[i].enabled).collect();
+    let off: Vec<usize> = (0..all.len()).filter(|&i| !all[i].enabled).collect();
+    for group in [&on, &off] {
+        // Those keeping their number, then the rest.
+        for &i in group.iter() {
+            if let Some(n) = prior[i]
+                && !taken(&held, i, n)
+            {
+                held[i] = Some(n);
+            }
+        }
+        for &i in group.iter() {
+            if held[i].is_none() {
+                let n = (1..).find(|&n| !taken(&held, i, n)).unwrap_or(1);
+                held[i] = Some(n);
+            }
+        }
+    }
+    for (i, o) in all.iter_mut().enumerate() {
+        o.id = nth(&bases[i], held[i].unwrap_or(1));
     }
 }
 
@@ -358,6 +397,9 @@ struct HeadEntry {
     transform: wl_output::Transform,
     scale: f64,
     adaptive_sync: bool,
+    /// (output-id) Its id at the last snapshot, kept while the head is
+    /// there ([`number_ids`]).
+    id: String,
 }
 
 impl HeadEntry {
@@ -377,6 +419,7 @@ impl HeadEntry {
             transform: wl_output::Transform::Normal,
             scale: 1.0,
             adaptive_sync: false,
+            id: String::new(),
         }
     }
 }
@@ -401,6 +444,10 @@ struct Client {
     modes: HashMap<ObjectId, ModeEntry>,
     /// A `done` (or the manager going) is waiting to be published.
     changed: bool,
+    /// The manager went (finished, or its global removed) and none is
+    /// bound since: what was shown no longer holds, and the service is
+    /// not ready until another manager's first `done`.
+    lost: bool,
     /// The registry's first sync is answered: every global then present
     /// was announced.
     synced: bool,
@@ -414,8 +461,8 @@ impl Client {
     }
 
     /// The outputs as published: every head with a name, modes
-    /// deduplicated.
-    fn snapshot(&self) -> Vec<Output> {
+    /// deduplicated; each head keeps its id ([`number_ids`]).
+    fn snapshot(&mut self) -> Vec<Output> {
         let mut all: Vec<Output> = self
             .heads
             .iter()
@@ -442,7 +489,7 @@ impl Client {
                     .map(ModeEntry::public);
                 Output {
                     name: h.name.clone(),
-                    id: String::new(),
+                    id: h.id.clone(),
                     description: h.description.clone(),
                     make: h.make.clone(),
                     model: h.model.clone(),
@@ -462,7 +509,34 @@ impl Client {
             })
             .collect();
         number_ids(&mut all);
+        let named = self.heads.iter_mut().filter(|h| !h.name.is_empty());
+        for (h, o) in named.zip(&all) {
+            h.id.clone_from(&o.id);
+        }
         all
+    }
+
+    /// What to publish after a dispatch (`ready`: the service is): the
+    /// outputs at each `done`, or once the registry shows no manager.
+    /// (service-ready) A manager that went while the connection stays (a
+    /// compositor shutting down removes its globals first) clears them,
+    /// not ready first, as a failed connection does, so a `file` written
+    /// from `outputs.all` waits instead of writing an empty list; ready
+    /// again at another manager's first `done`.
+    fn publish(&mut self, ready: bool) -> Publish {
+        let changed = std::mem::take(&mut self.changed);
+        if self.lost {
+            return match changed {
+                true => Publish::Cleared,
+                false => Publish::Nothing,
+            };
+        }
+        let answered = self.manager.is_none() || self.serial.is_some();
+        if !(changed || self.synced && !ready) || !answered {
+            return Publish::Nothing;
+        }
+        let available = self.manager.is_some();
+        Publish::Shown(self.snapshot(), available)
     }
 
     /// The manager is gone (finished, or its global removed): its heads
@@ -482,7 +556,18 @@ impl Client {
         self.manager_global = None;
         self.serial = None;
         self.changed = true;
+        self.lost = true;
     }
+}
+
+/// What [`Client::publish`] asks of the run.
+#[derive(Debug, PartialEq)]
+enum Publish {
+    Nothing,
+    /// Not ready, then the outputs cleared.
+    Cleared,
+    /// The outputs and whether a manager is there, then ready.
+    Shown(Vec<Output>, bool),
 }
 
 /// How a configured head gets its mode.
@@ -827,17 +912,22 @@ impl Outputs {
                 }
             }
             // State, at each `done` (or once the registry shows no manager).
-            if std::mem::take(&mut client.changed) || (client.synced && !cx.is_ready()) {
-                let ready = client.manager.is_none() || client.serial.is_some();
-                if ready && stopping.is_none() {
-                    let all = client.snapshot();
-                    let available = client.manager.is_some();
+            match client.publish(cx.is_ready()) {
+                Publish::Cleared => {
+                    cx.unready();
+                    cx.update(|s| {
+                        s.all.clear();
+                        s.available = false;
+                    });
+                }
+                Publish::Shown(all, available) if stopping.is_none() => {
                     cx.update(|s| {
                         s.all = all;
                         s.available = available;
                     });
                     cx.ready();
                 }
+                _ => {}
             }
             // Answers.
             for (id, outcome) in std::mem::take(&mut client.answers) {
@@ -973,6 +1063,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
             } if interface == ZwlrOutputManagerV1::interface().name && state.manager.is_none() => {
                 state.manager = Some(registry.bind(name, version.min(VERSION), qh, ()));
                 state.manager_global = Some(name);
+                state.lost = false;
             }
             wl_registry::Event::GlobalRemove { name } if state.manager_global == Some(name) => {
                 if let Some(m) = &state.manager {
@@ -1299,5 +1390,68 @@ mod tests {
                 "Unknown | DELL U2720Q | Built-in (not eDP-2)".to_string(),
             ]
         );
+    }
+
+    /// (output-id, review round 1) Two identical monitors keep their ids
+    /// when one is turned off or on, as strand-surface keeps its
+    /// `Screen.id`; one unplugged and plugged in again takes the lowest
+    /// number no monitor on holds, as strand-surface reclaims its record.
+    #[test]
+    fn an_identical_monitor_keeps_its_id_while_it_is_there() {
+        let head = |name: &str, enabled: bool| Output {
+            name: name.into(),
+            make: "Dell Inc.".into(),
+            model: "DELL U2720Q".into(),
+            description: format!("Dell Inc. DELL U2720Q ({name})"),
+            enabled,
+            ..Output::default()
+        };
+        let base = "Dell Inc. | DELL U2720Q | Dell Inc. DELL U2720Q";
+        let second = format!("{base} #2");
+        let ids = |all: &[Output]| -> Vec<String> { all.iter().map(|o| o.id.clone()).collect() };
+        let mut all = vec![head("DP-1", true), head("DP-2", true)];
+        number_ids(&mut all);
+        assert_eq!(ids(&all), [base.to_string(), second.clone()]);
+        // A profile turns DP-1 off and DP-2 on: neither is renumbered, so
+        // the profile still names the same two (no loop of applies).
+        all[0].enabled = false;
+        number_ids(&mut all);
+        assert_eq!(ids(&all), [base.to_string(), second.clone()]);
+        all[0].enabled = true;
+        number_ids(&mut all);
+        assert_eq!(ids(&all), [base.to_string(), second.clone()]);
+        // DP-1 unplugged: DP-2 keeps its `#2`, as its `Screen.id` does.
+        let mut all = vec![all.remove(1)];
+        number_ids(&mut all);
+        assert_eq!(ids(&all), std::slice::from_ref(&second));
+        // Plugged in again, after DP-2: it takes the number free again.
+        all.push(head("DP-1", true));
+        number_ids(&mut all);
+        assert_eq!(ids(&all), [second.clone(), base.to_string()]);
+        // A monitor turned on takes over the id of one that is off (as
+        // strand-surface's record is reclaimed), which takes the next.
+        let mut all = vec![head("DP-1", false), head("DP-2", true)];
+        all[0].id = base.to_string();
+        number_ids(&mut all);
+        assert_eq!(ids(&all), [second.clone(), base.to_string()]);
+    }
+
+    /// (service-ready, review round 1) The output manager going while
+    /// the connection stays clears the outputs as not ready, and nothing
+    /// shows them ready again until another manager answers.
+    #[test]
+    fn a_lost_manager_clears_its_outputs_unready() {
+        let mut c = Client {
+            synced: true,
+            ..Client::default()
+        };
+        // No manager on this compositor: ready, with none.
+        assert_eq!(c.publish(false), Publish::Shown(Vec::new(), false));
+        assert_eq!(c.publish(true), Publish::Nothing);
+        // The manager goes (finished, or its global removed).
+        c.drop_manager();
+        assert_eq!(c.publish(true), Publish::Cleared);
+        assert_eq!(c.publish(false), Publish::Nothing, "not ready again");
+        assert_eq!(c.publish(false), Publish::Nothing);
     }
 }

@@ -773,12 +773,24 @@ fn sway_rects(sock: &Path) -> std::collections::BTreeMap<String, (i64, i64, i64,
 /// Once `outputs` is ready the best guess puts them side by side (x the
 /// running total of logical widths, y 0) through `outputs.apply`; the
 /// compositor file and the JSON file are written from `outputs.all` with
-/// each monitor's `id`; a profile written by hand as `[[…]]` tables,
+/// each monitor's `id`; workspaces.strand, its big monitor HEADLESS-2,
+/// puts workspace 1 there when the shell starts (review round 1: it named
+/// no `ready` and did nothing at start); a profile written by hand as `[[…]]` tables,
 /// naming the monitors by `id`, is read live and applied, and the
 /// compositor file follows.
 #[test]
 fn the_monitor_profiles_page_arranges_sways_monitors() {
-    let page = page_files(MONITOR_PROFILES_PAGE);
+    // The big monitor is HEADLESS-2 here.
+    let dell = "s.id.starts_with(\"Dell Inc. | DELL U2720Q\")";
+    let page: Vec<(String, String)> = page_files(MONITOR_PROFILES_PAGE)
+        .into_iter()
+        .map(|(n, t)| {
+            if n == "workspaces.strand" {
+                assert!(t.contains(dell), "{t}");
+            }
+            (n, t.replace(dell, "s.name == \"HEADLESS-2\""))
+        })
+        .collect();
     let mut files: Vec<(&str, &str)> = page.iter().map(|(n, t)| (n.as_str(), t.as_str())).collect();
     assert_eq!(files.len(), 4, "{files:?}");
     files.push(("probe.strand", PROBE));
@@ -819,6 +831,15 @@ fn the_monitor_profiles_page_arranges_sways_monitors() {
         match v.as_slice() {
             [a, b] if a.0 == 0 && a.1 == 0 && b.1 == 0 && b.0 == a.2 => Ok(()),
             _ => Err(format!("{r:?}")),
+        }
+    });
+    // Workspace 1, on HEADLESS-1 at start, is on the big monitor.
+    desk.until("workspace 1 on the big monitor from the start", |d| {
+        let all: serde_json::Value =
+            serde_json::from_str(&swaymsg(&d.sock, &["-t", "get_workspaces"])).unwrap();
+        match all.as_array().unwrap().iter().find(|w| w["name"] == "1") {
+            Some(w) if w["output"] == "HEADLESS-2" => Ok(()),
+            w => Err(format!("{w:?}")),
         }
     });
     let home = desk.dir.join("home");

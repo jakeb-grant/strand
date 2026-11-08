@@ -204,12 +204,11 @@ fn text_and_number_helpers() {
     assert_eq!(get(&inst, "b"), Value::Null);
 }
 
-/// Text `slice` and `index_of` count characters, as `len` does.
 /// (json-fn) `json(value)` writes plain data as compact JSON: a record
 /// by its fields in order, nested lists and records, a dictionary as an
-/// object of its keys' texts, null, an enum's name, a colour's hex, a
-/// duration's milliseconds, an `int` whole and a float in its shortest
-/// form; a text escaped as JSON requires, other characters kept. What it
+/// object of its keys' texts, null, an enum's name, a colour `#rrggbb`
+/// (`#rrggbbaa` translucent), a duration's milliseconds, an `int` whole
+/// and a float in its shortest form; a text escaped as JSON requires, other characters kept. What it
 /// writes reads back as the same data.
 #[test]
 fn json_writes_plain_data() {
@@ -224,7 +223,8 @@ fn json_writes_plain_data() {
          let j6 = json(1500ms)\n\
          let j7 = json(0.1 + 0.2)\n\
          let j8 = json(7)\n\
-         let j9 = json(#ff8800)\n");
+         let j9 = json(#ff8800)\n\
+         let j10 = json(#ff880080)\n");
     let j1 = text(&inst, "j1");
     assert_eq!(
         j1,
@@ -242,11 +242,12 @@ fn json_writes_plain_data() {
     assert_eq!(text(&inst, "j6"), "1500");
     assert_eq!(text(&inst, "j7"), "0.30000000000000004");
     assert_eq!(text(&inst, "j8"), "7");
-    let j9 = text(&inst, "j9");
-    assert!(j9.starts_with("\"#ff8800"), "{j9}");
+    assert_eq!(text(&inst, "j9"), r##""#ff8800""##);
+    assert_eq!(text(&inst, "j10"), r##""#ff880080""##, "translucent");
     assert_eq!(ty("let a = json([1])\n", "a"), "text");
 }
 
+/// Text `slice` and `index_of` count characters, as `len` does.
 #[test]
 fn text_slices_by_characters() {
     let (_, _, inst) = run("let s = \"héllo 😀 world\"\n\

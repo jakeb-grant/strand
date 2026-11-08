@@ -135,9 +135,9 @@ write in an overlay in Strand's state directory instead, with a notice.
   `{ … }` form:
 
   ```toml
-  # Pinned apps, in your order.
+  # the browser
   [[apps]]
-  id = "firefox"   # the browser
+  id = "firefox"
 
   # the terminal
   [[apps]]
@@ -150,7 +150,14 @@ write in an overlay in Strand's state directory instead, with a notice.
   typo never passes for the default. Strand writes the list back in the
   form the file has, matching elements by value: when the click moves
   the terminal to the front, each pin keeps the comments written on it,
-  and an element you changed is written afresh. A dictionary of records
-  works the same way: `profiles: [text: Profile]` reads
-  `[profiles.desk]`, with a list inside it as
+  and an element you changed is written afresh. A comment above an
+  element's `[[apps]]` is that element's and moves with it. A
+  dictionary of records works the same way: `profiles: [text: Profile]`
+  reads `[profiles.desk]`, with a list inside it as
   `[[profiles.desk.mons]]`.
+- **A bad value is not written over.** While a field's value in the
+  file is bad (a typo, or a key a record no longer has after you edit
+  its `type`), a write of that field from the shell is kept live but
+  not saved, with a notice: saving it would replace what you wrote,
+  every other profile of a dictionary among it. Fix the file, and its
+  value applies.

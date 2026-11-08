@@ -1271,10 +1271,6 @@ mod tests {
         assert_eq!(first_layouts(&inputs), ["English (US)", "German"]);
     }
 
-    /// Gaps 3 (m6-w2-services): the config's top-level `workspace <name>
-    /// output <outputs…>` lines, with `set` variables (longest name
-    /// first), quotes, continued lines; blocks, comments, bindings and
-    /// other `workspace` commands are not assignments.
     /// (ws-move) `ws.move_to(screen)`: by a window on the workspace, else
     /// the focused one, else switched to (an empty workspace shown on
     /// another output); the focus goes back to the workspace that had it
@@ -1356,6 +1352,10 @@ mod tests {
         );
     }
 
+    /// Gaps 3 (m6-w2-services): the config's top-level `workspace <name>
+    /// output <outputs…>` lines, with `set` variables (longest name
+    /// first), quotes, continued lines; blocks, comments, bindings and
+    /// other `workspace` commands are not assignments.
     #[test]
     fn assignments_are_read_from_the_config() {
         let config = r#"

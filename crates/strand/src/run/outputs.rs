@@ -60,6 +60,9 @@ const PACE: Duration = Duration::from_millis(500);
 const LOOP_WINDOW: Duration = Duration::from_secs(1);
 /// (live-files) After this many rounds in a row, the `run:` is held.
 const LOOP_ROUNDS: u32 = 3;
+/// (live-files) A file whose text was seen to change on its own is
+/// watched for loops again once it is quiet this long.
+const OWN_QUIET: Duration = Duration::from_secs(2);
 /// The loop guard's notice.
 const LOOP_NOTICE: &str = "its `run:` changes what it is written from: the `run:` is held \
                            until the file is quiet for a second";
@@ -397,6 +400,12 @@ struct RunState {
     /// again, and that hold ends without a run.
     probation: bool,
     stuck: bool,
+    /// (review round 1) A write came while held, with no run near it:
+    /// the text changes on its own (a player's position, once a second),
+    /// so its writes are no rounds until the file is quiet for
+    /// [`OWN_QUIET`]. When the last write landed, for that.
+    own: bool,
+    last_write: Option<Instant>,
 }
 
 /// (live-files) A write a path's pace holds: its bytes, its `run:` and
@@ -604,8 +613,9 @@ impl Writer {
     ) -> Option<Duration> {
         match self.write_file(&path, &bytes) {
             Ok(changed) => {
-                self.tell(Outcome::Written(path.clone()));
                 let now = Instant::now();
+                // Held `run:`: the loop notice stands (the write is no news).
+                let mut held = false;
                 if changed {
                     match entry(&mut self.paced, &path) {
                         Some(p) => p.last = now,
@@ -632,8 +642,25 @@ impl Writer {
                     // (live-files) The loop guard: a write soon after the
                     // file's own run ended is a round; three in a row hold
                     // the `run:` until the file is quiet for a second.
-                    let round =
+                    let near =
                         r.running || r.ended.is_some_and(|e| now.duration_since(e) < LOOP_WINDOW);
+                    if r.last_write
+                        .is_some_and(|w| now.duration_since(w) >= OWN_QUIET)
+                    {
+                        r.own = false;
+                    }
+                    r.last_write = Some(now);
+                    // A write while held that no run is near: the text
+                    // changes on its own, and the rounds were its ticks,
+                    // not a loop. The hold goes; the `run:` follows it.
+                    if r.held_until.is_some() && !near {
+                        r.own = true;
+                        r.held_until = None;
+                        r.skipped = false;
+                        r.stuck = false;
+                        r.probation = false;
+                    }
+                    let round = near && !r.own;
                     if round {
                         r.rounds += 1;
                     } else {
@@ -647,12 +674,16 @@ impl Writer {
                         r.due = None;
                         r.skipped = true;
                         r.stuck |= again;
+                        held = true;
                         if !was_held {
-                            self.tell(Outcome::Failed(path, LOOP_NOTICE.into()));
+                            self.tell(Outcome::Failed(path.clone(), LOOP_NOTICE.into()));
                         }
                     } else {
                         r.due = due;
                     }
+                }
+                if !held {
+                    self.tell(Outcome::Written(path));
                 }
                 None
             }
@@ -1796,6 +1827,52 @@ mod tests {
             assert!(later.elapsed() < Duration::from_secs(5), "ran again");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// (live-files, review round 1) A file whose text changes on its own
+    /// every half second (a player's position, a slider) looks like a
+    /// loop for three rounds; while held, the loop notice stands (a held
+    /// write does not take it away), and the first write no run is near
+    /// shows the text changes by itself: the hold goes and `run:` follows
+    /// every later write.
+    #[test]
+    fn a_text_that_changes_on_its_own_is_not_held() {
+        let dir = temp("own");
+        let log = dir.join("runs.log");
+        let out = dir.join("np.txt");
+        let (jobs, rx) = spawned(&dir, RUN_TIMEOUT);
+        let run = Some(vec![
+            "sh".to_string(),
+            "-c".into(),
+            format!("echo x >> {}", log.display()),
+        ]);
+        let mut seen: Vec<Outcome> = Vec::new();
+        let start = Instant::now();
+        let mut n = 0;
+        let mut sampled = None;
+        while start.elapsed() < Duration::from_millis(4000) {
+            jobs.send(Job::Write {
+                path: out.clone(),
+                bytes: format!("pos {n}").into_bytes(),
+                run: run.clone(),
+            })
+            .unwrap();
+            n += 1;
+            std::thread::sleep(Duration::from_millis(250));
+            seen.extend(rx.drain());
+            // Between the held write at 2 s and the one at 2.5 s that
+            // lets the hold go.
+            if sampled.is_none() && start.elapsed() >= Duration::from_millis(2250) {
+                sampled = seen.last().cloned();
+            }
+        }
+        let runs = lines(&log);
+        assert!(
+            matches!(&sampled, Some(Outcome::Failed(p, why)) if *p == out && why == LOOP_NOTICE),
+            "the notice stands while held: {sampled:?} in {seen:?}"
+        );
+        // Writes at 0, 0.5, … 3.5 s: held only at 1.5 and 2 s.
+        assert!(runs >= 5, "{runs} runs: {seen:?}");
     }
 
     /// (live-files) A `file` waiting for a service that is starting says
