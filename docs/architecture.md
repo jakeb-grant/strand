@@ -3220,11 +3220,14 @@ itself.
   protocol's rule), made after a read when the heads may be behind;
   changes are validated before sending, since the
   protocol ends the connection on those errors, and a mode is the
-  listed one nearest within 0.5 Hz (`outputs::pick`), else custom.
+  listed one nearest within 0.5 Hz (`outputs::pick`), else custom; a
+  head on not given one is sent the mode it shows, or none when it
+  shows none Strand can name (a Hyprland mirror), keeping its own.
   An apply answered `succeeded` is `succeeded` once the `wl_output`s
   and xdg-outputs show what it asked (its scale as sent, within 1/128;
-  a head on with no `wl_output`, a Hyprland mirror, unchecked until it
-  has one), the heads read again and published before it when they may
+  a head on with no `wl_output`, a Hyprland mirror, checked by its
+  head for the place, transform and scale the apply changed of it until
+  it has one), the heads read again and published before it when they may
   be behind, `failed` naming how they differ once they are quiet for
   1 s without it (`Client::unlike`).
   `cancelled` is retried from the new state up to `MAX_TRIES` (3). A

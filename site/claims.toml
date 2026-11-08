@@ -4121,6 +4121,12 @@ proof  = "crates/strand-services/tests/outputs.rs::an_apply_the_compositor_did_n
 
 [[claim]]
 page   = "site/how-to/monitor-profiles.md"
+text   = "A monitor Hyprland mirrors stays a mirror where it is, so a layout"
+source = ['crates/strand-services/src/outputs.rs "a mirror with no wl_output, is at {}, {}, not {}, {}"', 'crates/strand-services/src/outputs.rs "/// shows no mode Strand can name (a Hyprland mirror: no current mode and"']
+proof  = "crates/strand-services/tests/outputs.rs::an_apply_placing_a_mirror_that_stays_fails; crates/strand-services/src/outputs.rs::tests::a_mirror_keeps_its_mode_when_another_head_changes; seen on nested Hyprland 0.57 (decisions.md outputs-apply review round 6)"
+
+[[claim]]
+page   = "site/how-to/monitor-profiles.md"
 text   = "lists every connected monitor, on or off"
 source = ['crates/strand-compiler/src/schema/builtin.schema "/// Every output, on or off, keyed by `name`, in the order of their"', 'crates/strand-compiler/src/schema/builtin.schema "/// Applies `changes` together, as one configuration."']
 proof  = "crates/strand-compiler/tests/instantiate.rs::a_best_guess_layout_is_written_with_the_list_operations_there_are"

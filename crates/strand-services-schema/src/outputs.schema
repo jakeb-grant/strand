@@ -74,7 +74,8 @@ record OutputChange {
   enabled: bool?
   /// The mode to show: one of its `modes`, or a size and rate (the listed
   /// mode of that size nearest the rate within 0.5 Hz, else a custom mode;
-  /// a rate of 0 takes the fastest listed one).
+  /// a rate of 0 takes the fastest listed one). Null keeps the one it
+  /// shows; an output turned on shows its preferred one.
   mode: OutputMode?
   /// Its left edge in the layout, in logical pixels.
   x: int?

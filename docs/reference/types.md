@@ -551,7 +551,7 @@ scale.
 | --- | --- | --- |
 | `name` | `text` | The output it changes (`Output.name`). |
 | `enabled` | `bool?` | Turns it on or off. |
-| `mode` | `OutputMode?` | The mode to show: one of its `modes`, or a size and rate (the listed mode of that size nearest the rate within 0.5 Hz, else a custom mode; a rate of 0 takes the fastest listed one). |
+| `mode` | `OutputMode?` | The mode to show: one of its `modes`, or a size and rate (the listed mode of that size nearest the rate within 0.5 Hz, else a custom mode; a rate of 0 takes the fastest listed one). Null keeps the one it shows; an output turned on shows its preferred one. |
 | `x` | `int?` | Its left edge in the layout, in logical pixels. |
 | `y` | `int?` | Its top edge in the layout, in logical pixels. |
 | `scale` | `float?` | Its scale factor, from 1/256 (the protocol's step) up. |

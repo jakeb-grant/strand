@@ -40,14 +40,17 @@
 //! listed mode of that size nearest its rate within 0.5 Hz (the fastest
 //! listed one for a rate of 0), else a custom mode; a head turned on with
 //! no mode named shows its current mode, else its preferred, else its
-//! first. A configuration asked for while the heads may be behind (a
+//! first, and a head on that shows no mode it can be sent (a Hyprland
+//! mirror) is sent none, keeping its own. A configuration asked for while
+//! the heads may be behind (a
 //! change not read yet) is made after reading the outputs again. The
 //! compositor answers `succeeded` or `failed` (`outputs.failed(action,
 //! error)`). (outputs-apply) `succeeded` is its word only, so an applied
 //! configuration is `outputs.succeeded("apply")` once the `wl_output`s
 //! and xdg-outputs show what it asked ([`Client::unlike`]: its scale as
-//! sent, within [`SCALE_SLACK`]; a mirror, on with no `wl_output`, only
-//! once it has one), with the heads read again and published first when
+//! sent, within [`SCALE_SLACK`]; a mirror, on with no `wl_output`, by its
+//! head for what the configuration changed of it until it has one), with
+//! the heads read again and published first when
 //! they may be behind, and `failed`
 //! naming how they differ once they are quiet for [`CHECK_QUIET`] (at
 //! most [`CHECK_FOR`]) without it; a test is `succeeded` at its answer.
@@ -970,9 +973,11 @@ impl Client {
     /// `wl_output` and its xdg-output say. A head asked off must have no
     /// `wl_output`; one asked on must have one, with its mode and (with
     /// xdg-output) its place and size in, that [`differs`] in nothing,
-    /// unless it was on with none when asked (`unseen`, a mirror), which
-    /// is compared only once it has one. A compositor whose `wl_output`s
-    /// give no names (before version 4) tells nothing.
+    /// unless it was on with none when asked (`unseen`, a mirror): until
+    /// it has one, what the configuration changed of its place, transform
+    /// or scale is checked against its head ([`Client::unseen_unlike`]).
+    /// A compositor whose `wl_output`s give no names (before version 4)
+    /// tells nothing.
     fn unlike(&self, asked: &[Expect]) -> Option<String> {
         if self.wl_outputs.iter().all(|o| o.name.is_empty()) {
             return None;
@@ -982,8 +987,10 @@ impl Client {
             match (e.enabled, o) {
                 (false, None) => None,
                 (false, Some(_)) => Some(format!("{} is still on", e.name)),
-                (true, None) if e.unseen => None,
-                (true, None) => Some(format!("{} is not on", e.name)),
+                (true, None) => match &e.unseen {
+                    Some(was) => self.unseen_unlike(e, was),
+                    None => Some(format!("{} is not on", e.name)),
+                },
                 (true, Some(o)) if o.mode.is_none() => Some(format!("{} shows no mode", e.name)),
                 (true, Some(o))
                     if self.xdg_manager.is_some() && (o.place.is_none() || o.size.is_none()) =>
@@ -993,6 +1000,43 @@ impl Client {
                 (true, Some(o)) => differs(o, e.position, e.transform, e.mode, e.scale),
             }
         })
+    }
+
+    /// (outputs-apply, review round 6) How a head asked on that had no
+    /// `wl_output` when the configuration was made (a Hyprland mirror)
+    /// differs from it: each of its place, transform and scale that the
+    /// configuration changed from `was` must be the head's now (its scale
+    /// within [`SCALE_SLACK`]); what it left as it was tells nothing, as
+    /// a mirror's head may move with the monitor it mirrors. Hyprland
+    /// 0.57 saves a mirror's new place and answers `succeeded`, and the
+    /// monitor stays a mirror where it was.
+    fn unseen_unlike(&self, e: &Expect, was: &Was) -> Option<String> {
+        let name = &e.name;
+        let Some(h) = self.heads.iter().find(|h| h.name == e.name && h.enabled) else {
+            return Some(format!("{name} is not on"));
+        };
+        if e.position != was.position && h.position != e.position {
+            return Some(format!(
+                "{name}, a mirror with no wl_output, is at {}, {}, not {}, {}",
+                h.position.0, h.position.1, e.position.0, e.position.1
+            ));
+        }
+        if e.transform != was.transform && h.transform != e.transform {
+            return Some(format!(
+                "{name}, a mirror with no wl_output, is turned {}, not {}",
+                transform_name(h.transform),
+                transform_name(e.transform)
+            ));
+        }
+        if e.scale != was.scale && (h.scale - e.scale).abs() > SCALE_SLACK {
+            let two = |s: f64| (s * 100.0).round() / 100.0;
+            return Some(format!(
+                "{name}, a mirror with no wl_output, is at scale {}, not {}",
+                two(h.scale),
+                two(e.scale)
+            ));
+        }
+        None
     }
 
     /// (outputs-resync, outputs-mode; review round 4) `wl_output`
@@ -1105,7 +1149,9 @@ struct Fresh {
 /// ([`Client::unlike`]). `mode` is `None` when no mode was sent; a
 /// refresh of 0 is not compared. `scale` is as sent ([`sent_scale`]).
 /// `unseen`: asked on, and on with no `wl_output` when it was made (a
-/// mirror), so its having none tells nothing ([`expect`]).
+/// mirror), so its having none tells nothing ([`expect`]); its head's
+/// values then, to tell what the configuration changed of it
+/// ([`Client::unseen_unlike`]).
 #[derive(Clone, Debug, PartialEq)]
 struct Expect {
     name: String,
@@ -1114,7 +1160,16 @@ struct Expect {
     position: (i32, i32),
     transform: wl_output::Transform,
     scale: f64,
-    unseen: bool,
+    unseen: Option<Was>,
+}
+
+/// (outputs-apply, review round 6) A head's place, transform and scale
+/// (as [`sent_scale`] gives it) when a configuration was made.
+#[derive(Clone, Debug, PartialEq)]
+struct Was {
+    position: (i32, i32),
+    transform: wl_output::Transform,
+    scale: f64,
 }
 
 /// (outputs-apply) An applied configuration the compositor answered
@@ -1437,7 +1492,9 @@ fn pick<K>(
 /// shows, else (turned on) its preferred, else its first. (outputs-mode)
 /// What it shows is the one its `wl_output` says when the head names
 /// none (a mode not in its list on Hyprland), so a change to another
-/// head leaves it as it is.
+/// head leaves it as it is. (review round 6) A head already on that
+/// shows no mode Strand can name (a Hyprland mirror: no current mode and
+/// no `wl_output`) is sent no mode, which keeps the one it has.
 fn default_mode(client: &Client, h: &HeadEntry) -> ModeChoice {
     let listed = |id: &ObjectId| client.modes.contains_key(id);
     if let Some(id) = h.current_mode.as_ref().filter(|id| listed(id)) {
@@ -1454,6 +1511,9 @@ fn default_mode(client: &Client, h: &HeadEntry) -> ModeChoice {
         && let Ok(choice) = choose_mode(client, h, m)
     {
         return choice;
+    }
+    if h.enabled {
+        return ModeChoice::Keep;
     }
     let preferred = h
         .modes
@@ -1573,7 +1633,14 @@ fn expect(client: &Client, head: &HeadEntry, p: &HeadPlan) -> Expect {
         position: p.position,
         transform: p.transform,
         scale: sent_scale(p.scale),
-        unseen: p.enabled && head.enabled && !client.wl_outputs.iter().any(|o| o.name == head.name),
+        unseen: (p.enabled
+            && head.enabled
+            && !client.wl_outputs.iter().any(|o| o.name == head.name))
+        .then(|| Was {
+            position: head.position,
+            transform: head.transform,
+            scale: sent_scale(head.scale),
+        }),
     }
 }
 
@@ -2660,6 +2727,84 @@ mod tests {
         assert_eq!(default_mode(&c, &c.heads[1]), ModeChoice::Keep);
     }
 
+    /// (review round 6) A head on that names no current mode and has no
+    /// `wl_output` (a Hyprland 0.57 mirror) is sent no mode when a change
+    /// names another head, so it keeps the one it shows: its preferred
+    /// mode would change it (nested Hyprland: a mirror at 1280x720 went
+    /// to its preferred 1920x1080 on an apply of NESTED-2 alone). A head
+    /// turned on from off still gets its preferred mode.
+    #[test]
+    fn a_mirror_keeps_its_mode_when_another_head_changes() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(a).unwrap();
+        let mut c = Client {
+            wl_outputs: vec![WlOut {
+                name: "NESTED-2".into(),
+                mode: Some(OutputMode {
+                    width: 1280,
+                    height: 720,
+                    refresh: 60.0,
+                }),
+                ..WlOut::new(7, wl_output::WlOutput::inert(conn.backend().downgrade()))
+            }],
+            ..Client::default()
+        };
+        let mut head = |name: &str, enabled: bool| {
+            let proxy = ZwlrOutputModeV1::inert(conn.backend().downgrade());
+            let id = proxy.id();
+            c.modes.insert(
+                id.clone(),
+                ModeEntry {
+                    proxy,
+                    width: 1920,
+                    height: 1080,
+                    refresh: 60_000,
+                    preferred: true,
+                },
+            );
+            HeadEntry {
+                name: name.into(),
+                enabled,
+                modes: vec![id],
+                ..HeadEntry::new(ZwlrOutputHeadV1::inert(conn.backend().downgrade()))
+            }
+        };
+        let heads = vec![
+            head("HOT-1", true),
+            head("HOT-2", false),
+            head("NESTED-2", true),
+        ];
+        c.heads = heads;
+        let plans = plan(
+            &c,
+            &[
+                OutputChange {
+                    x: Some(1280),
+                    y: Some(100),
+                    ..OutputChange::of("NESTED-2")
+                },
+                OutputChange {
+                    enabled: Some(true),
+                    ..OutputChange::of("HOT-2")
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(plans[0].mode, ModeChoice::Keep, "the mirror keeps its mode");
+        assert_eq!(
+            plans[1].mode,
+            ModeChoice::Listed(c.heads[1].modes[0].clone()),
+            "turned on: its preferred"
+        );
+        assert_eq!(
+            plans[2].mode,
+            ModeChoice::Custom(1280, 720, 60_000),
+            "the one its wl_output shows"
+        );
+        let asked = expect(&c, &c.heads[0], &plans[0]);
+        assert_eq!(asked.mode, None, "no mode sent, none checked");
+    }
+
     /// (outputs-resync) A head or mode event after a `done` with no
     /// `done` since makes a resync due after [`RESYNC_AFTER`]; a `done`
     /// takes it back, and the first state (no `done` yet) never does.
@@ -2852,6 +2997,13 @@ mod tests {
         let c = Client {
             xdg_manager: Some(ZxdgOutputManagerV1::inert(conn.backend().downgrade())),
             wl_outputs: vec![shown()],
+            heads: vec![HeadEntry {
+                name: "DP-2".into(),
+                enabled: true,
+                position: (1920, 0),
+                scale: 2.0,
+                ..HeadEntry::new(ZwlrOutputHeadV1::inert(conn.backend().downgrade()))
+            }],
             ..Client::default()
         };
         let asked = Expect {
@@ -2861,7 +3013,7 @@ mod tests {
             position: (1920, 0),
             transform: wl_output::Transform::Normal,
             scale: 2.0,
-            unseen: false,
+            unseen: None,
         };
         assert_eq!(c.unlike(std::slice::from_ref(&asked)), None, "as asked");
         let unlike = |e: Expect| c.unlike(&[e]).unwrap_or_default();
@@ -2929,7 +3081,11 @@ mod tests {
         // having none tells nothing.
         let mirror = Expect {
             name: "DP-2".into(),
-            unseen: true,
+            unseen: Some(Was {
+                position: (1920, 0),
+                transform: wl_output::Transform::Normal,
+                scale: 2.0,
+            }),
             ..asked.clone()
         };
         assert_eq!(c.unlike(&[mirror]), None, "a mirror");
@@ -2984,7 +3140,7 @@ mod tests {
             position: (0, 0),
             transform: wl_output::Transform::Normal,
             scale: sent_scale(scale),
-            unseen: false,
+            unseen: None,
         };
         assert_eq!(sent_scale(1.33), 340.0 / 256.0);
         assert_eq!(sent_scale(341.0 / 256.0), 341.0 / 256.0);
@@ -3000,6 +3156,16 @@ mod tests {
         assert_eq!(
             sway.unlike(&[asked(1.25)]).as_deref(),
             Some("DP-1 is 2891x1626 in the layout, not 3840x2160 at scale 1.25")
+        );
+        // (review round 6) The rounding is from the scale sent, not the
+        // one asked: 1.26 is sent as 322/256 (1.2578), and a compositor
+        // rounding that to whole logical pixels within its two steps
+        // lays 3840x2160 out 3069x1726 (1.2512 and 1.2514), 0.0066 from
+        // what it was sent but 0.0088 from 1.26: as asked.
+        assert_eq!(
+            client((3069, 1726)).unlike(&[asked(1.26)]),
+            None,
+            "1.26 rounded from 322/256"
         );
         // A head Hyprland sends at 341/256 agrees with its 2880.
         let mut c = client((2880, 1620));
@@ -3057,18 +3223,94 @@ mod tests {
         };
         let e = expect(&c, &head("DP-1", true), &plan(true));
         assert_eq!(e.scale, 340.0 / 256.0, "as sent");
-        assert!(!e.unseen, "it has its wl_output");
-        assert!(
-            expect(&c, &head("HDMI-A-1", true), &plan(true)).unseen,
-            "a mirror"
+        assert_eq!(e.unseen, None, "it has its wl_output");
+        let mirror = HeadEntry {
+            position: (2560, 0),
+            ..head("HDMI-A-1", true)
+        };
+        assert_eq!(
+            expect(&c, &mirror, &plan(true)).unseen,
+            Some(Was {
+                position: (2560, 0),
+                transform: wl_output::Transform::Normal,
+                scale: 1.0,
+            }),
+            "a mirror, with its head's values"
         );
-        assert!(
-            !expect(&c, &head("HDMI-A-1", false), &plan(true)).unseen,
+        assert_eq!(
+            expect(&c, &head("HDMI-A-1", false), &plan(true)).unseen,
+            None,
             "turned on"
         );
-        assert!(
-            !expect(&c, &head("HDMI-A-1", true), &plan(false)).unseen,
+        assert_eq!(
+            expect(&c, &head("HDMI-A-1", true), &plan(false)).unseen,
+            None,
             "turned off"
+        );
+    }
+
+    /// (outputs-apply, review round 6) A head with no `wl_output` (a
+    /// Hyprland mirror) is checked by its head for what the configuration
+    /// changed of it: Hyprland 0.57 answers `succeeded` to a mirror's new
+    /// place and leaves it where it was (nested Hyprland: HOT-1 asked at
+    /// 5000, 0 stayed at 0, 200). What it left as it was is not compared.
+    #[test]
+    fn a_mirror_is_checked_by_its_head_for_what_was_changed() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(a).unwrap();
+        let mut c = Client {
+            heads: vec![HeadEntry {
+                name: "HOT-1".into(),
+                enabled: true,
+                position: (0, 200),
+                ..HeadEntry::new(ZwlrOutputHeadV1::inert(conn.backend().downgrade()))
+            }],
+            ..Client::default()
+        };
+        // Names are given: another output's wl_output has one.
+        c.wl_outputs.push(WlOut {
+            name: "NESTED-1".into(),
+            ..WlOut::new(7, wl_output::WlOutput::inert(conn.backend().downgrade()))
+        });
+        let was = Was {
+            position: (0, 200),
+            transform: wl_output::Transform::Normal,
+            scale: 1.0,
+        };
+        let asked = |position, transform, scale| Expect {
+            name: "HOT-1".into(),
+            enabled: true,
+            mode: None,
+            position,
+            transform,
+            scale,
+            unseen: Some(was.clone()),
+        };
+        let normal = wl_output::Transform::Normal;
+        assert_eq!(c.unlike(&[asked((0, 200), normal, 1.0)]), None, "as it was");
+        assert_eq!(
+            c.unlike(&[asked((5000, 0), normal, 1.0)]).as_deref(),
+            Some("HOT-1, a mirror with no wl_output, is at 0, 200, not 5000, 0")
+        );
+        assert_eq!(
+            c.unlike(&[asked((0, 200), wl_output::Transform::_90, 1.0)])
+                .as_deref(),
+            Some("HOT-1, a mirror with no wl_output, is turned normal, not rotate_90")
+        );
+        assert_eq!(
+            c.unlike(&[asked((0, 200), normal, 1.5)]).as_deref(),
+            Some("HOT-1, a mirror with no wl_output, is at scale 1, not 1.5")
+        );
+        // Its head moved as asked: it took.
+        c.heads[0].position = (5000, 0);
+        assert_eq!(c.unlike(&[asked((5000, 0), normal, 1.0)]), None, "moved");
+        // A mirror's head that moved with what it mirrors, asked as it was.
+        assert_eq!(c.unlike(&[asked((0, 200), normal, 1.0)]), None, "unchanged");
+        // Gone, or off.
+        c.heads[0].enabled = false;
+        assert_eq!(
+            c.unlike(&[asked((0, 200), normal, 1.0)]).as_deref(),
+            Some("HOT-1 is not on")
         );
     }
 

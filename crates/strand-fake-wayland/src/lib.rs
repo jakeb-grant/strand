@@ -1166,7 +1166,9 @@ impl FakeBuilder {
     /// (outputs-apply) Outputs of these names (among
     /// [`FakeBuilder::outputs`]) mirror another: their head is on, and
     /// they have no `wl_output` global (Hyprland 0.57 removes a mirrored
-    /// monitor's, `CProtocolManager::onMonitorModeChange`).
+    /// monitor's, `CProtocolManager::onMonitorModeChange`), and their head
+    /// names no current mode. (review round 6) Hyprland's shapes leave a
+    /// mirror where it is when a configuration places it.
     pub fn mirrors(mut self, names: &'static [&'static str]) -> Self {
         self.mirrors = names;
         self
@@ -1318,6 +1320,7 @@ impl Fake {
                 om: output_management::State::new(
                     output_management,
                     &outputs.iter().map(|o| o.to_string()).collect::<Vec<_>>(),
+                    mirrors,
                 ),
                 seat_globals,
                 activation_log: thread_activation_log,

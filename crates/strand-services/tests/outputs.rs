@@ -864,6 +864,58 @@ fn an_apply_with_a_mirror_is_checked_on_the_others() {
     outputs::configure(None);
 }
 
+/// (outputs-apply, review round 6) Hyprland 0.57 answers `succeeded` to
+/// a configuration placing a mirror, saves the place and leaves the
+/// monitor a mirror where it was (nested Hyprland: HOT-1 asked at 5000,
+/// 0 stayed at 0, 200). With no `wl_output` to tell by, the mirror's head
+/// is read again and the apply is `failed`; wlroots' shape moves it and
+/// it is `succeeded`.
+#[test]
+fn an_apply_placing_a_mirror_that_stays_fails() {
+    use strand_fake_wayland::{Fake, OutputManagement};
+    let _serial = serial();
+    for shape in [
+        OutputManagement::Lagging,
+        OutputManagement::Silent,
+        OutputManagement::Wlroots,
+    ] {
+        let fake = Fake::builder()
+            .toplevel_list(false)
+            .outputs(&["FAKE-1", "FAKE-2"])
+            .mirrors(&["FAKE-2"])
+            .output_management(shape)
+            .start();
+        let h = Harness::start_on(fake.socket.clone());
+        h.until("ready", |h| h.b.outputs.ready(&h.rt));
+        assert_eq!(h.output("FAKE-2").x, 1920, "{shape:?}");
+        h.act(
+            "apply",
+            &[OutputChange {
+                x: Some(5000),
+                y: Some(0),
+                ..OutputChange::of("FAKE-2")
+            }],
+        );
+        let (event, args) = h.next_event("the answer");
+        if shape == OutputManagement::Wlroots {
+            assert_eq!(event, "succeeded", "{shape:?}: {args:?}");
+            assert_eq!(h.output("FAKE-2").x, 5000, "{shape:?}");
+        } else {
+            assert_eq!(event, "failed", "{shape:?}: {args:?}");
+            assert!(
+                format!("{args:?}").contains(
+                    "the compositor said it applied the configuration, but FAKE-2, \
+                     a mirror with no wl_output, is at 1920, 0, not 5000, 0"
+                ),
+                "{shape:?}: {args:?}"
+            );
+            assert_eq!(h.output("FAKE-2").x, 1920, "{shape:?}: where it is");
+        }
+        h.s.shutdown();
+    }
+    outputs::configure(None);
+}
+
 /// (outputs-apply, review round 5) `succeeded` is emitted once
 /// `outputs.all` shows the apply. Hyprland 0.57's reload sends the heads'
 /// old values (`Lagging`) or none (`Silent`) while the xdg-outputs move,

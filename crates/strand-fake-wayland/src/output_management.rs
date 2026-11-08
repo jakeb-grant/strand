@@ -29,7 +29,9 @@
 //! saving one. [`crate::Fake::output_managers`] counts the managers bound
 //! and still connected, and the stopped ones among them.
 //! [`crate::FakeBuilder::mirrors`] gives an output a head on and no
-//! `wl_output`, as Hyprland does a mirrored monitor.
+//! `wl_output`, as Hyprland does a mirrored monitor: its head names no
+//! current mode, and Hyprland's shapes save a place a configuration
+//! gives it and leave it where it is (the monitor stays a mirror).
 
 use std::sync::{Arc, Mutex};
 
@@ -83,6 +85,8 @@ pub(crate) struct Head {
     position: (i32, i32),
     /// A mode not in its list (width, height).
     custom: Option<(i32, i32)>,
+    /// (review round 6) It mirrors another ([`crate::FakeBuilder::mirrors`]).
+    mirror: bool,
 }
 
 impl Head {
@@ -142,7 +146,7 @@ pub struct ManagerCount {
 }
 
 impl State {
-    pub(crate) fn new(kind: OutputManagement, names: &[String]) -> State {
+    pub(crate) fn new(kind: OutputManagement, names: &[String], mirrors: &[&str]) -> State {
         State {
             kind,
             heads: names
@@ -152,6 +156,7 @@ impl State {
                     name: n.clone(),
                     position: (WIDTH * i as i32, 0),
                     custom: None,
+                    mirror: mirrors.contains(&n.as_str()),
                 })
                 .collect(),
             ..State::default()
@@ -277,8 +282,12 @@ impl State {
         {
             m.resource.done(serial);
         }
-        // The rule reload: the first saved place wins.
+        // The rule reload: the first saved place wins, but for a mirror,
+        // which stays where it is.
         for i in 0..self.heads.len() {
+            if self.heads[i].mirror {
+                continue;
+            }
             let first = self.shadow.iter().find(|(j, _)| *j == i).or_else(|| {
                 self.managers
                     .iter()
@@ -327,6 +336,7 @@ impl State {
             name: name.into(),
             position: (x, 0),
             custom: Some((w, h)),
+            mirror: false,
         };
         let serial = self.next_serial();
         for m in self.managers.iter_mut().filter(|m| m.resource.is_alive()) {
@@ -358,7 +368,7 @@ fn send_head(dh: &DisplayHandle, m: &ZwlrOutputManagerV1, h: &Head) -> Option<Zw
     mode.refresh(REFRESH);
     mode.preferred();
     head.enabled(1);
-    if h.custom.is_none() {
+    if h.custom.is_none() && !h.mirror {
         head.current_mode(&mode);
     }
     head.position(h.position.0, h.position.1);

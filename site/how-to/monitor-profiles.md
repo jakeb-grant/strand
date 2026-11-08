@@ -155,6 +155,9 @@ bar Displays {
   A layout Hyprland answers but does not show (another program, such
   as kanshi, arranged that monitor first) is `outputs.failed`, its
   `error` saying how the monitors differ, never `outputs.succeeded`.
+  A monitor Hyprland mirrors stays a mirror where it is, so a layout
+  that moves it fails that way too; one that leaves it out keeps its
+  mode.
 
 ## The file
 
