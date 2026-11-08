@@ -1622,7 +1622,7 @@ impl Lowerer<'_> {
     fn state(&mut self, s: &hir::StateDecl) -> State {
         let init = match &s.init {
             hir::StateInit::Value { value, .. } => StateInit::Value(self.expr_chunk(value)),
-            hir::StateInit::File { path, fields } => {
+            hir::StateInit::File { path, fields, .. } => {
                 let record = match &self.hir.def(s.def).ty {
                     Ty::Record(r) => *r,
                     _ => RecordId(0),

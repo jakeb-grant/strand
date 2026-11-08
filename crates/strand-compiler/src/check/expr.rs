@@ -1292,6 +1292,21 @@ impl<'a> Checker<'a> {
                 span,
             };
         }
+        // (dbus-action-run) `bolt.enroll.error`: a `from dbus` service's
+        // action read without a call is its run, as a declared command
+        // action's name is (spec.md 5.6).
+        if let Some(r) = self.dbus_action_run(&base, &name.name) {
+            self.add_ref(name.span, Target::Field(r.0, name.name.clone()));
+            return hir::Expr {
+                kind: ExprKind::Field {
+                    base: Box::new(base),
+                    name: name.name.clone(),
+                    optional,
+                },
+                ty: Ty::Record(r.1),
+                span,
+            };
+        }
         let (ty, nullable) = match base.ty.clone() {
             Ty::Error | Ty::Any => (Ty::Error, false),
             Ty::Null => {
@@ -1330,6 +1345,35 @@ impl<'a> Checker<'a> {
             },
             ty,
             span,
+        }
+    }
+
+    /// (dbus-action-run) `base` is a config's own service (`service bolt
+    /// from dbus …`) and `member` one of its actions, not a field: the
+    /// service's record and the `ActionRun` record the read gives.
+    pub(crate) fn dbus_action_run(
+        &self,
+        base: &hir::Expr,
+        member: &str,
+    ) -> Option<(crate::ty::RecordId, crate::ty::RecordId)> {
+        let ExprKind::Def(d) = &base.kind else {
+            return None;
+        };
+        let DefKind::Service(r) = self.defs[d.0 as usize].kind else {
+            return None;
+        };
+        let rec = self.types.record(r);
+        if rec.field(member).is_some() || rec.method(member).is_none() {
+            return None;
+        }
+        Some((r, self.types.find_schema_record("ActionRun")?))
+    }
+
+    /// The name of the declaration `e` reads (`bolt`), for messages.
+    fn defs_name(&self, e: &hir::Expr) -> String {
+        match &e.kind {
+            ExprKind::Def(d) => self.defs[d.0 as usize].name.clone(),
+            _ => String::new(),
         }
     }
 
@@ -1499,6 +1543,32 @@ impl<'a> Checker<'a> {
                     Some(r) => r,
                     None => self.expr(base, None),
                 };
+                // (dbus-action-run) A D-Bus method's call cannot be taken
+                // back: the daemon may act whatever strand does.
+                if name.name == "stop"
+                    && let ExprKind::Field {
+                        base: svc,
+                        name: act,
+                        ..
+                    } = &recv.kind
+                    && self.dbus_action_run(svc, act).is_some()
+                {
+                    self.error(
+                        "check::unknown_field",
+                        format!("`{}.{act}` has no method `stop`", self.defs_name(svc)),
+                        name.span,
+                        "a D-Bus method call cannot be stopped",
+                    )
+                    .help = Some(
+                        "its run has `running`, `started` and `error`; the daemon answers the \
+                         call however long it takes"
+                            .into(),
+                    );
+                    for a in args {
+                        self.expr(&a.value, None);
+                    }
+                    return hir::Expr::error(span);
+                }
                 self.method_call(recv, base, name, *optional, args, span)
             }
             _ => {

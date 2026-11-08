@@ -57,6 +57,9 @@ struct Entry {
     /// again.
     epoch: Signal<u64>,
     values: Vec<Memo<Value>>,
+    /// (dbus-action-run) Its actions' runs (`bolt.enroll.error`), each an
+    /// `ActionRun`, by index.
+    runs: Vec<Memo<Value>>,
     /// (services-round) `on svc.line(doc)`'s queue (a `from listen`
     /// declaration's), each line as the declaration's record.
     line: strand_core::EventQueue<Vec<Value>>,
@@ -762,6 +765,27 @@ impl Mismatch {
     }
 }
 
+/// (dbus-action-run) What the service says of an action's calls as an
+/// `ActionRun` of `types`: `running` while one is in flight, `started` the
+/// oldest one's time to the minute, `error` why the last one failed. Null
+/// fields when the schema has no `ActionRun` (never: it is builtin).
+fn action_run(types: &TypeTable, run: &custom::CustomRun) -> Value {
+    let Some(record) = types.find_schema_record("ActionRun") else {
+        return Value::Null;
+    };
+    let started = run
+        .started
+        .zip(types.find_schema_record("Date"))
+        .and_then(|(secs, date)| {
+            use chrono::TimeZone;
+            let t = chrono::Local.timestamp_opt(secs, 0).single()?;
+            Some(clock::datetime_record(date, t.naive_local()))
+        })
+        .unwrap_or(Value::Null);
+    let error = run.error.as_deref().map_or(Value::Null, Value::text);
+    Value::record(record, vec![Value::Bool(run.running > 0), started, error])
+}
+
 /// `d` as a message shows it: short, quoted text, kinds for the rest.
 fn shown(d: &Data) -> String {
     match d {
@@ -843,7 +867,7 @@ impl CustomHost {
         }
         let typing = Rc::new(RefCell::new(typing));
         let mut mismatches = Vec::with_capacity(n);
-        let (scope, (epoch, values, line)) = rt.scope(|rt| {
+        let (scope, (epoch, values, runs, line)) = rt.scope(|rt| {
             let epoch = rt.signal(0u64);
             let values = (0..n)
                 .map(|i| {
@@ -875,7 +899,25 @@ impl CustomHost {
                     m
                 })
                 .collect::<Vec<Memo<Value>>>();
-            (epoch, values, rt.events::<Vec<Value>>())
+            // (dbus-action-run) Each action's run, as the service tells
+            // it, an `ActionRun` as a declared command action's run is.
+            let runs = (0..decl.actions.len())
+                .map(|i| {
+                    let (client, typing) = (client.clone(), typing.clone());
+                    let m = rt.memo(move |rt| {
+                        epoch.get(rt)?;
+                        let run = client
+                            .cells()
+                            .runs
+                            .with(rt, |v| v.get(&(i as i64)).cloned())?
+                            .unwrap_or_default();
+                        Ok(action_run(&typing.borrow().table, &run))
+                    });
+                    rt.set_name(m.id(), format!("{}.{}", decl.name, decl.actions[i].name));
+                    m
+                })
+                .collect::<Vec<Memo<Value>>>();
+            (epoch, values, runs, rt.events::<Vec<Value>>())
         });
         // (services-round) Each `line` the service sends, as the
         // declaration's record: its fields converted as the memos convert
@@ -894,6 +936,7 @@ impl CustomHost {
             typing,
             epoch,
             values,
+            runs,
             line,
             sink,
             mismatches,
@@ -986,6 +1029,7 @@ impl ServiceHost for CustomHost {
             };
             e.decl.source == decl.source
                 && e.decl.fields == decl.fields
+                && e.decl.actions == decl.actions
                 && text(&e.typing.borrow().fields) == text(&Typing::of(decl, types).fields)
         };
         if !same {
@@ -1014,6 +1058,14 @@ impl ServiceHost for CustomHost {
     }
 
     fn read(&self, rt: &Runtime, service: &str, field: &str) -> Result<Value, Error> {
+        // (dbus-action-run) `bolt.enroll`, read without a call: its run.
+        let run = self.entries.borrow().get(service).and_then(|e| {
+            let i = e.decl.actions.iter().position(|a| a.name == field)?;
+            e.runs.get(i).copied()
+        });
+        if let Some(m) = run {
+            return m.get(rt);
+        }
         let i = self.index(service, field)?;
         let m = self.entries.borrow().get(service).map(|e| e.values[i]);
         match m {
@@ -1036,9 +1088,20 @@ impl ServiceHost for CustomHost {
         if field == Some(strand_compiler::schema::READY) {
             return vec![ready];
         }
+        if let Some(i) = field.and_then(|f| e.decl.actions.iter().position(|a| a.name == f))
+            && let Some(m) = e.runs.get(i)
+        {
+            return vec![m.id()];
+        }
         match field.and_then(|f| e.decl.fields.iter().position(|d| d.name == f)) {
             Some(i) => vec![e.values[i].id()],
-            None => e.values.iter().map(|m| m.id()).chain([ready]).collect(),
+            None => e
+                .values
+                .iter()
+                .chain(&e.runs)
+                .map(|m| m.id())
+                .chain([ready])
+                .collect(),
         }
     }
 

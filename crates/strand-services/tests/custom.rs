@@ -1,7 +1,8 @@
 //! No-code services run through the registry as `strand run` runs them:
 //! a `from listen` command printing faster than a frame wakes the logic
 //! thread at most once a frame, its last line always shown; (M6) a `from
-//! dbus` declaration's actions call its object's methods; (services-round)
+//! dbus` declaration's actions call its object's methods, (dbus-action-run)
+//! each with a run that says why its last call failed; (services-round)
 //! once a handler hears it, every line a `from listen` command prints is
 //! one `line` event, none lost to the merge; (services-round) a `from
 //! dir` declaration lists a directory's files and follows them as they
@@ -120,6 +121,157 @@ fn a_dbus_declarations_actions_call_its_methods() {
         7
     );
     // The refused action left the service running: it still reads.
+    assert!(client.running(), "the service stopped");
+    client.release(&rt);
+    services.shutdown();
+    custom::forget(id);
+}
+
+/// (dbus-action-run) A `from dbus` action's run, on dbusmock's
+/// power-profiles-daemon with a method added that refuses (`stored`),
+/// takes a second (`slow`) or answers at once: a refusal is the run's
+/// `error`, the daemon's error name and message; a call in flight is
+/// `running` from when it was made (`started`) until its answer; a new
+/// call clears the last failure and an answer that is no error leaves it
+/// clear; an action naming no method of the object fails at once.
+#[test]
+fn a_dbus_actions_run_says_why_its_call_failed() {
+    const PPD: &str = "net.hadess.PowerProfiles";
+    const PATH: &str = "/net/hadess/PowerProfiles";
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let Some(_ppd) = DbusMock::start(&bus, "power_profiles_daemon", true, None, PPD) else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    mock(
+        &tokio,
+        &conn,
+        PPD,
+        PATH,
+        "AddMethod",
+        &(
+            PPD,
+            "Enroll",
+            "s",
+            "",
+            "import time\n\
+             if args[0] == 'stored':\n    \
+             raise dbus.exceptions.DBusException('device already stored', \
+             name='org.example.Error.Exists')\n\
+             if args[0] == 'slow':\n    time.sleep(1)\n",
+        ),
+    );
+    let rt = Runtime::new();
+    let services = Services::new(&rt, bus.buses(), || {});
+    let client = services.register_as::<Custom>(&rt, "ppd");
+    let id = custom::register(Spec {
+        name: "ppd".into(),
+        source: Source::Dbus {
+            system: true,
+            name: PPD.into(),
+            path: None,
+        },
+        fields: vec![FieldSpec {
+            name: "profile".into(),
+            key: vec!["ActiveProfile".into()],
+            rw: false,
+            text: Default::default(),
+        }],
+        actions: vec![
+            ActionSpec {
+                name: "enroll".into(),
+                method: "Enroll".into(),
+            },
+            ActionSpec {
+                name: "gone".into(),
+                method: "NoSuchMethod".into(),
+            },
+        ],
+    });
+    client.seed(&rt, |s| *s = Custom::seeded(id, 1)).unwrap();
+    client.acquire(&rt);
+    until(&rt, &services, "the profile is read", || {
+        client
+            .cells()
+            .values
+            .with_untracked(&rt, |v| v.get(&0i64).map(|v| v.value.clone()))
+            .ok()
+            .flatten()
+            == Some(Data::Text("balanced".into()))
+    });
+    let run = |index: i64| -> (i64, Option<i64>, Option<String>) {
+        let r = client
+            .cells()
+            .runs
+            .with_untracked(&rt, |v| v.get(&index).cloned())
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        (r.running, r.started, r.error)
+    };
+    let enroll = |what: &str| {
+        client
+            .act(
+                &rt,
+                CustomAction {
+                    index: 0,
+                    args: vec![Data::Text(what.into())],
+                },
+            )
+            .unwrap();
+        services.pump(&rt);
+    };
+    // Never called: not running, no failure.
+    assert_eq!(run(0), (0, None, None));
+    const STORED: &str = "org.example.Error.Exists: device already stored";
+    enroll("stored");
+    until(&rt, &services, "the refusal is the run's error", || {
+        run(0) == (0, None, Some(STORED.into()))
+    });
+    // A call in flight runs from when it was made, and clears the last
+    // failure at once, before its answer.
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    enroll("slow");
+    until(&rt, &services, "the slow call runs", || {
+        let (running, started, error) = run(0);
+        running == 1 && started.is_some_and(|t| t >= before) && error.is_none()
+    });
+    until(&rt, &services, "the slow call is answered", || {
+        run(0) == (0, None, None)
+    });
+    // The failure again, then a call that is answered well.
+    enroll("stored");
+    until(&rt, &services, "the refusal again", || {
+        run(0) == (0, None, Some(STORED.into()))
+    });
+    enroll("fast");
+    until(&rt, &services, "a good answer leaves no failure", || {
+        run(0) == (0, None, None)
+    });
+    assert_eq!(mock_calls(&tokio, &conn, PPD, PATH, "Enroll").len(), 4);
+    // A method the object does not have fails at once.
+    client
+        .act(
+            &rt,
+            CustomAction {
+                index: 1,
+                args: Vec::new(),
+            },
+        )
+        .unwrap();
+    until(
+        &rt,
+        &services,
+        "a missing method is the run's error",
+        || run(1).2.as_deref() == Some("`net.hadess.PowerProfiles` has no method `NoSuchMethod`"),
+    );
+    assert_eq!(run(1).0, 0);
     assert!(client.running(), "the service stopped");
     client.release(&rt);
     services.shutdown();

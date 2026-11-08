@@ -744,13 +744,45 @@ fn an_actions_run_is_read_through_its_name() {
         "{head}type Job {{ running: int }}\nfn f(rec: Job) -> int {{ rec.running }}\n"
     ));
     assert!(codes.is_empty(), "{text}");
-    // A service's D-Bus action has no run: it is a method.
-    let (codes, text) = diags(
-        "service ppd from dbus system \"net.hadess.PowerProfiles\" {\n  \
-         profile: text = ActiveProfile\n  action hold(p: text) = HoldProfile\n}\n\
-         let x = ppd.hold.running\n",
+}
+
+/// (dbus-action-run) A `from dbus` service's action read without a call is
+/// its run, an `ActionRun` as a declared command action's is:
+/// `ppd.hold.running`, `.started` and `.error` read in a binding and are
+/// heard by `on change`; they are never written, the run has no `stop()`
+/// (a method call cannot be taken back), a field of the service keeps
+/// its name, and a name that is neither is still an unknown field.
+#[test]
+fn a_dbus_actions_run_is_read_through_its_name() {
+    let head = "service ppd from dbus system \"net.hadess.PowerProfiles\" {\n  \
+         profile: text = ActiveProfile\n  action hold(p: text) = HoldProfile\n}\n";
+    let src = format!(
+        "{head}let busy = ppd.hold.running\nlet since = ppd.hold.started\n\
+         let why = ppd.hold.error ?? \"\"\nlet p = ppd.profile\n"
     );
-    assert!(!codes.is_empty(), "{text}");
+    assert_eq!(ty(&src, "busy"), "bool");
+    assert_eq!(ty(&src, "since"), "Date?");
+    assert_eq!(ty(&src, "why"), "text");
+    assert_eq!(ty(&src, "p"), "text");
+    let (codes, text) = diags(&format!(
+        "{head}state shown = \"\"\non change ppd.hold.error {{ shown = ppd.hold.error ?? \"\" }}\n\
+         on change shown {{ ppd.hold(\"performance\") }}\n"
+    ));
+    assert!(codes.is_empty(), "{text}");
+    let (codes, text) = diags(&format!(
+        "{head}state n = 0\non change n {{ ppd.hold.error = \"no\" }}\n"
+    ));
+    assert_eq!(codes, ["check::read_only"], "{text}");
+    let (codes, text) = diags(&format!(
+        "{head}state n = 0\non change n {{ ppd.hold.stop() }}\n"
+    ));
+    assert_eq!(codes, ["check::unknown_field"], "{text}");
+    assert!(text.contains("`ppd.hold` has no method `stop`"), "{text}");
+    let (codes, text) = diags(&format!("{head}let x = ppd.hold.runing\n"));
+    assert_eq!(codes, ["check::unknown_field"], "{text}");
+    assert!(text.contains("running"), "{text}");
+    let (codes, text) = diags(&format!("{head}let x = ppd.held\n"));
+    assert_eq!(codes, ["check::unknown_field"], "{text}");
 }
 
 /// (action-error) `rec.error` is what the host last said of the action's

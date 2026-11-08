@@ -70,6 +70,14 @@ Strand's built-in `power` service already reads and sets the profile
   build", "strand")`; each parameter is one argument of the method.
   The call does not hold the service up, and its answer is waited for
   however long the daemon takes.
+- **Its name reads as its run**, as a declared action's does.
+  `ppd.hold.running` is true while a call waits for its answer, and
+  when the daemon refuses one, `ppd.hold.error` is its error name and
+  message (`org.freedesktop.bolt.Error.Exists: device already stored`
+  from bolt's `EnrollDevice`), so the shell can say why: `text
+  ppd.hold.error ?? ""`. A new call clears it, as does an answer
+  without an error. A method call cannot be taken back, so this run has
+  no `stop()`.
 - **It is checked against the object's introspection**, like its
   properties: a misspelt method or property is an error with a
   did-you-mean, and so is a wrong number of arguments. When Strand

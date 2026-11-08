@@ -644,7 +644,7 @@ proof  = "crates/strand-dev/tests/lsp.rs::the_binary_serves_stdio"
 page   = "site/tools/editor.md"
 text   = "- **Diagnostics**: what `strand check` finds in the config's files"
 source = ['crates/strand-dev/src/workspace.rs ".extend(strand_compiler::check::paths::check(&compiled.program, dir));"', 'crates/strand/src/check.rs "diags.extend(lock_helper(&compiled.parses, helper));"']
-proof  = "read: the same checks as `check_config`, all but `lock_helper`, which crates/strand-dev has no call of"
+proof  = "read: the same checks as `check_config`, all but `lock_helper` and `check::settings::check`, which crates/strand-dev has no call of (decisions.md check-settings)"
 
 [[claim]]
 page   = "site/tools/editor.md"
@@ -2734,6 +2734,24 @@ proof  = "read"
 
 [[claim]]
 page   = "site/how-to/settings-file.md"
+text   = "**`strand check` reads the file too**, as the shell would, and shows"
+source = ['crates/strand/src/check.rs "diags.extend(strand_compiler::check::settings::check("', 'crates/strand-compiler/src/check/settings.rs "walking the item as `decode_item` does"', 'docs/spec.md "**`strand check` reads each settings file** the config declares"']
+proof  = "crates/strand/src/check.rs::tests::settings_files_are_read_as_the_shell_reads_them (the TOML line shown, through a symlink)"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "A file that is not TOML is an error, since the shell takes nothing from it."
+source = ['crates/strand-compiler/src/check/settings.rs ""check::settings_syntax","', 'docs/spec.md "A TOML syntax error keeps every last good value."']
+proof  = "crates/strand-compiler/src/check/settings.rs::tests::syntax_errors_and_unknown_keys"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "is a warning: the shell keeps that field's last good value, or never reads the key. A missing file is fine."
+source = ['crates/strand-compiler/src/check/settings.rs ""check::settings_value","', 'crates/strand-compiler/src/check/settings.rs ""check::settings_unknown_key","', 'crates/strand-compiler/src/check/settings.rs "Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,"']
+proof  = "crates/strand-compiler/src/check/settings.rs::tests::a_typod_key_is_a_warning_on_its_line, ::a_wrong_type_is_a_warning_on_its_line, ::a_good_or_missing_file_is_quiet"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
 text   = "**Edits apply live, field by field.**"
 source = ['docs/spec.md "Edits to the file apply live, as per-field writes."']
 proof  = "crates/strand-compiler/tests/instantiate.rs::settings_files_are_read_and_written_back"
@@ -2839,6 +2857,30 @@ page   = "site/how-to/dbus-and-actions.md"
 text   = "`strand set ppd.profile balanced` sets the property"
 source = ['''crates/strand/src/run/request/set.rs "// The config's own service (`ppd.profile`): its record is in"''']
 proof  = "read: the config's own service field"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "**Its name reads as its run**, as a declared action's does."
+source = ['docs/spec.md "Such an action read without a call is its run, an `ActionRun` as a declared command"', 'crates/strand-compiler/src/check/expr.rs "// (dbus-action-run) `bolt.enroll.error`: a `from dbus` service"', 'crates/strand/src/services/custom.rs "// (dbus-action-run) `bolt.enroll`, read without a call: its run."']
+proof  = "crates/strand-compiler/tests/flex.rs::a_dbus_actions_run_is_read_through_its_name; crates/strand/tests/services.rs::a_config_services_action_failure_is_read_as_its_error"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "`ppd.hold.error` is its error name and message"
+source = ['crates/strand-services/src/custom.rs "// `org.freedesktop.bolt.Error.Exists: device already stored`."', 'crates/strand-services/src/custom.rs "r.error = error;"']
+proof  = "crates/strand-services/tests/custom.rs::a_dbus_actions_run_says_why_its_call_failed (`org.example.Error.Exists: device already stored`)"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "A new call clears it, as does an answer without an error."
+source = ['crates/strand-services/src/custom.rs "// A new call clears the last one"', 'crates/strand-services/src/custom.rs "r.error = refused;"']
+proof  = "crates/strand-services/tests/custom.rs::a_dbus_actions_run_says_why_its_call_failed"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "A method call cannot be taken back, so this run has no `stop()`."
+source = ['crates/strand-compiler/src/check/expr.rs "a D-Bus method call cannot be stopped"']
+proof  = "crates/strand-compiler/tests/flex.rs::a_dbus_actions_run_is_read_through_its_name"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"

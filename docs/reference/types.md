@@ -32,17 +32,19 @@ Keyed by `ssid`.
 
 (lockmon) A declared action's commands as they run, read through the
 action's name: `rec.running`, `rec.started` and `rec.stop()` for
-`action rec(…) […]`. Only an action's name reads as one.
+`action rec(…) […]`. Only an action's name reads as one, and
+(dbus-action-run) a `from dbus` service's action read without a call:
+`bolt.enroll.running`, `.started` and `.error` for its method calls.
 
 | Field | Type | |
 | --- | --- | --- |
-| `running` | `bool` | A command of it runs: true while any does (an action with a result may run several at once). |
-| `started` | `Date?` | When the command running longest started, to the minute; null while none runs. |
-| `error` | `text?` | Why its last command failed: it could not start (`could not start \`wf-recorder\`: …`), or exited non-zero; null once one ends well or is stopped, and from the moment it is called again. Null on an action with a result, whose call has its own `.error`. |
+| `running` | `bool` | A command of it runs: true while any does (an action with a result may run several at once). For a D-Bus method, while a call of it waits for its answer. |
+| `started` | `Date?` | When the command running longest started, to the minute; null while none runs. For a D-Bus method, when the oldest call still waiting was made. |
+| `error` | `text?` | Why its last command failed: it could not start (`could not start \`wf-recorder\`: …`), or exited non-zero; null once one ends well or is stopped, and from the moment it is called again. Null on an action with a result, whose call has its own `.error`. For a D-Bus method, the daemon's error name and message (`org.freedesktop.bolt.Error.Exists: …`); null once a call is answered without one, and from the moment the service takes a new call. |
 
 | Method | |
 | --- | --- |
-| `action stop()` | Stops every command of it now running, and the re-run queued behind one: SIGINT to each one's process group, SIGTERM 2 s later, SIGKILL 2 s after that. |
+| `action stop()` | Stops every command of it now running, and the re-run queued behind one: SIGINT to each one's process group, SIGTERM 2 s later, SIGKILL 2 s after that. A D-Bus method's run has none: a call cannot be taken back once sent. |
 
 ### `App`
 

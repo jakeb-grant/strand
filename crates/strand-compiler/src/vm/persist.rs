@@ -471,7 +471,12 @@ fn decode_key(
 /// (dictionary) An object's key text as a `ty`: an `int` in decimal, a
 /// `bool` as `true` or `false`, an enum by variant name (one no longer
 /// declared: `Some(None)`, dropped), a `text` or `path` as it is.
-fn key_text(types: &TypeTable, ty: &Ty, s: &str, dropped: &mut Dropped) -> Option<Option<Value>> {
+pub(crate) fn key_text(
+    types: &TypeTable,
+    ty: &Ty,
+    s: &str,
+    dropped: &mut Dropped,
+) -> Option<Option<Value>> {
     Some(Some(match ty {
         Ty::Prim(Prim::Int) => Value::int(s.trim().parse::<i64>().ok()?),
         Ty::Prim(Prim::Bool) => Value::Bool(s.parse().ok()?),

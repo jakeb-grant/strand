@@ -1901,7 +1901,11 @@ Public interfaces:
     ctx)` and
     `event(rt, service, event) -> EventQueue<Vec<Value>>`, the lossless
     queue an `on svc.event` listens to. A `from dbus` service's actions
-    reach the custom service as `strand_services::custom::CustomAction`.
+    reach the custom service as `strand_services::custom::CustomAction`;
+    (dbus-action-run) each one's run comes back as the store's keyed
+    `runs` (`custom::CustomRun`: calls in flight, the oldest's Unix
+    seconds, the last failure), which `CustomHost::read` answers as an
+    `ActionRun` for `bolt.enroll` read without a call.
   - A top-level `action`'s command is not a host call: the VM queues an
     `ExecRequest`, logic takes them after each tick's diff
     (`Instance::take_execs()`), and the strand crate's `Execs`
