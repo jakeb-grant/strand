@@ -105,6 +105,7 @@ pub(crate) fn split(layout: &TextLayout) -> Vec<Arc<TextLayout>> {
                 color: run.color,
                 glyphs: vec![*g],
                 underline: None,
+                strike: None,
             }];
             out.push(Arc::new(one));
         }

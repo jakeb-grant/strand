@@ -37,12 +37,21 @@
 //!   ([`list_dir`]).
 //!
 //! A document ([`Document`]) is JSON when it parses as JSON, else
-//! `key=value` (or `key: value`) lines when every line is one (blank and
-//! `#` comment lines aside; a value's double or single quotes removed,
-//! as os-release(5) writes them), else plain text. A field's key path
-//! walks a JSON object (a first key the top level lacks is searched for
-//! below it); in lines it is the key; a scalar document (a number, a
-//! word) is every field's value.
+//! (doc-formats) XML when it starts with `<` and parses as XML (bounded
+//! first: [`xml`]), else `key=value` (or `key: value`) lines when every
+//! line is one (blank and `#` comment lines aside; a key starting with
+//! no digit; a value's double or single quotes removed, as os-release(5)
+//! writes them), else plain text. Text starting with `<` that is not XML
+//! (an HTML page served in place of a feed) is text, never pairs, and
+//! the source logs why once until a document is something else. A
+//! `text` field reads an XML fragment as written where the element tree
+//! has nothing for it ([`Document::fields`]). A field's key path walks a JSON object (a
+//! first key the top level lacks is searched for below it) or an XML
+//! root element by [`lookup`] (exact names, then attributes and local
+//! names; the last segment's matches all, several a list: [`xml::get`]);
+//! in lines it is the key; a scalar document (a number, a word, an
+//! element of text alone) is every field's value. A string key (`=
+//! "dc:creator"`, `= "@state"`) is one exact segment.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -53,9 +62,12 @@ use tokio::io::AsyncBufReadExt;
 use zbus::zvariant::{OwnedValue, Value as ZValue};
 
 use crate::dbus::{self, Daemon, DaemonEvent};
+
+pub mod xml;
 use crate::{
     CallSig, Cx, Data, DataError, Event, FromCall, Msg, ServiceError, Store, Write, service,
 };
+pub use xml::{ELEMENT, element_text, is_element, lookup};
 
 /// The schema text of the [`Custom`] store. Never added to the
 /// language's schema: each declaration is its own record there.
@@ -84,8 +96,82 @@ service custom {
 /// How long a polled command may run before it is killed.
 pub const POLL_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Longest document read (a file, a line, a command's output).
-pub const MAX_DOCUMENT: usize = 1 << 20;
+/// Longest document read (a file, a line, a command's output):
+/// (doc-formats) 4 MiB, room for a large feed or a CLI's XML; a larger
+/// one is refused whole, never cut (a cut document is not one).
+pub const MAX_DOCUMENT: usize = 1 << 22;
+
+/// (doc-formats) A document's bytes as text: UTF-8 when they are; else,
+/// when an XML declaration at its start names ISO-8859-1 (Latin-1),
+/// windows-1252 or US-ASCII, windows-1252, as browsers read all three
+/// (a feed declaring Latin-1 often holds 1252's quotes); else UTF-8
+/// with what is not replaced by U+FFFD.
+pub fn decode_document(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+    if let Ok(t) = std::str::from_utf8(bytes) {
+        return std::borrow::Cow::Borrowed(t);
+    }
+    if declares_latin1(bytes) {
+        return std::borrow::Cow::Owned(bytes.iter().map(|b| windows_1252(*b)).collect());
+    }
+    String::from_utf8_lossy(bytes)
+}
+
+/// The encoding an XML declaration at the start of `bytes` names is one
+/// read as windows-1252.
+fn declares_latin1(bytes: &[u8]) -> bool {
+    let head = &bytes[..bytes.len().min(256)];
+    let start = head
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(0);
+    let head = &head[start..];
+    if !head.starts_with(b"<?xml") {
+        return false;
+    }
+    let Some(end) = head.windows(2).position(|w| w == b"?>") else {
+        return false;
+    };
+    let decl = String::from_utf8_lossy(&head[..end]).to_ascii_lowercase();
+    let Some(at) = decl.find("encoding") else {
+        return false;
+    };
+    let rest = decl[at + "encoding".len()..].trim_start();
+    let Some(rest) = rest.strip_prefix('=') else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    let Some(quote) = rest.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+        return false;
+    };
+    let name = rest[1..].split(quote).next().unwrap_or("");
+    matches!(
+        name,
+        "iso-8859-1"
+            | "iso8859-1"
+            | "iso_8859-1"
+            | "latin1"
+            | "latin-1"
+            | "l1"
+            | "windows-1252"
+            | "cp1252"
+            | "us-ascii"
+            | "ascii"
+    )
+}
+
+/// One windows-1252 byte as its character (the five bytes 1252 leaves
+/// undefined as the C1 control of their value, as WHATWG does).
+fn windows_1252(b: u8) -> char {
+    const HIGH: [u16; 32] = [
+        0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160,
+        0x2039, 0x0152, 0x8D, 0x017D, 0x8F, 0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013,
+        0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x9D, 0x017E, 0x0178,
+    ];
+    match b {
+        0x80..=0x9F => char::from_u32(u32::from(HIGH[usize::from(b - 0x80)])).unwrap_or('\u{FFFD}'),
+        _ => char::from(b),
+    }
+}
 
 /// The shortest interval a command is polled at (each poll forks it): a
 /// shorter `every` runs at this. The checker warns about one
@@ -129,6 +215,23 @@ pub struct FieldSpec {
     pub name: String,
     pub key: Vec<String>,
     pub rw: bool,
+    /// (doc-formats) Whether its declared type is `text`, which this
+    /// crate otherwise never sees: such a field reads XML as written
+    /// ([`Document::fields`]).
+    pub text: TextField,
+}
+
+/// (doc-formats) A field's declared type as far as [`Document::fields`]
+/// needs it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextField {
+    /// Not text.
+    #[default]
+    No,
+    /// `text?`.
+    Optional,
+    /// `text`.
+    Required,
 }
 
 /// (M6) One `action name(params) = Method` of a `from dbus` declaration.
@@ -309,16 +412,38 @@ impl Custom {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Document {
     Json(serde_json::Value),
+    /// (doc-formats) An XML document's root element as data
+    /// ([`xml`]), and the document as written (trimmed), which a `text`
+    /// field may read ([`Document::fields`]): `None` when anything
+    /// precedes the root element (an XML declaration, a DOCTYPE, a
+    /// comment), which a markup fragment never has.
+    Xml(Data, Option<Arc<str>>),
     Pairs(Vec<(String, String)>),
     Text(String),
+    /// (doc-formats) Text starting with `<` that is not XML, and why:
+    /// read as [`Document::Text`] is, the reason logged once by its
+    /// source.
+    NotXml {
+        text: String,
+        why: String,
+    },
 }
 
 impl Document {
     /// See the module docs.
     pub fn parse(text: &str) -> Document {
-        let t = text.trim();
+        let t = text.strip_prefix('\u{feff}').unwrap_or(text).trim();
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
             return Document::Json(v);
+        }
+        if t.starts_with('<') {
+            return match xml::parse(t, MAX_DOCUMENT) {
+                Ok((root, start)) => Document::Xml(root, (start == 0).then(|| t.into())),
+                Err(why) => Document::NotXml {
+                    text: t.to_string(),
+                    why,
+                },
+            };
         }
         // Blank lines and `#` comment lines (os-release(5), hostname(5))
         // are not lines of the document's pairs.
@@ -334,8 +459,13 @@ impl Document {
             .map(|l| {
                 let (k, v) = l.split_once('=').or_else(|| l.split_once(':'))?;
                 let k = k.trim();
-                (!k.is_empty() && !k.contains(char::is_whitespace))
-                    .then(|| (k.to_string(), unquote(v.trim())))
+                // (doc-formats) A key starts with no digit: a time
+                // (`12:30`) or a date (`2026-11-07T21:05:09+01:00`) is
+                // text, not a pair.
+                let key = !k.is_empty()
+                    && !k.starts_with(|c: char| c.is_ascii_digit())
+                    && !k.contains(char::is_whitespace);
+                key.then(|| (k.to_string(), unquote(v.trim())))
             })
             .collect();
         match pairs {
@@ -347,6 +477,32 @@ impl Document {
     /// Whether it is nothing but whitespace (an empty file).
     pub fn is_blank(&self) -> bool {
         matches!(self, Document::Text(t) if t.is_empty())
+    }
+
+    /// (doc-formats) Why text starting with `<` was not read as XML.
+    pub fn not_xml(&self) -> Option<&str> {
+        match self {
+            Document::NotXml { why, .. } => Some(why),
+            _ => None,
+        }
+    }
+
+    /// (doc-formats) The whole document as data, as an action's `-> T`
+    /// reads it: JSON as [`json_data`], pairs as a record of their
+    /// texts, XML as its root, text as itself.
+    pub fn into_data(self) -> Data {
+        match self {
+            Document::Json(v) => json_data(&v),
+            Document::Xml(root, _) => root,
+            Document::Pairs(pairs) => Data::Record {
+                ty: "".into(),
+                fields: pairs
+                    .into_iter()
+                    .map(|(k, v)| (k.into(), Data::text(v)))
+                    .collect(),
+            },
+            Document::Text(t) | Document::NotXml { text: t, .. } => Data::text(t),
+        }
     }
 
     /// The value at `key` (see the module docs); `None`: not in it.
@@ -363,9 +519,63 @@ impl Document {
                     .or_else(|| p.iter().find(|(n, _)| n.eq_ignore_ascii_case(&k)))
                     .map(|(_, v)| Data::text(v.as_str()))
             }
-            Document::Text(t) => Some(Data::text(t.as_str())),
+            Document::Xml(root, _) => xml::get(root, key),
+            Document::Text(t) | Document::NotXml { text: t, .. } => Some(Data::text(t.as_str())),
         }
     }
+
+    /// (doc-formats) The values of the fields `fs` ([`Document::get`] at
+    /// each key), except that a `text` field reads an XML fragment as
+    /// written, markup and all, where the element tree has nothing better
+    /// for it: when the document is one element of text alone
+    /// (`<b>CPU</b>`), and, for `text` but not `text?`, when the
+    /// document holds nothing at the key of any of `fs` (an HTML
+    /// fragment in a file, `<span foreground="red">92%</span>` from a
+    /// script; the root's own text read by a field named `text` holds
+    /// nothing, [`xml::by_text_alias`]). Markup a source prints so stays markup for `markup:`,
+    /// as any text document does; `text?` keeps null for a key the
+    /// document lacks, as with JSON. A document that holds some field is
+    /// data, so a key it lacks is absent there: a feed without a
+    /// `subtitle` does not show its own source, and a `from listen` line
+    /// that updates some fields leaves a `text` one alone. A document
+    /// with an XML declaration or a DOCTYPE is data, never a fragment
+    /// ([`Document::Xml`]).
+    pub fn fields(&self, fs: &[FieldSpec]) -> Vec<Option<Data>> {
+        let got: Vec<Option<Data>> = fs.iter().map(|f| self.get(&f.key)).collect();
+        let Document::Xml(root, Some(written)) = self else {
+            return got;
+        };
+        let alone = matches!(root, Data::Text(_));
+        let none = fs
+            .iter()
+            .zip(&got)
+            .all(|(f, g)| g.is_none() || xml::by_text_alias(root, &f.key));
+        fs.iter()
+            .zip(got)
+            .map(|(f, got)| match f.text {
+                TextField::Optional | TextField::Required if alone => {
+                    Some(Data::Text(written.clone()))
+                }
+                TextField::Required if none => Some(Data::Text(written.clone())),
+                _ => got,
+            })
+            .collect()
+    }
+}
+
+/// (doc-formats) Log why `doc` (of the service `name`) is not XML, once
+/// until a document is something else again (`last`: the one before was
+/// not XML either). Not once per reason: roxmltree's reasons hold a
+/// position, so a `from listen` stream of `<6>…` kernel lines would log
+/// every line.
+fn note_not_xml(name: &str, doc: &Document, last: &mut bool) {
+    let why = doc.not_xml();
+    if let Some(w) = why
+        && !*last
+    {
+        log::warn!("`{name}`: not XML ({w}); read as text");
+    }
+    *last = why.is_some();
 }
 
 /// A pair's value without the quotes around it, as os-release(5) writes
@@ -443,8 +653,8 @@ pub fn json_data(v: &serde_json::Value) -> Data {
 /// Merge `doc` into `state`: every field the document holds; the others
 /// keep their values (a `listen` line may be a partial update).
 fn merge_doc(spec: &Spec, doc: &Document, state: &mut Custom) {
-    for (i, f) in spec.fields.iter().enumerate() {
-        if let Some(v) = doc.get(&f.key) {
+    for (i, v) in doc.fields(&spec.fields).into_iter().enumerate() {
+        if let Some(v) = v {
             state.set(i, v);
         }
     }
@@ -454,8 +664,8 @@ fn merge_doc(spec: &Spec, doc: &Document, state: &mut Custom) {
 /// result) is the source's state, so a field it no longer holds reads
 /// null (its type's default), not its last value.
 fn replace_doc(spec: &Spec, doc: &Document, state: &mut Custom) {
-    for (i, f) in spec.fields.iter().enumerate() {
-        state.set(i, doc.get(&f.key).unwrap_or(Data::Null));
+    for (i, v) in doc.fields(&spec.fields).into_iter().enumerate() {
+        state.set(i, v.unwrap_or(Data::Null));
     }
 }
 
@@ -1040,10 +1250,21 @@ async fn run_dbus(
 /// thread.
 const READ_WAIT: Duration = Duration::from_secs(5);
 
-/// Read `path` as a document (`None`: it is not there). Opened without
-/// blocking, and only a regular file is read (sysfs and procfs
-/// attributes are): a FIFO or a device would block the reader.
-fn read_doc(path: &Path) -> Result<Option<Document>, String> {
+/// What reading a file found.
+#[derive(Debug, PartialEq)]
+enum Got {
+    /// It is not there.
+    Gone,
+    Doc(Document),
+    /// (doc-formats) More than [`MAX_DOCUMENT`] bytes (its size, as far
+    /// as it is known): refused whole, never cut.
+    Over(u64),
+}
+
+/// Read `path` as a document. Opened without blocking, and only a
+/// regular file is read (sysfs and procfs attributes are): a FIFO or a
+/// device would block the reader.
+fn read_doc(path: &Path) -> Result<Got, String> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     let f = match std::fs::OpenOptions::new()
@@ -1052,21 +1273,24 @@ fn read_doc(path: &Path) -> Result<Option<Document>, String> {
         .open(path)
     {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Got::Gone),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
-    let executable = match f.metadata() {
+    let (executable, size) = match f.metadata() {
         Ok(m) if m.is_file() => {
             use std::os::unix::fs::PermissionsExt;
-            m.permissions().mode() & 0o111 != 0
+            (m.permissions().mode() & 0o111 != 0, m.len())
         }
         Ok(_) => return Err(format!("{}: not a regular file", path.display())),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
     let mut buf = Vec::new();
-    f.take(MAX_DOCUMENT as u64)
+    f.take(MAX_DOCUMENT as u64 + 1)
         .read_to_end(&mut buf)
         .map_err(|e| format!("{}: {e}", path.display()))?;
+    if buf.len() > MAX_DOCUMENT {
+        return Ok(Got::Over(size.max(buf.len() as u64)));
+    }
     // `from poll "/usr/local/bin/gpu-temp" every 5s` reads a path as a
     // file; a program there was meant to run: say so rather than parse
     // its bytes.
@@ -1077,11 +1301,32 @@ fn read_doc(path: &Path) -> Result<Option<Document>, String> {
             path.display()
         ));
     }
-    Ok(Some(Document::parse(&String::from_utf8_lossy(&buf))))
+    Ok(Got::Doc(Document::parse(&decode_document(&buf))))
+}
+
+/// (doc-formats) Log once that the service `name`'s file is too large,
+/// when its size differs from what `last` said; a read document clears
+/// it.
+fn note_over(name: &str, path: &Path, got: &Got, last: &mut Option<u64>) {
+    let over = match got {
+        Got::Over(n) => Some(*n),
+        _ => None,
+    };
+    if let Some(n) = over
+        && over != *last
+    {
+        log::warn!(
+            "`{name}`: {} is {n} bytes, more than the {} MiB a document may be; \
+             its last value is kept",
+            path.display(),
+            MAX_DOCUMENT >> 20
+        );
+    }
+    *last = over;
 }
 
 /// [`read_doc`] off the services thread, at most [`READ_WAIT`].
-async fn read_doc_bounded(path: &Path) -> Result<Option<Document>, ServiceError> {
+async fn read_doc_bounded(path: &Path) -> Result<Got, ServiceError> {
     let p = path.to_path_buf();
     match tokio::time::timeout(READ_WAIT, tokio::task::spawn_blocking(move || read_doc(&p))).await {
         Ok(Ok(r)) => r.map_err(ServiceError),
@@ -1409,11 +1654,13 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
     let mut watch = watch_file(path)
         .map_err(|e| ServiceError(format!("cannot watch {}: {e}", path.display())))?;
     let mut last: Option<Document> = None;
+    let mut not_xml = false;
+    let mut over = None;
     let mut first = true;
     loop {
         // Read (first, or after a change to the file itself).
-        let mut doc = read_doc_bounded(path).await?;
-        if !first && doc.as_ref().is_some_and(Document::is_blank) {
+        let mut got = read_doc_bounded(path).await?;
+        if !first && matches!(&got, Got::Doc(d) if d.is_blank()) {
             // A file emptied by a change is most often a write in
             // progress (`echo 5 > f`, a plain rewrite: truncated, then
             // written), which `MODIFY` shows between the two: read it
@@ -1421,12 +1668,24 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
             // default and back (a file left empty is read empty then).
             tokio::time::sleep(FILE_SETTLE).await;
             let _ = watch.drain();
-            doc = read_doc_bounded(path).await?;
+            got = read_doc_bounded(path).await?;
         }
-        if first || doc != last {
+        note_over(&spec.name, path, &got, &mut over);
+        // Too large: the last value stays (none yet: the defaults).
+        let doc = match got {
+            Got::Gone => Some(None),
+            Got::Doc(d) => Some(Some(d)),
+            Got::Over(_) => None,
+        };
+        if let Some(doc) = doc
+            && (first || doc != last)
+        {
             let mut state = cx.state().clone();
             match &doc {
-                Some(d) => replace_doc(spec, d, &mut state),
+                Some(d) => {
+                    note_not_xml(&spec.name, d, &mut not_xml);
+                    replace_doc(spec, d, &mut state);
+                }
                 // Gone: every field null until it is back.
                 None => state.values.iter_mut().for_each(|v| v.value = Data::Null),
             }
@@ -1793,7 +2052,7 @@ fn decode(mut line: Vec<u8>) -> String {
     }
     match String::from_utf8(line) {
         Ok(s) => s,
-        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        Err(e) => decode_document(e.as_bytes()).into_owned(),
     }
 }
 
@@ -1811,6 +2070,7 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
     // go. A line after a quiet frame is sent at once.
     let mut pending: Option<Custom> = None;
     let mut next_send = tokio::time::Instant::now();
+    let mut not_xml = false;
     loop {
         tokio::select! {
             line = lines.next() => match line {
@@ -1819,13 +2079,14 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
                         continue;
                     }
                     let doc = Document::parse(&l);
+                    note_not_xml(&spec.name, &doc, &mut not_xml);
                     // (services-round) The line itself, before any merge.
                     let id = cx.state().spec;
                     if hears_lines(id) {
-                        let values = spec
-                            .fields
-                            .iter()
-                            .map(|f| doc.get(&f.key).unwrap_or(Data::Null))
+                        let values = doc
+                            .fields(&spec.fields)
+                            .into_iter()
+                            .map(|v| v.unwrap_or(Data::Null))
                             .collect();
                         if !cx.emit(CustomEvent::Line(Data::List(values))) {
                             return Ok(());
@@ -1909,7 +2170,7 @@ async fn poll_command(argv: &[String]) -> Option<Document> {
             log::warn!("`{}` failed ({status})", argv[0]);
             return None;
         }
-        Some(Document::parse(&String::from_utf8_lossy(&out)))
+        Some(Document::parse(&decode_document(&out)))
     };
     match tokio::time::timeout(POLL_TIMEOUT, run).await {
         Ok(d) => d,
@@ -1936,6 +2197,8 @@ async fn run_poll(
     // When the last poll began: shown again sooner than `every` after it
     // (a hover popup flickering), the next poll still waits for `every`.
     let mut last: Option<tokio::time::Instant> = None;
+    let mut not_xml = false;
+    let mut over = None;
     loop {
         if first && cx.period(every).is_none() {
             cx.ready();
@@ -1969,8 +2232,8 @@ async fn run_poll(
         // command's group) at once, writes are refused meanwhile.
         let fetch = async {
             match target {
-                PollTarget::Command(argv) => Ok(poll_command(argv).await),
-                PollTarget::File(path) => read_doc_bounded(path).await,
+                PollTarget::Command(argv) => Ok(poll_command(argv).await.map(Got::Doc)),
+                PollTarget::File(path) => read_doc_bounded(path).await.map(Some),
             }
         };
         tokio::pin!(fetch);
@@ -1984,8 +2247,14 @@ async fn run_poll(
                 },
             }
         };
-        if let Some(doc) = doc {
+        // A file too large keeps the last value (as a command's output
+        // past the cap does), said once per size.
+        if let (PollTarget::File(path), Some(got)) = (target, &doc) {
+            note_over(&spec.name, path, got, &mut over);
+        }
+        if let Some(Got::Doc(doc)) = doc {
             let mut state = cx.state().clone();
+            note_not_xml(&spec.name, &doc, &mut not_xml);
             replace_doc(spec, &doc, &mut state);
             if !cx.update(|s| *s = state) {
                 return Ok(());
@@ -2027,6 +2296,11 @@ mod tests {
         assert_eq!(t.get(&key("profile")), Some(Data::text("performance")));
         let words = Document::parse("hello world\nsecond line");
         assert!(matches!(words, Document::Text(_)));
+        // (doc-formats) A date or a time printed alone is text, not a
+        // pair keyed by its first digits.
+        for t in ["2026-11-07T21:05:09+01:00", "12:30", "20261107T195510Z"] {
+            assert_eq!(Document::parse(t), Document::Text(t.into()), "{t}");
+        }
     }
 
     /// os-release(5) and hostname(5): `#` comment lines are not lines of
@@ -2188,7 +2462,7 @@ mod tests {
             .expect("the read blocked on the FIFO")
             .unwrap_err();
         assert!(e.contains("not a regular file"), "{e}");
-        assert_eq!(read_doc(&dir.join("none")), Ok(None));
+        assert_eq!(read_doc(&dir.join("none")), Ok(Got::Gone));
         // A program (executable, a script or ELF) is not read as a
         // document; an executable data file (a vfat mount) still is.
         {
@@ -2204,11 +2478,111 @@ mod tests {
             let data = dir.join("data");
             std::fs::write(&data, "temp=40\n").unwrap();
             std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o755)).unwrap();
-            assert!(read_doc(&data).unwrap().is_some());
+            assert!(matches!(read_doc(&data), Ok(Got::Doc(_))));
         }
         std::fs::write(dir.join("doc"), "{\"a\": 1}").unwrap();
-        assert!(read_doc(&dir.join("doc")).unwrap().is_some());
+        assert!(matches!(read_doc(&dir.join("doc")), Ok(Got::Doc(_))));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (doc-formats) A file over [`MAX_DOCUMENT`] is refused whole, its
+    /// size said, never read cut short; one of exactly the cap is read.
+    #[test]
+    fn an_oversized_file_is_refused_not_cut() {
+        let dir = std::env::temp_dir().join(format!("strand-custom-over-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Valid JSON either way: cut at the cap, it would read `a` as 1.
+        let mut big = b"{\"a\": 1".to_vec();
+        big.resize(MAX_DOCUMENT, b' ');
+        big.extend_from_slice(b", \"b\": 2}");
+        std::fs::write(dir.join("big"), &big).unwrap();
+        assert_eq!(read_doc(&dir.join("big")), Ok(Got::Over(big.len() as u64)));
+        let mut log = None;
+        note_over("s", &dir.join("big"), &Got::Over(5), &mut log);
+        assert_eq!(log, Some(5));
+        note_over("s", &dir.join("big"), &Got::Gone, &mut log);
+        assert_eq!(log, None, "a read clears it, so the next is said again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (doc-formats) The cap is 4 MiB, and a document of exactly that
+    /// many bytes reads whole (an XML one too).
+    #[test]
+    fn a_document_just_under_the_cap_is_read() {
+        assert_eq!(MAX_DOCUMENT, 4 * 1024 * 1024);
+        let dir = std::env::temp_dir().join(format!("strand-custom-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut json = b"{\"a\": 1".to_vec();
+        json.resize(MAX_DOCUMENT - 1, b' ');
+        json.push(b'}');
+        std::fs::write(dir.join("json"), &json).unwrap();
+        let Ok(Got::Doc(d)) = read_doc(&dir.join("json")) else {
+            panic!("not read")
+        };
+        assert_eq!(d.get(&key("a")), Some(Data::Int(1)));
+        let item = "<item><title>t</title></item>\n";
+        let n = (MAX_DOCUMENT - 20) / item.len();
+        let xml = format!("<rss>{}</rss>", item.repeat(n));
+        assert!(xml.len() <= MAX_DOCUMENT && xml.len() > MAX_DOCUMENT - 100);
+        std::fs::write(dir.join("xml"), &xml).unwrap();
+        let Ok(Got::Doc(d)) = read_doc(&dir.join("xml")) else {
+            panic!("not read")
+        };
+        let Some(Data::List(items)) = d.get(&key("item")) else {
+            panic!("no items")
+        };
+        assert_eq!(items.len(), n);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (doc-formats) Bytes that are not UTF-8 under an XML declaration
+    /// naming Latin-1 or windows-1252 are read as windows-1252; without
+    /// one they stay lossy UTF-8; UTF-8 is never re-read.
+    #[test]
+    fn a_latin1_feed_decodes() {
+        let feed = b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n<rss><item><title>Caf\xe9 \x93news\x94 \x80 5</title></item></rss>";
+        assert_eq!(
+            decode_document(feed),
+            "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n<rss><item><title>Café “news” € 5</title></item></rss>"
+        );
+        let d = Document::parse(&decode_document(feed));
+        assert_eq!(
+            d.get(&key("item.title")),
+            Some(Data::text("Café “news” € 5"))
+        );
+        for decl in [
+            "encoding='windows-1252'",
+            "encoding = \"latin1\"",
+            "encoding=\"US-ASCII\"",
+        ] {
+            let doc = format!("  <?xml version=\"1.0\" {decl} ?><a>").into_bytes();
+            let mut doc = doc;
+            doc.extend_from_slice(b"\xe9</a>");
+            assert!(decode_document(&doc).ends_with("<a>é</a>"), "{decl}");
+        }
+        // No declaration, or another encoding: lossy UTF-8.
+        assert_eq!(decode_document(b"<a>\xe9</a>"), "<a>\u{FFFD}</a>");
+        assert_eq!(
+            decode_document(b"<?xml version=\"1.0\" encoding=\"KOI8-R\"?><a>\xe9</a>"),
+            "<?xml version=\"1.0\" encoding=\"KOI8-R\"?><a>\u{FFFD}</a>"
+        );
+        // UTF-8 stays UTF-8 whatever it declares.
+        let utf8 = "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><a>é</a>";
+        assert_eq!(decode_document(utf8.as_bytes()), utf8);
+        // Every byte has a character; the undefined five are C1's.
+        let all: Vec<u8> = (0..=255).collect();
+        let mut doc = b"<?xml encoding=\"cp1252\"?>".to_vec();
+        doc.extend_from_slice(&all);
+        assert_eq!(decode_document(&doc).chars().count(), 25 + 256);
+        assert_eq!(windows_1252(0x81), '\u{81}');
+        assert_eq!(windows_1252(0x9F), 'Ÿ');
+        // A listen line decodes the same way.
+        assert_eq!(
+            decode(feed.to_vec()),
+            String::from_utf8(decode_document(feed).as_bytes().to_vec()).unwrap()
+        );
     }
 
     /// Directory events re-read the file only when they name it; the

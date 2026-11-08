@@ -224,7 +224,7 @@ permit exec "sensors"
 | Source | Reads |
 | --- | --- |
 | `from dbus` | A D-Bus object's properties, followed live, and its methods as actions |
-| `from file` | A file (JSON, `key=value` lines or plain text), again each time it changes |
+| `from file` | A file (JSON, XML, `key=value` lines or plain text), again each time it changes |
 | `from dir` | A directory's files, again each time one is added, removed or changed |
 | `from listen` | The lines a command prints, as they come |
 | `from poll … every T` | A command's output, or a file, every `T` while a reader is shown |
@@ -238,6 +238,14 @@ an error with a did-you-mean. Running a command needs `permit exec`,
 naming the programs allowed. A custom service starts and stops as the
 built-ins do, and saving a change to its declaration restarts only
 that service.
+
+A document can be XML as well as JSON: an RSS or Atom feed fetched by
+`curl`, or a tool's XML output. Its elements are records whose fields
+are their attributes and child elements, and the `type` you declare
+decides whether a field takes one element or every one of its name. A
+`Date` field reads dates as documents write them: RFC 3339, RFC 2822
+and Unix time. [Data from the web and from tools](../how-to/data-from-the-web.md)
+has recipes for feeds, a JSON API and a scan.
 
 ## Actions as a fallback
 

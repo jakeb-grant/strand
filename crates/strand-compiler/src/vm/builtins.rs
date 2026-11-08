@@ -1171,6 +1171,36 @@ pub(crate) fn method(
         }
         Value::Time(_) => Err(time_in_logic(&format!("with `.{name}`"))),
         _ if timed => Err(time_in_logic(&format!("as an argument of `.{name}`"))),
+        // (doc-formats) `t.plain(html)`, `t.links(basic)`: what the
+        // `markup:` level shows, read by strand-scene's one converter.
+        Value::Text(t) if name == "plain" || name == "links" => {
+            let level = match args.params.first().and_then(Option::as_ref) {
+                Some(Value::Enum(e, v)) => vm
+                    .types()
+                    .enum_(*e)
+                    .variants
+                    .get(*v as usize)
+                    .map(String::as_str),
+                _ => None,
+            };
+            let level = match level {
+                Some("basic") => Some(strand_scene::markup::Level::Basic),
+                Some("html") => Some(strand_scene::markup::Level::Html),
+                _ => None,
+            };
+            Ok(match (name, level) {
+                ("plain", None) => Value::Text(t.clone()),
+                (_, None) => Value::list(Vec::new()),
+                (_, Some(level)) => {
+                    let m = strand_scene::markup::parse(t, level, None);
+                    if name == "plain" {
+                        Value::text(m.text)
+                    } else {
+                        Value::list(m.links.into_iter().map(Value::text).collect())
+                    }
+                }
+            })
+        }
         Value::Text(t) => text_method(t, name, &args),
         Value::Num(n, u) => num_method(*n, *u, name, &args),
         Value::List(items) => list_method(vm, rt, items, name, args),

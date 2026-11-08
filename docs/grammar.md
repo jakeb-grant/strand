@@ -389,6 +389,11 @@ with a did-you-mean); a `poll` without `every` is one
 `syntax::expected`. See decisions.md, wave4-a3 "no-code
 services, their grammar read precisely".
 
+A field's `= expr` is its key path: an identifier path (`= cpu.temp`)
+walks the document segment by segment; a string (`= "dc:creator"`, `=
+"@state"`) is one key segment exactly as written, never split on `.`
+(spec.md 5.6; decisions.md doc-formats).
+
 `-> type` (flex) makes the command's output the call's value, an
 `Async` of that type (spec.md 5.7); a `from dbus` method's action takes
 none (the parser reads one there, and the checker refuses it).

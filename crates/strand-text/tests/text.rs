@@ -439,6 +439,82 @@ fn spans_colour_and_weight_ranges() {
     assert_eq!(l.glyphs().count(), 5);
 }
 
+/// (doc-formats) A struck span's runs carry a line through the glyphs,
+/// above the baseline and apart from an underline; a span's family
+/// override shapes its glyphs in that family (markup `<s>` and `<code>`).
+#[test]
+fn strikethrough_and_mono_spans_shape() {
+    let mut e = TextEngine::new(config());
+    let l = e.layout(&styled(1, "Firefox", None, |s| {
+        s.spans = vec![
+            TextSpan {
+                range: 0..4,
+                strikethrough: true,
+                ..TextSpan::default()
+            },
+            TextSpan {
+                range: 4..7,
+                underline: true,
+                ..TextSpan::default()
+            },
+        ]
+    }));
+    let struck: Vec<_> = l.runs.iter().filter(|r| r.strike.is_some()).collect();
+    assert_eq!(struck.iter().map(|r| r.glyphs.len()).sum::<usize>(), 4);
+    assert!(struck.iter().all(|r| r.underline.is_none()));
+    let under = l.runs.iter().find_map(|r| r.underline).unwrap();
+    for r in &struck {
+        let s = r.strike.unwrap();
+        // Through the glyphs: above the baseline, inside the line box.
+        assert!(s.y > 0 && (s.y as f32) < l.baseline, "{s:?} {}", l.baseline);
+        assert!(s.y < under.y);
+        assert!(s.w > 0 && s.h >= 1);
+        assert!(l.ink.contains_rect(s));
+    }
+    assert_eq!(
+        l.runs
+            .iter()
+            .filter(|r| r.strike.is_none())
+            .map(|r| r.glyphs.len())
+            .sum::<usize>(),
+        3
+    );
+
+    // A family span, with the system's fonts (DejaVu Sans Mono in the
+    // image): every glyph under it has one advance, and the rest of the
+    // text keeps its own family.
+    let mut e = TextEngine::new(FontConfig::default());
+    let mut width = |text: &str, family: Option<&str>| {
+        e.layout(&styled(2, text, None, |s| {
+            s.font.family = "sans-serif".into();
+            s.spans = vec![TextSpan {
+                range: 0..text.len(),
+                family: family.map(Arc::from),
+                ..TextSpan::default()
+            }]
+        }))
+        .size
+        .w
+    };
+    let (narrow, wide) = (width("iiii", None), width("MMMM", None));
+    if narrow == 0.0 {
+        eprintln!("no system fonts: skipped");
+        return;
+    }
+    assert!(wide - narrow > 5.0, "sans iiii {narrow} vs MMMM {wide}");
+    let mono = (
+        width("iiii", Some("No Such Mono, monospace")),
+        width("MMMM", Some("No Such Mono, monospace")),
+    );
+    assert!((mono.0 - mono.1).abs() < 0.5, "mono {mono:?}");
+    // A family without a generic one gets `monospace` from its name.
+    let named = (
+        width("iiii", Some("No Such Mono")),
+        width("MMMM", Some("No Such Mono")),
+    );
+    assert!((named.0 - named.1).abs() < 0.5, "named mono {named:?}");
+}
+
 /// A layout that could not place every glyph says so, and reports the
 /// atlas pages that are still live.
 #[test]

@@ -4259,6 +4259,36 @@ fn an_element_handler_with_no_element_is_an_error() {
     }
 }
 
+/// (doc-formats) `markup: html` is a level of the `markup` property, and
+/// a misspelt one names the closest; `plain` and `links` take that enum,
+/// and it is required.
+#[test]
+fn markup_html_and_plain_are_checked() {
+    let shell =
+        |body: &str| format!("let body = \"<p>a</p>\"\nbar B {{\n  col {{\n    {body}\n  }}\n}}\n");
+    for good in [
+        "text body { markup: html }",
+        "text body { markup: basic }",
+        "text body.plain(html) { max_lines: 2 }",
+        "text body.links(basic).first ?? \"\"",
+        "text body.plain(none)",
+    ] {
+        assert_eq!(errors_of(&shell(good)), Vec::<String>::new(), "{good}");
+    }
+    let htm = errors_of(&shell("text body { markup: htm }"));
+    assert_eq!(htm.len(), 1, "{htm:?}");
+    assert!(htm[0].contains("html"), "{htm:?}");
+    let missing = errors_of(&shell("text body.plain()"));
+    assert!(
+        missing.len() == 1 && missing[0].starts_with("check::missing_arg"),
+        "{missing:?}"
+    );
+    let wrong = errors_of(&shell("text body.plain(\"html\")"));
+    assert_eq!(wrong.len(), 1, "{wrong:?}");
+    let color = errors_of(&shell("text body.plain(#fff)"));
+    assert_eq!(color.len(), 1, "{color:?}");
+}
+
 /// (service-ready) Every service has `ready: bool`, builtin or declared,
 /// read-only; a declared field or action of that name is
 /// `check::reserved_field` with a rename hint, and a service schema

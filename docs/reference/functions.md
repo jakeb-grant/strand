@@ -113,6 +113,8 @@ Builtin functions and values, every name in scope in every file, and the methods
 | `fn replace(from: text, to: text) -> text` | Every `from` replaced with `to`. |
 | `fn slice(from: int, to: int? = null) -> text` | The characters from `from` up to (not including) `to`, counted from 0; without `to`, to the end. A negative index counts from the end (`name.slice(-3)` is the last three), and indices past either end stop there: `"strand".slice(1, 3)` is `tr`. |
 | `fn index_of(part: text) -> int?` | The character index of the first `part` in it (0 for the first character, as `slice` counts), or null when it holds none. |
+| `fn plain(markup: Markup) -> text` | The text `markup: m` shows, without its styles, to search, shorten or count: `p.description?.plain(html)`; `none` is the text as written. |
+| `fn links(markup: Markup) -> [text]` | The links `markup: m` finds, in order, as written (a relative one stays relative): `e.description.links(html).first`. |
 
 ### `[T]`
 

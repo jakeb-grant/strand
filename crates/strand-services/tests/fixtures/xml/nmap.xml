@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<?xml-stylesheet href="file:///usr/bin/../share/nmap/nmap.xsl" type="text/xsl"?>
+<!-- Hand-written in nmap's -oX schema (nmap 7.98). -->
+<nmaprun scanner="nmap" args="nmap -oX - -sV 192.168.1.0/30" start="1794084315" startstr="Sat Nov  7 20:45:15 2026" version="7.98" xmloutputversion="1.05">
+<scaninfo type="syn" protocol="tcp" numservices="1000" services="1,3-4,6-7,9"/>
+<host starttime="1794084315" endtime="1794084330"><status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.1" addrtype="ipv4"/>
+<address addr="AA:BB:CC:DD:EE:FF" addrtype="mac" vendor="Example Networks"/>
+<ports><extraports state="closed" count="997"/>
+<port protocol="tcp" portid="22"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="ssh" product="OpenSSH" version="9.9"><cpe>cpe:/a:openbsd:openssh:9.9</cpe></service></port>
+<port protocol="tcp" portid="80"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="http" product="lighttpd"/></port>
+</ports>
+</host>
+<host starttime="1794084315" endtime="1794084330"><status state="down" reason="no-response" reason_ttl="0"/>
+<address addr="192.168.1.2" addrtype="ipv4"/>
+</host>
+<runstats><finished time="1794084330" timestr="Sat Nov  7 20:45:30 2026" elapsed="15.02" exit="success"/><hosts up="1" down="1" total="2"/>
+</runstats>
+</nmaprun>

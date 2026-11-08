@@ -804,6 +804,7 @@ fn the_guide_host_service_reads_the_kernels_name() {
             name: "name".into(),
             key: vec!["name".into()],
             rw: false,
+            text: Default::default(),
         }],
         actions: Vec::new(),
     });

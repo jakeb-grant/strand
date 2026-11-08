@@ -22,7 +22,11 @@ enum Layer { background, bottom, top, overlay }
 enum Keyboard { none, on_demand, exclusive }
 enum Screens { all, focused }
 enum Ellipsis { none, start, middle, end }
-enum Markup { none, basic }
+/// How a `text` reads tags in its text: `none` shows them; `basic` reads
+/// notification markup (b, i, u, a, img alt; other tags stay text);
+/// `html` reads an HTML fragment (blocks as lines, lists, styles; other
+/// tags, scripts and styles dropped).
+enum Markup { none, basic, html }
 enum Fit { cover, contain, fill, none }
 enum CornerStyle { round, squircle }
 enum RadiusKeyword { full }
@@ -288,7 +292,10 @@ record Key {
   repeat: bool
 }
 
-/// A date and time of day, such as `clock.today`.
+/// A date and time of day, such as `clock.today`. Filled from a document it
+/// also reads RFC 3339 / ISO 8601, RFC 2822, `YYYYMMDD` and Unix time
+/// (seconds to nanoseconds, by its count of digits), from text or a number alike;
+/// prefer `Date?` where a source may leave it out.
 provisional record Date {
   /// The year.
   year: int
@@ -1946,6 +1953,12 @@ methods text {
   /// The character index of the first `part` in it (0 for the first
   /// character, as `slice` counts), or null when it holds none.
   fn index_of(part: text) -> int?
+  /// The text `markup: m` shows, without its styles, to search, shorten
+  /// or count: `p.description?.plain(html)`; `none` is the text as written.
+  fn plain(markup: Markup) -> text
+  /// The links `markup: m` finds, in order, as written (a relative one
+  /// stays relative): `e.description.links(html).first`.
+  fn links(markup: Markup) -> [text]
 }
 
 methods float {
@@ -2426,7 +2439,9 @@ element text(text -> text): node {
   marks: [Range]
   /// The paint of `marks`.
   mark_color: paint
-  /// `basic` renders simple markup.
+  /// Tags in the text as styles: `basic` for notification bodies,
+  /// `html` for HTML fragments (summaries, release notes); `none` shows
+  /// them as written.
   markup: Markup
   /// Rolls the digits when the number changes: `roll: true`.
   roll: bool

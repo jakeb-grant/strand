@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hand-written in the shape of an Arch-style RSS 2.0 news feed. -->
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Example Linux: Recent news</title>
+    <link>https://example.org/news/</link>
+    <description>News from an example distribution.</description>
+    <atom:link href="https://example.org/feeds/news/" rel="self"/>
+    <lastBuildDate>Wed, 21 Oct 2026 19:29:36 +0000</lastBuildDate>
+    <item>
+      <title>Update to libfoo ≥ 2.1 before upgrading</title>
+      <link>https://example.org/news/libfoo-2-1/</link>
+      <description>&lt;p&gt;The &lt;a href="https://example.org/libfoo"&gt;libfoo&lt;/a&gt; package moved.&lt;/p&gt;
+&lt;p&gt;Run the upgrade twice.&lt;/p&gt;</description>
+      <dc:creator>Ada Example</dc:creator>
+      <pubDate>Wed, 21 Oct 2026 13:58:42 +0000</pubDate>
+      <guid isPermaLink="false">tag:example.org,2026-10-21:/news/libfoo-2-1/</guid>
+      <category>security</category>
+    </item>
+    <item>
+      <title><![CDATA[Bar & baz <now> merged]]></title>
+      <link>https://example.org/news/bar-baz/</link>
+      <description><![CDATA[<p>Two tools became one.</p>]]></description>
+      <dc:creator>Grace Example</dc:creator>
+      <pubDate>Fri, 6 Nov 2026 18:19:19 -0000</pubDate>
+      <guid isPermaLink="true">https://example.org/news/bar-baz/</guid>
+      <category>tools</category>
+      <category>packaging</category>
+    </item>
+    <item>
+      <link>https://example.org/news/untitled/</link>
+      <description>A note with no title.</description>
+      <pubDate>Thu, 14 May 2026 19:25:26 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

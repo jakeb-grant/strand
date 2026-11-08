@@ -349,6 +349,23 @@ removed, but only when every other line is a pair: one line that is
 neither makes the whole file text again, and every field reads all of
 it. A field without `= key` reads the key with its own name.
 
+A field typed `Date` reads the date text files and APIs write, not only
+a record of `year`, `month` and `day`: `"2026-11-07T19:59:32Z"` (RFC
+3339), `"Sat, 07 Nov 2026 19:59:32 +0000"` (RFC 2822, as RSS writes
+it), `"2026-11-07"` (a date with no time of day), and Unix time as a
+number, seconds or finer (told apart by the count of digits). An instant is shown in your own time
+zone. Make it `Date?` when the source may leave it out or write
+something else: a date that cannot be read is then `null`, and
+`strand watch` says what it held.
+
+A file or a command's output can be XML too: an RSS feed, an nmap scan,
+a GPX track. Each element is a record whose fields are its attributes
+and its child elements, found by name (`creator` finds `dc:creator`),
+and a field typed as a list takes every element of its name, so `type
+Post { title: text?; link: text; pubDate: Date?; category: [text] }` and
+`posts: [Post] = item` read a feed's items. The site's "Data from the
+web and from tools" page has the recipes.
+
 **`from dir`** lists a directory's files and watches it:
 `service walls from dir "~/Pictures/walls" { files: [File] }` gives
 `walls.files`, each file's `path`, `name`, `modified` date and `size`,
@@ -423,7 +440,7 @@ command again each time `query` changes, ending the run before if it
 has not finished. While it runs, `.pending` is true and the last answer
 stays shown; if the program fails, `.error` says how. A `text` result is
 what the program printed; a number, an enum, a record or a list is read
-from it as a `from poll` service reads a command's output (JSON or
+from it as a `from poll` service reads a command's output (JSON, XML or
 `key=value` lines into the type's fields). In a handler, `let r = await
 calc(q)` waits for it.
 

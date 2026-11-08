@@ -1,0 +1,15 @@
+<b>Battery low</b>: <i>10%</i> left, <u>plug in</u> soon.
+-----
+Build done: <a href="https://ci.example.org/job/42">job #42</a> <img src="file:///ok.png" alt="[ok]"/>
+-----
+<a href="https://chat.example.org/">chat.example.org</a>
+
+Ann &amp; Bob said: 1 &lt; 2 &amp;&amp; &quot;yes&quot; &#39;no&#39;
+-----
+if a<b && c>d then Ann & Bob, Vec<T> too
+-----
+Line one<br>Line two<br/>Line&nbsp;three&nbsp;&mdash;&nbsp;done
+-----
+<p>First</p><p>Second <span style="color:red">part</span></p><ul><li>a</li><li>b</li></ul>
+-----
+caf&#233; &#x2014; &#x1F600; &#xD800; &#x110000; &#0; &#; AT&T &copy 2026 &nope; &amp

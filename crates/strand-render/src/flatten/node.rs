@@ -1560,7 +1560,10 @@ impl<'a> Flattener<'a> {
                 let lines: Vec<(Rect, Color)> = l
                     .runs
                     .iter()
-                    .filter_map(|r| Some((r.underline?, slot_color(r.color, &span_colors, color))))
+                    .flat_map(|r| {
+                        let c = slot_color(r.color, &span_colors, color);
+                        r.underline.into_iter().chain(r.strike).map(move |l| (l, c))
+                    })
                     .collect();
                 // Glyph cells, when the glyphs are the last thing drawn
                 // (but an input's caret, a cell of its own: caret) and land

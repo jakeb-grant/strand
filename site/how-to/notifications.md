@@ -103,6 +103,12 @@ show.
 
 ## Variations
 
+- **HTML bodies.** `markup: basic` is the notification standard, and
+  it shows any other tag as written, so `Vec<T>` in a body reads right.
+  If an app you use sends whole HTML (`<p>`, `<br>`, lists), as some
+  mail clients do, use `markup: html` for its cards
+  ([Showing HTML text](html-text.md)).
+
 - **Progress.** `meter n.progress ?? 0` in the card shows how far a
   download or a copy has got, for senders that say (0 to 1).
 - **More or fewer at once.** `.take(5)` shows at most five cards;

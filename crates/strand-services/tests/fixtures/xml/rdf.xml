@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<!-- Hand-written in the shape of an RSS 1.0 (RDF) feed: items are siblings of channel. -->
+<rdf:RDF
+ xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+ xmlns="http://purl.org/rss/1.0/"
+ xmlns:dc="http://purl.org/dc/elements/1.1/"
+ xmlns:slash="http://purl.org/rss/1.0/modules/slash/"
+ xmlns:syn="http://purl.org/rss/1.0/modules/syndication/">
+<channel rdf:about="https://example.net/">
+<title>Example Net</title>
+<link>https://example.net/</link>
+<description>Stories that matter to nobody</description>
+<dc:date>2026-11-07T20:37:15+00:00</dc:date>
+<syn:updateBase>1970-01-01T00:00+00:00</syn:updateBase>
+<items>
+ <rdf:Seq>
+  <rdf:li rdf:resource="https://example.net/story/1" />
+  <rdf:li rdf:resource="https://example.net/story/2" />
+ </rdf:Seq>
+</items>
+</channel>
+<item rdf:about="https://example.net/story/1">
+<title>A rock fell from the sky</title>
+<link>https://example.net/story/1</link>
+<description>Scientists found a small rock.</description>
+<dc:creator>editor</dc:creator>
+<dc:date>2026-11-07T19:24:14Z</dc:date>
+<slash:department>rock-on</slash:department>
+</item>
+<item rdf:about="https://example.net/story/2">
+<title>Wind turned on</title>
+<link>https://example.net/story/2</link>
+<description>A third farm runs.</description>
+<dc:creator>editor</dc:creator>
+<dc:date>2026-11-07T18:00:00Z</dc:date>
+</item>
+</rdf:RDF>

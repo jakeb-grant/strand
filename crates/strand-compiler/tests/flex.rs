@@ -272,6 +272,45 @@ fn text_slices_by_characters() {
     assert_eq!(ty("let i = \"ab\".index_of(\"b\")\n", "i"), "int?");
 }
 
+/// (doc-formats) `plain(markup)` is the text `markup:` shows, without its
+/// styles, and `links(markup)` its links in order, as written; `none` is
+/// the text as it is.
+#[test]
+fn text_plain_and_links_read_markup() {
+    let (_, _, inst) = run("let h = \"<p>a &amp; b</p><ul><li>x</li></ul>\"\n\
+         let a = h.plain(html)\n\
+         let b = \"a <b>b</b> Vec<T>\".plain(basic)\n\
+         let c = h.plain(none)\n\
+         let d = \"<a href='/rel'>r</a> <a href=\\\"https://x.org/?a=1&amp;b=2\\\">x</a>\".links(html)\n\
+         let e = \"<a href=x>a</a> <b>b</b>\".links(basic)\n\
+         let f = h.links(none)\n\
+         state n: text? = null\n\
+         let g = n?.plain(html)\n\
+         let i = h.plain(html).contains(\"a & b\")\n\
+         let j = \"caf&eacute;&nbsp;&#8212; ok\".plain(html)\n");
+    assert_eq!(text(&inst, "a"), "a & b\n\n• x");
+    assert_eq!(text(&inst, "b"), "a b Vec<T>");
+    assert_eq!(text(&inst, "c"), "<p>a &amp; b</p><ul><li>x</li></ul>");
+    assert_eq!(
+        get(&inst, "d"),
+        Value::list(vec![
+            Value::text("/rel"),
+            Value::text("https://x.org/?a=1&b=2")
+        ])
+    );
+    assert_eq!(get(&inst, "e"), Value::list(vec![Value::text("x")]));
+    assert_eq!(get(&inst, "f"), Value::list(vec![]));
+    assert_eq!(get(&inst, "g"), Value::Null);
+    assert_eq!(get(&inst, "i"), Value::Bool(true));
+    assert_eq!(text(&inst, "j"), "café — ok");
+    assert_eq!(ty("let a = \"x\".plain(html)\n", "a"), "text");
+    assert_eq!(ty("let a = \"x\".links(html)\n", "a"), "[text]");
+    assert_eq!(
+        ty("state n: text? = null\nlet a = n?.plain(basic)\n", "a"),
+        "text?"
+    );
+}
+
 /// `+` joins two lists of one item type, in a binding and with `+=` in
 /// a handler, so a pure `fn` builds any list (here a range).
 #[test]

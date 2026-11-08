@@ -248,7 +248,8 @@ optional one.
 
 ```
 No Strand dependency:
-  strand-scene            shared vocabulary: ids, geometry, colour, scene protocol, Painter
+  strand-scene            shared vocabulary: ids, geometry, colour, scene protocol, Painter,
+                          key patterns and text markup (shared by checker, VM and render)
   strand-core             the reactive graph; its `ipc` (serde_json) is shared by
                           strand, strand-services and strand-dev
   strand-watch            EventSink, CompositorEvent; portal follow
@@ -816,7 +817,9 @@ and marked truncated), `named_value`, `push_named`, `pause`/`resume`
   lapped, so a dump holds a suffix with every value in it.
 - **Values** are compact JSON typed by the schema or program; a field
   change is `[old, new]` or shorter `{"e": …}` edits, a keyed one
-  `{"d", "r"}` or `{"patch": …}`; a held-back text is `{"~text": N}`;
+  `{"d", "r"}` or `{"patch": …}`, an edit's path naming the n-th of an
+  XML element's repeated name `name.n` as its JSON's array does; a
+  held-back text is `{"~text": N}`;
   (dictionary) a dictionary is an array of `[key, value]` pairs in key
   order, a text key held back as any text is.
 - **Coalescing.** A motion merges into a newest same-surface motion
@@ -1342,6 +1345,15 @@ is being saved, so the idle-wakeup windows hold.
     `NodeEvent::Claim { handler, key }`, which the host hands to
     `Instance::claim`: that claim's handler alone runs, never `route`'s
     bubbling through observers.
+  - **Markup** (doc-formats). `strand_scene::markup::parse(text, level,
+    limit)` is the one reading of a text's `markup:` (`Level::Basic`,
+    `Level::Html`): the shown text, its styled runs (bold, italic,
+    underline, strike, mono, link; ordered, never overlapping) and the
+    links' hrefs as written. Render maps the runs to `TextSpan`s (passing
+    `MAX_TEXT_BYTES` as the limit); the VM's `plain(markup)` and
+    `links(markup)` call it with no limit. The named character references
+    are a generated static table (`scripts/gen-html-entities.py`), since
+    the compiler builds to wasm. Pure, linear in its input, never fails.
   - **Virtualised lists.** On a `list` whose direct child is a `for`,
     logic sets `Prop::RowCount` and `Prop::RowFirst`, and `Create`/
     `Remove` carry `window: true` for rows the window mounts or unmounts
@@ -1744,6 +1756,15 @@ Public interfaces:
   a config broken at boot starts from it; `store_cache()` runs after the
   build is sent on, so the disk write is never on the save-to-pixels
   path (decisions.md m5-open-reload).
+- **Dates from text** (`strand_compiler::vm::clock`, doc-formats):
+  `date_from_text(text, Zone)` and `date_from_number(n, Zone)` (a
+  number read as its digits are; Unix time through the private
+  `date_from_unix`) read a document's date text and numbers into
+  `DateParts` (a date and its hour and minute, if any) in the zone
+  given, which tests fix and `Zone::Local` takes from the system; `is_date(types, r)` says whether `r` is the schema's
+  `Date`, and `date_value(r, parts)` builds one.
+  `instantiate::parse_text` reads a `Date` with them, and the binary's
+  `custom::coerce` reads a number as one.
 - **Diagnostics** (`strand_compiler::diagnostic`): `Diagnostic {
   severity, code, message, labels, help, suggestions }`.
   `Severity::Note` is never a load notice. Editors and the overlay read
@@ -2099,7 +2120,12 @@ text, style, max_width, scale }` → `TextLayout` (size, glyph runs,
 caret stops). `TextStyle` (font, line height, alignment, ellipsis,
 `max_lines`, `spans`) is documented in `strand-text/src/lib.rs`; weight
 picks a face by CSS font matching and synthesises bold only for 600+ on
-a face lighter than 600. Render draws the last delivered layout.
+a face lighter than 600. A `TextSpan` sets a range's weight, italic,
+colour, underline, strikethrough and (doc-formats) font family (a CSS
+list, a generic appended when it names none, as for the style's font);
+each `GlyphRun` carries its span's `underline` and `strike` rects, which
+render paints in the run's colour. Render draws the last delivered
+layout.
 
 Contracts render relies on:
 
@@ -3019,6 +3045,30 @@ itself.
   `strand_auth::Password`s in `Zeroizing` buffers. No-code services
   (`from dbus`, `file`, `dir`, `listen`, `poll`) run on the same
   contract as `custom::Custom`, one store per declaration;
+  (doc-formats) a source's output is a `custom::Document` (`Json`,
+  `Xml` (the root element as `Data`, and the document as written),
+  `Pairs`, `Text`, and `NotXml`, text starting with `<` that is not
+  XML, with why, logged once by its source), read by key path through
+  `Document::get`, the fields' values through `Document::fields(&[FieldSpec])`
+  (a `FieldSpec` whose `text: TextField` the binary sets from the
+  declared type reads an XML fragment as written: one element of text
+  alone, or, for `text`, a document holding none of the fields' keys,
+  the root's own text through a field named `text` not counting; an
+  `Xml` whose written text is `None`, a prolog before its root, is
+  always data), and
+  whole through `Document::into_data` (an action's `-> T`). An XML element is a
+  `Data::Record` whose `ty` is `custom::ELEMENT` (`"<element>"`, which
+  no identifier can be), holding `@attribute`s, then child elements
+  and `#text` runs in document order; `custom::lookup(record, name)`
+  is the one name rule (exact, `@name`, `p:name`, `@p:name`, then an
+  element's text for `text`) used by XML key paths and by the binary's
+  record conversion (a JSON key path stays exact), and `custom::element_text` an element's text
+  content. `custom::xml` bounds what roxmltree is given (depth 128, 64
+  attributes, DTD entities) before it parses; `Data::write_json` writes
+  an element's repeated names as one array; a document is at most
+  `custom::MAX_DOCUMENT` (4 MiB), a larger file refused whole, and
+  `custom::decode_document` (also the binary's for an action's output)
+  turns its bytes into text, windows-1252 under a Latin-1 declaration;
   `Client::restart`, `stop_now` and `unregister` serve their reloads,
   and commands run in their own process group, ended whole.
   Hooks the binary sets: `keyboard::focused` (from
@@ -3052,7 +3102,10 @@ itself.
   `write` refuses a non-`rw` field written whole. An async call made
   while nothing reads the service waits for a reader (decisions.md
   wave4-a3). `CustomHost` serves no-code services (`custom::coerce`
-  to the declared types; a `from listen` service's `line` event).
+  to the declared types, which decide a list or one value and an
+  element's text or its fields, `custom::coerce_noting` also naming
+  the first value inside that did not convert, with its path; a `from
+  listen` service's `line` event).
   No reload waits on a bus (`custom::dbus_check`).
   `services::set_text` is `strand set`
   (a signed number steps from the current value). `Composite` routes by

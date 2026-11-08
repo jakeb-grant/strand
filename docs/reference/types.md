@@ -260,7 +260,10 @@ Keyed by `id`.
 
 ### `Date`
 
-A date and time of day, such as `clock.today`.
+A date and time of day, such as `clock.today`. Filled from a document it
+also reads RFC 3339 / ISO 8601, RFC 2822, `YYYYMMDD` and Unix time
+(seconds to nanoseconds, by its count of digits), from text or a number alike;
+prefer `Date?` where a source may leave it out.
 
 | Field | Type | |
 | --- | --- | --- |
@@ -863,7 +866,7 @@ A variant is written bare where its enum is expected (`edge: top`).
 | `Keyboard` | `none`, `on_demand`, `exclusive` |
 | `Layer` | `background`, `bottom`, `top`, `overlay` |
 | `Loop` | `none`, `track`, `playlist`. What a media player repeats: nothing, the track or the playlist (MPRIS `LoopStatus`: `None`, `Track`, `Playlist`). |
-| `Markup` | `none`, `basic` |
+| `Markup` | `none`, `basic`, `html`. How a `text` reads tags in its text: `none` shows them; `basic` reads notification markup (b, i, u, a, img alt; other tags stay text); `html` reads an HTML fragment (blocks as lines, lists, styles; other tags, scripts and styles dropped). |
 | `OutputTransform` | `normal`, `rotate_90`, `rotate_180`, `rotate_270`, `flipped`, `flipped_90`, `flipped_180`, `flipped_270`. An output's rotation and flip, as `wl_output` (and niri) name them: counter-clockwise, so sway's clockwise `transform 90` is `rotate_270`; `flipped_90` is flipped about the vertical axis, then rotated 90 degrees. |
 | `Place` | `flow`, `absolute` |
 | `PopupAnchor` | `pointer`. A popup opened where the press that opened it went down. |

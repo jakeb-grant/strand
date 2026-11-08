@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Hand-written in the shape of a GPX 1.0 track. -->
+<gpx version="1.0" creator="hand" xmlns="http://www.topografix.com/GPX/1/0">
+<time>2010-08-06T10:36:35Z</time>
+<bounds minlat="45.735" minlon="14.288" maxlat="45.795" maxlon="14.377"/>
+<wpt lat="45.772163216" lon="14.357652292">
+  <name>001</name>
+  <cmt>05-AUG-10 16:58:37</cmt>
+  <time>2010-08-05T14:23:59Z</time>
+</wpt>
+<trk><name>walk</name><trkseg>
+<trkpt lat="45.772" lon="14.357"><ele>301.5</ele><time>2010-08-05T14:23:59Z</time></trkpt>
+<trkpt lat="45.773" lon="14.358"><ele>302.0</ele><time>2010-08-05T14:24:29Z</time></trkpt>
+</trkseg></trk>
+</gpx>

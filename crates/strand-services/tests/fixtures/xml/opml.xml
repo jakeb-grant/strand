@@ -1,0 +1,14 @@
+<?xml version='1.0' encoding='UTF-8' ?>
+<!-- Hand-written in the shape of a feed reader's OPML export. -->
+<opml version="1.0">
+	<head>
+		<title>Export</title>
+	</head>
+	<body>
+		<outline text="Tech" title="Tech">
+			<outline text="Tools &amp; tricks" title="Tools" xmlUrl="https://example.org/tools.rss" type="rss" />
+			<outline text="Dev&apos;s log" xmlUrl="https://example.org/dev.atom" type="rss" />
+		</outline>
+		<outline text="Loose" xmlUrl="https://example.org/loose.rss" type="rss" />
+	</body>
+</opml>

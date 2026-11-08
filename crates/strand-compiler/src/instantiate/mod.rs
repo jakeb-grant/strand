@@ -1116,7 +1116,8 @@ enum PathStep {
     Key(Value),
 }
 
-/// A value of type `ty` written as text (`strand set`).
+/// A value of type `ty` written as text (`strand set`; a document's
+/// text through the binary's `coerce`).
 pub fn parse_text(types: &crate::ty::TypeTable, ty: &crate::ty::Ty, text: &str) -> Option<Value> {
     use crate::ty::{Prim, Ty};
     use crate::vm::Num;
@@ -1130,6 +1131,13 @@ pub fn parse_text(types: &crate::ty::TypeTable, ty: &crate::ty::Ty, text: &str) 
     let number = |t: &str, suffix: &str| t.strip_suffix(suffix)?.trim().parse::<f64>().ok();
     match ty {
         Ty::Enum(e) => types.enum_(*e).variant(text).map(|v| Value::Enum(*e, v)),
+        // (doc-formats) The schema's `Date` from date text (RFC 3339,
+        // RFC 2822, Unix time …) in the local zone: what a document's
+        // field, `strand set` and `strand call` read.
+        Ty::Record(r) if crate::vm::clock::is_date(types, *r) => {
+            let parts = crate::vm::clock::date_from_text(text, crate::vm::clock::Zone::Local)?;
+            Some(crate::vm::clock::date_value(*r, parts))
+        }
         Ty::Prim(p) => Some(match p {
             Prim::Bool => match text {
                 "true" => Value::Bool(true),

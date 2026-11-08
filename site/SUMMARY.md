@@ -27,6 +27,7 @@
 - [A bar with a calendar popup](how-to/calendar-popup.md)
 - [An app launcher](how-to/launcher.md)
 - [A notification stack](how-to/notifications.md)
+- [Showing HTML text](how-to/html-text.md)
 - [A volume and brightness OSD](how-to/osd.md)
 - [A morphing island](how-to/island.md)
 - [A theme from your wallpaper](how-to/wallpaper-theme.md)
@@ -35,6 +36,7 @@
 - [A settings file](how-to/settings-file.md)
 - [Remembering things by key](how-to/remembering-by-key.md)
 - [A D-Bus method or an action](how-to/dbus-and-actions.md)
+- [Data from the web and from tools](how-to/data-from-the-web.md)
 - [Keyboard shortcuts](how-to/keys.md)
 - [Monitor profiles](how-to/monitor-profiles.md)
 

@@ -1,0 +1,22 @@
+<!DOCTYPE node PUBLIC
+"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd" [
+  <!ENTITY ERROR_GENERAL "org.example.Device.GeneralError">
+]>
+<node name="/" xmlns:doc="http://www.freedesktop.org/dbus/1.0/doc.dtd">
+  <interface name="org.example.Device">
+    <doc:doc>
+      <doc:description>
+        <doc:para>
+          Found through the <doc:tt>org.example.Power</doc:tt> object
+          with <doc:ref type="method" to="Power.Enumerate">Enumerate</doc:ref>.
+        </doc:para>
+      </doc:description>
+    </doc:doc>
+    <method name="Refresh">
+      <annotation name="org.example.Error" value="&ERROR_GENERAL;"/>
+    </method>
+    <property name="Percentage" type="d" access="read"/>
+    <property name="State" type="u" access="read"/>
+  </interface>
+</node>

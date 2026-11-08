@@ -733,13 +733,115 @@ monitor, the keyboard always).
   whenever an entry is added, removed, renamed or rewritten (changes
   within 50 ms listed once, and a directory that keeps changing at
   most every 500 ms), never on a clock. A directory that does not exist yet reads as no
-  document (every field its default) until it is made. `File` is the
-  one builtin record (with the `Date` it holds) a service's fields may
-  hold besides your own `type`s.
+  document (every field its default) until it is made. `File` and
+  `Date` are the builtin records a service's fields may hold besides
+  your own `type`s.
+- (doc-formats) A `Date` filled from a document (a field, a field of a
+  declared `type` at any depth, a list item, a listen line, `-> Date`)
+  reads a record of its fields or date text, trimmed, the first form
+  that parses winning: digit text by its count of integer digits, 8
+  as `YYYYMMDD`, 12 as `YYYYMMDDHHMM` and 14 as `YYYYMMDDHHMMSS` (the
+  wall time as written), 9 to 11 as Unix seconds, 13 as milliseconds,
+  16 as microseconds and 19 as nanoseconds, any other count no date;
+  RFC 3339 / ISO 8601 with a zone (also without seconds, with `+hhmm`
+  or `+hh`, or `20261107T195510Z`); RFC 2822, a leading weekday
+  ignored when it is wrong or written in full; a naive `YYYY-MM-DD[T
+  ]HH:MM[:SS]` or `YYYYMMDDTHHMM[SS]`, the wall time as written;
+  `YYYY-MM-DD`, hour and minute null. A trailing ` UTC` reads as `Z`. A number reads as its digits written out do, so `20261107`
+  printed alone (which a document reads as a JSON number) is 7
+  November 2026, and `2026` or `0` is no date. An instant is
+  moved to the local zone and cut to the minute; one whose wall time
+  falls outside the dates Strand holds is no date. Other text does not
+  convert: the default and one report, or null for `Date?`.
+  `strand set` and `strand call` read date text the same way. A
+  `key=value` line's key starts with no digit, so a date or a time
+  printed alone is text, not a pair.
+- (doc-formats) **Documents.** A file, a poll's output, a listen line
+  and an action's output are each one document: JSON when it parses as
+  JSON; else XML when, a UTF-8 BOM removed and trimmed, it starts with
+  `<` and parses as XML; else `key=value` (or `key: value`) lines when
+  every line is one (blank and `#` lines aside); else text. Text
+  starting with `<` that is not XML (an HTML page) is text, never pairs,
+  and the service logs why once, until a document is something else. XML nested deeper than 128 elements,
+  with more than 64 attributes on an element, or with a DTD declaring a
+  parameter entity, an external entity or an entity whose value holds
+  `&`, `%` or `<`, or whose entities expand past the document's size
+  cap, is not read as XML; a DTD is otherwise allowed, and nothing
+  outside the document is ever fetched.
+- A document is at most 4 MiB: a file larger is not read (cut short it
+  would not be the document) and its fields keep their last values,
+  logged once per size; a command printing more is ended and its
+  output ignored; a longer listen line is skipped. Bytes that are not
+  UTF-8 are read as windows-1252 when an XML declaration at the start
+  names ISO-8859-1, Latin-1, windows-1252 or US-ASCII (as browsers
+  do), and otherwise with U+FFFD in place of what is not UTF-8.
+- An XML document's root element is the document (its name is not a
+  key segment). An element with neither attributes nor child elements
+  is its text (CDATA and entities decoded, ends trimmed, inner line
+  breaks kept); any other is a record of its attributes (`@name`), then
+  its child elements and non-blank text runs (`#text`) in document
+  order. Names keep the prefix the document writes (`dc:creator`).
+- A name `n` in a key path or a declared type's field finds, in order,
+  the first of: child elements named exactly `n`; the attribute `@n`;
+  child elements `p:n` with any prefix; attributes `@p:n`; and, for
+  `text`, the element's own text. A key path's first segment is searched
+  for depth first when the root lacks it (`= item` finds RSS's and
+  RSS 1.0's items alike), and the first element found holding it gives
+  its matches (a GPX track's points across two `<trkseg>`s are read as
+  `[Seg]`, each with its `trkpt`s); each later one is read in the first match of
+  the one before (a number picks that match); the last segment's
+  matches are the value, several of them a list. A string key (`=
+  "dc:creator"`, `= "@state"`, `= "#text"`) is one exact segment.
+- The declared type decides, for every document: a list type over one
+  value is a list of it if it converts (else it does not convert),
+  text of several values (several lines, or a further word that is
+  itself a number) only as a list of `text` or `path` or of a record
+  that reads text (a command's `22\n80\n443`, or `pidof`'s
+  `1234 5678`, read as `[int]` does not convert, where a number with a
+  unit would read the first alone; `45 °C` is still one item), a
+  record (a JSON object, an element) only when it holds one of the item
+  type's fields, so an API's error object read whole as `[T]` (an
+  action's `-> [T]`, or a key that finds the object) is reported
+  rather than one item of defaults; a missing key `[]`, with no report; blank text (an
+  empty element) read as a list of anything but `text` is `[]`, and
+  read as a record type other than `Date` its fields' defaults; a single type over a list reads its first item; an
+  XML element read as text, a number, a bool, an enum, a path or a
+  `Date` is its text (its own and its descendants' in document order;
+  where it has child elements, whitespace collapsed and the runs,
+  trimmed, joined by a space except before closing and after opening
+  punctuation, so `H<sub>2</sub>O` reads `H 2 O`), and one with no
+  text does not convert; a JSON object is never text; a record type
+  with a field named `text` reads text (an element of text alone,
+  `<guid>x</guid>` beside `<guid isPermaLink="false">x</guid>`) as
+  that field, its other fields absent, unless that field's type is
+  a record (`type Node { text: Node? }`), which does not read text; `length`,
+  `angle` and `duration` read plain number text as a number (px, deg,
+  seconds); a record's fields are found by the lookup above, a list
+  field taking every match; blank text read as an optional type other
+  than `text` is null. A value inside a field's (a list's item, a
+  record's field) that held something and does not convert is reported
+  once with its path (`` `news.posts`: `item[0].pubDate` holds … ``),
+  the item left out or the field its default; the whole field failing
+  later replaces that report.
+- A field typed `text` reads an XML fragment as written, markup and
+  all, when the document is one element of text alone (`<b>CPU</b>`)
+  or, for `text` but not `text?`, when it holds nothing at the key of
+  any of the service's fields (an HTML fragment in a file, `<span
+  foreground="red">92%</span>` printed by a script; the root's own text
+  read by a field named `text` holds nothing): markup a source
+  prints stays markup for `markup:` (section 6.2), as it does in a text
+  document. A document that holds some field's key is data, so a
+  `text` field whose key it lacks is absent there (`""` for a file or a
+  poll, and a `from listen` line leaves the field as it was); a
+  document with anything before its root element (an XML declaration,
+  a DOCTYPE, a comment) is data and never read as written. `text?`
+  reads null for a key the document lacks, as with JSON; other types
+  read the element tree; an action's `-> text` is what it printed.
 - A `from listen` service has one event, `line(doc)`: each line the
   command prints, `doc` holding that line's fields alone (the service's
   own record: a field the line leaves out is null when its type is
-  optional, its type's default otherwise). Lines printed faster than a
+  optional, its type's default otherwise, and a required `text` field
+  holds the line as written when the line holds no field at all). Lines printed faster than a
   frame are merged into the fields but each is still one `line` event,
   queued as `notifications.received` is, so `on player.line(doc)` sees
   every line. A line handler reads the service: the command runs while
@@ -850,8 +952,11 @@ monitor, the keyboard always).
   `File` or `Date` (section 5.6; decisions.md services-round), or a list
   of these, or any of these optional; any other (a live handle such as
   `Window` or `Canvas`, a font) is a load error. A record or list is read from
-  JSON, a record also from `key=value` lines, as section 5.6 reads a
-  document; nothing printed is `null` for an optional `T`. The
+  JSON or XML (the root element as `T`), a record also from `key=value`
+  lines, as section 5.6 reads a document; nothing printed is `null` for
+  an optional `T`. An action has no key path, so `-> [T]` over XML
+  reads the root as one item, and a feed's entries need a type holding
+  them (`type Feed { entry: [Entry] }` and `-> Feed`). The
   parameters, the command and `permit exec` are as above.
   - In a binding (`let r = calc(query)`, `text calc(query) ?? "…"`) the
     call is a load, as `apps.search(q)` is: it runs when first read,
@@ -869,7 +974,7 @@ monitor, the keyboard always).
     no one keeps (neither awaited nor stored) is ended at the end of
     that step.
   - Every call runs at once on a thread of its own, never queued behind
-    another. Its stdout is read, at most 1 MiB (more ends it, an error);
+    another. Its stdout is read, at most 4 MiB (more ends it, an error);
     stderr is strand's own log. It has 10 s, as a `from poll` command
     has: one still running then (or still holding its output open, a
     child it left in the background) has its process group ended as a
@@ -998,6 +1103,13 @@ monitor, the keyboard always).
 - **Inherited props** (`font`, `weight`, `color`) set on any node
   apply to every descendant that does not set its own. These three are
   the only inherited props.
+- **Markup** (decisions.md doc-formats). A `text`'s `markup:` says how
+  tags in its text show: `none` (the default) as written; `basic` as the
+  freedesktop notification markup (`b`, `i`, `u`, `a`, `img`'s alt, other
+  tags kept as text); `html` as an HTML fragment (blocks as line breaks,
+  lists marked, inline styles, links in `$accent`, scripts, styles and
+  unknown tags dropped). Both decode HTML's character references. An
+  `input` ignores it.
 
 ### 6.3 Conditional style
 
@@ -1875,6 +1987,11 @@ monitor, the keyboard always).
   in order, enums by name, colours as `"#rrggbb"` (`"#rrggbbaa"` when
   translucent), durations in milliseconds (docs/reference/functions.md; decisions.md json-fn), for
   a file a tool reads or an action's one argument.
+- `t.plain(m)` is the text `markup: m` shows, without its styles, and
+  `t.links(m)` its links' targets in order, as written, both read by the
+  one converter the renderer uses; `m` is a `Markup` and required, and
+  `none` gives the text unchanged and no links (decisions.md
+  doc-formats).
 
 A bare number where a length is expected is logical pixels: `width: 90`
 is `width: 90px`. Where an angle is expected it is degrees, and where a

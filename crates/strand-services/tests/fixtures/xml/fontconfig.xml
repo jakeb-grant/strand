@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<!-- A trimmed fonts.conf. -->
+<fontconfig>
+	<description>Default configuration file</description>
+	<dir>/usr/share/fonts</dir>
+	<dir prefix="xdg">fonts</dir>
+	<match target="pattern">
+		<test qual="any" name="family"><string>mono</string></test>
+		<edit name="family" mode="assign" binding="same"><string>monospace</string></edit>
+	</match>
+	<cachedir>/var/cache/fontconfig</cachedir>
+</fontconfig>

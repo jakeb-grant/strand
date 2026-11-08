@@ -3327,6 +3327,8 @@ service early {
             inst: Instance,
             build: Build,
             now: Duration,
+            /// The scene every tick's diff built, for what a test shows.
+            scene: SceneMirror,
         }
 
         fn build(src: &str, prev: Option<&Build>) -> Build {
@@ -3361,6 +3363,7 @@ service early {
                     inst,
                     build: b,
                     now: Duration::ZERO,
+                    scene: SceneMirror::new(),
                 };
                 live.tick(Duration::ZERO);
                 live
@@ -3371,6 +3374,7 @@ service early {
                 self.now += by;
                 let u = self.inst.tick(self.now);
                 assert!(u.errors.is_empty(), "{:?}", u.errors);
+                self.scene.apply(&u.diff).unwrap();
             }
 
             fn value(&self, service: &str, field: &str) -> Value {
@@ -3666,13 +3670,15 @@ service early {
                 first[0].message
             );
             // Another value that does not convert: not reported again.
-            save(&file, r##"{"level": [1], "tint": "#ff0000"}"##);
+            // (doc-formats: a list now reads as its first item, so an
+            // object stands in for it.)
+            save(&file, r##"{"level": {"n": 1}, "tint": "#ff0000"}"##);
             live.until("the second save read", |l| {
                 l.real
                     .custom
                     .debug_state(&l.rt)
                     .iter()
-                    .any(|s| s.contains("List"))
+                    .any(|s| s.contains("Record"))
             });
             assert_eq!(live.value("m", "lvl"), Value::int(0));
             assert!(mismatches(&live).is_empty());
@@ -3733,6 +3739,516 @@ service early {
             let stopped = mismatches(&live);
             assert_eq!(stopped.len(), 1, "{stopped:?}");
             assert!(stopped[0].resolved && stopped[0].message == back[0].message);
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// (doc-formats) The site's recipes (site/how-to/
+        /// data-from-the-web.md), copied here so the page cannot drift
+        /// from what is tested.
+        const POST: &str = "type Post { title: text?; link: text; pubDate: Date?; date: Date?; description: text?; creator: text?; category: [text] }\n";
+        const ENTRY: &str = "type Link { href: text; rel: text? }\ntype Entry { title: text; id: text; updated: Date?; published: Date?; link: [Link]; summary: text?; content: text? }\n";
+
+        fn fixture(name: &str) -> String {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../strand-services/tests/fixtures/xml")
+                .join(name);
+            std::fs::read_to_string(path).unwrap()
+        }
+
+        fn items(v: &Value) -> Vec<Value> {
+            match v {
+                Value::List(l) => l.iter().cloned().collect(),
+                v => panic!("not a list: {v:?}"),
+            }
+        }
+
+        fn year(live: &Live, d: Option<&Value>) -> Option<Value> {
+            let types = &live.build.program.types;
+            d.and_then(|d| d.field(types, "year")).cloned()
+        }
+
+        /// (doc-formats) An RSS 2.0 file read into a declared list:
+        /// RFC 2822 dates, `dc:creator` by its local name, one category
+        /// or several, a missing title null; a rewrite in place is
+        /// followed.
+        #[test]
+        fn an_rss_file_fills_a_typed_list_with_dates() {
+            let dir = temp("rss");
+            let file = dir.join("news.xml");
+            let rss = fixture("rss.xml");
+            save(&file, &rss);
+            let src = format!(
+                "{POST}service news from file \"{}\" {{ posts: [Post] = item; title: text = channel.title }}\nbar B {{ text news.title }}\n",
+                file.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("the feed read", |l| {
+                l.value("news", "title") == Value::text("Example Linux: Recent news")
+            });
+            let types = live.build.program.types.clone();
+            let posts = items(&live.value("news", "posts"));
+            assert_eq!(posts.len(), 3);
+            let f = |p: &Value, n: &str| p.field(&types, n).cloned();
+            assert_eq!(
+                f(&posts[0], "title"),
+                Some(Value::text("Update to libfoo ≥ 2.1 before upgrading"))
+            );
+            assert_eq!(
+                f(&posts[1], "title"),
+                Some(Value::text("Bar & baz <now> merged"))
+            );
+            assert_eq!(f(&posts[2], "title"), Some(Value::Null), "no title");
+            assert_eq!(f(&posts[0], "creator"), Some(Value::text("Ada Example")));
+            assert_eq!(
+                year(&live, posts[0].field(&types, "pubDate")),
+                Some(Value::int(2026))
+            );
+            let month = posts[2]
+                .field(&types, "pubDate")
+                .and_then(|d| d.field(&types, "month"))
+                .cloned();
+            assert_eq!(month, Some(Value::int(5)));
+            assert_eq!(f(&posts[0], "date"), Some(Value::Null));
+            assert_eq!(
+                f(&posts[0], "category"),
+                Some(Value::list(vec![Value::text("security")]))
+            );
+            assert_eq!(
+                f(&posts[1], "category"),
+                Some(Value::list(vec![
+                    Value::text("tools"),
+                    Value::text("packaging")
+                ]))
+            );
+            assert_eq!(f(&posts[2], "category"), Some(Value::list(vec![])));
+            assert!(
+                f(&posts[0], "description")
+                    .and_then(|d| d.as_text().map(|t| t.starts_with("<p>The <a href")))
+                    .unwrap_or(false),
+                "escaped HTML is its text"
+            );
+            // Rewritten in place (not replaced).
+            std::fs::write(&file, rss.replace("Example Linux: Recent news", "Renamed")).unwrap();
+            live.until("the rewrite followed", |l| {
+                l.value("news", "title") == Value::text("Renamed")
+            });
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// (doc-formats) An Atom feed a command prints, polled: entries
+        /// with their links as a list of records (the alternate one found
+        /// by `rel`, not by its place) and RFC 3339 dates.
+        #[test]
+        fn an_atom_poll_reads_entries_with_links_and_dates() {
+            let dir = temp("atom");
+            let file = dir.join("releases.atom");
+            save(&file, &fixture("atom.xml"));
+            let src = format!(
+                "{ENTRY}permit exec \"cat\"\nservice rel from poll [\"cat\", \"{}\"] every 30s {{ entries: [Entry] = entry; title: text }}\nexport let alt = rel.entries.first?.link?.find(l => (l.rel ?? \"alternate\") == \"alternate\")?.href ?? \"none\"\nbar B {{ text alt }}\n",
+                file.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("the feed polled", |l| {
+                l.value("rel", "title") == Value::text("Release notes from tool")
+            });
+            let types = live.build.program.types.clone();
+            let entries = items(&live.value("rel", "entries"));
+            assert_eq!(entries.len(), 2);
+            let links = items(entries[0].field(&types, "link").unwrap());
+            assert_eq!(links.len(), 2);
+            assert_eq!(links[1].field(&types, "rel"), Some(&Value::text("related")));
+            assert_eq!(
+                year(&live, entries[0].field(&types, "updated")),
+                Some(Value::int(2026))
+            );
+            assert_eq!(entries[0].field(&types, "published"), Some(&Value::Null));
+            assert!(matches!(
+                entries[1].field(&types, "published"),
+                Some(Value::Record(..))
+            ));
+            assert_eq!(
+                live.inst.get("svc.alt").unwrap(),
+                Value::text("https://github.com/example/tool/releases/tag/v0.57.1")
+            );
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// (doc-formats) The site's news list ("Data from the web and from
+        /// tools"): an RSS file and an Atom file put into one `Story` type,
+        /// joined with `+` and sorted newest first by their dates; a
+        /// summary's HTML read by `plain(html)` and `links(html)` in
+        /// logic and shown by a `text` with `markup: html`; releases
+        /// searched by their HTML content. `STORY` is the page's, less its
+        /// RSS 1.0 feed.
+        #[test]
+        fn a_news_list_from_two_feeds_shows_and_searches_html_summaries() {
+            const STORY: &str = "type Story { title: text; link: text; when: Date?; summary: text? }\n\
+                let news = (arch.posts.map(p => Story(title: p.title ?? p.link, link: p.link, when: p.pubDate ?? p.date, summary: p.description))\n\
+                  + hypr.entries.map(e => Story(title: e.title, link: e.link.find(l => (l.rel ?? \"alternate\") == \"alternate\")?.href ?? e.id, when: e.updated ?? e.published, summary: e.content ?? e.summary)))\n\
+                  .sort_by(s => s.when).reverse()\n\
+                let nvidia = hypr.entries.filter(e => (e.content?.plain(html) ?? \"\").lower().contains(\"nvidia\"))\n";
+            let dir = temp("news");
+            let rss = dir.join("news.xml");
+            let atom = dir.join("releases.atom");
+            save(&rss, &fixture("rss.xml"));
+            save(&atom, &fixture("atom.xml"));
+            let src = format!(
+                "{POST}{ENTRY}{STORY}service arch from file \"{}\" {{ posts: [Post] = item }}\n\
+                 service hypr from file \"{}\" {{ entries: [Entry] = entry }}\n\
+                 export let titles = news.map(s => s.title)\n\
+                 export let first = news.first?.summary?.plain(html)\n\
+                 export let libfoo = news.find(s => s.title.contains(\"libfoo\"))?.summary?.plain(html)\n\
+                 export let hrefs = news.map(s => (s.summary ?? \"\").links(html)).find(l => l.len > 0) ?? []\n\
+                 export let found = nvidia.map(e => e.title)\n\
+                 bar B {{ col {{ for s in news.take(2) key s.link {{ text s.summary ?? \"\" {{ markup: html; max_lines: 3 }} }} }} }}\n",
+                rss.display(),
+                atom.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until(
+                "both feeds read",
+                |l| matches!(l.inst.get("svc.titles"), Ok(Value::List(t)) if t.len() == 5),
+            );
+            let titles = items(&live.inst.get("svc.titles").unwrap());
+            assert_eq!(
+                titles,
+                [
+                    "Bar & baz <now> merged",
+                    "v0.57.1",
+                    "Update to libfoo ≥ 2.1 before upgrading",
+                    "v0.57.0",
+                    "https://example.org/news/untitled/",
+                ]
+                .map(Value::text),
+                "newest first across both feeds"
+            );
+            assert_eq!(
+                live.inst.get("svc.first").unwrap(),
+                Value::text("Two tools became one.")
+            );
+            assert_eq!(
+                live.inst.get("svc.libfoo").unwrap(),
+                Value::text("The libfoo package moved.\n\nRun the upgrade twice.")
+            );
+            assert_eq!(
+                live.inst.get("svc.hrefs").unwrap(),
+                Value::list(vec![Value::text("https://example.org/libfoo")])
+            );
+            assert_eq!(
+                live.inst.get("svc.found").unwrap(),
+                Value::list(vec![Value::text("v0.57.1")])
+            );
+            // The summaries reach render as written, with `markup: html`
+            // (render's `plain_matches_what_markup_shows` holds what it
+            // shows to `plain(html)`).
+            let shown: Vec<(String, Option<strand_scene::PropValue>)> = live
+                .scene
+                .of_kind(strand_scene::NodeKind::Text)
+                .into_iter()
+                .filter_map(|n| match live.scene.prop(n, strand_scene::Prop::Text) {
+                    Some(strand_scene::PropValue::Text(t)) => Some((
+                        t.clone(),
+                        live.scene.prop(n, strand_scene::Prop::Markup).cloned(),
+                    )),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                shown,
+                [
+                    "<p>Two tools became one.</p>",
+                    "<p>A small update.</p>\n<ul><li>fix black screens on nvidia</li></ul>",
+                ]
+                .map(|t| (
+                    t.to_string(),
+                    Some(strand_scene::PropValue::Keyword("html".into()))
+                ))
+            );
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// (doc-formats) A file grown past the 4 MiB cap keeps its last
+        /// value (never a value read from a cut-short document); back
+        /// under it, it is read again. A Latin-1 feed reads its accents.
+        #[test]
+        fn a_file_over_the_cap_keeps_its_value_and_latin1_reads() {
+            let dir = temp("over");
+            let file = dir.join("news.xml");
+            save(&file, "<rss><channel><title>first</title></channel></rss>");
+            let src = format!(
+                "service news from file \"{}\" {{ title: text = channel.title }}\nbar B {{ text news.title }}\n",
+                file.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("the first read", |l| {
+                l.value("news", "title") == Value::text("first")
+            });
+            // Over the cap: cut at it, the document would end inside a
+            // comment after a new title.
+            let mut big = "<rss><channel><title>cut</title><!--".to_string();
+            big.push_str(&" ".repeat(strand_services::custom::MAX_DOCUMENT));
+            big.push_str("--></channel></rss>");
+            std::fs::write(&file, &big).unwrap();
+            let read_again = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            live.until("a second passed", |_| {
+                std::time::Instant::now() > read_again
+            });
+            assert_eq!(live.value("news", "title"), Value::text("first"));
+            let mut latin = b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><rss><channel><title>Caf\xe9 \x93Ola\x94</title></channel></rss>".to_vec();
+            latin.push(b'\n');
+            std::fs::write(&file, &latin).unwrap();
+            live.until("the Latin-1 feed read", |l| {
+                l.value("news", "title") == Value::text("Café “Ola”")
+            });
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// (doc-formats) A line a `from listen` command prints in XML is a
+        /// document, attributes and children by name.
+        #[test]
+        fn a_listen_line_of_xml_is_a_document() {
+            let src = "permit exec \"sh\"\nservice ev from listen [\"sh\", \"-c\", \"echo '<event kind=\\\"added\\\"><n>3</n><when>1794084315</when></event>'; sleep 30\"] { kind: text; n: int; when: Date? }\nbar B { text ev.kind }\n";
+            let mut live = Live::boot(src, Buses::none());
+            live.until("the line read", |l| l.value("ev", "n") == Value::int(3));
+            assert_eq!(live.value("ev", "kind"), Value::text("added"));
+            assert_eq!(
+                year(&live, Some(&live.value("ev", "when"))),
+                Some(Value::int(2026))
+            );
+        }
+
+        /// (doc-formats) An XML listen line is a partial update, as a JSON
+        /// one is: a `text` field the line leaves out keeps its value
+        /// rather than taking the line as written.
+        #[test]
+        fn a_listen_line_of_xml_updates_only_its_fields() {
+            let src = "permit exec \"sh\"\nservice ev from listen [\"sh\", \"-c\", \"echo '<s cpu=\\\"5\\\" label=\\\"CPU\\\"/>'; sleep 0.3; echo '<s cpu=\\\"7\\\"/>'; sleep 30\"] { cpu: int; label: text }\nbar B { text ev.label }\n";
+            let mut live = Live::boot(src, Buses::none());
+            live.until("both lines read", |l| l.value("ev", "cpu") == Value::int(7));
+            assert_eq!(live.value("ev", "label"), Value::text("CPU"));
+        }
+
+        /// (doc-formats) A JSON API's RFC 3339 dates (GitHub's releases,
+        /// a top-level array) read as `Date`s.
+        #[test]
+        fn a_json_api_s_rfc3339_dates_read_as_dates() {
+            let dir = temp("gh");
+            let file = dir.join("releases.json");
+            save(
+                &file,
+                r#"[{"tag_name": "v0.52.1", "published_at": "2026-11-03T09:47:31Z", "draft": false},
+                    {"tag_name": "v0.52.0", "published_at": "2026-10-20T08:00:00Z", "draft": false}]"#,
+            );
+            let src = format!(
+                "type Release {{ tag_name: text; published_at: Date?; html_url: text }}\nservice gh from file \"{}\" {{ releases: [Release] }}\nexport let newest = gh.releases.sort_by(r => r.published_at).last?.tag_name ?? \"none\"\nbar B {{ text newest }}\n",
+                file.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("the releases read", |l| {
+                items(&l.value("gh", "releases")).len() == 2
+            });
+            let types = live.build.program.types.clone();
+            let releases = items(&live.value("gh", "releases"));
+            let month = releases[1]
+                .field(&types, "published_at")
+                .and_then(|d| d.field(&types, "month"))
+                .cloned();
+            assert_eq!(month, Some(Value::int(10)));
+            assert_eq!(live.inst.get("svc.newest").unwrap(), Value::text("v0.52.1"));
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// (doc-formats) Not only feeds: RDF items beside the channel
+        /// (the RSS recipe's type), ECB's nested `Cube`s with a date-only
+        /// time and rates in attributes, OPML's recursive outlines, GPX's
+        /// track points.
+        #[test]
+        fn rdf_ecb_opml_and_gpx_read_into_declared_types() {
+            let dir = temp("xmls");
+            for name in ["rdf.xml", "ecb.xml", "opml.xml", "gpx.xml"] {
+                save(&dir.join(name), &fixture(name));
+            }
+            let at = |n: &str| dir.join(n).display().to_string();
+            let src = format!(
+                "{POST}type Rate {{ currency: text; rate: float }}\ntype RateDay {{ time: Date?; Cube: [Rate] }}\ntype Outline {{ text: text; xmlUrl: text?; outline: [Outline] }}\ntype Point {{ lat: angle; lon: angle; ele: float; time: Date }}\n\
+                 service rdf from file \"{}\" {{ posts: [Post] = item }}\n\
+                 service ecb from file \"{}\" {{ day: RateDay = Cube.Cube }}\n\
+                 service opml from file \"{}\" {{ feeds: [Outline] = body.outline }}\n\
+                 service gpx from file \"{}\" {{ points: [Point] = trkpt }}\n\
+                 bar B {{ text join(\" \", rdf.posts.len, ecb.day.Cube.len, opml.feeds.len, gpx.points.len) }}\n",
+                at("rdf.xml"),
+                at("ecb.xml"),
+                at("opml.xml"),
+                at("gpx.xml"),
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("all four read", |l| {
+                items(&l.value("rdf", "posts")).len() == 2
+                    && !items(&l.value("opml", "feeds")).is_empty()
+                    && items(&l.value("gpx", "points")).len() == 2
+                    && matches!(l.value("ecb", "day"), Value::Record(..))
+            });
+            let types = live.build.program.types.clone();
+            let f = |v: &Value, n: &str| v.field(&types, n).cloned().unwrap();
+            let posts = items(&live.value("rdf", "posts"));
+            assert_eq!(
+                f(&posts[0], "title"),
+                Value::text("A rock fell from the sky")
+            );
+            assert_eq!(f(&posts[0], "creator"), Value::text("editor"));
+            assert_eq!(f(&posts[0], "pubDate"), Value::Null);
+            assert_eq!(
+                year(&live, posts[0].field(&types, "date")),
+                Some(Value::int(2026))
+            );
+            let day = live.value("ecb", "day");
+            assert_eq!(f(&f(&day, "time"), "hour"), Value::Null, "a date alone");
+            assert_eq!(f(&f(&day, "time"), "day"), Value::int(6));
+            let rates = items(&f(&day, "Cube"));
+            assert_eq!(rates.len(), 3);
+            assert_eq!(f(&rates[0], "currency"), Value::text("USD"));
+            assert_eq!(f(&rates[0], "rate"), Value::float(1.1165));
+            let feeds = items(&live.value("opml", "feeds"));
+            assert_eq!(feeds.len(), 2);
+            assert_eq!(items(&f(&feeds[0], "outline")).len(), 2);
+            assert_eq!(
+                f(&feeds[1], "xmlUrl"),
+                Value::text("https://example.org/loose.rss")
+            );
+            let points = items(&live.value("gpx", "points"));
+            assert_eq!(
+                f(&points[0], "lon"),
+                Value::Num(14.357, strand_compiler::vm::Num::Deg)
+            );
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// (doc-formats) An HTML page served where a feed was expected is
+        /// text: a list of records over it does not convert, and that is
+        /// reported, never a silent empty list. A date inside an item
+        /// that does not convert is reported with its path.
+        #[test]
+        fn a_page_that_is_not_xml_is_reported() {
+            let dir = temp("notxml");
+            let file = dir.join("feed.xml");
+            save(
+                &file,
+                "<!doctype html>\n<html><head><title>Making sure you're not a bot!</title></head><body><p>Loading<br>…</p></body></html>\n",
+            );
+            let src = format!(
+                "{POST}service news from file \"{}\" {{ posts: [Post] = item }}\nbar B {{ text join(\" \", news.posts.len) }}\n",
+                file.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            let report = |l: &Live| -> Vec<strand_services::ServiceDiagnostic> {
+                l.real
+                    .services
+                    .take_diagnostics()
+                    .into_iter()
+                    .filter(|d| d.message.contains("`news.posts`"))
+                    .collect()
+            };
+            let seen = std::cell::RefCell::new(Vec::new());
+            live.until("the page reported", |l| {
+                seen.borrow_mut().extend(report(l));
+                !seen.borrow().is_empty()
+            });
+            let first = seen.take();
+            assert!(
+                first[0].message.contains("<!doctype html>") && first[0].message.contains("[Post]"),
+                "{}",
+                first[0].message
+            );
+            assert_eq!(live.value("news", "posts"), Value::list(vec![]));
+            // A feed whose one item's date is ctime: the item reads, the
+            // date is null, and the report names where (a list of one
+            // item: its key, then the field).
+            save(
+                &file,
+                "<rss><channel><item><link>x</link><pubDate>Sat Nov  7 20:45:15 2026</pubDate></item></channel></rss>",
+            );
+            live.until("the feed read", |l| {
+                items(&l.value("news", "posts")).len() == 1
+            });
+            let seen = std::cell::RefCell::new(Vec::new());
+            live.until("the date reported", |l| {
+                seen.borrow_mut()
+                    .extend(report(l).into_iter().filter(|d| !d.resolved));
+                !seen.borrow().is_empty()
+            });
+            let date = seen.take();
+            assert!(
+                date[0].message.contains(
+                    "`item.pubDate` holds \"Sat Nov  7 20:45:15 2026\", which is not a `Date?`"
+                ),
+                "{}",
+                date[0].message
+            );
+            // The page served again: the whole field fails now, which
+            // replaces the open report of the date inside it.
+            save(
+                &file,
+                "<!doctype html>\n<html><body><p>Checking<br>again</p></body></html>\n",
+            );
+            let seen = std::cell::RefCell::new(Vec::new());
+            live.until("the page reported again", |l| {
+                seen.borrow_mut().extend(report(l));
+                seen.borrow()
+                    .iter()
+                    .any(|d| !d.resolved && d.message.contains("Checking"))
+            });
+            assert!(
+                seen.borrow()
+                    .iter()
+                    .any(|d| d.resolved && d.message.contains("pubDate")),
+                "the date's report resolved: {:?}",
+                seen.borrow()
+            );
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// (doc-formats) Markup a source prints stays markup for a `text`
+        /// field: an HTML fragment in a file reads as written for a key
+        /// it lacks (it parses as XML, rooted at `div`), a status
+        /// script's `<b>…</b>` keeps its tags, and `text?` reads null for
+        /// a missing key, as with JSON.
+        #[test]
+        fn markup_in_a_document_reads_as_written_for_text() {
+            let dir = temp("markup");
+            let file = dir.join("motd.html");
+            let html = "<div><h2>Hi</h2><p>Today <b>3</b> updates</p></div>";
+            save(&file, &format!("{html}\n"));
+            let src = format!(
+                "service motd from file \"{f}\" {{ body: text; note: text? }}\nservice head from file \"{f}\" {{ body: text; h2: text }}\nbar B {{\n  text motd.body {{ markup: html }}\n  text join(\" \", head.body, head.h2)\n}}\n",
+                f = file.display()
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            live.until("the fragment read", |l| {
+                l.value("motd", "body") == Value::text(html)
+                    && l.value("head", "h2") == Value::text("Hi")
+            });
+            assert_eq!(live.value("motd", "note"), Value::Null);
+            // A document holding one field's key is data: the other
+            // field's missing key is absent, not the document.
+            assert_eq!(live.value("head", "body"), Value::text(""));
+            save(&file, "<b>CPU</b> \n");
+            live.until("the bold kept", |l| {
+                l.value("motd", "body") == Value::text("<b>CPU</b>")
+            });
+            assert_eq!(live.value("motd", "note"), Value::text("<b>CPU</b>"));
+            // A declaration makes it data: the element's text.
+            save(&file, "<?xml version=\"1.0\"?><string>EUR 1.08</string>\n");
+            live.until("the value read", |l| {
+                l.value("motd", "body") == Value::text("EUR 1.08")
+            });
             drop(live);
             let _ = std::fs::remove_dir_all(&dir);
         }
