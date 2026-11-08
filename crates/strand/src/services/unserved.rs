@@ -62,6 +62,7 @@ impl UnservedHost {
             message: self.notice.clone(),
             notice: true,
             resolved,
+            standing: true,
         });
     }
 }

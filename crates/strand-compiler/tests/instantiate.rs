@@ -2694,7 +2694,7 @@ fn runtime_errors_are_located_and_freeze_their_component() {
 /// run on; a binding's fault in the same component still freezes it.
 #[test]
 fn a_handlers_error_freezes_nothing() {
-    let src = "state zero = 0\nstate one = 1\nstate ticks = 0\nstate n = 0\ncomponent Faulty() {\n  every 1s { ticks += 1 }\n  row {\n    box { on click { n = 1 / zero } }\n    box { on click { n += 1 } }\n  }\n  text pct(10 / one)\n}\nbar B { Faulty }\n";
+    let src = "state zero = 0\nstate one = 1\nstate ticks = 0\nstate n = 0\nstate tries = 0\ncomponent Faulty() {\n  every 1s { ticks += 1 }\n  row {\n    box { on click { tries += 1; n = 1 / zero } }\n    box { on click { n += 1 } }\n  }\n  text pct(10 / one)\n}\nbar B { Faulty }\n";
     let mut shell = boot(&[("t.strand", src)], |rt, host| {
         screens(rt, host, &["DP-1"])
     });
@@ -2711,8 +2711,10 @@ fn a_handlers_error_freezes_nothing() {
     assert_eq!(shell.inst.value_of("t", "ticks").unwrap(), Value::int(1));
     shell.inst.event(boxes[1], "click", Vec::new());
     shell.inst.event(boxes[0], "click", Vec::new());
-    let u = shell.flush();
-    assert_eq!(u.errors.len(), 1, "the failing handler ran again");
+    shell.flush();
+    // (build-ready review) The failing handler ran again; failing the
+    // same way, it is not reported twice.
+    assert_eq!(shell.inst.value_of("t", "tries").unwrap(), Value::int(2));
     assert_eq!(shell.inst.value_of("t", "n").unwrap(), Value::float(1.0));
     // A binding's fault is no handler's: it freezes the component.
     shell.inst.set_value("t", "one", Value::int(0)).unwrap();
@@ -2720,6 +2722,45 @@ fn a_handlers_error_freezes_nothing() {
     assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
     assert!(!u.errors[0].handler);
     assert!(shell.inst.freeze(&u.errors[0]));
+}
+
+/// (build-ready review) A handler failing the same way on every run is
+/// reported once, until a run of it completes: a timer dividing by zero
+/// every tick is one fault, not one a tick, and after a run that
+/// completes the next failure is reported again. Another handler's
+/// error is its own.
+#[test]
+fn a_handler_failing_the_same_way_is_reported_once_until_a_run_completes() {
+    let src = "state zero = 0\nstate ticks = 0\nstate n = 0\ncomponent T() {\n  every 1s { ticks += 1; n = 10 / zero }\n  box { on click { n = 5 / zero } }\n}\nbar B { T }\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let u = shell.at(1.0);
+    assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+    assert!(u.errors[0].handler, "{:?}", u.errors);
+    for t in [2.0, 3.0, 4.0] {
+        let u = shell.at(t);
+        assert!(
+            u.errors.is_empty(),
+            "reported again at {t} s: {:?}",
+            u.errors
+        );
+    }
+    assert_eq!(shell.inst.value_of("t", "ticks").unwrap(), Value::int(4));
+    // Another handler's error is reported.
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    shell.inst.event(boxes[0], "click", Vec::new());
+    let u = shell.flush();
+    assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+    assert!(u.errors[0].what.contains("on click"), "{:?}", u.errors);
+    // A run that completes; the next failure is news again.
+    shell.inst.set_value("t", "zero", Value::int(1)).unwrap();
+    let u = shell.at(5.0);
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(shell.inst.value_of("t", "n").unwrap(), Value::float(10.0));
+    shell.inst.set_value("t", "zero", Value::int(0)).unwrap();
+    let u = shell.at(6.0);
+    assert_eq!(u.errors.len(), 1, "reported again after a run completed");
 }
 
 /// Changing one item of a long keyed list re-runs that item's bindings

@@ -874,3 +874,65 @@ fn a_failing_poll_is_reported_under_its_name_and_is_not_ready() {
     services.shutdown();
     custom::forget(id);
 }
+
+/// (build-ready review) A poll service whose first poll failed is not
+/// made ready by its reader going hidden meanwhile (a popup closed while
+/// the poll ran): it is ready only once a poll answers.
+#[test]
+fn a_failed_first_poll_hidden_meanwhile_is_still_not_ready() {
+    let tmp = tempfile::tempdir().unwrap();
+    let go = tmp.path().join("go");
+    let ok = tmp.path().join("ok");
+    let runs = tmp.path().join("runs");
+    // Each poll is counted, waits for `go`, then fails until `ok` exists.
+    let script = format!(
+        "echo x >> '{runs}'; while [ ! -e '{go}' ]; do sleep 0.02; done; \
+         [ -e '{ok}' ] && echo '{{\"level\": 2}}' || exit 22",
+        runs = runs.display(),
+        go = go.display(),
+        ok = ok.display()
+    );
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let client = services.register_as::<Custom>(&rt, "hidden");
+    let id = custom::register(Spec {
+        name: "hidden".into(),
+        source: Source::Poll {
+            target: custom::PollTarget::Command(vec!["sh".into(), "-c".into(), script]),
+            every: Duration::from_millis(100),
+        },
+        fields: vec![FieldSpec {
+            name: "level".into(),
+            key: vec!["level".into()],
+            rw: false,
+            text: Default::default(),
+        }],
+        actions: Vec::new(),
+    });
+    client.seed(&rt, |s| *s = Custom::seeded(id, 1)).unwrap();
+    client.acquire(&rt);
+    let count = || std::fs::read_to_string(&runs).map_or(0, |r| r.lines().count());
+    until(&rt, &services, "the first poll running", || count() >= 1);
+    // Its reader goes hidden while the poll runs; then the poll fails.
+    client.release(&rt);
+    std::thread::sleep(Duration::from_millis(200));
+    std::fs::write(&go, "").unwrap();
+    until(&rt, &services, "the failure reported", || {
+        !services.take_diagnostics().is_empty()
+    });
+    // Shown again: the next poll (also failing) is past the loop's top,
+    // where a hidden reader made it ready.
+    client.acquire(&rt);
+    until(&rt, &services, "a second poll", || count() >= 2);
+    let after = count();
+    until(&rt, &services, "a third poll", || count() > after);
+    services.pump(&rt);
+    rt.flush();
+    assert!(!client.ready(&rt), "ready with no poll answered");
+    std::fs::write(&ok, "").unwrap();
+    until(&rt, &services, "ready once a poll answers", || {
+        client.ready(&rt)
+    });
+    services.shutdown();
+    custom::forget(id);
+}

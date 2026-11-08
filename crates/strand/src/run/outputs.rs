@@ -302,10 +302,14 @@ impl Files {
     }
 
     /// Tells the writer the paths `inst`'s outputs write now, when they
-    /// changed since last told.
-    fn keep(&mut self, inst: &strand_compiler::instantiate::Instance) {
+    /// changed since last told. (build-ready review) The waits of paths
+    /// no output writes any more (a reload removed the `file` or moved
+    /// it) go, writer or not; those paths are returned, for their notices
+    /// to go too.
+    fn keep(&mut self, inst: &strand_compiler::instantiate::Instance) -> Vec<PathBuf> {
+        let gone = self.let_go(|each| inst.output_targets(each));
         if self.shared.is_none() {
-            return;
+            return gone;
         }
         let (mut count, mut same) = (0, true);
         inst.output_targets(|p| {
@@ -313,12 +317,36 @@ impl Files {
             same &= self.targets.iter().any(|t| t == p);
         });
         if same && count == self.targets.len() {
-            return;
+            return gone;
         }
         let mut now = Vec::with_capacity(count);
         inst.output_targets(|p| now.push(p.to_path_buf()));
         self.targets.clone_from(&now);
         self.send(Job::Keep(now));
+        gone
+    }
+
+    /// (build-ready review) Forgets the waits (slow, and with no run up)
+    /// of the paths `targets` no longer lists: no write will ever land
+    /// there to end them, so a slow-wait notice would come for a `file`
+    /// that is gone. The paths forgotten, once each.
+    fn let_go(&mut self, targets: impl FnOnce(&mut dyn FnMut(&Path))) -> Vec<PathBuf> {
+        if self.slow.is_empty() && self.waiting.is_empty() {
+            return Vec::new();
+        }
+        let mut now: Vec<PathBuf> = Vec::new();
+        targets(&mut |p| now.push(p.to_path_buf()));
+        let mut gone: Vec<PathBuf> = Vec::new();
+        let mut forget = |p: &Path| {
+            let kept = now.iter().any(|t| t == p);
+            if !kept && !gone.iter().any(|g| g == p) {
+                gone.push(p.to_path_buf());
+            }
+            kept
+        };
+        self.slow.retain(|w| forget(&w.path));
+        self.waiting.retain(|(p, _)| forget(p));
+        gone
     }
 
     fn send(&mut self, job: Job) -> bool {
@@ -369,7 +397,11 @@ impl Shell {
         for change in self.inst.take_outputs() {
             self.output(change);
         }
-        self.files.keep(&self.inst);
+        // (build-ready review) A `file` a reload took away while it
+        // waited: its notice goes with it.
+        for path in self.files.keep(&self.inst) {
+            self.output_ok(&path);
+        }
         for (path, why) in self.files.slow_due(Instant::now()) {
             self.output_notice(&path, &why, false);
         }
@@ -2185,6 +2217,28 @@ mod tests {
         // Waiting on another service starts the count again.
         files.set_slow(a, Some(vec!["rate".into()]), t0 + SLOW_WAIT * 3);
         assert_eq!(files.wait(t0 + SLOW_WAIT * 3), Some(SLOW_WAIT));
+    }
+
+    /// (build-ready review) A waiting `file` that a reload took away (or
+    /// moved) is let go: no slow-wait notice comes for it later, and its
+    /// path is given back once so its waiting notice goes; one still
+    /// written keeps its wait.
+    #[test]
+    fn a_wait_whose_file_is_gone_is_let_go() {
+        let (ping, _source) = calloop::ping::make_ping().unwrap();
+        let mut files = Files::new(ping, None, None);
+        let t0 = Instant::now();
+        let (a, b) = (Path::new("/x/news.conf"), Path::new("/x/kept.conf"));
+        files.set_slow(a, Some(vec!["news".into()]), t0);
+        files.set_waiting(a, Some("waits for `news`, which has no run up".into()));
+        files.set_slow(b, Some(vec!["news".into()]), t0);
+        let gone = files.let_go(|each| each(b));
+        assert_eq!(gone, [a.to_path_buf()]);
+        assert_eq!(files.still_waiting(a), None);
+        let due = files.slow_due(t0 + SLOW_WAIT);
+        assert_eq!(due.len(), 1, "{due:?}");
+        assert_eq!(due[0].0, b);
+        assert!(files.let_go(|each| each(b)).is_empty(), "let go once");
     }
 
     #[test]

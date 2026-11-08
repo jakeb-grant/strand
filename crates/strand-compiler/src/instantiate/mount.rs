@@ -2649,6 +2649,7 @@ impl Ctx {
             node: Some(id),
             component: env.component,
             scope: env.fault_scope(),
+            reported: Default::default(),
         });
         match memo.get_untracked(rt) {
             Ok(out) => {
@@ -2723,6 +2724,7 @@ impl Ctx {
             node: Some(id),
             component: env.component,
             scope: env.fault_scope(),
+            reported: Default::default(),
         });
         if let Ok(out) = memo.get_untracked(rt) {
             self.em
@@ -2788,6 +2790,7 @@ impl Ctx {
             node: Some(id),
             component: env.component,
             scope: env.fault_scope(),
+            reported: Default::default(),
         });
         if let Ok(out) = memo.get_untracked(rt) {
             self.em
@@ -4313,12 +4316,26 @@ impl Ctx {
         async move {
             match fut.await {
                 Err(e) if e != Error::Cancelled => {
+                    // (build-ready review) The same error as this
+                    // handler's last run that failed, with no run
+                    // completing between: not reported again (a timer
+                    // failing every tick, a scroll handler every step).
+                    let text = e.to_string();
+                    if site.reported.borrow().as_deref() == Some(text.as_str()) {
+                        return Ok(());
+                    }
+                    *site.reported.borrow_mut() = Some(text);
                     if let Some(ctx) = weak.upgrade() {
                         let mut err = ctx.located(&site, e);
                         // (handler-fault) A value: it freezes nothing.
                         err.handler = true;
                         ctx.errors.borrow_mut().push(err);
                     }
+                    Ok(())
+                }
+                Ok(()) => {
+                    // A run that completes: its next failure is news.
+                    site.reported.borrow_mut().take();
                     Ok(())
                 }
                 r => r,
@@ -4511,6 +4528,7 @@ impl Ctx {
                     node: el.map(|e| e.scene),
                     component: env.component,
                     scope: env.fault_scope(),
+                    reported: Default::default(),
                 });
                 let (e, me, l) = (env.clone(), self.clone(), loc.clone());
                 let el = el.cloned();
@@ -4689,6 +4707,7 @@ impl Ctx {
             node: scene,
             component: env.component,
             scope: env.fault_scope(),
+            reported: Default::default(),
         });
         let (vm, e, body, me, l) = (
             self.vm.clone(),

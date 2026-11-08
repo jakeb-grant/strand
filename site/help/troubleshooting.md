@@ -229,7 +229,9 @@ it happened. The next reload of a fixed config takes the outline away.
 A handler that fails, such as an `await` of an action that exits
 non-zero, freezes nothing. That click's run ends with the error,
 `strand watch` prints it as a `fault:` line, and every handler,
-that one included, runs again at its next event.
+that one included, runs again at its next event. A handler that fails
+the same way again, such as an `every` timer on each tick, is printed
+once, until a run of it completes.
 
 ## A surface does not appear
 

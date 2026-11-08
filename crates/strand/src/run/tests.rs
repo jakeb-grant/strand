@@ -4021,8 +4021,9 @@ fn a_failed_await_in_a_handler_stops_no_other_handler() {
     click(boxes[3]);
     fault("has no value");
     m.until("the run that divides by zero", |s| s.texts() == ["1 2 2"]);
+    // (build-ready review) Failing the same way again, it runs and is
+    // not reported twice.
     click(boxes[0]);
-    fault("`false` failed (exit status: 1)");
     click(boxes[1]);
     m.until("the failed box runs again, and the plain one", |s| {
         s.texts() == ["2 3 2"]
@@ -4237,6 +4238,117 @@ fn an_empty_config_has_nothing_to_run() {
     assert!(!nothing_to_run(&broken));
     let _ = std::fs::remove_dir_all(dir);
     assert!(not_a_config_dir(&std::env::temp_dir()).is_none());
+}
+
+/// (build-ready review) A failing service's diagnostic no longer reaches
+/// a later `strand watch` once a reload fixes the service or removes it,
+/// and the same failure after a fix is reported again; a service the
+/// reloads leave alone keeps its open failure.
+#[test]
+fn a_reload_that_fixes_or_removes_a_service_takes_its_failure_away() {
+    let dir = temp_dir("service-notices-reload");
+    let config = |gone: Option<&str>| {
+        let (decl, read) = match gone {
+            Some(argv) => (
+                format!("service gone from poll [{argv}] every 1h {{ n: int = n }}\n"),
+                ", gone.n",
+            ),
+            None => (String::new(), ""),
+        };
+        format!(
+            "permit exec \"false\", \"echo\"\n\
+             {decl}\
+             service still from poll [\"false\"] every 1h {{ n: int = n }}\n\
+             bar Top {{ text join(\" \", \"n\"{read}, still.n) }}\n"
+        )
+    };
+    let failing = r#""false""#;
+    std::fs::write(dir.join("bar.strand"), config(Some(failing))).unwrap();
+    let socket = dir.join("ipc.sock");
+    let (wtx, wrx) = calloop::channel::channel();
+    let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+    assert!(boot.build.is_some(), "{:?}", boot.diagnostics);
+    let live = Live {
+        worker: Some(wrx),
+        jobs: Some(compiler.jobs()),
+        socket: Some(socket.clone()),
+        buses: None,
+        icon_theme_switched: None,
+        requests_to: None,
+        events_to: None,
+        own_writes: None,
+        to_main: None,
+        tokens: None,
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(boot, Storage::none(), from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| s.texts() == ["n 0 0"]);
+    let watch = || {
+        let mut events =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+        assert_eq!(ok["ok"], true);
+        events
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        events
+    };
+    let next = |events: &mut std::io::BufReader<std::os::unix::net::UnixStream>| {
+        let mut line = String::new();
+        std::io::BufRead::read_line(events, &mut line).unwrap();
+        serde_json::from_str::<Json>(&line).unwrap()
+    };
+    let gone = json!("service `gone`: `false` failed (exit status: 1)");
+    let still = json!("service `still`: `false` failed (exit status: 1)");
+    // Until every one of `want` has been said.
+    let hears = |events: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
+                 want: &[&Json]| {
+        let mut left: Vec<&Json> = want.to_vec();
+        while !left.is_empty() {
+            let ev = next(events);
+            if ev["event"] == "notices"
+                && let Some(n) = ev["notices"].as_array()
+            {
+                left.retain(|w| !n.contains(w));
+            }
+        }
+    };
+    let mut first = watch();
+    hears(&mut first, &[&gone, &still]);
+    let mut late = watch();
+    let ev = next(&mut late);
+    assert_eq!(ev["event"], "notices", "{ev}");
+    let mut open = ev["notices"].as_array().cloned().unwrap_or_default();
+    open.sort_by_key(ToString::to_string);
+    assert_eq!(open, [gone.clone(), still.clone()], "{ev}");
+    // Fixed by a reload: a later watcher hears only `still`.
+    std::fs::write(
+        dir.join("bar.strand"),
+        config(Some(r#""echo", "{\"n\": 7}""#)),
+    )
+    .unwrap();
+    m.until("the fixed service", |s| s.texts() == ["n 7 0"]);
+    let mut late = watch();
+    let ev = next(&mut late);
+    assert_eq!(ev["notices"], json!([still]), "after the fix: {ev}");
+    // Failing again after the fix is news again.
+    std::fs::write(dir.join("bar.strand"), config(Some(failing))).unwrap();
+    hears(&mut first, &[&gone]);
+    // Removed by a reload: its failure goes with it.
+    std::fs::write(dir.join("bar.strand"), config(None)).unwrap();
+    m.until("the service removed", |s| s.texts() == ["n 0"]);
+    let mut late = watch();
+    let ev = next(&mut late);
+    assert_eq!(ev["notices"], json!([still]), "after the removal: {ev}");
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// (build-ready) A service diagnostic (here a `from poll` command that

@@ -81,6 +81,7 @@ filter = '''
   | test(=a_huge_dir_lists_its_first_files_by_name)
   | test(=a_busy_dir_is_listed_at_most_every_relist)
   | test(=a_failing_poll_is_reported_under_its_name_and_is_not_ready)
+  | test(=a_failed_first_poll_hidden_meanwhile_is_still_not_ready)
   | test(=without_a_bus_system_keeps_its_seeded_values)
   | test(=cpu_and_memory_sample_only_while_a_reader_is_visible)
   | test(=disk_reads_the_root_filesystem_only_while_visible)

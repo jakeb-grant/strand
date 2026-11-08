@@ -191,6 +191,10 @@ pub(crate) struct Site {
     pub node: Option<NodeId>,
     pub component: Option<DefId>,
     pub scope: Option<CoreId>,
+    /// (build-ready review) A handler's error last reported, until a run
+    /// of it completes: the same error again is not reported again, so a
+    /// timer failing every tick is one fault, not one a tick.
+    pub reported: std::cell::RefCell<Option<String>>,
 }
 
 /// What one tick produced.
@@ -600,6 +604,7 @@ impl Ctx {
             node,
             component: env.component,
             scope: env.fault_scope(),
+            reported: Default::default(),
         });
         self.sites.borrow_mut().insert(id, site.clone());
         let weak = Rc::downgrade(self);

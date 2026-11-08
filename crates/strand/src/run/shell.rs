@@ -994,8 +994,12 @@ impl Shell {
 const SERVICE_OPEN_MAX: usize = 64;
 
 /// (build-ready) `d` kept in `open`, keyed by its service and message,
-/// or (resolved) taken out.
+/// or (resolved) taken out; (build-ready review) a one-off event's
+/// warning (`standing: false`) is not kept.
 fn keep_open(open: &mut Vec<(String, String)>, d: &strand_services::ServiceDiagnostic) {
+    if !d.standing && !d.resolved {
+        return;
+    }
     let key = format!("{}\0{}", d.service, d.message);
     open.retain(|(k, _)| *k != key);
     if !d.resolved {
@@ -1016,6 +1020,7 @@ mod open_tests {
             message: message.into(),
             notice: false,
             resolved,
+            standing: true,
         }
     }
 
@@ -1031,6 +1036,14 @@ mod open_tests {
             &diag("rate", "`curl` failed (exit status: 22)", false),
         );
         keep_open(&mut open, &diag("news", "`news.posts`: bad", false));
+        // (build-ready review) A one-off event's warning is not kept.
+        keep_open(
+            &mut open,
+            &strand_services::ServiceDiagnostic {
+                standing: false,
+                ..diag("clipboard", "cannot keep a copied image", false)
+            },
+        );
         let texts: Vec<&str> = open.iter().map(|(_, t)| t.as_str()).collect();
         assert_eq!(
             texts,

@@ -1588,7 +1588,9 @@ owner-approved theming design" and after) and m5-palette.
     A `Waiting` output whose service has no run up
     (`Services::snapshot`) is a standing notice, and (build-ready) so is
     one still waiting after `SLOW_WAIT` (10 s) on a service that is up
-    (`Files::slow_due`, the loop woken at `Files::wait`).
+    (`Files::slow_due`, the loop woken at `Files::wait`); a wait whose
+    path no output writes any more (a reload removed or moved the
+    `file`) is let go with its notice (`Files::let_go`).
   - `entry.rs` serves every one-shot command from one table
     (`entry::one_shot`).
 
@@ -2013,7 +2015,10 @@ Public interfaces:
     component and outlines it in red; `thaw` and reloads clear it. A
     top-level fault is outlined and nothing is frozen. A handler's error
     (`RuntimeError::handler`, set by the handler's `reporting` wrapper)
-    freezes and outlines nothing (decisions.md handler-fault).
+    freezes and outlines nothing (decisions.md handler-fault); the
+    wrapper reports a handler's error only when it differs from the one
+    its last failing run reported with no run completing between
+    (`Site::reported`, decisions.md handler-fault-repeat).
   - The host loop: `Instance::step(now, wall) -> (Update, Wake)`. The
     `strand run` logic thread feeds `screens` from the surface layer's
     monitor hooks, maps render's input to `event(node, name, args)`
@@ -3032,13 +3037,22 @@ itself.
 - **Failures are diagnostics.** A run that errs or panics is a
   `ServiceDiagnostic { service, message, notice: false, .. }`;
   `Cx::notice` raises one the user must act on (`notice: true`),
-  `Cx::warn` one the run retries itself. `take_diagnostics()` yields
-  each distinct message once (until a run stays up `RETRY_MAX` or ends
-  cleanly); a notice that no longer holds comes back once with
-  `resolved: true`, and (build-ready) so does a failure: a run's end by
-  a later run's `Cx::ready`, a `Cx::warn` by the run's `Cx::resolve`, any
-  by a clean end or another failure in its place. `strand run` logs them, sends them to `strand
-  watch`, and shows notices as overlay rows under `strand: services`.
+  `Cx::failing` one that holds while the run goes on (a failing poll),
+  `Cx::warn` a one-off event the run survives (a copied image not
+  kept; `standing: false`, every other diagnostic is `standing: true`).
+  `take_diagnostics()` yields each distinct message once (until a run
+  stays up `RETRY_MAX` or ends cleanly); a notice that no longer holds
+  comes back once with `resolved: true`, and (build-ready) so does a
+  standing failure: a run's end, or an earlier run's `Cx::failing`,
+  once a later run that said it is ready has stayed up `RETRY_MAX` since
+  it started (`ClientInner::arm_settle`, so a run failing right after
+  its first read is reported once over its retries); a `Cx::failing` by
+  the run's `Cx::resolve`; any by a clean end, another failure in its
+  place, `Client::restart`, `Client::stop_now` (a reload changing or
+  removing a no-code service) or the stop after the last reader left.
+  `strand run` logs them, sends them to `strand watch`, keeps the
+  standing ones still open for a later watcher (`Shell::service_open`),
+  and shows notices as overlay rows under `strand: services`.
 - **Calls of one name on several records.** Variants sharing a
   `#[call(name)]` and taking items of different records
   (`TrayItem.activate()`, `TrayMenuItem.activate()`) are told apart by

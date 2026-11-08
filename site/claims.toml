@@ -1140,6 +1140,12 @@ proof  = "crates/strand/src/run/tests.rs::a_failed_await_in_a_handler_stops_no_o
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
+text   = "the same way again, such as an `every` timer on each tick, is printed"
+source = ['crates/strand-compiler/src/instantiate/mount.rs "A run that completes: its next failure is news."', 'docs/spec.md "is not reported again until a run of"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_handler_failing_the_same_way_is_reported_once_until_a_run_completes"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
 text   = "A missing `xdg_wm_base` is logged as a warning for windows; for"
 source = ['crates/strand-surface/src/manager/window.rs "log::warn!( "{}: no xdg_wm_base, windows are not shown","', 'crates/strand-surface/src/manager/popup.rs "log::debug!("{}: no xdg_wm_base, popups are not shown", spec.namespace());"']
 proof  = "read"
@@ -3940,8 +3946,14 @@ proof  = "crates/strand-compiler/tests/negative/dict_in_service_field.strand (a 
 [[claim]]
 page   = "site/how-to/data-from-the-web.md"
 text   = "A poll whose command fails keeps its last values, and `strand watch` names the service it failed for."
-source = ['crates/strand-services/src/custom.rs "A failed poll keeps the last values."', 'crates/strand-services/src/custom.rs "if !cx.warn(why.clone())"']
+source = ['crates/strand-services/src/custom.rs "A failed poll keeps the last values."', 'crates/strand-services/src/custom.rs "if !cx.failing(why.clone())"']
 proof  = "crates/strand-services/tests/custom.rs::a_failing_poll_is_reported_under_its_name_and_is_not_ready; crates/strand/src/run/tests.rs::open_service_diagnostics_reach_watchers_that_come_later"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "A save that fixes the command, or removes the service, takes the"
+source = ['''crates/strand-services/src/client.rs "What the old declaration's runs reported"''', 'docs/spec.md "a reload that changes or"']
+proof  = "crates/strand/src/run/tests.rs::a_reload_that_fixes_or_removes_a_service_takes_its_failure_away"
 
 [[claim]]
 page   = "site/how-to/data-from-the-web.md"

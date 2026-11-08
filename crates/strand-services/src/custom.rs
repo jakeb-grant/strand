@@ -2199,7 +2199,9 @@ async fn run_poll(
     // Whether the first frame's hold was ended by a failed first poll.
     let mut hold_ended = false;
     loop {
-        if first && cx.period(every).is_none() {
+        // (build-ready review) Not after a failed first poll ended the
+        // hold: the service is ready only once a poll answers.
+        if first && !hold_ended && cx.period(every).is_none() {
             cx.ready();
             first = false;
         }
@@ -2265,7 +2267,7 @@ async fn run_poll(
             // have never answered is not `ready` (spec.md 5.6).
             Err(why) => {
                 if failing.as_deref() != Some(why.as_str()) {
-                    if !cx.warn(why.clone()) {
+                    if !cx.failing(why.clone()) {
                         return Ok(());
                     }
                     failing = Some(why);

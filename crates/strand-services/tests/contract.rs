@@ -66,6 +66,10 @@ enum Cmd {
     Notice(String),
     /// The notice no longer holds, the run going on ([`Cx::resolve`]).
     Resolve,
+    /// A one-off failure ([`Cx::warn`]).
+    Warn(String),
+    /// A failure that holds while the run goes on ([`Cx::failing`]).
+    Failing(String),
     /// End the run with an error.
     Fail(String),
 }
@@ -213,6 +217,8 @@ impl Probe {
                     Some(Cmd::Ready) => { cx.ready(); }
                     Some(Cmd::Notice(m)) => { cx.notice(m); }
                     Some(Cmd::Resolve) => { cx.resolve(); }
+                    Some(Cmd::Warn(m)) => { cx.warn(m); }
+                    Some(Cmd::Failing(m)) => { cx.failing(m); }
                     Some(Cmd::Fail(m)) => return Err(ServiceError(m)),
                     None => return Ok(()),
                 },
@@ -1504,6 +1510,144 @@ impl Flaky {
         cx.ready();
         Err("the daemon is gone".into())
     }
+}
+
+/// The diagnostics said since the last call, after pumping until there
+/// are some.
+fn said(rt: &Runtime, s: &Services, what: &str) -> Vec<strand_services::ServiceDiagnostic> {
+    let seen = std::cell::RefCell::new(Vec::new());
+    until(rt, s, what, || {
+        seen.borrow_mut().extend(s.take_diagnostics());
+        !seen.borrow().is_empty()
+    });
+    seen.into_inner()
+}
+
+/// (build-ready review) A failure the live run raised with
+/// [`Cx::failing`] stays open until something says it no longer holds,
+/// and a restart (a reload changed the declaration) or a stop for good
+/// (a reload removed it) is that: each resolves it, and the same
+/// failure from the next run is reported again. A one-off warning
+/// ([`Cx::warn`]) is never open, so nothing resolves it.
+#[test]
+fn a_restart_or_a_stop_resolves_a_live_runs_failure() {
+    let (sc, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    probe.acquire(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Ready);
+    sc.cmd(Cmd::Failing("the feed failed".into()));
+    let d = said(&rt, &s, "the failure");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(d[0].standing && !d[0].resolved && !d[0].notice, "{d:?}");
+    sc.cmd(Cmd::Warn("a copied image was not kept".into()));
+    let d = said(&rt, &s, "the one-off warning");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(!d[0].standing && !d[0].resolved, "{d:?}");
+    // Its repeat is dropped; the standing failure's repeat too, though
+    // the one-off came between.
+    sc.cmd(Cmd::Warn("a copied image was not kept".into()));
+    sc.cmd(Cmd::Failing("the feed failed".into()));
+    sc.cmd(Cmd::Warn("the last one".into()));
+    let d = said(&rt, &s, "the last warning");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].message, "the last one", "{d:?}");
+    // The declaration changed: a new run, and the old run's failure goes.
+    let sc = script_again();
+    probe.restart(&rt);
+    assert_eq!(sc.next(), "start visible=true");
+    let d = said(&rt, &s, "the failure resolved by the restart");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(d[0].resolved && d[0].message == "the feed failed", "{d:?}");
+    sc.cmd(Cmd::Ready);
+    sc.cmd(Cmd::Failing("the feed failed".into()));
+    let d = said(&rt, &s, "the same failure from the new run");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(!d[0].resolved && d[0].message == "the feed failed", "{d:?}");
+    // The declaration removed: it goes too.
+    probe.stop_now(&rt);
+    let d = said(&rt, &s, "the failure resolved by the stop");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(d[0].resolved && d[0].message == "the feed failed", "{d:?}");
+    s.shutdown();
+    assert!(s.take_diagnostics().is_empty(), "resolved once");
+}
+
+/// (build-ready review) A run's end failure is resolved once a later run
+/// has stayed up [`RETRY_MAX`], not when it says it is ready: a run that
+/// fails right after its first read would otherwise resolve and report
+/// it again on every retry.
+#[test]
+fn an_earlier_runs_failure_is_resolved_once_a_later_run_stays_up() {
+    let (first, _guard) = script();
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let probe = s.register::<Probe>(&rt);
+    let now = std::cell::Cell::new(Duration::ZERO);
+    let at = |d: Duration| {
+        now.set(now.get() + d);
+        rt.tick(now.get());
+    };
+    probe.acquire(&rt);
+    assert_eq!(first.next(), "start visible=true");
+    first.cmd(Cmd::Fail("the daemon is gone".into()));
+    let d = said(&rt, &s, "the failed run");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(!d[0].resolved && d[0].standing, "{d:?}");
+    until(&rt, &s, "the retry armed", || {
+        !probe.running() && rt.next_deadline().is_some()
+    });
+    let sc = script_again();
+    at(Duration::from_secs(1));
+    assert_eq!(sc.next(), "start visible=true");
+    sc.cmd(Cmd::Ready);
+    until(&rt, &s, "the new run ready", || probe.ready(&rt));
+    assert!(
+        s.take_diagnostics().is_empty(),
+        "resolved as it said it is ready"
+    );
+    // Up for RETRY_MAX (30 s) since it started: resolved.
+    at(Duration::from_secs(29));
+    s.pump(&rt);
+    assert!(
+        s.take_diagnostics().is_empty(),
+        "resolved before it stayed up"
+    );
+    at(Duration::from_secs(1));
+    let d = said(&rt, &s, "the failure resolved");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(
+        d[0].resolved && d[0].message == "the daemon is gone",
+        "{d:?}"
+    );
+    s.shutdown();
+}
+
+/// (build-ready review) A body that fails right after saying it is
+/// ready is reported once over its retries: no retry resolves it.
+#[test]
+fn a_body_failing_right_after_ready_is_reported_once() {
+    let rt = Runtime::new();
+    let (s, _) = services(&rt);
+    let flaky = s.register::<Flaky>(&rt);
+    let now = std::cell::Cell::new(Duration::ZERO);
+    flaky.acquire(&rt);
+    let mut seen = Vec::new();
+    for _ in 0..30 {
+        until(&rt, &s, "the failed run", || {
+            !flaky.running() && rt.next_deadline().is_some()
+        });
+        seen.extend(s.take_diagnostics());
+        now.set(now.get() + Duration::from_secs(1));
+        rt.tick(now.get());
+    }
+    s.shutdown();
+    seen.extend(s.take_diagnostics());
+    assert!(flaky.starts() >= 5, "{} starts", flaky.starts());
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert!(!seen[0].resolved, "{seen:?}");
 }
 
 /// A body that fails right after saying it is ready keeps backing off

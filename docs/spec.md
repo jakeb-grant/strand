@@ -2170,7 +2170,9 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   error in a handler's body, ends that run of the handler only: it is
   logged and told to `strand watch` as a fault that froze nothing, and
   every handler, that one included, runs at its next event (section 12;
-  decisions.md handler-fault).
+  decisions.md handler-fault). A handler that fails the same way again
+  (an `every` timer on each tick) is not reported again until a run of
+  it completes (decisions.md handler-fault-repeat).
 - When a handler's node unmounts, the handler is cancelled at its next
   `await`. A reload that changes a handler's code, or anything it calls,
   restarts it and cancels and reports an in-flight `await`
@@ -2856,8 +2858,11 @@ people can edit by hand.
   an `Async`'s `.error`) and as service diagnostics; they never stop the
   shell. A diagnostic names its service (a `from poll` command that
   fails is one, said once until a poll answers); one that no longer
-  holds is resolved, and `strand watch` tells a watcher that starts
-  later the ones still open. An action of a builtin service that cannot run (its daemon or
+  holds is resolved (a poll that answers; a reload that changes or
+  removes its service; a later run that stays up 30 s, for a run that
+  failed), and `strand watch` tells a watcher that starts later the
+  ones still open, not a one-off warning such as a copied image that
+  could not be kept (decisions.md build-ready-failures). An action of a builtin service that cannot run (its daemon or
   bus missing) is never a runtime fault: it is logged and arrives as
   that service's failure event where it has one (`session.failed`,
   `network.failed`, `bluetooth.failed`, `outputs.failed`,
