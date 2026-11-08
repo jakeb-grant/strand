@@ -6,7 +6,8 @@ html`, and logic reads the same text without its tags with `plain`, to
 search it, shorten it or count it. Strand never fetches anything
 itself: the text comes from a service, a file or a command, as any text
 does. A file or a command holding an HTML fragment parses as XML when it
-is well-formed, and a `text` field still reads it as written; see
+is well-formed, and a `text` field (not `text?`) still reads it as
+written when it holds none of the service's fields; see
 [Markup as written](data-from-the-web.md#markup-as-written).
 
 ## The file

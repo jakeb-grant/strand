@@ -1737,11 +1737,11 @@ Public interfaces:
   build is sent on, so the disk write is never on the save-to-pixels
   path (decisions.md m5-open-reload).
 - **Dates from text** (`strand_compiler::vm::clock`, doc-formats):
-  `date_from_text(text, Zone)`, `date_from_number(n, Zone)` (a number
-  read as its digits are) and `date_from_unix(n, Zone)` read a
-  document's date text, numbers and Unix time into `DateParts` (a date and its
-  hour and minute, if any) in the zone given, never calling `Local`
-  themselves; `is_date(types, r)` says whether `r` is the schema's
+  `date_from_text(text, Zone)` and `date_from_number(n, Zone)` (a
+  number read as its digits are; Unix time through the private
+  `date_from_unix`) read a document's date text and numbers into
+  `DateParts` (a date and its hour and minute, if any) in the zone
+  given, which tests fix and `Zone::Local` takes from the system; `is_date(types, r)` says whether `r` is the schema's
   `Date`, and `date_value(r, parts)` builds one.
   `instantiate::parse_text` reads a `Date` with them, and the binary's
   `custom::coerce` reads a number as one.
@@ -3006,9 +3006,13 @@ itself.
   `Xml` (the root element as `Data`, and the document as written),
   `Pairs`, `Text`, and `NotXml`, text starting with `<` that is not
   XML, with why, logged once by its source), read by key path through
-  `Document::get`, a field's value through `Document::field` (a
-  `FieldSpec` whose `text: TextField` the binary sets from the declared
-  type reads XML as written where the tree has nothing for it), and
+  `Document::get`, the fields' values through `Document::fields(&[FieldSpec])`
+  (a `FieldSpec` whose `text: TextField` the binary sets from the
+  declared type reads an XML fragment as written: one element of text
+  alone, or, for `text`, a document holding none of the fields' keys,
+  the root's own text through a field named `text` not counting; an
+  `Xml` whose written text is `None`, a prolog before its root, is
+  always data), and
   whole through `Document::into_data` (an action's `-> T`). An XML element is a
   `Data::Record` whose `ty` is `custom::ELEMENT` (`"<element>"`, which
   no identifier can be), holding `@attribute`s, then child elements

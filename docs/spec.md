@@ -789,8 +789,9 @@ monitor, the keyboard always).
 - The declared type decides, for every document: a list type over one
   value is a list of it if it converts (else it does not convert), a
   record (a JSON object, an element) only when it holds one of the item
-  type's fields, so an API's error object read as `[T]` is reported
-  rather than one item of defaults; a missing key `[]`; blank text (an
+  type's fields, so an API's error object read whole as `[T]` (an
+  action's `-> [T]`, or a key that finds the object) is reported
+  rather than one item of defaults; a missing key `[]`, with no report; blank text (an
   empty element) read as a list of anything but `text` is `[]`, and
   read as a record type other than `Date` its fields' defaults; a single type over a list reads its first item; an
   XML element read as text, a number, a bool, an enum, a path or a
@@ -815,7 +816,8 @@ monitor, the keyboard always).
   all, when the document is one element of text alone (`<b>CPU</b>`)
   or, for `text` but not `text?`, when it holds nothing at the key of
   any of the service's fields (an HTML fragment in a file, `<span
-  foreground="red">92%</span>` printed by a script): markup a source
+  foreground="red">92%</span>` printed by a script; the root's own text
+  read by a field named `text` holds nothing): markup a source
   prints stays markup for `markup:` (section 6.2), as it does in a text
   document. A document that holds some field's key is data, so a
   `text` field whose key it lacks is absent there (`""` for a file or a
@@ -925,7 +927,9 @@ monitor, the keyboard always).
   `Window` or `Canvas`, a font) is a load error. A record or list is read from
   JSON or XML (the root element as `T`), a record also from `key=value`
   lines, as section 5.6 reads a document; nothing printed is `null` for
-  an optional `T`. The
+  an optional `T`. An action has no key path, so `-> [T]` over XML
+  reads the root as one item, and a feed's entries need a type holding
+  them (`type Feed { entry: [Entry] }` and `-> Feed`). The
   parameters, the command and `permit exec` are as above.
   - In a binding (`let r = calc(query)`, `text calc(query) ?? "…"`) the
     call is a load, as `apps.search(q)` is: it runs when first read,

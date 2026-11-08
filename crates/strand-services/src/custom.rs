@@ -531,7 +531,8 @@ impl Document {
     /// (`<b>CPU</b>`), and, for `text` but not `text?`, when the
     /// document holds nothing at the key of any of `fs` (an HTML
     /// fragment in a file, `<span foreground="red">92%</span>` from a
-    /// script). Markup a source prints so stays markup for `markup:`,
+    /// script; the root's own text read by a field named `text` holds
+    /// nothing, [`xml::by_text_alias`]). Markup a source prints so stays markup for `markup:`,
     /// as any text document does; `text?` keeps null for a key the
     /// document lacks, as with JSON. A document that holds some field is
     /// data, so a key it lacks is absent there: a feed without a
@@ -545,7 +546,10 @@ impl Document {
             return got;
         };
         let alone = matches!(root, Data::Text(_));
-        let none = got.iter().all(Option::is_none);
+        let none = fs
+            .iter()
+            .zip(&got)
+            .all(|(f, g)| g.is_none() || xml::by_text_alias(root, &f.key));
         fs.iter()
             .zip(got)
             .map(|(f, got)| match f.text {

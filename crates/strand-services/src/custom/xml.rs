@@ -4,12 +4,15 @@
 //!
 //! roxmltree recurses once per nesting level (a few thousand levels
 //! overflow a thread's stack, which aborts the process) and checks
-//! duplicate attributes in quadratic time, so [`prescan`] refuses, before
-//! roxmltree sees it, a document nested deeper than [`MAX_DEPTH`], an
-//! element with more than [`MAX_ATTRIBUTES`] attributes, and a DTD that
-//! declares a parameter entity, an external entity, an entity whose
-//! value holds `&`, `%` or `<`, or entities whose references expand past
-//! the document budget. The scan skips comments, CDATA, processing
+//! duplicate attributes in quadratic time, copies the namespaces in
+//! scope into each element that declares one and looks every entity
+//! reference up in a list, so [`prescan`] refuses, before roxmltree sees
+//! it, a document nested deeper than [`MAX_DEPTH`], an element with more
+//! than [`MAX_ATTRIBUTES`] attributes, more than [`MAX_NAMESPACES`]
+//! namespaces in scope or [`MAX_NAMESPACE_COPIES`] copied in all, and a
+//! DTD that declares more than [`MAX_ENTITIES`] entities, a parameter
+//! entity, an external entity, an entity whose value holds `&`, `%` or
+//! `<`, or entities whose references expand past the document budget. The scan skips comments, CDATA, processing
 //! instructions and quoted values, reads a DTD's internal subset token
 //! for token as roxmltree does (so it skips nothing roxmltree reads),
 //! and refuses the document at a construct it cannot follow, which
@@ -41,6 +44,19 @@ pub const MAX_DEPTH: usize = 128;
 
 /// The most attributes one element may have (real ones have about 8).
 pub const MAX_ATTRIBUTES: usize = 64;
+
+/// The most namespace declarations in scope at one element (real
+/// documents have about 10; an OpenDocument root about 35).
+pub const MAX_NAMESPACES: usize = 64;
+
+/// The most namespaces roxmltree copies in all: each element that
+/// declares one copies those in scope (an Atom feed with XHTML entries
+/// copies about a thousand).
+pub const MAX_NAMESPACE_COPIES: usize = 1 << 20;
+
+/// The most entities a DTD may declare, repeats included (real internal
+/// subsets declare a handful).
+pub const MAX_ENTITIES: usize = 256;
 
 /// The most nodes roxmltree is asked to build.
 const MAX_NODES: u32 = 1_000_000;
@@ -87,8 +103,19 @@ fn starts(b: &[u8], i: usize, s: &[u8]) -> bool {
 /// The declared entities and how far their references have expanded.
 struct Entities<'a> {
     declared: HashMap<&'a [u8], usize>,
+    /// Declarations read, repeats included.
+    count: usize,
     expanded: usize,
     budget: usize,
+}
+
+/// The open elements: how many namespaces each declares, how many are
+/// in scope, and how many roxmltree will have copied.
+#[derive(Default)]
+struct Open {
+    declared: Vec<usize>,
+    in_scope: usize,
+    copied: usize,
 }
 
 impl<'a> Entities<'a> {
@@ -123,10 +150,11 @@ fn is_name_byte(c: u8) -> bool {
 fn prescan(b: &[u8], budget: usize) -> Result<(), String> {
     let mut entities = Entities {
         declared: HashMap::new(),
+        count: 0,
         expanded: 0,
         budget,
     };
-    let mut depth = 0usize;
+    let mut open = Open::default();
     let mut i = 0;
     while i < b.len() {
         match b[i] {
@@ -141,12 +169,14 @@ fn prescan(b: &[u8], budget: usize) -> Result<(), String> {
                 } else if starts(b, i, b"<!DOCTYPE") {
                     doctype(b, i + 9, &mut entities)?
                 } else if starts(b, i, b"</") {
-                    depth = depth.saturating_sub(1);
+                    if let Some(n) = open.declared.pop() {
+                        open.in_scope -= n;
+                    }
                     after(b, i + 2, b">")
                 } else if starts(b, i, b"<!") {
                     after(b, i + 2, b">")
                 } else {
-                    tag(b, i + 1, &mut depth, &mut entities)?
+                    tag(b, i + 1, &mut open, &mut entities)?
                 };
                 match next {
                     Some(n) => i = n,
@@ -162,16 +192,19 @@ fn prescan(b: &[u8], budget: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// An opening tag whose name starts at `i`: its attributes counted, its
-/// values' references expanded, the depth one more unless it closes
-/// itself. The index after its `>`.
+/// An opening tag whose name starts at `i`: its attributes and namespace
+/// declarations counted, its values' references expanded, opened unless
+/// it closes itself. The index after its `>`.
 fn tag<'a>(
     b: &'a [u8],
     mut i: usize,
-    depth: &mut usize,
+    open: &mut Open,
     entities: &mut Entities<'a>,
 ) -> Result<Option<usize>, String> {
     let mut attributes = 0usize;
+    let mut namespaces = 0usize;
+    // The last name read: an attribute's when `=` follows it.
+    let mut name = (i, i);
     while i < b.len() {
         match b[i] {
             b'"' | b'\'' => {
@@ -195,18 +228,43 @@ fn tag<'a>(
                         "an element has more than {MAX_ATTRIBUTES} attributes"
                     ));
                 }
+                let n = &b[name.0..name.1];
+                if n == b"xmlns" || n.starts_with(b"xmlns:") {
+                    namespaces += 1;
+                }
                 i += 1;
             }
             b'>' => {
+                if namespaces > 0 {
+                    let in_scope = open.in_scope + namespaces;
+                    if in_scope > MAX_NAMESPACES {
+                        return Err(format!(
+                            "it has more than {MAX_NAMESPACES} namespaces in scope"
+                        ));
+                    }
+                    open.copied += in_scope;
+                    if open.copied > MAX_NAMESPACE_COPIES {
+                        return Err("its elements declare too many namespaces".into());
+                    }
+                }
                 if b[i - 1] != b'/' {
-                    *depth += 1;
-                    if *depth > MAX_DEPTH {
+                    open.declared.push(namespaces);
+                    open.in_scope += namespaces;
+                    if open.declared.len() > MAX_DEPTH {
                         return Err(format!("it nests deeper than {MAX_DEPTH} elements"));
                     }
                 }
                 return Ok(Some(i + 1));
             }
-            _ => i += 1,
+            c => {
+                if is_name_byte(c) {
+                    if !is_name_byte(b[i - 1]) {
+                        name.0 = i;
+                    }
+                    name.1 = i + 1;
+                }
+                i += 1;
+            }
         }
     }
     Ok(None)
@@ -314,6 +372,14 @@ fn entity<'a>(
                 return Err(format!(
                     "its DTD declares an entity `{}` holding `&`, `%` or `<`",
                     String::from_utf8_lossy(name)
+                ));
+            }
+            // roxmltree looks each reference up in a list of every
+            // declaration, repeats included.
+            entities.count += 1;
+            if entities.count > MAX_ENTITIES {
+                return Err(format!(
+                    "its DTD declares more than {MAX_ENTITIES} entities"
                 ));
             }
             // roxmltree expands the first declaration of a name (as XML
@@ -455,6 +521,21 @@ pub fn is_element(d: &Data) -> bool {
 /// its name, which `"@name"` still reaches. Anything not a record has
 /// none.
 pub fn lookup<'d>(d: &'d Data, name: &str) -> Vec<Cow<'d, Data>> {
+    lookup_named(d, name, true)
+}
+
+/// Whether a key path reads `root` only through the `text` alias: the
+/// root element's own text, with nothing named `text` in it. That does
+/// not make a fragment data ([`super::Document::fields`]): a script's
+/// `<span foreground="red">92%</span>` read as `text: text` is markup.
+pub fn by_text_alias(root: &Data, key: &[String]) -> bool {
+    matches!(key, [k] if k == "text")
+        && is_element(root)
+        && lookup_named(root, "text", false).is_empty()
+        && !element_text(root).is_empty()
+}
+
+fn lookup_named<'d>(d: &'d Data, name: &str, alias: bool) -> Vec<Cow<'d, Data>> {
     let Data::Record { fields, .. } = d else {
         return Vec::new();
     };
@@ -493,7 +574,7 @@ pub fn lookup<'d>(d: &'d Data, name: &str) -> Vec<Cow<'d, Data>> {
             }
         }
     }
-    if element && name == "text" {
+    if alias && element && name == "text" {
         let t = element_text(d);
         if !t.is_empty() {
             return vec![Cow::Owned(Data::text(t))];
@@ -868,6 +949,18 @@ mod tests {
             assert_eq!(one(&d, field("body", TextField::Optional)), None);
             assert_eq!(one(&d, field("body", TextField::No)), None);
         }
+        // Its own text through a field named `text` is no field held: a
+        // bar script's coloured label stays markup.
+        let d = Document::parse(span);
+        assert_eq!(
+            one(&d, field("text", TextField::Required)),
+            Some(text(span))
+        );
+        let both = d.fields(&[
+            field("text", TextField::Required),
+            field("foreground", TextField::Optional),
+        ]);
+        assert_eq!(both, [Some(text("CPU 92%")), Some(text("#e06c75"))]);
         // A key the document holds reads the element, as before.
         let span = Document::parse(span);
         assert_eq!(
@@ -1081,6 +1174,59 @@ mod tests {
             Document::parse(&format!("<r{ok}/>")),
             Document::Xml(..)
         ));
+        // Namespaces: a chain declaring 64 each is refused at the second
+        // element, many leaves under the most allowed in scope once
+        // their copies pass the bound, and real ones read.
+        let decl = |n: usize, from: usize| -> String {
+            (from..from + n)
+                .map(|i| format!(" xmlns:p{i}=\"u\""))
+                .collect()
+        };
+        let chain = format!(
+            "{}{}",
+            (0..127)
+                .map(|e| format!("<e{}>", decl(MAX_ATTRIBUTES, e * MAX_ATTRIBUTES)))
+                .collect::<String>(),
+            "</e>".repeat(127)
+        );
+        let refused = Document::parse(&chain);
+        assert!(refused.not_xml().is_some_and(|w| w.contains("in scope")));
+        let leaves = format!(
+            "<r{}>{}</r>",
+            decl(MAX_NAMESPACES - 1, 0),
+            "<e xmlns:z=\"u\"/>".repeat(MAX_NAMESPACE_COPIES / MAX_NAMESPACES + 1)
+        );
+        assert!(
+            Document::parse(&leaves)
+                .not_xml()
+                .is_some_and(|w| w.contains("too many"))
+        );
+        let fewer = format!(
+            "<r{}>{}</r>",
+            decl(MAX_NAMESPACES - 1, 0),
+            "<e xmlns:z=\"u\"/>".repeat(1000)
+        );
+        assert!(matches!(Document::parse(&fewer), Document::Xml(..)));
+        // A namespace closed with its element leaves the scope.
+        let closed = format!(
+            "<r>{}</r>",
+            format!("<e{}/>", decl(MAX_ATTRIBUTES, 0)).repeat(100)
+        );
+        assert!(matches!(Document::parse(&closed), Document::Xml(..)));
+        // Entities: past MAX_ENTITIES declarations, repeats included.
+        let entities = |n: usize| -> String {
+            let d: String = (0..n).map(|_| "<!ENTITY a \"\">").collect();
+            format!("<!DOCTYPE r [{d}]><r>{}</r>", "&a;".repeat(1000))
+        };
+        assert!(matches!(
+            Document::parse(&entities(MAX_ENTITIES)),
+            Document::Xml(..)
+        ));
+        assert!(
+            Document::parse(&entities(MAX_ENTITIES + 1))
+                .not_xml()
+                .is_some_and(|w| w.contains("entities"))
+        );
         // 262k siblings in about 1 MiB.
         let siblings = format!("<r>{}</r>", "<a/>".repeat(262_000));
         let Document::Xml(Data::Record { fields, .. }, _) = Document::parse(&siblings) else {

@@ -169,9 +169,13 @@ such as GPX's `<trkseg></trkseg>`, is an empty list, and read as a
 record it has its fields' defaults.
 
 A list of records takes a single object or element only when it holds
-one of the record's fields. An API that answers with an error object,
-such as `{"message": "API rate limit exceeded"}`, where you declared
-`[Release]` gives no list and `strand watch` reports it.
+one of the record's fields. So an action declared `-> [Release]` whose
+program prints an error object, such as `{"message": "API rate limit
+exceeded"}`, fails and says why in `.error`, rather than returning one
+empty release. A service field is different: the error object lacks the
+field's key (`releases`), and a missing key reads as `[]` with no
+report. That is why the recipes call `curl -f`, which fails on an HTTP
+error instead of printing its body.
 
 When something does not convert, the field reads as its type's
 default, an item that does not convert is left out of its list, and
@@ -185,7 +189,9 @@ an HTML fragment, or the Pango `<span foreground="#e06c75">92%</span>`
 that bar scripts print. A field typed `text` reads such a document as
 written, tags and all, when it holds none of the service's fields or is
 a single element of text, such as `<b>CPU</b>`; show it with `markup:
-html` or `markup: basic`. A document that holds any of the fields is
+html` or `markup: basic`. A field named `text` reading the element's
+own text does not count as one held, so `{ text: text }` keeps the
+script's colour. A document that holds any of the fields is
 data: a `text` field it lacks is empty, and a `from listen` line keeps
 that field's last value. So is a document that starts with an XML
 declaration (`<?xml …?>`) or a DOCTYPE: its element gives its text. A

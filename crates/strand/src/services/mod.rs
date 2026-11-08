@@ -3908,7 +3908,7 @@ service shelf {
                     {"tag_name": "v0.52.0", "published_at": "2026-10-20T08:00:00Z", "draft": false}]"#,
             );
             let src = format!(
-                "type Release {{ tag_name: text; published_at: Date }}\nservice gh from file \"{}\" {{ releases: [Release] }}\nexport let newest = gh.releases.sort_by(r => r.published_at).last?.tag_name ?? \"none\"\nbar B {{ text newest }}\n",
+                "type Release {{ tag_name: text; published_at: Date?; html_url: text }}\nservice gh from file \"{}\" {{ releases: [Release] }}\nexport let newest = gh.releases.sort_by(r => r.published_at).last?.tag_name ?? \"none\"\nbar B {{ text newest }}\n",
                 file.display()
             );
             let mut live = Live::boot(&src, Buses::none());
@@ -3939,7 +3939,7 @@ service shelf {
             }
             let at = |n: &str| dir.join(n).display().to_string();
             let src = format!(
-                "{POST}type Rate {{ currency: text; rate: float }}\ntype RateDay {{ time: Date; Cube: [Rate] }}\ntype Outline {{ text: text; xmlUrl: text?; outline: [Outline] }}\ntype Point {{ lat: angle; lon: angle; ele: float; time: Date }}\n\
+                "{POST}type Rate {{ currency: text; rate: float }}\ntype RateDay {{ time: Date?; Cube: [Rate] }}\ntype Outline {{ text: text; xmlUrl: text?; outline: [Outline] }}\ntype Point {{ lat: angle; lon: angle; ele: float; time: Date }}\n\
                  service rdf from file \"{}\" {{ posts: [Post] = item }}\n\
                  service ecb from file \"{}\" {{ day: RateDay = Cube.Cube }}\n\
                  service opml from file \"{}\" {{ feeds: [Outline] = body.outline }}\n\
