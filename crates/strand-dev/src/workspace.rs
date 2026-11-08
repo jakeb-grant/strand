@@ -195,6 +195,15 @@ impl Analysis {
                 &compiled.program,
                 dir,
             ));
+        // (check-settings) The settings files the config declares, read
+        // as `strand check` reads them, each problem shown at the
+        // declaration that reads the file (a stamp per file read, so an
+        // edit to it outside the editor is seen).
+        if let Some(d) = dir {
+            let (diags, read) = settings_at_declarations(&compiled.program, d, &map);
+            compiled.diagnostics.extend(diags);
+            stamps.extend(read.iter().filter_map(|p| Stamp::of(p)));
+        }
         // `shader "x.wgsl"` files, checked with naga (relative paths only
         // in a config directory).
         use strand_compiler::check::shaders;
@@ -645,6 +654,53 @@ impl Introspector {
     fn answered(&self) -> u64 {
         self.answered.load(std::sync::atomic::Ordering::SeqCst)
     }
+}
+
+/// (check-settings) What `strand check` says of the settings files
+/// `program` declares (`check::settings::check`), with the files it read.
+/// The editor shows only the config's `.strand` documents, so a problem
+/// found in a TOML file is shown at the declaration that reads it (its
+/// second label made the first), its message naming the file and line
+/// (`` `…/monitors.toml:12` ``); quick fixes inside the TOML file are
+/// left out.
+fn settings_at_declarations(
+    program: &strand_compiler::hir::Program,
+    dir: &Path,
+    map: &SourceMap,
+) -> (Vec<strand_compiler::Diagnostic>, Vec<PathBuf>) {
+    let n = map.len();
+    let mut read = map.clone();
+    let diags = strand_compiler::check::settings::check(program, Some(dir), &mut read);
+    let ours = |f: FileId| (f.0 as usize) < n;
+    let diags = diags
+        .into_iter()
+        .filter_map(|mut d| {
+            let at = d.labels.iter().find(|l| !ours(l.file)).and_then(|l| {
+                let f = read.get(l.file)?;
+                let before = f.text.get(..l.span.start as usize)?;
+                Some((f.name.clone(), before.matches('\n').count() + 1))
+            });
+            if let Some((name, line)) = at {
+                d.message =
+                    d.message
+                        .replacen(&format!("`{name}`"), &format!("`{name}:{line}`"), 1);
+            }
+            d.labels.retain(|l| ours(l.file));
+            d.suggestions.retain(|s| ours(s.file));
+            if !d.labels.iter().any(|l| l.primary)
+                && let Some(l) = d.labels.first_mut()
+            {
+                l.primary = true;
+            }
+            (!d.labels.is_empty()).then_some(d)
+        })
+        .collect();
+    let files = read
+        .iter()
+        .skip(n)
+        .map(|(_, f)| PathBuf::from(&f.name))
+        .collect();
+    (diags, files)
 }
 
 impl strand_compiler::check::dbus::Introspect for Introspector {

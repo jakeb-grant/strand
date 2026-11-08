@@ -91,7 +91,12 @@ strand check: 1 file in /home/you/.config/strand: 0 errors, 0 warnings
 
 `strand check ~/shells/test` checks another directory. Given a file,
 `strand check bar.strand` checks it together with the rest of its
-config and prints only the problems in that file.
+config and prints only the problems in that file. A file inside your
+config directory is checked with all of that config; a file anywhere
+else is checked with its own directory as the config, and relative
+paths in it (a settings file, an image) are found from there. To check
+a config kept somewhere else, such as a dotfiles repository, give its
+directory.
 
 ## Format it
 

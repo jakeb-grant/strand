@@ -1053,7 +1053,15 @@ monitor, the keyboard always).
   last call failed: the daemon's error name and message
   (``"org.freedesktop.bolt.Error.Exists: device already stored"``), or
   ``"`org.freedesktop.bolt` is not running"`` or ``"`…` has no method
-  `EnrollDevice`"`` when the call could not be made. `error` is null to
+  `EnrollDevice`"`` when the call could not be made, or why the service
+  could not take it at all (``"`bolt` is not running: its body failed
+  and restarts after a backoff"``, ``"no system bus"``), which is the
+  action failing, never the handler's error (section 12). A call still
+  waiting when the service's run ends (it stops 5 s after its last
+  visible reader goes, or its run failed) has lost its answer: the
+  action runs no more, its `error` ``"the service stopped before
+  `org.freedesktop.bolt` answered; whether the call took is unknown"``.
+  `error` is null to
   begin with, from the moment the service takes a new call, and once one
   is answered without an error; so `on change bolt.enroll.error` hears a
   failure a shell can show (unless the new call fails before the logic
@@ -2889,7 +2897,9 @@ people can edit by hand.
   and loads the rest; so is a key no declaration of the file has
   (`check::settings_unknown_key`, with a did-you-mean), which the shell
   never reads. The overlay and the last-good snapshot are the running
-  shell's and are not read.
+  shell's and are not read. The language server reports the same, each
+  at the declaration that reads the file, its message naming the TOML
+  file and line.
 
 ## 12. Errors and faults
 

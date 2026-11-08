@@ -2196,6 +2196,32 @@ impl<S: Service> Client<S> {
         self.act_inner(rt, action, ctx, token).map_err(|(e, _)| e)
     }
 
+    /// [`Client::act_with`] from a handler: a service that cannot take
+    /// it (its body failed and backs off) reports it as the action
+    /// failing ([`Service::refused`]), never as the caller's error
+    /// (spec.md 12; owner-testing gap 20), and a caller outside the
+    /// program hears it through [`catch_refusals`] as `` `name`: why ``.
+    /// True when a run took it.
+    pub fn act_or_refuse(
+        &self,
+        rt: &Runtime,
+        name: &str,
+        action: S::Action,
+        ctx: ActionCtx,
+        token: bool,
+    ) -> bool {
+        let Err((e, a)) = self.act_inner(rt, action, ctx, token) else {
+            return true;
+        };
+        self.0.refuse(rt, name, a.as_ref(), &e);
+        CAUGHT.with(|c| {
+            if let Some(v) = c.borrow_mut().as_mut() {
+                v.push(format!("`{name}`: {e}"));
+            }
+        });
+        false
+    }
+
     /// [`Client::act_with`], handing the action back with the error when
     /// no run took it (what [`Service::refused`] reports it by).
     fn act_inner(
@@ -2643,17 +2669,7 @@ impl<S: Service> DynService for Client<S> {
     ) -> Result<(), Error> {
         let a = <S::Action as FromCall>::from_call(name, item, args)
             .map_err(|e| Error::failed(format!("{}.{name}: {e}", S::NAME)))?;
-        // A service that cannot take it (its body failed and backs off)
-        // reports it as the action failing, never as the caller's error
-        // (spec.md 12; owner-testing gap 20).
-        if let Err((e, a)) = self.act_inner(rt, a, ctx, S::ACTIVATION.contains(&name)) {
-            self.0.refuse(rt, name, a.as_ref(), &e);
-            CAUGHT.with(|c| {
-                if let Some(v) = c.borrow_mut().as_mut() {
-                    v.push(format!("`{name}`: {e}"));
-                }
-            });
-        }
+        self.act_or_refuse(rt, name, a, ctx, S::ACTIVATION.contains(&name));
         Ok(())
     }
 

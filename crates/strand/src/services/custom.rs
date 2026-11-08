@@ -42,7 +42,7 @@ use strand_core::{Error, Memo, NodeId, Runtime, Scope, Signal};
 use strand_services::custom::{
     self, ActionSpec, Custom, CustomAction, CustomValue, FieldSpec, Source, Spec, TextField,
 };
-use strand_services::{Client, Data, ServiceDiagnostic, Services, Step, ToData};
+use strand_services::{Client, Data, ServiceDiagnostic, Services, Step, Store, ToData};
 
 use super::convert::{to_service_data, to_value};
 
@@ -60,6 +60,10 @@ struct Entry {
     /// (dbus-action-run) Its actions' runs (`bolt.enroll.error`), each an
     /// `ActionRun`, by index.
     runs: Vec<Memo<Value>>,
+    /// (dbus-action-run) Each action's refusal by the client (the service
+    /// could not take the call at all), by index: its run's `error` until
+    /// a run takes the next call.
+    refusals: Vec<Signal<Option<String>>>,
     /// (services-round) `on svc.line(doc)`'s queue (a `from listen`
     /// declaration's), each line as the declaration's record.
     line: strand_core::EventQueue<Vec<Value>>,
@@ -93,7 +97,8 @@ impl Entry {
 /// line's record, which the one observer a client gets
 /// ([`LineSink::observe`]) looks up for each line: a restart mounts anew
 /// on the same client, so an observer per mount would pile up, each
-/// emitting into a disposed queue.
+/// emitting into a disposed queue. (dbus-action-run) The observer also
+/// hears the service's `refused` event, into the mount's `refusals`.
 #[derive(Default)]
 struct LineSink(RefCell<Option<LineTarget>>);
 
@@ -104,6 +109,8 @@ struct LineTarget {
     service: String,
     /// (doc-formats) The last line's value that did not convert, logged.
     nested: RefCell<Option<String>>,
+    /// (dbus-action-run) [`Entry::refusals`].
+    refusals: Vec<Signal<Option<String>>>,
 }
 
 impl LineSink {
@@ -112,9 +119,28 @@ impl LineSink {
         let sink = Rc::new(LineSink::default());
         let s = sink.clone();
         client.dynamic().observe(Box::new(move |rt, applied| {
-            let strand_services::Applied::Event { args, .. } = applied else {
+            let strand_services::Applied::Event { event, args } = applied else {
                 return;
             };
+            // (dbus-action-run) An action the service could not take: its
+            // run's error.
+            if <Custom as Store>::EVENTS.get(*event).map(|e| e.name) == Some("refused") {
+                let (Some(Data::Int(i)), Some(Data::Text(why))) = (args.first(), args.get(1))
+                else {
+                    return;
+                };
+                let refusal = s.0.borrow().as_ref().and_then(|t| {
+                    usize::try_from(*i)
+                        .ok()
+                        .and_then(|i| t.refusals.get(i).copied())
+                });
+                if let Some(r) = refusal
+                    && let Err(e) = r.set(rt, Some(why.to_string()))
+                {
+                    log::warn!("a refused action's error: {e}");
+                }
+                return;
+            }
             let Some(Data::List(values)) = args.first() else {
                 return;
             };
@@ -867,7 +893,7 @@ impl CustomHost {
         }
         let typing = Rc::new(RefCell::new(typing));
         let mut mismatches = Vec::with_capacity(n);
-        let (scope, (epoch, values, runs, line)) = rt.scope(|rt| {
+        let (scope, (epoch, values, runs, refusals, line)) = rt.scope(|rt| {
             let epoch = rt.signal(0u64);
             let values = (0..n)
                 .map(|i| {
@@ -900,24 +926,33 @@ impl CustomHost {
                 })
                 .collect::<Vec<Memo<Value>>>();
             // (dbus-action-run) Each action's run, as the service tells
-            // it, an `ActionRun` as a declared command action's run is.
+            // it, an `ActionRun` as a declared command action's run is; a
+            // call the service could not take at all is its error until
+            // a run takes the next.
+            let refusals = (0..decl.actions.len())
+                .map(|_| rt.signal(None::<String>))
+                .collect::<Vec<_>>();
             let runs = (0..decl.actions.len())
                 .map(|i| {
                     let (client, typing) = (client.clone(), typing.clone());
+                    let refusal = refusals[i];
                     let m = rt.memo(move |rt| {
                         epoch.get(rt)?;
-                        let run = client
+                        let mut run = client
                             .cells()
                             .runs
                             .with(rt, |v| v.get(&(i as i64)).cloned())?
                             .unwrap_or_default();
+                        if let Some(why) = refusal.get(rt)? {
+                            run.error = Some(why);
+                        }
                         Ok(action_run(&typing.borrow().table, &run))
                     });
                     rt.set_name(m.id(), format!("{}.{}", decl.name, decl.actions[i].name));
                     m
                 })
                 .collect::<Vec<Memo<Value>>>();
-            (epoch, values, runs, rt.events::<Vec<Value>>())
+            (epoch, values, runs, refusals, rt.events::<Vec<Value>>())
         });
         // (services-round) Each `line` the service sends, as the
         // declaration's record: its fields converted as the memos convert
@@ -928,6 +963,7 @@ impl CustomHost {
             typing: typing.clone(),
             service: decl.name.clone(),
             nested: RefCell::new(None),
+            refusals: refusals.clone(),
         });
         Entry {
             client,
@@ -937,6 +973,7 @@ impl CustomHost {
             epoch,
             values,
             runs,
+            refusals,
             line,
             sink,
             mismatches,
@@ -1171,7 +1208,7 @@ impl ServiceHost for CustomHost {
                 "a no-code service has no item action `{name}`"
             )));
         };
-        let (client, index, table) = {
+        let (client, index, table, refusal) = {
             let entries = self.entries.borrow();
             let e = entries
                 .get(service)
@@ -1182,13 +1219,26 @@ impl ServiceHost for CustomHost {
                 .iter()
                 .position(|a| a.name == name)
                 .ok_or_else(|| Error::failed(format!("`{service}` has no action `{name}`")))?;
-            (e.client.clone(), index, e.typing.borrow().table.clone())
+            (
+                e.client.clone(),
+                index,
+                e.typing.borrow().table.clone(),
+                e.refusals.get(index).copied(),
+            )
         };
         let args = args
             .iter()
             .map(|v| to_service_data(&table, v))
             .collect::<Result<_, _>>()?;
-        client.act_with(rt, CustomAction { index, args }, ctx, false)
+        // (dbus-action-run) A service that cannot take it (its body
+        // failed and backs off) refuses it as the action's failure, its
+        // run's `error` (the observer of `refused`), never the caller's
+        // error (spec.md 12); one a run takes ends the last refusal.
+        let taken = client.act_or_refuse(rt, name, CustomAction { index, args }, ctx, false);
+        if taken && let Some(r) = refusal {
+            r.set(rt, None)?;
+        }
+        Ok(())
     }
 
     fn call(

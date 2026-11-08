@@ -1905,7 +1905,11 @@ Public interfaces:
     (dbus-action-run) each one's run comes back as the store's keyed
     `runs` (`custom::CustomRun`: calls in flight, the oldest's Unix
     seconds, the last failure), which `CustomHost::read` answers as an
-    `ActionRun` for `bolt.enroll` read without a call.
+    `ActionRun` for `bolt.enroll` read without a call; an action the
+    service could not take comes back as its `refused` event (index,
+    why), the run's error until a run takes the next call, and
+    `CustomHost::action` sends through `Client::act_or_refuse`, as
+    `DynService::action` does.
   - A top-level `action`'s command is not a host call: the VM queues an
     `ExecRequest`, logic takes them after each tick's diff
     (`Instance::take_execs()`), and the strand crate's `Execs`

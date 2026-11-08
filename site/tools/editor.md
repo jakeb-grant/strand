@@ -24,9 +24,10 @@ input and output. An editor starts it for files ending in `.strand`.
 ### What it does
 
 - **Diagnostics**: what `strand check` finds in the config's files
-  (all of it but a missing `strand-auth` helper and what is wrong inside
-  a settings file), for every file of the config: when a file opens or
-  is saved, and 200 ms after you stop typing.
+  (all of it but a missing `strand-auth` helper), for every file of the
+  config: when a file opens or is saved, and 200 ms after you stop
+  typing. What is wrong inside a settings file is shown at the `state`
+  that reads it, the message naming the TOML file and line.
 - **Completion** after `$`, `.` and `<->`, and of element, component,
   keyword, prop and event names and enum values.
 - **Hover**: a name's type, and its documentation from the schemas.

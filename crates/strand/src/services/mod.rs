@@ -4613,6 +4613,60 @@ service early {
             let _ = std::fs::remove_dir_all(&dir);
         }
 
+        /// (review of dbus-action-run) A call a `from dbus` service cannot
+        /// take at all (its bus does not answer, so its body fails and
+        /// backs off) is the action's `.error`, as a daemon's refusal is,
+        /// never the handler's error; a caller outside the program
+        /// (`strand call`) hears it too.
+        #[test]
+        fn a_dbus_action_the_service_cannot_take_is_its_error() {
+            let gone =
+                strand_services::Bus::Address("unix:path=/nonexistent/strand-test-bus".into());
+            let src = "service bolt from dbus system \"org.example.Gone\" {\n  action enroll(dev: text) = Enroll\n}\nbar B { text bolt.enroll.error ?? \"none\" }\n";
+            let mut live = Live::boot(
+                src,
+                Buses {
+                    session: gone.clone(),
+                    system: gone,
+                },
+            );
+            let types = live.build.program.types.clone();
+            let error = |l: &Live| {
+                l.value("bolt", "enroll")
+                    .field(&types, "error")
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            };
+            assert_eq!(error(&live), Value::Null);
+            let call = |l: &Live| {
+                strand_services::catch_refusals(|| {
+                    l.real.host.action(
+                        &l.rt,
+                        strand_compiler::vm::host::ActionTarget::Service("bolt"),
+                        "enroll",
+                        &[Value::text("dev")],
+                        strand_compiler::vm::host::ActionCtx::default(),
+                    )
+                })
+            };
+            // The first call starts the service, whose body fails before
+            // reading it; a later one finds it backing off. Each is the
+            // run's error, the caller's `Ok`.
+            let (r, _) = call(&live);
+            assert_eq!(r, Ok(()));
+            live.until("the refusal is the run's error", |l| {
+                error(l) != Value::Null
+            });
+            let (r, caught) = call(&live);
+            assert_eq!(r, Ok(()));
+            assert_eq!(caught.len(), 1, "{caught:?}");
+            assert!(caught[0].contains("backoff"), "{caught:?}");
+            let Value::Text(why) = error(&live) else {
+                panic!("{:?}", error(&live));
+            };
+            assert!(why.contains("restarts after a backoff"), "{why}");
+        }
+
         /// design.md's `service ppd from dbus system
         /// "net.hadess.PowerProfiles" { profile: text rw = ActiveProfile }`
         /// against python-dbusmock's power-profiles-daemon: checked against

@@ -76,7 +76,10 @@ Strand's built-in `power` service already reads and sets the profile
   message (`org.freedesktop.bolt.Error.Exists: device already stored`
   from bolt's `EnrollDevice`), so the shell can say why: `text
   ppd.hold.error ?? ""`. A new call clears it, as does an answer
-  without an error. A method call cannot be taken back, so this run has
+  without an error. When the call could not be made at all (the
+  daemon is not on the bus, or the service could not reach the bus),
+  `.error` says so; when the service stopped while a call still
+  waited, it says the answer never came. A method call cannot be taken back, so this run has
   no `stop()`.
 - **It is checked against the object's introspection**, like its
   properties: a misspelt method or property is an error with a

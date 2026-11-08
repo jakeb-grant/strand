@@ -354,6 +354,12 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 
 [[claim]]
 page   = "site/start/running.md"
+text   = "else is checked with its own directory as the config, and relative"
+source = ['crates/strand/src/check.rs "let inside_default = default_root"', 'crates/strand/src/check.rs ".parent() .map_or_else(|| PathBuf::from("."), Path::to_path_buf),"']
+proof  = "ran in the review of check-settings (2026-11-08): `strand check …/c1/pages/mon.strand` outside the default config resolved `monitors.toml` from `pages/` and reported nothing, `strand check …/c1` reported both bad values"
+
+[[claim]]
+page   = "site/start/running.md"
 text   = "`strand new` writes one file, `bar.strand`, the guide's hello bar, and"
 source = ['''crates/strand/src/new.rs "/// The starter config, byte for byte the guide's level-1 block."''', 'crates/strand/src/new.rs "pub(crate) const FILE: &str = "bar.strand";"']
 proof  = "crates/strand/src/new.rs::tests::a_new_or_empty_dir_gets_the_template"
@@ -644,7 +650,13 @@ proof  = "crates/strand-dev/tests/lsp.rs::the_binary_serves_stdio"
 page   = "site/tools/editor.md"
 text   = "- **Diagnostics**: what `strand check` finds in the config's files"
 source = ['crates/strand-dev/src/workspace.rs ".extend(strand_compiler::check::paths::check(&compiled.program, dir));"', 'crates/strand/src/check.rs "diags.extend(lock_helper(&compiled.parses, helper));"']
-proof  = "read: the same checks as `check_config`, all but `lock_helper` and `check::settings::check`, which crates/strand-dev has no call of (decisions.md check-settings)"
+proof  = "read: the same checks as `check_config`, all but `lock_helper`, which crates/strand-dev has no call of"
+
+[[claim]]
+page   = "site/tools/editor.md"
+text   = "typing. What is wrong inside a settings file is shown at the `state`"
+source = ['crates/strand-dev/src/workspace.rs "let diags = strand_compiler::check::settings::check(program, Some(dir), &mut read);"', 'crates/strand-dev/src/workspace.rs ".replacen(&format!("`{name}`"), &format!("`{name}:{line}`"), 1);"']
+proof  = "crates/strand-dev/tests/lsp.rs::a_settings_files_problems_are_shown_at_its_declaration"
 
 [[claim]]
 page   = "site/tools/editor.md"
@@ -2875,6 +2887,12 @@ page   = "site/how-to/dbus-and-actions.md"
 text   = "A new call clears it, as does an answer without an error."
 source = ['crates/strand-services/src/custom.rs "// A new call clears the last one"', 'crates/strand-services/src/custom.rs "r.error = refused;"']
 proof  = "crates/strand-services/tests/custom.rs::a_dbus_actions_run_says_why_its_call_failed"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "`.error` says so; when the service stopped while a call still"
+source = ['crates/strand-services/src/custom.rs "fn refused(action: &CustomAction, error: &str) -> Option<CustomEvent> {"', 'crates/strand-services/src/custom.rs "the service stopped before `{name}` answered; whether the call took is unknown"', 'crates/strand/src/services/custom.rs "if <Custom as Store>::EVENTS.get(*event).map(|e| e.name) == Some("refused") {"']
+proof  = "crates/strand-services/tests/custom.rs::a_dbus_actions_run_says_why_its_call_failed (a slow call, then a restart), ::a_dbus_action_the_service_cannot_take_is_refused; crates/strand/src/services/mod.rs::tests::custom_services::a_dbus_action_the_service_cannot_take_is_its_error"
 
 [[claim]]
 page   = "site/how-to/dbus-and-actions.md"
