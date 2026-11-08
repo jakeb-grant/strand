@@ -10,7 +10,9 @@ use strand_scene::{KEY_MODIFIERS, KeyPattern, KeyPatternError};
 impl<'a> Checker<'a> {
     pub(crate) fn stmts(&mut self, items: &'a [ast::Stmt]) -> Vec<hir::Stmt> {
         self.push_scope();
+        self.action_calls.push(Vec::new());
         let out = items.iter().map(|s| self.stmt(s)).collect();
+        self.action_calls.pop();
         self.pop_scope();
         out
     }
@@ -136,7 +138,10 @@ impl<'a> Checker<'a> {
                 if let Some(k) = &f.key {
                     self.expr(k, None);
                 }
+                let in_loop = self.ctx.in_loop;
+                self.ctx.in_loop = self.ctx.handler;
                 let body = self.stmts(&f.body.items);
+                self.ctx.in_loop = in_loop;
                 self.pop_scope();
                 StmtKind::For {
                     binding,
@@ -681,7 +686,10 @@ impl<'a> Checker<'a> {
         };
         self.ctx.handler = true;
         self.ctx.prop = false;
+        self.ctx.in_loop = false;
+        let calls = std::mem::take(&mut self.action_calls);
         let body = self.stmts(&o.body.items);
+        self.action_calls = calls;
         self.pop_scope();
         self.ctx = saved;
         Some(hir::Handler {
@@ -897,7 +905,10 @@ impl<'a> Checker<'a> {
             .as_ref()
             .map(|w| self.expect(w, &Ty::BOOL, "`while`"));
         self.ctx.handler = true;
+        self.ctx.in_loop = false;
+        let calls = std::mem::take(&mut self.action_calls);
         let body = self.stmts(&t.body.items);
+        self.action_calls = calls;
         self.ctx = saved;
         hir::Timer {
             kind: t.kind,

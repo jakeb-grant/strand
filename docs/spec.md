@@ -816,7 +816,13 @@ monitor, the keyboard always).
 - An action without a result (no `-> T`) runs at most once at a time:
   a call while its command still
   runs queues one re-run, the latest call's, started when the command
-  ends, as a `file`'s `run` is (section 9.7).
+  ends, as a `file`'s `run` is (section 9.7). (action-coalesced) So
+  calls made together are lost but for the first and the latest: a
+  call in a `for` body of a handler, or one after a call of the same
+  action that runs first on every path of the handler, is a warning
+  (`check::action_coalesced`), whose help offers one call for all
+  items or a `-> text` action awaited each time. A service's own
+  actions are each their own request and are not warned about.
 - Its command runs detached, in its own process group, with stdin and
   stdout on `/dev/null`; the handler does not wait for it, and logic is
   never blocked by it. A program that cannot start or exits non-zero is

@@ -2670,6 +2670,79 @@ fn unread_methods_leave_actions_unchecked_with_a_warning() {
     assert!(d[0].message.contains("timed out"), "{}", d[0].message);
 }
 
+/// (action-coalesced) A declared action without a result runs once at
+/// a time, a call while it runs replacing the one waiting (spec.md 5.7):
+/// called for each item of a `for`, or again after a call that runs first
+/// on every path of the handler, it is a warning. Calls on exclusive
+/// branches, one call per handler, a `-> text` action awaited in a loop
+/// and a builtin service action in a loop are silent.
+#[test]
+fn an_action_without_a_result_called_together_is_warned_about() {
+    let head = "permit exec \"notify-send\", \"qalc\"\n\
+        action notify(m: text) [\"notify-send\", m]\n\
+        action calc(q: text) -> text [\"qalc\", \"-t\", q]\n\
+        state xs = [\"a\", \"b\"]\n";
+    let warned = |body: &str| {
+        let (out, _) = compile_files(&[("a.strand", format!("{head}{body}"))]);
+        let d: Vec<_> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.code != "check::unused")
+            .collect();
+        assert!(
+            d.iter().all(|d| d.code == "check::action_coalesced"),
+            "{body}: {:?}",
+            d.iter().map(|d| (d.code, &d.message)).collect::<Vec<_>>()
+        );
+        d.len()
+    };
+    assert_eq!(
+        warned("bar B { text \"x\" { on click { for x in xs key x { notify(x) } } } }\n"),
+        1,
+        "in a loop"
+    );
+    assert_eq!(
+        warned(
+            "bar B { text \"x\" { on click { notify(\"a\")\n if xs.count(x => true) > 1 { notify(\"b\") } } } }\n"
+        ),
+        1,
+        "again, in a block inside"
+    );
+    assert_eq!(
+        warned(
+            "bar B { text \"x\" { on click { notify(\"a\")\n notify(\"b\")\n notify(\"c\") } } }\n"
+        ),
+        2,
+        "the second and the third"
+    );
+    for silent in [
+        "bar B { text \"x\" { on click { if xs.count(x => true) > 1 { notify(\"a\") } else { notify(\"b\") } } } }\n",
+        "bar B { text \"x\" { on click { notify(\"a\") } }\n text \"y\" { on click { notify(\"b\") } } }\n",
+        "bar B { state r = \"\"\n text r { on click { for x in xs key x { r = await calc(x) } } } }\n",
+        "bar B { text \"x\" { on click { for p in media.players key p.id { p.select() } } } }\n",
+    ] {
+        assert_eq!(warned(silent), 0, "{silent}");
+    }
+    let (out, _) = compile_files(&[(
+        "a.strand",
+        format!(
+            "{head}bar B {{ text \"x\" {{ on click {{ for x in xs key x {{ notify(x) }} }} }} }}\n"
+        ),
+    )]);
+    let d = out
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "check::action_coalesced")
+        .unwrap();
+    assert!(
+        d.message.contains("`notify` has no result"),
+        "{}",
+        d.message
+    );
+    let help = d.help.as_deref().unwrap_or("");
+    assert!(help.contains("-> text") && help.contains("await"), "{help}");
+}
+
 /// (dbus-unfollowed) A field bound to a property annotated
 /// `EmitsChangedSignal=false` (logind's `Docked`) is a warning naming
 /// the field, with a way out; a `const` property, one signalled with

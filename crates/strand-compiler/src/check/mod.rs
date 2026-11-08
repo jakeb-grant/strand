@@ -335,6 +335,9 @@ pub(crate) struct Ctx {
     /// entry written, a `V`, where a read gives a `V?` (decisions.md,
     /// dictionary).
     pub place: bool,
+    /// (action-coalesced) In a `for` body of a handler: a declared action
+    /// without a result called here loses all but its latest queued call.
+    pub in_loop: bool,
 }
 
 /// An element being checked.
@@ -526,6 +529,11 @@ pub(crate) struct Checker<'a> {
     /// a call standing alone: only there can a foreign method's fix turn
     /// it into a write (`m.set(k, v)` to `m[k] = v`).
     pub stmt_expr: Option<Span>,
+    /// (action-coalesced) The declared actions without a result called so
+    /// far in each block being checked, innermost last: a call of one
+    /// already called in this block or an enclosing one runs after it on
+    /// every path.
+    pub action_calls: Vec<Vec<DefId>>,
     /// The inferred component parameter whose argument is being checked
     /// (for the help on a bare builtin variant: `Side center`).
     pub infer_arg: Option<String>,
@@ -644,6 +652,7 @@ impl<'a> Checker<'a> {
             float_pins: HashSet::new(),
             untyped_dicts: HashSet::new(),
             stmt_expr: None,
+            action_calls: Vec::new(),
             infer_arg: None,
             flows: Vec::new(),
             value_sources: HashMap::new(),

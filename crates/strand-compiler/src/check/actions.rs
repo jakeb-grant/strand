@@ -50,6 +50,38 @@ fn is_dash_c(arg: &str) -> bool {
 }
 
 impl<'a> Checker<'a> {
+    /// (action-coalesced) Warn about a call of declared action `d`, which
+    /// has no result, in a `for` body or after a call of it that runs
+    /// first on every path of the handler: it runs once at a time, and a
+    /// call while it runs replaces the one queued (spec.md 5.7), so calls
+    /// made together are lost but for the first and the latest.
+    pub(super) fn action_coalesced(&mut self, d: DefId, name: &str, span: crate::syntax::Span) {
+        let again = self.action_calls.iter().flatten().any(|c| *c == d);
+        if let Some(block) = self.action_calls.last_mut() {
+            block.push(d);
+        }
+        let label = if self.ctx.in_loop {
+            "called for each item"
+        } else if again {
+            "called again in this handler"
+        } else {
+            return;
+        };
+        self.warning(
+            "check::action_coalesced",
+            format!(
+                "`{name}` has no result, so it runs once at a time: a call while it runs \
+                 replaces the one waiting, and only the latest call is sure to run"
+            ),
+            span,
+            label,
+        )
+        .help = Some(format!(
+            "pass everything in one call, or declare `action {name}(…) -> text [...]` and \
+             `await` each call; when only the latest call matters, this is what you want"
+        ));
+    }
+
     /// (M6, the review of the owner's ruling) Warn about a parameter that
     /// a shell reads as its script (`["sh", "-c", cmd]`): its value is
     /// run as shell code, which a text from a service or a user may not
