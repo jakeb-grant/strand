@@ -5,7 +5,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use strand_compiler::instantiate::{Instance, NodeFlag, SceneMirror, Storage, Update, show};
+use strand_compiler::instantiate::{
+    Instance, NodeFlag, OutputContent, SceneMirror, Storage, Update, show,
+};
 use strand_compiler::vm::schema_host::SchemaHost;
 use strand_compiler::vm::{Num, Value};
 use strand_compiler::{SourceMap, lower};
@@ -7318,8 +7320,9 @@ fn settings_records_read_and_write_table_forms() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// (monitor-layout) The best-guess arrangement site/how-to/monitor-layouts.md
-/// shows, as written there: the laptop's panel last, the others left to
+/// (monitor-layout) The best-guess arrangement site/how-to/monitor-profiles.md
+/// shows (the page's own files are mounted by
+/// `the_monitor_profiles_page_works_together`): the laptop's panel last, the others left to
 /// right in `outputs.all` order, each one's x the sum of the logical
 /// widths before it (a rotated head is as wide as its mode is tall, a
 /// scaled one narrower), y 0, every head on at its preferred mode.
@@ -7493,4 +7496,306 @@ fn hex_and_argb_format_colours_anywhere() {
         Some(parts[0]),
         "the token followed the flip"
     );
+}
+
+/// The page site/how-to/monitor-profiles.md, whose `strand file=` blocks
+/// the tests below mount as they are written there.
+const MONITOR_PROFILES_PAGE: &str = include_str!("../../../site/how-to/monitor-profiles.md");
+
+/// The `strand file=NAME` blocks of a site page, in order.
+fn page_files(page: &str) -> Vec<(String, String)> {
+    let mut files = Vec::new();
+    let mut lines = page.lines();
+    while let Some(line) = lines.next() {
+        let Some(name) = line.strip_prefix("```strand file=") else {
+            continue;
+        };
+        let body: Vec<&str> = lines.by_ref().take_while(|l| *l != "```").collect();
+        files.push((name.trim().to_string(), body.join("\n") + "\n"));
+    }
+    files
+}
+
+/// (blocks) An `Output` as outputs reports it, with its `id`.
+fn monitor(
+    host: &SchemaHost,
+    name: &str,
+    id: &str,
+    (w, h, r): (i64, i64, f64),
+    (x, y): (i64, i64),
+    scale: f64,
+    turn: &str,
+) -> Value {
+    let mode = host.record(
+        "OutputMode",
+        &[
+            ("width", Value::int(w)),
+            ("height", Value::int(h)),
+            ("refresh", Value::float(r)),
+        ],
+    );
+    host.record(
+        "Output",
+        &[
+            ("name", Value::text(name)),
+            ("id", Value::text(id)),
+            ("enabled", Value::Bool(true)),
+            ("mode", mode.clone()),
+            ("preferred", mode),
+            ("x", Value::int(x)),
+            ("y", Value::int(y)),
+            ("scale", Value::float(scale)),
+            ("transform", host.variant("OutputTransform", turn)),
+        ],
+    )
+}
+
+const PANEL: &str = "BOE | 0x0BCA | BOE 0x0BCA";
+const DELL: &str = "Dell Inc. | DELL U2720Q | Dell Inc. DELL U2720Q 6Y1ZW13";
+
+/// The laptop's panel and a Dell turned on its side, at `panel` and
+/// `dell`.
+fn desk(host: &SchemaHost, panel: (i64, i64), dell: (i64, i64)) -> Value {
+    Value::list(vec![
+        monitor(
+            host,
+            "eDP-1",
+            PANEL,
+            (1920, 1200, 60.0),
+            panel,
+            1.25,
+            "normal",
+        ),
+        monitor(
+            host,
+            "DP-3",
+            DELL,
+            (3840, 2160, 59.997),
+            dell,
+            1.5,
+            "rotate_90",
+        ),
+    ])
+}
+
+/// The `outputs.apply` calls since the last, each as `name@x,y` per
+/// monitor.
+fn applied(shell: &Shell) -> Vec<String> {
+    shell
+        .host
+        .take_actions()
+        .into_iter()
+        .filter(|c| c.target == "outputs" && c.name == "apply")
+        .map(|c| {
+            let json = strand_compiler::vm::json::to_json_string(shell.host.types(), &c.args[0]);
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|c| format!("{}@{},{}", c["name"].as_str().unwrap(), c["x"], c["y"]))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect()
+}
+
+/// (blocks) The monitor profiles page, end to end on the mock host: its
+/// compositor file and JSON file wait for `outputs.ready` and then follow
+/// `outputs.all` (with `Output.id`); `on change chosen, outputs.ready`
+/// applies the best guess (the take/index_of/sum running total) once
+/// the monitors are in; a profile written by hand in `[[…]]` form is read
+/// into records, matched by `Output.id`, and applied; and "Save this
+/// profile" writes back into that form, leaving a profile that reads the
+/// same as written, comments and all.
+#[test]
+fn the_monitor_profiles_page_works_together() {
+    let files = page_files(MONITOR_PROFILES_PAGE);
+    let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "layout.strand",
+            "monitors.strand",
+            "hyprland.strand",
+            "workspaces.strand"
+        ]
+    );
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(n, t)| (n.as_str(), t.as_str()))
+        .collect();
+    let dir = temp_dir("monitor-profiles");
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let storage = Storage::in_dirs(dir.join("state"), &config);
+    let mut shell = boot_with(
+        &refs,
+        |rt, host| {
+            dp1(rt, host);
+            host.set_ready(rt, "outputs", false).unwrap();
+            host.set(rt, "outputs.all", desk(host, (0, 0), (1920, 0)))
+                .unwrap();
+        },
+        storage.clone(),
+    );
+    let outputs = |shell: &Shell| {
+        let mut seen = shell
+            .inst
+            .take_outputs()
+            .into_iter()
+            .map(|c| {
+                let name = c
+                    .path
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                let what = match c.content {
+                    OutputContent::Write { bytes, .. } => String::from_utf8(bytes).unwrap(),
+                    other => format!("{other:?}"),
+                };
+                (name, what)
+            })
+            .collect::<Vec<_>>();
+        seen.sort();
+        seen
+    };
+    // Before `outputs` has answered, both files wait and nothing is
+    // applied.
+    let waiting = format!(
+        "{:?}",
+        OutputContent::Waiting {
+            services: vec!["outputs".into()]
+        }
+    );
+    assert_eq!(
+        outputs(&shell),
+        [
+            ("monitors.conf".to_string(), waiting.clone()),
+            ("monitors.json".to_string(), waiting)
+        ]
+    );
+    shell.at(5.0);
+    assert!(applied(&shell).is_empty());
+    // It answers: the files are written from `outputs.all`, and the best
+    // guess is applied 1.5 s later: the Dell, turned, is 2160 / 1.5 =
+    // 1440 wide, the panel after it.
+    shell.host.set_ready(&shell.rt, "outputs", true).unwrap();
+    shell.at(5.1);
+    assert_eq!(
+        outputs(&shell),
+        [
+            (
+                "monitors.conf".to_string(),
+                "# Written by Strand from outputs.all\n\
+                 monitor = eDP-1, 1920x1200@60, 0x0, 1.25, transform, 0\n\
+                 monitor = DP-3, 3840x2160@59.997, 1920x0, 1.5, transform, 1\n"
+                    .to_string()
+            ),
+            (
+                "monitors.json".to_string(),
+                format!("[[\"{PANEL}\",\"eDP-1\"],[\"{DELL}\",\"DP-3\"]]")
+            )
+        ]
+    );
+    shell.at(6.0);
+    assert!(applied(&shell).is_empty(), "debounced");
+    shell.at(6.7);
+    assert_eq!(applied(&shell), ["eDP-1@1440,0 DP-3@0,0"]);
+    // The compositor does it; the file follows, and nothing is applied
+    // again (the guess reads no position).
+    shell
+        .host
+        .set(
+            &shell.rt,
+            "outputs.all",
+            desk(&shell.host, (1440, 0), (0, 0)),
+        )
+        .unwrap();
+    shell.at(7.0);
+    let conf = outputs(&shell);
+    assert!(
+        conf[0].1.contains("monitor = eDP-1, 1920x1200@60, 1440x0,"),
+        "{conf:?}"
+    );
+    shell.at(9.0);
+    assert!(applied(&shell).is_empty());
+    assert_eq!(shell.scene.texts()[0], "Best guess");
+    // A profile written by hand, as `[[…]]` tables: the panel left of the
+    // Dell this time. It is read live and applied by `id`.
+    let setup = format!("{PANEL} + {DELL}");
+    let file = config.join("monitors.toml");
+    let profile = format!(
+        "# Monitor profiles.\n\n\
+         # At the desk.\n\
+         [profiles.\"{setup}\"]\n\
+         [[profiles.\"{setup}\".mons]]\n\
+         id = \"{PANEL}\"   # the laptop\n\
+         on = true\nwidth = 1920\nheight = 1200\nrefresh = 60.0\n\
+         x = 0\ny = 0\nscale = 1.25\ntransform = \"normal\"\n\n\
+         [[profiles.\"{setup}\".mons]]\n\
+         id = \"{DELL}\"\n\
+         on = true\nwidth = 3840\nheight = 2160\nrefresh = 59.997\n\
+         x = 1536\ny = 0\nscale = 1.5\ntransform = \"rotate_90\"\n"
+    );
+    std::fs::write(&file, &profile).unwrap();
+    assert!(shell.inst.reload_settings(&file));
+    let notes = settings_notices(&shell.flush().diagnostics, &config);
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(shell.scene.texts()[0], "Saved profile");
+    shell.at(11.0);
+    assert_eq!(applied(&shell), ["eDP-1@0,0 DP-3@1536,0"]);
+    shell
+        .host
+        .set(
+            &shell.rt,
+            "outputs.all",
+            desk(&shell.host, (0, 0), (1536, 0)),
+        )
+        .unwrap();
+    shell.at(11.1);
+    let _ = outputs(&shell);
+    // Saved as it is: every monitor reads as the file has it, so the file
+    // is left as written, comments and all.
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    shell.at(12.0);
+    let sync = |storage: &Storage| {
+        assert!(
+            storage
+                .settings
+                .as_ref()
+                .unwrap()
+                .sync(Duration::from_secs(5))
+        )
+    };
+    sync(&storage);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), profile);
+    // Moved by hand (nothing is applied), then saved: only the Dell's
+    // table changes; the panel's keeps its comment.
+    shell
+        .host
+        .set(
+            &shell.rt,
+            "outputs.all",
+            desk(&shell.host, (0, 0), (1536, 200)),
+        )
+        .unwrap();
+    shell.at(14.0);
+    assert!(applied(&shell).is_empty(), "a move by hand stays");
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    shell.at(15.0);
+    sync(&storage);
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(
+        written,
+        profile.replace("x = 1536\ny = 0", "x = 1536\ny = 200")
+    );
+    shell.at(17.0);
+    assert_eq!(applied(&shell), ["eDP-1@0,0 DP-3@1536,200"]);
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
 }

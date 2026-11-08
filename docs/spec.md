@@ -1861,7 +1861,7 @@ monitor, the keyboard always).
   `float` when `f` gives fractions (a whole-number `init` follows `f`,
   as an untyped `state` does). A running total needs no operation of its
   own: `xs.take(i).sum(x => x.w)` is the total before item `i`, as the
-  best-guess monitor layout in site/how-to/monitor-layouts.md writes it
+  best-guess monitor layout in site/how-to/monitor-profiles.md writes it
   (decisions.md monitor-layout).
 - A `text`'s members (`len`, `slice`, `index_of`, `split`, …) count
   characters (Unicode scalar values), not bytes: `"héllo".len` is 5,

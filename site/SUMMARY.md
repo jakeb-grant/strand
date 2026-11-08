@@ -36,7 +36,7 @@
 - [Remembering things by key](how-to/remembering-by-key.md)
 - [A D-Bus method or an action](how-to/dbus-and-actions.md)
 - [Keyboard shortcuts](how-to/keys.md)
-- [Monitor layouts](how-to/monitor-layouts.md)
+- [Monitor profiles](how-to/monitor-profiles.md)
 
 ## Concepts
 - [The language in brief](concepts/language.md)

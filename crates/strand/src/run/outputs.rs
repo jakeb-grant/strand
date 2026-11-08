@@ -399,11 +399,15 @@ struct RunState {
     stuck: bool,
 }
 
+/// (live-files) A write a path's pace holds: its bytes, its `run:` and
+/// why the previous try of the path failed (see `Writer::write`).
+type Held = (Vec<u8>, Option<Vec<String>>, Option<String>);
+
 /// (live-files) A path's pace: when a write last landed there, and the
 /// newest content waiting for [`PACE`] to pass.
 struct Paced {
     last: Instant,
-    next: Option<(Vec<u8>, Option<Vec<String>>, Option<String>)>,
+    next: Option<Held>,
 }
 
 /// A write that did not land, tried again at `at`.
@@ -620,9 +624,7 @@ impl Writer {
                         Some(r) => r,
                         None => {
                             self.runs.push((path.clone(), RunState::default()));
-                            let Some((_, r)) = self.runs.last_mut() else {
-                                return None;
-                            };
+                            let (_, r) = self.runs.last_mut()?;
                             r
                         }
                     };

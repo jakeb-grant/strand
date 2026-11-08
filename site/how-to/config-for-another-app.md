@@ -77,5 +77,7 @@ status line, a prompt or an OBS text source reads the second.
   reload, outside `permit exec`. Put outside text (a monitor's model, a
   title) only where the format expects a name, and escape it with a
   `fn` anywhere else.
+  [Monitor profiles](monitor-profiles.md) writes Hyprland's monitor
+  lines from `outputs.all` this way.
 - **Colours in a setting.** `hex(c)` and `argb(c)` format any colour,
   in a `text:` or in a label: `hex(prefs.accent, hash: false)`.

@@ -3924,48 +3924,90 @@ text   = "`key=value` lines. A result cannot be a dictionary yet"
 source = ['crates/strand-compiler/src/check/tree.rs "cannot hold a dictionary yet: `{shown}`"']
 proof  = "crates/strand-compiler/tests/negative/dict_in_service_field.strand (a command's output)"
 
-# --- monitor-layouts (blocks-more) ---
+# --- monitor-profiles (blocks-more, blocks integration) ---
 [[claim]]
-page   = "site/how-to/monitor-layouts.md"
-text   = "`outputs.all` lists every connected monitor, on or off, and"
+page   = "site/how-to/monitor-profiles.md"
+text   = "lists every connected monitor, on or off"
 source = ['crates/strand-compiler/src/schema/builtin.schema "/// Every output, on or off, keyed by `name`."', 'crates/strand-compiler/src/schema/builtin.schema "/// Applies `changes` together, as one configuration."']
 proof  = "crates/strand-compiler/tests/instantiate.rs::a_best_guess_layout_is_written_with_the_list_operations_there_are"
 
 [[claim]]
-page   = "site/how-to/monitor-layouts.md"
+page   = "site/how-to/monitor-profiles.md"
 text   = "keeps the order it finds among equals, and `false`"
 source = ['crates/strand-core/src/keyed/ops.rs "/// `.sort_by(cmp)`: a stable sort (ties keep source order). A comparator"', 'crates/strand-compiler/src/vm/builtins.rs "(Value::Bool(x), Value::Bool(y)) => x.cmp(y),"']
 proof  = "crates/strand-compiler/tests/instantiate.rs::a_best_guess_layout_is_written_with_the_list_operations_there_are (DP-3, DP-4 keep their order, eDP-1 goes last)"
 
 [[claim]]
-page   = "site/how-to/monitor-layouts.md"
+page   = "site/how-to/monitor-profiles.md"
 text   = "on its side is 2160 / 1.5 = 1440 wide, so the next one starts at"
 source = ['crates/strand-compiler/src/schema/members.rs "The items added up (`xs.sum()`), or what `of` gives for each"']
 proof  = "crates/strand-compiler/tests/instantiate.rs::a_best_guess_layout_is_written_with_the_list_operations_there_are (DP-4 at x 1440 after a rotated 4K head at scale 1.5)"
 
 [[claim]]
-page   = "site/how-to/monitor-layouts.md"
+page   = "site/how-to/monitor-profiles.md"
 text   = "`scale` and `transform`) stays as it is."
 source = ['''crates/strand-compiler/src/schema/builtin.schema "/// One output's part of a configuration; a null field keeps its value."''']
 proof  = "read: OutputChange's doc"
 
 [[claim]]
-page   = "site/how-to/monitor-layouts.md"
-text   = "when the set changes. `on change` never runs for the first value, so"
-source = ['docs/spec.md "**never** runs for the first value (at boot or mount), for a value a"']
-proof  = "crates/strand-compiler/tests/instantiate.rs::on_change_over_an_identity_fires_on_a_switch (never at boot)"
+page   = "site/how-to/monitor-profiles.md"
+text   = "`on change` never runs for the first value, and `ready` turns true once the monitors are in, as a change, so naming it is what applies a layout when the shell starts."
+source = ['docs/spec.md "**never** runs for the first value (at boot or mount), for a value a"', 'docs/spec.md "and turns true one flush later, as a change, so `on change"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::the_monitor_profiles_page_works_together (nothing applied before `outputs.ready`, the guess 1.5 s after); crates/strand/tests/screens_focus.rs::the_monitor_profiles_page_arranges_sways_monitors (fails with `outputs.ready` left out of the handler)"
 
 [[claim]]
-page   = "site/how-to/monitor-layouts.md"
+page   = "site/how-to/monitor-profiles.md"
 text   = "and keep with your dotfiles: an edit applies live, and Strand writes a"
 source = ['docs/spec.md "- Edits to the file apply live, as per-field writes."', 'crates/strand-core/src/settings.rs "fn merge_tables(old: &mut toml_edit::ArrayOfTables, new: &toml_edit::Array) {"']
 proof  = "crates/strand-compiler/tests/instantiate.rs::settings_records_read_and_write_table_forms"
 
 [[claim]]
-page   = "site/how-to/monitor-layouts.md"
-text   = "good layouts with a notice naming it, so a typo never reaches your"
+page   = "site/how-to/monitor-profiles.md"
+text   = "good profiles with a notice naming it, so a typo never reaches your"
 source = ['crates/strand-compiler/src/vm/persist.rs "return Err(format!("unknown field {key:?}"));"']
 proof  = "crates/strand-compiler/tests/instantiate.rs::settings_records_read_and_write_table_forms"
+
+[[claim]]
+page   = "site/how-to/monitor-profiles.md"
+text   = "usually carries its serial number), whatever port it is plugged into."
+source = ['crates/strand-services-schema/src/outputs.schema "on, and kept when it moves to another port: what a saved layout"']
+proof  = "crates/strand/src/services/mod.rs::tests::an_outputs_id_is_its_screens_id (the connector left out); crates/strand/tests/screens_focus.rs::an_outputs_id_is_its_screens_id_on_sway"
+
+[[claim]]
+page   = "site/how-to/monitor-profiles.md"
+text   = "(a screen has the same `id` as its output)"
+source = ['crates/strand-services-schema/src/outputs.schema "identical one (those on first). The same as `Screen.id` while it is"']
+proof  = "crates/strand/tests/screens_focus.rs::an_outputs_id_is_its_screens_id_on_sway"
+
+[[claim]]
+page   = "site/how-to/monitor-profiles.md"
+text   = "described alike get ` #2` on the second, the monitors that are on numbered first."
+source = ['crates/strand-services/src/outputs.rs "/// strand-surface does (its second ` #2`): those on first, in order, then"']
+proof  = "crates/strand-services/src/outputs.rs::tests::identical_heads_are_numbered_the_ones_on_first"
+
+[[claim]]
+page   = "site/how-to/monitor-profiles.md"
+text   = "file is written again whenever a monitor is moved, turned or plugged in, at most twice a second."
+source = ['docs/spec.md "path is written at most once per 500 ms: the first write lands at"']
+proof  = "crates/strand/tests/screens_focus.rs::the_monitor_profiles_page_arranges_sways_monitors (monitors.conf follows sway's layout and then the profile)"
+
+[[claim]]
+page   = "site/how-to/monitor-profiles.md"
+text   = "is empty, so the file is not written at all and the last session's lines stay."
+source = ['docs/spec.md "has `ready` false (section 5.6): its values"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::the_monitor_profiles_page_works_together (both files wait until `outputs` is ready)"
+
+[[claim]]
+page   = "site/how-to/monitor-profiles.md"
+text   = "hold text from the monitor itself, go into JSON, where `json` quotes them."
+source = ['''crates/strand-compiler/src/schema/builtin.schema "/// `value` as compact JSON, for a file a tool reads or an action's"''']
+proof  = "crates/strand-compiler/tests/instantiate.rs::the_monitor_profiles_page_works_together (monitors.json holds each id)"
+
+[[claim]]
+page   = "site/how-to/monitor-profiles.md"
+text   = "Moving a monitor by hand changes nothing `chosen` reads, so it stays where you put it until you save it."
+source = ['docs/spec.md "**never** runs for the first value (at boot or mount), for a value a"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::the_monitor_profiles_page_works_together (a move by hand applies nothing; saving it writes only the moved monitor's table)"
 
 # --- dbus-unfollowed (blocks-more) ---
 [[claim]]
@@ -3982,19 +4024,19 @@ proof  = "crates/strand-services/tests/custom.rs::the_lid_recipe_follows_upower 
 
 # --- ws-move (blocks-more) ---
 [[claim]]
-page   = "site/how-to/monitor-layouts.md"
+page   = "site/how-to/monitor-profiles.md"
 text   = "`ws.move_to(screen)` moves a workspace, with its windows, to a screen,"
 source = ['crates/strand-services-schema/src/workspaces.schema "action move_to(screen: Screen)"', 'crates/strand-services/src/wm/mod.rs "UnknownScreen(String),"']
 proof  = "crates/strand/tests/compositor_matrix.rs::a_workspace_is_moved_to_another_screen; crates/strand-services/tests/sway.rs::sway_moves_a_workspace_to_another_output"
 
 [[claim]]
-page   = "site/how-to/monitor-layouts.md"
+page   = "site/how-to/monitor-profiles.md"
 text   = "and a workspace on that screen already is left alone, so placing"
 source = ['crates/strand-services/src/wm/sway.rs "pub(crate) fn in_place(&self, action: &WmAction) -> bool {"']
 proof  = "crates/strand-services/tests/sway.rs::sway_moves_a_workspace_to_another_output (the same move again: nothing sent, nothing changes)"
 
 [[claim]]
-page   = "site/how-to/monitor-layouts.md"
+page   = "site/how-to/monitor-profiles.md"
 text   = "them again does nothing. Each call is its own request, so a `for`"
 source = ['crates/strand-services/src/wm/service.rs "WorkspaceAction::MoveTo { item, screen } => WmAction::MoveWorkspace {"']
 proof  = "crates/strand-services/tests/wm_services.rs::the_compositor_stores_follow_hyprland (two moves in a row both sent)"

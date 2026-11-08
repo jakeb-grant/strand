@@ -157,6 +157,18 @@ fn sway(dir: &Path) -> (Proc, String, PathBuf) {
 /// sway with the focus on `focus`, then `strand run` on `shell`, with
 /// sway's IPC (`adapter`) or without it.
 fn start(name: &str, shell: &str, focus: &str, adapter: bool) -> Option<Desk> {
+    start_with(name, &[("shell.strand", shell)], focus, adapter, &[])
+}
+
+/// [`start`] with the config's `files`, and sway's `layout` commands run
+/// before strand starts.
+fn start_with(
+    name: &str,
+    files: &[(&str, &str)],
+    focus: &str,
+    adapter: bool,
+    layout: &[&str],
+) -> Option<Desk> {
     if !tools() {
         return None;
     }
@@ -166,11 +178,16 @@ fn start(name: &str, shell: &str, focus: &str, adapter: bool) -> Option<Desk> {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     let (sway, display, sock) = sway(&dir);
+    for cmd in layout {
+        swaymsg(&sock, &[cmd]);
+    }
     swaymsg(&sock, &["focus", "output", focus]);
     let home = dir.join("home");
     let config = home.join(".config/strand");
     std::fs::create_dir_all(&config).unwrap();
-    std::fs::write(config.join("shell.strand"), shell).unwrap();
+    for (name, text) in files {
+        std::fs::write(config.join(name), text).unwrap();
+    }
     let log = dir.join("strand.log");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_strand"));
     cmd.arg("run")
@@ -700,4 +717,185 @@ fn an_outputs_id_is_its_screens_id_on_sway() {
         outs.contains(" | "),
         "an id is make | model | description: {outs}"
     );
+}
+
+/// (blocks) site/how-to/monitor-profiles.md, whose `strand file=` blocks
+/// the test below runs as they are written there.
+const MONITOR_PROFILES_PAGE: &str = include_str!("../../../site/how-to/monitor-profiles.md");
+
+/// The `strand file=NAME` blocks of a site page, in order.
+fn page_files(page: &str) -> Vec<(String, String)> {
+    let mut files = Vec::new();
+    let mut lines = page.lines();
+    while let Some(line) = lines.next() {
+        let Some(name) = line.strip_prefix("```strand file=") else {
+            continue;
+        };
+        let body: Vec<&str> = lines.by_ref().take_while(|l| *l != "```").collect();
+        files.push((name.trim().to_string(), body.join("\n") + "\n"));
+    }
+    files
+}
+
+/// (blocks) What the test reads of `outputs`: the set's key as
+/// monitors.strand makes it, and each monitor's id and mode.
+const PROBE: &str = r#"
+export let n = 6
+export let setup = outputs.all.map(o => o.id).sort_by(i => i).join(" + ")
+export let ids = outputs.all.map(o => o.name + "=" + o.id).join(";")
+export let modes = outputs.all.map(o => join(" ", o.name, o.mode?.width, o.mode?.height, o.mode?.refresh)).join(";")
+"#;
+
+/// sway's outputs: name to (x, y, logical width, scale).
+fn sway_rects(sock: &Path) -> std::collections::BTreeMap<String, (i64, i64, i64, f64)> {
+    let all: serde_json::Value =
+        serde_json::from_str(&swaymsg(sock, &["-t", "get_outputs"])).unwrap();
+    all.as_array()
+        .unwrap()
+        .iter()
+        .map(|o| {
+            let r = &o["rect"];
+            (
+                o["name"].as_str().unwrap().to_string(),
+                (
+                    r["x"].as_i64().unwrap(),
+                    r["y"].as_i64().unwrap(),
+                    r["width"].as_i64().unwrap(),
+                    o["scale"].as_f64().unwrap_or(1.0),
+                ),
+            )
+        })
+        .collect()
+}
+
+/// (blocks) The monitor profiles page on a real compositor: its files run
+/// on headless sway with HEADLESS-1 at scale 2 and HEADLESS-2 below it.
+/// Once `outputs` is ready the best guess puts them side by side (x the
+/// running total of logical widths, y 0) through `outputs.apply`; the
+/// compositor file and the JSON file are written from `outputs.all` with
+/// each monitor's `id`; a profile written by hand as `[[…]]` tables,
+/// naming the monitors by `id`, is read live and applied, and the
+/// compositor file follows.
+#[test]
+fn the_monitor_profiles_page_arranges_sways_monitors() {
+    let page = page_files(MONITOR_PROFILES_PAGE);
+    let mut files: Vec<(&str, &str)> = page.iter().map(|(n, t)| (n.as_str(), t.as_str())).collect();
+    assert_eq!(files.len(), 4, "{files:?}");
+    files.push(("probe.strand", PROBE));
+    let Some(mut desk) = start_with(
+        "prof",
+        &files,
+        "HEADLESS-1",
+        true,
+        &[
+            "output HEADLESS-1 scale 2",
+            "output HEADLESS-2 position 0 720",
+        ],
+    ) else {
+        return;
+    };
+    let get = |d: &Desk, name: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_strand"))
+            .args(["get", &format!("probe.{name}")])
+            .env("XDG_RUNTIME_DIR", &d.dir)
+            .env("WAYLAND_DISPLAY", &d.display)
+            .env("STRAND_SOCKET", d.dir.join("strand.sock"))
+            .stdin(Stdio::null())
+            .output()
+            .ok()?;
+        out.status.success().then(|| {
+            String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .trim_matches('"')
+                .to_string()
+        })
+    };
+    // The best guess: side by side, the second at the first's logical
+    // width.
+    desk.until("the best guess on sway", |d| {
+        let r = sway_rects(&d.sock);
+        let mut v: Vec<_> = r.values().copied().collect();
+        v.sort_by_key(|o| o.0);
+        match v.as_slice() {
+            [a, b] if a.0 == 0 && a.1 == 0 && b.1 == 0 && b.0 == a.2 => Ok(()),
+            _ => Err(format!("{r:?}")),
+        }
+    });
+    let home = desk.dir.join("home");
+    let conf = home.join(".config/hypr/monitors.conf");
+    // The compositor file follows sway's layout: a line for each monitor
+    // at its place and scale (a whole number written whole).
+    let follows = |d: &Desk| -> Result<(), String> {
+        let text = std::fs::read_to_string(&conf).unwrap_or_default();
+        for (name, (x, y, _, s)) in sway_rects(&d.sock) {
+            let scale = if s.fract() == 0.0 {
+                format!("{}", s as i64)
+            } else {
+                format!("{s}")
+            };
+            let place = format!(", {x}x{y}, {scale}, transform, 0");
+            if !text
+                .lines()
+                .any(|l| l.starts_with(&format!("monitor = {name}, ")) && l.ends_with(&place))
+            {
+                return Err(format!("no line for {name}{place} in {text:?}"));
+            }
+        }
+        Ok(())
+    };
+    desk.until("monitors.conf follows sway", follows);
+    // The JSON file has every monitor's id.
+    let ids = get(&desk, "ids").unwrap_or_default();
+    let json = std::fs::read_to_string(home.join(".cache/monitors.json")).unwrap();
+    let pairs: Vec<(String, String)> = ids
+        .split(';')
+        .map(|p| {
+            let (n, i) = p.split_once('=').unwrap();
+            (n.to_string(), i.to_string())
+        })
+        .collect();
+    assert_eq!(pairs.len(), 2, "{ids}");
+    for (name, id) in &pairs {
+        assert!(
+            json.contains(&format!("[\"{id}\",\"{name}\"]")),
+            "{name}={id} in {json}"
+        );
+    }
+    // A profile by hand, in `[[…]]` form, naming the monitors by id:
+    // HEADLESS-2 first, HEADLESS-1 right of it at scale 1.
+    let setup = get(&desk, "setup").unwrap();
+    let modes = get(&desk, "modes").unwrap();
+    let id_of = |name: &str| pairs.iter().find(|(n, _)| n == name).unwrap().1.clone();
+    let mode_of = |name: &str| -> (String, String, f64) {
+        let m = modes
+            .split(';')
+            .find(|m| m.starts_with(&format!("{name} ")))
+            .unwrap_or_else(|| panic!("{name} in {modes}"));
+        let p: Vec<&str> = m.split(' ').collect();
+        (p[1].into(), p[2].into(), p[3].parse().unwrap())
+    };
+    let mon = |name: &str, x: i64| {
+        let (w, h, r) = mode_of(name);
+        format!(
+            "[[profiles.\"{setup}\".mons]]\nid = \"{}\"\non = true\nwidth = {w}\nheight = {h}\n\
+             refresh = {r:?}\nx = {x}\ny = 0\nscale = 1.0\ntransform = \"normal\"\n",
+            id_of(name)
+        )
+    };
+    let profile = format!(
+        "# Monitor profiles.\n\n# HEADLESS-2 on the left.\n{}\n{}",
+        mon("HEADLESS-2", 0),
+        mon("HEADLESS-1", 1600)
+    );
+    std::fs::write(desk.config.join("monitors.toml"), profile).unwrap();
+    desk.until("the profile on sway", |d| {
+        let r = sway_rects(&d.sock);
+        match (r.get("HEADLESS-1"), r.get("HEADLESS-2")) {
+            (Some(&(1600, 0, 1280, 1.0)), Some(&(0, 0, _, _))) => Ok(()),
+            _ => Err(format!("{r:?}")),
+        }
+    });
+    desk.until("monitors.conf follows the profile", follows);
+    let text = std::fs::read_to_string(&conf).unwrap();
+    assert!(text.contains(", 1600x0, 1, transform, 0"), "{text}");
 }
