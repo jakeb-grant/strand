@@ -1745,6 +1745,39 @@ fn diff<'a>(
         return;
     }
     match (old, new) {
+        // (doc-formats) An XML element's record may repeat a name (two
+        // `<category>`s), and its JSON holds the repeated ones as one
+        // array at the first one's place (`Data::write_json`): the n-th
+        // of a repeated name is `name.n` there, so an edit's path is.
+        (Data::Record { ty: a, fields: fa }, Data::Record { ty: b, fields: fb })
+            if a == b
+                && a == strand_services::custom::ELEMENT
+                && fa.len() == fb.len()
+                && fa
+                    .iter()
+                    .zip(fb)
+                    .all(|((x, _), (y, _))| x == y && plain_field(x)) =>
+        {
+            let mut count: HashMap<&str, usize> = HashMap::new();
+            for (name, _) in fa {
+                *count.entry(&**name).or_default() += 1;
+            }
+            let mut seen: HashMap<&str, usize> = HashMap::new();
+            for ((name, o), (_, n)) in fa.iter().zip(fb) {
+                path.push(Seg::Field(name));
+                let repeated = count.get(&**name).is_some_and(|&c| c > 1);
+                if repeated {
+                    let i = seen.entry(&**name).or_default();
+                    path.push(Seg::Index(*i));
+                    *i += 1;
+                }
+                diff(o, n, path, out, keep);
+                if repeated {
+                    path.pop();
+                }
+                path.pop();
+            }
+        }
         (Data::Record { ty: a, fields: fa }, Data::Record { ty: b, fields: fb })
             if a == b
                 && fa.len() == fb.len()
@@ -3831,5 +3864,81 @@ mod tests {
         );
         assert_ne!(e[0].rec.flags & flags::REDACTED, 0);
         assert!(!contains(&c.dump().unwrap(), b"hunter2"));
+    }
+
+    /// (doc-formats) An XML element's repeated names are one array in its
+    /// JSON, so an edit inside one is at `name.n`: applied to the value
+    /// before as the replay applies it (`eval/src/replay/plan.rs`,
+    /// `place`), the edits give the value after, for the ECB's daily
+    /// rates (attributes of repeated `Cube`s) and an RSS item's second
+    /// `<category>` (repeated text).
+    #[test]
+    fn an_elements_repeated_names_are_edited_by_their_index() {
+        use strand_services::custom::Document;
+        fn json(d: &Data) -> serde_json::Value {
+            let mut s = String::new();
+            d.write_json(&mut s, &mut |_| true).unwrap();
+            serde_json::from_str(&s).unwrap()
+        }
+        fn place<'a>(
+            mut v: &'a mut serde_json::Value,
+            path: &str,
+        ) -> Option<&'a mut serde_json::Value> {
+            for seg in path.split('.') {
+                v = match v {
+                    serde_json::Value::Array(a) => a.get_mut(seg.parse::<usize>().ok()?)?,
+                    serde_json::Value::Object(o) => o.get_mut(seg)?,
+                    _ => return None,
+                };
+            }
+            Some(v)
+        }
+        let ecb = |time: &str, third: &str| {
+            let mut s = format!("<Cube time=\"{time}\">");
+            for (i, c) in ["USD", "JPY", "BGN", "CZK", "DKK", "GBP", "HUF"]
+                .iter()
+                .enumerate()
+            {
+                let rate = if i == 2 { third } else { "1.2345" };
+                s.push_str(&format!("<Cube currency=\"{c}\" rate=\"{rate}\"/>"));
+            }
+            s.push_str("</Cube>");
+            Document::parse(&s).into_data()
+        };
+        let rss = |second: &str| {
+            Document::parse(&format!(
+                "<item><title>A long enough title for the edit to be shorter</title>\
+                 <category>linux</category><category>{second}</category>\
+                 <description>{}</description></item>",
+                "words ".repeat(20)
+            ))
+            .into_data()
+        };
+        for (old, new, paths) in [
+            (
+                ecb("2026-11-06", "1.9558"),
+                ecb("2026-11-07", "1.9560"),
+                vec!["@time", "Cube.2.@rate"],
+            ),
+            (rss("kernel"), rss("wayland"), vec!["category.1"]),
+        ] {
+            let edits = field_edits(&old, &new, &|_| true).expect("edits are shorter");
+            let mut s = String::new();
+            write_edit_list(&mut s, &edits, &mut |_| true).unwrap();
+            let edits: serde_json::Value = serde_json::from_str(&s).unwrap();
+            let got: Vec<&str> = edits
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e[0].as_str().unwrap())
+                .collect();
+            assert_eq!(got, paths);
+            let mut v = json(&old);
+            for e in edits.as_array().unwrap() {
+                *place(&mut v, e[0].as_str().unwrap()).expect("the path fits the JSON") =
+                    e[2].clone();
+            }
+            assert_eq!(v, json(&new));
+        }
     }
 }

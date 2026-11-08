@@ -787,7 +787,10 @@ monitor, the keyboard always).
   matches are the value, several of them a list. A string key (`=
   "dc:creator"`, `= "@state"`, `= "#text"`) is one exact segment.
 - The declared type decides, for every document: a list type over one
-  value is a list of it if it converts (else it does not convert), a
+  value is a list of it if it converts (else it does not convert),
+  text of several lines only as a list of `text` or `path` or of a
+  record that reads text (a command's `22\n80\n443` read as `[int]`
+  does not convert, where a number with a unit would read `22` alone), a
   record (a JSON object, an element) only when it holds one of the item
   type's fields, so an API's error object read whole as `[T]` (an
   action's `-> [T]`, or a key that finds the object) is reported

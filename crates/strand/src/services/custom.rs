@@ -522,6 +522,16 @@ fn go(
         // converts; a record (a JSON object, an element) only when it
         // holds one of the item record's fields, so an API's error
         // object read as `[Release]` is reported, not one empty item.
+        // Text of several lines is not one item of a list of numbers,
+        // bools, enums or the like: a number with a unit (`45 °C`) reads
+        // its first word, so a command's `22\n80\n443` read as `[int]`
+        // would be `[22]`, the other lines lost without a report.
+        (Ty::List(item, _), Data::Text(t))
+            if t.trim().contains('\n')
+                && matches!(strip_optional(item), Ty::Prim(p) if !matches!(p, Prim::Text | Prim::Path)) =>
+        {
+            None
+        }
         (Ty::List(item, _), d) => {
             if let Ty::Record(r) = strip_optional(item)
                 && matches!(d, Data::Record { .. })
@@ -1638,6 +1648,16 @@ mod tests {
         );
         assert_eq!(c(&ints, Data::text("x")), None, "a report, not a silent []");
         assert_eq!(c(&ints, Data::Null), None);
+        // A value per line is not one item: `22` with the rest lost.
+        assert_eq!(c(&ints, Data::text("22\n80\n443")), None);
+        let floats = Ty::List(Box::new(Ty::Prim(Prim::Float)), false);
+        assert_eq!(c(&floats, Data::text("0.5\n0.25")), None);
+        assert!(read_output(types, &ints, "22\n80\n443\n").is_err());
+        assert_eq!(
+            c(&texts, Data::text("a\nb")),
+            Some(Value::list(vec![Value::text("a\nb")])),
+            "text keeps it whole"
+        );
         let two = || Data::List(vec![Data::text("5"), Data::text("x")]);
         assert_eq!(c(&Ty::INT, two()), Some(Value::int(5)));
         assert_eq!(

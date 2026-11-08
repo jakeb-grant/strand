@@ -155,6 +155,9 @@ a `type Seg { trkpt: [Point] }` reads both.
 
 The type you declare decides the shape. A field typed as a list takes
 every element of its name, one or many; a single type takes the first.
+Text of several lines is not one item of a list of numbers: a command
+printing a port per line, read as `[int]`, does not convert and is
+reported. Print a JSON array, such as `[22, 80, 443]`, instead.
 An element read as `text`, a number or a `Date` is its text, so
 `<title>` is a `text` and `<size units="bytes">42</size>` an `int`;
 read as a record, the same element gives its attributes and children.
@@ -188,10 +191,17 @@ A command or a file can also hold markup meant to be shown, not data:
 an HTML fragment, or the Pango `<span foreground="#e06c75">92%</span>`
 that bar scripts print. A field typed `text` reads such a document as
 written, tags and all, when it holds none of the service's fields or is
-a single element of text, such as `<b>CPU</b>`; show it with `markup:
-html` or `markup: basic`. A field named `text` reading the element's
-own text does not count as one held, so `{ text: text }` keeps the
-script's colour. A document that holds any of the fields is
+a single element of text, such as `<b>CPU</b>`. A field named `text`
+reading the element's own text does not count as one held, so `{ text:
+text }` keeps the script's markup. Show it with `markup: html`, which
+draws bold, italics, links and the other styles of
+[Showing HTML text](html-text.md). A `span`'s attributes are not
+drawn: Pango's `foreground` and `size` are not HTML, so
+`<span foreground="#e06c75">92%</span>` shows `92%` in the text's own
+`color`. To colour a value, have the script print it as data, such as
+`{"text": "92%", "alert": true}`, and pick the colour in the config.
+`markup: basic` knows only `b`, `i`, `u`, `a` and `img`, and shows a
+`span`'s tags as written. A document that holds any of the fields is
 data: a `text` field it lacks is empty, and a `from listen` line keeps
 that field's last value. So is a document that starts with an XML
 declaration (`<?xml …?>`) or a DOCTYPE: its element gives its text. A
