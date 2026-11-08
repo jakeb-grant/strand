@@ -2249,7 +2249,14 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   nothing); a monitor shown whose id that changes (an identical
   one plugged in on a port named before its own, one unplugged, the
   list arriving) is unplugged and plugged in again with the new id, as
-  one whose description changed is, so `Screen.id` is `Output.id`. `SurfaceId`s are
+  one whose description changed is, so `Screen.id` is `Output.id`.
+  (review round 2) With no list (no run of `outputs` up), a plug,
+  unplug or new description renumbers only the monitors of the
+  identity it changes (`Monitors::renumbering_after`), so an unrelated
+  plug renames none; and nothing then says a monitor that is off is
+  still connected, so it does not count: identical monitors shown are
+  numbered among themselves, and `Screen.id` can differ from the
+  `Output.id` a run gives once one is up (which renumbers them). `SurfaceId`s are
   stable per (node, monitor) while the monitor is remembered. The binary
   forwards the `monitor_*` hooks to logic as the `screens` service.
   (screen-position) `ScreenInfo` carries the monitor's

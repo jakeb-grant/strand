@@ -687,7 +687,7 @@ Keyed by `id`.
 
 | Field | Type | |
 | --- | --- | --- |
-| `id` | `text` | Its identity: make, model and description, with ` #2`, ` #3` for identical ones by their connectors' names (`outputs`' `Output.id`). Kept across a replug to another port. |
+| `id` | `text` | Its identity: make, model and description, with ` #2`, ` #3` for identical ones by their connectors' names (`outputs`' `Output.id`). Kept across a replug to another port. A monitor turned off counts only while `outputs` runs (nothing else says it is still connected): without it, identical monitors shown are numbered among themselves. |
 | `name` | `text` | Its connector name, such as `DP-1`. |
 | `make` | `text` | Its maker. |
 | `model` | `text` | Its model. |

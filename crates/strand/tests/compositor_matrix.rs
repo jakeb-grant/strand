@@ -2315,6 +2315,18 @@ fn one_workspace_is_shown_per_screen_after_a_screen_goes_off() {
         .map(|o| (o.name.clone(), hypr_monitor(live.kind, &o.name)))
         .collect();
     let shown_at_start = shown_by(live.kind);
+    // A failure while `there` is off leaves it on again for the tests
+    // after this one (Hyprland: every monitor at its place).
+    let (k, there_on) = (live.kind, there.as_str());
+    let _back_on = OnPanic(|| match k {
+        Kind::Hyprland => {
+            for (name, m) in places.iter().filter(|(_, m)| !m.is_null()) {
+                switch_from_outside(k, name, true, m);
+            }
+        }
+        Kind::Sway => run_quietly("swaymsg", &["output", there_on, "enable"]),
+        Kind::Niri => run_quietly("niri", &["msg", "output", there_on, "on"]),
+    });
 
     // `other`, kept by a window, shown on `there`; the focus at home.
     let other = live.other(&real);
@@ -4374,6 +4386,33 @@ fn hyprctl_said(args: &[String]) -> String {
     }
 }
 
+/// Runs its closure when dropped while the test panics: what the test
+/// changed in the compositor the matrix tests share (an output made, a
+/// monitor turned off) is put back, so one failure does not fail the
+/// tests after it. The closure must not panic (a panic while unwinding
+/// aborts): it runs commands and ignores how they end.
+struct OnPanic<F: FnMut()>(F);
+
+impl<F: FnMut()> Drop for OnPanic<F> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            (self.0)();
+        }
+    }
+}
+
+/// Runs `program ARGS…` and ignores how it ends (an [`OnPanic`] undo).
+fn run_quietly(program: &str, args: &[&str]) {
+    let said = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .output();
+    eprintln!(
+        "matrix: put back: {program} {args:?}: {:?}",
+        said.map(|o| o.status)
+    );
+}
+
 impl Drop for Policy {
     fn drop(&mut self) {
         let _ = Command::new(self.program)
@@ -6238,6 +6277,11 @@ fn identical_outputs_are_numbered_by_name() {
         first.into(),
     ]);
     eprintln!("matrix: hyprctl output create headless {first}: {said:?}");
+    // A failure from here on removes it, for the tests after this one.
+    let _remove = OnPanic(|| {
+        let said = hyprctl_said(&["output".into(), "remove".into(), first.into()]);
+        eprintln!("matrix: put back: hyprctl output remove {first}: {said:?}");
+    });
     let made = outputs_agree(&mut d, Some(&l), &format!("{first} made"), |s| {
         s.iter().any(|(h, _)| h.name == first && h.enabled)
     });

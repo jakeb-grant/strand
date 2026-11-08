@@ -444,6 +444,40 @@ impl Monitors {
         out
     }
 
+    /// (output-id-order, review round 2) What a plug or unplug renames:
+    /// [`Monitors::renumbering`] with `joining` plugged in. With the
+    /// outputs service's list, every monitor whose id the list now gives
+    /// otherwise, as `State::poll` does. With no list (no run of
+    /// `outputs` up) only the monitors of the identities this changes:
+    /// the joining monitor's and `left`, the identity of a monitor
+    /// unplugged or described anew. A list gone empty renames nothing at
+    /// a poll, so a plug or unplug of another identity does not either:
+    /// an identical monitor shown as ` #2` beside one that is off keeps
+    /// its id until a monitor of its own identity comes or goes,
+    /// whatever else is plugged in.
+    pub fn renumbering_after(
+        &self,
+        joining: Option<Joining<'_>>,
+        left: Option<&MonitorId>,
+    ) -> Renumbering {
+        let mut plan = self.renumbering(joining);
+        if self.known.is_empty() {
+            let joined = joining.map(|j| base(j.make, j.model, j.description, j.connector));
+            plan.renamed.retain(|(global, _)| {
+                self.base_of(*global)
+                    .is_some_and(|b| Some(&b) == joined.as_ref() || Some(&b) == left)
+            });
+        }
+        plan
+    }
+
+    /// (output-id-order) The identity before numbering of a plugged-in
+    /// `wl_output` global: make, model and description.
+    pub fn base_of(&self, global: u32) -> Option<MonitorId> {
+        let id = self.outputs.get(&global)?;
+        self.records.get(id).map(|r| r.monitor.base())
+    }
+
     /// Records a plugged-in monitor's scale, logical size and position.
     /// Returns the updated monitor when any of them changed.
     pub fn set_geometry(&mut self, global: u32, g: Geometry) -> Option<Monitor> {
@@ -879,6 +913,71 @@ mod tests {
         assert_eq!(
             ids_by_connector(&m),
             [("DP-1".into(), x.into()), ("DP-2".into(), x2.into())]
+        );
+    }
+
+    /// (output-id-order, review round 2) With no list from the outputs
+    /// service (its run stopped), a plug or unplug renumbers the
+    /// monitors of its own identity and no other, as a list gone empty
+    /// renames nothing at a poll: DP-2 shown as ` #2` beside DP-1, off,
+    /// keeps its id while a monitor of another identity comes and goes.
+    /// One of its own identity coming, going or described anew numbers
+    /// them by name among those shown.
+    #[test]
+    fn without_the_list_a_plug_renumbers_its_own_identity_alone() {
+        let t = Instant::now();
+        let (x, x2) = ("A | B | C", "A | B | C #2");
+        let join = |make: &'static str, c: &'static str| Joining {
+            make,
+            model: "B",
+            description: "C",
+            connector: Some(c),
+        };
+        let plug = |m: &mut Monitors, g: u32, j: Joining<'_>, left: Option<&MonitorId>| {
+            let plan = m.renumbering_after(Some(j), left);
+            replug(m, &plan.renamed, t);
+            let id = plan.joining.unwrap();
+            m.plug_as(
+                g,
+                j.make,
+                j.model,
+                j.description,
+                j.connector.map(str::to_owned),
+                id.clone(),
+                t,
+            );
+            (id.to_string(), plan.renamed)
+        };
+        let mut m = Monitors::default();
+        m.set_known(vec![("DP-1".into(), x.into()), ("DP-2".into(), x2.into())]);
+        assert_eq!(plug(&mut m, 2, join("A", "DP-2"), None).0, x2);
+        // The run stopped: an empty list at the next plug or unplug.
+        m.set_known(Vec::new());
+        let (id, renamed) = plug(&mut m, 3, join("Z", "HDMI-A-1"), None);
+        assert_eq!((id.as_str(), renamed), ("Z | B | C", vec![]));
+        let gone = m.unplug(3, t).unwrap();
+        let plan = m.renumbering_after(None, Some(&gone.base()));
+        assert!(plan.renamed.is_empty(), "{plan:?}");
+        assert_eq!(ids_by_connector(&m), [("DP-2".into(), x2.into())]);
+        // Numbered without the list, every identity would be renamed.
+        assert_eq!(m.renumbering(None).renamed, [(2, MonitorId(x.into()))]);
+        // One of its own identity plugged in on DP-3: by name.
+        let (id, renamed) = plug(&mut m, 4, join("A", "DP-3"), None);
+        assert_eq!(id, x2);
+        assert_eq!(renamed, [(2, MonitorId(x.into()))]);
+        // DP-2 described anew (another make): DP-3 alone of `X`.
+        let before = m.base_of(2).unwrap();
+        let old = m.unplug(2, t).unwrap();
+        assert_eq!(old.base(), before);
+        let (id, renamed) = plug(&mut m, 2, join("Y", "DP-2"), Some(&before));
+        assert_eq!(id, "Y | B | C");
+        assert_eq!(renamed, [(4, MonitorId(x.into()))]);
+        assert_eq!(
+            ids_by_connector(&m),
+            [
+                ("DP-2".into(), "Y | B | C".into()),
+                ("DP-3".into(), x.into())
+            ]
         );
     }
 }

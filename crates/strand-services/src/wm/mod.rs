@@ -304,7 +304,10 @@ pub(crate) type Cmd = (WmAction, Option<oneshot::Sender<Result<(), WmError>>>);
 /// 0.57's `ext-workspace-v1` keeps a workspace it moved off a monitor
 /// turned off active on the monitor it moved to, beside the one shown
 /// there, while its `j/monitors` names the one shown). Where the adapter
-/// names none of them, the first of them stays.
+/// shows none of them on that screen (it lags behind the protocol, still
+/// showing the moved one on the screen turned off), the one it places
+/// on that screen stays, the one that was there before the move; where
+/// it places none of them there either, the first of them.
 fn one_shown_per_screen(merged: &mut [Workspace], adapter: &[Workspace]) {
     let mut crowded: Vec<String> = Vec::new();
     for w in merged.iter().filter(|w| w.active) {
@@ -318,11 +321,18 @@ fn one_shown_per_screen(merged: &mut [Workspace], adapter: &[Workspace]) {
     }
     for screen in crowded {
         let on_it = |w: &&mut Workspace| w.active && w.screen == screen;
-        let adapter_says = |id: i64| adapter.iter().any(|a| a.id == id && a.active);
+        let there = |id: i64| adapter.iter().find(|a| a.id == id && a.screen == screen);
+        let shown_there = |id: i64| there(id).is_some_and(|a| a.active);
         let kept = merged
             .iter()
             .filter(|w| w.active && w.screen == screen)
-            .find(|w| adapter_says(w.id))
+            .find(|w| shown_there(w.id))
+            .or_else(|| {
+                merged
+                    .iter()
+                    .filter(|w| w.active && w.screen == screen)
+                    .find(|w| there(w.id).is_some())
+            })
             .or_else(|| merged.iter().find(|w| w.active && w.screen == screen))
             .map(|w| w.id);
         for w in merged.iter_mut().filter(on_it) {
@@ -1131,8 +1141,10 @@ mod tests {
     /// its `ext-workspace-v1` still says 1 is active, its `j/monitors`
     /// that NESTED-1 shows 3. One workspace is shown per screen, the
     /// adapter's; a screen the protocol has one shown on keeps the
-    /// protocol's, and with the adapter naming none of them the first
-    /// stays.
+    /// protocol's. With the adapter behind (still showing the moved one
+    /// on the screen turned off), the one it places on that screen
+    /// stays; with the adapter showing none of them there and placing
+    /// both there, the first.
     #[test]
     fn a_screen_shows_one_workspace() {
         let ws = |id: i64, screen: &str, active: bool| Workspace {
@@ -1175,14 +1187,36 @@ mod tests {
             shown(&merge(Some(&ipc), &[], &proto)),
             [(3, "NESTED-1".into()), (4, "DP-1".into())]
         );
-        // The adapter names neither of the two: the first stays.
-        let unsure = WmState {
-            workspaces: vec![ws(1, "NESTED-1", false), ws(3, "NESTED-1", false)],
-            ..Default::default()
-        };
         let proto = ProtocolState {
             workspaces: proto.workspaces[..2].to_vec(),
             ..proto
+        };
+        // The adapter behind the move, 1 still shown on NESTED-2 (or not
+        // shown at all): 3, the one it places on NESTED-1, stays.
+        for one_shown in [true, false] {
+            let behind = WmState {
+                workspaces: vec![ws(1, "NESTED-2", one_shown), ws(3, "NESTED-1", false)],
+                ..Default::default()
+            };
+            assert_eq!(
+                shown(&merge(Some(&behind), &[], &proto)),
+                [(3, "NESTED-1".into())],
+                "{one_shown}"
+            );
+        }
+        // Shown on another screen by the adapter, it is not shown here.
+        let elsewhere = WmState {
+            workspaces: vec![ws(1, "NESTED-2", true), ws(3, "NESTED-1", true)],
+            ..Default::default()
+        };
+        assert_eq!(
+            shown(&merge(Some(&elsewhere), &[], &proto)),
+            [(3, "NESTED-1".into())]
+        );
+        // The adapter places both there and shows neither: the first.
+        let unsure = WmState {
+            workspaces: vec![ws(1, "NESTED-1", false), ws(3, "NESTED-1", false)],
+            ..Default::default()
         };
         assert_eq!(
             shown(&merge(Some(&unsure), &[], &proto)),
