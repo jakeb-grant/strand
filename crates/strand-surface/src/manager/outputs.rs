@@ -10,6 +10,8 @@ impl<H: SurfaceHost + 'static> State<H> {
         let global = info.id;
         let now = Instant::now();
         self.forget_expired(now);
+        let known = self.host.output_ids();
+        self.monitors.set_known(known);
         let plugged = self.monitors.plug(
             global,
             &info.make,

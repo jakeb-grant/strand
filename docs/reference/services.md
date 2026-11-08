@@ -8,7 +8,7 @@ A service is a live value: read it and the shell updates when it changes (spec.m
 
 | Field | Type | |
 | --- | --- | --- |
-| `ready` | `bool` | A run of the service is up and has answered: false before its first report, while its source is gone (a declared `from dbus` service's daemon, the compositor or its output manager for `outputs`), and while no run is up (failed and backing off, or stopped); a builtin D-Bus service whose daemon goes stays ready and shows what it reads again, as a change. It turns true one flush after the service's first values, as a change, so `on change svc.x, svc.ready` runs once the values are real (spec.md 8.4). It means *reported*, not *settled*. Unlike `available` or `present`, which say whether a backend or device exists and are part of the report, every service has it, the config's own included. Read-only. |
+| `ready` | `bool` | A run of the service is up and has answered: false before its first report, while its source is gone (a declared `from dbus` service's daemon, the compositor or its output manager for `outputs`), and while no run is up (failed and backing off, or stopped); a builtin D-Bus service whose daemon goes stays ready and shows what it reads again, as a change. It turns true one flush after the service's first values, as a change, so `on change svc.x, svc.ready` runs once the values are real (spec.md 8.4). It means *reported*, not *settled*. Unlike `available` or `present`, which say whether a backend or device exists and are part of the report, every service has it, the config's own included. The ones the shell fills itself, with no run (`screens`, `clock`, `calendar`), are ready from the start, so `on change screens.ready` never runs. Read-only. |
 
 ## `apps`
 

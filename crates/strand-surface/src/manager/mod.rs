@@ -164,6 +164,14 @@ pub trait SurfaceHost: Painter {
     fn monitor_changed(&mut self, monitor: &Monitor) {
         let _ = monitor;
     }
+    /// (output-id, review round 3) The outputs service's numbering of
+    /// the monitors connected, on or off, as (connector, `Output.id`):
+    /// a monitor plugged in takes its connector's id from it, so two
+    /// identical ones keep their ` #n` as they are turned on and off.
+    /// Empty (the default) numbers by plug order alone.
+    fn output_ids(&mut self) -> Vec<(String, String)> {
+        Vec::new()
+    }
     /// A monitor was unplugged; it is remembered for 30 s.
     fn monitor_removed(&mut self, monitor: &Monitor) {
         let _ = monitor;

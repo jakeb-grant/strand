@@ -83,7 +83,8 @@ cannot work. A missing daemon never stops the shell.
 
 Every service, built in or your own, also has `ready`: true once a run
 of it is up and has answered, and false before its first values and
-while it is not running. `outputs` and a service you declare `from
+while it is not running. The few the shell fills itself, with no run
+(`screens`, `clock`, `calendar`), are ready from the start. `outputs` and a service you declare `from
 dbus` are also not ready while their source is gone (the compositor's
 output manager, the daemon); a built-in D-Bus service such as `battery`
 or `network` stays ready when its daemon goes, and what it shows then

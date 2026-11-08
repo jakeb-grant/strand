@@ -545,8 +545,9 @@ fn services(s: &Schema) -> String {
          after the service's first values, as a change, so `on change svc.x, svc.ready` runs \
          once the values are real (spec.md 8.4). It means *reported*, not *settled*. Unlike \
          `available` or `present`, which say whether a backend or device exists and are \
-         part of the report, every service has it, the config's own included. \
-         Read-only. |\n\n",
+         part of the report, every service has it, the config's own included. The ones \
+         the shell fills itself, with no run (`screens`, `clock`, `calendar`), are ready \
+         from the start, so `on change screens.ready` never runs. Read-only. |\n\n",
     );
     for (name, id) in &s.services {
         let r = s.types.record(*id);

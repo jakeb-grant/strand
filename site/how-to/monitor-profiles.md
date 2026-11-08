@@ -323,7 +323,8 @@ panel off (`on = false`) for the dock instead.
   described alike get ` #2` on the second, the monitors that are on
   numbered first. A monitor keeps its number while it is connected,
   turned off or on, so a profile that turns one of the two off names
-  the same one afterwards; which one is ` #2` can change when Strand
+  the same one afterwards and is applied once; one plugged in takes the
+  lowest number free, and which one is ` #2` can change when Strand
   restarts, as for `Screen.id`.
 - **Only a profile, never a guess.** Apply only when `mons != null`,
   and a set nobody saved stays as the compositor arranged it.

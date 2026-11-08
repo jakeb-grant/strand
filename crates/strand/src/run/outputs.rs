@@ -171,6 +171,11 @@ pub(super) struct Files {
     /// Each output's standing notice (until its next write lands), so a
     /// `strand watch` started after it still hears it.
     notices: Vec<(PathBuf, String)>,
+    /// (live-files, review round 3) The outputs whose content waits for a
+    /// service with no run up, with that notice: a write paced from
+    /// before (or a held `run:`'s catch-up) that lands meanwhile takes
+    /// the notice away as any write does, and it is posted again.
+    waiting: Vec<(PathBuf, String)>,
 }
 
 impl Drop for Files {
@@ -197,7 +202,27 @@ impl Files {
             shared: None,
             targets: Vec::new(),
             notices: Vec::new(),
+            waiting: Vec::new(),
         }
+    }
+
+    /// (live-files, review round 3) `path`'s content now waits, with
+    /// `notice` when a service it waits for has no run up; `None`
+    /// (content to write, a failure, `text: null`) when it does not wait
+    /// on one that is down.
+    fn set_waiting(&mut self, path: &Path, notice: Option<String>) {
+        self.waiting.retain(|(p, _)| p != path);
+        if let Some(n) = notice {
+            self.waiting.push((path.to_path_buf(), n));
+        }
+    }
+
+    /// The waiting notice `path` still has, once a write to it landed.
+    fn still_waiting(&self, path: &Path) -> Option<&str> {
+        self.waiting
+            .iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, n)| n.as_str())
     }
 
     /// Tells the writer the paths `inst`'s outputs write now, when they
@@ -271,7 +296,13 @@ impl Shell {
         self.files.keep(&self.inst);
         for o in self.files.outcomes() {
             match o {
-                Outcome::Written(path) => self.output_ok(&path),
+                Outcome::Written(path) => {
+                    self.output_ok(&path);
+                    // An earlier write landed while the content waits.
+                    if let Some(why) = self.files.still_waiting(&path).map(str::to_string) {
+                        self.output_notice(&path, &why, false);
+                    }
+                }
                 Outcome::Failed(path, why) => self.output_notice(&path, &why, false),
                 Outcome::Unowned(path, why) => self.output_notice(&path, &why, true),
             }
@@ -279,6 +310,11 @@ impl Shell {
     }
 
     fn output(&mut self, c: OutputChange) {
+        if let Some(p) = &c.path
+            && !matches!(c.content, OutputContent::Waiting { .. })
+        {
+            self.files.set_waiting(p, None);
+        }
         match c.content {
             OutputContent::Write { bytes, run } => {
                 let Some(path) = c.path else { return };
@@ -319,7 +355,9 @@ impl Shell {
                 let Some(path) = c.path else { return };
                 let Some(r) = &self.real else { return };
                 let snap = r.services.snapshot(self.inst.runtime());
-                if let Some(why) = waiting_notice(&services, &snap) {
+                let why = waiting_notice(&services, &snap);
+                self.files.set_waiting(&path, why.clone());
+                if let Some(why) = why {
                     self.output_notice(&path, &why, false);
                 }
             }
@@ -1943,6 +1981,25 @@ mod tests {
         );
         let why = waiting_notice(&waits, &[snap("outputs", true), snap("media", false)]).unwrap();
         assert!(why.starts_with("waits for `media`"), "{why}");
+    }
+
+    /// (live-files, review round 3) A waiting notice outlives a write
+    /// that lands while the content waits (one paced from before the
+    /// service went down), and goes once the content is no longer
+    /// waiting on it.
+    #[test]
+    fn a_write_landing_while_waiting_keeps_the_notice() {
+        let (ping, _source) = calloop::ping::make_ping().unwrap();
+        let mut files = Files::new(ping, None, None);
+        let (a, b) = (Path::new("/x/a.lua"), Path::new("/x/b.json"));
+        files.set_waiting(a, Some("waits for `outputs`".into()));
+        files.set_waiting(b, None);
+        assert_eq!(files.still_waiting(a), Some("waits for `outputs`"));
+        assert_eq!(files.still_waiting(b), None);
+        files.set_waiting(a, Some("waits for `media`".into()));
+        assert_eq!(files.still_waiting(a), Some("waits for `media`"));
+        files.set_waiting(a, None);
+        assert_eq!(files.still_waiting(a), None);
     }
 
     #[test]

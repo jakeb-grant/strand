@@ -871,7 +871,10 @@ monitor, the keyboard always).
   one has been read). The name is reserved: a declared field or action
   named `ready` is a load error (`check::reserved_field`), and a
   service schema declaring one is refused. Section 8.4 says when it
-  changes.
+  changes. A builtin the shell fills itself, with no run (`screens`,
+  whose monitors main reports, `clock`, `calendar`), is ready from the
+  start, so a `file` reading only it never waits and `on change
+  screens.ready` never runs.
 - **Plugin services.** A service may also come from a plugin: a binary
   built from `strand`'s library with services of its own (git-only and
   marked unstable). Its schema is a
@@ -1985,7 +1988,8 @@ monitor, the keyboard always).
   when the text is not one (decisions.md flex). (json-fn) `json(v)`
   writes any plain-data value as compact JSON, records by their fields
   in order, enums by name, colours as `"#rrggbb"` (`"#rrggbbaa"` when
-  translucent), durations in milliseconds (docs/reference/functions.md; decisions.md json-fn), for
+  translucent), durations in milliseconds, a token as its current
+  value (docs/reference/functions.md; decisions.md json-fn), for
   a file a tool reads or an action's one argument.
 - `t.plain(m)` is the text `markup: m` shows, without its styles, and
   `t.links(m)` its links' targets in order, as written, both read by the
@@ -2509,7 +2513,8 @@ from a service, a compositor fragment from `outputs.all`.
   once every one has answered. A write from before it turned false, still
   waiting for its turn (the 500 ms pacing below), lands: it was made from
   values that held. A service with no run up (failed, backing
-  off) makes it a standing notice naming that service; one starting is
+  off) makes it a standing notice naming that service, kept while it
+  waits (that earlier write landing does not take it away); one starting is
   no news, and so is one that is up but not ready (a declared `from
   dbus` service whose daemon is absent waits for it with no notice). A
   builtin whose backend is absent (`battery` without UPower) is ready
@@ -2847,7 +2852,7 @@ people can edit by hand.
   a failed service waits to try again, so a config can hide what cannot
   work (decisions.md m6-owner-fixes, gaps 18 and 20; m6-service-gaps,
   gap 30; drives; power-media-kbd). Every service's `ready` (section
-  5.6) is false from the moment a run fails until a new run has
+  5.6; one with no run is always ready) is false from the moment a run fails until a new run has
   answered; a service whose source goes while it runs (`outputs`: the
   compositor's connection or its output manager; a declared `from
   dbus` service: its daemon) turns `ready` false before it clears what

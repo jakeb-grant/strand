@@ -1035,7 +1035,12 @@ pub(crate) fn call(
         // (json-fn) Compact JSON of any plain-data value.
         "json" => {
             let mut out = String::new();
-            json(types, args.get(0).unwrap_or(&Value::Null), &mut out);
+            // (json-fn, review round 3) A token (`$fg`, a record field
+            // holding one) is its current value, as `join` and `hex`
+            // read it.
+            let token = |t: &strand_scene::TokenExpr| vm.hooks().and_then(|h| h.token(rt, t));
+            json(types, args.get(0).unwrap_or(&Value::Null), &mut out, &token)
+                .map_err(|e| fail(format!("`json`: {e}")))?;
             Value::text(out)
         }
         // (flex) Angles are degrees (a plain number where an angle is
@@ -1728,9 +1733,17 @@ fn list_method(
 /// variant's name, a colour its `hex`, a duration its milliseconds, a
 /// whole number whole and any other in its shortest form (a non-finite
 /// one `null`). Texts are escaped as JSON requires and keep
-/// their other characters. What is not data (a function, an element)
-/// is `null`.
-pub(crate) fn json(types: &TypeTable, v: &Value, out: &mut String) {
+/// their other characters. A token is its value over the current table
+/// (`token`; review round 3): a colour as a colour is, a number, length
+/// or angle as a number, a duration in milliseconds, a text or keyword
+/// as text, and one with no value, or none JSON writes, an error. What
+/// is not data (a function, an element) is `null`.
+pub(crate) fn json(
+    types: &TypeTable,
+    v: &Value,
+    out: &mut String,
+    token: &dyn Fn(&strand_scene::TokenExpr) -> Option<strand_scene::PropValue>,
+) -> Result<(), String> {
     use std::fmt::Write as _;
     let text = |out: &mut String, t: &str| {
         out.push_str(&serde_json::Value::String(t.to_string()).to_string());
@@ -1750,6 +1763,23 @@ pub(crate) fn json(types: &TypeTable, v: &Value, out: &mut String) {
         },
         Value::Text(t) => text(out, t),
         Value::Color(c) => text(out, &super::value::hex(*c)),
+        Value::Token(t) => {
+            use strand_scene::{Length, PropValue};
+            let v = match token(t).ok_or("the token has no value")? {
+                PropValue::Color(c) => Value::Color(c),
+                PropValue::Number(n) | PropValue::Angle(n) | PropValue::Length(Length::Px(n)) => {
+                    // Its shortest form (`0.65`, not `0.6499999761581543`).
+                    Value::float(n.to_string().parse().unwrap_or(f64::from(n)))
+                }
+                PropValue::Duration(d) => Value::float(d.as_secs_f64() * 1000.0),
+                PropValue::Bool(b) => Value::Bool(b),
+                pv => Value::text(
+                    crate::template::write_value(&pv, crate::syntax::Span::default())
+                        .map_err(|d| d.message)?,
+                ),
+            };
+            return json(types, &v, out, token);
+        }
         Value::Enum(e, i) => match types.enum_(*e).variants.get(*i as usize) {
             Some(name) => text(out, name),
             None => out.push_str("null"),
@@ -1763,7 +1793,7 @@ pub(crate) fn json(types: &TypeTable, v: &Value, out: &mut String) {
                 }
                 text(out, &f.name);
                 out.push(':');
-                json(types, x, out);
+                json(types, x, out, token)?;
             }
             out.push('}');
         }
@@ -1773,7 +1803,7 @@ pub(crate) fn json(types: &TypeTable, v: &Value, out: &mut String) {
                 if i > 0 {
                     out.push(',');
                 }
-                json(types, x, out);
+                json(types, x, out, token)?;
             }
             out.push(']');
         }
@@ -1784,18 +1814,19 @@ pub(crate) fn json(types: &TypeTable, v: &Value, out: &mut String) {
                     out.push(',');
                 }
                 let mut key = String::new();
-                json(types, k, &mut key);
+                json(types, k, &mut key, token)?;
                 match serde_json::from_str::<serde_json::Value>(&key) {
                     Ok(serde_json::Value::String(s)) => text(out, &s),
                     _ => text(out, &key),
                 }
                 out.push(':');
-                json(types, x, out);
+                json(types, x, out, token)?;
             }
             out.push('}');
         }
         _ => out.push_str("null"),
     }
+    Ok(())
 }
 
 #[cfg(test)]

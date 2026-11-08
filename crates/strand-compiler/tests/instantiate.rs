@@ -7532,6 +7532,42 @@ fn hex_and_argb_format_colours_anywhere() {
     );
 }
 
+/// (json-fn, review round 3) `json` writes a token as its value over the
+/// current table, as `hex` and `join` do: a colour token as `"#rrggbb"`,
+/// held in a record's colour field or a dictionary's value, a length
+/// token as a number, and it follows a theme flip.
+#[test]
+fn json_writes_a_token_as_its_value() {
+    let src = "type Colors { fg: color; bg: color }\n\
+               type Look { c: Colors; r: length; a: [text: color] }\n\
+               bar Top { text json(Look(c: Colors(fg: $fg, bg: $accent), r: $radius.md, a: [\"x\": $accent])) }\n";
+    let mut shell = boot(&[("a.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+    });
+    let read = |shell: &Shell| -> serde_json::Value {
+        let t = shell.scene.texts()[0].clone();
+        serde_json::from_str(&t).unwrap_or_else(|e| panic!("{t}: {e}"))
+    };
+    let v = read(&shell);
+    let colour = |v: &serde_json::Value| {
+        v.as_str()
+            .is_some_and(|s| s.len() == 7 && s.starts_with('#'))
+    };
+    assert!(colour(&v["c"]["fg"]) && colour(&v["c"]["bg"]), "{v}");
+    assert_eq!(v["c"]["bg"], v["a"]["x"], "{v}");
+    assert!(v["r"].is_number(), "{v}");
+    shell
+        .host
+        .set(&shell.rt, "system.dark", Value::Bool(true))
+        .unwrap();
+    shell.flush();
+    let after = read(&shell);
+    assert_ne!(
+        after["c"]["fg"], v["c"]["fg"],
+        "the token followed the flip"
+    );
+}
+
 /// The page site/how-to/monitor-profiles.md, whose `strand file=` blocks
 /// the tests below mount as they are written there.
 const MONITOR_PROFILES_PAGE: &str = include_str!("../../../site/how-to/monitor-profiles.md");

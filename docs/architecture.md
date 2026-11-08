@@ -2209,8 +2209,16 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   `PresentationClock::set_clock_id` also sets
   `strand_scene::backlog::set_presentation_clock`.
 - **Monitors.** `MonitorId` is `"make | model | description"` without
-  wlroots' trailing ` (<connector>)` (a duplicate gets ` #2`, in plug
-  order); `Screens::Named` matches it or the connector. `SurfaceId`s are
+  wlroots' trailing ` (<connector>)` (a duplicate gets ` #2`);
+  `Screens::Named` matches it or the connector. (output-id, review
+  round 3) A duplicate's number is the one the `outputs` service gives
+  its connector: `SurfaceHost::output_ids()` (default empty; the
+  binary's host returns `strand_services::outputs::ids()`, the last
+  snapshot's connector and `Output.id` of every monitor connected, on or
+  off) is read at each plug, so `Screen.id` is `Output.id` and turning
+  one of two identical monitors on or off renumbers neither. Without
+  it, or for a connector it does not name yet, the lowest number no
+  monitor plugged in holds and the list gives no other connector. `SurfaceId`s are
   stable per (node, monitor) while the monitor is remembered. The binary
   forwards the `monitor_*` hooks to logic as the `screens` service.
   (screen-position) `ScreenInfo` carries the monitor's

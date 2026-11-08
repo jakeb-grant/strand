@@ -85,8 +85,9 @@ pub struct Monitor {
     pub id: MonitorId,
     /// The connector name (`DP-1`, `HEADLESS-2`), when the compositor gives
     /// one. Not part of the identity: connectors move between ports.
-    /// Identical monitors are numbered in plug order (` #2`), so which of
-    /// two identical monitors is `#2` can change across restarts.
+    /// Identical monitors are numbered as the `outputs` service numbers
+    /// them, else in plug order (` #2`; [`Monitors::set_known`]), so which
+    /// of two identical monitors is `#2` can change across restarts.
     pub connector: Option<String>,
     pub make: String,
     pub model: String,
@@ -133,6 +134,8 @@ pub(crate) struct Monitors {
     records: HashMap<MonitorId, Record>,
     /// `wl_output` global name → identity, for plugged-in monitors.
     outputs: HashMap<u32, MonitorId>,
+    /// (output-id) Connector → `Output.id` ([`Monitors::set_known`]).
+    known: Vec<(String, String)>,
 }
 
 /// Result of [`Monitors::plug`].
@@ -145,7 +148,10 @@ pub(crate) struct Plugged {
 
 impl Monitors {
     /// A `wl_output` global appeared (or changed its make, model or
-    /// description, which callers handle as unplug + plug).
+    /// description, which callers handle as unplug + plug). A second
+    /// identical monitor takes the number the outputs service gave its
+    /// connector ([`Monitors::set_known`]; decisions.md output-id, review
+    /// round 3).
     pub fn plug(
         &mut self,
         global: u32,
@@ -161,18 +167,7 @@ impl Monitors {
             model,
             identity_description(description, connector.as_deref()),
         );
-        // Identical monitors plugged in at once get numbered; an unplugged
-        // record with the identity is reclaimed first.
-        let mut id = base.clone();
-        let mut n = 1;
-        while self
-            .records
-            .get(&id)
-            .is_some_and(|r| r.unplugged_at.is_none())
-        {
-            n += 1;
-            id = base.nth(n);
-        }
+        let id = self.number(&base, connector.as_deref());
         let monitor = Monitor {
             id: id.clone(),
             connector,
@@ -196,6 +191,62 @@ impl Monitors {
             monitor,
             reconnected,
         }
+    }
+
+    /// (output-id, review round 3) The output-management numbering,
+    /// connector to `Output.id`, of every monitor connected, on or off
+    /// (`SurfaceHost::output_ids`), which the next [`Monitors::plug`]
+    /// numbers by.
+    pub fn set_known(&mut self, known: Vec<(String, String)>) {
+        self.known = known;
+    }
+
+    /// (output-id, review round 3) The id a monitor of identity `base`
+    /// plugged in on `connector` takes. Its number is the one the
+    /// outputs service gives that connector (`known`), so `Screen.id` is
+    /// `Output.id` and turning one of two identical monitors on or off
+    /// renumbers neither: a monitor off has no `wl_output`, so only the
+    /// output-management list knows it is still connected and holds its
+    /// number. Without one (no outputs service, or its list not yet
+    /// updated for a monitor just plugged in), the lowest number no
+    /// monitor plugged in holds and the list gives no other connector,
+    /// which is how the outputs service numbers a monitor new to it.
+    fn number(&self, base: &MonitorId, connector: Option<&str>) -> MonitorId {
+        let known = &self.known;
+        let plugged = |id: &MonitorId| {
+            self.records
+                .get(id)
+                .is_some_and(|r| r.unplugged_at.is_none())
+        };
+        let of_base = |id: &str| {
+            id == base.as_str()
+                || id
+                    .strip_prefix(base.as_str())
+                    .and_then(|r| r.strip_prefix(" #"))
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .is_some_and(|n| n >= 2)
+        };
+        let given = connector.and_then(|c| known.iter().find(|(k, _)| k == c));
+        if let Some((_, id)) = given
+            && of_base(id)
+        {
+            let id = MonitorId(id.clone());
+            if !plugged(&id) {
+                return id;
+            }
+        }
+        let others = |id: &MonitorId| {
+            known
+                .iter()
+                .any(|(k, i)| Some(k.as_str()) != connector && i == id.as_str())
+        };
+        let mut id = base.clone();
+        let mut n = 1;
+        while plugged(&id) || others(&id) {
+            n += 1;
+            id = base.nth(n);
+        }
+        id
     }
 
     /// Records a plugged-in monitor's scale, logical size and position.
@@ -412,5 +463,64 @@ mod tests {
         assert_eq!(c.monitor.id, b.monitor.id);
         assert!(c.reconnected);
         assert_eq!(m.unplug(42, t), None);
+    }
+
+    /// (output-id, review round 3) Two identical monitors on DP-1 and
+    /// DP-2 take the numbers the outputs service gives their connectors,
+    /// on or off, so `Screen.id` is `Output.id` and turning one on while
+    /// the other goes off (in either order of the two `wl_output`
+    /// events) swaps nothing; one the list does not yet name takes the
+    /// lowest number no monitor plugged in or connected holds.
+    #[test]
+    fn identical_monitors_take_the_outputs_numbers() {
+        let t = Instant::now();
+        let known = |a: &str, b: &str| -> Vec<(String, String)> {
+            vec![("DP-1".into(), a.into()), ("DP-2".into(), b.into())]
+        };
+        let plug = |m: &mut Monitors, g: u32, c: &str, k: &[(String, String)]| {
+            m.set_known(k.to_vec());
+            m.plug(g, "A", "B", "C", Some(c.into()), t)
+                .monitor
+                .id
+                .as_str()
+                .to_string()
+        };
+        let (x, x2) = ("A | B | C", "A | B | C #2");
+        // DP-2 on (`X`), DP-1 off (`X #2`); the profile turns DP-1 on and
+        // DP-2 off: DP-1 is `X #2` whether DP-2's output goes first or not.
+        for remove_first in [true, false] {
+            let mut m = Monitors::default();
+            let k = known(x2, x);
+            assert_eq!(plug(&mut m, 2, "DP-2", &k), x);
+            if remove_first {
+                m.unplug(2, t);
+            }
+            assert_eq!(plug(&mut m, 1, "DP-1", &k), x2, "{remove_first}");
+            m.unplug(2, t);
+            // And back: DP-2 is `X` again, DP-1 still `X #2`.
+            m.unplug(1, t);
+            assert_eq!(plug(&mut m, 2, "DP-2", &k), x);
+            assert_eq!(plug(&mut m, 1, "DP-1", &k), x2);
+        }
+        // Both off, then on in the other order: each its own number.
+        let mut m = Monitors::default();
+        let k = known(x, x2);
+        assert_eq!(plug(&mut m, 2, "DP-2", &k), x2);
+        assert_eq!(plug(&mut m, 1, "DP-1", &k), x);
+        // Not in the list yet (just plugged in): not DP-1's `X`, which is
+        // off but connected, nor a number plugged in.
+        let mut m = Monitors::default();
+        let only = vec![("DP-1".to_string(), x.to_string())];
+        assert_eq!(plug(&mut m, 5, "DP-5", &only), x2);
+        // No list (no outputs service): the lowest number plugged in.
+        let mut m = Monitors::default();
+        assert_eq!(plug(&mut m, 5, "DP-5", &[]), x);
+        // A number the list gives that is another identity's, or held by
+        // a monitor plugged in, is not taken.
+        let mut m = Monitors::default();
+        let wrong = vec![("DP-1".to_string(), "Other | B | C".to_string())];
+        assert_eq!(plug(&mut m, 1, "DP-1", &wrong), x);
+        let both = vec![("DP-2".to_string(), x.to_string())];
+        assert_eq!(plug(&mut m, 2, "DP-2", &both), x2);
     }
 }

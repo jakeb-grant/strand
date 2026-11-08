@@ -1518,6 +1518,12 @@ impl SurfaceHost for Host {
         let Ok(()) = host_loop::detached(self, surface);
     }
 
+    /// (output-id, review round 3) `Screen.id` numbers identical
+    /// monitors as the `outputs` service does.
+    fn output_ids(&mut self) -> Vec<(String, String)> {
+        strand_services::outputs::ids()
+    }
+
     fn monitor_added(&mut self, monitor: &Monitor, _reconnected: bool) {
         #[cfg(test)]
         if let Some(p) = &self.probe {

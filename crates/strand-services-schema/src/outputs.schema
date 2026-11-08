@@ -23,8 +23,10 @@ record Output key name {
   /// identical one (those on first). The same as `Screen.id` while it is
   /// on, and kept when it moves to another port: what a saved layout
   /// names a monitor by. A monitor keeps its ` #n` while it is
-  /// connected, turned off or on; which of two identical ones is ` #2`
-  /// can change when Strand restarts.
+  /// connected, turned off or on, so applying a layout renames none; one
+  /// plugged in takes the lowest number no connected monitor holds, and
+  /// which of two identical ones is ` #2` can change when Strand
+  /// restarts.
   id: text
   /// A readable description of it.
   description: text

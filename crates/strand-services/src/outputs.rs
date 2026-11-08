@@ -88,6 +88,21 @@ const RATE_SLACK: i64 = 500;
 
 static TARGET: Mutex<Option<WaylandTarget>> = Mutex::new(None);
 
+/// (output-id, review round 3) The ids of the monitors connected, on or
+/// off, by connector, as the last snapshot numbered them ([`ids`]). Kept
+/// when a run ends, so the next run's heads keep their ids.
+static IDS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// (output-id, review round 3) Each connected monitor's connector and
+/// `Output.id`, as the last snapshot gave them, on or off. strand-surface
+/// numbers a monitor's `Screen.id` from this (`SurfaceHost::output_ids`):
+/// a monitor off has no `wl_output`, so only this list shows that it is
+/// still connected and holds its number. Empty before the first snapshot
+/// of this process.
+pub fn ids() -> Vec<(String, String)> {
+    IDS.lock().map(|i| i.clone()).unwrap_or_default()
+}
+
 /// Which display `outputs` connects to from its next start on (tests: a
 /// headless sway's socket). `None` restores `$WAYLAND_DISPLAY`. A running
 /// service keeps its connection until it stops.
@@ -221,29 +236,16 @@ pub fn output_id(make: &str, model: &str, description: &str, connector: &str) ->
     format!("{make} | {model} | {description}")
 }
 
-/// (output-id, review round 2) The id an output comes to
-/// [`number_ids`] with: none for one turned on since the last snapshot,
-/// which so takes the lowest number no monitor on holds, as
-/// strand-surface's `Monitors::plug` numbers the `wl_output` a monitor
-/// turned on gets; else the one it had.
-fn turned_on_afresh(id: &str, was_on: bool, on: bool) -> String {
-    match on && !was_on {
-        true => String::new(),
-        false => id.to_string(),
-    }
-}
-
-/// Fills each output's `id`, numbering identical monitors as
-/// strand-surface does (its second ` #2`), so an id agrees with
-/// `Screen.id` for every monitor shown. An output comes with the id it
-/// had at the last snapshot (empty when new) and keeps it: turning one of
-/// two identical monitors off or on, or unplugging one, renumbers neither
-/// (review round 1). A monitor turned on whose id another one on holds,
-/// a new one, or one turned on since the last snapshot (it comes with no
-/// id, [`turned_on_afresh`]), takes the lowest number no monitor on holds, as
-/// strand-surface's `Monitors::plug` reclaims a record; one off takes
-/// what no other output holds. New ones are numbered those on first, in
-/// the compositor's order, then those off.
+/// Fills each output's `id`, numbering identical monitors (the second
+/// ` #2`). The rule (decisions.md output-id, review round 3): an output
+/// comes with the id it had at the last snapshot (empty when new) and
+/// keeps it for as long as it is connected, on or off, so applying a
+/// configuration, which connects and disconnects nothing, renames no
+/// monitor, and a profile chosen by id is still the one chosen after it
+/// is applied. A new one takes the lowest number no connected monitor of
+/// its identity holds, those on first, in the compositor's order, then
+/// those off. strand-surface takes `Screen.id` from this numbering
+/// ([`ids`]), so the two agree for every monitor shown.
 fn number_ids(all: &mut [Output]) {
     let bases: Vec<String> = all
         .iter()
@@ -263,28 +265,28 @@ fn number_ids(all: &mut [Output]) {
         })
         .collect();
     let mut held: Vec<Option<usize>> = vec![None; all.len()];
-    // Held so far: by those on only, while they are numbered.
     let taken = |held: &[Option<usize>], i: usize, n: usize| {
         held.iter()
             .enumerate()
             .any(|(j, h)| *h == Some(n) && bases[j] == bases[i])
     };
-    let on: Vec<usize> = (0..all.len()).filter(|&i| all[i].enabled).collect();
-    let off: Vec<usize> = (0..all.len()).filter(|&i| !all[i].enabled).collect();
-    for group in [&on, &off] {
-        // Those keeping their number, then the rest.
-        for &i in group.iter() {
-            if let Some(n) = prior[i]
-                && !taken(&held, i, n)
-            {
-                held[i] = Some(n);
-            }
+    let order: Vec<usize> = (0..all.len())
+        .filter(|&i| all[i].enabled)
+        .chain((0..all.len()).filter(|&i| !all[i].enabled))
+        .collect();
+    // Every one connected keeps its number (two with the same, after a
+    // change of description: the first, those on first), then the new.
+    for &i in &order {
+        if let Some(n) = prior[i]
+            && !taken(&held, i, n)
+        {
+            held[i] = Some(n);
         }
-        for &i in group.iter() {
-            if held[i].is_none() {
-                let n = (1..).find(|&n| !taken(&held, i, n)).unwrap_or(1);
-                held[i] = Some(n);
-            }
+    }
+    for &i in &order {
+        if held[i].is_none() {
+            let n = (1..).find(|&n| !taken(&held, i, n)).unwrap_or(1);
+            held[i] = Some(n);
         }
     }
     for (i, o) in all.iter_mut().enumerate() {
@@ -413,9 +415,6 @@ struct HeadEntry {
     /// (output-id) Its id at the last snapshot, kept while the head is
     /// there ([`number_ids`]).
     id: String,
-    /// (output-id) Whether it was on at the last snapshot: one turned on
-    /// since is numbered afresh ([`turned_on_afresh`]).
-    was_on: bool,
 }
 
 impl HeadEntry {
@@ -436,7 +435,6 @@ impl HeadEntry {
             scale: 1.0,
             adaptive_sync: false,
             id: String::new(),
-            was_on: false,
         }
     }
 }
@@ -470,6 +468,11 @@ struct Client {
     synced: bool,
     /// Answers to configurations, by the configuration's own number.
     answers: Vec<(u64, Outcome)>,
+    /// (output-id, review round 3) Whether the snapshot shares its ids
+    /// with the process ([`IDS`]): a head new to this run takes the id
+    /// the last run gave its connector, and strand-surface reads them.
+    /// Off in unit tests, which run side by side.
+    shared: bool,
 }
 
 impl Client {
@@ -480,6 +483,10 @@ impl Client {
     /// The outputs as published: every head with a name, modes
     /// deduplicated; each head keeps its id ([`number_ids`]).
     fn snapshot(&mut self) -> Vec<Output> {
+        let remembered = match self.shared {
+            true => Some(ids()),
+            false => None,
+        };
         let mut all: Vec<Output> = self
             .heads
             .iter()
@@ -504,9 +511,18 @@ impl Client {
                     .filter(|_| h.enabled)
                     .and_then(|id| self.modes.get(id))
                     .map(ModeEntry::public);
+                // New to this run: what the last run called it, if any.
+                let id = match (h.id.is_empty(), &remembered) {
+                    (true, Some(ids)) => ids
+                        .iter()
+                        .find(|(n, _)| *n == h.name)
+                        .map(|(_, id)| id.clone())
+                        .unwrap_or_default(),
+                    _ => h.id.clone(),
+                };
                 Output {
                     name: h.name.clone(),
-                    id: turned_on_afresh(&h.id, h.was_on, h.enabled),
+                    id,
                     description: h.description.clone(),
                     make: h.make.clone(),
                     model: h.model.clone(),
@@ -529,7 +545,11 @@ impl Client {
         let named = self.heads.iter_mut().filter(|h| !h.name.is_empty());
         for (h, o) in named.zip(&all) {
             h.id.clone_from(&o.id);
-            h.was_on = o.enabled;
+        }
+        if self.shared
+            && let Ok(mut ids) = IDS.lock()
+        {
+            *ids = all.iter().map(|o| (o.name.clone(), o.id.clone())).collect();
         }
         all
     }
@@ -903,7 +923,10 @@ impl Outputs {
         let display = conn.display();
         let _registry = display.get_registry(&qh, ());
         display.sync(&qh, ());
-        let mut client = Client::default();
+        let mut client = Client {
+            shared: true,
+            ..Client::default()
+        };
         let Pending { waiting, in_flight } = pending;
         let mut next_id = 0u64;
         // Set once stopped: the deadline for the answer in flight.
@@ -1410,10 +1433,11 @@ mod tests {
         );
     }
 
-    /// (output-id, review round 1) Two identical monitors keep their ids
-    /// when one is turned off or on, as strand-surface keeps its
-    /// `Screen.id`; one unplugged and plugged in again takes the lowest
-    /// number no monitor on holds, as strand-surface reclaims its record.
+    /// (output-id, review rounds 1 and 3) Two identical monitors keep
+    /// their ids while they are connected, whichever is turned off or on;
+    /// one unplugged and plugged in again takes the lowest number no
+    /// connected monitor holds, and a new one does not take the number of
+    /// one that is off.
     #[test]
     fn an_identical_monitor_keeps_its_id_while_it_is_there() {
         let head = |name: &str, enabled: bool| Output {
@@ -1430,43 +1454,111 @@ mod tests {
         let mut all = vec![head("DP-1", true), head("DP-2", true)];
         number_ids(&mut all);
         assert_eq!(ids(&all), [base.to_string(), second.clone()]);
-        // A profile turns DP-1 off and DP-2 on: neither is renumbered, so
-        // the profile still names the same two (no loop of applies).
-        all[0].enabled = false;
-        number_ids(&mut all);
-        assert_eq!(ids(&all), [base.to_string(), second.clone()]);
-        all[0].enabled = true;
-        number_ids(&mut all);
-        assert_eq!(ids(&all), [base.to_string(), second.clone()]);
-        // DP-1 unplugged: DP-2 keeps its `#2`, as its `Screen.id` does.
+        // Every on and off of the two, from every other: neither is
+        // renumbered.
+        for (a, b) in [(false, true), (true, false), (false, false), (true, true)] {
+            for (c, d) in [(false, true), (true, false), (false, false), (true, true)] {
+                all[0].enabled = a;
+                all[1].enabled = b;
+                number_ids(&mut all);
+                all[0].enabled = c;
+                all[1].enabled = d;
+                number_ids(&mut all);
+                assert_eq!(ids(&all), [base.to_string(), second.clone()]);
+            }
+        }
+        // DP-1 unplugged: DP-2 keeps its `#2`.
         let mut all = vec![all.remove(1)];
         number_ids(&mut all);
         assert_eq!(ids(&all), std::slice::from_ref(&second));
-        // Plugged in again, after DP-2: it takes the number free again.
-        all.push(head("DP-1", true));
-        number_ids(&mut all);
-        assert_eq!(ids(&all), [second.clone(), base.to_string()]);
-        // Both off, then DP-2 on again: its new `wl_output` takes the
-        // lowest number no monitor on holds, as strand-surface's plug
-        // does, and DP-1 (off) the next.
-        let mut all = vec![head("DP-1", false), head("DP-2", false)];
-        all[0].id = base.to_string();
-        all[1].id = second.clone();
-        number_ids(&mut all);
-        assert_eq!(ids(&all), [base.to_string(), second.clone()]);
-        all[1].enabled = true;
-        all[1].id = turned_on_afresh(&all[1].id, false, true);
-        number_ids(&mut all);
-        assert_eq!(ids(&all), [second.clone(), base.to_string()]);
-        // On all along, it keeps its number.
-        assert_eq!(turned_on_afresh(&second, true, true), second);
-        assert_eq!(turned_on_afresh(&second, false, false), second);
-        // A monitor turned on takes over the id of one that is off (as
-        // strand-surface's record is reclaimed), which takes the next.
+        // Plugged in again (or into DP-5), on or off: the number free.
+        for enabled in [true, false] {
+            let mut again = all.clone();
+            again.push(head("DP-5", enabled));
+            number_ids(&mut again);
+            assert_eq!(ids(&again), [second.clone(), base.to_string()]);
+        }
+        // A new one beside one that is off with `X`: `X #2`, not `X`.
         let mut all = vec![head("DP-1", false), head("DP-2", true)];
         all[0].id = base.to_string();
         number_ids(&mut all);
-        assert_eq!(ids(&all), [second.clone(), base.to_string()]);
+        assert_eq!(ids(&all), [base.to_string(), second.clone()]);
+    }
+
+    /// (output-id, review round 3) The profile loop: two identical
+    /// monitors with no serial, DP-1 off and DP-2 on at start, so DP-2 is
+    /// `X` and DP-1 `X #2`. A profile `X` off, `X #2` on is applied: DP-1
+    /// goes on and DP-2 off, at the heads, through the snapshots the
+    /// service publishes. Neither id changes, so the same profile is
+    /// chosen again and applying it changes nothing (it was applied every
+    /// 1.5 s while a monitor turned on took the lowest number).
+    #[test]
+    fn a_profile_that_swaps_identical_monitors_is_applied_once() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(a).unwrap();
+        let head = |name: &str, enabled: bool| HeadEntry {
+            name: name.into(),
+            description: format!("Acme Twin ({name})"),
+            make: "Acme".into(),
+            model: "Twin".into(),
+            enabled,
+            ..HeadEntry::new(ZwlrOutputHeadV1::inert(conn.backend().downgrade()))
+        };
+        let mut c = Client {
+            heads: vec![head("DP-1", false), head("DP-2", true)],
+            ..Client::default()
+        };
+        let state = |all: &[Output]| -> Vec<(String, String, bool)> {
+            all.iter()
+                .map(|o| (o.name.clone(), o.id.clone(), o.enabled))
+                .collect()
+        };
+        let x = "Acme | Twin | Acme Twin".to_string();
+        let x2 = format!("{x} #2");
+        let first = c.snapshot();
+        assert_eq!(
+            state(&first),
+            [
+                ("DP-1".into(), x2.clone(), false),
+                ("DP-2".into(), x.clone(), true)
+            ]
+        );
+        // The profile, by id; applying it sets each head it names.
+        let profile = [(x.clone(), false), (x2.clone(), true)];
+        let apply = |c: &mut Client, all: &[Output]| -> bool {
+            let mut changed = false;
+            for (id, on) in &profile {
+                let Some(o) = all.iter().find(|o| o.id == *id) else {
+                    continue;
+                };
+                let h = c.heads.iter_mut().find(|h| h.name == o.name).unwrap();
+                changed |= h.enabled != *on;
+                h.enabled = *on;
+            }
+            changed
+        };
+        let mut all = first;
+        assert!(apply(&mut c, &all), "the profile changes the monitors");
+        for round in 0..3 {
+            all = c.snapshot();
+            assert_eq!(
+                state(&all),
+                [
+                    ("DP-1".into(), x2.clone(), true),
+                    ("DP-2".into(), x.clone(), false)
+                ],
+                "round {round}"
+            );
+            assert!(!apply(&mut c, &all), "applied again in round {round}");
+        }
+        // Both turned off and on again, the other one first: the same ids.
+        c.heads.iter_mut().for_each(|h| h.enabled = false);
+        let _ = c.snapshot();
+        c.heads[1].enabled = true;
+        let _ = c.snapshot();
+        c.heads[0].enabled = true;
+        let ids: Vec<String> = c.snapshot().into_iter().map(|o| o.id).collect();
+        assert_eq!(ids, [x2, x]);
     }
 
     /// (service-ready, review round 1) The output manager going while

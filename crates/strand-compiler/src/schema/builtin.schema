@@ -1701,7 +1701,8 @@ fn number(t: text) -> float? lift
 /// argument: `json(prefs)` is `{"size":3,"dark":true}`. A record is an
 /// object of its fields, a list an array, a dictionary an object of its
 /// keys, null `null`, an enum its variant's name, a colour `"#rrggbb"`,
-/// or `"#rrggbbaa"` when translucent, a duration its milliseconds. Not a
+/// or `"#rrggbbaa"` when translucent, a duration its milliseconds, and a
+/// token (`$fg`, `$radius.md`) its current value the same way. Not a
 /// quoter for Lua: a control character is written `\u001b`, which Lua
 /// reads otherwise, so Lua takes a `fn` of its own.
 fn json(value: any?) -> text
