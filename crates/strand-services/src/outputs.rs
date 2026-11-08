@@ -45,7 +45,10 @@
 //! compositor answers `succeeded` or `failed` (`outputs.failed(action,
 //! error)`). (outputs-apply) `succeeded` is its word only, so an applied
 //! configuration is `outputs.succeeded("apply")` once the `wl_output`s
-//! and xdg-outputs show what it asked ([`Client::unlike`]), and `failed`
+//! and xdg-outputs show what it asked ([`Client::unlike`]: its scale as
+//! sent, within [`SCALE_SLACK`]; a mirror, on with no `wl_output`, only
+//! once it has one), with the heads read again and published first when
+//! they may be behind, and `failed`
 //! naming how they differ once they are quiet for [`CHECK_QUIET`] (at
 //! most [`CHECK_FOR`]) without it; a test is `succeeded` at its answer.
 //! `cancelled` (the outputs
@@ -124,6 +127,14 @@ const CHECK_FOR: Duration = Duration::from_secs(5);
 /// from a head's mode over its scale before they disagree (compositors
 /// round it each their own way).
 const SIZE_SLACK: f64 = 2.0;
+
+/// (outputs-apply) How far the scale xdg-output's size shows (a mode
+/// over its size in logical pixels) may be from the one asked or sent
+/// before they disagree: two `wl_fixed` steps, for a compositor that
+/// takes the scale it is sent to the nearest one giving whole logical
+/// pixels (Hyprland 0.57's `CMonitor::applyMonitorRule` searches a 1/120
+/// grid: 4/3, sent as 341/256, is 1.3333, 2880 wide on 3840, not 2883).
+const SCALE_SLACK: f64 = 1.0 / 128.0;
 
 /// The highest manager version this client speaks (4: adaptive sync).
 const VERSION: u32 = 4;
@@ -537,7 +548,8 @@ pub struct Outputs {
     pub available: bool,
     /// The compositor took a configuration: `on outputs.succeeded(action)
     /// { … }`, `action` as written (`"apply"` or `"test"`). An apply is
-    /// `succeeded` once the monitors show what it asked.
+    /// `succeeded` once the monitors show what it asked, and `outputs.all`
+    /// shows it then.
     pub succeeded: Event<String>,
     /// A configuration failed: the compositor refused it (a mode the
     /// monitor cannot show), it said it applied it but the monitors did
@@ -957,9 +969,10 @@ impl Client {
     /// asked (`None`: as asked, or nothing to tell by), from what each
     /// `wl_output` and its xdg-output say. A head asked off must have no
     /// `wl_output`; one asked on must have one, with its mode and (with
-    /// xdg-output) its place and size in, that [`differs`] in nothing.
-    /// A compositor whose `wl_output`s give no names (before version 4)
-    /// tells nothing.
+    /// xdg-output) its place and size in, that [`differs`] in nothing,
+    /// unless it was on with none when asked (`unseen`, a mirror), which
+    /// is compared only once it has one. A compositor whose `wl_output`s
+    /// give no names (before version 4) tells nothing.
     fn unlike(&self, asked: &[Expect]) -> Option<String> {
         if self.wl_outputs.iter().all(|o| o.name.is_empty()) {
             return None;
@@ -969,6 +982,7 @@ impl Client {
             match (e.enabled, o) {
                 (false, None) => None,
                 (false, Some(_)) => Some(format!("{} is still on", e.name)),
+                (true, None) if e.unseen => None,
                 (true, None) => Some(format!("{} is not on", e.name)),
                 (true, Some(o)) if o.mode.is_none() => Some(format!("{} shows no mode", e.name)),
                 (true, Some(o))
@@ -1089,7 +1103,9 @@ struct Fresh {
 /// (outputs-apply) What a configuration asked of a head, to check the
 /// outputs against once the compositor says it applied it
 /// ([`Client::unlike`]). `mode` is `None` when no mode was sent; a
-/// refresh of 0 is not compared.
+/// refresh of 0 is not compared. `scale` is as sent ([`sent_scale`]).
+/// `unseen`: asked on, and on with no `wl_output` when it was made (a
+/// mirror), so its having none tells nothing ([`expect`]).
 #[derive(Clone, Debug, PartialEq)]
 struct Expect {
     name: String,
@@ -1098,6 +1114,7 @@ struct Expect {
     position: (i32, i32),
     transform: wl_output::Transform,
     scale: f64,
+    unseen: bool,
 }
 
 /// (outputs-apply) An applied configuration the compositor answered
@@ -1140,8 +1157,9 @@ fn transform_name(t: wl_output::Transform) -> &'static str {
 /// showing `mode` at `scale` (`None`: they agree): its place, its mode's
 /// size or rate (within [`RATE_SLACK`]; a rate of 0 is not compared), its
 /// transform, or its size in logical pixels, its mode (or, with none,
-/// the one `o` shows) over the scale, within [`SIZE_SLACK`]. What `o`
-/// does not say is not compared.
+/// the one `o` shows) over the scale, within [`SIZE_SLACK`] or with the
+/// scale it shows within [`SCALE_SLACK`]. What `o` does not say is not
+/// compared.
 fn differs(
     o: &WlOut,
     position: (i32, i32),
@@ -1186,11 +1204,14 @@ fn differs(
             | wl_output::Transform::Flipped270 => (m.height, m.width),
             _ => (m.width, m.height),
         };
-        let off =
-            |px: i64, logical: i32| (px as f64 / scale - f64::from(logical)).abs() > SIZE_SLACK;
+        let off = |px: i64, logical: i32| {
+            (px as f64 / scale - f64::from(logical)).abs() > SIZE_SLACK
+                && (logical <= 0 || (px as f64 / f64::from(logical) - scale).abs() > SCALE_SLACK)
+        };
         if off(mw, w) || off(mh, h) {
+            let shown = (scale * 100.0).round() / 100.0;
             return Some(format!(
-                "{name} is {w}x{h} in the layout, not {mw}x{mh} at scale {scale}"
+                "{name} is {w}x{h} in the layout, not {mw}x{mh} at scale {shown}"
             ));
         }
     }
@@ -1493,26 +1514,7 @@ fn send(
         let Some(head) = client.heads.iter().find(|h| h.proxy.id() == p.head) else {
             continue;
         };
-        asked.push(Expect {
-            name: head.name.clone(),
-            enabled: p.enabled,
-            mode: match &p.mode {
-                ModeChoice::Keep => None,
-                ModeChoice::Listed(m) => client
-                    .modes
-                    .get(m)
-                    .map(ModeEntry::public)
-                    .filter(|m| m.width > 0 && m.height > 0),
-                ModeChoice::Custom(w, h, r) => Some(OutputMode {
-                    width: i64::from(*w),
-                    height: i64::from(*h),
-                    refresh: f64::from(*r) / 1000.0,
-                }),
-            },
-            position: p.position,
-            transform: p.transform,
-            scale: p.scale,
-        });
+        asked.push(expect(client, head, &p));
         if !p.enabled {
             config.disable_head(&head.proxy);
             continue;
@@ -1543,6 +1545,42 @@ fn send(
         OutputsAction::Test { .. } => config.test(),
     }
     Ok((config, asked))
+}
+
+/// (outputs-apply) What plan `p` asks of `head`, to check once it is
+/// applied: its mode as sent, and its scale as the protocol carries it
+/// ([`sent_scale`]). A head on that has no `wl_output` when the
+/// configuration is made is `unseen` (Hyprland 0.57 removes a mirrored
+/// monitor's `wl_output`, `CProtocolManager::onMonitorModeChange`, and
+/// sends its head as on).
+fn expect(client: &Client, head: &HeadEntry, p: &HeadPlan) -> Expect {
+    Expect {
+        name: head.name.clone(),
+        enabled: p.enabled,
+        mode: match &p.mode {
+            ModeChoice::Keep => None,
+            ModeChoice::Listed(m) => client
+                .modes
+                .get(m)
+                .map(ModeEntry::public)
+                .filter(|m| m.width > 0 && m.height > 0),
+            ModeChoice::Custom(w, h, r) => Some(OutputMode {
+                width: i64::from(*w),
+                height: i64::from(*h),
+                refresh: f64::from(*r) / 1000.0,
+            }),
+        },
+        position: p.position,
+        transform: p.transform,
+        scale: sent_scale(p.scale),
+        unseen: p.enabled && head.enabled && !client.wl_outputs.iter().any(|o| o.name == head.name),
+    }
+}
+
+/// (outputs-apply) Scale `s` as `set_scale` sends it: a `wl_fixed`,
+/// which wayland-client truncates to a 1/256 step (`(s * 256.) as i32`).
+fn sent_scale(s: f64) -> f64 {
+    f64::from((s * 256.0) as i32) / 256.0
 }
 
 /// The socket `$WAYLAND_DISPLAY` names (under `$XDG_RUNTIME_DIR` unless
@@ -1735,6 +1773,24 @@ impl Outputs {
                 let now = Instant::now();
                 match client.unlike(&c.asked) {
                     None => {
+                        // The outputs show it while the heads may be
+                        // behind (Hyprland's reload sends their old
+                        // values): read them again and publish first, so
+                        // a handler on `succeeded` reads `outputs.all` as
+                        // applied.
+                        if client.stale() {
+                            log::debug!("outputs: an apply shown; reading the heads again");
+                            client.resync(&path);
+                            if let Publish::Shown(all, available) = client.publish(cx.is_ready())
+                                && stopping.is_none()
+                            {
+                                cx.update(|s| {
+                                    s.all = all;
+                                    s.available = available;
+                                });
+                                cx.ready();
+                            }
+                        }
                         if let Some(c) = checking.take() {
                             cx.emit(OutputsEvent::Succeeded(c.action));
                         }
@@ -2805,6 +2861,7 @@ mod tests {
             position: (1920, 0),
             transform: wl_output::Transform::Normal,
             scale: 2.0,
+            unseen: false,
         };
         assert_eq!(c.unlike(std::slice::from_ref(&asked)), None, "as asked");
         let unlike = |e: Expect| c.unlike(&[e]).unwrap_or_default();
@@ -2868,6 +2925,14 @@ mod tests {
             ..asked.clone()
         };
         assert_eq!(c.unlike(&[off]), None, "off, and no wl_output");
+        // (review round 5) On with no wl_output when asked (a mirror):
+        // having none tells nothing.
+        let mirror = Expect {
+            name: "DP-2".into(),
+            unseen: true,
+            ..asked.clone()
+        };
+        assert_eq!(c.unlike(&[mirror]), None, "a mirror");
         // Not in yet: its mode, its place.
         let mut c = c;
         c.wl_outputs[0].place = None;
@@ -2882,6 +2947,129 @@ mod tests {
         );
         c.wl_outputs[0].name.clear();
         assert_eq!(c.unlike(&[asked]), None, "no names: nothing to tell by");
+    }
+
+    /// (outputs-apply, review round 5) A fractional scale is checked as
+    /// the protocol carried it and as the compositor may round it. sway
+    /// takes 1.33 as sent, 340/256: 2891 wide on 3840, not 2887.
+    /// Hyprland 0.57 takes 4/3, which it sends as 341/256 (and a profile
+    /// saved from it asks), as 1.3333 for whole logical pixels: 2880, not
+    /// 2883. A scale it moves further (1.5 to 4/3) is not the one asked.
+    #[test]
+    fn a_fractional_scale_is_checked_as_it_was_sent_and_rounded() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(a).unwrap();
+        let mode = OutputMode {
+            width: 3840,
+            height: 2160,
+            refresh: 60.0,
+        };
+        let shown = |size: (i32, i32)| WlOut {
+            name: "DP-1".into(),
+            mode: Some(mode),
+            transform: Some(wl_output::Transform::Normal),
+            place: Some((0, 0)),
+            size: Some(size),
+            ..WlOut::new(9, wl_output::WlOutput::inert(conn.backend().downgrade()))
+        };
+        let client = |size| Client {
+            xdg_manager: Some(ZxdgOutputManagerV1::inert(conn.backend().downgrade())),
+            wl_outputs: vec![shown(size)],
+            ..Client::default()
+        };
+        let asked = |scale: f64| Expect {
+            name: "DP-1".into(),
+            enabled: true,
+            mode: Some(mode),
+            position: (0, 0),
+            transform: wl_output::Transform::Normal,
+            scale: sent_scale(scale),
+            unseen: false,
+        };
+        assert_eq!(sent_scale(1.33), 340.0 / 256.0);
+        assert_eq!(sent_scale(341.0 / 256.0), 341.0 / 256.0);
+        let sway = client((2891, 1626));
+        assert_eq!(sway.unlike(&[asked(1.33)]), None, "sway at 1.33");
+        let hyprland = client((2880, 1620));
+        assert_eq!(hyprland.unlike(&[asked(341.0 / 256.0)]), None, "4/3");
+        assert_eq!(hyprland.unlike(&[asked(1.33)]), None, "1.33 as 4/3");
+        assert_eq!(
+            hyprland.unlike(&[asked(1.5)]).as_deref(),
+            Some("DP-1 is 2880x1620 in the layout, not 3840x2160 at scale 1.5")
+        );
+        assert_eq!(
+            sway.unlike(&[asked(1.25)]).as_deref(),
+            Some("DP-1 is 2891x1626 in the layout, not 3840x2160 at scale 1.25")
+        );
+        // A head Hyprland sends at 341/256 agrees with its 2880.
+        let mut c = client((2880, 1620));
+        c.manager = Some(ZwlrOutputManagerV1::inert(conn.backend().downgrade()));
+        let proxy = ZwlrOutputModeV1::inert(conn.backend().downgrade());
+        let id = proxy.id();
+        c.modes.insert(
+            id.clone(),
+            ModeEntry {
+                proxy,
+                width: 3840,
+                height: 2160,
+                refresh: 60_000,
+                preferred: true,
+            },
+        );
+        c.heads.push(HeadEntry {
+            name: "DP-1".into(),
+            enabled: true,
+            current_mode: Some(id),
+            transform: wl_output::Transform::Normal,
+            scale: 341.0 / 256.0,
+            ..HeadEntry::new(ZwlrOutputHeadV1::inert(conn.backend().downgrade()))
+        });
+        assert!(!c.disagrees(), "the head agrees with its xdg-output");
+    }
+
+    /// (outputs-apply, review round 5) What a configuration asks of a
+    /// head: its scale as sent, and whether it is a head on with no
+    /// `wl_output` (a Hyprland mirror), whose having none tells nothing.
+    #[test]
+    fn a_plan_is_checked_as_it_was_sent() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(a).unwrap();
+        let head = |name: &str, enabled: bool| HeadEntry {
+            name: name.into(),
+            enabled,
+            ..HeadEntry::new(ZwlrOutputHeadV1::inert(conn.backend().downgrade()))
+        };
+        let c = Client {
+            wl_outputs: vec![WlOut {
+                name: "DP-1".into(),
+                ..WlOut::new(9, wl_output::WlOutput::inert(conn.backend().downgrade()))
+            }],
+            ..Client::default()
+        };
+        let plan = |enabled: bool| HeadPlan {
+            head: ZwlrOutputHeadV1::inert(conn.backend().downgrade()).id(),
+            enabled,
+            mode: ModeChoice::Keep,
+            position: (0, 0),
+            transform: wl_output::Transform::Normal,
+            scale: 1.33,
+            adaptive_sync: false,
+        };
+        let e = expect(&c, &head("DP-1", true), &plan(true));
+        assert_eq!(e.scale, 340.0 / 256.0, "as sent");
+        assert!(!e.unseen, "it has its wl_output");
+        assert!(
+            expect(&c, &head("HDMI-A-1", true), &plan(true)).unseen,
+            "a mirror"
+        );
+        assert!(
+            !expect(&c, &head("HDMI-A-1", false), &plan(true)).unseen,
+            "turned on"
+        );
+        assert!(
+            !expect(&c, &head("HDMI-A-1", true), &plan(false)).unseen,
+            "turned off"
+        );
     }
 
     /// (outputs-apply) A check is `failed` only once the outputs are

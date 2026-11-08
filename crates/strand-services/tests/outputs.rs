@@ -823,3 +823,97 @@ fn an_apply_the_compositor_did_not_take_fails() {
     }
     outputs::configure(None);
 }
+
+/// (outputs-apply, review round 5) Hyprland 0.57 removes a mirrored
+/// monitor's `wl_output` and goes on sending its head as on, so a
+/// configuration includes it on. Having no `wl_output` then tells
+/// nothing of it: the apply is checked on the others, and is
+/// `succeeded`, not `failed` with "FAKE-2 is not on".
+#[test]
+fn an_apply_with_a_mirror_is_checked_on_the_others() {
+    use strand_fake_wayland::{Fake, OutputManagement};
+    let _serial = serial();
+    for shape in [
+        OutputManagement::Lagging,
+        OutputManagement::Silent,
+        OutputManagement::Wlroots,
+    ] {
+        let fake = Fake::builder()
+            .toplevel_list(false)
+            .outputs(&["FAKE-1", "FAKE-2"])
+            .mirrors(&["FAKE-2"])
+            .output_management(shape)
+            .start();
+        let h = Harness::start_on(fake.socket.clone());
+        h.until("ready", |h| h.b.outputs.ready(&h.rt));
+        assert!(h.output("FAKE-2").enabled, "{shape:?}: the mirror is on");
+        h.act(
+            "apply",
+            &[OutputChange {
+                y: Some(300),
+                ..OutputChange::of("FAKE-1")
+            }],
+        );
+        let (event, args) = h.next_event("the answer");
+        assert_eq!(event, "succeeded", "{shape:?}: {args:?}");
+        h.until(&format!("{shape:?}: FAKE-1 at 0, 300"), |h| {
+            h.output("FAKE-1").y == 300
+        });
+        h.s.shutdown();
+    }
+    outputs::configure(None);
+}
+
+/// (outputs-apply, review round 5) `succeeded` is emitted once
+/// `outputs.all` shows the apply. Hyprland 0.57's reload sends the heads'
+/// old values (`Lagging`) or none (`Silent`) while the xdg-outputs move,
+/// so the check finds the outputs as asked before the heads are; the
+/// heads are read again and published first, and a handler on
+/// `succeeded` reading `outputs.all` sees the new places.
+#[test]
+fn succeeded_comes_after_outputs_all_shows_the_apply() {
+    use strand_fake_wayland::{Fake, OutputManagement};
+    let _serial = serial();
+    for shape in [
+        OutputManagement::Lagging,
+        OutputManagement::Silent,
+        OutputManagement::Wlroots,
+    ] {
+        let fake = Fake::builder()
+            .toplevel_list(false)
+            .outputs(&["FAKE-1", "FAKE-2"])
+            .output_management(shape)
+            .start();
+        let h = Harness::start_on(fake.socket.clone());
+        h.until("ready", |h| h.b.outputs.ready(&h.rt));
+        // `outputs.all` at each event, as a handler on it reads it.
+        let seen: Arc<Mutex<Vec<Vec<Output>>>> = Arc::default();
+        let log = seen.clone();
+        let out = h.b.outputs.clone();
+        h.b.outputs.dynamic().observe(Box::new(move |rt, a| {
+            if let Applied::Event { .. } = a {
+                let all = out.cells().snapshot(rt).map(|s| s.all).unwrap_or_default();
+                log.lock().unwrap().push(all);
+            }
+        }));
+        let place = |n: &str, x: i64| OutputChange {
+            x: Some(x),
+            y: Some(0),
+            ..OutputChange::of(n)
+        };
+        for (one, two) in [(1920, 0), (0, 4000)] {
+            h.act("apply", &[place("FAKE-1", one), place("FAKE-2", two)]);
+            let (event, args) = h.next_event("the answer");
+            assert_eq!(event, "succeeded", "{shape:?}: {args:?}");
+            let all = seen.lock().unwrap().remove(0);
+            let x = |n: &str| all.iter().find(|o| o.name == n).map(|o| o.x);
+            assert_eq!(
+                (x("FAKE-1"), x("FAKE-2")),
+                (Some(one), Some(two)),
+                "{shape:?}: outputs.all at succeeded"
+            );
+        }
+        h.s.shutdown();
+    }
+    outputs::configure(None);
+}

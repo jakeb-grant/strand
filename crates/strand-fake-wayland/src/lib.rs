@@ -194,8 +194,8 @@ pub enum Cmd {
         refresh: std::time::Duration,
         seq: u64,
     },
-    /// Answered once every command sent before it is applied
-    /// ([`Fake::sync`]).
+    /// Answered once every command sent before it is applied and what
+    /// it sent is flushed to the clients ([`Fake::sync`]).
     Sync(mpsc::Sender<()>),
     /// (m6-service-gaps) The fake sets the selection, as another program
     /// copying: each type with its bytes, which it writes to readers
@@ -288,6 +288,9 @@ struct Server {
     output_names: Vec<String>,
     /// Bound outputs with the index of their name.
     outputs: Vec<(usize, wl_output::WlOutput)>,
+    /// (review round 5) [`Cmd::Sync`]s to answer once the clients are
+    /// flushed.
+    syncs: Vec<mpsc::Sender<()>>,
     workspaces: Vec<Ws>,
     pending: Vec<String>,
     activated: Arc<Mutex<Vec<String>>>,
@@ -575,9 +578,7 @@ impl Server {
             Cmd::HoldFrames(on) => self.surf.hold_frames(on),
             Cmd::HoldFeedback(on) => self.surf.hold_feedback(on),
             Cmd::Vblank { time, refresh, seq } => self.surf.vblank(time, refresh, seq),
-            Cmd::Sync(done) => {
-                let _ = done.send(());
-            }
+            Cmd::Sync(done) => self.syncs.push(done),
             Cmd::SetSelection(offers) => self.dc.set_own(dh, offers),
             Cmd::ConfigureWindow { app_id, configure } => {
                 self.surf.configure_window(&app_id, configure);
@@ -1102,6 +1103,7 @@ pub struct FakeBuilder {
     capture: bool,
     data_control: DataControl,
     output_management: OutputManagement,
+    mirrors: &'static [&'static str],
 }
 
 impl FakeBuilder {
@@ -1161,6 +1163,15 @@ impl FakeBuilder {
         self
     }
 
+    /// (outputs-apply) Outputs of these names (among
+    /// [`FakeBuilder::outputs`]) mirror another: their head is on, and
+    /// they have no `wl_output` global (Hyprland 0.57 removes a mirrored
+    /// monitor's, `CProtocolManager::onMonitorModeChange`).
+    pub fn mirrors(mut self, names: &'static [&'static str]) -> Self {
+        self.mirrors = names;
+        self
+    }
+
     pub fn start(self) -> Fake {
         Fake::start_built(self).expect("the fake compositor starts")
     }
@@ -1187,6 +1198,7 @@ impl Fake {
             capture: false,
             data_control: DataControl::None,
             output_management: OutputManagement::None,
+            mirrors: &[],
         }
     }
 
@@ -1265,6 +1277,7 @@ impl Fake {
             capture,
             data_control,
             output_management,
+            mirrors,
         } = b;
         let thread = std::thread::spawn(move || {
             let mut display = Display::<Server>::new().expect("a wayland-server display");
@@ -1293,8 +1306,10 @@ impl Fake {
             let seat_globals = (0..seats)
                 .map(|n| Some(dh.create_global::<Server, wl_seat::WlSeat, usize>(1, n)))
                 .collect();
-            for i in 0..outputs.len() {
-                dh.create_global::<Server, wl_output::WlOutput, usize>(4, i);
+            for (i, name) in outputs.iter().enumerate() {
+                if !mirrors.contains(name) {
+                    dh.create_global::<Server, wl_output::WlOutput, usize>(4, i);
+                }
             }
             let mut state = Server {
                 activated: thread_activated,
@@ -1337,6 +1352,9 @@ impl Fake {
                 }
                 if thread_paused.load(Ordering::SeqCst) {
                     let _ = display.flush_clients();
+                    for done in state.syncs.drain(..) {
+                        let _ = done.send(());
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(5));
                     continue;
                 }
@@ -1344,6 +1362,11 @@ impl Fake {
                     eprintln!("fake compositor: dispatch failed: {e}");
                 }
                 let _ = display.flush_clients();
+                // (review round 5) What the commands sent is in the
+                // clients' sockets before a sync is answered.
+                for done in state.syncs.drain(..) {
+                    let _ = done.send(());
+                }
                 let Ok(poll_fd) = display.backend().poll_fd().try_clone_to_owned() else {
                     continue;
                 };
@@ -1404,8 +1427,10 @@ impl Fake {
         let _ = std::io::Write::write(&mut &self.wake, &[1]);
     }
 
-    /// Returns once the fake has applied every command sent before (10 s
-    /// at most): what a client sends after it is handled after them.
+    /// Returns once the fake has applied every command sent before and
+    /// flushed what they sent to the clients (10 s at most): what a
+    /// client sends after it is handled after them, and a client woken
+    /// after it finds their events in its socket.
     pub fn sync(&self) {
         let (tx, rx) = mpsc::channel();
         self.cmd(Cmd::Sync(tx));

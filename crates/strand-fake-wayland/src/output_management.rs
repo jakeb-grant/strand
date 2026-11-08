@@ -28,6 +28,8 @@
 //! [`crate::Cmd::ShadowOutput`] is another client's earlier manager
 //! saving one. [`crate::Fake::output_managers`] counts the managers bound
 //! and still connected, and the stopped ones among them.
+//! [`crate::FakeBuilder::mirrors`] gives an output a head on and no
+//! `wl_output`, as Hyprland does a mirrored monitor.
 
 use std::sync::{Arc, Mutex};
 

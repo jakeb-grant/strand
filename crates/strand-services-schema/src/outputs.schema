@@ -113,7 +113,8 @@ service outputs {
   action test(changes: [OutputChange])
   /// The compositor took a configuration: `on outputs.succeeded(action)
   /// { … }`, `action` as written (`"apply"` or `"test"`). An apply is
-  /// `succeeded` once the monitors show what it asked.
+  /// `succeeded` once the monitors show what it asked, and `outputs.all`
+  /// shows it then.
   event succeeded(action: text)
   /// A configuration failed: the compositor refused it (a mode the
   /// monitor cannot show), it said it applied it but the monitors did

@@ -133,6 +133,9 @@ bar Displays {
 - **Save this profile** stores the monitors as they are now under that
   key. Arrange them some other way first (your compositor's settings,
   `wlr-randr`, a config line) and save once for each place you work.
+  On Hyprland those do not move a monitor Strand has arranged (below),
+  and the page arranges every monitor at start: save the best guess
+  once, then edit its section in the file.
 - **`on change chosen, outputs.ready`** applies the chosen layout when
   `outputs` has first answered, when the set of monitors changes, when
   a profile is saved or edited, and after the compositor comes back.
@@ -142,7 +145,8 @@ bar Displays {
 - **`after 1500ms`** waits until nothing has changed for a second and
   a half, so a dock that brings up its monitors one by one is arranged
   once. Moving a monitor by hand changes nothing `chosen` reads, so it
-  stays where you put it until you save it.
+  stays where you put it until you save it. On Hyprland it does not
+  move at all while the shell runs, as the next point says.
 - **On Hyprland**, a monitor Strand has arranged keeps that layout over
   Hyprland's own monitor rules while the shell runs: Hyprland follows,
   for each monitor, the first program still running that arranged it.
