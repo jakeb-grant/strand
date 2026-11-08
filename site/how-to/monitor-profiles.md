@@ -101,7 +101,7 @@ fn kept(o: Output) -> Mon {
 fn placed(m: Mon) -> OutputChange {
   OutputChange(name: outputs.all.find(o => o.id == m.id)?.name ?? "",
     enabled: m.on,
-    mode: m.on ? OutputMode(width: m.width, height: m.height, refresh: m.refresh) : null,
+    mode: m.on && m.width > 0 ? OutputMode(width: m.width, height: m.height, refresh: m.refresh) : null,
     x: m.x, y: m.y, scale: m.scale, transform: m.transform)
 }
 let mons = saved.profiles[setup]?.mons
@@ -136,6 +136,9 @@ bar Displays {
   On Hyprland those do not move a monitor Strand has arranged (below),
   and the page arranges every monitor at start: save the best guess
   once, then edit its section in the file.
+- **`placed`** sends no mode for a monitor saved without one (`width`
+  0: a monitor Hyprland mirrors shows no mode of its own), so it keeps
+  the mode it has.
 - **`on change chosen, outputs.ready`** applies the chosen layout when
   `outputs` has first answered, when the set of monitors changes, when
   a profile is saved or edited, and after the compositor comes back.

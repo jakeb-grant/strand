@@ -4127,6 +4127,12 @@ proof  = "crates/strand-services/tests/outputs.rs::an_apply_placing_a_mirror_tha
 
 [[claim]]
 page   = "site/how-to/monitor-profiles.md"
+text   = "0: a monitor Hyprland mirrors shows no mode of its own), so it keeps the mode it has."
+source = ['crates/strand-services-schema/src/outputs.schema "a rate of 0 takes the fastest listed one). Null keeps the one it"', 'crates/strand-services/src/outputs.rs "shows no mode Strand can name (a Hyprland mirror: no current mode and"', 'crates/strand-services/src/outputs.rs "mode {what} {v} is not a size"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::the_monitor_profiles_page_places_a_monitor_saved_with_no_mode_with_none (placed sent OutputMode(0, 0, 0) for it, which the service refuses); crates/strand-services/src/outputs.rs::tests::a_mirror_keeps_its_mode_when_another_head_changes"
+
+[[claim]]
+page   = "site/how-to/monitor-profiles.md"
 text   = "lists every connected monitor, on or off"
 source = ['crates/strand-compiler/src/schema/builtin.schema "/// Every output, on or off, keyed by `name`, in the order of their"', 'crates/strand-compiler/src/schema/builtin.schema "/// Applies `changes` together, as one configuration."']
 proof  = "crates/strand-compiler/tests/instantiate.rs::a_best_guess_layout_is_written_with_the_list_operations_there_are"

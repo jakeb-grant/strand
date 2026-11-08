@@ -47,6 +47,11 @@
 //! drags a `window` of strand's own by `w.move()` and `w.resize(edge)`
 //! from a held virtual-pointer press, against the compositor's report and
 //! what it shows.
+//! (outputs-matrix) On all four, `the_outputs_service_follows_the_live_compositor`
+//! checks `strand run`'s `outputs`: `outputs.all` against the
+//! compositor's own outputs (labwc: against the shell's `screens`),
+//! `Output.id` against `Screen.id`, a move from outside, and with a second
+//! output `outputs.apply` moving it and back.
 //!
 //! Environment: `STRAND_MATRIX` names the compositor (`sway`, `hyprland`
 //! or `niri`); `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and its IPC variable
@@ -325,6 +330,18 @@ fn hyprland_dispatch_forms_use_the_current_syntax_first() {
         "keyword can't work with non-legacy parsers. Use eval.\n"
     ));
     assert!(hypr_wants_eval("unknown request\n"));
+    assert_eq!(
+        hypr_place_monitor("STRAND-2", "1280x720@60", (1780, 0), 1.0, true),
+        [
+            "eval",
+            "hl.monitor({ output = \"STRAND-2\", mode = \"1280x720@60\", position = \"1780x0\", \
+             scale = 1 })"
+        ]
+    );
+    assert_eq!(
+        hypr_place_monitor("STRAND-2", "1280x720@60", (1780, 0), 1.5, false),
+        ["keyword", "monitor", "STRAND-2,1280x720@60,1780x0,1.5"]
+    );
     assert!(!hypr_wants_eval("ok"));
     let on = r#"{"option": "misc:focus_on_activate", "bool": true, "set": true }"#;
     assert!(hypr_option_is(on, true) && !hypr_option_is(on, false));
@@ -2259,14 +2276,16 @@ fn near(a: [i64; 4], b: [i64; 4], tol: i64) -> bool {
     a.iter().zip(b).all(|(a, b)| (a - b).abs() <= tol)
 }
 
-/// (oi-window) A `strand` of the test's own, its control socket and log.
-struct Drag {
+/// (oi-window) A `strand` of the test's own, its control socket and log:
+/// read and set with the CLI (the window drag test's and, outputs-matrix,
+/// the outputs test's).
+struct Driven {
     strand: Proc,
     log: PathBuf,
     sock: PathBuf,
 }
 
-impl Drag {
+impl Driven {
     fn log_text(&self) -> String {
         std::fs::read_to_string(&self.log).unwrap_or_default()
     }
@@ -2290,12 +2309,18 @@ impl Drag {
             .then(|| String::from_utf8_lossy(&out.stdout).trim_end().to_string())
     }
 
-    /// `drag.<cell>` reads `want`.
-    fn reads(&mut self, cell: &str, want: &str) {
-        let path = format!("drag.{cell}");
+    /// (outputs-matrix) `strand get --json PATH`'s value as JSON (a list
+    /// of records as an array of objects), `None` when it failed.
+    fn value(&self, path: &str) -> Option<Value> {
+        let answer: Value = serde_json::from_str(&self.cli(&["get", "--json", path])?).ok()?;
+        Some(answer["value"].clone())
+    }
+
+    /// `path` (`drag.fixed`) reads `want`.
+    fn reads(&mut self, path: &str, want: &str) {
         until(&format!("{path} is {want}"), || {
             self.alive();
-            match self.cli(&["get", &path]) {
+            match self.cli(&["get", path]) {
                 Some(v) if v == want => Ok(()),
                 other => Err(format!("{other:?}\n{}", self.log_text())),
             }
@@ -2349,7 +2374,7 @@ fn a_window_moves_and_resizes_from_its_own_press() {
             ("STRAND_LOG", "debug".into()),
         ],
     );
-    let mut d = Drag { strand, log, sock };
+    let mut d = Driven { strand, log, sock };
     let outputs = match &live {
         Some(l) => l.outputs(),
         None => {
@@ -2390,10 +2415,10 @@ fn a_window_moves_and_resizes_from_its_own_press() {
         "{}",
         d.log_text()
     );
-    d.reads("fixed", "false");
+    d.reads("drag.fixed", "false");
     // Where it is drawn and where the compositor says it is, alike in two
     // looks a moment apart.
-    let settled = |d: &mut Drag, what: &str| -> ([i64; 4], Option<[i64; 4]>) {
+    let settled = |d: &mut Driven, what: &str| -> ([i64; 4], Option<[i64; 4]>) {
         let mut last = None;
         until(what, || {
             d.alive();
@@ -2478,55 +2503,59 @@ fn a_window_moves_and_resizes_from_its_own_press() {
     // the press) has moved (with `resize`, changed size). The grab began
     // where the pointer is less that change, at whichever step it began;
     // the pointer then goes on to there plus `by`, and lets go.
-    let mut drag =
-        |d: &mut Drag, pre: [i64; 4], from: (i64, i64), by: (i64, i64), asks: u32, resize: bool| {
-            // A pixel off first, as a hand never presses where a drag
-            // let go without moving: Hyprland gives the pointer back to
-            // the window it just moved (its leave came after the release)
-            // only on a motion, and a press with no motion before it
-            // reaches no window.
-            let (x, y, w, h) = at(from.0 + 1, from.1);
+    let mut drag = |d: &mut Driven,
+                    pre: [i64; 4],
+                    from: (i64, i64),
+                    by: (i64, i64),
+                    asks: u32,
+                    resize: bool| {
+        // A pixel off first, as a hand never presses where a drag
+        // let go without moving: Hyprland gives the pointer back to
+        // the window it just moved (its leave came after the release)
+        // only on a motion, and a press with no motion before it
+        // reaches no window.
+        let (x, y, w, h) = at(from.0 + 1, from.1);
+        pointer.motion(x, y, w, h);
+        let (x, y, w, h) = at(from.0, from.1);
+        pointer.press(x, y, w, h);
+        d.reads("drag.asks", &asks.to_string());
+        let mut now = from;
+        let mut began = None;
+        for i in 1..=10 {
+            now = (from.0 + by.0 * i / 10, from.1 + by.1 * i / 10);
+            let (x, y, w, h) = at(now.0, now.1);
             pointer.motion(x, y, w, h);
-            let (x, y, w, h) = at(from.0, from.1);
-            pointer.press(x, y, w, h);
-            d.reads("asks", &asks.to_string());
-            let mut now = from;
-            let mut began = None;
-            for i in 1..=10 {
-                now = (from.0 + by.0 * i / 10, from.1 + by.1 * i / 10);
-                let (x, y, w, h) = at(now.0, now.1);
-                pointer.motion(x, y, w, h);
-                let (b, _) = settled(d, &format!("the drag's step {i}"));
-                let change = if resize {
-                    (b[2] - pre[2], b[3] - pre[3])
-                } else {
-                    (b[0] - pre[0], b[1] - pre[1])
-                };
-                if change != (0, 0) {
-                    began = Some((now.0 - change.0, now.1 - change.1));
-                    break;
-                }
-            }
-            let Some(began) = began else {
-                panic!(
-                    "the window never {} while the press was dragged by {by:?}\n{}",
-                    if resize { "changed size" } else { "moved" },
-                    d.log_text()
-                );
+            let (b, _) = settled(d, &format!("the drag's step {i}"));
+            let change = if resize {
+                (b[2] - pre[2], b[3] - pre[3])
+            } else {
+                (b[0] - pre[0], b[1] - pre[1])
             };
-            eprintln!("matrix: {kind}: the grab began at {began:?} (the press at {from:?})");
-            let to = (began.0 + by.0, began.1 + by.1);
-            let start = now;
-            for i in 1..=10 {
-                let (x, y, w, h) = at(
-                    start.0 + (to.0 - start.0) * i / 10,
-                    start.1 + (to.1 - start.1) * i / 10,
-                );
-                pointer.motion(x, y, w, h);
-                std::thread::sleep(Duration::from_millis(30));
+            if change != (0, 0) {
+                began = Some((now.0 - change.0, now.1 - change.1));
+                break;
             }
-            pointer.release();
+        }
+        let Some(began) = began else {
+            panic!(
+                "the window never {} while the press was dragged by {by:?}\n{}",
+                if resize { "changed size" } else { "moved" },
+                d.log_text()
+            );
         };
+        eprintln!("matrix: {kind}: the grab began at {began:?} (the press at {from:?})");
+        let to = (began.0 + by.0, began.1 + by.1);
+        let start = now;
+        for i in 1..=10 {
+            let (x, y, w, h) = at(
+                start.0 + (to.0 - start.0) * i / 10,
+                start.1 + (to.1 - start.1) * i / 10,
+            );
+            pointer.motion(x, y, w, h);
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        pointer.release();
+    };
     let centre = |b: [i64; 4]| (b[0] + b[2] / 2, b[1] + b[3] / 2);
 
     // `w.move()`: toward the middle of its output, so it stays on it.
@@ -2568,7 +2597,7 @@ fn a_window_moves_and_resizes_from_its_own_press() {
         }
     });
     let (b1, r1) = settled(&mut d, "moved");
-    let pointer_log = |d: &Drag| {
+    let pointer_log = |d: &Driven| {
         d.log_text()
             .lines()
             .filter(|l| l.contains("pointer: ") || l.contains("handed to the compositor"))
@@ -2587,7 +2616,7 @@ fn a_window_moves_and_resizes_from_its_own_press() {
         "{}",
         d.log_text()
     );
-    d.reads("resizing", "true");
+    d.reads("drag.resizing", "true");
     let by = (-60, -40);
     drag(&mut d, b1, centre(b1), by, 2, true);
     let sized = |b: [i64; 4]| [b[0], b[1], b[2] + by.0, b[3] + by.1];
@@ -3920,6 +3949,37 @@ fn hypr_set_option(section: &str, option: &str, to: &str, lua: bool) -> Vec<Stri
         ]
     } else {
         vec!["keyword".into(), format!("{section}:{option}"), to.into()]
+    }
+}
+
+/// (outputs-matrix) The `hyprctl` arguments that put monitor `name` at
+/// `(x, y)`, keeping its mode (`1280x720@60`) and scale: hyprlang's
+/// `keyword monitor` rule, or the Lua form through `eval`,
+/// `hl.monitor({ output = …, mode = …, position = "XxY", scale = … })`,
+/// as scripts/compositor-matrix.sh writes the config's rule.
+fn hypr_place_monitor(
+    name: &str,
+    mode: &str,
+    (x, y): (i64, i64),
+    scale: f64,
+    lua: bool,
+) -> Vec<String> {
+    if lua {
+        vec![
+            "eval".into(),
+            format!(
+                "hl.monitor({{ output = {}, mode = {}, position = {}, scale = {scale} }})",
+                lua_string(name),
+                lua_string(mode),
+                lua_string(&format!("{x}x{y}"))
+            ),
+        ]
+    } else {
+        vec![
+            "keyword".into(),
+            "monitor".into(),
+            format!("{name},{mode},{x}x{y},{scale}"),
+        ]
     }
 }
 
@@ -5386,4 +5446,479 @@ fn the_clipboard_works_on_every_compositor() {
     });
     services.shutdown();
     clipboard::configure(None);
+}
+
+// ---- outputs -----------------------------------------------------------------
+
+/// (outputs-matrix) A shell that shows the test what `strand run`'s
+/// `outputs` and `screens` say (`strand get --json probe.heads`,
+/// `probe.shown`) and applies a place it is given: `target`, `to_x` and
+/// `to_y` set, then `asks`, make `outputs.apply`, and `done`, `fails` and
+/// `said` count its answers. Its bar puts a `Screen` on every monitor.
+const OUTPUTS_SRC: &str = r#"export let heads = outputs.all
+export let ready = outputs.ready
+export let available = outputs.available
+export let shown = screens.all
+export state target = ""
+export state to_x = 0
+export state to_y = 0
+export state asks = 0
+export state done = 0
+export state fails = 0
+export state said = ""
+on change asks {
+  outputs.apply([OutputChange(name: target, x: to_x, y: to_y)])
+}
+on outputs.succeeded(action) {
+  if action == "apply" { done += 1 }
+}
+on outputs.failed(action, error) {
+  fails += 1
+  said = action + ": " + error
+}
+bar Probe { height: 30
+  text screen.name
+}
+"#;
+
+/// (outputs-matrix) An output as `outputs.all` or the compositor has it,
+/// as far as the two are compared: its name, whether it is on, its place
+/// and its mode's size (hardware pixels). One off has neither place nor
+/// mode to compare (0).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Head {
+    name: String,
+    enabled: bool,
+    x: i64,
+    y: i64,
+    w: i64,
+    h: i64,
+}
+
+impl Head {
+    fn new(name: String, enabled: bool, (x, y): (i64, i64), (w, h): (i64, i64)) -> Head {
+        let (x, y, w, h) = if enabled { (x, y, w, h) } else { (0, 0, 0, 0) };
+        Head {
+            name,
+            enabled,
+            x,
+            y,
+            w,
+            h,
+        }
+    }
+}
+
+/// A JSON number, rounded (0 when it is none).
+fn num(v: &Value) -> i64 {
+    v.as_f64().unwrap_or(0.0).round() as i64
+}
+
+/// (outputs-matrix) The compositor's own outputs, on or off, by name
+/// (`swaymsg -t get_outputs`, `hyprctl -j monitors all`, `niri msg
+/// outputs`).
+fn compositor_heads(kind: Kind) -> Vec<Head> {
+    let mut all: Vec<Head> = match kind {
+        Kind::Sway => json("swaymsg", &["-t", "get_outputs", "-r"])
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|o| {
+                let (r, m) = (&o["rect"], &o["current_mode"]);
+                Head::new(
+                    text(&o["name"]),
+                    o["active"] != false,
+                    (num(&r["x"]), num(&r["y"])),
+                    (num(&m["width"]), num(&m["height"])),
+                )
+            })
+            .collect(),
+        // `width`/`height` are the mode's pixels, `x`/`y` logical.
+        Kind::Hyprland => json("hyprctl", &["-j", "monitors", "all"])
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|m| {
+                Head::new(
+                    text(&m["name"]),
+                    m["disabled"] != true,
+                    (num(&m["x"]), num(&m["y"])),
+                    (num(&m["width"]), num(&m["height"])),
+                )
+            })
+            .collect(),
+        // `current_mode` indexes `modes`; one off has no `logical`.
+        Kind::Niri => json("niri", &["msg", "--json", "outputs"])
+            .as_object()
+            .into_iter()
+            .flat_map(|m| m.values())
+            .map(|o| {
+                let l = &o["logical"];
+                let m = o["current_mode"]
+                    .as_u64()
+                    .and_then(|i| o["modes"].get(i as usize))
+                    .unwrap_or(&Value::Null);
+                Head::new(
+                    text(&o["name"]),
+                    !l.is_null(),
+                    (num(&l["x"]), num(&l["y"])),
+                    (num(&m["width"]), num(&m["height"])),
+                )
+            })
+            .collect(),
+    };
+    all.sort();
+    all
+}
+
+/// (outputs-matrix) Each output as `outputs.all` has it, and its `id`.
+type Shown = Vec<(Head, String)>;
+
+/// (outputs-matrix) What the shell's `outputs.all` and `screens.all` say
+/// agrees with itself, and with the compositor's own outputs where it has
+/// an IPC (`live`; labwc has none): the same outputs, on or off, at the
+/// same places with the same modes; every output on has a `Screen` of its
+/// name, at its place and of its size over its scale, with its `id`
+/// (`Output.id` is `Screen.id`: `strand run` numbers its screens from the
+/// running `outputs`' ids, `outputs::ids` and `outputs::shown` through
+/// its surface host, decisions.md "output-id"); and `want` holds of it.
+/// Each output as `outputs.all` has it.
+fn outputs_agree(
+    d: &mut Driven,
+    live: Option<&Live>,
+    what: &str,
+    want: impl Fn(&Shown) -> bool,
+) -> Shown {
+    let mut last = Vec::new();
+    until(what, || {
+        d.alive();
+        let heads = d
+            .value("probe.heads")
+            .ok_or_else(|| format!("no probe.heads\n{}", d.log_text()))?;
+        let shown = d
+            .value("probe.shown")
+            .ok_or_else(|| format!("no probe.shown\n{}", d.log_text()))?;
+        let ours = parse_heads(&heads);
+        let empty = Vec::new();
+        let heads = heads.as_array().unwrap_or(&empty);
+        if ours.is_empty() {
+            return Err("outputs.all is empty".into());
+        }
+        let names: Vec<&str> = ours.iter().map(|(h, _)| h.name.as_str()).collect();
+        if names.windows(2).any(|w| w[0] == w[1]) {
+            return Err(format!("a name twice in outputs.all: {names:?}"));
+        }
+        if let Some(l) = live {
+            let real = compositor_heads(l.kind);
+            let heads = heads_of(&ours);
+            if heads != real {
+                return Err(format!("{:?}: {real:?}\noutputs.all: {heads:?}", l.kind));
+            }
+        }
+        let mut screens: Vec<String> = Vec::new();
+        for s in shown.as_array().unwrap_or(&empty) {
+            let name = text(&s["name"]);
+            let Some((o, id)) = ours.iter().find(|(o, _)| o.name == name) else {
+                return Err(format!("screen {name} is no output: {ours:?}"));
+            };
+            let scale = heads
+                .iter()
+                .find(|h| h["name"] == s["name"])
+                .and_then(|h| h["scale"].as_f64())
+                .unwrap_or(1.0)
+                .max(0.1);
+            let wide = s["width"].as_f64().unwrap_or(0.0);
+            let near = |v: i64| (v as f64 / scale - wide).abs() <= 2.0;
+            if *id != text(&s["id"]) || (o.x, o.y) != (num(&s["x"]), num(&s["y"])) {
+                return Err(format!("{name}: output {o:?} {id:?}, screen {s}"));
+            }
+            if !o.enabled || !(near(o.w) || near(o.h)) {
+                return Err(format!("{name}: output {o:?} at scale {scale}, screen {s}"));
+            }
+            if !id.contains(" | ") {
+                return Err(format!(
+                    "{name}: an id is make | model | description: {id:?}"
+                ));
+            }
+            screens.push(name);
+        }
+        screens.sort();
+        let on: Vec<String> = ours
+            .iter()
+            .filter(|(o, _)| o.enabled)
+            .map(|(o, _)| o.name.clone())
+            .collect();
+        if screens != on {
+            return Err(format!("screens {screens:?}, outputs on {on:?}"));
+        }
+        if !want(&ours) {
+            return Err(format!("not there yet: {ours:?}"));
+        }
+        last = ours;
+        Ok(())
+    });
+    eprintln!("matrix: outputs: {what}: {last:?}");
+    last
+}
+
+/// (outputs-matrix) Output `name` in `shown`.
+fn head<'a>(shown: &'a Shown, name: &str) -> &'a Head {
+    shown
+        .iter()
+        .map(|(h, _)| h)
+        .find(|h| h.name == name)
+        .unwrap_or_else(|| panic!("no {name} in {shown:?}"))
+}
+
+/// (outputs-matrix) The outputs in `shown`.
+fn heads_of(shown: &Shown) -> Vec<Head> {
+    shown.iter().map(|(h, _)| h.clone()).collect()
+}
+
+/// (outputs-matrix) The outputs of `boot` with `name` alone moved to `at`.
+fn alone_at(boot: &Shown, name: &str, (x, y): (i64, i64)) -> Vec<Head> {
+    heads_of(boot)
+        .into_iter()
+        .map(|h| match h.name == name {
+            true => Head { x, y, ..h },
+            false => h,
+        })
+        .collect()
+}
+
+/// (outputs-matrix) Output `name` is at `at` in `shown`.
+fn placed_at(shown: &Shown, name: &str, at: (i64, i64)) -> bool {
+    shown
+        .iter()
+        .any(|(h, _)| h.name == name && (h.x, h.y) == at)
+}
+
+/// (outputs-matrix) Each output's name and id.
+fn ids_of(shown: &Shown) -> Vec<(String, String)> {
+    shown
+        .iter()
+        .map(|(h, id)| (h.name.clone(), id.clone()))
+        .collect()
+}
+
+/// (outputs-matrix) Moves output `o` to `at` from outside, with the
+/// compositor's own CLI: `swaymsg output … position`, `niri msg output …
+/// position set`, Hyprland's monitor rule with its mode and scale kept
+/// (`hypr_place_monitor`: `keyword monitor`, else `eval` of `hl.monitor`
+/// where `keyword` is refused).
+fn place_from_outside(kind: Kind, o: &Head, at: (i64, i64)) {
+    let (x, y) = (at.0.to_string(), at.1.to_string());
+    match kind {
+        Kind::Sway => drop(run("swaymsg", &["output", &o.name, "position", &x, &y])),
+        Kind::Niri => drop(run(
+            "niri",
+            &["msg", "output", &o.name, "position", "set", &x, &y],
+        )),
+        Kind::Hyprland => {
+            // A rule reloads every monitor's: one placed `auto` (the
+            // config's) would move. Each is pinned where it is first, then
+            // `o` moved.
+            let all = json("hyprctl", &["-j", "monitors", "all"]);
+            let mut on: Vec<&Value> = all
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|m| m["disabled"] != true)
+                .collect();
+            assert!(
+                on.iter().any(|m| m["name"] == o.name.as_str()),
+                "hyprctl has no {}: {all}",
+                o.name
+            );
+            on.sort_by_key(|m| m["name"] == o.name.as_str());
+            for m in on {
+                let name = text(&m["name"]);
+                let place = match name == o.name {
+                    true => at,
+                    false => (num(&m["x"]), num(&m["y"])),
+                };
+                let rate = (m["refreshRate"].as_f64().unwrap_or(60.0) * 1000.0).round() / 1000.0;
+                let mode = format!("{}x{}@{rate}", num(&m["width"]), num(&m["height"]));
+                let scale = m["scale"].as_f64().unwrap_or(1.0);
+                let mut args = hypr_place_monitor(&name, &mode, place, scale, false);
+                let mut said = hyprctl_said(&args);
+                if hypr_wants_eval(&said) {
+                    args = hypr_place_monitor(&name, &mode, place, scale, true);
+                    said = hyprctl_said(&args);
+                }
+                eprintln!("matrix: hyprctl {args:?}: {said:?}");
+            }
+        }
+    }
+}
+
+/// (outputs-matrix) The probe's `outputs.apply` of `name` at `at`, and
+/// its answer: it must be `succeeded`, and `outputs.all` must show the
+/// place by then (an apply is `succeeded` once the monitors show it, and
+/// `outputs.all` with it). Each output as `outputs.all` has it then.
+fn apply_place(d: &mut Driven, name: &str, at: (i64, i64)) -> Shown {
+    let count = |d: &Driven, cell: &str| d.value(&format!("probe.{cell}")).map(|v| num(&v));
+    let (done, fails, asks) = (
+        count(d, "done").unwrap_or(0),
+        count(d, "fails").unwrap_or(0),
+        count(d, "asks").unwrap_or(0),
+    );
+    for (cell, to) in [
+        ("target", name.to_string()),
+        ("to_x", at.0.to_string()),
+        ("to_y", at.1.to_string()),
+    ] {
+        assert!(
+            d.cli(&["set", &format!("probe.{cell}"), &to]).is_some(),
+            "strand set probe.{cell} {to}\n{}",
+            d.log_text()
+        );
+    }
+    assert!(
+        d.cli(&["set", "probe.asks", &(asks + 1).to_string()])
+            .is_some(),
+        "strand set probe.asks\n{}",
+        d.log_text()
+    );
+    until(
+        &format!("the answer to outputs.apply of {name} at {at:?}"),
+        || {
+            d.alive();
+            match (count(d, "done"), count(d, "fails")) {
+                (_, Some(f)) if f > fails => panic!(
+                    "outputs.apply of {name} at {at:?} failed: {:?}\n{}",
+                    d.value("probe.said"),
+                    d.log_text()
+                ),
+                (Some(n), _) if n > done => Ok(()),
+                got => Err(format!("done and fails: {got:?}")),
+            }
+        },
+    );
+    // Read after the answer: what `outputs.all` was when it came, or later.
+    let shown = parse_heads(&d.value("probe.heads").unwrap_or_default());
+    assert!(
+        placed_at(&shown, name, at),
+        "outputs.apply of {name} at {at:?} was succeeded before outputs.all showed it: {shown:?}"
+    );
+    shown
+}
+
+/// (outputs-matrix) `probe.heads` (`outputs.all`) as the outputs it
+/// lists, by name, each with its `id`.
+fn parse_heads(heads: &Value) -> Shown {
+    let mut ours: Shown = heads
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|o| {
+            let m = &o["mode"];
+            let head = Head::new(
+                text(&o["name"]),
+                o["enabled"] == true,
+                (num(&o["x"]), num(&o["y"])),
+                (num(&m["width"]), num(&m["height"])),
+            );
+            (head, text(&o["id"]))
+        })
+        .collect();
+    ours.sort();
+    ours
+}
+
+/// (outputs-matrix) On all four, wherever the compositor offers
+/// `zwlr_output_manager_v1`, the `outputs` service of `strand run`
+/// against the compositor's own report: `outputs.all` lists its outputs,
+/// on or off, at their places with their modes (labwc, with no IPC: with
+/// the shell's own `screens`, from the `wl_output`s and xdg-outputs), and
+/// every output's `id` is the `Screen.id` of its screen; a move made from
+/// outside before any apply (`swaymsg output … position`, Hyprland's
+/// monitor rule, `niri msg output … position set`) is followed; and with
+/// a second output an `outputs.apply` moving it 500 px right is
+/// `succeeded` with `outputs.all` showing it, the compositor shows it,
+/// the ids stay, and it is put back the same way. Hyprland 0.57 follows,
+/// for each monitor, the oldest output manager that configured it, so a
+/// rule set from outside no longer moves a monitor an apply placed: the
+/// move from outside comes first (decisions.md outputs-apply).
+#[test]
+fn the_outputs_service_follows_the_live_compositor() {
+    let Ok(kind) = std::env::var("STRAND_MATRIX") else {
+        skipped("the outputs test");
+        return;
+    };
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"));
+    let socket = runtime.join(std::env::var_os("WAYLAND_DISPLAY").expect("WAYLAND_DISPLAY"));
+    if !registry(&socket)
+        .iter()
+        .any(|i| i == "zwlr_output_manager_v1")
+    {
+        eprintln!("matrix: {kind} offers no zwlr_output_manager_v1: the outputs test did not run");
+        return;
+    }
+    // labwc: no IPC to compare with; its outputs and screens must agree.
+    let live = if without_ipc() { None } else { live() };
+    let dir = std::env::temp_dir().join(format!("strand-matrix-outputs-{}", std::process::id()));
+    let sock = dir.join("strand.sock");
+    let (strand, log, _bus) = launch_strand(
+        &dir,
+        &[("probe.strand", OUTPUTS_SRC)],
+        &[("STRAND_SOCKET", sock.clone().into_os_string())],
+    );
+    let mut d = Driven { strand, log, sock };
+    until("outputs ready and available", || {
+        d.alive();
+        match (d.value("probe.ready"), d.value("probe.available")) {
+            (Some(Value::Bool(true)), Some(Value::Bool(true))) => Ok(()),
+            got => Err(format!("ready, available: {got:?}\n{}", d.log_text())),
+        }
+    });
+    let boot = outputs_agree(&mut d, live.as_ref(), "at start", |_| true);
+    let ids = ids_of(&boot);
+    let Some(l) = &live else {
+        eprintln!("matrix: {kind} has no IPC: no move from outside or apply is checked against it");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    let second = second_output(l);
+
+    // From outside, before any apply: the second output (else the only
+    // one) 500 px right, then back; the others stay where they are.
+    let moved = second.clone().unwrap_or_else(|| l.output.clone());
+    let home = head(&boot, &moved).clone();
+    let there = (home.x + 500, home.y);
+    let shows = |what: &str, want: &[Head]| {
+        until(&format!("{kind} shows {what}"), || {
+            let real = compositor_heads(l.kind);
+            match real == want {
+                true => Ok(()),
+                false => Err(format!("{real:?}\nwanted {want:?}")),
+            }
+        })
+    };
+    for (what, at) in [
+        ("moved from outside", there),
+        ("moved back from outside", (home.x, home.y)),
+    ] {
+        let what = format!("{moved} {what}");
+        let want = alone_at(&boot, &moved, at);
+        place_from_outside(l.kind, &home, at);
+        shows(&what, &want);
+        let now = outputs_agree(&mut d, Some(l), &what, |s| heads_of(s) == want);
+        assert_eq!(ids_of(&now), ids, "the ids after {what}");
+    }
+
+    // `outputs.apply`: the second output 500 px right, then back.
+    if let Some(second) = &second {
+        for (what, at) in [("applied", there), ("applied back", (home.x, home.y))] {
+            let what = format!("{second} {what}");
+            let want = alone_at(&boot, second, at);
+            let answered = apply_place(&mut d, second, at);
+            assert_eq!(ids_of(&answered), ids, "the ids at the answer: {what}");
+            shows(&what, &want);
+            let now = outputs_agree(&mut d, Some(l), &what, |s| heads_of(s) == want);
+            assert_eq!(ids_of(&now), ids, "the ids after {what}");
+        }
+    }
+    drop(d);
+    let _ = std::fs::remove_dir_all(&dir);
 }

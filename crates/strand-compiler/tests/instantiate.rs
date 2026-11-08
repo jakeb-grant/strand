@@ -7670,6 +7670,104 @@ fn applied(shell: &Shell) -> Vec<String> {
         .collect()
 }
 
+/// The `outputs.apply` calls since the last, each as `name mode` per
+/// monitor, its mode `WxH` or `null`.
+fn applied_modes(shell: &Shell) -> Vec<String> {
+    shell
+        .host
+        .take_actions()
+        .into_iter()
+        .filter(|c| c.target == "outputs" && c.name == "apply")
+        .map(|c| {
+            let json = strand_compiler::vm::json::to_json_string(shell.host.types(), &c.args[0]);
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|c| {
+                    let m = &c["mode"];
+                    let mode = match m.is_null() {
+                        true => "null".to_string(),
+                        false => format!("{}x{}", m["width"], m["height"]),
+                    };
+                    format!("{} {mode}", c["name"].as_str().unwrap())
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .collect()
+}
+
+/// (outputs-apply, review round 6) The page's profiles place a monitor
+/// saved with no mode (a Hyprland mirror shows none, so `kept` stores
+/// width 0) with `mode: null`, which keeps the mode it has: `placed` sent
+/// `OutputMode(0, 0, 0)`, which `outputs` refuses ("mode width 0 is not
+/// a size"), failing the whole profile.
+#[test]
+fn the_monitor_profiles_page_places_a_monitor_saved_with_no_mode_with_none() {
+    let files = page_files(MONITOR_PROFILES_PAGE);
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .filter(|(n, _)| n == "layout.strand" || n == "monitors.strand")
+        .map(|(n, t)| (n.as_str(), t.as_str()))
+        .collect();
+    assert_eq!(refs.len(), 2);
+    let dir = temp_dir("monitor-profiles-mirror");
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let storage = Storage::in_dirs(dir.join("state"), &config);
+    let mut shell = boot_with(
+        &refs,
+        |rt, host| {
+            dp1(rt, host);
+            // HOT-1 mirrors the panel: on, at its place, with no mode.
+            let mirror = host.record(
+                "Output",
+                &[
+                    ("name", Value::text("HOT-1")),
+                    ("id", Value::text("Unknown | Unknown | HOT")),
+                    ("enabled", Value::Bool(true)),
+                    ("x", Value::int(0)),
+                    ("y", Value::int(0)),
+                    ("scale", Value::float(1.0)),
+                    ("transform", host.variant("OutputTransform", "normal")),
+                ],
+            );
+            let panel = monitor(
+                host,
+                "eDP-1",
+                PANEL,
+                (1920, 1200, 60.0),
+                (0, 0),
+                1.0,
+                "normal",
+            );
+            host.set(rt, "outputs.all", Value::list(vec![panel, mirror]))
+                .unwrap();
+            host.set_ready(rt, "outputs", false).unwrap();
+        },
+        storage,
+    );
+    // The best guess once `outputs` answers, its mode the preferred one:
+    // none for the mirror.
+    shell.at(1.0);
+    shell.host.set_ready(&shell.rt, "outputs", true).unwrap();
+    shell.at(1.1);
+    shell.at(3.0);
+    assert_eq!(applied_modes(&shell), ["eDP-1 1920x1200, HOT-1 null"]);
+    // Saved as it is, then applied from the profile: the mirror's width
+    // is 0, so it is sent no mode.
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    shell.at(3.1);
+    shell.at(5.0);
+    assert_eq!(shell.scene.texts()[0], "Saved profile");
+    assert_eq!(applied_modes(&shell), ["eDP-1 1920x1200, HOT-1 null"]);
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// (monitor-profiles, review round 4) The page's Hyprland file writes a
 /// monitor that is on as on, with Hyprland's `preferred`, when no mode
 /// is known for it, and only a monitor off as `disabled = true`: it
