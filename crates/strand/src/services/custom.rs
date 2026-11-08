@@ -299,6 +299,18 @@ pub fn coerce(types: &TypeTable, ty: &Ty, d: &Data) -> Option<Value> {
     coerce_noting(types, ty, d, &mut None)
 }
 
+/// Whether text holds several values, not one value and its unit:
+/// several lines (`22\n80\n443`), or a word after the first that is
+/// itself a number (`1234 5678`, `22\t80`), where `45 °C` and
+/// `16303392 kB` are one number and its unit.
+fn several_values(t: &str) -> bool {
+    let t = t.trim();
+    t.contains('\n')
+        || t.split_whitespace()
+            .skip(1)
+            .any(|w| w.parse::<f64>().is_ok())
+}
+
 /// [`coerce`], noting in `nested` the first value inside `d` that held
 /// something and did not convert (a list's item, a record's field).
 ///
@@ -522,13 +534,20 @@ fn go(
         // converts; a record (a JSON object, an element) only when it
         // holds one of the item record's fields, so an API's error
         // object read as `[Release]` is reported, not one empty item.
-        // Text of several lines is not one item of a list of numbers,
+        // Text of several values is not one item of a list of numbers,
         // bools, enums or the like: a number with a unit (`45 °C`) reads
-        // its first word, so a command's `22\n80\n443` read as `[int]`
-        // would be `[22]`, the other lines lost without a report.
-        (Ty::List(item, _), Data::Text(t))
-            if t.trim().contains('\n')
-                && matches!(strip_optional(item), Ty::Prim(p) if !matches!(p, Prim::Text | Prim::Path)) =>
+        // its first word, so a command's `22\n80\n443` or `pidof`'s
+        // `1234 5678` read as `[int]` would be `[22]` or `[1234]`, the
+        // rest lost without a report. Several lines, or a further word
+        // that is itself a number, is several values; a unit is not.
+        // An element's text (`<ports>22 80</ports>`) the same.
+        (Ty::List(item, _), d)
+            if matches!(strip_optional(item), Ty::Prim(p) if !matches!(p, Prim::Text | Prim::Path))
+                && match d {
+                    Data::Text(t) => several_values(t),
+                    d if custom::is_element(d) => several_values(&custom::element_text(d)),
+                    _ => false,
+                } =>
         {
             None
         }
@@ -1653,6 +1672,36 @@ mod tests {
         let floats = Ty::List(Box::new(Ty::Prim(Prim::Float)), false);
         assert_eq!(c(&floats, Data::text("0.5\n0.25")), None);
         assert!(read_output(types, &ints, "22\n80\n443\n").is_err());
+        // Nor are values on one line, by spaces or tabs (`pidof`).
+        assert_eq!(c(&ints, Data::text("1234 5678")), None);
+        assert_eq!(c(&ints, Data::text("22\t80\t443")), None);
+        assert_eq!(c(&floats, Data::text("0.5 0.25")), None);
+        assert!(read_output(types, &ints, "1234 5678\n").is_err());
+        let durations = Ty::List(Box::new(Ty::Prim(Prim::Duration)), false);
+        assert_eq!(c(&durations, Data::text("5 10")), None);
+        let element = xml_at("<r><ports>22 80 443</ports><d>1</d></r>", "ports");
+        assert_eq!(c(&ints, element), None);
+        let element = xml_at("<r><ports p=\"tcp\">22 80 443</ports><d>1</d></r>", "ports");
+        assert!(custom::is_element(&element));
+        assert_eq!(c(&ints, element), None);
+        let element = xml_at("<r><t u=\"C\">45</t><d>1</d></r>", "t");
+        assert_eq!(c(&ints, element), Some(Value::list(vec![Value::int(45)])));
+        // A number and its unit is still one item.
+        assert_eq!(
+            c(&ints, Data::text("45 °C")),
+            Some(Value::list(vec![Value::int(45)]))
+        );
+        assert_eq!(
+            c(&ints, Data::text("16303392 kB")),
+            Some(Value::list(vec![Value::int(16303392)]))
+        );
+        // A single number still reads the first of them, as on main.
+        assert_eq!(c(&Ty::INT, Data::text("1234 5678")), Some(Value::int(1234)));
+        assert_eq!(
+            c(&texts, Data::text("a 1")),
+            Some(Value::list(vec![Value::text("a 1")])),
+            "text keeps it whole"
+        );
         assert_eq!(
             c(&texts, Data::text("a\nb")),
             Some(Value::list(vec![Value::text("a\nb")])),

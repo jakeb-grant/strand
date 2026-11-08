@@ -155,9 +155,10 @@ a `type Seg { trkpt: [Point] }` reads both.
 
 The type you declare decides the shape. A field typed as a list takes
 every element of its name, one or many; a single type takes the first.
-Text of several lines is not one item of a list of numbers: a command
-printing a port per line, read as `[int]`, does not convert and is
-reported. Print a JSON array, such as `[22, 80, 443]`, instead.
+Text of several values is not one item of a list of numbers: a command
+printing a port per line, or `pidof` printing PIDs separated by spaces,
+read as `[int]`, does not convert and is reported. Print a JSON array,
+such as `[22, 80, 443]`, instead.
 An element read as `text`, a number or a `Date` is its text, so
 `<title>` is a `text` and `<size units="bytes">42</size>` an `int`;
 read as a record, the same element gives its attributes and children.
