@@ -1091,6 +1091,96 @@ fn check_warnings_reach_strand_watch_and_are_resolved() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// (build-ready review) A handler failing the same way is reported once
+/// (decisions.md handler-fault-repeat), but a `strand watch` started
+/// after that hears it at its next failing run, then once only
+/// (decisions.md handler-fault-repeat-watch). Each step is read up to a
+/// host notice sent after it, so "nothing heard" is a sequence, not a
+/// quiet window.
+#[test]
+fn a_late_watch_hears_a_handler_still_failing_the_same_way() {
+    let dir = temp_dir("fault-late-watch");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "state zero = 0\nstate tries = 0\nstate n = 0\n\
+         bar Top {\n  box { on click { tries += 1; n = 1 / zero } }\n  \
+         text join(\"\", \"t\", tries)\n}\n",
+    )
+    .unwrap();
+    let socket = dir.join("ipc.sock");
+    let (compiler, to_logic, t, mut m) = spawn_live(&dir, Some(socket.clone()));
+    m.until("the bar", |s| s.texts() == ["t0"]);
+    let boxes = m.scene.of_kind(NodeKind::Box);
+    let watch = || {
+        let s = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut r = std::io::BufReader::new(s);
+        let ok = ipc::request(&mut r, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+        assert_eq!(ok["ok"], true);
+        r
+    };
+    // The events `w` hears up to the host notice `mark`: whether a fault
+    // came first.
+    let faulted_before = |w: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
+                          mark: &str| {
+        let mut fault = false;
+        loop {
+            let mut line = String::new();
+            std::io::BufRead::read_line(w, &mut line)
+                .unwrap_or_else(|e| panic!("no `{mark}`: {e}"));
+            let ev: Json = serde_json::from_str(&line).unwrap();
+            if ev["event"] == "fault" {
+                assert!(
+                    ev["message"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("on click"),
+                    "{ev}"
+                );
+                fault = true;
+            } else if ev["notices"] == json!([mark]) {
+                return fault;
+            }
+        }
+    };
+    let mut click = |n: usize| {
+        to_logic
+            .send(ToLogic::Event {
+                input: None,
+                node: boxes[0],
+                event: NodeEvent::Click,
+            })
+            .unwrap();
+        let want = format!("t{n}");
+        m.until(&want, |s| s.texts().contains(&want));
+        to_logic
+            .send(ToLogic::Notice(format!("after {n}")))
+            .unwrap();
+    };
+    let mut early = watch();
+    click(1);
+    assert!(faulted_before(&mut early, "after 1"), "the first failure");
+    click(2);
+    assert!(
+        !faulted_before(&mut early, "after 2"),
+        "the same failure again"
+    );
+    let mut late = watch();
+    click(3);
+    assert!(
+        faulted_before(&mut late, "after 3"),
+        "a watch started since hears the failure at its next run"
+    );
+    assert!(faulted_before(&mut early, "after 3"), "the early watch too");
+    click(4);
+    assert!(!faulted_before(&mut late, "after 4"), "then once only");
+    assert!(!faulted_before(&mut early, "after 4"), "then once only");
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    drop(compiler);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn saves_reload_live_with_state_kept() {
     let dir = temp_dir("live");

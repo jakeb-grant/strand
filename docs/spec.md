@@ -2172,7 +2172,9 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   every handler, that one included, runs at its next event (section 12;
   decisions.md handler-fault). A handler that fails the same way again
   (an `every` timer on each tick) is not reported again until a run of
-  it completes (decisions.md handler-fault-repeat).
+  it completes (decisions.md handler-fault-repeat); a `strand watch`
+  started since hears it at its next failing run (decisions.md
+  handler-fault-repeat-watch).
 - When a handler's node unmounts, the handler is cancelled at its next
   `await`. A reload that changes a handler's code, or anything it calls,
   restarts it and cancels and reports an in-flight `await`

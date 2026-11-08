@@ -1146,6 +1146,12 @@ proof  = "crates/strand-compiler/tests/instantiate.rs::a_handler_failing_the_sam
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
+text   = "still sees it: it prints the `fault:` line again at the handler's next"
+source = ['crates/strand/src/run/request/watch.rs "self.inst.report_faults_again();"', 'docs/spec.md "started since hears it at its next failing run"']
+proof  = "crates/strand/src/run/tests.rs::a_late_watch_hears_a_handler_still_failing_the_same_way"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
 text   = "A missing `xdg_wm_base` is logged as a warning for windows; for"
 source = ['crates/strand-surface/src/manager/window.rs "log::warn!( "{}: no xdg_wm_base, windows are not shown","', 'crates/strand-surface/src/manager/popup.rs "log::debug!("{}: no xdg_wm_base, popups are not shown", spec.namespace());"']
 proof  = "read"

@@ -4320,17 +4320,20 @@ impl Ctx {
                     // handler's last run that failed, with no run
                     // completing between: not reported again (a timer
                     // failing every tick, a scroll handler every step).
-                    let text = e.to_string();
-                    if site.reported.borrow().as_deref() == Some(text.as_str()) {
+                    // A `strand watch` started since (a later epoch)
+                    // hears it once more.
+                    let Some(ctx) = weak.upgrade() else {
+                        return Ok(());
+                    };
+                    let now = (ctx.fault_epoch.get(), e.to_string());
+                    if site.reported.borrow().as_ref() == Some(&now) {
                         return Ok(());
                     }
-                    *site.reported.borrow_mut() = Some(text);
-                    if let Some(ctx) = weak.upgrade() {
-                        let mut err = ctx.located(&site, e);
-                        // (handler-fault) A value: it freezes nothing.
-                        err.handler = true;
-                        ctx.errors.borrow_mut().push(err);
-                    }
+                    *site.reported.borrow_mut() = Some(now);
+                    let mut err = ctx.located(&site, e);
+                    // (handler-fault) A value: it freezes nothing.
+                    err.handler = true;
+                    ctx.errors.borrow_mut().push(err);
                     Ok(())
                 }
                 Ok(()) => {

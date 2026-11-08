@@ -231,7 +231,9 @@ non-zero, freezes nothing. That click's run ends with the error,
 `strand watch` prints it as a `fault:` line, and every handler,
 that one included, runs again at its next event. A handler that fails
 the same way again, such as an `every` timer on each tick, is printed
-once, until a run of it completes.
+once, until a run of it completes. A `strand watch` you start later
+still sees it: it prints the `fault:` line again at the handler's next
+failing run.
 
 ## A surface does not appear
 

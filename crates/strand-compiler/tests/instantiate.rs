@@ -2761,6 +2761,13 @@ fn a_handler_failing_the_same_way_is_reported_once_until_a_run_completes() {
     shell.inst.set_value("t", "zero", Value::int(0)).unwrap();
     let u = shell.at(6.0);
     assert_eq!(u.errors.len(), 1, "reported again after a run completed");
+    // (handler-fault-repeat-watch) A `strand watch` started since: the
+    // same failure is reported once more at its next run, then not.
+    assert!(shell.at(7.0).errors.is_empty());
+    shell.inst.report_faults_again();
+    let u = shell.at(8.0);
+    assert_eq!(u.errors.len(), 1, "reported again for a new watch");
+    assert!(shell.at(9.0).errors.is_empty(), "then once only");
 }
 
 /// Changing one item of a long keyed list re-runs that item's bindings

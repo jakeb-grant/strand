@@ -193,8 +193,10 @@ pub(crate) struct Site {
     pub scope: Option<CoreId>,
     /// (build-ready review) A handler's error last reported, until a run
     /// of it completes: the same error again is not reported again, so a
-    /// timer failing every tick is one fault, not one a tick.
-    pub reported: std::cell::RefCell<Option<String>>,
+    /// timer failing every tick is one fault, not one a tick. With the
+    /// [`Ctx::fault_epoch`] it was reported in: a later epoch (a new
+    /// `strand watch`) hears it again.
+    pub reported: std::cell::RefCell<Option<(u64, String)>>,
 }
 
 /// What one tick produced.
@@ -252,6 +254,9 @@ pub(crate) struct Ctx {
     /// Persisted cells kept over a changed default since the last tick.
     pub kept: RefCell<Vec<crate::reconcile::KeptCell>>,
     play_seq: Cell<u32>,
+    /// (build-ready review) Bumped by [`Instance::report_faults_again`]:
+    /// a handler's repeated error is reported again once in each epoch.
+    pub fault_epoch: Cell<u64>,
     /// Reload identities and handler hashes of the program (`None`: made
     /// from a bare program, keyed by span).
     pub identity: Option<Arc<crate::reconcile::Identity>>,
@@ -945,6 +950,7 @@ impl Ctx {
             notices: RefCell::default(),
             kept: RefCell::default(),
             play_seq: Cell::new(0),
+            fault_epoch: Cell::new(0),
             identity,
             hashes,
             registry: RefCell::default(),
@@ -2567,6 +2573,15 @@ impl Instance {
     pub fn origin(&self, node: NodeId) -> Option<(FileId, crate::hir::NodeIdx, Span)> {
         let em = self.ctx.em.borrow();
         em.nodes.get(&node).map(|e| (e.file, e.idx, e.span))
+    }
+
+    /// (build-ready review) A handler failing the same way again is
+    /// reported once more at its next failing run, as if new: called when
+    /// a `strand watch` starts, which hears no fault reported before it
+    /// (decisions.md handler-fault-repeat-watch).
+    pub fn report_faults_again(&self) {
+        let epoch = &self.ctx.fault_epoch;
+        epoch.set(epoch.get().wrapping_add(1));
     }
 
     /// Freeze the component instance a runtime error happened in

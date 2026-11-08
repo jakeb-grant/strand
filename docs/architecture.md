@@ -2018,7 +2018,10 @@ Public interfaces:
     freezes and outlines nothing (decisions.md handler-fault); the
     wrapper reports a handler's error only when it differs from the one
     its last failing run reported with no run completing between
-    (`Site::reported`, decisions.md handler-fault-repeat).
+    (`Site::reported`, decisions.md handler-fault-repeat), or was
+    reported in an earlier fault epoch: each `strand watch` that starts
+    calls `Instance::report_faults_again`, which bumps it (decisions.md
+    handler-fault-repeat-watch).
   - The host loop: `Instance::step(now, wall) -> (Update, Wake)`. The
     `strand run` logic thread feeds `screens` from the surface layer's
     monitor hooks, maps render's input to `event(node, name, args)`

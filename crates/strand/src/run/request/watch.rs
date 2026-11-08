@@ -1,7 +1,8 @@
 //! `strand watch`: answered by the socket's server itself; the running
 //! config's warnings, the main thread's notices, the `file` outputs'
 //! standing notices and (build-ready) the open service diagnostics
-//! follow here (the boot's were made before anyone watched).
+//! follow here (the boot's were made before anyone watched), and a
+//! handler's repeated fault is reported again at its next run.
 
 use serde_json::json;
 
@@ -14,6 +15,12 @@ impl Shell {
             // On D-Bus, watching is the `Changed` signal (S-ipc).
             from @ Caller::Bus(_) => return self.not_served(from, "watch"),
         };
+        // (build-ready review) A handler failing the same way since before
+        // this watch (an `every` failing each tick) is reported once more
+        // at its next failing run: the dedupe would keep it from a
+        // watcher who never heard it (decisions.md
+        // handler-fault-repeat-watch).
+        self.inst.report_faults_again();
         let notices: Vec<&String> = self
             .host_notices
             .iter()

@@ -2241,6 +2241,40 @@ mod tests {
         assert!(files.let_go(|each| each(b)).is_empty(), "let go once");
     }
 
+    /// (build-ready review) [`Files::keep`], which `after_diff` calls
+    /// each tick, lets go of the waits of the paths the running config's
+    /// `file`s no longer write (here the instance writes only `kept`),
+    /// writer or not, and gives each such path back once for its notice
+    /// to go.
+    #[test]
+    fn keep_lets_go_of_the_waits_no_file_writes() {
+        use strand_compiler::instantiate::{Instance, Storage};
+        let mut map = strand_compiler::source::SourceMap::new();
+        map.add("a.strand", "file \"/x/kept.conf\" { text: \"k\" }\n");
+        let b = strand_compiler::reconcile::Build::compile(None, map).unwrap();
+        let rt = strand_core::Runtime::new();
+        let host = std::rc::Rc::new(strand_compiler::vm::schema_host::SchemaHost::mock(
+            &rt,
+            &b.program.types,
+        ));
+        let inst = Instance::from_build(&rt, &b, host, Storage::none());
+        let _ = inst.flush();
+        let _ = inst.take_outputs();
+        let (ping, _source) = calloop::ping::make_ping().unwrap();
+        let mut files = Files::new(ping, None, None);
+        let t0 = Instant::now();
+        let (gone, kept) = (Path::new("/x/gone.conf"), Path::new("/x/kept.conf"));
+        files.set_slow(gone, Some(vec!["news".into()]), t0);
+        files.set_waiting(gone, Some("waits for `news`, which has no run up".into()));
+        files.set_slow(kept, Some(vec!["news".into()]), t0);
+        assert_eq!(files.keep(&inst), [gone.to_path_buf()]);
+        assert_eq!(files.still_waiting(gone), None);
+        let due = files.slow_due(t0 + SLOW_WAIT);
+        assert_eq!(due.len(), 1, "{due:?}");
+        assert_eq!(due[0].0, kept, "{due:?}");
+        assert!(files.keep(&inst).is_empty(), "given back once");
+    }
+
     #[test]
     fn the_manifest_round_trips() {
         let mut m = BTreeMap::new();
