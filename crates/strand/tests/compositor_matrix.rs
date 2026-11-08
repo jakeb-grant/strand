@@ -79,12 +79,13 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use strand_core::Runtime;
+use strand_services::outputs::OutputChange;
 use strand_services::testing::PrivateBus;
 use strand_services::wm::{
     self, WindowAction, WindowItem, WmAction, WmConfig, WmError, WmRequest, WorkspaceAction,
     WorkspaceItem,
 };
-use strand_services::{Applied, Builtin, Buses, Cells, Data, Services};
+use strand_services::{Applied, Builtin, Buses, Cells, Data, Services, ToData};
 use window::TestWindow;
 
 const FILES: [(&str, &str); 2] = [
@@ -2124,6 +2125,357 @@ fn a_workspace_is_moved_to_another_screen() {
     on("the other one back", &other, &live.output, &home);
     drop(keeper);
     s.shutdown();
+}
+
+/// (ws-shown) The workspace each output that is on shows, by output name,
+/// as the compositor says it (`swaymsg -t get_outputs`' `current_workspace`,
+/// `hyprctl -j monitors`' `activeWorkspace`; niri's `is_active`).
+fn shown_by(kind: Kind) -> Vec<(String, String)> {
+    let mut all: Vec<(String, String)> = match kind {
+        Kind::Sway => json("swaymsg", &["-t", "get_outputs", "-r"])
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|o| o["active"] != false)
+            .map(|o| (text(&o["name"]), text(&o["current_workspace"])))
+            .collect(),
+        Kind::Hyprland => json("hyprctl", &["-j", "monitors"])
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|m| m["disabled"] != true)
+            .map(|m| (text(&m["name"]), text(&m["activeWorkspace"]["name"])))
+            .collect(),
+        Kind::Niri => json("niri", &["msg", "--json", "workspaces"])
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|w| w["is_active"] == true)
+            .map(|w| {
+                let name = w["name"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| w["idx"].as_u64().unwrap_or(0).to_string());
+                (text(&w["output"]), name)
+            })
+            .collect(),
+    };
+    all.sort();
+    all
+}
+
+/// (ws-shown) The workspaces the `workspaces` store reads as shown
+/// (`active`), by screen, sorted as [`shown_by`].
+fn stored_shown(b: &Builtin, rt: &Runtime) -> Result<Vec<(String, String)>, String> {
+    let ws = b
+        .workspaces
+        .cells()
+        .snapshot(rt)
+        .map_err(|e| format!("{e:?}"))?;
+    let mut all: Vec<(String, String)> = ws
+        .all
+        .iter()
+        .filter(|w| w.active)
+        .map(|w| (w.screen.clone(), w.name.clone()))
+        .collect();
+    all.sort();
+    Ok(all)
+}
+
+/// (ws-shown) Turns output `name` off or on with the compositor's own
+/// command, as a lid switch bound in its config does: `swaymsg output …
+/// disable`/`enable`, Hyprland's monitor rule (`keyword monitor …,disable`,
+/// else `eval` of `hl.monitor({ …, disabled = true })`; back on, the rule
+/// it had, `was`: `j/monitors all`'s entry), `niri msg output … off`/`on`.
+fn switch_from_outside(kind: Kind, name: &str, on: bool, was: &Value) {
+    match kind {
+        Kind::Sway => drop(run(
+            "swaymsg",
+            &["output", name, if on { "enable" } else { "disable" }],
+        )),
+        Kind::Niri => drop(run(
+            "niri",
+            &["msg", "output", name, if on { "on" } else { "off" }],
+        )),
+        Kind::Hyprland => {
+            let rate = (was["refreshRate"].as_f64().unwrap_or(60.0) * 1000.0).round() / 1000.0;
+            let mode = format!("{}x{}@{rate}", num(&was["width"]), num(&was["height"]));
+            let (x, y) = (num(&was["x"]), num(&was["y"]));
+            let scale = was["scale"].as_f64().unwrap_or(1.0);
+            let classic: Vec<String> = match on {
+                true => hypr_place_monitor(name, &mode, (x, y), scale, false),
+                false => vec![
+                    "keyword".into(),
+                    "monitor".into(),
+                    format!("{name},disable"),
+                ],
+            };
+            let mut said = hyprctl_said(&classic);
+            if hypr_wants_eval(&said) {
+                let lua = match on {
+                    true => format!(
+                        "hl.monitor({{ output = {}, disabled = false, mode = {}, position = {}, scale = {scale} }})",
+                        lua_string(name),
+                        lua_string(&mode),
+                        lua_string(&format!("{x}x{y}"))
+                    ),
+                    false => format!(
+                        "hl.monitor({{ output = {}, disabled = true }})",
+                        lua_string(name)
+                    ),
+                };
+                said = hyprctl_said(&["eval".into(), lua]);
+            }
+            eprintln!("matrix: {name} on: {on}: hyprctl said {said:?}");
+        }
+    }
+}
+
+/// (ws-shown) Puts the focus on output `name`, so a workspace switched
+/// to next is made there: `swaymsg focus output`, Hyprland's
+/// `hl.dsp.focus({ monitor = … })` (else the classic `focusmonitor`),
+/// `niri msg action focus-monitor`.
+fn focus_monitor(kind: Kind, name: &str) {
+    match kind {
+        Kind::Sway => drop(run("swaymsg", &["focus", "output", name])),
+        Kind::Niri => drop(run("niri", &["msg", "action", "focus-monitor", name])),
+        Kind::Hyprland => {
+            let mut reply = hyprctl_dispatch(&[format!(
+                "hl.dsp.focus({{ monitor = {} }})",
+                lua_string(name)
+            )]);
+            if hypr_wants_classic(&reply) {
+                reply = hyprctl_dispatch(&["focusmonitor".into(), name.into()]);
+            }
+            assert!(
+                hypr_dispatch_ok(&reply),
+                "hyprctl dispatch to monitor {name}: {reply}"
+            );
+        }
+    }
+}
+
+/// (ws-shown) Output `name`'s entry in `hyprctl -j monitors all` (null
+/// elsewhere).
+fn hypr_monitor(kind: Kind, name: &str) -> Value {
+    if kind != Kind::Hyprland {
+        return Value::Null;
+    }
+    json("hyprctl", &["-j", "monitors", "all"])
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|m| m["name"] == name)
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// (ws-shown) One workspace is shown per screen, the one the compositor
+/// shows there, after a screen showing a workspace kept by a window is
+/// turned off and the compositor moves that workspace to a screen that
+/// already shows its own (a laptop docked with its lid shut): turned off
+/// with the compositor's own command, as a lid switch does, then (where
+/// the compositor offers `zwlr_output_manager_v1`) with `outputs.apply`,
+/// and each time on again. Needs two outputs (sway, Hyprland).
+#[test]
+fn one_workspace_is_shown_per_screen_after_a_screen_goes_off() {
+    let Ok(kind) = std::env::var("STRAND_MATRIX") else {
+        skipped("the shown-workspace test");
+        return;
+    };
+    let Some(live) = live() else {
+        return;
+    };
+    let Some(there) = second_output(&live) else {
+        return;
+    };
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"));
+    let socket = runtime.join(std::env::var_os("WAYLAND_DISPLAY").expect("WAYLAND_DISPLAY"));
+    let managed = registry(&socket)
+        .iter()
+        .any(|i| i == "zwlr_output_manager_v1");
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    b.workspaces.acquire(&rt);
+    b.windows.acquire(&rt);
+    if managed {
+        b.outputs.acquire(&rt);
+    }
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)), "the first read");
+    let real = live.real();
+    let home = real.focused.clone().expect("a focused workspace");
+    let was = hypr_monitor(live.kind, &there);
+    // What to put back for the tests after this one: every monitor's
+    // place (Hyprland places a monitor turned on again `auto`, moving
+    // the others) and the workspace each shows.
+    let places: Vec<(String, Value)> = live
+        .outputs()
+        .iter()
+        .map(|o| (o.name.clone(), hypr_monitor(live.kind, &o.name)))
+        .collect();
+    let shown_at_start = shown_by(live.kind);
+
+    // `other`, kept by a window, shown on `there`; the focus at home.
+    let other = live.other(&real);
+    live.switch(&other);
+    until("the other workspace focused", || {
+        let r = live.real();
+        match r.focused.as_deref() == Some(other.as_str()) {
+            true => Ok(()),
+            false => Err(format!("{r}")),
+        }
+    });
+    let keeper = TestWindow::open(&socket, "strand-ws-shown", "keeper");
+    until(
+        "the keeper on the other workspace",
+        || match compositor_window(live.kind, "strand-ws-shown") {
+            Some((ws, _)) if ws == other => Ok(()),
+            got => Err(format!("{got:?}")),
+        },
+    );
+    live.switch(&home);
+    let show_other_there = |what: &str| {
+        until(&format!("{other} in the store"), || {
+            s.pump(&rt);
+            rt.flush();
+            match stored_shown(&b, &rt)?.is_empty() {
+                true => Err("nothing shown".into()),
+                false => Ok(()),
+            }
+        });
+        b.workspaces
+            .act(
+                &rt,
+                WorkspaceAction::MoveTo {
+                    item: workspace_named(&b, &rt, &other),
+                    screen: wm::ScreenName(there.clone()),
+                },
+            )
+            .unwrap();
+        until(&format!("{other} on {there}"), || {
+            match live
+                .real_on(&there)
+                .workspaces
+                .iter()
+                .any(|w| w.name == other)
+            {
+                true => Ok(()),
+                false => Err(format!("{kind}: {}", live.real_on(&there))),
+            }
+        });
+        // Shown there: focused (which shows it), then the focus home.
+        live.switch(&other);
+        until(&format!("{other} focused on {there}"), || {
+            let r = live.real();
+            match r.focused.as_deref() == Some(other.as_str()) {
+                true => Ok(()),
+                false => Err(format!("{r}")),
+            }
+        });
+        live.switch(&home);
+        until(what, || {
+            let shown = shown_by(live.kind);
+            let want = [
+                (live.output.clone(), home.clone()),
+                (there.clone(), other.clone()),
+            ];
+            match want.iter().all(|w| shown.contains(w)) {
+                true => Ok(()),
+                false => Err(format!("{kind}: {shown:?}")),
+            }
+        });
+    };
+    // The store reads as shown what the compositor shows, one per screen.
+    let agree = |what: &str| {
+        until(what, || {
+            s.pump(&rt);
+            rt.flush();
+            let theirs = shown_by(live.kind);
+            let ours = stored_shown(&b, &rt)?;
+            match ours == theirs {
+                true => Ok(()),
+                false => Err(format!("{kind}: shown {theirs:?}\nthe store: {ours:?}")),
+            }
+        });
+        eprintln!("matrix: {what}: {:?}", shown_by(live.kind));
+    };
+    let on_is = |on: bool| {
+        until(&format!("{there} on: {on}"), || {
+            let shown = shown_by(live.kind);
+            match shown.iter().any(|(o, _)| *o == there) == on {
+                true => Ok(()),
+                false => Err(format!("{kind}: {shown:?}")),
+            }
+        })
+    };
+    show_other_there("the other workspace on the second output");
+    agree("both outputs on");
+
+    // As a lid switch does: the compositor's own command.
+    switch_from_outside(live.kind, &there, false, &was);
+    on_is(false);
+    agree(&format!("{there} turned off from outside"));
+    switch_from_outside(live.kind, &there, true, &was);
+    on_is(true);
+    agree(&format!("{there} turned on from outside"));
+
+    // `outputs.apply`.
+    if managed {
+        show_other_there("the other workspace on the second output again");
+        agree("both outputs on again");
+        for on in [false, true] {
+            let change = OutputChange {
+                enabled: Some(on),
+                ..OutputChange::of(there.clone())
+            };
+            let list = Data::List(vec![change.to_data()]);
+            b.outputs
+                .dynamic()
+                .action(&rt, "apply", None, &[list], Default::default())
+                .unwrap();
+            rt.flush();
+            on_is(on);
+            agree(&format!("{there} turned on: {on} with outputs.apply"));
+        }
+    }
+    drop(keeper);
+    s.shutdown();
+    // Back as it was, for the tests after this one.
+    if live.kind == Kind::Hyprland {
+        for (name, m) in places.iter().filter(|(_, m)| !m.is_null()) {
+            switch_from_outside(live.kind, name, true, m);
+        }
+        until("the monitors back in their places", || {
+            let now = live.outputs();
+            let back = places.iter().all(|(name, m)| {
+                now.iter().any(|o| {
+                    o.name == *name && (o.x as i64, o.y as i64) == (num(&m["x"]), num(&m["y"]))
+                })
+            });
+            match back {
+                true => Ok(()),
+                false => Err(format!(
+                    "{kind}: {:?}",
+                    now.iter().map(|o| (&o.name, o.x, o.y)).collect::<Vec<_>>()
+                )),
+            }
+        });
+    }
+    for (output, ws) in shown_at_start.iter().filter(|(_, ws)| **ws != home) {
+        focus_monitor(live.kind, output);
+        live.switch(ws);
+    }
+    live.switch(&home);
+    until("the workspaces shown at the start", || {
+        match shown_by(live.kind) == shown_at_start {
+            true => Ok(()),
+            false => Err(format!(
+                "{kind}: {:?}, at the start {shown_at_start:?}",
+                shown_by(live.kind)
+            )),
+        }
+    });
 }
 
 /// (ws-move) One request on niri's socket and its reply.
@@ -5580,8 +5932,8 @@ type Shown = Vec<(Head, String)>;
 /// same places with the same modes; every output on has a `Screen` of its
 /// name, at its place and of its size over its scale, with its `id`
 /// (`Output.id` is `Screen.id`: `strand run` numbers its screens from the
-/// running `outputs`' ids, `outputs::ids` and `outputs::shown` through
-/// its surface host, decisions.md "output-id"); and `want` holds of it.
+/// running `outputs`' ids, `outputs::ids` through its surface host,
+/// decisions.md "output-id"); and `want` holds of it.
 /// Each output as `outputs.all` has it.
 fn outputs_agree(
     d: &mut Driven,
@@ -5824,6 +6176,125 @@ fn parse_heads(heads: &Value) -> Shown {
         .collect();
     ours.sort();
     ours
+}
+
+/// (output-id-order) Identical monitors are numbered by their
+/// connectors' names, whatever order they came in, so a restart gives
+/// the same ids (strand-issues 2026-11-08: plugged in while Strand ran
+/// they were numbered in plug order, after a restart by name). Where the
+/// compositor makes headless outputs alike (Hyprland: `hyprctl output
+/// create headless`, no make, model or description): one made while
+/// `strand run` runs, on a name before the others', is the plain id and
+/// the others follow by name, `Output.id` and `Screen.id` alike; a
+/// `strand run` started afresh gives the same ids; removed, the others
+/// are as at the start. Elsewhere (sway's headless outputs are
+/// told apart by their descriptions) it says so and stops.
+#[test]
+fn identical_outputs_are_numbered_by_name() {
+    let Ok(kind) = std::env::var("STRAND_MATRIX") else {
+        skipped("the identical outputs test");
+        return;
+    };
+    let Some(l) = live() else {
+        return;
+    };
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"));
+    let socket = runtime.join(std::env::var_os("WAYLAND_DISPLAY").expect("WAYLAND_DISPLAY"));
+    if l.kind != Kind::Hyprland
+        || !registry(&socket)
+            .iter()
+            .any(|i| i == "zwlr_output_manager_v1")
+    {
+        eprintln!(
+            "matrix: {kind}: no identical outputs to make: the identical outputs test did not run"
+        );
+        return;
+    }
+    let launch = |n: u32| {
+        let dir = std::env::temp_dir().join(format!(
+            "strand-matrix-identical-{}-{n}",
+            std::process::id()
+        ));
+        let sock = dir.join("strand.sock");
+        let (strand, log, _bus) = launch_strand(
+            &dir,
+            &[("probe.strand", OUTPUTS_SRC)],
+            &[("STRAND_SOCKET", sock.clone().into_os_string())],
+        );
+        (Driven { strand, log, sock }, dir)
+    };
+    let (mut d, dir) = launch(1);
+    let boot = outputs_agree(&mut d, Some(&l), "at start", |_| true);
+    // A name before every other's.
+    let first = "AAA-1";
+    assert!(
+        boot.iter().all(|(h, _)| h.name.as_str() > first),
+        "{boot:?}"
+    );
+    let said = hyprctl_said(&[
+        "output".into(),
+        "create".into(),
+        "headless".into(),
+        first.into(),
+    ]);
+    eprintln!("matrix: hyprctl output create headless {first}: {said:?}");
+    let made = outputs_agree(&mut d, Some(&l), &format!("{first} made"), |s| {
+        s.iter().any(|(h, _)| h.name == first && h.enabled)
+    });
+    let base = |id: &str| id.split(" #").next().unwrap_or(id).to_string();
+    let new_id = made
+        .iter()
+        .find(|(h, _)| h.name == first)
+        .map(|(_, id)| base(id))
+        .unwrap_or_default();
+    let alike: Vec<(String, String)> = ids_of(&made)
+        .into_iter()
+        .filter(|(_, id)| base(id) == new_id)
+        .collect();
+    let cleanup = |d: Driven| {
+        drop(d);
+        let said = hyprctl_said(&["output".into(), "remove".into(), first.into()]);
+        eprintln!("matrix: hyprctl output remove {first}: {said:?}");
+    };
+    if alike.len() < 2 {
+        eprintln!(
+            "matrix: {kind}: {first} is like no other output ({made:?}): the identical outputs test did not run"
+        );
+        cleanup(d);
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+    // By name: `made` is sorted by name, so the n-th of them is ` #n`.
+    let want: Vec<(String, String)> = alike
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _))| {
+            let id = match i {
+                0 => new_id.clone(),
+                i => format!("{new_id} #{}", i + 1),
+            };
+            (name.clone(), id)
+        })
+        .collect();
+    assert_eq!(alike, want, "{kind}: plugged in while running");
+    assert_eq!(alike[0].0, first);
+    // A run started afresh: the same ids.
+    let (mut again, again_dir) = launch(2);
+    let fresh = outputs_agree(&mut again, Some(&l), "a run started afresh", |s| {
+        s.iter().any(|(h, _)| h.name == first)
+    });
+    assert_eq!(ids_of(&fresh), ids_of(&made), "{kind}: after a restart");
+    drop(again);
+    let _ = std::fs::remove_dir_all(&again_dir);
+    // Removed while it runs: the others as at the start.
+    let said = hyprctl_said(&["output".into(), "remove".into(), first.into()]);
+    eprintln!("matrix: hyprctl output remove {first}: {said:?}");
+    let after = outputs_agree(&mut d, Some(&l), &format!("{first} removed"), |s| {
+        s.iter().all(|(h, _)| h.name != first)
+    });
+    assert_eq!(ids_of(&after), ids_of(&boot), "{kind}: {first} removed");
+    drop(d);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// (outputs-matrix) On all four, wherever the compositor offers

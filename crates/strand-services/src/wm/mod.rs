@@ -299,12 +299,45 @@ pub(crate) enum AdapterMsg {
 
 pub(crate) type Cmd = (WmAction, Option<oneshot::Sender<Result<(), WmError>>>);
 
+/// (ws-shown) A screen shows one workspace: where the protocol's `active`
+/// has two or more on one screen, the adapter's says which (Hyprland
+/// 0.57's `ext-workspace-v1` keeps a workspace it moved off a monitor
+/// turned off active on the monitor it moved to, beside the one shown
+/// there, while its `j/monitors` names the one shown). Where the adapter
+/// names none of them, the first of them stays.
+fn one_shown_per_screen(merged: &mut [Workspace], adapter: &[Workspace]) {
+    let mut crowded: Vec<String> = Vec::new();
+    for w in merged.iter().filter(|w| w.active) {
+        let on_it = merged
+            .iter()
+            .filter(|o| o.active && o.screen == w.screen)
+            .count();
+        if on_it > 1 && !crowded.contains(&w.screen) {
+            crowded.push(w.screen.clone());
+        }
+    }
+    for screen in crowded {
+        let on_it = |w: &&mut Workspace| w.active && w.screen == screen;
+        let adapter_says = |id: i64| adapter.iter().any(|a| a.id == id && a.active);
+        let kept = merged
+            .iter()
+            .filter(|w| w.active && w.screen == screen)
+            .find(|w| adapter_says(w.id))
+            .or_else(|| merged.iter().find(|w| w.active && w.screen == screen))
+            .map(|w| w.id);
+        for w in merged.iter_mut().filter(on_it) {
+            w.active = kept == Some(w.id);
+        }
+    }
+}
+
 /// Merges an adapter's state with the protocols': the protocol is
 /// preferred where it covers a field. With an adapter, its workspace and
 /// window sets and ids stand (only they relate windows to workspaces and
 /// carry the ids actions need); a workspace joined by name (and screen,
 /// when names repeat on either side) takes `active`, `screen` and (or-ed) `urgent` from
-/// `ext-workspace-v1`, and a window joined by its toplevel identifier
+/// `ext-workspace-v1` (where that has two shown on one screen, the
+/// adapter's `active` says which: [`one_shown_per_screen`]), and a window joined by its toplevel identifier
 /// takes `title` and `app_id` from `ext-foreign-toplevel-list-v1` (every
 /// window keeps that identifier as [`Window::toplevel`]). Without
 /// an adapter the protocols are the whole state: workspaces not `hidden`,
@@ -370,6 +403,7 @@ pub(crate) fn merge_with(
                     }
                 }
             }
+            one_shown_per_screen(&mut s.workspaces, &ipc.workspaces);
             for w in &mut s.windows {
                 let ident = ids.iter().find(|(id, _)| *id == w.id).map(|(_, i)| i);
                 w.toplevel = ident.cloned();
@@ -1089,6 +1123,70 @@ mod tests {
         assert_eq!(
             merge(None, &[], &hidden).focused_workspace().map(|w| w.id),
             Some(1)
+        );
+    }
+
+    /// (ws-shown, strand-issues 2026-11-08) Hyprland 0.57 moved
+    /// workspace 1 off NESTED-2, turned off, to NESTED-1, which shows 3:
+    /// its `ext-workspace-v1` still says 1 is active, its `j/monitors`
+    /// that NESTED-1 shows 3. One workspace is shown per screen, the
+    /// adapter's; a screen the protocol has one shown on keeps the
+    /// protocol's, and with the adapter naming none of them the first
+    /// stays.
+    #[test]
+    fn a_screen_shows_one_workspace() {
+        let ws = |id: i64, screen: &str, active: bool| Workspace {
+            id,
+            name: id.to_string(),
+            active,
+            screen: screen.into(),
+            ..Default::default()
+        };
+        let ipc = WmState {
+            workspaces: vec![
+                ws(1, "NESTED-1", false),
+                ws(3, "NESTED-1", true),
+                ws(4, "DP-1", false),
+                ws(5, "DP-1", true),
+            ],
+            ..Default::default()
+        };
+        let proto = ProtocolState {
+            connected: true,
+            workspace_manager: true,
+            workspaces: vec![
+                proto_ws(1, "1", "NESTED-1", true),
+                proto_ws(3, "3", "NESTED-1", true),
+                // The protocol ahead of the adapter on another screen: it
+                // stands.
+                proto_ws(4, "4", "DP-1", true),
+                proto_ws(5, "5", "DP-1", false),
+            ],
+            ..Default::default()
+        };
+        let shown = |s: &WmState| -> Vec<(i64, String)> {
+            s.workspaces
+                .iter()
+                .filter(|w| w.active)
+                .map(|w| (w.id, w.screen.clone()))
+                .collect()
+        };
+        assert_eq!(
+            shown(&merge(Some(&ipc), &[], &proto)),
+            [(3, "NESTED-1".into()), (4, "DP-1".into())]
+        );
+        // The adapter names neither of the two: the first stays.
+        let unsure = WmState {
+            workspaces: vec![ws(1, "NESTED-1", false), ws(3, "NESTED-1", false)],
+            ..Default::default()
+        };
+        let proto = ProtocolState {
+            workspaces: proto.workspaces[..2].to_vec(),
+            ..proto
+        };
+        assert_eq!(
+            shown(&merge(Some(&unsure), &[], &proto)),
+            [(1, "NESTED-1".into())]
         );
     }
 

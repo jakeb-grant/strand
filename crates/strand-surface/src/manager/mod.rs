@@ -66,7 +66,7 @@ use strand_scene::{
 use crate::caps::Offered;
 use crate::clock::{FrameClock, Presentation, PresentationClock};
 use crate::input::{AxisDelta, AxisSource, ButtonState, InputEvent};
-use crate::monitor::{Geometry, Monitor, MonitorId, Monitors};
+use crate::monitor::{Geometry, Joining, Monitor, MonitorId, Monitors, identity_description};
 use crate::placement::{
     LayerConfig, PlacementError, PopupConfig, PopupSide, layer_config_with, popup_config,
     popup_request, popup_scrim_layer, popup_shift, popup_slides,
@@ -166,9 +166,10 @@ pub trait SurfaceHost: Painter {
     }
     /// (output-id, review round 3) The outputs service's numbering of
     /// the monitors connected, on or off, as (connector, `Output.id`):
-    /// a monitor plugged in takes its connector's id from it, so two
-    /// identical ones keep their ` #n` as they are turned on and off.
-    /// Empty (the default) numbers by plug order alone.
+    /// `Screen.id` takes its connector's id from it. Read at each plug
+    /// and unplug and at each [`State::poll`]; a change renumbers the
+    /// monitors shown. Empty (the default) numbers identical monitors by
+    /// their connectors' names alone (decisions.md output-id-order).
     fn output_ids(&mut self) -> Vec<(String, String)> {
         Vec::new()
     }
@@ -1492,7 +1493,11 @@ impl<H: SurfaceHost + 'static> State<H> {
 
     /// Asks every surface's [`Painter::wants_frame`] again: call after
     /// handing the painter new content (a scene diff, delivered text).
+    /// (output-id-order) Also gives the monitors shown the outputs
+    /// service's ids when its numbering changed since they were plugged
+    /// in (`SurfaceHost::output_ids`).
     pub fn poll(&mut self) {
+        self.sync_monitor_ids();
         let ids: Vec<SurfaceId> = self.surfaces.keys().copied().collect();
         for id in ids {
             self.mark(id);

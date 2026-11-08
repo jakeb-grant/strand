@@ -2230,20 +2230,26 @@ Interface (main thread; `SurfaceManager<H>` owns the calloop
   `strand_scene::backlog::set_presentation_clock`.
 - **Monitors.** `MonitorId` is `"make | model | description"` without
   the output's own connector (wlroots' trailing ` (<connector>)` or
-  ` (<connector> via <sub>)`, smithay's ` - <connector>`; a duplicate
-  gets ` #2`); `Screens::Named` matches it or the connector. (output-id,
-  review rounds 3 and 4) A duplicate's number is the one the `outputs`
-  service gives its connector: `SurfaceHost::output_ids()` (default
-  empty; the binary's host returns `strand_services::outputs::ids()`,
-  the running snapshot's connector and `Output.id` of every monitor
-  connected, on or off, and empty while no run of `outputs` is up) is
-  read at each plug, so `Screen.id` is `Output.id` and turning one of
-  two identical monitors on or off renumbers neither. Without it, or
-  for a connector it does not name yet, the lowest number no monitor
-  plugged in holds and the list gives no other connector. The other
-  way, the host reports each monitor it shows with
-  `strand_services::outputs::shown(connector, Some(id))` (`None` when
-  it goes), and a run's heads new to it take those ids first. `SurfaceId`s are
+  ` (<connector> via <sub>)`, smithay's ` - <connector>`), each part
+  trimmed and an empty description left out with its separator
+  (`Unknown | Unknown`); identical monitors get ` #2`, ` #3`;
+  `Screens::Named` matches it or the connector. (output-id-order)
+  Identical monitors are numbered by their connectors' names
+  (`connector_order`, a copy of `strand_services::outputs::by_name`),
+  on or off, never by plug order. The `outputs` service's numbering
+  counts the monitors connected but off: `SurfaceHost::output_ids()`
+  (default empty; the binary's host returns
+  `strand_services::outputs::ids()`, the running snapshot's connector
+  and `Output.id` of every monitor connected, on or off, and empty
+  while no run of `outputs` is up) gives `Screen.id` those ids when it
+  names every monitor of an identity shown; else they are numbered by
+  name among those shown and the connectors the list gives that
+  identity. It is read at each plug and unplug and at each
+  `State::poll` (where a list gone empty, the run stopped, renames
+  nothing); a monitor shown whose id that changes (an identical
+  one plugged in on a port named before its own, one unplugged, the
+  list arriving) is unplugged and plugged in again with the new id, as
+  one whose description changed is, so `Screen.id` is `Output.id`. `SurfaceId`s are
   stable per (node, monitor) while the monitor is remembered. The binary
   forwards the `monitor_*` hooks to logic as the `screens` service.
   (screen-position) `ScreenInfo` carries the monitor's

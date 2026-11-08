@@ -3,21 +3,55 @@
 use super::*;
 
 impl<H: SurfaceHost + 'static> State<H> {
+    /// (output-id-order) A `wl_output` appeared: it is numbered among the
+    /// monitors of its identity by its connector's name
+    /// ([`Monitors::renumbering`]), and any of them whose id that
+    /// changes is unplugged and plugged in again with its new id, as a
+    /// monitor whose description changed is, so its surfaces are made
+    /// for the new id.
     pub(super) fn output_added(&mut self, output: wl_output::WlOutput) {
+        let Some(info) = self.output_state.info(&output) else {
+            return;
+        };
+        self.forget_expired(Instant::now());
+        let known = self.host.output_ids();
+        self.monitors.set_known(known);
+        let plan = self.monitors.renumbering(Some(Joining {
+            make: &info.make,
+            model: &info.model,
+            description: info.description.as_deref().unwrap_or(""),
+            connector: info.name.as_deref(),
+        }));
+        let moved = self.unplug_renamed(&plan.renamed);
+        self.attach(output, plan.joining);
+        for (output, id) in moved {
+            self.attach(output, Some(id));
+        }
+    }
+
+    /// Plugs `output` in as `id` (the plain identity when `None`).
+    fn attach(&mut self, output: wl_output::WlOutput, id: Option<MonitorId>) {
         let Some(info) = self.output_state.info(&output) else {
             return;
         };
         let global = info.id;
         let now = Instant::now();
         self.forget_expired(now);
-        let known = self.host.output_ids();
-        self.monitors.set_known(known);
-        let plugged = self.monitors.plug(
+        let description = info.description.as_deref().unwrap_or("");
+        let id = id.unwrap_or_else(|| {
+            MonitorId::new(
+                &info.make,
+                &info.model,
+                identity_description(description, info.name.as_deref()),
+            )
+        });
+        let plugged = self.monitors.plug_as(
             global,
             &info.make,
             &info.model,
-            info.description.as_deref().unwrap_or(""),
+            description,
             info.name.clone(),
+            id,
             now,
         );
         let monitor = self
@@ -30,7 +64,55 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.reconcile_all();
     }
 
+    /// (output-id-order) Unplugs the monitors `renamed` names, for them
+    /// to be plugged in again with their new ids.
+    fn unplug_renamed(
+        &mut self,
+        renamed: &[(u32, MonitorId)],
+    ) -> Vec<(wl_output::WlOutput, MonitorId)> {
+        let mut moved = Vec::new();
+        for (global, id) in renamed {
+            if let Some(output) = self.outputs.get(global).cloned() {
+                self.detach(&output);
+                moved.push((output, id.clone()));
+            }
+        }
+        moved
+    }
+
+    /// (output-id-order) Gives every monitor plugged in the id the
+    /// numbering gives it now ([`Monitors::renumbering`]).
+    fn renumber(&mut self) {
+        let plan = self.monitors.renumbering(None);
+        for (output, id) in self.unplug_renamed(&plan.renamed) {
+            self.attach(output, Some(id));
+        }
+    }
+
+    /// (output-id-order) The outputs service's numbering changed
+    /// (`SurfaceHost::output_ids`: it started, or a monitor was plugged
+    /// in, unplugged or turned off): the monitors shown take its ids. A
+    /// list gone empty (no run of `outputs` up: nobody reads it) renames
+    /// nothing; the next plug or unplug numbers without it.
+    pub(super) fn sync_monitor_ids(&mut self) {
+        let known = self.host.output_ids();
+        if known.is_empty() || self.monitors.known() == known.as_slice() {
+            return;
+        }
+        self.monitors.set_known(known);
+        self.renumber();
+    }
+
+    /// A `wl_output` went away: its monitor is unplugged, and the others
+    /// of its identity numbered without it.
     pub(super) fn output_removed(&mut self, output: &wl_output::WlOutput) {
+        self.detach(output);
+        let known = self.host.output_ids();
+        self.monitors.set_known(known);
+        self.renumber();
+    }
+
+    fn detach(&mut self, output: &wl_output::WlOutput) {
         let Some(global) = self.output_globals.remove(&output.id()) else {
             return;
         };
@@ -193,7 +275,7 @@ impl<H: SurfaceHost + 'static> OutputHandler for State<H> {
                     && m.description == info.description.clone().unwrap_or_default()
             });
         if !same {
-            self.output_removed(&output);
+            self.detach(&output);
             self.output_added(output);
         } else if let Some(monitor) = self.monitors.set_geometry(global, output_geometry(&info)) {
             self.rescale_unshown_on(global);
