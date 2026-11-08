@@ -970,6 +970,60 @@ fn succeeded_comes_after_outputs_all_shows_the_apply() {
     outputs::configure(None);
 }
 
+/// The process's CPU time so far (user and system, every thread), from
+/// `/proc/self/stat` in clock ticks of 10 ms.
+fn cpu_time() -> Duration {
+    let stat = std::fs::read_to_string("/proc/self/stat").unwrap();
+    let after = &stat[stat.rfind(')').unwrap() + 2..];
+    let f: Vec<&str> = after.split(' ').collect();
+    // Fields 14 and 15 (utime, stime); `after` starts at field 3.
+    let ticks: u64 = f[11].parse::<u64>().unwrap() + f[12].parse::<u64>().unwrap();
+    Duration::from_millis(ticks * 10)
+}
+
+/// (outputs-frame, final round) A compositor whose apply waits for a
+/// frame and that offers no surface to give it one (here no
+/// `wl_compositor`, `wl_shm` or layer shell): the service asks again
+/// every 500 ms and waits in `poll` between, rather than spinning on a
+/// deadline already past for as long as the apply goes unanswered.
+#[test]
+fn an_apply_with_no_frame_surface_to_make_waits_without_spinning() {
+    use strand_fake_wayland::{Fake, OutputManagement};
+    let _serial = serial();
+    let fake = Fake::builder()
+        .toplevel_list(false)
+        .outputs(&["FAKE-1", "FAKE-2"])
+        .output_management(OutputManagement::Lagging)
+        .applies_at_frame(true)
+        .start();
+    let h = Harness::start_on(fake.socket.clone());
+    h.until("ready", |h| h.b.outputs.ready(&h.rt));
+    let place = OutputChange {
+        x: Some(3000),
+        y: Some(0),
+        ..OutputChange::of("FAKE-2")
+    };
+    h.act("apply", &[place]);
+    h.until("the apply held", |_| fake.held_configurations() == 1);
+    // Past NUDGE_AFTER, then a window with only the service awake.
+    std::thread::sleep(Duration::from_millis(200));
+    let (cpu, wall) = (cpu_time(), Instant::now());
+    std::thread::sleep(Duration::from_millis(1500));
+    let (cpu, wall) = (cpu_time() - cpu, wall.elapsed());
+    assert_eq!(fake.held_configurations(), 1, "still unanswered");
+    assert!(
+        h.events.lock().unwrap().is_empty(),
+        "no answer: {:?}",
+        h.events.lock().unwrap()
+    );
+    assert!(
+        cpu < Duration::from_millis(400),
+        "the wait spun: {cpu:?} of CPU in {wall:?}"
+    );
+    h.s.shutdown();
+    outputs::configure(None);
+}
+
 /// (outputs-frame) Hyprland 0.57 applies a configuration, and answers it,
 /// at its next frame, and an idle desktop draws none: seen on nested
 /// Hyprland, an apply sent while nothing moved waited 13 s for the

@@ -140,7 +140,9 @@ const CHECK_FOR: Duration = Duration::from_secs(5);
 /// `scheduleReload`, run in its render's pre-checks), and draws none
 /// while nothing changes on screen: an idle desktop answered an apply
 /// only once the pointer moved. sway, niri and labwc answer at once, so
-/// they never get one.
+/// they get one only for an apply they take longer to answer (a slow
+/// modeset), where it is harmless: the surface shows nothing and takes no
+/// input.
 const NUDGE_AFTER: Duration = Duration::from_millis(100);
 const NUDGE_EVERY: Duration = Duration::from_millis(500);
 
@@ -727,6 +729,11 @@ struct Client {
     /// (outputs-frame) The surface shown while an apply waits for its
     /// answer.
     nudge: Option<Nudge>,
+    /// (outputs-frame) When a frame was last asked for while an apply
+    /// waits, whether or not a [`Nudge`] could be made: with no surface
+    /// to commit (no `wl_shm` or layer shell, or no buffer) the next try
+    /// is still [`NUDGE_EVERY`] later, so the wait does not spin.
+    nudged: Option<Instant>,
 }
 
 /// (outputs-frame) A 1x1 fully transparent layer surface (the overlay
@@ -743,8 +750,6 @@ struct Nudge {
     buffer: wl_buffer::WlBuffer,
     /// Its first configure came (it can show a buffer).
     configured: bool,
-    /// When it last asked for a frame.
-    at: Instant,
 }
 
 impl Nudge {
@@ -800,11 +805,11 @@ impl WlOut {
 impl Client {
     /// (outputs-frame) Asks the compositor for a frame: the [`Nudge`]
     /// made and shown, or committed again. Nothing without the globals
-    /// it needs, or when its buffer cannot be made.
+    /// it needs, or when its buffer cannot be made; either way the try is
+    /// recorded ([`Client::nudged`]).
     fn nudge(&mut self, qh: &QueueHandle<Client>) {
-        let now = Instant::now();
-        if let Some(n) = &mut self.nudge {
-            n.at = now;
+        self.nudged = Some(Instant::now());
+        if let Some(n) = &self.nudge {
             if n.configured {
                 n.show();
             }
@@ -850,12 +855,19 @@ impl Client {
             pool,
             buffer,
             configured: false,
-            at: now,
         });
     }
 
-    /// (outputs-frame) The [`Nudge`] is no longer needed.
+    /// (outputs-frame) No apply waits: the [`Nudge`] is no longer
+    /// needed, and the next apply's first try is [`NUDGE_AFTER`] after it.
     fn unnudge(&mut self) {
+        self.nudged = None;
+        self.close_nudge();
+    }
+
+    /// (outputs-frame) The [`Nudge`] destroyed, its last try kept: one
+    /// the compositor closes is made again [`NUDGE_EVERY`] later.
+    fn close_nudge(&mut self) {
         if let Some(n) = self.nudge.take() {
             n.destroy();
         }
@@ -1788,11 +1800,12 @@ fn socket(target: WaylandTarget) -> io::Result<std::path::PathBuf> {
 }
 
 /// (outputs-frame) When the compositor is next given a frame for the
-/// apply in flight ([`Nudge`]); `None`: no apply waits for its answer.
-fn nudge_due(in_flight: Option<&InFlight>, nudge: Option<&Nudge>) -> Option<Instant> {
+/// apply in flight ([`Nudge`]), given when one was last asked for
+/// (`nudged`, [`Client::nudged`]); `None`: no apply waits for its answer.
+fn nudge_due(in_flight: Option<&InFlight>, nudged: Option<Instant>) -> Option<Instant> {
     let f = in_flight.filter(|f| matches!(f.request.action, OutputsAction::Apply { .. }))?;
-    Some(match nudge {
-        Some(n) => n.at + NUDGE_EVERY,
+    Some(match nudged {
+        Some(at) => at + NUDGE_EVERY,
         None => f.sent + NUDGE_AFTER,
     })
 }
@@ -2061,13 +2074,13 @@ impl Outputs {
             }
             // (outputs-frame) An apply unanswered: a frame for the
             // compositor; answered, the surface goes.
-            let nudge_at = nudge_due(in_flight.as_ref(), client.nudge.as_ref());
+            let nudge_at = nudge_due(in_flight.as_ref(), client.nudged);
             match nudge_at {
                 Some(at) if Instant::now() >= at => client.nudge(&qh),
                 Some(_) => {}
                 None => client.unnudge(),
             }
-            let nudge_at = nudge_due(in_flight.as_ref(), client.nudge.as_ref());
+            let nudge_at = nudge_due(in_flight.as_ref(), client.nudged);
             // A full socket buffer is not an error: wait until it drains.
             let unflushed = match queue.flush() {
                 Ok(()) => false,
@@ -2568,7 +2581,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for Client {
                 n.configured = true;
                 n.show();
             }
-            zwlr_layer_surface_v1::Event::Closed => state.unnudge(),
+            zwlr_layer_surface_v1::Event::Closed => state.close_nudge(),
             _ => {}
         }
     }

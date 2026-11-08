@@ -430,9 +430,19 @@ fn crashing_requests_are_not_retried() {
 
 /// A poisoned slot never gets a layout, so it does not hold on to the
 /// node's layouts at other widths as stand-ins: when the other surface
-/// goes, its layout goes too.
+/// goes, its layout goes too. (final round) Also when the worker answers
+/// between the test's steps, as on a loaded runner (`settle`): the
+/// unbounded layout before surface 1's configure and the wide one before
+/// surface 2's, so the wide request is answered before the test crashes
+/// it, and is asked for again to be in flight.
 #[test]
 fn a_poisoned_slot_keeps_no_stand_ins() {
+    for settle in [false, true] {
+        poisoned_slot_keeps_no_stand_ins(settle);
+    }
+}
+
+fn poisoned_slot_keeps_no_stand_ins(settle: bool) {
     let mut r = Renderer::new(worker());
     // Flattening waits for no new text here (`ESTIMATE_WAIT`): the wide
     // request must stay in flight for the test to crash it, and an
@@ -446,7 +456,13 @@ fn a_poisoned_slot_keeps_no_stand_ins() {
     assert!(r.apply(d).is_empty());
     r.attach_surface(SurfaceId(1), root);
     r.attach_surface(SurfaceId(2), root);
+    if settle {
+        assert!(r.wait_for_text(Duration::from_secs(10)));
+    }
     r.configure_surface(SurfaceId(1), Size::new(200, 20), Scale::ONE);
+    if settle {
+        assert!(r.wait_for_text(Duration::from_secs(10)));
+    }
     r.configure_surface(SurfaceId(2), Size::new(120, 20), Scale::ONE);
     // The unbounded layout first: then each width asks for its own.
     let start = std::time::Instant::now();
@@ -465,13 +481,21 @@ fn a_poisoned_slot_keeps_no_stand_ins() {
     }
     // The engine crashes on the wide one's request.
     let wide = Some(200f32.to_bits());
-    let key = r
-        .texts
-        .iter()
-        .find(|(s, _)| s.node == txt && s.width == wide)
-        .and_then(|(_, t)| t.requested.as_ref())
-        .unwrap()
-        .0;
+    let in_flight = |r: &Renderer| {
+        r.texts
+            .iter()
+            .find(|(s, _)| s.node == txt && s.width == wide)
+            .and_then(|(_, t)| t.requested.as_ref())
+            .map(|(k, _)| *k)
+    };
+    if in_flight(&r).is_none() {
+        // Answered already (the worker ran between the steps above): it
+        // is asked for again, as if never shaped.
+        r.texts.retain(|s, _| !(s.node == txt && s.width == wide));
+        r.surfaces.get_mut(&SurfaceId(1)).unwrap().cache = None;
+        r.flatten_surface(SurfaceId(1));
+    }
+    let key = in_flight(&r).expect("the wide request in flight");
     r.deliver(TextLayout::reset(key, Scale::ONE));
     for id in [1, 2] {
         r.surfaces.get_mut(&SurfaceId(id)).unwrap().cache = None;

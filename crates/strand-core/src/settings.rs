@@ -517,8 +517,10 @@ fn probe_read_only(target: &Path) -> bool {
 /// list of records written over an array of tables, `[[name]]`, is
 /// merged by value ([`merge_tables`]). (settings-tables follow-up) The
 /// file's comments above anything a write removes stay, above what
-/// follows it ([`Orphans`]).
+/// follows it ([`Orphans`]); (final round) so do those of a file of
+/// comments alone, above the first thing written ([`head_of`]).
 fn apply_edits(doc: &mut DocumentMut, edits: &[Edit]) {
+    let head = head_of(doc);
     let mut orphans = Orphans::default();
     for (name, item) in edits {
         match item {
@@ -543,6 +545,55 @@ fn apply_edits(doc: &mut DocumentMut, edits: &[Edit]) {
         }
     }
     orphans.settle(doc);
+    if let Some(head) = head {
+        put_head(doc, head);
+    }
+}
+
+/// (settings-tables follow-up, final round) A file of comments alone (a
+/// header, as a builder starts a `monitors.toml`) is held by toml_edit as
+/// the document's trailing text, which prints after anything inserted:
+/// taken out here, and put back above what is written ([`put_head`]).
+fn head_of(doc: &mut DocumentMut) -> Option<String> {
+    let text = raw(Some(doc.trailing()));
+    if !doc.as_table().is_empty() || !has_comment(text) {
+        return None;
+    }
+    let head = text.to_string();
+    doc.set_trailing("");
+    Some(head)
+}
+
+/// `head` (from [`head_of`]) above the first thing `doc` prints, a blank
+/// line apart; at the end again when nothing was written.
+fn put_head(doc: &mut DocumentMut, text: String) {
+    let mut head = text.clone();
+    if !head.ends_with('\n') {
+        head.push('\n');
+    }
+    if !head.ends_with("\n\n") {
+        head.push('\n');
+    }
+    // A root value prints before every table.
+    if let Some((mut key, _)) = doc
+        .as_table_mut()
+        .iter_mut()
+        .find(|(_, i)| matches!(i, Item::Value(_)))
+    {
+        let prefix = format!("{head}{}", raw(key.leaf_decor().prefix()));
+        key.leaf_decor_mut().set_prefix(prefix);
+        return;
+    }
+    match printed_after(doc.as_table(), ROOT).and_then(|path| table_at(doc.as_table_mut(), &path)) {
+        Some(t) => {
+            let prefix = format!("{head}{}", raw(t.decor().prefix()));
+            t.decor_mut().set_prefix(prefix);
+        }
+        None => {
+            let trailing = format!("{text}{}", raw(Some(doc.trailing())));
+            doc.set_trailing(trailing);
+        }
+    }
 }
 
 /// The root table's place, before every table in the file.

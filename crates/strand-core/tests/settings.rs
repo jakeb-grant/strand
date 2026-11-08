@@ -1931,6 +1931,26 @@ lid = \"b\"
     );
 }
 
+/// (settings-tables follow-up, final round) A file of comments alone (a
+/// `monitors.toml` with only its header, as a builder starts one) keeps
+/// them above the first thing written into it: toml_edit holds such a
+/// file's text after anything inserted, so the first saved profile went
+/// above its header.
+#[test]
+fn a_header_with_nothing_under_it_stays_above_the_first_write() {
+    let save = "[x]\n\"A + B\" = { mons = [{ id = \"A\", x = 0 }] }\n";
+    let tables = "[profiles.\"A + B\"]\n[[profiles.\"A + B\".mons]]\nid = \"A\"\nx = 0\n";
+    let out = write_toml("header-only", "# Monitor profiles.\n", "profiles", save);
+    assert_eq!(out, format!("# Monitor profiles.\n\n{tables}"), "{out}");
+    // Its own blank line kept, not doubled.
+    let before = "# Monitor profiles.\n# Saved by the page.\n\n";
+    let out = write_toml("header-blank", before, "profiles", save);
+    assert_eq!(out, format!("{before}{tables}"), "{out}");
+    // A plain value written under it.
+    let out = write_toml("header-value", "# Prefs.\n", "scale", "x = 1.5");
+    assert_eq!(out, "# Prefs.\n\nscale = 1.5\n", "{out}");
+}
+
 /// (settings-shape) A record that holds records, written where the file
 /// has nothing to follow (no file yet, or the dictionary's first entry),
 /// is written as the settings-file and monitor-profiles pages show it: a
