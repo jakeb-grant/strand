@@ -2160,7 +2160,12 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   field is a load error with a fix. Assignment is a statement, never an
   expression.
 - A handler's errors are values: a failing action or expression never
-  stops other handlers or the shell.
+  stops other handlers or the shell. A failed `await` (an action that
+  exits non-zero or prints what does not read as its `T`), or any other
+  error in a handler's body, ends that run of the handler only: it is
+  logged and told to `strand watch` as a fault that froze nothing, and
+  every handler, that one included, runs at its next event (section 12;
+  decisions.md handler-fault).
 - When a handler's node unmounts, the handler is cancelled at its next
   `await`. A reload that changes a handler's code, or anything it calls,
   restarts it and cancels and reports an in-flight `await`
@@ -2835,8 +2840,10 @@ people can edit by hand.
   the file in `$EDITOR`. A save fixed within those 250 ms (format on
   save, delete then create) never opens it.
 - **Runtime faults** freeze only their own component, outlined in red,
-  until a reload fixes it; the rest of the shell runs on. A fault inside
-  the `lock` shows the built-in password field (section 5.1).
+  until a reload fixes it; the rest of the shell runs on. A handler's
+  error (section 8.3) is a value, not such a fault: it freezes and
+  outlines nothing. A fault inside the `lock` shows the built-in password field
+  (section 5.1), a handler's error there included.
 - **Service failures** reach the program as values (an action's error,
   an `Async`'s `.error`) and as service diagnostics; they never stop the
   shell. An action of a builtin service that cannot run (its daemon or

@@ -1128,6 +1128,12 @@ proof  = "read"
 
 [[claim]]
 page   = "site/help/troubleshooting.md"
+text   = "A handler that fails, such as an `await` of an action that exits"
+source = ['''docs/spec.md "is a value, not such a fault: it freezes and outlines nothing."''', '''crates/strand-compiler/src/instantiate/mod.rs "(handler-fault) A handler's error"''']
+proof  = "crates/strand/src/run/tests.rs::a_failed_await_in_a_handler_stops_no_other_handler; crates/strand-compiler/tests/instantiate.rs::a_handlers_error_freezes_nothing"
+
+[[claim]]
+page   = "site/help/troubleshooting.md"
 text   = "A missing `xdg_wm_base` is logged as a warning for windows; for"
 source = ['crates/strand-surface/src/manager/window.rs "log::warn!( "{}: no xdg_wm_base, windows are not shown","', 'crates/strand-surface/src/manager/popup.rs "log::debug!("{}: no xdg_wm_base, popups are not shown", spec.namespace());"']
 proof  = "read"

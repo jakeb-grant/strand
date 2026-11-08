@@ -22,15 +22,16 @@
 //!   "watching"}` once subscribed): `{"ok": true}`, then one event object per line
 //!   for as long as the connection stays open: `{"event": "reload", …}`
 //!   (files, edit classes, kept and reset cells, notices, timing,
-//!   diagnostics), `{"event": "fault", …}` (a runtime error that froze a
-//!   component), `{"event": "notices", …}` (service and settings
+//!   diagnostics), `{"event": "fault", …}` (a runtime error; its `frozen`
+//!   says whether it froze a component, never for a handler's error), `{"event": "notices", …}` (service and settings
 //!   notices; right after subscribing, the running config's warnings in
 //!   its `diagnostics`, which a later reload event without them
 //!   resolves).
 //!
 //! The server lives on the logic thread's loop (`docs/architecture.md`,
 //! "Threads"): every socket is non-blocking, a client that does not read
-//! its events is dropped once 1 MiB is queued for it.
+//! its events is dropped once more than 1 MiB of it is unread as another
+//! line comes; a line of any size (a large `get` answer) is queued whole.
 //!
 //! - (M5, S-ipc) `{"cmd": "get", "path": …}`, `toggle{path}`,
 //!   `call{target, args}` and `clear{path}`: `strand get`, `toggle`,

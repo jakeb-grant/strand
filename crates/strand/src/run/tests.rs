@@ -3914,6 +3914,106 @@ fn a_failing_action_with_a_result_leaves_its_error_null() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (handler-fault) A handler's error is a value (spec.md 8.3): an awaited
+/// action that fails (a non-zero exit, output that does not read as its
+/// `-> int`) or an expression that fails in a handler ends that run
+/// only. Each is reported as a fault that froze nothing, and the bar's
+/// other handlers, and the failed one clicked again, still run. Before,
+/// the shell froze the bar's instance for it, outlined red, so no click
+/// reached it again.
+#[test]
+fn a_failed_await_in_a_handler_stops_no_other_handler() {
+    let dir = temp_dir("handler-fault");
+    let src = "permit exec \"false\", \"echo\"\n\
+         action fails() -> int [\"false\"]\n\
+         action num() -> int [\"echo\", \"abc\"]\n\
+         state zero = 0\nstate f = 0\nstate p = 0\nstate e = 0\n\
+         bar Top {\n  row {\n    \
+         box { on click { f += 1; let n = await fails(); f = n } }\n    \
+         box { on click { p += 1 } }\n    \
+         box { on click { e += 1; let n = await num(); e = n } }\n    \
+         box { on click { e += 1; e = 1 / zero } }\n  }\n  \
+         text join(\" \", f, p, e)\n}\n";
+    std::fs::write(dir.join("bar.strand"), src).unwrap();
+    let program = load(&dir);
+    let storage = Storage::in_dirs(dir.join("state"), &dir);
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let (heard, events) = std::sync::mpsc::channel();
+    let heard = std::sync::Mutex::new(heard);
+    let live = Live {
+        events_to: Some(ipc::EventSink::new(move |ev| {
+            let _ = heard.lock().unwrap().send(ev.clone());
+        })),
+        ..Live::default()
+    };
+    let t = std::thread::spawn(move || logic(program, storage, from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| s.texts() == ["0 0 0"]);
+    let boxes = m.scene.of_kind(NodeKind::Box);
+    assert_eq!(boxes.len(), 4, "{}", m.scene.render());
+    let click = |node| {
+        to_logic
+            .send(ToLogic::Event {
+                input: None,
+                node,
+                event: NodeEvent::Click,
+            })
+            .unwrap();
+    };
+    // The next fault event, which must say it froze nothing.
+    let fault = |want: &str| loop {
+        let ev = events
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap_or_else(|_| panic!("no fault for {want}"));
+        if ev["event"] == "fault" {
+            let message = ev["message"].as_str().unwrap_or_default();
+            assert!(message.contains(want), "{ev}");
+            assert_eq!(ev["frozen"], false, "{ev}");
+            return;
+        }
+    };
+    let outlined = |s: &SceneMirror| {
+        s.of_kind(NodeKind::Bar)
+            .into_iter()
+            .chain(s.of_kind(NodeKind::Row))
+            .chain(s.of_kind(NodeKind::Box))
+            .any(|n| s.prop(n, Prop::Border).is_some())
+    };
+    // Each failing run: its write before the `await` lands and its error
+    // is reported; then a click on the plain box still runs.
+    click(boxes[0]);
+    fault("`false` failed (exit status: 1)");
+    m.until("the failed exit's run", |s| s.texts() == ["1 0 0"]);
+    click(boxes[1]);
+    m.until("the plain box after a failed exit", |s| {
+        s.texts() == ["1 1 0"]
+    });
+    click(boxes[2]);
+    fault("on click");
+    m.until("the run that reads no int", |s| s.texts() == ["1 1 1"]);
+    click(boxes[1]);
+    m.until("the plain box after a bad result", |s| {
+        s.texts() == ["1 2 1"]
+    });
+    click(boxes[3]);
+    fault("has no value");
+    m.until("the run that divides by zero", |s| s.texts() == ["1 2 2"]);
+    click(boxes[0]);
+    fault("`false` failed (exit status: 1)");
+    click(boxes[1]);
+    m.until("the failed box runs again, and the plain one", |s| {
+        s.texts() == ["2 3 2"]
+    });
+    assert!(!outlined(&m.scene), "nothing froze:\n{}", m.scene.render());
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// (M6, decisions.md m6-w2-surface) A popup grabs by its cause: the diff
 /// a click's handler produces carries that click's serial
 /// (`SceneDiff::press`, and so does every diff after it until a hover

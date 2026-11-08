@@ -161,7 +161,9 @@ new watcher first gets a `notices` event with the running config's
 check warnings, when it has any. A reload event's `total_ms` runs from
 the watcher's last event behind the save to the send of the diff
 holding the reload. A client that cannot take its output gets a write
-source on the logic loop; one more than 1 MiB behind is dropped.
+source on the logic loop; one more than 1 MiB behind when another line
+is queued is dropped, and a line of any size is queued whole
+(decisions.md ipc-large-answer).
 
 **M4 additions.** The GPU thread, promotion and hand-off are in
 "`strand-gpu`".
@@ -521,8 +523,10 @@ name them.
   share `Instance::path_to`; a dictionary is an object in `get`'s
   answer). `call` reaches service-level actions only. `toggle` is bool
   only. Token paths are spelled `$accent`.
-- `MAX_LINE` (64 KiB) bounds requests; an answer is bounded by the
-  connection's 1 MiB queue.
+- `MAX_LINE` (64 KiB) bounds requests; an answer is delivered whole,
+  whatever its size: the connection's 1 MiB queue drops a client only
+  when that much it has not read is queued before another line
+  (decisions.md ipc-large-answer).
 - **The D-Bus name**: `DBUS_NAME` (`io.github.jakeb_grant.Strand`), bus
   and interface name, object path `/`; its only spelling (a
   strand-services test holds any zbus literal equal to it). It may be
@@ -2001,7 +2005,9 @@ Public interfaces:
     innermost failing operation's. `Instance::origin(node)` maps a scene
     node to its element. `Instance::freeze(&err)` suspends the faulting
     component and outlines it in red; `thaw` and reloads clear it. A
-    top-level fault is outlined and nothing is frozen.
+    top-level fault is outlined and nothing is frozen. A handler's error
+    (`RuntimeError::handler`, set by the handler's `reporting` wrapper)
+    freezes and outlines nothing (decisions.md handler-fault).
   - The host loop: `Instance::step(now, wall) -> (Update, Wake)`. The
     `strand run` logic thread feeds `screens` from the surface layer's
     monitor hooks, maps render's input to `event(node, name, args)`

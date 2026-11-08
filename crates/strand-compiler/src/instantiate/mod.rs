@@ -142,6 +142,10 @@ pub struct RuntimeError {
     pub component: Option<DefId>,
     /// The core scope of that instance: [`Instance::freeze`] suspends it.
     pub scope: Option<CoreId>,
+    /// (handler-fault) Raised by a handler's body (`on`, `after`,
+    /// `every`): a value that ends that run only (spec.md 8.3), so
+    /// [`Instance::freeze`] freezes nothing for it.
+    pub handler: bool,
 }
 
 impl std::fmt::Display for RuntimeError {
@@ -557,6 +561,7 @@ impl Ctx {
             node: site.node,
             component: site.component,
             scope: site.scope,
+            handler: false,
         }
     }
 
@@ -571,6 +576,7 @@ impl Ctx {
             node: None,
             component: None,
             scope: None,
+            handler: false,
         }
     }
 
@@ -2562,8 +2568,13 @@ impl Instance {
     /// (design.md: "a runtime fault freezes one component outlined red"):
     /// its effects, timers and handlers stop, its state is kept. Returns
     /// whether something was frozen. [`Instance::thaw`] undoes it (the
-    /// fixing reload).
+    /// fixing reload). (handler-fault) A handler's error
+    /// ([`RuntimeError::handler`]) is a value that ended that run only
+    /// (spec.md 8.3): nothing is frozen or outlined for it.
     pub fn freeze(&self, err: &RuntimeError) -> bool {
+        if err.handler {
+            return false;
+        }
         let frozen = match err.scope {
             Some(s) if !self.rt.is_suspended(s) => self.rt.suspend(s).is_ok(),
             _ => false,

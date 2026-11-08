@@ -1548,6 +1548,7 @@ impl Ctx {
             node: None,
             component: env.component,
             scope: env.fault_scope(),
+            handler: false,
         });
     }
 
@@ -4313,7 +4314,9 @@ impl Ctx {
             match fut.await {
                 Err(e) if e != Error::Cancelled => {
                     if let Some(ctx) = weak.upgrade() {
-                        let err = ctx.located(&site, e);
+                        let mut err = ctx.located(&site, e);
+                        // (handler-fault) A value: it freezes nothing.
+                        err.handler = true;
                         ctx.errors.borrow_mut().push(err);
                     }
                     Ok(())

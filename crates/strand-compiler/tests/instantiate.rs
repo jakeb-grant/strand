@@ -2688,6 +2688,40 @@ fn runtime_errors_are_located_and_freeze_their_component() {
     assert_eq!(shell.inst.value_of("t", "ticks").unwrap(), Value::int(2));
 }
 
+/// (handler-fault) A handler's error is a value (spec.md 8.3): it is
+/// located and marked as a handler's, and freezing it freezes and
+/// outlines nothing, so the component's timer and its other handlers
+/// run on; a binding's fault in the same component still freezes it.
+#[test]
+fn a_handlers_error_freezes_nothing() {
+    let src = "state zero = 0\nstate one = 1\nstate ticks = 0\nstate n = 0\ncomponent Faulty() {\n  every 1s { ticks += 1 }\n  row {\n    box { on click { n = 1 / zero } }\n    box { on click { n += 1 } }\n  }\n  text pct(10 / one)\n}\nbar B { Faulty }\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    shell.inst.event(boxes[0], "click", Vec::new());
+    let u = shell.flush();
+    assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+    let e = &u.errors[0];
+    assert!(e.handler && e.scope.is_some() && e.span.is_some(), "{e:?}");
+    assert!(!shell.inst.freeze(e), "a handler's error freezes nothing");
+    shell.flush();
+    assert!(shell.inst.outlined().is_empty());
+    shell.at(1.0);
+    assert_eq!(shell.inst.value_of("t", "ticks").unwrap(), Value::int(1));
+    shell.inst.event(boxes[1], "click", Vec::new());
+    shell.inst.event(boxes[0], "click", Vec::new());
+    let u = shell.flush();
+    assert_eq!(u.errors.len(), 1, "the failing handler ran again");
+    assert_eq!(shell.inst.value_of("t", "n").unwrap(), Value::float(1.0));
+    // A binding's fault is no handler's: it freezes the component.
+    shell.inst.set_value("t", "one", Value::int(0)).unwrap();
+    let u = shell.flush();
+    assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+    assert!(!u.errors[0].handler);
+    assert!(shell.inst.freeze(&u.errors[0]));
+}
+
 /// Changing one item of a long keyed list re-runs that item's bindings
 /// only: each mounted key has its own value cell, and a `for` over a
 /// keyed `state` follows its diffs.

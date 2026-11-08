@@ -714,7 +714,7 @@ Crate: raw inotify through [`rustix`](https://docs.rs/rustix/latest/rustix/fs/in
 ### Errors
 
 - Errors that survive 250 ms of quiet open a dismissible overlay listing every diagnostic, with labels, did-you-mean fixes and click-to-open in `$EDITOR`. Format-on-save and delete-then-create saves never flash it.
-- A runtime fault freezes only its own component, outlined in red.
+- A runtime fault freezes only its own component, outlined in red. A handler's error (a failed `await` included) is a value that ends that run only and freezes nothing (decisions.md handler-fault).
 
 ### CLI
 
