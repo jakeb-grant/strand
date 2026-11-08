@@ -31,7 +31,7 @@ usage: strand run [dir | --demo]
 $ strand check --help
 usage: strand check [dir | file]
 
-Parses and type-checks every .strand file under the directory (default $XDG_CONFIG_HOME/strand) as one config and prints diagnostics; exits non-zero on errors. Given a file, checks it with the rest of its config (the default directory if the file is in it, else the file's directory) and prints the diagnostics in that file, and a missing lock helper.
+Parses and type-checks every .strand file under the directory (default $XDG_CONFIG_HOME/strand) as one config and prints diagnostics, and reads each settings file it declares as the running shell would; exits non-zero on errors. Given a file, checks it with the rest of its config (the default directory if the file is in it, else the file's directory) and prints the diagnostics in that file, and a missing lock helper.
 $ strand fmt --help
 usage: strand fmt [--check] [--] [dir | file]...
 
