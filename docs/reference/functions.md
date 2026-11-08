@@ -32,6 +32,7 @@ Builtin functions and values, every name in scope in every file, and the methods
 | `fn import(source: text) -> Palette` | A palette from another scheme: `import("catppuccin:mocha")`. It must fill the whole palette schema. |
 | `fn invert(amount: float) -> Filter` | A colour filter inverting colours. |
 | `fn join(sep: text, ...parts: any) -> text` | Joins the parts that are not null. |
+| `fn json(value: any) -> text` | `value` as compact JSON, for a file a tool reads or an action's argument: `json(prefs)` is `{"size":3,"dark":true}`. A record is an object of its fields, a list an array, a dictionary an object of its keys, null `null`, an enum its variant's name, a colour its `hex`, a duration its milliseconds. Not a quoter for Lua: a control character is written `\u001b`, which Lua reads otherwise, so Lua takes a `fn` of its own. |
 | `fn linear(angle: angle, ...stops: color) -> paint` | A linear gradient: `linear(45deg, $accent, $tertiary)`. Banding is removed by dithering. |
 | `fn ln(x: float) -> float` | The natural logarithm; 0 and negative numbers have none (an error value). |
 | `fn material(seed: color, variant: Variant = tonal_spot, dark: bool = false, contrast: float = 0) -> Palette` | A Material 3 palette from a seed colour, or from a wallpaper image (quantised off-thread and cached; the old palette holds until the new one is ready, so that form is `Async`). |

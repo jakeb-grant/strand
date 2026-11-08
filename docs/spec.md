@@ -1859,7 +1859,11 @@ monitor, the keyboard always).
   so `s.slice(-3)` is its last three), and `s.index_of(part)` is the
   index of `part`'s first occurrence, as an `int?`. `number(t)` reads a
   decimal number from a text, spaces around it allowed, and is `null`
-  when the text is not one (decisions.md flex).
+  when the text is not one (decisions.md flex). (json-fn) `json(v)`
+  writes any plain-data value as compact JSON, records by their fields
+  in order, enums by name, colours as `hex`, durations in
+  milliseconds (docs/reference/functions.md; decisions.md json-fn), for
+  a file a tool reads or an action's one argument.
 
 A bare number where a length is expected is logical pixels: `width: 90`
 is `width: 90px`. Where an angle is expected it is degrees, and where a

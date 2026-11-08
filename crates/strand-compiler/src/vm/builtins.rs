@@ -603,6 +603,7 @@ pub(crate) fn computes(name: &str) -> bool {
             | "num"
             | "bytes"
             | "number"
+            | "json"
             | "join"
             | "material"
             | "palette"
@@ -978,6 +979,12 @@ pub(crate) fn call(
             Some(t) => self::number(t).map_or(Value::Null, Value::float),
             None => Value::Null,
         },
+        // (json-fn) Compact JSON of any plain-data value.
+        "json" => {
+            let mut out = String::new();
+            json(types, args.get(0).unwrap_or(&Value::Null), &mut out);
+            Value::text(out)
+        }
         // (flex) Angles are degrees (a plain number where an angle is
         // expected is one), 0deg pointing right, clockwise with y down.
         "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" => {
@@ -1630,6 +1637,82 @@ fn list_method(
         }
         _ => return Err(fail(format!("lists have no method `{name}` here"))),
     })
+}
+
+/// (json-fn) `json(value)`: `value` as compact JSON. A record is an
+/// object of its fields in declaration order, a list an array, a
+/// dictionary an object of its keys' texts, null `null`, an enum its
+/// variant's name, a colour its `hex`, a duration its milliseconds, a
+/// whole number whole and any other in its shortest form (a non-finite
+/// one `null`). Texts are escaped as JSON requires and keep
+/// their other characters. What is not data (a function, an element)
+/// is `null`.
+pub(crate) fn json(types: &TypeTable, v: &Value, out: &mut String) {
+    use std::fmt::Write as _;
+    let text = |out: &mut String, t: &str| {
+        out.push_str(&serde_json::Value::String(t.to_string()).to_string());
+    };
+    match v {
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        // A whole number is written whole (`2`, not `2.0`): JSON has
+        // one kind of number.
+        Value::Num(n, _) if n.fract() == 0.0 && n.abs() < 9.0e15 => {
+            let _ = write!(out, "{}", *n as i64);
+        }
+        Value::Num(n, _) => match serde_json::Number::from_f64(*n) {
+            Some(n) => {
+                let _ = write!(out, "{n}");
+            }
+            None => out.push_str("null"),
+        },
+        Value::Text(t) => text(out, t),
+        Value::Color(c) => text(out, &super::value::hex(*c)),
+        Value::Enum(e, i) => match types.enum_(*e).variants.get(*i as usize) {
+            Some(name) => text(out, name),
+            None => out.push_str("null"),
+        },
+        Value::Record(r) => {
+            out.push('{');
+            let def = types.record(r.ty);
+            for (i, (f, x)) in def.fields.iter().zip(&r.fields).enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                text(out, &f.name);
+                out.push(':');
+                json(types, x, out);
+            }
+            out.push('}');
+        }
+        Value::List(items) => {
+            out.push('[');
+            for (i, x) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                json(types, x, out);
+            }
+            out.push(']');
+        }
+        Value::Dict(d) => {
+            out.push('{');
+            for (i, (k, x)) in d.entries().iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                let mut key = String::new();
+                json(types, k, &mut key);
+                match serde_json::from_str::<serde_json::Value>(&key) {
+                    Ok(serde_json::Value::String(s)) => text(out, &s),
+                    _ => text(out, &key),
+                }
+                out.push(':');
+                json(types, x, out);
+            }
+            out.push('}');
+        }
+        _ => out.push_str("null"),
+    }
 }
 
 #[cfg(test)]

@@ -1687,6 +1687,14 @@ fn bytes(n: float) -> text lift
 /// trailing white space is ignored; `1e3` and `-0.5` are numbers.
 /// Null in, null out.
 fn number(t: text) -> float? lift
+/// `value` as compact JSON, for a file a tool reads or an action's
+/// argument: `json(prefs)` is `{"size":3,"dark":true}`. A record is an
+/// object of its fields, a list an array, a dictionary an object of its
+/// keys, null `null`, an enum its variant's name, a colour its `hex`, a
+/// duration its milliseconds. Not a quoter for Lua: a control character
+/// is written `\u001b`, which Lua reads otherwise, so Lua takes a `fn`
+/// of its own.
+fn json(value: any?) -> text
 
 /// A Material 3 palette from a seed colour, or from a wallpaper image
 /// (quantised off-thread and cached; the old palette holds until the new
