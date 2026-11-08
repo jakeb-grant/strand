@@ -76,6 +76,16 @@ pub trait VmHooks {
     /// once the step's diff is applied. Nothing without a host that shows
     /// them.
     fn ask(&self, _rt: &Runtime, _node: &Rc<NodeState>, _ask: strand_scene::NodeAsk) {}
+    /// (live-files) A token expression's value over the current token
+    /// table, tracked: what `hex($accent)` formats outside a template.
+    /// `None` when there is no table.
+    fn token(
+        self: Rc<Self>,
+        _rt: &Runtime,
+        _e: &strand_scene::TokenExpr,
+    ) -> Option<strand_scene::PropValue> {
+        None
+    }
 }
 
 /// A scope of names: a component, surface or `for` item instance (or the

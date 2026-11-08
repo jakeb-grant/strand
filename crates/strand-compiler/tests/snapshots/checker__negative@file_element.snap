@@ -47,7 +47,7 @@ check::file_target
   9 │ file "~/.config/strand/x.strand" { text: $accent; colour: $fg }
     ·      ─────────────┬─────────────
     ·                   ╰── a config file
- 10 │ file "~/.cache/c.css" { text: n }
+ 10 │ file "~/.cache/c.css" { text: num(n) + hex($surface.light()) }
     ╰────
   help: write the output beside the config, not into it
 
@@ -59,23 +59,23 @@ check::unknown_prop
   9 │ file "~/.config/strand/x.strand" { text: $accent; colour: $fg }
     ·                                                   ───┬──
     ·                                                      ╰── unknown prop
- 10 │ file "~/.cache/c.css" { text: n }
+ 10 │ file "~/.cache/c.css" { text: num(n) + hex($surface.light()) }
     ╰────
   help: a `file` takes `template:` (a template file), or `text:`, and `run:`, and `when` blocks
         that change them
 
-template::not_theme
+file::other_mode
 
-  × a template reads the theme only: `n` is not in its scope
-    ╭─[file_element.strand:10:31]
+  × `.light()` needs a `text:` that reads only the theme
+    ╭─[file_element.strand:10:44]
   9 │ file "~/.config/strand/x.strand" { text: $accent; colour: $fg }
- 10 │ file "~/.cache/c.css" { text: n }
-    ·                               ┬
-    ·                               ╰── not a token, a palette entry or a template function
+ 10 │ file "~/.cache/c.css" { text: num(n) + hex($surface.light()) }
+    ·                                            ────────┬───────
+    ·                                                    ╰── the other mode
  11 │ bar Top {
     ╰────
-  help: a hole reads tokens (`$accent`, `$fg.muted.light()`), `$palette.<name>`, literals, `??`,
-        `join`, `hex` and `argb`
+  help: the other mode is read by a template: a `text:` of tokens, `??`, `join`, `hex` and `argb`
+        only, or a `template:` file
 
 check::file_item
 

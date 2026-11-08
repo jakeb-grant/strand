@@ -1758,6 +1758,14 @@ fn oklch(from: color, l: float = l, c: float = c, h: angle = h, alpha: float = a
 fn oklch(l: float, c: float, h: angle, alpha: float = 1) -> color
 /// A colour from red, green and blue channels.
 fn rgb(r: float, g: float, b: float, alpha: float = 1) -> color
+/// A colour as lowercase hex, gamut-mapped: `hex($accent)` is
+/// `#rrggbb`, with `alpha: true` `#rrggbbaa`, with `hash: false` no `#`
+/// (spec.md 9.8, "Values"). A translucent colour without `alpha: true`
+/// is an error, never made opaque. Null in, null out.
+fn hex(c: color, alpha: bool = false, hash: bool = true) -> text lift
+/// A colour as `0xaarrggbb`, gamut-mapped (spec.md 9.8). Null in, null
+/// out.
+fn argb(c: color) -> text lift
 
 /// A linear gradient: `linear(45deg, $accent, $tertiary)`. Banding is
 /// removed by dithering.

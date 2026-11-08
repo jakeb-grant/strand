@@ -7266,3 +7266,34 @@ fn strand_get_and_set_reach_one_entry_of_a_dictionary() {
     shell.flush();
     assert_eq!(shell.scene.texts(), ["1=mail,2=code,3=chat"]);
 }
+
+/// (live-files) `hex` and `argb` are ordinary builtins: a label formats a
+/// colour, a token through the current token table (following a theme
+/// flip), and null in is null out.
+#[test]
+fn hex_and_argb_format_colours_anywhere() {
+    let src = "export state c: color? = #ff8800\n\
+               bar Top { text hex($accent) + \" \" + argb(#ff880080) + \" \" + (hex(c, hash: false) ?? \"none\") }\n";
+    let mut shell = boot(&[("a.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+    });
+    let text = shell.scene.texts()[0].clone();
+    let parts: Vec<&str> = text.split(' ').collect();
+    assert_eq!(parts.len(), 3, "{text}");
+    assert!(parts[0].starts_with('#') && parts[0].len() == 7, "{text}");
+    assert_eq!(&parts[1..], ["0x80ff8800", "ff8800"]);
+    shell
+        .host
+        .set(&shell.rt, "system.dark", Value::Bool(true))
+        .unwrap();
+    shell.flush();
+    shell.inst.set("a.c", Value::Null).unwrap();
+    shell.flush();
+    let after = shell.scene.texts()[0].clone();
+    assert!(after.ends_with(" none"), "{after}");
+    assert_ne!(
+        after.split(' ').next(),
+        Some(parts[0]),
+        "the token followed the flip"
+    );
+}

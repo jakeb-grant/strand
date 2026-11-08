@@ -1,7 +1,9 @@
 //! (M5) Templates: text of any format with `{{ expr }}` holes over the
 //! theme (spec.md 9.8; decisions.md m5-tools, "template expressions and
 //! formats"). A template file (`strand export --template`, a `file`'s
-//! `template:`) and a `file`'s `text:` expression compile to a pure IR,
+//! `template:`) and a `file`'s `text:` expression that reads only the
+//! theme (decisions.md live-files: one that reads more is an ordinary
+//! chunk and never comes here) compile to a pure IR,
 //! [`Template`], which [`Template::render`] turns into bytes over a
 //! resolved [`TokenTable`] and, when a hole reads `.light()` or
 //! `.dark()`, the other mode's table.
@@ -17,6 +19,8 @@
 //! token tables.
 
 mod render;
+
+pub(crate) use render::{argb, hex, translucent, write as write_value};
 
 use strand_scene::{Color, Length, PropValue, TokenMethod};
 

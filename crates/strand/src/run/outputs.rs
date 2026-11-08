@@ -52,6 +52,17 @@ const STDERR_GRACE: Duration = Duration::from_millis(100);
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 /// The longest wait between two tries of a write.
 const RETRY_MAX: Duration = Duration::from_secs(10);
+/// (live-files) A path is written at most once in this long: the first
+/// write lands at once, the newest content in the window when it ends.
+const PACE: Duration = Duration::from_millis(500);
+/// (live-files) A write while its file's own `run:` runs, or this soon
+/// after it ended, counts as one round of a loop ([`LOOP_ROUNDS`]).
+const LOOP_WINDOW: Duration = Duration::from_secs(1);
+/// (live-files) After this many rounds in a row, the `run:` is held.
+const LOOP_ROUNDS: u32 = 3;
+/// The loop guard's notice.
+const LOOP_NOTICE: &str = "its `run:` changes what it is written from: the `run:` is held \
+                           until the file is quiet for a second";
 
 /// What logic asks of the writer.
 enum Job {
@@ -290,6 +301,25 @@ impl Shell {
                 let path = c.path.unwrap_or_default();
                 self.output_notice(&path, short.trim_end(), false);
             }
+            // (live-files) `text: null`: the file is left as it is, and
+            // what was still being tried there goes with its notice (the
+            // path is no longer a target, so the writer lets go of it).
+            OutputContent::Leave => {
+                if let Some(path) = c.path {
+                    self.output_ok(&path);
+                }
+            }
+            // (live-files) It waits for a service to answer. Starting is
+            // no news; a service with no run up (failed, backing off) is
+            // a standing notice, until the next write lands.
+            OutputContent::Waiting { services } => {
+                let Some(path) = c.path else { return };
+                let Some(r) = &self.real else { return };
+                let snap = r.services.snapshot(self.inst.runtime());
+                if let Some(why) = waiting_notice(&services, &snap) {
+                    self.output_notice(&path, &why, false);
+                }
+            }
         }
     }
 
@@ -325,6 +355,21 @@ impl Shell {
     }
 }
 
+/// (live-files) A waiting `file`'s notice: only when a service it waits
+/// for has no run up (failed, backing off); one starting is no news.
+fn waiting_notice(
+    services: &[String],
+    snap: &[strand_services::ServiceSnapshot],
+) -> Option<String> {
+    let down = services
+        .iter()
+        .find(|s| snap.iter().any(|m| m.name == **s && !m.running))?;
+    Some(format!(
+        "waits for `{down}`, which has no run up (its own notice says why); nothing is \
+         written until it answers"
+    ))
+}
+
 /// The overlay's key for one output's notices.
 fn cell(path: &Path) -> String {
     format!("files:{}", path.display())
@@ -338,6 +383,27 @@ struct RunState {
     due: Option<Instant>,
     running: bool,
     queued: bool,
+    /// (live-files) The loop guard: when its last run ended, how many
+    /// writes in a row came within [`LOOP_WINDOW`] of a run ending, and,
+    /// while the `run:` is held, when the hold ends (a second after the
+    /// last write).
+    ended: Option<Instant>,
+    rounds: u32,
+    held_until: Option<Instant>,
+    /// A write landed while held: the hold's end runs `run:` once, so the
+    /// program reads the file's last content.
+    skipped: bool,
+    /// That catch-up run is the last chance: a round after it holds
+    /// again, and that hold ends without a run.
+    probation: bool,
+    stuck: bool,
+}
+
+/// (live-files) A path's pace: when a write last landed there, and the
+/// newest content waiting for [`PACE`] to pass.
+struct Paced {
+    last: Instant,
+    next: Option<(Vec<u8>, Option<Vec<String>>, Option<String>)>,
 }
 
 /// A write that did not land, tried again at `at`.
@@ -361,6 +427,7 @@ struct Writer {
     /// Per path (a handful of files: lists, not maps).
     runs: Vec<(PathBuf, RunState)>,
     retries: Vec<(PathBuf, Retry)>,
+    paced: Vec<(PathBuf, Paced)>,
     /// How long `run:` may take ([`RUN_TIMEOUT`]; tests shorten it).
     timeout: Duration,
     /// Registers a write with the config watcher before it lands.
@@ -385,6 +452,7 @@ impl Writer {
             ping,
             runs: Vec::new(),
             retries: Vec::new(),
+            paced: Vec::new(),
             timeout: RUN_TIMEOUT,
             own_writes: None,
         }
@@ -400,14 +468,21 @@ impl Writer {
             let next = self
                 .runs
                 .iter()
-                .filter_map(|(_, r)| r.due)
+                .flat_map(|(_, r)| [r.due, r.held_until])
+                .flatten()
                 .chain(self.retries.iter().map(|(_, r)| r.at))
+                .chain(
+                    self.paced
+                        .iter()
+                        .filter(|(_, p)| p.next.is_some())
+                        .map(|(_, p)| p.last + PACE),
+                )
                 .min();
             match self.shared.pop(next) {
                 Some(Job::Write { path, bytes, run }) => {
                     // Newer content replaces a write still being retried.
                     let last = take(&mut self.retries, &path).map(|r| r.why);
-                    self.write(path, bytes, run, last);
+                    self.write_paced(path, bytes, run, last);
                 }
                 Some(Job::Replace(path)) => {
                     // The file it names, a link followed: what is written.
@@ -428,6 +503,7 @@ impl Writer {
                     }
                     if let Some(r) = entry(&mut self.runs, &path) {
                         r.running = false;
+                        r.ended = Some(Instant::now());
                         if std::mem::take(&mut r.queued) {
                             r.due = Some(Instant::now());
                         }
@@ -435,8 +511,79 @@ impl Writer {
                 }
                 None => {}
             }
+            self.pace_due();
             self.retry_due();
+            self.unhold_due();
             self.start_due();
+        }
+    }
+
+    /// (live-files) A write, at most one per [`PACE`] per path: within
+    /// the window the content waits (the newest replacing it), and a
+    /// `run:` due there waits for it.
+    fn write_paced(
+        &mut self,
+        path: PathBuf,
+        bytes: Vec<u8>,
+        run: Option<Vec<String>>,
+        last: Option<String>,
+    ) {
+        let now = Instant::now();
+        if let Some(p) = entry(&mut self.paced, &path)
+            && now < p.last + PACE
+        {
+            let at = p.last + PACE;
+            p.next = Some((bytes, run, last));
+            // `run:` follows the file's last write, and one is coming.
+            if let Some(r) = entry(&mut self.runs, &path)
+                && let Some(due) = &mut r.due
+            {
+                *due = (*due).max(at + RUN_DEBOUNCE);
+            }
+            return;
+        }
+        self.write(path, bytes, run, last);
+    }
+
+    /// Writes the paced contents whose window has passed.
+    fn pace_due(&mut self) {
+        let now = Instant::now();
+        let due: Vec<PathBuf> = self
+            .paced
+            .iter()
+            .filter(|(_, p)| p.next.is_some() && p.last + PACE <= now)
+            .map(|(p, _)| p.clone())
+            .collect();
+        for path in due {
+            let Some((bytes, run, last)) =
+                entry(&mut self.paced, &path).and_then(|p| p.next.take())
+            else {
+                continue;
+            };
+            self.write(path, bytes, run, last);
+        }
+    }
+
+    /// Ends the loop guard's holds whose file has been quiet for
+    /// [`LOOP_WINDOW`]: `run:` runs once for the last content (a slider
+    /// dragged past three rounds is caught up), and its next write runs
+    /// it again; a round right after that catch-up run is a loop, held
+    /// again and let go without a run.
+    fn unhold_due(&mut self) {
+        let now = Instant::now();
+        for (_, r) in &mut self.runs {
+            if r.held_until.is_some_and(|at| at <= now) {
+                r.held_until = None;
+                r.rounds = 0;
+                r.ended = None;
+                // One catch-up run, unless that run is what looped.
+                if std::mem::take(&mut r.skipped) && !std::mem::take(&mut r.stuck) {
+                    r.due = Some(now);
+                    r.probation = true;
+                } else {
+                    r.probation = false;
+                }
+            }
         }
     }
 
@@ -454,21 +601,55 @@ impl Writer {
         match self.write_file(&path, &bytes) {
             Ok(changed) => {
                 self.tell(Outcome::Written(path.clone()));
-                if changed && let Some(argv) = run.filter(|a| !a.is_empty()) {
-                    let due = Some(Instant::now() + RUN_DEBOUNCE);
-                    match entry(&mut self.runs, &path) {
-                        Some(r) => {
-                            r.argv = argv;
-                            r.due = due;
-                        }
-                        None => self.runs.push((
-                            path,
-                            RunState {
-                                argv,
-                                due,
-                                ..RunState::default()
+                let now = Instant::now();
+                if changed {
+                    match entry(&mut self.paced, &path) {
+                        Some(p) => p.last = now,
+                        None => self.paced.push((
+                            path.clone(),
+                            Paced {
+                                last: now,
+                                next: None,
                             },
                         )),
+                    }
+                }
+                if changed && let Some(argv) = run.filter(|a| !a.is_empty()) {
+                    let due = Some(now + RUN_DEBOUNCE);
+                    let r = match entry(&mut self.runs, &path) {
+                        Some(r) => r,
+                        None => {
+                            self.runs.push((path.clone(), RunState::default()));
+                            let Some((_, r)) = self.runs.last_mut() else {
+                                return None;
+                            };
+                            r
+                        }
+                    };
+                    r.argv = argv;
+                    // (live-files) The loop guard: a write soon after the
+                    // file's own run ended is a round; three in a row hold
+                    // the `run:` until the file is quiet for a second.
+                    let round =
+                        r.running || r.ended.is_some_and(|e| now.duration_since(e) < LOOP_WINDOW);
+                    if round {
+                        r.rounds += 1;
+                    } else {
+                        r.rounds = 0;
+                        r.probation = false;
+                    }
+                    let was_held = r.held_until.is_some();
+                    let again = round && r.probation;
+                    if was_held || again || r.rounds >= LOOP_ROUNDS {
+                        r.held_until = Some(now + LOOP_WINDOW);
+                        r.due = None;
+                        r.skipped = true;
+                        r.stuck |= again;
+                        if !was_held {
+                            self.tell(Outcome::Failed(path, LOOP_NOTICE.into()));
+                        }
+                    } else {
+                        r.due = due;
                     }
                 }
                 None
@@ -507,6 +688,7 @@ impl Writer {
     /// (review round 3, item 2). Only idle run state is dropped.
     fn keep(&mut self, paths: &[PathBuf]) {
         self.retries.retain(|(p, _)| paths.contains(p));
+        self.paced.retain(|(p, _)| paths.contains(p));
         self.runs
             .retain(|(p, r)| paths.contains(p) || r.due.is_some() || r.running || r.queued);
     }
@@ -1491,6 +1673,145 @@ mod tests {
                 (link, b"two".to_vec(), false),
             ]
         );
+    }
+
+    /// A writer on its own thread that records each write as it lands:
+    /// (jobs and outcomes, the writes with when they landed).
+    #[allow(clippy::type_complexity)]
+    fn recorded(dir: &Path) -> (Arc<Shared>, Arc<Mutex<Vec<(Vec<u8>, Instant)>>>) {
+        let (ping, _source) = calloop::ping::make_ping().unwrap();
+        let shared = Arc::new(Shared::default());
+        let mut w = Writer::new(Some(dir.join("state/files")), shared.clone(), ping);
+        let seen: Arc<Mutex<Vec<(Vec<u8>, Instant)>>> = Arc::default();
+        let log = seen.clone();
+        w.own_writes = Some(OwnWrites(Box::new(move |_, b| {
+            log.lock().unwrap().push((b.to_vec(), Instant::now()));
+        })));
+        std::thread::spawn(move || w.run());
+        (shared, seen)
+    }
+
+    /// (live-files) A path is written at most once per 500 ms: the first
+    /// write lands at once, ten more within 100 ms give one more write,
+    /// the newest, when the window ends; a quiet path writes at once.
+    #[test]
+    fn writes_are_paced() {
+        let dir = temp("paced");
+        let out = dir.join("status.txt");
+        let (jobs, seen) = recorded(&dir);
+        let write = |b: &str| {
+            jobs.send(Job::Write {
+                path: out.clone(),
+                bytes: b.as_bytes().to_vec(),
+                run: None,
+            })
+            .unwrap();
+        };
+        let start = Instant::now();
+        write("0");
+        let until = |n: usize| {
+            while seen.lock().unwrap().len() < n {
+                assert!(start.elapsed() < Duration::from_secs(5), "{n} writes");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
+        until(1);
+        let first = seen.lock().unwrap()[0].1;
+        assert!(
+            first - start < Duration::from_millis(200),
+            "the first is at once"
+        );
+        for i in 1..=10 {
+            write(&i.to_string());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        until(2);
+        std::thread::sleep(Duration::from_millis(700));
+        let got = seen.lock().unwrap().clone();
+        assert_eq!(got.len(), 2, "eleven changes, two writes: {got:?}");
+        assert_eq!(got[1].0, b"10", "the newest lands");
+        assert!(got[1].1 - first >= PACE, "at the window's end");
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "10");
+        // Quiet for a window: the next write lands at once.
+        let again = Instant::now();
+        write("11");
+        until(3);
+        assert!(seen.lock().unwrap()[2].1 - again < Duration::from_millis(200));
+    }
+
+    /// (live-files) A `run:` that changes what its file is written from:
+    /// after three rounds the `run:` is held, with a notice, and the loop
+    /// stops (one catch-up run, then nothing).
+    #[test]
+    fn a_run_that_rewrites_its_input_is_held() {
+        let dir = temp("loop");
+        let log = dir.join("runs.log");
+        let out = dir.join("monitors.conf");
+        let (jobs, rx) = spawned(&dir, RUN_TIMEOUT);
+        let run = Some(vec![
+            "sh".to_string(),
+            "-c".into(),
+            format!("echo x >> {}", log.display()),
+        ]);
+        let write = |n: usize| {
+            jobs.send(Job::Write {
+                path: out.clone(),
+                bytes: format!("v{n}").into_bytes(),
+                run: run.clone(),
+            })
+            .unwrap();
+        };
+        // The "config": every run of the program bumps what the file is
+        // written from, which writes the file again.
+        let start = Instant::now();
+        let mut n = 0;
+        write(n);
+        let mut runs = 0;
+        while start.elapsed() < Duration::from_secs(5) {
+            let now = lines(&log);
+            if now > runs {
+                runs = now;
+                n += 1;
+                write(n);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let outcomes = rx.drain();
+        assert!(
+            outcomes
+                .iter()
+                .any(|o| matches!(o, Outcome::Failed(p, why) if *p == out && why == LOOP_NOTICE)),
+            "{outcomes:?}"
+        );
+        // Three rounds, the catch-up run once the file was quiet, and the
+        // hold its own round brings, let go without a run.
+        assert_eq!(lines(&log), 4, "the loop stops");
+        // A change from outside runs `run:` again.
+        std::thread::sleep(LOOP_WINDOW + Duration::from_millis(200));
+        write(100);
+        let later = Instant::now();
+        while lines(&log) < 5 {
+            assert!(later.elapsed() < Duration::from_secs(5), "ran again");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// (live-files) A `file` waiting for a service that is starting says
+    /// nothing; one waiting for a service with no run up says which.
+    #[test]
+    fn a_wait_on_a_service_with_no_run_is_a_notice() {
+        let snap = |name: &str, running: bool| strand_services::ServiceSnapshot {
+            name: name.into(),
+            running,
+            fields: Vec::new(),
+        };
+        let waits = vec!["outputs".to_string(), "media".to_string()];
+        assert_eq!(
+            waiting_notice(&waits, &[snap("outputs", true), snap("media", true)]),
+            None
+        );
+        let why = waiting_notice(&waits, &[snap("outputs", true), snap("media", false)]).unwrap();
+        assert!(why.starts_with("waits for `media`"), "{why}");
     }
 
     #[test]

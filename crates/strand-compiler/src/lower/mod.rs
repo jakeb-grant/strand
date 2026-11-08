@@ -366,8 +366,11 @@ pub struct FileProp {
 pub enum FilePart {
     /// `template:`: the template file's path.
     Template(ChunkId),
-    /// `text:`, compiled as a template hole.
+    /// `text:` that reads the theme only, compiled as a template hole.
     Text(Arc<crate::template::Template>),
+    /// (live-files) `text:` that reads the scope: an ordinary chunk, its
+    /// value written by spec.md 9.8's Values rule (`null`: nothing).
+    Value(ChunkId),
     /// `run:`: the argv.
     Run(ChunkId),
 }
@@ -390,7 +393,9 @@ pub struct Element {
     pub file: FileId,
     /// For a surface element (`popup`, `panel`, a `bar`): the services its
     /// children read, held only while it is shown. A nested surface's
-    /// reads do not count for the body around it.
+    /// reads do not count for the body around it. (live-files) For a
+    /// `file`: the services its chunks read, which it waits on (its
+    /// enclosing scope holds them).
     pub services: Option<Arc<ServiceUses>>,
     /// (M6) For a component call: its handlers, which are its root
     /// element's and run in the caller's scope.
@@ -1381,16 +1386,25 @@ impl Lowerer<'_> {
     /// checker compiled it, its `when`s' props under their conditions,
     /// all in source order.
     fn file_output(&mut self, e: &hir::Element) -> Element {
+        // (live-files) Its own frame: the services its chunks read (text,
+        // path, `run:`, `when`s) are the ones it waits on; merged into the
+        // enclosing frame, which holds them.
+        self.push_frame();
         let mut props: Vec<(u32, FileProp)> = Vec::new();
         let part = |l: &mut Self, p: &hir::Prop| match p.name.as_str() {
             "template" => Some(FilePart::Template(l.expr_chunk(&p.value))),
             "run" => Some(FilePart::Run(l.expr_chunk(&p.value))),
-            "text" => l
-                .hir
-                .file_texts
-                .iter()
-                .find(|(k, _)| *k == (l.file, p.value.span))
-                .map(|(_, t)| FilePart::Text(t.clone())),
+            "text" => Some(
+                match l
+                    .hir
+                    .file_texts
+                    .iter()
+                    .find(|(k, _)| *k == (l.file, p.value.span))
+                {
+                    Some((_, t)) => FilePart::Text(t.clone()),
+                    None => FilePart::Value(l.expr_chunk(&p.value)),
+                },
+            ),
             _ => None,
         };
         for p in &e.props {
@@ -1418,6 +1432,7 @@ impl Lowerer<'_> {
             path: e.arg.as_ref().map(|a| self.expr_chunk(a)),
             props: props.into_iter().map(|(_, p)| p).collect(),
         };
+        let services = self.pop_frame(true);
         Element {
             node: e.node,
             kind: ElementKind::File(Arc::new(out)),
@@ -1428,7 +1443,8 @@ impl Lowerer<'_> {
             scope: Vec::new(),
             span: e.span,
             file: self.file,
-            services: None,
+            // What it waits on (spec.md 9.7, "Pending").
+            services: Some(services),
             call_handlers: Arc::default(),
         }
     }

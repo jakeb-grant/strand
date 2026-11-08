@@ -132,8 +132,9 @@ fn kind(v: &PropValue) -> &'static str {
     }
 }
 
-/// `c` as lowercase hex: `#rrggbb[aa]`, gamut-mapped first.
-fn hex(c: Color, alpha: bool, hash: bool) -> String {
+/// `c` as lowercase hex: `#rrggbb[aa]`, gamut-mapped first. (live-files)
+/// Also the ordinary builtin `hex`.
+pub(crate) fn hex(c: Color, alpha: bool, hash: bool) -> String {
     let [r, g, b, a] = c.gamut_mapped().to_rgba8();
     let mut s = String::with_capacity(9);
     if hash {
@@ -146,7 +147,14 @@ fn hex(c: Color, alpha: bool, hash: bool) -> String {
     s
 }
 
-fn translucent(c: Color) -> bool {
+/// `c` as `0xaarrggbb`, gamut-mapped first. (live-files) Also the
+/// ordinary builtin `argb`.
+pub(crate) fn argb(c: Color) -> String {
+    let [r, g, b, a] = c.gamut_mapped().to_rgba8();
+    format!("0x{a:02x}{r:02x}{g:02x}{b:02x}")
+}
+
+pub(crate) fn translucent(c: Color) -> bool {
     c.gamut_mapped().to_rgba8()[3] < 255
 }
 
@@ -159,8 +167,9 @@ fn translucent_error(span: Span) -> Diagnostic {
     .with_help("write `hex(c, alpha: true)` for `#rrggbbaa`, or `argb(c)`")
 }
 
-/// A value as a hole writes it (spec.md 9.8, "Values").
-fn write(v: &PropValue, span: Span) -> Result<String, Diagnostic> {
+/// A value as a hole writes it (spec.md 9.8, "Values"). (live-files)
+/// Also a `file`'s `text:` that reads the scope, for a token it gives.
+pub(crate) fn write(v: &PropValue, span: Span) -> Result<String, Diagnostic> {
     Ok(match v {
         PropValue::Color(c) => {
             if translucent(*c) {
@@ -361,8 +370,7 @@ impl Ctx<'_> {
             }
             Node::Argb { color, .. } => {
                 let c = self.color(color, "`argb`")?;
-                let [r, g, b, a] = c.gamut_mapped().to_rgba8();
-                Ok(PropValue::Text(format!("0x{a:02x}{r:02x}{g:02x}{b:02x}")))
+                Ok(PropValue::Text(argb(c)))
             }
             Node::Join { sep, parts, .. } => {
                 let sep = self.text(sep)?;

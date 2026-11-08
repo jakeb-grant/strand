@@ -8,6 +8,7 @@ Builtin functions and values, every name in scope in every file, and the methods
 
 | Function | |
 | --- | --- |
+| `fn argb(c: color) -> text lift` | A colour as `0xaarrggbb`, gamut-mapped (spec.md 9.8). Null in, null out. |
 | `fn atan2(y: float, x: float) -> angle` | The angle from the origin to the point (`x`, `y`), from -180deg to 180deg, 0deg pointing right and clockwise positive (y grows down): the knob angle of a pointer, `atan2(p.y - cy, p.x - cx)`. An arc drawn from a fixed angle to it turns the other way once the pointer passes 180deg: add `360deg` to an angle below the arc's start. |
 | `fn bezier(x1: float, y1: float, x2: float, y2: float) -> Easing` | A cubic bézier curve: `~ bezier(0.05, 0.9, 0.1, 1.05)`. |
 | `fn bloom(radius: length, strength: float = 1) -> Filter` | Bloom: bright parts bleed light `radius` around them, `strength` times as bright as they are (1: as bright), `filter: bloom(12)`, `filter: bloom(12, 1.5)`. Without a GPU it draws as a glow. |
@@ -28,6 +29,7 @@ Builtin functions and values, every name in scope in every file, and the methods
 | `fn glass(refraction: length = 12) -> Filter` | Liquid glass over what is behind it: lightly frosted, bent up to `refraction` at its rim (red and blue apart), a fresnel rim and a highlight under the pointer, `backdrop: glass()`, `backdrop: glass(20)`. Without a GPU it draws as a blur and a tint. |
 | `fn grayscale(amount: float) -> Filter` | A colour filter: `filter: grayscale(1)`. |
 | `fn grow(by: length) -> HitArea` | A larger hit area for a small target: `hit: grow(6)`. |
+| `fn hex(c: color, alpha: bool = false, hash: bool = true) -> text lift` | A colour as lowercase hex, gamut-mapped: `hex($accent)` is `#rrggbb`, with `alpha: true` `#rrggbbaa`, with `hash: false` no `#` (spec.md 9.8, "Values"). A translucent colour without `alpha: true` is an error, never made opaque. Null in, null out. |
 | `fn hue(angle: angle) -> Filter` | A colour filter turning hues: `filter: hue(30deg)`. |
 | `fn import(source: text) -> Palette` | A palette from another scheme: `import("catppuccin:mocha")`. It must fill the whole palette schema. |
 | `fn invert(amount: float) -> Filter` | A colour filter inverting colours. |

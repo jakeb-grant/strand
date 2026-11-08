@@ -221,6 +221,17 @@ stops the updates and leaves the file where it is. Editing
 
 For one line, `text:` replaces the template file, as in the last line
 of `theme.strand`: `file "~/.cache/strand/accent.txt" { text: $accent }`.
+`text:` is an ordinary expression, so it can read more than the theme:
+a settings field, a `state`, a service. Then the file follows those
+too, and waits until a service it reads has answered, so a default is
+never written over a good file:
+
+```
+file "~/.cache/strand/now-playing.txt" { text: media.title ?? "" }
+```
+
+A file is written at most twice a second, and `text: null` leaves it as
+it is.
 
 To tell a program its colours changed, add `run:`, a command run 200 ms
 after the file is written. Running a program needs your permission,

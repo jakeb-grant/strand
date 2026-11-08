@@ -4152,3 +4152,43 @@ fn every_service_has_a_read_only_ready() {
         "{errs:?}"
     );
 }
+
+/// (live-files) A `file`'s `text:` that reads the scope is an ordinary
+/// expression: a password typed into a field and written by it warns
+/// (`check::secret_flow`, the `file` sink), and `hex`/`argb` are ordinary
+/// builtins, so they type-check inside a lambda.
+#[test]
+fn a_scope_text_is_checked_as_an_expression() {
+    let secret = |src: &str| {
+        let (out, map) = compile_files(&[("a.strand", src.to_string())]);
+        assert!(
+            !out.diagnostics.iter().any(|d| d.is_error()),
+            "{}",
+            render(&out.diagnostics, &map, Style::Plain)
+        );
+        out.diagnostics
+            .iter()
+            .filter(|d| d.code == "check::secret_flow")
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+    };
+    let warned = secret(
+        "state pw = \"\"\nbar Top { input { type: password; text: <-> pw } }\nfile \"~/.cache/pw.txt\" { text: pw }\n",
+    );
+    assert_eq!(warned.len(), 1, "{warned:?}");
+    assert!(warned[0].contains("written to a file"), "{warned:?}");
+    assert!(
+        secret("state pw = \"\"\nbar Top { input { type: password; text: <-> pw } }\nfile \"~/.cache/c.txt\" { text: $accent }\n")
+            .is_empty()
+    );
+    let src = "export state picks = [#ff8800, #00ff00]\n\
+               bar Top { text picks.map(c => hex(c)).join(\" \") + argb(picks.first ?? #000000) }\n\
+               file \"~/.cache/picks.txt\" { text: picks.map(c => hex(c, hash: false)).join(\",\") }\n";
+    let errs = errors_of(src);
+    assert!(errs.is_empty(), "{errs:?}");
+    let errs = errors_of("bar Top { text hex(\"red\") }\n");
+    assert!(
+        errs.iter().any(|e| e.starts_with("check::type")),
+        "{errs:?}"
+    );
+}

@@ -505,3 +505,31 @@ fn file_outputs_follow_the_theme() {
     desk.stop();
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// (live-files) A `file`'s `text:` may read the scope, but a template
+/// file stays the theme's alone: `strand export --template` naming a
+/// service, a `state` or a `fn` is `template::not_theme`, and nothing is
+/// written.
+#[test]
+fn an_exported_template_reads_the_theme_only() {
+    let home = Home::new("theme-only");
+    let mocha = "import(\"catppuccin:mocha\")";
+    for (i, hole) in ["media.title", "label", "shout(\"x\")", "$accent + \"x\""]
+        .iter()
+        .enumerate()
+    {
+        let name = format!("t{i}.tmpl");
+        home.write(&name, &format!("a {{{{ {hole} }}}} b\n"));
+        let target = home.dir.join(format!("out/{i}.txt"));
+        let err = home.err(&[
+            "--template",
+            &name,
+            "--palette",
+            mocha,
+            "-o",
+            target.to_str().unwrap(),
+        ]);
+        assert!(err.contains("template::not_theme"), "{hole}: {err}");
+        assert!(!target.exists(), "{hole}: written");
+    }
+}

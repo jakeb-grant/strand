@@ -31,6 +31,14 @@ use crate::vm::value::Value;
 pub(crate) enum Content {
     /// A palette it reads is still loading: nothing is written.
     Pending,
+    /// (live-files) A service it reads has not answered (`ready` false):
+    /// nothing is written, and its `run:` does not run.
+    Waiting {
+        path: Option<PathBuf>,
+        services: Rc<[Rc<str>]>,
+    },
+    /// (live-files) Its `text:` is `null`: the file is left as it is.
+    Leave { path: PathBuf },
     Ready {
         path: PathBuf,
         bytes: Rc<[u8]>,
@@ -81,6 +89,20 @@ pub enum OutputContent {
         diags: Vec<Diagnostic>,
         template: Option<(String, String)>,
     },
+    /// (live-files) A service it reads has not answered: nothing is
+    /// written until it has (spec.md 9.7, "Pending").
+    Waiting { services: Vec<String> },
+    /// (live-files) Its `text:` is `null`: nothing is written or run, and
+    /// bytes not yet written there are let go.
+    Leave,
+}
+
+/// Where a mounted `file` is written in the config, and (live-files) the
+/// services it waits for.
+struct Site {
+    file: FileId,
+    span: Span,
+    waits: Rc<[Rc<str>]>,
 }
 
 /// A compiled template file, kept while its text is unchanged.
@@ -98,12 +120,26 @@ impl Ctx {
     ) {
         let id = self.next_output.get();
         self.next_output.set(id + 1);
+        // (live-files) The services its chunks read: it waits for each to
+        // answer (lowering's per-`file` frame).
+        let waits: Rc<[Rc<str>]> = e
+            .services
+            .iter()
+            .flat_map(|s| s.iter())
+            .filter(|(_, f)| f.is_none())
+            .map(|(s, _)| Rc::from(s.as_str()))
+            .collect();
         let held = Rc::new(Cell::new(false));
         let compiled: Compiled = Rc::default();
         let weak = Rc::downgrade(self);
-        let (f, env2, held2, site) = (f.clone(), env.clone(), held.clone(), (e.file, e.span));
+        let site = Site {
+            file: e.file,
+            span: e.span,
+            waits,
+        };
+        let (f, env2, held2) = (f.clone(), env.clone(), held.clone());
         let memo = rt.memo(move |rt| match weak.upgrade() {
-            Some(ctx) => Ok(ctx.output_content(rt, &f, &env2, &held2, &compiled, site)),
+            Some(ctx) => Ok(ctx.output_content(rt, &f, &env2, &held2, &compiled, &site)),
             None => Err(Error::failed("the instance is gone")),
         });
         rt.set_name(memo.id(), "file");
@@ -133,8 +169,10 @@ impl Ctx {
         env: &Rc<Env>,
         held: &Cell<bool>,
         compiled: &Compiled,
-        (file, span): (FileId, Span),
+        site: &Site,
     ) -> Content {
+        let Site { file, span, waits } = site;
+        let (file, span) = (*file, *span);
         let fail = |path: Option<PathBuf>, msg: String| Content::Failed {
             path,
             diags: Rc::from(vec![Diagnostic::error("file::output", msg).with_label_in(
@@ -156,6 +194,22 @@ impl Ctx {
                 Err(e) => Err(format!("its {what}: {e}")),
             }
         };
+        // (live-files) A service it reads that has not answered: its
+        // values are defaults, so nothing is written (even with `??`).
+        let waiting: Vec<Rc<str>> = waits
+            .iter()
+            .filter(|s| !self.vm.host.ready(rt, s))
+            .cloned()
+            .collect();
+        if !waiting.is_empty() {
+            let path = text(f.path, "path")
+                .ok()
+                .and_then(|p| self.storage.resolve(&p));
+            return Content::Waiting {
+                path,
+                services: waiting.into(),
+            };
+        }
         let path = match text(f.path, "path") {
             Ok(p) => match self.storage.resolve(&p) {
                 Some(p) => p,
@@ -202,6 +256,9 @@ impl Ctx {
             },
         };
         let (template, source) = match source {
+            Some(FilePart::Value(c)) => {
+                return self.value_content(rt, *c, env, path, run, (file, span));
+            }
             Some(FilePart::Text(t)) => (t.clone(), None),
             Some(FilePart::Template(c)) => {
                 let name = match text(Some(*c), "template") {
@@ -301,6 +358,116 @@ impl Ctx {
             },
         }
     }
+}
+
+impl Ctx {
+    /// (live-files) A `text:` that reads the scope: its value, written by
+    /// spec.md 9.8's Values rule; `null` leaves the file; a token is
+    /// resolved against the current table (waiting, as a template does,
+    /// while the palette loads).
+    fn value_content(
+        self: &Rc<Self>,
+        rt: &Runtime,
+        chunk: crate::lower::ChunkId,
+        env: &Rc<Env>,
+        path: PathBuf,
+        run: Option<Rc<[String]>>,
+        (file, span): (FileId, Span),
+    ) -> Content {
+        let fail = |path: PathBuf, msg: String| Content::Failed {
+            path: Some(path),
+            diags: Rc::from(vec![Diagnostic::error("file::output", msg).with_label_in(
+                file,
+                span,
+                "this `file`",
+            )]),
+            template: None,
+        };
+        let v = match self.vm.eval(rt, chunk, env) {
+            Ok(Value::Async(a)) => match (&a.value, a.pending, &a.error) {
+                (Some(v), _, _) => v.clone(),
+                (None, true, _) => return Content::Pending,
+                (None, false, Some(e)) => return fail(path, format!("its `text:`: {e}")),
+                (None, false, None) => Value::Null,
+            },
+            Ok(v) => v,
+            Err(e) => return fail(path, format!("its `text:`: {e}")),
+        };
+        let written = match &v {
+            Value::Null => return Content::Leave { path },
+            Value::Token(expr) => {
+                if let Err(e) = self.palette_ok(rt) {
+                    return match is_pending(&e) {
+                        true => Content::Pending,
+                        false => fail(path, format!("no palette: {e}")),
+                    };
+                }
+                let value = match self.tokens_memo.get().map(|m| m.get(rt)) {
+                    Some(Ok(table)) => table.eval(expr),
+                    Some(Err(e)) => return fail(path, format!("no token table: {e}")),
+                    None => return Content::Pending,
+                };
+                match value {
+                    Some(pv) => crate::template::write_value(&pv, span).map_err(|d| d.message),
+                    None => Err("its token has no value".to_string()),
+                }
+            }
+            v => value_text(&self.vm.prog.types, v),
+        };
+        match written {
+            Ok(text) => Content::Ready {
+                path,
+                bytes: Rc::from(text.into_bytes()),
+                run,
+            },
+            Err(why) => fail(path, format!("its `text:`: {why}")),
+        }
+    }
+}
+
+/// A value as spec.md 9.8's Values rule writes it: text as is, a number
+/// in shortest form (at most three decimals, no unit but `%` and `ch`),
+/// a bool, a colour as `hex(c)`, an enum by its case; anything else is
+/// an error naming its kind.
+fn value_text(types: &crate::ty::TypeTable, v: &Value) -> Result<String, String> {
+    use crate::vm::value::Num;
+    use strand_theme::export::number;
+    Ok(match v {
+        Value::Text(t) => t.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Num(x, Num::Percent) => format!("{}%", number(*x)),
+        Value::Num(x, Num::Ch) => format!("{}ch", number(*x)),
+        Value::Num(x, _) => number(*x),
+        Value::Color(c) => {
+            if crate::template::translucent(*c) {
+                return Err(
+                    "the colour is translucent, and `hex` writes it opaque only \
+                            when asked: write `hex(c, alpha: true)` or `argb(c)`"
+                        .into(),
+                );
+            }
+            crate::template::hex(*c, false, true)
+        }
+        Value::Enum(e, i) => types
+            .enums
+            .get(e.0 as usize)
+            .and_then(|d| d.variants.get(*i as usize))
+            .map(|v| v.to_string())
+            .ok_or("an unknown enum case")?,
+        other => {
+            let kind = match other {
+                Value::List(_) | Value::Commas(_) | Value::Spaced(_) => "a list",
+                Value::Record(_) => "a record",
+                Value::Dict(_) => "a dictionary",
+                Value::Time(_) => "a value that changes with time",
+                Value::Fn(_) => "a function",
+                _ => "this value",
+            };
+            return Err(format!(
+                "{kind} has no one text form; write the text it should be (`join`, `num`, `hex`)"
+            ));
+        }
+    })
 }
 
 impl Ctx {
@@ -416,6 +583,20 @@ impl Instance {
                         diags: diags.to_vec(),
                         template: template.map(|(n, t)| (n.to_string(), t.to_string())),
                     },
+                },
+                Content::Waiting { path, services } => OutputChange {
+                    path,
+                    file,
+                    span,
+                    content: OutputContent::Waiting {
+                        services: services.iter().map(|s| s.to_string()).collect(),
+                    },
+                },
+                Content::Leave { path } => OutputChange {
+                    path: Some(path),
+                    file,
+                    span,
+                    content: OutputContent::Leave,
                 },
                 Content::Pending => continue,
             });

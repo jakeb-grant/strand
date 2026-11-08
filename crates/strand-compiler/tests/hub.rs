@@ -424,7 +424,7 @@ fn both(c: &strand_compiler::instantiate::OutputChange) -> Option<String> {
     }
     match &c.content {
         OutputContent::Write { bytes, .. } => Some(String::from_utf8(bytes.clone()).unwrap()),
-        OutputContent::Failed { diags, .. } => panic!("{diags:?}"),
+        other => panic!("{other:?}"),
     }
 }
 

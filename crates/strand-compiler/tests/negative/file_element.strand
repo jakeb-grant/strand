@@ -1,13 +1,13 @@
-// expect: check::file_item, check::file_source, check::file_target, check::no_permit, check::unknown_prop, check::unknown_token, template::not_theme
+// expect: check::file_item, check::file_source, check::file_target, check::no_permit, check::unknown_prop, check::unknown_token, file::other_mode
 // A `file` takes one of `template:` and `text:`, never writes a `.strand`
-// file, runs only what `permit exec` allows, and its `text:` reads the
-// theme only, tokens the config has; a `when` changes the `file`'s own
-// source.
+// file, runs only what `permit exec` allows, and its `text:` reads
+// tokens the config has, and the other mode only when it reads nothing
+// but the theme; a `when` changes the `file`'s own source.
 state n = 1
 file "~/.cache/a.css" { template: "a.tmpl"; text: $accent }
 file "~/.cache/b.css" { run: ["notify-send", "x"] }
 file "~/.config/strand/x.strand" { text: $accent; colour: $fg }
-file "~/.cache/c.css" { text: n }
+file "~/.cache/c.css" { text: num(n) + hex($surface.light()) }
 bar Top {
   file "~/.cache/d.css" { template: "d.tmpl"; text "hi" }
 }

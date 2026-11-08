@@ -441,6 +441,19 @@ impl VmHooks for Ctx {
         })
     }
 
+    fn token(
+        self: Rc<Self>,
+        rt: &Runtime,
+        e: &strand_scene::TokenExpr,
+    ) -> Option<strand_scene::PropValue> {
+        match self.tokens_memo.get() {
+            Some(m) => m.get(rt).ok()?.eval(e),
+            // While the program mounts (the table's memo is made after
+            // it): the table over the palette memo, made for this read.
+            None => self.token_table(rt).ok()?.eval(e),
+        }
+    }
+
     fn window(&self, _rt: &Runtime, node: &Rc<NodeState>, ask: strand_scene::WindowAsk) {
         // Only a mounted window's root: on another element, nothing.
         let Some(id) = node.scene.get() else { return };

@@ -85,14 +85,14 @@ impl Shell {
 fn written(c: &OutputChange) -> String {
     match &c.content {
         OutputContent::Write { bytes, .. } => String::from_utf8(bytes.clone()).unwrap(),
-        OutputContent::Failed { diags, .. } => panic!("failed: {diags:?}"),
+        other => panic!("not written: {other:?}"),
     }
 }
 
 fn failed(c: &OutputChange) -> String {
     match &c.content {
         OutputContent::Failed { diags, .. } => format!("{diags:?}"),
-        OutputContent::Write { .. } => panic!("written: {c:?}"),
+        _ => panic!("not failed: {c:?}"),
     }
 }
 
@@ -428,4 +428,249 @@ fn a_removed_or_failed_file_has_no_target() {
     assert_eq!(c.len(), 1);
     let _ = failed(&c[0]);
     assert_eq!(targets(&shell), vec![at("c.txt")]);
+}
+
+/// Boots `files` with `before` run on the mock host first (a service
+/// set not ready, say).
+fn boot_with(
+    files: &[(&str, &str)],
+    dir: &std::path::Path,
+    before: impl FnOnce(&Runtime, &SchemaHost),
+) -> Shell {
+    let b = build(files).unwrap_or_else(|e| panic!("{e}"));
+    let rt = Runtime::new();
+    let host = Rc::new(SchemaHost::mock(&rt, &b.program.types));
+    before(&rt, &host);
+    let inst = Instance::from_build(
+        &rt,
+        &b,
+        host.clone(),
+        Storage::in_dirs(dir.join("state"), dir),
+    );
+    let shell = Shell { rt, host, inst };
+    shell.flush();
+    shell
+}
+
+/// The one change for `name`, if any.
+fn change<'c>(
+    c: &'c [OutputChange],
+    dir: &std::path::Path,
+    name: &str,
+) -> Option<&'c OutputChange> {
+    c.iter().find(|c| c.path == Some(dir.join(name)))
+}
+
+/// (live-files, a) A `text:` that reads the scope (a `state`, a settings
+/// field, a `let`, a `fn` and a service) is an ordinary expression,
+/// written again on each change of what it reads.
+#[test]
+fn a_text_reads_the_files_scope() {
+    let dir = temp_dir("scope");
+    let src = "export state label = \"a\"\n\
+               export state prefs from \"prefs.toml\" { size: int = 11 }\n\
+               let twice = prefs.size * 2\n\
+               fn shout(s: text) -> text { s.upper() }\n\
+               file \"out/a.txt\" { text: shout(label) + \" \" + num(twice) + \" \" + (media.title ?? \"-\") }\n";
+    let shell = boot(&[("a.strand", src)], &dir);
+    let next = |shell: &Shell| {
+        let c = shell.take();
+        assert_eq!(c.len(), 1, "{c:?}");
+        written(&c[0])
+    };
+    assert_eq!(next(&shell), "A 22 -");
+    shell.inst.set("a.label", Value::text("b")).unwrap();
+    shell.flush();
+    assert_eq!(next(&shell), "B 22 -");
+    shell.inst.set("a.prefs.size", Value::int(12)).unwrap();
+    shell.flush();
+    assert_eq!(next(&shell), "B 24 -");
+    shell
+        .host
+        .set(&shell.rt, "media.title", Value::text("song"))
+        .unwrap();
+    shell.flush();
+    assert_eq!(next(&shell), "B 24 song");
+    // Values by 9.8's rule: a number shortest, a bool, a colour as hex.
+    let src = "export state n = 1.5\n\
+               file \"out/n.txt\" { text: n * 2 }\n\
+               file \"out/b.txt\" { text: n > 1 }\n\
+               file \"out/c.txt\" { text: n > 1 ? #ff8800 : #000000 }\n\
+               file \"out/t.txt\" { text: n > 1 ? $accent : $fg }\n\
+               file \"out/x.txt\" { text: [n] }\n";
+    let shell = boot(&[("a.strand", src)], &dir);
+    let c = shell.take();
+    assert_eq!(written(change(&c, &dir, "out/n.txt").unwrap()), "3");
+    assert_eq!(written(change(&c, &dir, "out/b.txt").unwrap()), "true");
+    assert_eq!(written(change(&c, &dir, "out/c.txt").unwrap()), "#ff8800");
+    // A token from the scope: the current table's value, as `$accent`.
+    let accent = boot(
+        &[("a.strand", "file \"out/t.txt\" { text: $accent }\n")],
+        &dir,
+    )
+    .take();
+    assert_eq!(
+        written(change(&c, &dir, "out/t.txt").unwrap()),
+        written(&accent[0])
+    );
+    let why = failed(change(&c, &dir, "out/x.txt").unwrap());
+    assert!(why.contains("a list has no one text form"), "{why}");
+}
+
+/// (live-files, b) `text: null` writes nothing and runs nothing: the
+/// file is left as it is, and a later text writes again.
+#[test]
+fn a_null_text_leaves_the_file() {
+    let dir = temp_dir("null");
+    let src = "export state on = true\n\
+               permit exec\n\
+               file \"out/b.txt\" { text: on ? \"x\" : null; run: [\"true\"] }\n\
+               file \"out/n.txt\" { text: null; run: [\"true\"] }\n";
+    let shell = boot(&[("a.strand", src)], &dir);
+    let c = shell.take();
+    assert_eq!(written(change(&c, &dir, "out/b.txt").unwrap()), "x");
+    let n = change(&c, &dir, "out/n.txt").unwrap();
+    assert_eq!(n.content, OutputContent::Leave, "{n:?}");
+    assert_eq!(targets(&shell), vec![dir.join("out/b.txt")]);
+    shell.inst.set("a.on", Value::Bool(false)).unwrap();
+    shell.flush();
+    let c = shell.take();
+    assert_eq!(c.len(), 1, "{c:?}");
+    assert_eq!(c[0].content, OutputContent::Leave, "no write, no run");
+    assert!(
+        targets(&shell).is_empty(),
+        "nothing is tried there any more"
+    );
+    shell.inst.set("a.on", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(written(&shell.take()[0]), "x");
+}
+
+/// (live-files, c) A service the text reads that has not answered: the
+/// file waits, even with `??`, and is written once it has.
+#[test]
+fn a_file_waits_for_the_services_it_reads() {
+    let dir = temp_dir("waits");
+    let src = "file \"out/c.txt\" { text: media.title ?? \"none\" }\n\
+               file \"out/t.txt\" { text: $accent }\n";
+    let shell = boot_with(&[("a.strand", src)], &dir, |rt, host| {
+        host.set_ready(rt, "media", false).unwrap();
+    });
+    let c = shell.take();
+    let waiting = change(&c, &dir, "out/c.txt").unwrap();
+    assert_eq!(
+        waiting.content,
+        OutputContent::Waiting {
+            services: vec!["media".into()]
+        }
+    );
+    // A theme text reads no service: it is written.
+    let _ = written(change(&c, &dir, "out/t.txt").unwrap());
+    shell.flush();
+    assert!(shell.take().is_empty(), "still waiting: nothing new");
+    shell.host.set_ready(&shell.rt, "media", true).unwrap();
+    shell.flush();
+    let c = shell.take();
+    assert_eq!(c.len(), 1);
+    assert_eq!(written(&c[0]), "none");
+}
+
+/// (live-files, d) A service that says its values no longer hold and then
+/// clears them: the file waits, and the cleared values are never written.
+#[test]
+fn an_unready_service_clearing_writes_nothing() {
+    let dir = temp_dir("unready");
+    let src = "file \"out/d.txt\" { text: media.title ?? \"none\" }\n";
+    let shell = boot(&[("a.strand", src)], &dir);
+    shell
+        .host
+        .set(&shell.rt, "media.title", Value::text("song"))
+        .unwrap();
+    shell.flush();
+    let c = shell.take();
+    assert_eq!(written(c.last().unwrap()), "song");
+    shell.host.set_ready(&shell.rt, "media", false).unwrap();
+    shell.flush();
+    shell
+        .host
+        .set(&shell.rt, "media.title", Value::Null)
+        .unwrap();
+    shell.flush();
+    let c = shell.take();
+    assert_eq!(c.len(), 1, "{c:?}");
+    assert!(
+        matches!(&c[0].content, OutputContent::Waiting { .. }),
+        "{c:?}"
+    );
+    shell.flush();
+    assert!(shell.take().is_empty());
+}
+
+/// (live-files, e) A `text:` that reads the theme only is the template
+/// it was: the same bytes as a template file's hole, `.light()` included.
+#[test]
+fn a_theme_text_is_still_a_template() {
+    let dir = temp_dir("theme-text");
+    std::fs::write(dir.join("a.tmpl"), "{{ $accent }}").unwrap();
+    std::fs::write(dir.join("l.tmpl"), "{{ $surface.light() }}").unwrap();
+    let src = "file \"out/a.txt\" { text: $accent }\n\
+               file \"out/at.txt\" { template: \"a.tmpl\" }\n\
+               file \"out/l.txt\" { text: $surface.light() }\n\
+               file \"out/lt.txt\" { template: \"l.tmpl\" }\n";
+    let shell = boot(&[("a.strand", src)], &dir);
+    shell.dark(true);
+    let c = shell.take();
+    let get = |n: &str| written(change(&c, &dir, n).unwrap());
+    assert_eq!(get("out/a.txt"), get("out/at.txt"));
+    assert_eq!(get("out/l.txt"), get("out/lt.txt"));
+    assert!(get("out/a.txt").starts_with('#'));
+    assert_eq!(shell.inst.other_mode_holders(), 2);
+}
+
+/// (live-files, f) The other mode needs a text that reads only the theme.
+#[test]
+fn the_other_mode_in_a_scope_text_is_an_error() {
+    let err = build(&[(
+        "a.strand",
+        "export state x = \"a\"\nfile \"/tmp/x\" { text: x + hex($surface.light()) }\n",
+    )])
+    .unwrap_err();
+    assert!(err.contains("file::other_mode"), "{err}");
+    assert!(err.contains("`.light()`"), "{err}");
+    let err = build(&[(
+        "a.strand",
+        "export state x = true\nfile \"/tmp/x\" { text: x ? hex($surface.dark()) : \"\" }\n",
+    )])
+    .unwrap_err();
+    assert!(err.contains("file::other_mode"), "{err}");
+}
+
+/// (live-files, g) A top-level `file` holds the services it reads.
+#[test]
+fn a_top_level_file_holds_what_it_reads() {
+    let dir = temp_dir("holds");
+    let src = "file \"out/g.txt\" { text: media.title ?? \"\" }\n";
+    let shell = boot(&[("a.strand", src)], &dir);
+    assert!(shell.host.readers("media") > 0, "media is held");
+    assert_eq!(shell.host.readers("battery"), 0);
+}
+
+/// (live-files, h) A service read only inside a `fn` the text calls still
+/// makes the file wait.
+#[test]
+fn a_service_read_through_a_fn_makes_the_file_wait() {
+    let dir = temp_dir("fn-waits");
+    let src = "fn playing() -> text { media.title ?? \"none\" }\n\
+               file \"out/h.txt\" { text: playing() }\n";
+    let shell = boot_with(&[("a.strand", src)], &dir, |rt, host| {
+        host.set_ready(rt, "media", false).unwrap();
+    });
+    let c = shell.take();
+    assert!(
+        matches!(&c[0].content, OutputContent::Waiting { services } if services == &["media"]),
+        "{c:?}"
+    );
+    shell.host.set_ready(&shell.rt, "media", true).unwrap();
+    shell.flush();
+    assert_eq!(written(&shell.take()[0]), "none");
 }

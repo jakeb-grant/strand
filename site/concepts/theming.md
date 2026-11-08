@@ -190,7 +190,10 @@ step with the theme, and `strand export json`, `strand export base24`
 and `strand export --template` write the palette for other programs.
 Strand ships no per-app themes; the guide's
 [level 5](../../docs/guide/level-5.md#2-your-colours-for-other-programs)
-shows both.
+shows both. A `text:` that reads only the theme is a template, with
+`$surface.light()` and the colour channels; one that also reads a
+setting or a service is an ordinary expression, and the file follows
+those as well ([another app's config file](../how-to/config-for-another-app.md)).
 
 ## Trying a colour
 

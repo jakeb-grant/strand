@@ -4,9 +4,12 @@
 //! `template:`, at the top level (grammar.md `top_file`) or in a tree.
 //!
 //! The rules checked here: the path is text and never a `.strand` file;
-//! exactly one of `template:` and `text:`; `text:` has the template scope
-//! (compiled as a template hole, `Template::compile_expr`, never as a
-//! prop) and reads tokens the config has; `run:` is a list of text whose
+//! exactly one of `template:` and `text:`; a `text:` that reads only the
+//! theme has the template scope (compiled as a template hole,
+//! `Template::compile_expr`, never as a prop) and reads tokens the config
+//! has, and (live-files) one that reads the enclosing scope is an
+//! ordinary expression, without `.light()`/`.dark()`
+//! (`file::other_mode`); `run:` is a list of text whose
 //! program `permit exec` allows; a `when` (an ordinary condition in the
 //! enclosing scope) changes those props, the source keeping its kind; no
 //! other prop, child or handler.
@@ -236,23 +239,12 @@ impl<'a> Checker<'a> {
                 self.file_run(&p.value);
                 self.expect(&p.value, &Ty::list(Ty::TEXT), "`run:`")
             }
-            // `text:` has the template scope: compiled as a hole, and
-            // never read as a prop (`$surface.light()` is a template
-            // method, a load error in a prop).
-            _ => {
-                match Template::compile_expr(self.file(), &p.value) {
-                    Ok(t) => {
-                        let key = (self.file(), p.value.span);
-                        self.file_texts.push((key, Arc::new(t)));
-                    }
-                    Err(d) => self.diags.extend(d),
-                }
-                hir::Expr {
-                    kind: hir::ExprKind::Null,
-                    ty: Ty::Any,
-                    span: p.value.span,
-                }
-            }
+            // (live-files) `text:` that reads the theme only compiles as
+            // a template hole, as before (`.light()` and the channels are
+            // template methods, a load error in a prop); one that reads
+            // the scope is an ordinary expression, its value written by
+            // 9.8's Values rule. `null` alone writes nothing.
+            _ => self.file_text(&p.value),
         };
         Some(hir::Prop {
             name: name.to_string(),
@@ -263,6 +255,51 @@ impl<'a> Checker<'a> {
             sub: Vec::new(),
             inherited: false,
         })
+    }
+
+    /// A `file`'s `text:` (spec.md 9.7): kept compiled in
+    /// [`Checker::file_texts`] when it reads the theme only (its HIR value
+    /// is then `null`, never read), else checked as an ordinary expression
+    /// in the enclosing scope, its HIR the real one (lowered to a chunk;
+    /// `check::secret_flow` walks it).
+    fn file_text(&mut self, e: &'a ast::Expr) -> hir::Expr {
+        let null = hir::Expr {
+            kind: hir::ExprKind::Null,
+            ty: Ty::Any,
+            span: e.span,
+        };
+        let bare_null = matches!(unparen(e).kind, ast::ExprKind::Null);
+        if !bare_null {
+            match Template::compile_expr(self.file(), e) {
+                Ok(t) => {
+                    let key = (self.file(), e.span);
+                    self.file_texts.push((key, Arc::new(t)));
+                    return null;
+                }
+                // Theme-only, with a mistake of its own: the template's
+                // errors.
+                Err(d) if d.iter().all(|d| d.code != "template::not_theme") => {
+                    self.diags.extend(d);
+                    return null;
+                }
+                Err(_) => {}
+            }
+        }
+        if let Some((span, method)) = other_mode_call(e) {
+            self.error(
+                "file::other_mode",
+                format!("`.{method}()` needs a `text:` that reads only the theme"),
+                span,
+                "the other mode",
+            )
+            .help = Some(
+                "the other mode is read by a template: a `text:` of tokens, `??`, `join`, \
+                 `hex` and `argb` only, or a `template:` file"
+                    .into(),
+            );
+            return null;
+        }
+        self.expr(e, None)
     }
 
     /// `run:`'s program against `permit exec`, as a `from poll` source's.
@@ -283,6 +320,84 @@ impl<'a> Checker<'a> {
             )
             .help = Some(format!("add `permit exec \"{prog}\"` at the top level"));
         }
+    }
+}
+
+fn unparen(e: &ast::Expr) -> &ast::Expr {
+    match &e.kind {
+        ast::ExprKind::Paren(inner) => unparen(inner),
+        _ => e,
+    }
+}
+
+/// The first `.light()` or `.dark()` in `e` (a method call with no
+/// arguments), with its span and name.
+fn other_mode_call(e: &ast::Expr) -> Option<(Span, &'static str)> {
+    let mut found = None;
+    walk(e, &mut |x| {
+        if found.is_some() {
+            return;
+        }
+        if let ast::ExprKind::Call { callee, args } = &x.kind
+            && args.is_empty()
+            && let ast::ExprKind::Field { name, .. } = &callee.kind
+        {
+            found = match name.name.as_str() {
+                "light" => Some((x.span, "light")),
+                "dark" => Some((x.span, "dark")),
+                _ => None,
+            };
+        }
+    });
+    found
+}
+
+/// Calls `f` on `e` and every expression inside it.
+fn walk<'e>(e: &'e ast::Expr, f: &mut impl FnMut(&'e ast::Expr)) {
+    f(e);
+    let mut each = |x: &'e ast::Expr| walk(x, f);
+    match &e.kind {
+        ast::ExprKind::Paren(x) | ast::ExprKind::Unary { expr: x, .. } => each(x),
+        ast::ExprKind::Field { base, .. } => each(base),
+        ast::ExprKind::Binary { lhs, rhs, .. } => {
+            each(lhs);
+            each(rhs);
+        }
+        ast::ExprKind::Ternary { cond, then, else_ } => {
+            each(cond);
+            each(then);
+            each(else_);
+        }
+        ast::ExprKind::Call { callee, args } => {
+            each(callee);
+            for a in args {
+                each(&a.value);
+            }
+        }
+        ast::ExprKind::Index { base, index } => {
+            each(base);
+            each(index);
+        }
+        ast::ExprKind::Array(v) | ast::ExprKind::Commas(v) | ast::ExprKind::Spaced(v) => {
+            v.iter().for_each(each);
+        }
+        ast::ExprKind::Dict(entries) => {
+            for (k, v) in entries {
+                each(k);
+                each(v);
+            }
+        }
+        ast::ExprKind::Lambda {
+            body: ast::LambdaBody::Expr(b),
+            ..
+        } => each(b),
+        ast::ExprKind::Match(m) => {
+            each(&m.scrutinee);
+            for a in &m.arms {
+                each(&a.body);
+            }
+        }
+        _ => {}
     }
 }
 

@@ -1810,6 +1810,12 @@ proof  = "read: a file is written when its rendered bytes differ, from the resol
 
 [[claim]]
 page   = "site/concepts/theming.md"
+text   = "one that also reads a setting or a service is an ordinary expression"
+source = ['docs/spec.md "reads anything else is an ordinary expression whose value is written"', 'crates/strand-compiler/src/lower/mod.rs "None => FilePart::Value(l.expr_chunk(&p.value)),"']
+proof  = "crates/strand-compiler/tests/outputs.rs::a_text_reads_the_files_scope"
+
+[[claim]]
+page   = "site/concepts/theming.md"
 text   = "The last palette is kept, so the shell starts in it"
 source = ['docs/spec.md "The last palette is persisted, so boot never shows default colours first;"', 'crates/strand-compiler/src/instantiate/mod.rs "_ => match theme.and_then(|t| t.last_palette()) {"']
 proof  = "crates/strand/src/run/tests.rs::the_theme_follows_the_portal_the_wallpaper_and_strand_set (restart boots into the last palette)"
@@ -3146,6 +3152,36 @@ page   = "site/how-to/theme-from-file.md"
 text   = "Without `from`, Strand works out the roles"
 source = ['docs/spec.md "without `from` the table derives it, and with no colour at all the result is null"']
 proof  = "crates/strand-compiler/tests/theme.rs::a_palette_from_hand_written_colours_fills_the_rest"
+
+[[claim]]
+page   = "site/how-to/config-for-another-app.md"
+text   = "is not written at all, even with a `??` fallback"
+source = ['docs/spec.md "are defaults, so a `??` fallback is not written either"', 'crates/strand-compiler/src/instantiate/outputs.rs ".filter(|s| !self.vm.host.ready(rt, s))"']
+proof  = "crates/strand-compiler/tests/outputs.rs::a_file_waits_for_the_services_it_reads"
+
+[[claim]]
+page   = "site/how-to/config-for-another-app.md"
+text   = "atomically, at most twice a second"
+source = ['docs/spec.md "A path is written at most once per 500 ms"', 'crates/strand/src/run/outputs.rs "const PACE: Duration = Duration::from_millis(500);"']
+proof  = "crates/strand/src/run/outputs.rs::writes_are_paced"
+
+[[claim]]
+page   = "site/how-to/config-for-another-app.md"
+text   = "Strand holds it after three rounds and says so"
+source = ['docs/spec.md "three times in a row, the `run:` is held"', 'crates/strand/src/run/outputs.rs "const LOOP_ROUNDS: u32 = 3;"']
+proof  = "crates/strand/src/run/outputs.rs::a_run_that_rewrites_its_input_is_held"
+
+[[claim]]
+page   = "site/how-to/config-for-another-app.md"
+text   = "`text: null` writes nothing"
+source = ['docs/spec.md "A `text:` that is `null` writes nothing and runs nothing"', 'crates/strand-compiler/src/instantiate/outputs.rs "Value::Null => return Content::Leave { path },"']
+proof  = "crates/strand-compiler/tests/outputs.rs::a_null_text_leaves_the_file"
+
+[[claim]]
+page   = "site/how-to/config-for-another-app.md"
+text   = "`hex(c)` and `argb(c)` format any colour"
+source = ['crates/strand-compiler/src/schema/builtin.schema "fn hex(c: color, alpha: bool = false, hash: bool = true) -> text lift"', 'crates/strand-compiler/src/vm/builtins.rs ""hex" | "argb" => {"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::hex_and_argb_format_colours_anywhere"
 
 [[claim]]
 page   = "site/start/install.md"

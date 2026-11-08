@@ -608,6 +608,8 @@ pub(crate) fn computes(name: &str) -> bool {
             | "palette"
             | "import"
             | "rgb"
+            | "hex"
+            | "argb"
             | "sleep"
             | "propagate"
     )
@@ -961,6 +963,38 @@ pub(crate) fn call(
                 scale(ch(2, 0.0)),
                 ch(3, 1.0),
             ))
+        }
+        // (live-files) The template's format functions, as ordinary
+        // builtins: a colour, or a token resolved against the current
+        // token table (`VmHooks::token`).
+        "hex" | "argb" => {
+            let c = match args.get(0) {
+                None | Some(Value::Null) => return Ok(Value::Null),
+                Some(Value::Color(c)) => *c,
+                Some(Value::Token(t)) => match vm.hooks().and_then(|h| h.token(rt, t)) {
+                    Some(strand_scene::PropValue::Color(c)) => c,
+                    Some(_) => return Err(fail(format!("`{name}` needs a colour"))),
+                    None => {
+                        return Err(fail(format!("`{name}`: the token has no value")));
+                    }
+                },
+                Some(_) => return Err(fail(format!("`{name}` needs a colour"))),
+            };
+            if name == "argb" {
+                return Ok(Value::text(crate::template::argb(c)));
+            }
+            let flag = |i: usize, d: bool| match args.get(i) {
+                Some(Value::Bool(b)) => *b,
+                _ => d,
+            };
+            let (alpha, hash) = (flag(1, false), flag(2, true));
+            if !alpha && crate::template::translucent(c) {
+                return Err(fail(
+                    "`hex`: this colour is translucent; write `hex(c, alpha: true)` for \
+                     `#rrggbbaa`, or `argb(c)`",
+                ));
+            }
+            Value::text(crate::template::hex(c, alpha, hash))
         }
         "num" => match args.get(0).and_then(Value::as_f64) {
             Some(x) => Value::text(self::num(

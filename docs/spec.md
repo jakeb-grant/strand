@@ -577,8 +577,9 @@ monitor, the keyboard always).
   and every operation that keeps its characters (`+`, `?:`, `??`,
   `match`, text methods, `join`, `number`). Reaching any of these is
   the warning: a prop of a built-in element (`text pw`, a
-  `placeholder`, a canvas's `draw`, a `file`'s `run:`, which show,
-  draw or run it), other than a password input's own `text`; a token,
+  `placeholder`, a canvas's `draw`, a `file`'s `run:` and `text:`,
+  which show, draw, run or write it), other than a password input's own
+  `text`; a token,
   a pose or keyframes; an argument of a declared `action`
   (the process list shows it) or of an action of a service or record
   (`clipboard.copy`, `n.reply`, a `from dbus` method), other than
@@ -2199,13 +2200,16 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   `$surface.mix($fg, 8%)`). Adding methods later never breaks a token
   name.
 - **Template-only methods.** In a template hole and in a `file`'s
-  `text:` (the template scope, section 9.8) a token path also has
+  `text:` that reads only the theme (the template scope, sections 9.7
+  and 9.8) a token path also has
   `.light()` and `.dark()` (the token's value in that mode),
   `.red()`, `.green()` and `.blue()` (integers 0–255 after gamut
   mapping) and `.opacity()` (0–1). They compose (`$accent.light().red()`).
-  In any other expression they are a load error. `$accent.red` is a
-  token path and `$accent.red()` the channel, so no token name can hide
-  a method.
+  In any other expression they are a load error (in a `text:` that also
+  reads the scope, `.light()` and `.dark()` are `file::other_mode`).
+  `$accent.red` is a token path and `$accent.red()` the channel, so no
+  token name can hide a method. The format functions `hex` and `argb`
+  (section 9.8) are ordinary functions, usable in any expression.
 - `oklch(from $c, l: l + 0.12)` derives a colour from `$c`'s channels
   (`l`, `c`, `h`, `alpha`).
 - An unknown token is a load error with a did-you-mean.
@@ -2331,7 +2335,9 @@ Writing the value a theme reads, a portal change, a new wallpaper,
 
 `file "<path>" { template: "<template path>"; run: [<argv>] }`, or
 `text: <expr>` in place of `template:`, keeps a file outside the config
-in step with the theme.
+in step with the theme, and (live-files) with anything else the config
+reads: another program's config from a settings slider, a status file
+from a service, a compositor fragment from `outputs.all`.
 
 - **Placement.** It is an element in the one call shape, so it may
   appear in any tree, where `if`, `match` and `for` gate it and `when`
@@ -2340,11 +2346,31 @@ in step with the theme.
   top level of a file (grammar.md `top_file`); every other element and
   every prop at the top level stays a load error (section 4.1).
 - **Props.** Exactly one of `template:` (a path relative to the config
-  directory) and `text:` is given; both or neither is a load error. A
-  `text:` expression has the template scope (section 9.8). The
-  positional path, `template:`, `run:` and any `when` condition are
-  ordinary expressions in the enclosing scope, loop variables included,
-  so a `for` can mount distinct paths. The positional path resolves as
+  directory) and `text:` is given; both or neither is a load error. The
+  positional path, `template:`, `text:`, `run:` and any `when` condition
+  are ordinary expressions in the enclosing scope (`state`s, settings
+  fields, `let`s, `fn`s, services and loop variables), so a `for` can
+  mount distinct paths.
+- **`text:`.** A `text:` that reads only the theme (the template scope,
+  section 9.8: tokens, `??`, `join`, `hex`, `argb`) is one template
+  hole, and has the template-only methods (`$surface.light()`). One that
+  reads anything else is an ordinary expression whose value is written
+  by 9.8's Values rule: text as is, a number in shortest form, a bool, a
+  colour as `hex(c)`, a token's current value; a list or record is an
+  error naming its type. `.light()` and `.dark()` in such a text are an
+  error (`file::other_mode`): the other mode needs a text that reads
+  only the theme, or a template file. A `text:` that is `null` writes
+  nothing and runs nothing: the file is left as it is, and bytes not yet
+  written there are let go, as when a render fails.
+  `text: wm.name == "Hyprland" ? monitors() : null` is how a
+  top-level `file` (which no `if` can gate) says "leave it".
+- **Pending.** Nothing is written, and `run:` does not run, while a
+  service the `file` reads (in its path, `text:`, `run:` or a `when`,
+  through `let`s and `fn`s) has `ready` false (section 5.6): its values
+  are defaults, so a `??` fallback is not written either. It is written
+  once every one has answered. A service with no run up (failed, backing
+  off) makes it a standing notice naming that service; one starting is
+  no news. A top-level `file` holds the services it reads. The positional path resolves as
   a settings file's does (section 11): `~/…` from `$HOME`, an absolute
   path as given, anything else against the config directory, never the
   working directory of `strand run`. One path mounted from two places
@@ -2358,7 +2384,12 @@ in step with the theme.
   wallpaper once its `Async` palette resolves, `strand set` and `strand
   clear` overlays, and edits to the template file, which is watched. The
   file is written only when the rendered bytes differ from what Strand
-  last wrote, and at boot when they differ from the file on disk. The
+  last wrote, and at boot when they differ from the file on disk. A
+  path is written at most once per 500 ms: the first write lands at
+  once, and the newest content of the window when it ends (a status
+  file following a playing track writes twice a second at most; a
+  longer pace is `on change x after 2s { snap = x }` and a text reading
+  `snap`). The
   write is atomic, follows symlinks and keeps the file's mode; any error
   writes nothing and is reported with its location, and the last good
   file stays. A refused or failed write is tried again after 1 s,
@@ -2366,7 +2397,14 @@ in step with the theme.
   one notice per reason.
 - **`run`** follows 200 ms after that file's last write, at most one
   run per file with one re-run queued, and is killed with its process
-  group after 10 s. A failure is a notice and a `strand watch` event,
+  group after 10 s. A `run:` that changes what its file is written from
+  (a compositor reload that changes `outputs.all`, which the text maps)
+  is held: when a write comes while the file's `run:` runs or within 1 s
+  of it ending, three times in a row, the `run:` is held, with a
+  standing notice, until the file is quiet for 1 s; it then runs once
+  for the last content, and a fourth round right after that run holds
+  it again without one. The next write that no run caused runs it as
+  usual. A failure is a notice and a `strand watch` event,
   and the last good file stays. A file's standing notice (an unowned
   target, a failing `run`) lasts until its next write lands, and a
   `strand watch` started later hears it.
@@ -2378,12 +2416,20 @@ in step with the theme.
   changing its path or its render failing stops its updates (the
   retries of bytes not yet written); a `run` due for a write that landed
   still runs. Removing a `file` never deletes the file.
+- **Code files.** A generated file a program runs (a compositor's Lua
+  or KDL, a shell script) runs at that program's next reload, outside
+  `permit exec`. Text from outside (an output's `make`, a track title,
+  an SSID) belongs in selectors and keys; anywhere else, escape it for
+  the target's syntax with a `fn` (`fn lua(s: text) -> text { "\"" +
+  s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"" }`). A
+  password reaching `text:` is `check::secret_flow`'s warning, as for
+  `run:` (section 5.1).
 
 ### 9.8 Templates
 
 A template (a `template:` file, or `strand export --template`) is text
-of any format with holes. A `file`'s `text:` is one expression in the
-same scope.
+of any format with holes. A `file`'s `text:` that reads only the theme
+is one hole in the same scope; one that reads more follows section 9.7.
 
 - A hole is `{{ expr }}`: one expression, ending at the first `}}`
   outside a string literal. A literal `{{` is written `{{ "{{" }}`.
@@ -2393,7 +2439,12 @@ same scope.
   only: an absent extra or other mode inside it is the same error as
   outside, and `?? null` skips one), and the format functions
   `hex` and `argb`. Services, `state`, `let` and `fn` are not in scope;
-  naming one is an error saying that a template reads the theme only.
+  naming one is an error saying that a template reads the theme only
+  (`template::not_theme`), so a template file and `strand export
+  --template` depend on the token tables alone. (live-files) `hex` and
+  `argb` are ordinary functions too: `hex(prefs.accent)` in a label,
+  `outputs.all.map(o => …)` in a `text:` (a token they are given is
+  read from the current table).
 - **The other mode.** `$x.light()` and `$x.dark()` evaluate the whole
   theme again with `system.dark` negated, top-level `let`s that reach it
   included, and read that token there; runtime overlays apply to both

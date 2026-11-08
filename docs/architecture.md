@@ -1530,8 +1530,18 @@ owner-approved theming design" and after) and m5-palette.
   - Outputs are pulled: each mounted `file` is a content memo, and
     `Instance::take_outputs()`, called after the tick's diff, renders
     the changed ones on the logic thread (`OutputContent::Write` or
-    `Failed`). `Instance::output_targets` names the paths written now,
-    and the writer drops its retries of every other path.
+    `Failed`; (live-files) `Waiting { services }` while a service it
+    reads is not `ServiceHost::ready`, `Leave` for a null `text:`).
+    `Instance::output_targets` names the paths written now, and the
+    writer drops its retries of every other path.
+  - (live-files) A `text:` that `compile_expr` refuses only for reading
+    the scope lowers to an ordinary chunk (`lower::FilePart::Value`),
+    its value written by `template::write_value`; each `file` element
+    carries the services its chunks read (`Element::services`, its own
+    lowering frame merged into the enclosing one). `hex`/`argb` are VM
+    builtins too; a token they get is read through
+    `VmHooks::token(self: Rc<Self>, rt, expr)`, the instance's current
+    token table.
 - **strand-core.** A read-only `PersistStore` for the offline mount.
 - **strand (binary).**
   - `strand export json | base24 | --template <file> [--palette
@@ -1548,7 +1558,12 @@ owner-approved theming design" and after) and m5-palette.
     targets (an unowned one's notice offers `[replace]`), and retries
     failures. `run:` is debounced 200 ms, one run per file plus one
     queued, killed after 10 s; failures become notices and `strand
-    watch` events, and the last good file stays.
+    watch` events, and the last good file stays. (live-files) A path is
+    written at most once per 500 ms (`PACE`, the newest content landing
+    at the window's end), and a `run:` written into by its own runs
+    three rounds in a row is held (`LOOP_ROUNDS`, a standing notice).
+    A `Waiting` output whose service has no run up
+    (`Services::snapshot`) is a standing notice.
   - `entry.rs` serves every one-shot command from one table
     (`entry::one_shot`).
 
