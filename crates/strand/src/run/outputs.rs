@@ -1874,6 +1874,19 @@ mod tests {
         }
     }
 
+    /// Waits until `run:` has run `n` times, by its log.
+    fn wait_runs(log: &Path, n: usize, seen: &[Outcome]) {
+        let start = Instant::now();
+        while lines(log) < n {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "{} of {n} runs: {seen:?}",
+                lines(log)
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     /// (live-files, review round 2) A slider dragged past three rounds:
     /// the hold ends with its catch-up run, and that takes the loop
     /// notice away (the `run:` is no longer held).
@@ -1888,30 +1901,50 @@ mod tests {
             "-c".into(),
             format!("echo x >> {}", log.display()),
         ]);
-        // Four clicks 0.55 s apart: each lands at once, within a second
-        // of the last run ending, so the fourth is held.
+        // Four clicks, each as soon as the last click's run is in the
+        // log (by the run, not the clock, so a slow machine is the same
+        // loop): each lands within a second of the last run ending, so
+        // the fourth is held.
         let mut seen: Vec<Outcome> = Vec::new();
         for n in 0..4 {
+            if n > 0 {
+                wait_runs(&log, n, &seen);
+            }
             jobs.send(Job::Write {
                 path: out.clone(),
                 bytes: format!("size {n}").into_bytes(),
                 run: run.clone(),
             })
             .unwrap();
-            std::thread::sleep(Duration::from_millis(550));
             seen.extend(rx.drain());
         }
         // Quiet: the hold ends a second after the held write, with one
-        // catch-up run.
+        // catch-up run, and nothing runs after it.
+        let held = |seen: &[Outcome]| {
+            seen.iter().position(
+                |o| matches!(o, Outcome::Failed(p, why) if *p == out && why == LOOP_NOTICE),
+            )
+        };
         let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(3) {
+        loop {
             std::thread::sleep(Duration::from_millis(50));
             seen.extend(rx.drain());
+            let caught_up = held(&seen).is_some_and(|h| {
+                seen[h + 1..]
+                    .iter()
+                    .any(|o| matches!(o, Outcome::Written(p) if *p == out))
+            });
+            if caught_up && lines(&log) >= 4 {
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "held and caught up: {seen:?}"
+            );
         }
-        let held = seen
-            .iter()
-            .position(|o| matches!(o, Outcome::Failed(p, why) if *p == out && why == LOOP_NOTICE));
-        assert!(held.is_some(), "held: {seen:?}");
+        std::thread::sleep(LOOP_WINDOW + Duration::from_millis(500));
+        seen.extend(rx.drain());
+        assert!(held(&seen).is_some(), "held: {seen:?}");
         assert_eq!(lines(&log), 4, "three runs and the catch-up: {seen:?}");
         assert!(
             matches!(seen.last(), Some(Outcome::Written(p)) if *p == out),
@@ -1920,11 +1953,11 @@ mod tests {
     }
 
     /// (live-files, review round 1) A file whose text changes on its own
-    /// every half second (a player's position, a slider) looks like a
-    /// loop for three rounds; while held, the loop notice stands (a held
-    /// write does not take it away), and the first write no run is near
-    /// shows the text changes by itself: the hold goes and `run:` follows
-    /// every later write.
+    /// (a player's position, a slider) can look like a loop for three
+    /// rounds; while held, the loop notice stands (a held write does not
+    /// take it away), and the first write no run is near shows the text
+    /// changes by itself: the hold goes and `run:` follows every later
+    /// write.
     #[test]
     fn a_text_that_changes_on_its_own_is_not_held() {
         let dir = temp("own");
@@ -1936,47 +1969,65 @@ mod tests {
             "-c".into(),
             format!("echo x >> {}", log.display()),
         ]);
-        let mut seen: Vec<Outcome> = Vec::new();
-        let start = Instant::now();
-        let mut n = 0;
-        let mut sampled = None;
-        while start.elapsed() < Duration::from_millis(4000) {
+        let write = |n: usize| {
             jobs.send(Job::Write {
                 path: out.clone(),
                 bytes: format!("pos {n}").into_bytes(),
                 run: run.clone(),
             })
             .unwrap();
-            n += 1;
-            std::thread::sleep(Duration::from_millis(250));
-            seen.extend(rx.drain());
-            // Between the held write at 2 s and the one at 2.5 s that
-            // lets the hold go.
-            if sampled.is_none() && start.elapsed() >= Duration::from_millis(2250) {
-                sampled = seen.last().cloned();
+        };
+        let mut seen: Vec<Outcome> = Vec::new();
+        // Three rounds, each write just after the last run (by the log,
+        // not the clock): the fourth write is held.
+        for n in 0..4 {
+            if n > 0 {
+                wait_runs(&log, n, &seen);
             }
+            write(n);
         }
-        // The last writes' runs may still be running or queued: count
-        // once the log has stopped growing.
-        let mut runs = lines(&log);
-        let settle = Instant::now();
-        while settle.elapsed() < Duration::from_secs(5) {
-            std::thread::sleep(Duration::from_millis(500));
-            let now = lines(&log);
-            if now == runs {
-                break;
-            }
-            runs = now;
+        // The fourth lands at its pace window's end, held: the notice
+        // comes, and stands.
+        let notice =
+            |o: &Outcome| matches!(o, Outcome::Failed(p, why) if *p == out && why == LOOP_NOTICE);
+        let start = Instant::now();
+        while !seen.iter().any(notice) {
+            assert!(start.elapsed() < Duration::from_secs(10), "held: {seen:?}");
+            std::thread::sleep(Duration::from_millis(5));
+            seen.extend(rx.drain());
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        seen.extend(rx.drain());
+        let sampled = seen.last().cloned();
+        // The text goes on changing every 300 ms, which keeps the hold
+        // (no catch-up run comes while writes are under a second apart);
+        // the first write a second past the last run is near no run.
+        let mut n = 4;
+        let start = Instant::now();
+        while lines(&log) < 4 {
+            write(n);
+            std::thread::sleep(Duration::from_millis(300));
+            seen.extend(rx.drain());
+            n += 1;
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "the hold never went: {seen:?}"
+            );
         }
         assert!(
             matches!(&sampled, Some(Outcome::Failed(p, why)) if *p == out && why == LOOP_NOTICE),
             "the notice stands while held: {sampled:?} in {seen:?}"
         );
-        // Writes at 0, 0.5, … 3.5 s: held only at 1.5 and 2 s, so three
-        // runs before the hold and up to three after it. A slow runner
-        // folds the later ones into one queued run; at least one after
-        // the hold shows `run:` follows the writes again.
-        assert!(runs >= 4, "{runs} runs: {seen:?}");
+        // Every later write runs `run:`, even one just after a run. A
+        // catch-up run in place of the hold going would hold the next
+        // such write for good, and this would time out.
+        for _ in 0..2 {
+            let have = lines(&log);
+            write(n);
+            n += 1;
+            seen.extend(rx.drain());
+            wait_runs(&log, have + 1, &seen);
+        }
     }
 
     /// (live-files) A `file` waiting for a service that is starting says
