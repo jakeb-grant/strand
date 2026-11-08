@@ -365,6 +365,8 @@ pub enum StateInit {
     },
     File {
         path: String,
+        /// (check-settings) The path as written, quotes and all.
+        path_span: Span,
         fields: Vec<SettingsField>,
     },
 }

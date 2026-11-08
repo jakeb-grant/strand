@@ -36,6 +36,7 @@ pub mod names;
 pub mod paths;
 mod prepin;
 mod secrets;
+pub mod settings;
 pub mod shaders;
 mod stmt;
 mod surfaces;

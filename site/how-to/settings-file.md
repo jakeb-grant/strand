@@ -76,6 +76,12 @@ accent = "#e06c75"
 - **The value's type decides what the file may say:** `true` or
   `false` for a `bool`, a quoted `"#rrggbb"` for a `color`, an enum's
   variant by name for an enum (`position = "bottom"`).
+- **`strand check` reads the file too**, as the shell would, and shows
+  what would not load at its line in the TOML file. A file that is not
+  TOML is an error, since the shell takes nothing from it. A value of
+  the wrong type, or a key that no field (or no field of a record) has,
+  is a warning: the shell keeps that field's last good value, or never
+  reads the key. A missing file is fine.
 
 ## Where the file lives
 

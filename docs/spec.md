@@ -1021,8 +1021,9 @@ monitor, the keyboard always).
   ``"`qalc` was stopped"``, which a handler awaiting it gets. A call
   after the `stop()` queues behind the stopped command as any call
   does, so `{ rec.stop(); rec(f) }` restarts it once it has ended. A
-  local or parameter of the action's name is that local, and a `from
-  dbus` service's actions (methods, `ppd.hold`) have no run. A reload
+  local or parameter of the action's name is that local. A `from dbus`
+  service's actions (methods, `ppd.hold`) have a run too, read as
+  `ppd.hold.running`, with no `stop()` (below). A reload
   keeps every run: it never stops a command. A glitch report's replay
   (section 13) runs no command: a command counts as running from its
   call to where the recording says it ended, or to its `stop()`.
@@ -1044,6 +1045,32 @@ monitor, the keyboard always).
   failing is. When the object's methods cannot be read, the actions are
   not checked and a warning says so. Any other source's block declaring
   an action is a load error.
+- (dbus-action-run; decisions.md dbus-action-run) Such an action read
+  without a call is its run, an `ActionRun` as a declared command
+  action's is: `bolt.enroll.running` is true while a call of it waits
+  for its answer, `bolt.enroll.started` is when the oldest of those was
+  made (to the minute), and `bolt.enroll.error` (`text?`) says why its
+  last call failed: the daemon's error name and message
+  (``"org.freedesktop.bolt.Error.Exists: device already stored"``), or
+  ``"`org.freedesktop.bolt` is not running"`` or ``"`…` has no method
+  `EnrollDevice`"`` when the call could not be made, or why the service
+  could not take it at all (``"`bolt` is not running: its body failed
+  and restarts after a backoff"``, ``"no system bus"``), which is the
+  action failing, never the handler's error (section 12). A call still
+  waiting when the service's run ends (it stops 5 s after its last
+  visible reader goes, or its run failed) has lost its answer: the
+  action runs no more, its `error` ``"the service stopped before
+  `org.freedesktop.bolt` answered; whether the call took is unknown"``.
+  `error` is null to
+  begin with, from the moment the service takes a new call, and once one
+  is answered without an error; so `on change bolt.enroll.error` hears a
+  failure a shell can show (unless the new call fails before the logic
+  thread's next flush, as a command action's may). They are tracked,
+  read in a binding or a handler, and never written. The run has no
+  `stop()`: a method call cannot be taken back once sent. A service
+  restarted by a reload starts its actions' runs afresh. A field and an
+  action of the same name are a load error already, so the name is never
+  both.
 
 ## 6. Trees
 
@@ -2855,6 +2882,24 @@ people can edit by hand.
   is gone are dropped with one overlay line, as a kept `state`'s are.
   The file may still name the old variant; its next read says so and
   keeps the field's last good value.
+- (check-settings; decisions.md check-settings) **`strand check` reads
+  each settings file** the config declares, resolved as above and read
+  through symlinks, with the shell's own decoder, and reports what the
+  shell would not load, each at its line in the TOML file with the
+  declaration as a second label. A file that does not exist is fine (the
+  first write makes it). One that cannot be read
+  (`check::settings_unreadable`) or is not TOML
+  (`check::settings_syntax`) is an error: the shell takes nothing from
+  it and never writes it. A field whose value does not read as its type
+  (`check::settings_value`: a wrong type, a key a record does not have, a
+  dictionary key that does not read) is a warning, with the message the
+  shell's notice gives, as the shell keeps that field's last good value
+  and loads the rest; so is a key no declaration of the file has
+  (`check::settings_unknown_key`, with a did-you-mean), which the shell
+  never reads. The overlay and the last-good snapshot are the running
+  shell's and are not read. The language server reports the same, each
+  at the declaration that reads the file, its message naming the TOML
+  file and line.
 
 ## 12. Errors and faults
 

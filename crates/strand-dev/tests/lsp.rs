@@ -1602,6 +1602,63 @@ fn formatting_whole_documents() {
     assert_eq!(c.request("textDocument/formatting", params), Value::Null);
 }
 
+/// (check-settings, its review) What `strand check` says of a settings
+/// file the config declares, the editor shows at the declaration that
+/// reads it, the message naming the TOML file and line; a good file
+/// written outside the editor clears it.
+#[test]
+fn a_settings_files_problems_are_shown_at_its_declaration() {
+    let src = "type Mon { name: text; scale: float }\n\
+        state mons from \"monitors.toml\" {\n  \
+          profiles: [text: [Mon]] = []\n  \
+          compact: bool = false\n\
+        }\n\
+        bar B { text \"x\" }\n";
+    let bad = "compact = true\ncompat = 1\n\n\
+        [[profiles.\"a + b\"]]\nname = \"a\"\nscale = \"big\"\n";
+    let mut c = Client::start(&[
+        ("mon.strand", src.to_string()),
+        ("monitors.toml", bad.to_string()),
+    ]);
+    c.open("mon.strand");
+    let diags = c.diagnostics("mon.strand");
+    let toml = c.dir.0.join("monitors.toml").display().to_string();
+    let mut got: Vec<(String, u64, String)> = diags
+        .iter()
+        .map(|d| {
+            (
+                d["code"].as_str().unwrap().to_string(),
+                d["range"]["start"]["line"].as_u64().unwrap(),
+                d["message"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    got.sort();
+    assert_eq!(got.len(), 2, "{diags:?}");
+    // A key no field has, at the file's path (line 2), the TOML's line 2
+    // named.
+    assert_eq!(got[0].0, "check::settings_unknown_key", "{got:?}");
+    assert_eq!(got[0].1, 1, "{got:?}");
+    assert!(got[0].2.starts_with(&format!("`{toml}:2`")), "{got:?}");
+    // A bad value, at its field's declaration (line 3), line 6 named.
+    assert_eq!(got[1].0, "check::settings_value", "{got:?}");
+    assert_eq!(got[1].1, 2, "{got:?}");
+    assert!(got[1].2.starts_with(&format!("`{toml}:6`")), "{got:?}");
+    assert!(got[1].2.contains("expected float"), "{got:?}");
+    assert!(
+        diags.iter().all(|d| d["severity"] == 2),
+        "warnings, as `strand check` gives: {diags:?}"
+    );
+    // Fixed outside the editor: seen at the next analysis.
+    std::fs::write(
+        c.dir.0.join("monitors.toml"),
+        "compact = true\n\n[[profiles.\"a + b\"]]\nname = \"a\"\nscale = 1.5\n",
+    )
+    .unwrap();
+    c.change("mon.strand", 2, &format!("{src}\n"));
+    assert_eq!(c.diagnostics("mon.strand"), Vec::<Value>::new());
+}
+
 #[test]
 fn a_file_outside_the_workspace_is_checked_alone() {
     let c = Client::start(&[]);

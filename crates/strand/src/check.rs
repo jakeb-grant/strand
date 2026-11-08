@@ -1,6 +1,7 @@
 //! `strand check [dir]`: parse, resolve and type-check every `.strand` file
 //! in the config directory as one program, and report diagnostics (with
-//! did-you-mean fixes) without running anything.
+//! did-you-mean fixes) without running anything; (check-settings) the
+//! settings files it reads are read as the running shell reads them.
 
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -193,6 +194,19 @@ fn check_config(
         &compiled.program,
         Some(dir),
     ));
+    // (check-settings) Each settings file the config reads, read as the
+    // running shell reads it; the files read join the map, so a problem
+    // shows its line.
+    let config_dir = if dir.is_file() {
+        dir.parent()
+    } else {
+        Some(dir)
+    };
+    diags.extend(strand_compiler::check::settings::check(
+        &compiled.program,
+        config_dir,
+        &mut map,
+    ));
     // (M6) A component, type, enum or `fn` declared in more than one
     // file: a note at each declaration (spec.md 4.2).
     diags.extend(strand_compiler::check::names::notes(&compiled.program));
@@ -372,7 +386,8 @@ pub(crate) fn helper_install_hint(exe: Option<&Path>) -> String {
 
 pub(crate) const USAGE: &str = "usage: strand check [dir | file]\n\n\
     Parses and type-checks every .strand file under the directory (default \
-    $XDG_CONFIG_HOME/strand) as one config and prints diagnostics; exits \
+    $XDG_CONFIG_HOME/strand) as one config and prints diagnostics, and reads \
+    each settings file it declares as the running shell would; exits \
     non-zero on errors. Given a file, checks it with the rest of its config \
     (the default directory if the file is in it, else the file's directory) \
     and prints the diagnostics in that file, and a missing lock helper.\n";
@@ -764,6 +779,75 @@ mod tests {
         assert_eq!(report.files, 2);
         assert!(report.text.contains("2 files"), "{}", report.text);
         assert!(report.text.contains("0 errors"), "{}", report.text);
+    }
+
+    /// (check-settings) `strand check` reads the settings files the
+    /// config declares, beside it and through a symlink, as `strand run`
+    /// would: a typo'd key in a `[[profiles."a + b".mons]]` table is a
+    /// warning shown at its line in the TOML file (the check still
+    /// passes, as the shell still runs, keeping that field's last good
+    /// value), a file that is not TOML an error (the shell takes nothing
+    /// from it), a missing file nothing; checking the declaring file
+    /// alone reports them too.
+    #[test]
+    fn settings_files_are_read_as_the_shell_reads_them() {
+        let t = TempDir::new();
+        t.write(
+            "monitors.strand",
+            "type Mon { name: text; scale: float }\n\
+             type Profile { mons: [Mon] }\n\
+             state mons from \"monitors.toml\" { profiles: [text: Profile] = [] }\n\
+             state later from \"later.toml\" { on: bool = false }\n\
+             bar Top { edge: top; height: 32 }\n",
+        );
+        // The file a dotfiles manager links in.
+        t.write(
+            "kept/monitors.toml",
+            "# monitors\n\n[profiles.\"a + b\"]\n\n[[profiles.\"a + b\".mons]]\n\
+             name = \"a\"\nscael = 1.5\n",
+        );
+        std::os::unix::fs::symlink(t.0.join("kept/monitors.toml"), t.0.join("monitors.toml"))
+            .unwrap();
+        let report = check_dir(&t.0, Style::Plain).unwrap();
+        assert!(report.ok(), "{}", report.text);
+        assert_eq!(report.warnings, 1, "{}", report.text);
+        assert!(
+            report.text.contains("monitors.toml:7:"),
+            "the TOML line\n{}",
+            report.text
+        );
+        // The renderer wraps a long message at the terminal's width.
+        let flat = report
+            .text
+            .replace('│', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            flat.contains(r#"`profiles`: "a + b": mons[0]: unknown field "scael""#),
+            "{}",
+            report.text
+        );
+        let alone = check_file(
+            &t.0.join("monitors.strand"),
+            None,
+            Style::Plain,
+            strand_auth::default_helper,
+        )
+        .unwrap();
+        assert_eq!(alone.warnings, 1, "{}", alone.text);
+        // Not TOML: an error, and the check fails.
+        t.write("kept/monitors.toml", "[profiles.\"a + b\"\n");
+        let report = check_dir(&t.0, Style::Plain).unwrap();
+        assert!(!report.ok(), "{}", report.text);
+        assert_eq!(report.errors, 1, "{}", report.text);
+        let flat = report
+            .text
+            .replace('│', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(flat.contains("is not valid TOML"), "{}", report.text);
     }
 
     #[test]

@@ -838,6 +838,60 @@ bar Top {
     }
 }
 
+/// (dbus-action-run) A config's own `from dbus` action reads as its run
+/// (spec.md 5.6): dbusmock's power-profiles-daemon refuses
+/// `ReleaseProfile` of a cookie it never gave, and the bar reads
+/// `ppd.release.error` (red) where the log alone said so before; a
+/// `ppd.release.running` read stays false once it is answered, and a
+/// good call clears the failure (blue), as a declared command action's
+/// `.error` is cleared.
+#[test]
+fn a_config_services_action_failure_is_read_as_its_error() {
+    let config = "\
+export state go = 0
+service ppd from dbus system \"net.hadess.PowerProfiles\" {
+  profile: text = ActiveProfile
+  action hold(profile: text, reason: text, app: text) = HoldProfile
+  action release(cookie: int) = ReleaseProfile
+}
+bar Top {
+  edge: top; height: 40
+  bg: ppd.release.running ? #ff00ff : ppd.release.error != null ? #ff0000 : #0000ff
+  on change go {
+    if go == 1 { ppd.release(99) }
+    if go == 2 { ppd.release(1) }
+  }
+  on change ppd.release.error { if ppd.release.error != null { ppd.hold(\"performance\", \"why\", \"strand\") } }
+}
+";
+    let Some(setup) = Setup::start_with(
+        "ppdfail",
+        config,
+        &[("power_profiles_daemon", "net.hadess.PowerProfiles")],
+        &[],
+    ) else {
+        return;
+    };
+    let blue = [0, 0, 255];
+    setup.wait("no call yet (blue)", |img| close(img.px(1270, 20), blue));
+    // The daemon has no hold 99: its error is the action's.
+    setup.cli(&["set", "bar.go", "1"]);
+    setup.wait("the refusal (red)", |img| close(img.px(1270, 20), RED));
+    assert!(
+        setup
+            .log()
+            .contains("ppd.release: net.hadess.PowerProfiles refused `ReleaseProfile`"),
+        "the refusal is still logged\n{}",
+        setup.log()
+    );
+    // `on change ppd.release.error` heard it and held a profile (cookie
+    // 1), which a release now gives back: answered well, no failure.
+    setup.cli(&["set", "bar.go", "2"]);
+    setup.wait("a good call clears it (blue)", |img| {
+        close(img.px(1270, 20), blue)
+    });
+}
+
 const MAGENTA: [u8; 3] = [255, 0, 255];
 const CYAN: [u8; 3] = [0, 255, 255];
 

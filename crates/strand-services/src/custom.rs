@@ -329,8 +329,22 @@ pub struct CustomValue {
     pub value: Data,
 }
 
+/// (dbus-action-run) One `from dbus` action's run, as a declared command
+/// action's is (`bolt.enroll.running`, `.started`, `.error`): its calls
+/// whose answer has not come, when the oldest of those was made (Unix
+/// seconds), and why its last call failed (the daemon's error name and
+/// message), cleared by a new call and by an answer that is no error.
+#[derive(crate::Data, Clone, Debug, Default, PartialEq)]
+#[data(name = "CustomRun", key = index)]
+pub struct CustomRun {
+    pub index: i64,
+    pub running: i64,
+    pub started: Option<i64>,
+    pub error: Option<String>,
+}
+
 /// See the module docs.
-#[service(name = "custom", action = CustomAction)]
+#[service(name = "custom", action = CustomAction, refused = refused)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Custom {
     /// Which declaration it runs.
@@ -338,10 +352,29 @@ pub struct Custom {
     /// Its fields' values, by index.
     #[store(keyed)]
     pub values: Vec<CustomValue>,
+    /// (dbus-action-run) Its actions' runs, by index: only those called
+    /// since the service started (one never called reads as not running,
+    /// with no error).
+    #[store(keyed)]
+    pub runs: Vec<CustomRun>,
     /// (services-round) One line a `from listen` command printed: its
     /// fields' values from that line alone, by index (null where the line
     /// has none). Sent only once a handler listens.
     pub line: Event<Data>,
+    /// (dbus-action-run) An action the service could not take at all
+    /// (its body failed and backs off, its bus is turned off, or its run
+    /// ended before reading it): its index and why. The host makes it
+    /// the action's run's `error`, as a refusal the body makes is.
+    pub refused: Event<(i64, String)>,
+}
+
+/// (dbus-action-run) An action the service could not take: `refused`,
+/// which the host reads as the action's `.error`.
+fn refused(action: &CustomAction, error: &str) -> Option<CustomEvent> {
+    Some(CustomEvent::Refused((
+        action.index as i64,
+        error.to_string(),
+    )))
 }
 
 /// How many handlers hear each spec's `line` event.
@@ -395,8 +428,26 @@ impl Custom {
                     value: Data::Null,
                 })
                 .collect(),
+            runs: Vec::new(),
             line: Default::default(),
+            refused: Default::default(),
         }
+    }
+
+    /// (dbus-action-run) Action `index`'s run, made on its first call.
+    fn run_mut(&mut self, index: usize) -> &mut CustomRun {
+        let i = index as i64;
+        let at = match self.runs.iter().position(|r| r.index == i) {
+            Some(at) => at,
+            None => {
+                self.runs.push(CustomRun {
+                    index: i,
+                    ..CustomRun::default()
+                });
+                self.runs.len() - 1
+            }
+        };
+        &mut self.runs[at]
     }
 
     fn set(&mut self, i: usize, v: Data) {
@@ -832,6 +883,21 @@ fn bind_methods(spec: &Spec, name: &str, methods: &[strand_introspect::Method]) 
         .collect()
 }
 
+/// (dbus-action-run) The calls a run left in flight, lost when it ended:
+/// each action that was waiting runs no more, its error saying the
+/// answer from `name` never came; the others keep their last failure.
+fn lose_calls(s: &mut Custom, name: &str) {
+    for r in &mut s.runs {
+        if r.running > 0 {
+            r.error = Some(format!(
+                "the service stopped before `{name}` answered; whether the call took is unknown"
+            ));
+        }
+        r.running = 0;
+        r.started = None;
+    }
+}
+
 /// (M6) Calls `method` of `iface` at `path` of `dest` with `args`, each
 /// sent as its in-argument's D-Bus type. An enum argument is sent as
 /// each of its spellings in turn ([`Seen::arg_spellings`]) while the
@@ -894,15 +960,41 @@ async fn call_method(
             Err(zbus::Error::MethodError(name, text, _))
                 if name.as_str() == "org.freedesktop.DBus.Error.InvalidArgs" =>
             {
-                last = Err(text.unwrap_or_else(|| name.to_string()));
+                last = Err(match text {
+                    Some(t) if !t.is_empty() => format!("{name}: {t}"),
+                    _ => name.to_string(),
+                });
             }
+            // (dbus-action-run) The daemon's error name and its message:
+            // `org.freedesktop.bolt.Error.Exists: device already stored`.
             Err(zbus::Error::MethodError(name, text, _)) => {
-                return Err(text.unwrap_or_else(|| name.to_string()));
+                return Err(match text {
+                    Some(t) if !t.is_empty() => format!("{name}: {t}"),
+                    _ => name.to_string(),
+                });
             }
             Err(e) => return Err(e.to_string()),
         }
     }
     last
+}
+
+/// (dbus-action-run) A `from dbus` action's method call answered: which
+/// action, when it was made, and how it went.
+struct Answer {
+    index: usize,
+    made: i64,
+    /// `ppd.hold`, for the log.
+    label: String,
+    method: String,
+    result: Result<(), String>,
+}
+
+/// Now, in Unix seconds.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 fn bind(spec: &Spec, name: &str, props: &[strand_introspect::Property]) -> Bound {
@@ -1055,6 +1147,13 @@ async fn run_dbus(
     name: &str,
     path: &str,
 ) -> Result<(), ServiceError> {
+    // (dbus-action-run) A run starts from the service's last state, and
+    // the calls a run that ended had in flight ended with it (its tasks
+    // were dropped): their answers are lost, so no action runs now, and
+    // one that was waiting says why it never heard back.
+    if !cx.update(|s| lose_calls(s, name)) {
+        return Ok(());
+    }
     let conn = if system {
         cx.system().await
     } else {
@@ -1083,9 +1182,11 @@ async fn run_dbus(
     // `power-saver`).
     let mut seen = Seen::new(spec.fields.len());
     let mut echoes = Echoes::new(spec.fields.len());
-    // (M6) The actions' method calls in flight, each a task.
-    let mut acting: tokio::task::JoinSet<(String, String, Result<(), String>)> =
-        tokio::task::JoinSet::new();
+    // (M6) The actions' method calls in flight, each a task, answering
+    // with its action's index and when it was made.
+    let mut acting: tokio::task::JoinSet<Answer> = tokio::task::JoinSet::new();
+    // (dbus-action-run) When each action's calls in flight were made.
+    let mut flying: Vec<Vec<i64>> = vec![Vec::new(); spec.actions.len()];
     loop {
         // (Re)read everything from the current owner.
         let mut bound: Bound = vec![None; spec.fields.len()];
@@ -1170,24 +1271,71 @@ async fn run_dbus(
                     }
                 },
                 Some(done) = acting.join_next(), if !acting.is_empty() => {
-                    if let Ok((label, method, Err(e))) = done {
-                        log::warn!("{label}: {name} refused `{method}`: {e}");
+                    let Ok(done) = done else { continue };
+                    if let Err(e) = &done.result {
+                        log::warn!("{}: {name} refused `{}`: {e}", done.label, done.method);
+                    }
+                    // (dbus-action-run) Its run: one call fewer in flight,
+                    // and why it failed, or no failure.
+                    if let Some(f) = flying.get_mut(done.index)
+                        && let Some(at) = f.iter().position(|t| *t == done.made)
+                    {
+                        f.remove(at);
+                    }
+                    let left = flying.get(done.index).cloned().unwrap_or_default();
+                    let error = done.result.err();
+                    if !cx.update(|s| {
+                        let r = s.run_mut(done.index);
+                        r.running = left.len() as i64;
+                        r.started = left.iter().min().copied();
+                        r.error = error;
+                    }) {
+                        return Ok(());
                     }
                 }
                 m = cx.recv() => match m {
                     None => return Ok(()),
                     // (M6) `ppd.hold("performance")`: the method, its
-                    // arguments as it takes them; a refusal is logged.
+                    // arguments as it takes them; a refusal is logged,
+                    // and (dbus-action-run) is the action's `.error`.
                     Some(Msg::Action(a)) => {
                         let label = spec.actions.get(a.index).map_or("?", |x| x.name.as_str());
-                        match calls.get(a.index).cloned().flatten() {
+                        let refused = match calls.get(a.index).cloned().flatten() {
                             Some(call) => {
                                 let args = a.args.iter().map(|d| seen.arg_spellings(d)).collect();
-                                let what = (format!("{}.{label}", spec.name), call.1.clone());
+                                let made = unix_now();
+                                let label = format!("{}.{label}", spec.name);
+                                let (index, method) = (a.index, call.1.clone());
                                 let go = call_method(conn.clone(), name.to_string(), path.to_string(), call, args);
-                                acting.spawn(async move { (what.0, what.1, go.await) });
+                                acting.spawn(async move {
+                                    let result = go.await;
+                                    Answer { index, made, label, method, result }
+                                });
+                                if let Some(f) = flying.get_mut(a.index) {
+                                    f.push(made);
+                                }
+                                None
                             }
-                            None => log::warn!("{}.{label}: `{name}` has no such method", spec.name),
+                            // The daemon is not on the bus, or its object
+                            // has no such method.
+                            None if daemon.owner().is_none() => Some(format!("`{name}` is not running")),
+                            None => {
+                                let method = spec.actions.get(a.index).map_or("?", |x| x.method.as_str());
+                                Some(format!("`{name}` has no method `{method}`"))
+                            }
+                        };
+                        if let Some(why) = &refused {
+                            log::warn!("{}.{label}: {why}", spec.name);
+                        }
+                        // A new call clears the last one's failure.
+                        let left = flying.get(a.index).cloned().unwrap_or_default();
+                        if !cx.update(|s| {
+                            let r = s.run_mut(a.index);
+                            r.running = left.len() as i64;
+                            r.started = left.iter().min().copied();
+                            r.error = refused;
+                        }) {
+                            return Ok(());
                         }
                     }
                     Some(Msg::Write(w)) => {

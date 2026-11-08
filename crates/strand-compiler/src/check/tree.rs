@@ -2827,6 +2827,7 @@ impl<'a> Checker<'a> {
                     def: id,
                     init: hir::StateInit::File {
                         path: path.value.clone(),
+                        path_span: path.span,
                         fields: out,
                     },
                     persist: false,
