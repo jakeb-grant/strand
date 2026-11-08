@@ -414,8 +414,8 @@ rotation, changed together with `outputs.apply` and checked first with
 
 | Event | |
 | --- | --- |
-| `on outputs.succeeded(action: text)` | The compositor took a configuration: `on outputs.succeeded(action) { … }`, `action` as written (`"apply"` or `"test"`). |
-| `on outputs.failed(action: text, error: text)` | A configuration failed: the compositor refused it (a mode the monitor cannot show), it named no output or an impossible value, or the compositor offers no output configuration: `on outputs.failed(action, error) { … }`. |
+| `on outputs.succeeded(action: text)` | The compositor took a configuration: `on outputs.succeeded(action) { … }`, `action` as written (`"apply"` or `"test"`). An apply is `succeeded` once the monitors show what it asked. |
+| `on outputs.failed(action: text, error: text)` | A configuration failed: the compositor refused it (a mode the monitor cannot show), it said it applied it but the monitors did not change to it (the error says how they differ), it named no output or an impossible value, or the compositor offers no output configuration: `on outputs.failed(action, error) { … }`. |
 
 ## `polkit`
 

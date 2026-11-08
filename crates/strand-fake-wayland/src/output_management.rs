@@ -14,8 +14,22 @@
 //! [`crate::Cmd::MoveOutput`] moves an output; [`crate::Cmd::CustomMode`]
 //! sets one to a mode not in its list, which Hyprland names no current
 //! mode for; [`crate::Cmd::AddOutput`] plugs one in showing such a mode,
-//! its head and `done` sent before a client can bind its `wl_output`. A
-//! configuration is answered `succeeded` and changes nothing.
+//! its head and `done` sent before a client can bind its `wl_output`.
+//!
+//! (outputs-apply) A configuration's places are taken as the compositor
+//! takes them. wlroots moves each output at once, a change and a `done`
+//! as above, then answers `succeeded`. Hyprland 0.57 (its
+//! `OutputManagement.cpp` and `MonitorRuleManager::get`) saves the
+//! places in the manager the configuration was made on, sends that
+//! manager a `done`, then sets each output where the first manager still
+//! connected, in the order they were bound, that saved a place for it
+//! says, as a change of the shape above, and answers `succeeded` whatever
+//! it did: a manager bound after one that saved a place is not followed.
+//! [`crate::Cmd::ShadowOutput`] is another client's earlier manager
+//! saving one. [`crate::Fake::output_managers`] counts the managers bound
+//! and still connected, and the stopped ones among them.
+
+use std::sync::{Arc, Mutex};
 
 use wayland_protocols::xdg::xdg_output::zv1::server::zxdg_output_v1::ZxdgOutputV1;
 use wayland_protocols_wlr::output_management::v1::server::{
@@ -25,6 +39,7 @@ use wayland_protocols_wlr::output_management::v1::server::{
     zwlr_output_manager_v1::{self, ZwlrOutputManagerV1},
     zwlr_output_mode_v1::{self, ZwlrOutputModeV1},
 };
+use wayland_server::backend::{ClientId, ObjectId};
 use wayland_server::protocol::wl_output;
 use wayland_server::{Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource};
 
@@ -80,6 +95,20 @@ struct Manager {
     heads: Vec<Option<ZwlrOutputHeadV1>>,
     /// Asked to stop (Hyprland's shapes, which never answer it).
     stopped: bool,
+    /// (outputs-apply) Hyprland's shapes: the place each output was given
+    /// by a configuration made on this manager, by output index.
+    saved: Vec<(usize, (i32, i32))>,
+}
+
+/// (outputs-apply) An enabled head of a configuration: its output's
+/// index, and the place it was given.
+type Placed = (usize, Option<(i32, i32)>);
+
+/// (outputs-apply) A configuration: the manager it was made on, and its
+/// enabled heads.
+pub(crate) struct Config {
+    manager: ObjectId,
+    heads: Mutex<Vec<Placed>>,
 }
 
 /// The output-management side of the fake's state.
@@ -91,6 +120,23 @@ pub(crate) struct State {
     /// The xdg-outputs given, with the index of their output.
     xdg: Vec<(usize, ZxdgOutputV1)>,
     serial: u32,
+    /// (outputs-apply) Places another client's earlier manager saved
+    /// ([`crate::Cmd::ShadowOutput`]), which Hyprland's shapes follow
+    /// before any of this client's.
+    shadow: Vec<(usize, (i32, i32))>,
+    /// Managers bound so far.
+    bound: usize,
+}
+
+/// (outputs-apply) The output managers bound ([`crate::Fake::output_managers`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ManagerCount {
+    /// Bound so far, by every client.
+    pub bound: usize,
+    /// Bound and still connected.
+    pub live: usize,
+    /// Of those, asked to stop and (Hyprland's shapes) never finished.
+    pub stopped: usize,
 }
 
 impl State {
@@ -145,7 +191,7 @@ impl State {
         };
         let before = std::mem::replace(&mut h.position, (x, y));
         let serial = self.next_serial();
-        for m in &self.managers {
+        for m in self.managers.iter().filter(|m| m.resource.is_alive()) {
             match (self.kind, m.stopped) {
                 (OutputManagement::Wlroots, _) => {
                     if let Some(Some(head)) = m.heads.get(index) {
@@ -169,6 +215,90 @@ impl State {
             if o.version() >= 2 {
                 o.done();
             }
+        }
+    }
+
+    /// (outputs-apply) Another client's earlier manager saves `(x, y)`
+    /// for output `index`, and the output moves there (Hyprland's shapes;
+    /// wlroots' only moves it).
+    pub(crate) fn shadow_output(
+        &mut self,
+        index: usize,
+        x: i32,
+        y: i32,
+        outputs: &[(usize, wl_output::WlOutput)],
+    ) {
+        if self.kind.hyprland() {
+            self.shadow.retain(|(i, _)| *i != index);
+            self.shadow.push((index, (x, y)));
+        }
+        self.move_output(index, x, y, outputs);
+    }
+
+    /// (outputs-apply) Configuration `config` applied: see the module
+    /// docs. Answers `succeeded` after the outputs moved.
+    fn apply(
+        &mut self,
+        config: &ZwlrOutputConfigurationV1,
+        data: &Config,
+        outputs: &[(usize, wl_output::WlOutput)],
+    ) {
+        let asked: Vec<(usize, (i32, i32))> = data
+            .heads
+            .lock()
+            .map(|h| h.iter().filter_map(|&(i, p)| Some((i, p?))).collect())
+            .unwrap_or_default();
+        if !self.kind.hyprland() {
+            for (i, (x, y)) in asked {
+                if self.heads.get(i).is_some_and(|h| h.position != (x, y)) {
+                    self.move_output(i, x, y, outputs);
+                }
+            }
+            config.succeeded();
+            return;
+        }
+        if let Some(m) = self
+            .managers
+            .iter_mut()
+            .find(|m| m.resource.id() == data.manager)
+        {
+            for (i, p) in asked {
+                m.saved.retain(|(j, _)| *j != i);
+                m.saved.push((i, p));
+            }
+        }
+        let serial = self.next_serial();
+        if let Some(m) = self
+            .managers
+            .iter()
+            .find(|m| m.resource.id() == data.manager)
+        {
+            m.resource.done(serial);
+        }
+        // The rule reload: the first saved place wins.
+        for i in 0..self.heads.len() {
+            let first = self.shadow.iter().find(|(j, _)| *j == i).or_else(|| {
+                self.managers
+                    .iter()
+                    .filter(|m| m.resource.is_alive())
+                    .find_map(|m| m.saved.iter().find(|(j, _)| *j == i))
+            });
+            if let Some(&(_, (x, y))) = first
+                && self.heads[i].position != (x, y)
+            {
+                self.move_output(i, x, y, outputs);
+            }
+        }
+        config.succeeded();
+    }
+
+    /// The managers counted ([`ManagerCount`]).
+    pub(crate) fn managers(&self) -> ManagerCount {
+        let live = self.managers.iter().filter(|m| m.resource.is_alive());
+        ManagerCount {
+            bound: self.bound,
+            live: live.clone().count(),
+            stopped: live.filter(|m| m.stopped).count(),
         }
     }
 
@@ -197,7 +327,7 @@ impl State {
             custom: Some((w, h)),
         };
         let serial = self.next_serial();
-        for m in &mut self.managers {
+        for m in self.managers.iter_mut().filter(|m| m.resource.is_alive()) {
             if !m.stopped {
                 m.heads.push(send_head(dh, &m.resource, &head));
             }
@@ -263,10 +393,12 @@ impl GlobalDispatch<ZwlrOutputManagerV1, ()> for Server {
         let sent = heads.iter().map(|h| send_head(dh, &m, h)).collect();
         let serial = state.om.next_serial();
         m.done(serial);
+        state.om.bound += 1;
         state.om.managers.push(Manager {
             resource: m,
             heads: sent,
             stopped: false,
+            saved: Vec::new(),
         });
     }
 }
@@ -283,7 +415,13 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for Server {
     ) {
         match request {
             zwlr_output_manager_v1::Request::CreateConfiguration { id, .. } => {
-                init.init(id, ());
+                init.init(
+                    id,
+                    Arc::new(Config {
+                        manager: manager.id(),
+                        heads: Mutex::new(Vec::new()),
+                    }),
+                );
             }
             // Hyprland 0.57 never answers `stop`, and goes on sending the
             // stopped manager a `done` at each change.
@@ -303,6 +441,11 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for Server {
             }
             _ => {}
         }
+    }
+
+    /// A client gone: Hyprland erases its managers, and what they saved.
+    fn destroyed(state: &mut Self, _: ClientId, manager: &ZwlrOutputManagerV1, _: &()) {
+        state.om.managers.retain(|m| m.resource != *manager);
     }
 }
 
@@ -332,36 +475,56 @@ impl Dispatch<ZwlrOutputModeV1, ()> for Server {
     }
 }
 
-impl Dispatch<ZwlrOutputConfigurationV1, ()> for Server {
+impl Dispatch<ZwlrOutputConfigurationV1, Arc<Config>> for Server {
     fn request(
-        _: &mut Self,
+        state: &mut Self,
         _: &Client,
         config: &ZwlrOutputConfigurationV1,
         request: zwlr_output_configuration_v1::Request,
-        _: &(),
+        data: &Arc<Config>,
         _: &DisplayHandle,
         init: &mut DataInit<'_, Self>,
     ) {
         match request {
-            zwlr_output_configuration_v1::Request::EnableHead { id, .. } => {
-                init.init(id, ());
+            zwlr_output_configuration_v1::Request::EnableHead { id, head } => {
+                // Any manager's head names its output (Hyprland looks
+                // heads up among every manager's).
+                let index = state.om.managers.iter().find_map(|m| {
+                    m.heads
+                        .iter()
+                        .position(|h| h.as_ref().is_some_and(|h| *h == head))
+                });
+                let slot = data.heads.lock().map_or(0, |mut h| {
+                    h.push((index.unwrap_or(usize::MAX), None));
+                    h.len() - 1
+                });
+                init.init(id, (data.clone(), slot));
             }
-            zwlr_output_configuration_v1::Request::Apply
-            | zwlr_output_configuration_v1::Request::Test => config.succeeded(),
+            zwlr_output_configuration_v1::Request::Apply => {
+                let outputs = state.outputs.clone();
+                state.om.apply(config, data, &outputs);
+            }
+            zwlr_output_configuration_v1::Request::Test => config.succeeded(),
             _ => {}
         }
     }
 }
 
-impl Dispatch<ZwlrOutputConfigurationHeadV1, ()> for Server {
+impl Dispatch<ZwlrOutputConfigurationHeadV1, (Arc<Config>, usize)> for Server {
     fn request(
         _: &mut Self,
         _: &Client,
         _: &ZwlrOutputConfigurationHeadV1,
-        _: zwlr_output_configuration_head_v1::Request,
-        _: &(),
+        request: zwlr_output_configuration_head_v1::Request,
+        (config, slot): &(Arc<Config>, usize),
         _: &DisplayHandle,
         _: &mut DataInit<'_, Self>,
     ) {
+        if let zwlr_output_configuration_head_v1::Request::SetPosition { x, y } = request
+            && let Ok(mut heads) = config.heads.lock()
+            && let Some(h) = heads.get_mut(*slot)
+        {
+            h.1 = Some((x, y));
+        }
     }
 }

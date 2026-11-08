@@ -17,9 +17,15 @@
 //! Hyprland 0.57's manager is right only when bound: a change comes as
 //! the values from before it with no `done`, or as nothing at all, so
 //! the service checks the heads against what each `wl_output` and its
-//! xdg-output say once they settle after a change, and binds the manager
-//! again when they disagree or a change came with no `done` for 250 ms,
-//! which gets the outputs as they are ([`Client::resync`]).
+//! xdg-output say once they settle after a change, and when they disagree
+//! or a change came with no `done` for 250 ms it reads the outputs again
+//! as a client bound now gets them ([`Client::resync`]). (outputs-apply)
+//! It reads them on a short connection of its own ([`read_again`]),
+//! never by binding a second manager on its own connection: Hyprland
+//! 0.57 never ends a stopped manager while its client is connected, and
+//! follows, for each monitor, the configuration of the oldest manager
+//! that made one, so every configuration is made on the one manager the
+//! service binds.
 //!
 //! `apply(changes)` and `test(changes)` each make one
 //! `zwlr_output_configuration_v1` against the last `done`'s serial. The
@@ -34,8 +40,15 @@
 //! listed mode of that size nearest its rate within 0.5 Hz (the fastest
 //! listed one for a rate of 0), else a custom mode; a head turned on with
 //! no mode named shows its current mode, else its preferred, else its
-//! first. The compositor answers `succeeded` (`outputs.succeeded(action)`)
-//! or `failed` (`outputs.failed(action, error)`); `cancelled` (the outputs
+//! first. A configuration asked for while the heads may be behind (a
+//! change not read yet) is made after reading the outputs again. The
+//! compositor answers `succeeded` or `failed` (`outputs.failed(action,
+//! error)`). (outputs-apply) `succeeded` is its word only, so an applied
+//! configuration is `outputs.succeeded("apply")` once the `wl_output`s
+//! and xdg-outputs show what it asked ([`Client::unlike`]), and `failed`
+//! naming how they differ once they are quiet for [`CHECK_QUIET`] (at
+//! most [`CHECK_FOR`]) without it; a test is `succeeded` at its answer.
+//! `cancelled` (the outputs
 //! changed since the serial) makes the configuration again from the new
 //! state, at most [`MAX_TRIES`] times. One configuration is in flight at a
 //! time; later ones wait their turn, in order. Every refusal is
@@ -89,10 +102,23 @@ pub const MAX_TRIES: u32 = 3;
 const STOP_WAIT: Duration = Duration::from_millis(500);
 
 /// (outputs-resync) How long a manager's change may go without a `done`
-/// before the manager is bound again ([`Client::resync`]), and how long
+/// before the outputs are read again ([`Client::resync`]), and how long
 /// the `wl_output`s are let settle after a change before the heads are
 /// checked against them ([`Client::disagrees`]).
 const RESYNC_AFTER: Duration = Duration::from_millis(250);
+
+/// (outputs-apply) How long a read of the outputs on a connection of its
+/// own ([`read_again`]) may take before it is given up.
+const READ_WAIT: Duration = Duration::from_secs(2);
+
+/// (outputs-apply) How long the `wl_output`s must be quiet after a
+/// configuration's `succeeded`, while they differ from what it asked,
+/// before it is `failed` ([`Check`]).
+const CHECK_QUIET: Duration = Duration::from_secs(1);
+
+/// (outputs-apply) The longest an applied configuration is checked for
+/// when the outputs keep changing ([`Check`]).
+const CHECK_FOR: Duration = Duration::from_secs(5);
 
 /// (outputs-resync) How far, in logical pixels, xdg-output's size may be
 /// from a head's mode over its scale before they disagree (compositors
@@ -510,12 +536,14 @@ pub struct Outputs {
     /// `apply` and `test` fail with `outputs.failed`.
     pub available: bool,
     /// The compositor took a configuration: `on outputs.succeeded(action)
-    /// { … }`, `action` as written (`"apply"` or `"test"`).
+    /// { … }`, `action` as written (`"apply"` or `"test"`). An apply is
+    /// `succeeded` once the monitors show what it asked.
     pub succeeded: Event<String>,
     /// A configuration failed: the compositor refused it (a mode the
-    /// monitor cannot show), it named no output or an impossible value, or
-    /// the compositor offers no output configuration: `on
-    /// outputs.failed(action, error) { … }`.
+    /// monitor cannot show), it said it applied it but the monitors did
+    /// not change to it (the error says how they differ), it named no
+    /// output or an impossible value, or the compositor offers no output
+    /// configuration: `on outputs.failed(action, error) { … }`.
     pub failed: Event<(String, String)>,
 }
 
@@ -563,6 +591,9 @@ struct HeadEntry {
     /// Its modes, in the order announced (finished ones removed).
     modes: Vec<ObjectId>,
     current_mode: Option<ObjectId>,
+    /// (outputs-apply) The mode the last read on a connection of its own
+    /// said it shows, when it is none of `modes` ([`Client::take_fresh`]).
+    shown_mode: Option<OutputMode>,
     position: (i32, i32),
     transform: wl_output::Transform,
     scale: f64,
@@ -585,6 +616,7 @@ impl HeadEntry {
             enabled: false,
             modes: Vec::new(),
             current_mode: None,
+            shown_mode: None,
             position: (0, 0),
             transform: wl_output::Transform::Normal,
             scale: 1.0,
@@ -628,19 +660,16 @@ struct Client {
     /// the last run gave its connector, and strand-surface reads them.
     /// Off in unit tests, which run side by side.
     shared: bool,
-    /// (outputs-resync) The registry, to bind the manager again.
-    registry: Option<wl_registry::WlRegistry>,
-    /// The version the manager was bound at.
-    manager_version: u32,
+    /// (outputs-apply) A client that reads the outputs once on a
+    /// connection of its own ([`read_again`]): it binds the manager
+    /// alone.
+    probe: bool,
     /// (outputs-resync) When the current manager sent a head or mode
     /// event after its last `done` with no `done` since: Hyprland 0.57
     /// sends a change that way, its values one change behind, so the
-    /// manager is bound again ([`Client::resync`]) once [`RESYNC_AFTER`]
+    /// outputs are read again ([`Client::resync`]) once [`RESYNC_AFTER`]
     /// passes without a `done`.
     undone: Option<Instant>,
-    /// (outputs-resync) Name and id of each head before a resync, which
-    /// the new manager's heads take.
-    carried: Vec<(String, String)>,
     /// (outputs-mode) The `wl_output`s, for the current mode of a head
     /// that names none, and (outputs-resync) to check the heads against.
     wl_outputs: Vec<WlOut>,
@@ -651,9 +680,12 @@ struct Client {
     /// batch of changes (its `done`) after the manager's first `done`:
     /// once [`RESYNC_AFTER`] passes the heads are checked against the
     /// `wl_output`s ([`Client::disagrees`]), since Hyprland 0.57 sends
-    /// the manager nothing for some changes, and nothing at all to a
-    /// manager bound again for the ones after.
+    /// the manager nothing for some changes.
     shown_at: Option<Instant>,
+    /// (outputs-apply) When a `wl_output` last came, went or ended a
+    /// batch of changes: an applied configuration is checked against them
+    /// once they are quiet ([`Check`]).
+    outputs_at: Option<Instant>,
 }
 
 /// (outputs-mode) A `wl_output` as the outputs service binds it: its
@@ -701,10 +733,10 @@ impl Client {
     /// no current mode (Hyprland, for a mode not in its list) has the one
     /// its `wl_output` shows.
     fn snapshot(&mut self) -> Vec<Output> {
-        let mut remembered = std::mem::take(&mut self.carried);
-        if self.shared {
-            remembered.extend(remembered_ids());
-        }
+        let remembered = match self.shared {
+            true => remembered_ids(),
+            false => Vec::new(),
+        };
         let mut all: Vec<Output> = self
             .heads
             .iter()
@@ -734,7 +766,8 @@ impl Client {
                                 .iter()
                                 .find(|o| o.name == h.name)
                                 .and_then(|o| o.mode)
-                        }),
+                        })
+                        .or(h.shown_mode),
                     false => None,
                 };
                 // New to this run: what the last run called it, if any.
@@ -780,43 +813,85 @@ impl Client {
         all
     }
 
-    /// (outputs-resync) Binds the manager again, as a fresh client would,
-    /// and stops the one bound: Hyprland 0.57 sends a change with no
-    /// `done` and the values it had before the change, while a manager
-    /// bound after it gets the outputs as they are, and a `done`. What
-    /// was published stands until the new manager's first `done`; each
-    /// head keeps its id ([`Client::carried`]), and the run stays ready.
-    fn resync(&mut self, qh: &QueueHandle<Client>) {
+    /// (outputs-resync, outputs-apply) Reads the outputs again on a
+    /// connection of its own ([`read_again`] at `path`), as a client
+    /// bound now would, and takes what it says into the heads
+    /// ([`Client::take_fresh`]): Hyprland 0.57's manager is right only
+    /// when bound. The manager bound here stays the one every
+    /// configuration is made on, never stopped, so no stopped manager
+    /// piles up and Hyprland follows each configuration (it follows the
+    /// oldest manager that configured a monitor). The heads keep their
+    /// ids and the run stays ready; a read that fails keeps what was
+    /// published, and the next change tries again.
+    fn resync(&mut self, path: &std::path::Path) {
         self.undone = None;
         self.shown_at = None;
-        let (Some(registry), Some(global), Some(old)) =
-            (&self.registry, self.manager_global, self.manager.take())
-        else {
+        if self.manager.is_none() {
             return;
-        };
-        // Hyprland 0.57 never answers `finished`, and goes on sending
-        // the stopped manager's changes: they are not this state's
-        // (`Dispatch<ZwlrOutputManagerV1>`), and nothing is kept of it.
-        old.stop();
-        self.carried = self
-            .heads
+        }
+        match read_again(path, READ_WAIT) {
+            Ok(fresh) => self.take_fresh(&fresh),
+            Err(e) => log::warn!("outputs: reading the outputs again failed: {e}"),
+        }
+    }
+
+    /// (outputs-apply) What a read on a connection of its own says of
+    /// each head ([`read_again`]).
+    fn fresh(&self) -> Vec<Fresh> {
+        self.heads
             .iter()
-            .filter(|h| !h.id.is_empty())
-            .map(|h| (h.name.clone(), h.id.clone()))
-            .collect();
-        for h in self.heads.drain(..) {
-            if h.proxy.version() >= 3 {
-                h.proxy.release();
-            }
+            .filter(|h| !h.name.is_empty())
+            .map(|h| Fresh {
+                name: h.name.clone(),
+                description: h.description.clone(),
+                make: h.make.clone(),
+                model: h.model.clone(),
+                serial: h.serial.clone(),
+                physical: h.physical,
+                enabled: h.enabled,
+                current: h
+                    .current_mode
+                    .as_ref()
+                    .and_then(|id| self.modes.get(id))
+                    .map(ModeEntry::public)
+                    .filter(|m| m.width > 0 && m.height > 0),
+                position: h.position,
+                transform: h.transform,
+                scale: h.scale,
+                adaptive_sync: h.adaptive_sync,
+            })
+            .collect()
+    }
+
+    /// (outputs-apply) Takes a read's values into the heads of the same
+    /// name, published at once: the head keeps its proxy, its modes and
+    /// its id. Its current mode is its listed one of that size and rate,
+    /// else [`HeadEntry::shown_mode`].
+    fn take_fresh(&mut self, fresh: &[Fresh]) {
+        for h in self.heads.iter_mut().filter(|h| !h.name.is_empty()) {
+            let Some(f) = fresh.iter().find(|f| f.name == h.name) else {
+                continue;
+            };
+            h.description.clone_from(&f.description);
+            h.make.clone_from(&f.make);
+            h.model.clone_from(&f.model);
+            h.serial.clone_from(&f.serial);
+            h.physical = f.physical;
+            h.enabled = f.enabled;
+            h.position = f.position;
+            h.transform = f.transform;
+            h.scale = f.scale;
+            h.adaptive_sync = f.adaptive_sync;
+            let listed = f.current.and_then(|m| {
+                h.modes
+                    .iter()
+                    .find(|id| self.modes.get(id).is_some_and(|e| e.public() == m))
+                    .cloned()
+            });
+            h.shown_mode = f.current.filter(|_| listed.is_none());
+            h.current_mode = listed;
         }
-        for (_, m) in self.modes.drain() {
-            if m.proxy.version() >= 3 {
-                m.proxy.release();
-            }
-        }
-        self.serial = None;
-        self.changed = false;
-        self.manager = Some(registry.bind(global, self.manager_version, qh, ()));
+        self.changed = true;
     }
 
     /// (outputs-resync) A resync is due: the manager sent a change and no
@@ -840,6 +915,14 @@ impl Client {
         false
     }
 
+    /// (outputs-apply) The heads may be behind the outputs: a change came
+    /// with no `done` yet, or the `wl_output`s changed since and disagree
+    /// with them.
+    fn stale(&self) -> bool {
+        self.manager.is_some()
+            && (self.undone.is_some() || self.shown_at.is_some() && self.disagrees())
+    }
+
     /// When the next resync or check falls due, for the poll's timeout.
     fn resync_at(&self) -> Option<Instant> {
         match (self.undone, self.shown_at) {
@@ -852,7 +935,7 @@ impl Client {
     /// (outputs-resync, review round 4) A head on disagrees with what its
     /// `wl_output` and xdg-output say of it: its place, its mode's size
     /// or rate, its transform, or its size in logical pixels (its scale).
-    /// What either side does not say is not compared.
+    /// What either side does not say is not compared ([`differs`]).
     fn disagrees(&self) -> bool {
         self.heads
             .iter()
@@ -861,41 +944,41 @@ impl Client {
                 let Some(o) = self.wl_outputs.iter().find(|o| o.name == h.name) else {
                     return false;
                 };
-                let place = o.place.is_some_and(|p| p != h.position);
-                let transform = o.transform.is_some_and(|t| t != h.transform);
                 let current = h
                     .current_mode
                     .as_ref()
                     .and_then(|id| self.modes.get(id))
                     .map(ModeEntry::public);
-                let mode = match (current, o.mode) {
-                    (Some(c), Some(m)) => {
-                        let mhz = |r: f64| (r * 1000.0).round() as i64;
-                        (c.width, c.height) != (m.width, m.height)
-                            || c.refresh > 0.0
-                                && m.refresh > 0.0
-                                && (mhz(c.refresh) - mhz(m.refresh)).abs() > RATE_SLACK
-                    }
-                    _ => false,
-                };
-                let size = match (current.or(o.mode), o.size) {
-                    (Some(m), Some((w, hh))) if h.scale > 0.0 => {
-                        let (mw, mh) = match h.transform {
-                            wl_output::Transform::_90
-                            | wl_output::Transform::_270
-                            | wl_output::Transform::Flipped90
-                            | wl_output::Transform::Flipped270 => (m.height, m.width),
-                            _ => (m.width, m.height),
-                        };
-                        let off = |px: i64, logical: i32| {
-                            (px as f64 / h.scale - f64::from(logical)).abs() > SIZE_SLACK
-                        };
-                        off(mw, w) || off(mh, hh)
-                    }
-                    _ => false,
-                };
-                place || transform || mode || size
+                differs(o, h.position, h.transform, current, h.scale).is_some()
             })
+    }
+
+    /// (outputs-apply) How the outputs differ from what a configuration
+    /// asked (`None`: as asked, or nothing to tell by), from what each
+    /// `wl_output` and its xdg-output say. A head asked off must have no
+    /// `wl_output`; one asked on must have one, with its mode and (with
+    /// xdg-output) its place and size in, that [`differs`] in nothing.
+    /// A compositor whose `wl_output`s give no names (before version 4)
+    /// tells nothing.
+    fn unlike(&self, asked: &[Expect]) -> Option<String> {
+        if self.wl_outputs.iter().all(|o| o.name.is_empty()) {
+            return None;
+        }
+        asked.iter().find_map(|e| {
+            let o = self.wl_outputs.iter().find(|o| o.name == e.name);
+            match (e.enabled, o) {
+                (false, None) => None,
+                (false, Some(_)) => Some(format!("{} is still on", e.name)),
+                (true, None) => Some(format!("{} is not on", e.name)),
+                (true, Some(o)) if o.mode.is_none() => Some(format!("{} shows no mode", e.name)),
+                (true, Some(o))
+                    if self.xdg_manager.is_some() && (o.place.is_none() || o.size.is_none()) =>
+                {
+                    Some(format!("{} has no place in the layout", e.name))
+                }
+                (true, Some(o)) => differs(o, e.position, e.transform, e.mode, e.scale),
+            }
+        })
     }
 
     /// (outputs-resync, outputs-mode; review round 4) `wl_output`
@@ -905,6 +988,7 @@ impl Client {
     /// in gets its `wl_output`'s mode after the manager's `done`), unless
     /// the manager's own change is still waiting for its `done`.
     fn output_done(&mut self, global: u32) {
+        self.outputs_at = Some(Instant::now());
         let Some(o) = self.wl_outputs.iter_mut().find(|o| o.global == global) else {
             return;
         };
@@ -981,6 +1065,191 @@ impl Client {
         self.serial = None;
         self.changed = true;
         self.lost = true;
+    }
+}
+
+/// (outputs-apply) What a read on a connection of its own says of a head
+/// ([`read_again`], [`Client::take_fresh`]).
+#[derive(Clone, Debug, PartialEq)]
+struct Fresh {
+    name: String,
+    description: String,
+    make: String,
+    model: String,
+    serial: String,
+    physical: (i32, i32),
+    enabled: bool,
+    current: Option<OutputMode>,
+    position: (i32, i32),
+    transform: wl_output::Transform,
+    scale: f64,
+    adaptive_sync: bool,
+}
+
+/// (outputs-apply) What a configuration asked of a head, to check the
+/// outputs against once the compositor says it applied it
+/// ([`Client::unlike`]). `mode` is `None` when no mode was sent; a
+/// refresh of 0 is not compared.
+#[derive(Clone, Debug, PartialEq)]
+struct Expect {
+    name: String,
+    enabled: bool,
+    mode: Option<OutputMode>,
+    position: (i32, i32),
+    transform: wl_output::Transform,
+    scale: f64,
+}
+
+/// (outputs-apply) An applied configuration the compositor answered
+/// `succeeded`, until the outputs show it: `succeeded` once they agree
+/// with it ([`Client::unlike`]), `failed` naming how they differ once
+/// they are quiet for [`CHECK_QUIET`] after the answer, or after
+/// [`CHECK_FOR`] in all.
+#[derive(Debug)]
+struct Check {
+    action: String,
+    asked: Vec<Expect>,
+    since: Instant,
+}
+
+impl Check {
+    /// When it is `failed` if the outputs still differ, given when they
+    /// last changed.
+    fn deadline(&self, outputs_at: Option<Instant>) -> Instant {
+        let quiet = outputs_at.map_or(self.since, |t| t.max(self.since)) + CHECK_QUIET;
+        quiet.min(self.since + CHECK_FOR)
+    }
+}
+
+/// The schema's name of a transform.
+fn transform_name(t: wl_output::Transform) -> &'static str {
+    match OutputTransform::from_wl(t) {
+        OutputTransform::Normal => "normal",
+        OutputTransform::Rotate90 => "rotate_90",
+        OutputTransform::Rotate180 => "rotate_180",
+        OutputTransform::Rotate270 => "rotate_270",
+        OutputTransform::Flipped => "flipped",
+        OutputTransform::Flipped90 => "flipped_90",
+        OutputTransform::Flipped180 => "flipped_180",
+        OutputTransform::Flipped270 => "flipped_270",
+    }
+}
+
+/// (outputs-resync, outputs-apply) How `wl_output` `o` and its
+/// xdg-output differ from an output at `position` turned `transform`,
+/// showing `mode` at `scale` (`None`: they agree): its place, its mode's
+/// size or rate (within [`RATE_SLACK`]; a rate of 0 is not compared), its
+/// transform, or its size in logical pixels, its mode (or, with none,
+/// the one `o` shows) over the scale, within [`SIZE_SLACK`]. What `o`
+/// does not say is not compared.
+fn differs(
+    o: &WlOut,
+    position: (i32, i32),
+    transform: wl_output::Transform,
+    mode: Option<OutputMode>,
+    scale: f64,
+) -> Option<String> {
+    let name = &o.name;
+    if let Some(p) = o.place.filter(|p| *p != position) {
+        return Some(format!(
+            "{name} is at {}, {}, not {}, {}",
+            p.0, p.1, position.0, position.1
+        ));
+    }
+    if let Some(t) = o.transform.filter(|t| *t != transform) {
+        return Some(format!(
+            "{name} is turned {}, not {}",
+            transform_name(t),
+            transform_name(transform)
+        ));
+    }
+    if let (Some(c), Some(m)) = (mode, o.mode) {
+        let mhz = |r: f64| (r * 1000.0).round() as i64;
+        if (c.width, c.height) != (m.width, m.height)
+            || c.refresh > 0.0
+                && m.refresh > 0.0
+                && (mhz(c.refresh) - mhz(m.refresh)).abs() > RATE_SLACK
+        {
+            return Some(format!(
+                "{name} shows {}x{}@{}, not {}x{}@{}",
+                m.width, m.height, m.refresh, c.width, c.height, c.refresh
+            ));
+        }
+    }
+    if let (Some(m), Some((w, h))) = (mode.or(o.mode), o.size)
+        && scale > 0.0
+    {
+        let (mw, mh) = match transform {
+            wl_output::Transform::_90
+            | wl_output::Transform::_270
+            | wl_output::Transform::Flipped90
+            | wl_output::Transform::Flipped270 => (m.height, m.width),
+            _ => (m.width, m.height),
+        };
+        let off =
+            |px: i64, logical: i32| (px as f64 / scale - f64::from(logical)).abs() > SIZE_SLACK;
+        if off(mw, w) || off(mh, h) {
+            return Some(format!(
+                "{name} is {w}x{h} in the layout, not {mw}x{mh} at scale {scale}"
+            ));
+        }
+    }
+    None
+}
+
+/// (outputs-apply) The outputs as a client bound now gets them: a
+/// connection of its own to the socket at `path` binding the output
+/// manager alone, read up to its first `done` (within `wait`), then
+/// closed, which ends the manager with it (Hyprland 0.57 keeps a stopped
+/// manager until its client goes).
+fn read_again(path: &std::path::Path, wait: Duration) -> Result<Vec<Fresh>, String> {
+    let deadline = Instant::now() + wait;
+    let stream = UnixStream::connect(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let conn = Connection::from_socket(stream).map_err(|e| e.to_string())?;
+    let mut queue: EventQueue<Client> = conn.new_event_queue();
+    let qh = queue.handle();
+    let display = conn.display();
+    let _registry = display.get_registry(&qh, ());
+    display.sync(&qh, ());
+    let mut c = Client {
+        probe: true,
+        ..Client::default()
+    };
+    loop {
+        queue.dispatch_pending(&mut c).map_err(|e| e.to_string())?;
+        if c.serial.is_some() {
+            return Ok(c.fresh());
+        }
+        if c.synced && c.manager.is_none() {
+            return Err("the compositor offers no output manager".into());
+        }
+        queue.flush().map_err(|e| e.to_string())?;
+        let Some(guard) = queue.prepare_read() else {
+            continue;
+        };
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(format!("no answer in {} ms", wait.as_millis()));
+        }
+        let readable = {
+            let fd = guard.connection_fd();
+            let mut fds = [PollFd::new(&fd, PollFlags::IN)];
+            match rustix::event::poll(&mut fds, Some(&timespec(left))) {
+                Ok(_) => !fds[0].revents().is_empty(),
+                Err(rustix::io::Errno::INTR) => false,
+                Err(e) => return Err(io::Error::from(e).to_string()),
+            }
+        };
+        if readable {
+            match guard.read() {
+                Ok(_) => {}
+                Err(wayland_client::backend::WaylandError::Io(e))
+                    if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) => return Err(e.to_string()),
+            }
+        } else {
+            drop(guard);
+        }
     }
 }
 
@@ -1158,6 +1427,7 @@ fn default_mode(client: &Client, h: &HeadEntry) -> ModeChoice {
         .iter()
         .find(|o| o.name == h.name)
         .and_then(|o| o.mode)
+        .or(h.shown_mode)
         .filter(|_| h.enabled);
     if let Some(m) = shown
         && let Ok(choice) = choose_mode(client, h, m)
@@ -1189,6 +1459,8 @@ struct Pending {
     waiting: VecDeque<Request>,
     /// Sent, its answer not read yet.
     in_flight: Option<InFlight>,
+    /// (outputs-apply) Answered `succeeded`, until the outputs show it.
+    checking: Option<Check>,
 }
 
 /// The configuration in flight.
@@ -1197,16 +1469,18 @@ struct InFlight {
     id: u64,
     config: ZwlrOutputConfigurationV1,
     request: Request,
+    /// What it asked of each head.
+    asked: Vec<Expect>,
 }
 
-/// Sends `request` as a configuration (number `id`): `Err` (why) when it
-/// is refused before it is sent.
+/// Sends `request` as a configuration (number `id`), with what it asks of
+/// each head: `Err` (why) when it is refused before it is sent.
 fn send(
     client: &Client,
     qh: &QueueHandle<Client>,
     id: u64,
     request: &Request,
-) -> Result<ZwlrOutputConfigurationV1, String> {
+) -> Result<(ZwlrOutputConfigurationV1, Vec<Expect>), String> {
     let (Some(manager), Some(serial)) = (client.manager.as_ref(), client.serial) else {
         return Err(
             "the compositor offers no output configuration (zwlr_output_manager_v1)".into(),
@@ -1214,10 +1488,31 @@ fn send(
     };
     let plans = plan(client, request.action.changes())?;
     let config = manager.create_configuration(serial, qh, id);
+    let mut asked = Vec::new();
     for p in plans {
         let Some(head) = client.heads.iter().find(|h| h.proxy.id() == p.head) else {
             continue;
         };
+        asked.push(Expect {
+            name: head.name.clone(),
+            enabled: p.enabled,
+            mode: match &p.mode {
+                ModeChoice::Keep => None,
+                ModeChoice::Listed(m) => client
+                    .modes
+                    .get(m)
+                    .map(ModeEntry::public)
+                    .filter(|m| m.width > 0 && m.height > 0),
+                ModeChoice::Custom(w, h, r) => Some(OutputMode {
+                    width: i64::from(*w),
+                    height: i64::from(*h),
+                    refresh: f64::from(*r) / 1000.0,
+                }),
+            },
+            position: p.position,
+            transform: p.transform,
+            scale: p.scale,
+        });
         if !p.enabled {
             config.disable_head(&head.proxy);
             continue;
@@ -1247,7 +1542,7 @@ fn send(
         OutputsAction::Apply { .. } => config.apply(),
         OutputsAction::Test { .. } => config.test(),
     }
-    Ok(config)
+    Ok((config, asked))
 }
 
 /// The socket `$WAYLAND_DISPLAY` names (under `$XDG_RUNTIME_DIR` unless
@@ -1297,20 +1592,31 @@ impl Outputs {
                 s.available = false;
             });
             let error = format!("the compositor's connection failed: {e}");
-            let mut lost: Vec<OutputsAction> = pending
-                .in_flight
+            let mut lost: Vec<String> = pending
+                .checking
                 .take()
-                .map(|f| f.request.action)
+                .map(|c| c.action)
                 .into_iter()
-                .chain(pending.waiting.drain(..).map(|r| r.action))
+                .chain(
+                    pending
+                        .in_flight
+                        .take()
+                        .map(|f| f.request.action.name().to_string()),
+                )
+                .chain(
+                    pending
+                        .waiting
+                        .drain(..)
+                        .map(|r| r.action.name().to_string()),
+                )
                 .collect();
             while let Ok(m) = cx.try_recv() {
                 if let Msg::Action(a) = m {
-                    lost.push(a);
+                    lost.push(a.name().to_string());
                 }
             }
             for a in lost {
-                cx.emit(OutputsEvent::Failed((a.name().to_string(), error.clone())));
+                cx.emit(OutputsEvent::Failed((a, error.clone())));
             }
         }
         r
@@ -1324,14 +1630,17 @@ impl Outputs {
         let mut queue: EventQueue<Client> = conn.new_event_queue();
         let qh = queue.handle();
         let display = conn.display();
-        let registry = display.get_registry(&qh, ());
+        let _registry = display.get_registry(&qh, ());
         display.sync(&qh, ());
         let mut client = Client {
             shared: true,
-            registry: Some(registry),
             ..Client::default()
         };
-        let Pending { waiting, in_flight } = pending;
+        let Pending {
+            waiting,
+            in_flight,
+            checking,
+        } = pending;
         let mut next_id = 0u64;
         // Set once stopped: the deadline for the answer in flight.
         let mut stopping: Option<Instant> = None;
@@ -1383,6 +1692,17 @@ impl Outputs {
                 f.config.destroy();
                 let action = f.request.action.name().to_string();
                 match outcome {
+                    // (outputs-apply) Applied: `succeeded` once the
+                    // outputs show it.
+                    Outcome::Succeeded
+                        if matches!(f.request.action, OutputsAction::Apply { .. }) =>
+                    {
+                        *checking = Some(Check {
+                            action,
+                            asked: f.asked,
+                            since: Instant::now(),
+                        });
+                    }
                     Outcome::Succeeded => {
                         cx.emit(OutputsEvent::Succeeded(action));
                     }
@@ -1409,34 +1729,68 @@ impl Outputs {
                     }
                 }
             }
+            // (outputs-apply) An applied configuration, checked against the
+            // outputs.
+            if let Some(c) = checking.as_ref() {
+                let now = Instant::now();
+                match client.unlike(&c.asked) {
+                    None => {
+                        if let Some(c) = checking.take() {
+                            cx.emit(OutputsEvent::Succeeded(c.action));
+                        }
+                    }
+                    Some(why) if now >= c.deadline(client.outputs_at) => {
+                        log::warn!(
+                            "outputs: the compositor took no configuration it said it applied: {why}"
+                        );
+                        if let Some(c) = checking.take() {
+                            cx.emit(OutputsEvent::Failed((
+                                c.action,
+                                format!(
+                                    "the compositor said it applied the configuration, but {why}"
+                                ),
+                            )));
+                        }
+                    }
+                    Some(_) => {}
+                }
+            }
             if let Some(deadline) = stopping
-                && (in_flight.is_none() || Instant::now() >= deadline)
+                && (in_flight.is_none() && checking.is_none() || Instant::now() >= deadline)
             {
                 let _ = conn.flush();
                 return Ok(());
             }
-            // (outputs-resync) A change with no `done`: bound again, once
-            // no configuration is in flight (its answer is the old
-            // manager's).
-            if in_flight.is_none() && stopping.is_none() && client.resync_due(Instant::now()) {
-                log::debug!("outputs: the heads are behind the outputs; binding the manager again");
-                client.resync(&qh);
+            let idle = in_flight.is_none() && checking.is_none() && stopping.is_none();
+            // (outputs-resync) A change with no `done`, or heads behind
+            // their outputs: read again, once no configuration is in
+            // flight or being checked.
+            if idle && client.resync_due(Instant::now()) {
+                log::debug!("outputs: the heads are behind the outputs; reading them again");
+                client.resync(&path);
                 continue;
             }
             // The next configuration, once the first state is in (a
             // manager announced with no `done` yet is waited for).
             let settled = client.synced && (client.manager.is_none() || client.serial.is_some());
-            while in_flight.is_none() && settled && stopping.is_none() {
+            // (outputs-apply) Made from heads that may be behind (a
+            // change not read yet): read again first.
+            if idle && settled && !waiting.is_empty() && client.stale() {
+                log::debug!("outputs: reading the outputs again before a configuration");
+                client.resync(&path);
+            }
+            while in_flight.is_none() && checking.is_none() && settled && stopping.is_none() {
                 let Some(request) = waiting.pop_front() else {
                     break;
                 };
                 next_id += 1;
                 match send(&client, &qh, next_id, &request) {
-                    Ok(config) => {
+                    Ok((config, asked)) => {
                         *in_flight = Some(InFlight {
                             id: next_id,
                             config,
                             request,
+                            asked,
                         })
                     }
                     Err(e) => {
@@ -1467,11 +1821,11 @@ impl Outputs {
                     PollFlags::IN
                 };
                 let mut fds = [PollFd::new(&fd, flags), PollFd::new(wake, PollFlags::IN)];
-                let deadline = match (stopping, client.resync_at().filter(|_| in_flight.is_none()))
-                {
-                    (Some(a), Some(b)) => Some(a.min(b)),
-                    (a, b) => a.or(b),
-                };
+                let resync = client
+                    .resync_at()
+                    .filter(|_| in_flight.is_none() && checking.is_none());
+                let check = checking.as_ref().map(|c| c.deadline(client.outputs_at));
+                let deadline = [stopping, resync, check].into_iter().flatten().min();
                 let timeout =
                     deadline.map(|d| timespec(d.saturating_duration_since(Instant::now())));
                 match rustix::event::poll(&mut fds, timeout.as_ref()) {
@@ -1520,8 +1874,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
                 interface,
                 version,
             } if interface == ZwlrOutputManagerV1::interface().name && state.manager.is_none() => {
-                state.manager_version = version.min(VERSION);
-                state.manager = Some(registry.bind(name, state.manager_version, qh, ()));
+                state.manager = Some(registry.bind(name, version.min(VERSION), qh, ()));
                 state.manager_global = Some(name);
                 state.lost = false;
             }
@@ -1529,7 +1882,11 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
                 name,
                 interface,
                 version,
-            } if interface == wl_output::WlOutput::interface().name && version >= 4 => {
+            } if interface == wl_output::WlOutput::interface().name
+                && version >= 4
+                && !state.probe =>
+            {
+                state.outputs_at = Some(Instant::now());
                 state
                     .wl_outputs
                     .push(WlOut::new(name, registry.bind(name, 4, qh, name)));
@@ -1540,7 +1897,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
                 interface,
                 version,
             } if interface == ZxdgOutputManagerV1::interface().name
-                && state.xdg_manager.is_none() =>
+                && state.xdg_manager.is_none()
+                && !state.probe =>
             {
                 state.xdg_manager = Some(registry.bind(name, version.min(3), qh, ()));
                 let globals: Vec<u32> = state.wl_outputs.iter().map(|o| o.global).collect();
@@ -1556,6 +1914,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
             }
             wl_registry::Event::GlobalRemove { name } => {
                 if let Some(i) = state.wl_outputs.iter().position(|o| o.global == name) {
+                    state.outputs_at = Some(Instant::now());
                     let o = state.wl_outputs.remove(i);
                     if let Some(x) = o.xdg {
                         x.destroy();
@@ -1675,8 +2034,9 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        // (outputs-resync) A manager stopped for a resync: its heads are
-        // not this state's, and its end is not the manager going.
+        // A manager that is not the current one (stopped when its global
+        // went): its heads are not this state's, and its end is not the
+        // manager going.
         if state.manager.as_ref() != Some(manager) {
             if let zwlr_output_manager_v1::Event::Head { head } = event
                 && head.version() >= 3
@@ -1716,7 +2076,7 @@ impl Dispatch<ZwlrOutputHeadV1, ()> for Client {
     ) {
         use zwlr_output_head_v1::Event as E;
         let id = head.id();
-        // A head of a manager stopped for a resync, or one released.
+        // A head of a manager no longer current, or one released.
         if !state.heads.iter().any(|h| h.proxy.id() == id) {
             if let E::Mode { mode } = &event
                 && mode.version() >= 3
@@ -1763,7 +2123,10 @@ impl Dispatch<ZwlrOutputHeadV1, ()> for Client {
             E::PhysicalSize { width, height } => h.physical = (width, height),
             E::Mode { mode } => h.modes.push(mode.id()),
             E::Enabled { enabled } => h.enabled = enabled != 0,
-            E::CurrentMode { mode } => h.current_mode = Some(mode.id()),
+            E::CurrentMode { mode } => {
+                h.current_mode = Some(mode.id());
+                h.shown_mode = None;
+            }
             E::Position { x, y } => h.position = (x, y),
             E::Transform {
                 transform: WEnum::Value(t),
@@ -2405,6 +2768,229 @@ mod tests {
             c.publish(true),
             Publish::Nothing,
             "the manager's change waits"
+        );
+    }
+
+    /// (outputs-apply) An applied configuration is checked against the
+    /// `wl_output`s and their xdg-outputs: a head asked off has none, one
+    /// asked on has one in its place, mode, transform and scale, and
+    /// what is not in yet counts as not done. A compositor whose
+    /// `wl_output`s give no names tells nothing.
+    #[test]
+    fn an_applied_configuration_is_checked_against_the_outputs() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(a).unwrap();
+        let mode = OutputMode {
+            width: 3840,
+            height: 2160,
+            refresh: 60.0,
+        };
+        let shown = || WlOut {
+            name: "DP-1".into(),
+            mode: Some(mode),
+            transform: Some(wl_output::Transform::Normal),
+            place: Some((1920, 0)),
+            size: Some((1920, 1080)),
+            ..WlOut::new(9, wl_output::WlOutput::inert(conn.backend().downgrade()))
+        };
+        let c = Client {
+            xdg_manager: Some(ZxdgOutputManagerV1::inert(conn.backend().downgrade())),
+            wl_outputs: vec![shown()],
+            ..Client::default()
+        };
+        let asked = Expect {
+            name: "DP-1".into(),
+            enabled: true,
+            mode: Some(mode),
+            position: (1920, 0),
+            transform: wl_output::Transform::Normal,
+            scale: 2.0,
+        };
+        assert_eq!(c.unlike(std::slice::from_ref(&asked)), None, "as asked");
+        let unlike = |e: Expect| c.unlike(&[e]).unwrap_or_default();
+        assert_eq!(
+            unlike(Expect {
+                position: (0, 0),
+                ..asked.clone()
+            }),
+            "DP-1 is at 1920, 0, not 0, 0"
+        );
+        assert_eq!(
+            unlike(Expect {
+                scale: 1.0,
+                ..asked.clone()
+            }),
+            "DP-1 is 1920x1080 in the layout, not 3840x2160 at scale 1"
+        );
+        assert!(
+            unlike(Expect {
+                mode: Some(OutputMode {
+                    width: 2560,
+                    height: 1440,
+                    refresh: 60.0
+                }),
+                ..asked.clone()
+            })
+            .starts_with("DP-1 shows 3840x2160@60, not 2560x1440@60")
+        );
+        assert_eq!(
+            unlike(Expect {
+                transform: wl_output::Transform::_90,
+                ..asked.clone()
+            }),
+            "DP-1 is turned normal, not rotate_90"
+        );
+        // A rate within 0.5 Hz, or none asked, is the same mode.
+        for refresh in [59.6, 0.0] {
+            let e = Expect {
+                mode: Some(OutputMode { refresh, ..mode }),
+                ..asked.clone()
+            };
+            assert_eq!(c.unlike(&[e]), None, "{refresh}");
+        }
+        assert_eq!(
+            unlike(Expect {
+                enabled: false,
+                ..asked.clone()
+            }),
+            "DP-1 is still on"
+        );
+        assert_eq!(
+            unlike(Expect {
+                name: "DP-2".into(),
+                ..asked.clone()
+            }),
+            "DP-2 is not on"
+        );
+        let off = Expect {
+            name: "DP-2".into(),
+            enabled: false,
+            ..asked.clone()
+        };
+        assert_eq!(c.unlike(&[off]), None, "off, and no wl_output");
+        // Not in yet: its mode, its place.
+        let mut c = c;
+        c.wl_outputs[0].place = None;
+        assert_eq!(
+            c.unlike(std::slice::from_ref(&asked)).as_deref(),
+            Some("DP-1 has no place in the layout")
+        );
+        c.wl_outputs[0].mode = None;
+        assert_eq!(
+            c.unlike(std::slice::from_ref(&asked)).as_deref(),
+            Some("DP-1 shows no mode")
+        );
+        c.wl_outputs[0].name.clear();
+        assert_eq!(c.unlike(&[asked]), None, "no names: nothing to tell by");
+    }
+
+    /// (outputs-apply) A check is `failed` only once the outputs are
+    /// quiet for [`CHECK_QUIET`] after the answer, and at most
+    /// [`CHECK_FOR`] after it.
+    #[test]
+    fn a_check_waits_for_the_outputs_to_be_quiet() {
+        let since = Instant::now();
+        let c = Check {
+            action: "apply".into(),
+            asked: Vec::new(),
+            since,
+        };
+        assert_eq!(c.deadline(None), since + CHECK_QUIET);
+        let earlier = since.checked_sub(Duration::from_secs(9)).unwrap_or(since);
+        assert_eq!(c.deadline(Some(earlier)), since + CHECK_QUIET);
+        let later = since + Duration::from_millis(700);
+        assert_eq!(c.deadline(Some(later)), later + CHECK_QUIET);
+        assert_eq!(c.deadline(Some(since + CHECK_FOR)), since + CHECK_FOR);
+    }
+
+    /// (outputs-apply) A read on a connection of its own is taken into
+    /// the heads of the same name: each keeps its proxy, modes and id,
+    /// its current mode is its listed one of that size and rate, else the
+    /// one shown, and it is published.
+    #[test]
+    fn a_read_again_is_taken_into_the_heads() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(a).unwrap();
+        let listed = ZwlrOutputModeV1::inert(conn.backend().downgrade());
+        let head = HeadEntry {
+            name: "DP-1".into(),
+            id: "Dell | U2720Q | Dell U2720Q".into(),
+            enabled: true,
+            position: (0, 0),
+            modes: vec![listed.id()],
+            current_mode: Some(listed.id()),
+            ..HeadEntry::new(ZwlrOutputHeadV1::inert(conn.backend().downgrade()))
+        };
+        let proxy = head.proxy.id();
+        let mut c = Client {
+            serial: Some(4),
+            synced: true,
+            heads: vec![head],
+            ..Client::default()
+        };
+        c.modes.insert(
+            listed.id(),
+            ModeEntry {
+                proxy: listed.clone(),
+                width: 1920,
+                height: 1080,
+                refresh: 60_000,
+                preferred: true,
+            },
+        );
+        let fresh = |current: OutputMode| Fresh {
+            name: "DP-1".into(),
+            description: "Dell U2720Q (DP-1)".into(),
+            make: "Dell".into(),
+            model: "U2720Q".into(),
+            serial: String::new(),
+            physical: (600, 340),
+            enabled: true,
+            current: Some(current),
+            position: (2560, 40),
+            transform: wl_output::Transform::_90,
+            scale: 1.5,
+            adaptive_sync: false,
+        };
+        let custom = OutputMode {
+            width: 1280,
+            height: 720,
+            refresh: 60.0,
+        };
+        c.take_fresh(&[
+            fresh(custom),
+            Fresh {
+                name: "DP-9".into(),
+                ..fresh(custom)
+            },
+        ]);
+        let h = &c.heads[0];
+        assert_eq!(h.proxy.id(), proxy);
+        assert_eq!((h.position, h.scale), ((2560, 40), 1.5));
+        assert_eq!(h.transform, wl_output::Transform::_90);
+        assert_eq!((h.current_mode.clone(), h.shown_mode), (None, Some(custom)));
+        assert_eq!(c.heads.len(), 1, "a head this manager has not sent waits");
+        match c.publish(true) {
+            Publish::Shown(all, _) => {
+                assert_eq!((all[0].x, all[0].y), (2560, 40));
+                assert_eq!(all[0].mode, Some(custom));
+                assert_eq!(all[0].id, "Dell | U2720Q | Dell U2720Q");
+            }
+            p => panic!("published: {p:?}"),
+        }
+        assert_eq!(
+            default_mode(&c, &c.heads[0]),
+            ModeChoice::Custom(1280, 720, 60_000)
+        );
+        c.take_fresh(&[fresh(OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh: 60.0,
+        })]);
+        let h = &c.heads[0];
+        assert_eq!(
+            (h.current_mode.clone(), h.shown_mode),
+            (Some(listed.id()), None)
         );
     }
 

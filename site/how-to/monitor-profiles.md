@@ -143,6 +143,14 @@ bar Displays {
   a half, so a dock that brings up its monitors one by one is arranged
   once. Moving a monitor by hand changes nothing `chosen` reads, so it
   stays where you put it until you save it.
+- **On Hyprland**, a monitor Strand has arranged keeps that layout over
+  Hyprland's own monitor rules while the shell runs: Hyprland follows,
+  for each monitor, the first program still running that arranged it.
+  So a `hyprctl` or config change to it does not take while the shell
+  runs; edit the saved profile in the file instead, which applies live.
+  A layout Hyprland answers but does not show (another program, such
+  as kanshi, arranged that monitor first) is `outputs.failed`, its
+  `error` saying how the monitors differ, never `outputs.succeeded`.
 
 ## The file
 
