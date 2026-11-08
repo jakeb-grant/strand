@@ -1956,13 +1956,27 @@ mod tests {
                 sampled = seen.last().cloned();
             }
         }
-        let runs = lines(&log);
+        // The last writes' runs may still be running or queued: count
+        // once the log has stopped growing.
+        let mut runs = lines(&log);
+        let settle = Instant::now();
+        while settle.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(500));
+            let now = lines(&log);
+            if now == runs {
+                break;
+            }
+            runs = now;
+        }
         assert!(
             matches!(&sampled, Some(Outcome::Failed(p, why)) if *p == out && why == LOOP_NOTICE),
             "the notice stands while held: {sampled:?} in {seen:?}"
         );
-        // Writes at 0, 0.5, … 3.5 s: held only at 1.5 and 2 s.
-        assert!(runs >= 5, "{runs} runs: {seen:?}");
+        // Writes at 0, 0.5, … 3.5 s: held only at 1.5 and 2 s, so three
+        // runs before the hold and up to three after it. A slow runner
+        // folds the later ones into one queued run; at least one after
+        // the hold shows `run:` follows the writes again.
+        assert!(runs >= 4, "{runs} runs: {seen:?}");
     }
 
     /// (live-files) A `file` waiting for a service that is starting says

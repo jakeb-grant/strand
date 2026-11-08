@@ -362,7 +362,7 @@ the report branch's binary (recording on, the default, in every run):
 | Measure | Figure |
 | --- | --- |
 | The rings' size (`strand_core::flight`, input 155,648 B + changes 106,496 B; replayfix 2026-10-21, from 180,224 + 81,920) | 262,144 B |
-| `the_replay_rings_cost_at_most_their_size`: anonymous PSS (`Pss_Anon`) on minus off, both rings wrapped by clicks | 264 to 268 kB over five runs (bound 288 KiB); 260 kB with replayfix's sizes (2026-10-21, one run) |
+| `the_replay_rings_cost_at_most_their_size`: anonymous PSS (`Pss_Anon`) on minus off, both rings wrapped by clicks | 264 to 268 kB over five runs (bound 288 KiB, 320 KiB since 2026-11-07); 260 kB with replayfix's sizes (2026-10-21, one run); 224 kB in CI's budgets job and 296 kB in its parallel debug `test` job at the blocks merge (2026-11-07) |
 | The same on the whole PSS (not gated: shared libraries' share moves) | 224 to 541 kB |
 | Design bar, two 2560×1440 outputs, warm device (lavapipe) | 200,251 kB (ceiling 247,808) |
 | Design bar, cold | 41,269 kB (ceiling 53,248 since lock-int; 49,185 kB on GitHub at its grain fix) |
@@ -377,7 +377,9 @@ report: `main` at 091c7f64 measured 26,207,698 B (GPU) and 22,218,514 B
 are 26,738,688 and 22,806,528 B (decisions.md growth); services-round
 re-based them to 28,311,552 and 24,379,392 B (decisions.md
 services-round), wave-cost to 29,097,984 and 24,903,680 B, and
-services-merge to 29,622,272 and 25,690,112 B.
+services-merge to 29,622,272 and 25,690,112 B, and blocks-ci to
+30,408,704 and 26,476,544 B (29,764,823 and 25,691,287 B measured at the
+blocks merge, 2026-11-07).
 
 No idle-wakeup window in budgets.rs changed: nothing records on a timer,
 and the `strand-report` thread lives only while a report is written.

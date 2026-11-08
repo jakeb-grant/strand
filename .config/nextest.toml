@@ -101,6 +101,7 @@ filter = '''
   | test(=wlr_management_serves_sway_without_its_adapter)
   | test(=sways_keyboard_layout_follows_its_input_events)
   | test(=an_unknown_sway_event_is_harmless_but_a_stream_of_no_events_is_not)
+  | test(=sway_moves_a_workspace_to_another_output)
   | test(=bluetooth_finds_nearby_devices_only_while_read)
   | test(=the_compositor_runs_for_the_focus_only_while_it_is_read)
   | test(=history_is_recorded_only_while_read)

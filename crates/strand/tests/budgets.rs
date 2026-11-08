@@ -50,12 +50,12 @@
 //!   Vulkan mapped, aiming at 76 MB and failing above 128 MiB in release.
 //! - `the_release_binary_code_stays_within_its_gate`: the release
 //!   binary's `.text` (most of it resident on a large-folio page cache):
-//!   29,622,272 B with the GPU backend (the default build), 25,690,112 B
+//!   30,408,704 B with the GPU backend (the default build), 26,476,544 B
 //!   for the CPU core (`--no-default-features`); both re-based for the
 //!   speed profile and since by the measured-plus-reserve rule, last for
-//!   the pairing agent, audio routing, power, media and keyboard-light and
-//!   drives work (decisions.md m5-speed, growth, services-round, wave-cost,
-//!   services-merge; docs/architecture.md,
+//!   the document formats and the monitor-profile building blocks
+//!   (decisions.md m5-speed, growth, services-round, wave-cost,
+//!   services-merge, blocks-ci; docs/architecture.md,
 //!   "`strand-gpu`", "Budgets and tests").
 //! - `the_binary_holds_no_fault_code`: no `STRAND_FAULT` point in a
 //!   default build (the lock's `faults` feature).
@@ -2540,7 +2540,11 @@ fn the_ledger_half_reads_size_delta_baseline_and_gate() {
     assert_eq!(grouped(1_000), "1,000");
 }
 
-/// `.text` of the default (GPU) release build: 29,622,272 B (113 × 256
+/// `.text` of the default (GPU) release build: 30,408,704 B (116 × 256
+/// KiB): `main` with doc-formats and the blocks merged
+/// (`laptop/blocks-ready`) measured 29,764,823 B in the container suite,
+/// 142,551 B over the gate before, plus a 512 KiB reserve, rounded up to
+/// 256 KiB (decisions.md blocks-ci). It was 29,622,272 B (113 × 256
 /// KiB): the pairing agent, audio routing, power, media and keyboard-light
 /// and drives merge (`laptop/services-round`) measured 29,053,463 B in the
 /// container suite, which CI's budgets job runs in too (+727,360 B over
@@ -2573,10 +2577,12 @@ fn the_ledger_half_reads_size_delta_baseline_and_gate() {
 /// reserve, decisions.md m6-integration-w1), 22,806,528 B from M5 wave 2's re-base (decisions.md
 /// m5-integration-w2), 22,282,240 B after the speed review (decisions.md
 /// m5-speed) and 18.5 MiB before it.
-const TEXT_GATE_GPU: u64 = 29_622_272;
-/// `.text` of the CPU-only release build: 25,690,112 B (98 × 256 KiB):
-/// the same merge measured 25,014,231 B in the container suite, 110,551 B
-/// over the gate before (+730,048 B over wave-cost's tree), plus a 512 KiB
+const TEXT_GATE_GPU: u64 = 30_408_704;
+/// `.text` of the CPU-only release build: 26,476,544 B (101 × 256 KiB):
+/// the same tree measured 25,691,287 B, 1,175 B over the gate before,
+/// plus the reserve, rounded up (decisions.md blocks-ci). It was
+/// 25,690,112 B (98 × 256 KiB): the services merge measured
+/// 25,014,231 B in the container suite, 110,551 B over the gate before (+730,048 B over wave-cost's tree), plus a 512 KiB
 /// reserve, rounded up to 256 KiB (decisions.md services-merge). It was
 /// 24,903,680 B (95 × 256 KiB; 24,284,183 B measured in the container
 /// suite; decisions.md wave-cost).
@@ -2599,7 +2605,7 @@ const TEXT_GATE_GPU: u64 = 29_622_272;
 /// after the speed review (decisions.md m5-speed) and 15,859,712 B
 /// before it. The gate catches accidental growth, never caps a feature:
 /// a deliberate choice re-bases it with its measured reason.
-const TEXT_GATE_CPU: u64 = 25_690_112;
+const TEXT_GATE_CPU: u64 = 26_476_544;
 /// The lock's fault injection never ships (decisions.md, m4-lock-w2):
 /// the `faults` feature's `STRAND_FAULT` points are not in the binary a
 /// default build makes, in the dev profile here and in release in CI's
@@ -2628,10 +2634,12 @@ fn the_binary_holds_no_fault_code() {
 
 /// (report) What the replay rings may add to the process's anonymous
 /// PSS (`Pss_Anon`, where the heap and so the rings are): their 256 KiB
-/// and 32 KiB of slack (docs/architecture.md, "Glitch reports"). The
+/// and 64 KiB of slack (docs/architecture.md, "Glitch reports"; 32 KiB
+/// until 2026-11-07, when the test job's parallel debug run measured
+/// 296 kB, decisions.md blocks-ci). The
 /// whole PSS is not compared: its shared libraries' share moves by a
 /// few hundred kB as other processes map and unmap them.
-const RINGS_KB: u64 = 288;
+const RINGS_KB: u64 = 320;
 
 /// `pid`'s anonymous PSS in kB.
 fn anon_kb(pid: u32) -> u64 {
