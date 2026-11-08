@@ -51,7 +51,12 @@ struct Harness {
 impl Harness {
     /// `outputs` on `sway`, read and ready.
     fn start(sway: &Sway) -> Harness {
-        outputs::configure(Some(WaylandTarget::Socket(sway.socket())));
+        Harness::start_on(sway.socket())
+    }
+
+    /// `outputs` on the compositor at `socket`, read and ready.
+    fn start_on(socket: std::path::PathBuf) -> Harness {
+        outputs::configure(Some(WaylandTarget::Socket(socket)));
         let rt = Runtime::new();
         let s = Services::new(&rt, Buses::none(), || {});
         let b = Builtin::register(&s, &rt);
@@ -496,6 +501,77 @@ fn a_lost_compositor_is_unready_before_its_heads_clear() {
     );
     assert_eq!(seen.last(), Some(&(false, 0)), "{seen:?}");
     assert_eq!(changes.get(), 0, "the clear is not a change");
+    h.s.shutdown();
+    outputs::configure(None);
+}
+
+/// (outputs-resync) Hyprland 0.57's output management: a change comes as
+/// the head's values from before it, with no manager `done`, so the list
+/// would stay as it was at bind until the next start. `outputs` binds the
+/// manager again when a change has no `done` for 250 ms, and a manager
+/// bound after the change gets the outputs as they are. The list stays
+/// ready and each output keeps its id. The fake's wlroots shape (a
+/// change and a `done`) is followed at once.
+#[test]
+fn a_change_with_no_done_is_read_again() {
+    use strand_fake_wayland::{Cmd, Fake, OutputManagement};
+    let _serial = serial();
+    for shape in [OutputManagement::Lagging, OutputManagement::Wlroots] {
+        let fake = Fake::builder()
+            .toplevel_list(false)
+            .outputs(&["FAKE-1", "FAKE-2"])
+            .output_management(shape)
+            .start();
+        let h = Harness::start_on(fake.socket.clone());
+        h.until("ready", |h| h.b.outputs.ready(&h.rt));
+        assert_eq!((h.output("FAKE-2").x, h.output("FAKE-2").y), (1920, 0));
+        let ids: Vec<String> = h.all().into_iter().map(|o| o.id).collect();
+        assert_eq!(
+            ids,
+            ["Fake | FAKE-1 | Fake FAKE-1", "Fake | FAKE-2 | Fake FAKE-2"]
+        );
+        fake.cmd(Cmd::MoveOutput(1, 3000, 40));
+        h.until(&format!("{shape:?}: FAKE-2 at 3000, 40"), |h| {
+            let o = h.output("FAKE-2");
+            (o.x, o.y) == (3000, 40)
+        });
+        // Again: each change is read.
+        fake.cmd(Cmd::MoveOutput(0, 0, 500));
+        h.until(&format!("{shape:?}: FAKE-1 at 0, 500"), |h| {
+            h.output("FAKE-1").y == 500
+        });
+        assert!(h.b.outputs.ready(&h.rt), "{shape:?}: still ready");
+        let again: Vec<String> = h.all().into_iter().map(|o| o.id).collect();
+        assert_eq!(again, ids, "{shape:?}: the same ids");
+        // An apply goes to the manager bound now.
+        h.act("apply", &[OutputChange::of("FAKE-1")]);
+        assert_eq!(h.next_event("the answer").0, "succeeded", "{shape:?}");
+        h.s.shutdown();
+    }
+    outputs::configure(None);
+}
+
+/// (outputs-mode) An output on that shows a mode not in its list:
+/// Hyprland 0.57's head names no current mode for it, and its `wl_output`
+/// sends it. `Output.mode` is that mode, not null, which reads as off.
+#[test]
+fn a_mode_not_in_the_list_is_the_wl_outputs() {
+    use strand_fake_wayland::{Cmd, Fake, OutputManagement};
+    let _serial = serial();
+    let fake = Fake::builder()
+        .toplevel_list(false)
+        .outputs(&["FAKE-1", "FAKE-2"])
+        .output_management(OutputManagement::Lagging)
+        .start();
+    fake.cmd(Cmd::CustomMode(0, 1280, 720));
+    fake.sync();
+    let h = Harness::start_on(fake.socket.clone());
+    h.until("ready", |h| h.b.outputs.ready(&h.rt));
+    let o = h.output("FAKE-1");
+    assert!(o.enabled);
+    assert_eq!(o.mode, Some(mode(1280, 720, 60.0)), "{o:#?}");
+    assert_eq!(o.modes, [mode(1920, 1080, 60.0)]);
+    assert_eq!(h.output("FAKE-2").mode, Some(mode(1920, 1080, 60.0)));
     h.s.shutdown();
     outputs::configure(None);
 }

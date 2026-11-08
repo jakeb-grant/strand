@@ -1424,7 +1424,9 @@ provisional record OutputChange {
 
 /// The monitors' configuration, from wlr-output-management.
 provisional service outputs {
-  /// Every output, on or off, keyed by `name`.
+  /// Every output, on or off, keyed by `name`, in the order of their
+  /// names (`DP-2` before `DP-10`), whatever order the compositor
+  /// announces them in.
   all: [Output]
   /// The compositor offers output configuration.
   available: bool

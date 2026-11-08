@@ -7669,6 +7669,69 @@ fn applied(shell: &Shell) -> Vec<String> {
         .collect()
 }
 
+/// (monitor-profiles, review round 4) The page's Hyprland file writes a
+/// monitor that is on as on, with Hyprland's `preferred`, when no mode
+/// is known for it, and only a monitor off as `disabled = true`: it
+/// wrote every monitor with no mode as off, which would turn a monitor
+/// on at a custom mode off at Hyprland's next start.
+#[test]
+fn the_monitor_profiles_page_writes_a_monitor_on_with_no_mode_as_on() {
+    let files = page_files(MONITOR_PROFILES_PAGE);
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .filter(|(n, _)| n == "hyprland.strand")
+        .map(|(n, t)| (n.as_str(), t.as_str()))
+        .collect();
+    assert_eq!(refs.len(), 1);
+    let dir = temp_dir("monitor-profiles-no-mode");
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let storage = Storage::in_dirs(dir.join("state"), &config);
+    let mut shell = boot_with(
+        &refs,
+        |rt, host| {
+            dp1(rt, host);
+            let on = |name: &str, enabled: bool| {
+                host.record(
+                    "Output",
+                    &[
+                        ("name", Value::text(name)),
+                        ("enabled", Value::Bool(enabled)),
+                        ("scale", Value::float(1.0)),
+                        ("transform", host.variant("OutputTransform", "normal")),
+                    ],
+                )
+            };
+            host.set(
+                rt,
+                "outputs.all",
+                Value::list(vec![on("NESTED-1", true), on("NESTED-2", false)]),
+            )
+            .unwrap();
+            host.set_ready(rt, "outputs", true).unwrap();
+        },
+        storage,
+    );
+    shell.at(1.0);
+    let lua: Vec<String> = shell
+        .inst
+        .take_outputs()
+        .into_iter()
+        .filter(|c| c.path.as_ref().is_some_and(|p| p.ends_with("monitors.lua")))
+        .filter_map(|c| match c.content {
+            OutputContent::Write { bytes, .. } => Some(String::from_utf8(bytes).unwrap()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        lua,
+        ["-- Written by Strand from outputs.all\n\
+          hl.monitor({ output = \"NESTED-1\", mode = \"preferred\", position = \"0x0\", \
+          scale = 1, transform = 0 })\n\
+          hl.monitor({ output = \"NESTED-2\", disabled = true })\n"]
+    );
+}
+
 /// (blocks) The monitor profiles page, end to end on the mock host: its
 /// compositor file and JSON file wait for `outputs.ready` and then follow
 /// `outputs.all` (with `Output.id`); `on change chosen, outputs.ready`

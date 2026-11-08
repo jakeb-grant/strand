@@ -65,17 +65,29 @@ impl fmt::Display for MonitorId {
 }
 
 /// The part of a `wl_output` description that identifies the monitor: the
-/// description without a trailing `" (<connector>)"` naming the output's
-/// own connector, which wlroots appends and which changes when the same
-/// monitor is plugged into another port.
+/// description without the output's own connector, which changes when the
+/// same monitor is plugged into another port. wlroots ends it with
+/// `" (<connector>)"`, or `" (<connector> via <sub>)"` when a DP
+/// connector drives an HDMI or DVI sink; smithay (niri) with
+/// `" - <connector>"` (`make - model - connector`). Anything else is kept
+/// (review round 4 of output-id; strand-services' `output_id` has a copy).
 pub fn identity_description<'a>(description: &'a str, connector: Option<&str>) -> &'a str {
     let Some(connector) = connector.filter(|c| !c.is_empty()) else {
         return description;
     };
+    if let Some(inner) = description.strip_suffix(')')
+        && let Some(open) = inner.rfind(" (")
+    {
+        let own = inner[open + 2..]
+            .strip_prefix(connector)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(" via "));
+        if own {
+            return &description[..open];
+        }
+    }
     description
-        .strip_suffix(')')
-        .and_then(|d| d.strip_suffix(connector))
-        .and_then(|d| d.strip_suffix(" ("))
+        .strip_suffix(connector)
+        .and_then(|d| d.strip_suffix(" - "))
         .unwrap_or(description)
 }
 
@@ -372,6 +384,27 @@ mod tests {
         );
         assert_eq!(identity_description("eDP-1", Some("eDP-1")), "eDP-1");
         assert_eq!(identity_description("X (DP-1)", None), "X (DP-1)");
+        // (review round 4) wlroots' DP connector driving an HDMI sink, and
+        // smithay's (niri) `make - model - connector`.
+        assert_eq!(
+            identity_description("Dell Inc. DELL U2720Q XYZ (DP-5 via HDMI)", Some("DP-5")),
+            "Dell Inc. DELL U2720Q XYZ"
+        );
+        assert_eq!(
+            identity_description("Dell Inc. - DELL U2720Q - DP-3", Some("DP-3")),
+            "Dell Inc. - DELL U2720Q"
+        );
+        assert_eq!(
+            identity_description("Smithay - Winit - winit", Some("winit")),
+            "Smithay - Winit"
+        );
+        // Another connector's, or not at the end: kept.
+        assert_eq!(
+            identity_description("X (DP-50 via HDMI)", Some("DP-5")),
+            "X (DP-50 via HDMI)"
+        );
+        assert_eq!(identity_description("X - DP-30", Some("DP-3")), "X - DP-30");
+        assert_eq!(identity_description("XDP-3", Some("DP-3")), "XDP-3");
 
         // The same monitor moved from DP-1 to DP-2 within 30 s is the same
         // monitor.

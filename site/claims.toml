@@ -4104,7 +4104,7 @@ proof  = "crates/strand-scene/src/markup/tests.rs::basic_is_unchanged"
 [[claim]]
 page   = "site/how-to/monitor-profiles.md"
 text   = "lists every connected monitor, on or off"
-source = ['crates/strand-compiler/src/schema/builtin.schema "/// Every output, on or off, keyed by `name`."', 'crates/strand-compiler/src/schema/builtin.schema "/// Applies `changes` together, as one configuration."']
+source = ['crates/strand-compiler/src/schema/builtin.schema "/// Every output, on or off, keyed by `name`, in the order of their"', 'crates/strand-compiler/src/schema/builtin.schema "/// Applies `changes` together, as one configuration."']
 proof  = "crates/strand-compiler/tests/instantiate.rs::a_best_guess_layout_is_written_with_the_list_operations_there_are"
 
 [[claim]]
@@ -4158,7 +4158,7 @@ proof  = "crates/strand/tests/screens_focus.rs::an_outputs_id_is_its_screens_id_
 [[claim]]
 page   = "site/how-to/monitor-profiles.md"
 text   = "described alike get ` #2` on the second, the monitors that are on numbered first."
-source = ['''crates/strand-services/src/outputs.rs "/// its identity holds, those on first, in the compositor's order, then"''']
+source = ['''crates/strand-services/src/outputs.rs "/// its identity holds, those on first, in the order of their names, then"''']
 proof  = "crates/strand-services/src/outputs.rs::tests::identical_heads_are_numbered_the_ones_on_first"
 
 [[claim]]
@@ -4171,7 +4171,7 @@ proof  = "crates/strand-services/src/outputs.rs::tests::a_profile_that_swaps_ide
 page   = "site/how-to/monitor-profiles.md"
 text   = "file is written again whenever a monitor is moved, turned or plugged in, at most twice a second."
 source = ['docs/spec.md "path is written at most once per 500 ms: the first write lands at"']
-proof  = "crates/strand/tests/screens_focus.rs::the_monitor_profiles_page_arranges_sways_monitors (monitors.lua follows sway's layout and then the profile)"
+proof  = "crates/strand/tests/screens_focus.rs::the_monitor_profiles_page_arranges_sways_monitors (monitors.lua follows sway's layout and then the profile); crates/strand-services/tests/outputs.rs::a_change_with_no_done_is_read_again (Hyprland 0.57's changes, sent with no done)"
 
 [[claim]]
 page   = "site/how-to/monitor-profiles.md"
@@ -4203,6 +4203,19 @@ page   = "site/how-to/dbus-and-actions.md"
 text   = "UPower signals the lid, so a `from dbus` service follows it."
 source = ['crates/strand-services/tests/custom.rs "fn the_lid_recipe_follows_upower() {"']
 proof  = "crates/strand-services/tests/custom.rs::the_lid_recipe_follows_upower (dbusmock's upower template: LidIsClosed, OnBattery followed)"
+
+# --- outputs-order, ws-move on niri (blocks review round 4) ---
+[[claim]]
+page   = "site/how-to/monitor-profiles.md"
+text   = "lists them by name (`DP-2` before `DP-10`), so the guess is the same at every start, whatever order the compositor finds them in"
+source = ['crates/strand-services-schema/src/outputs.schema "/// names (`DP-2` before `DP-10`), whatever order the compositor"', 'crates/strand-services/src/outputs.rs "all.sort_by(|a, b| by_name(&a.name, &b.name));"']
+proof  = "crates/strand-services/src/outputs.rs::tests::outputs_are_listed_by_name (sway's order after a restart, HEADLESS-3 before HEADLESS-2)"
+
+[[claim]]
+page   = "site/how-to/monitor-profiles.md"
+text   = "a workspace without a name is numbered by its place on its own monitor (each monitor has a `1`)"
+source = ['crates/strand-services/src/wm/niri.rs "name: w.name.clone().unwrap_or_else(|| w.idx.to_string()),"']
+proof  = "crates/strand-services/src/wm/niri.rs::tests::events_update_the_state (an unnamed workspace of idx 1 is named `1`)"
 
 # --- ws-move (blocks-more) ---
 [[claim]]

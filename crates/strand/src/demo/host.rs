@@ -1533,6 +1533,11 @@ impl SurfaceHost for Host {
         if let Some(feeds) = &mut self.feeds {
             feeds.screen(monitor.id.as_str(), monitor.connector.as_deref());
         }
+        // (output-id, review round 4) A run of `outputs` started later
+        // gives this monitor's head its `Screen.id`.
+        if let Some(c) = &monitor.connector {
+            strand_services::outputs::shown(c, Some(monitor.id.as_str()));
+        }
         if let Some(f) = &mut self.logic {
             f.monitor_added(monitor);
         }
@@ -1570,6 +1575,9 @@ impl SurfaceHost for Host {
             .output_gone(strand_core::flight::now_ns(), monitor.id.as_str());
         if let Some(feeds) = &mut self.feeds {
             feeds.screen(monitor.id.as_str(), None);
+        }
+        if let Some(c) = &monitor.connector {
+            strand_services::outputs::shown(c, None);
         }
         if let Some(f) = &mut self.logic {
             f.monitor_removed(monitor);

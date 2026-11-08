@@ -33,12 +33,17 @@
 //!   configured as [`Cmd::ConfigureWindow`] says ([`WindowConfigure`]),
 //!   closed by [`Cmd::CloseWindow`], what it asks recorded
 //!   ([`SurfaceRecord::toplevel`], [`Fake::windows`]).
+//! - (outputs-resync) `strand-services`' outputs:
+//!   `zwlr_output_manager_v1` in wlroots' shape or Hyprland 0.57's
+//!   ([`FakeBuilder::output_management`]; `output_management.rs`), its
+//!   outputs moved by [`Cmd::MoveOutput`].
 //!
 //! It runs on its own thread and is driven by [`Cmd`]s.
 
 mod activation;
 mod capture;
 mod data_control;
+mod output_management;
 mod surfaces;
 mod xdg;
 
@@ -47,6 +52,8 @@ pub use activation::ActivationRequest;
 pub use capture::DEFAULT_SIZE as CAPTURE_SIZE;
 
 pub use data_control::{DataControl, Selection};
+
+pub use output_management::OutputManagement;
 
 pub use surfaces::{BufferKind, CommitRecord, Region, RegionOp, SurfaceGlobals, SurfaceRecord};
 
@@ -96,6 +103,14 @@ pub enum Cmd {
     SetActive(&'static str, bool),
     /// The manager's `done`.
     Done,
+    /// (outputs-resync) Output `n` (by the order of `outputs`) moves to
+    /// `x, y`, as output management says it
+    /// ([`FakeBuilder::output_management`]).
+    MoveOutput(usize, i32, i32),
+    /// (outputs-mode) Output `n` shows a mode not in its list, of this
+    /// width and height: its head names no current mode, its `wl_output`
+    /// sends it (before a client binds).
+    CustomMode(usize, i32, i32),
     /// Removes seat `n`'s global (by the order they were offered), as a
     /// seat going away would.
     RemoveSeat(usize),
@@ -286,6 +301,8 @@ struct Server {
     hold_tokens: bool,
     /// (m6-service-gaps) The data-control side.
     dc: data_control::State,
+    /// (outputs-resync) The output-management side.
+    om: output_management::State,
 }
 
 impl Server {
@@ -478,6 +495,8 @@ impl Server {
                 }
             }
             Cmd::Done => self.done(),
+            Cmd::MoveOutput(n, x, y) => self.om.move_output(n, x, y),
+            Cmd::CustomMode(n, w, h) => self.om.custom_mode(n, w, h),
             Cmd::SetEffectCapabilities(flags) => self.surf.set_effect_caps(flags),
             Cmd::Paint(ident, colour) => self.capture_paint(ident, colour),
             Cmd::ResizeToplevel(ident, w, h) => self.capture_resize(ident, w, h),
@@ -754,6 +773,10 @@ impl GlobalDispatch<wl_output::WlOutput, usize> for Server {
             if o.version() >= 2 {
                 o.scale(1);
             }
+        } else if let Some((w, h, r)) = state.om.current(*index)
+            && state.om.kind != OutputManagement::None
+        {
+            o.mode(wl_output::Mode::Current, w, h, r);
         }
         if o.version() >= 4 {
             o.name(state.output_names[*index].clone());
@@ -1048,6 +1071,7 @@ pub struct FakeBuilder {
     toplevel_list: bool,
     capture: bool,
     data_control: DataControl,
+    output_management: OutputManagement,
 }
 
 impl FakeBuilder {
@@ -1101,6 +1125,12 @@ impl FakeBuilder {
         self
     }
 
+    /// (outputs-resync) `zwlr_output_manager_v1`, one head per output.
+    pub fn output_management(mut self, which: OutputManagement) -> Self {
+        self.output_management = which;
+        self
+    }
+
     pub fn start(self) -> Fake {
         Fake::start_built(self).expect("the fake compositor starts")
     }
@@ -1126,6 +1156,7 @@ impl Fake {
             toplevel_list: true,
             capture: false,
             data_control: DataControl::None,
+            output_management: OutputManagement::None,
         }
     }
 
@@ -1203,6 +1234,7 @@ impl Fake {
             toplevel_list,
             capture,
             data_control,
+            output_management,
         } = b;
         let thread = std::thread::spawn(move || {
             let mut display = Display::<Server>::new().expect("a wayland-server display");
@@ -1223,6 +1255,7 @@ impl Fake {
                 capture::create_globals(&dh, surface_globals.is_none());
             }
             data_control::create_globals(&dh, data_control);
+            output_management::create_globals(&dh, output_management);
             let seat_globals = (0..seats)
                 .map(|n| Some(dh.create_global::<Server, wl_seat::WlSeat, usize>(1, n)))
                 .collect();
@@ -1233,6 +1266,10 @@ impl Fake {
                 activated: thread_activated,
                 wlr_requests: thread_wlr_requests,
                 output_names: outputs.iter().map(|o| o.to_string()).collect(),
+                om: output_management::State::new(
+                    output_management,
+                    &outputs.iter().map(|o| o.to_string()).collect::<Vec<_>>(),
+                ),
                 seat_globals,
                 activation_log: thread_activation_log,
                 ..Default::default()

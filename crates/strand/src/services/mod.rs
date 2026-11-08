@@ -5215,6 +5215,34 @@ mod output_id {
             // model empty, as the head does (nested Hyprland 0.57).
             ("", "", "", "NESTED-1", "", ""),
             ("Acme", "X", "Acme X ()", "", "Acme", "X"),
+            // (review round 4) wlroots' DP connector driving an HDMI sink:
+            // the same id on every port.
+            (
+                "Dell Inc.",
+                "DELL U2720Q",
+                "Dell Inc. DELL U2720Q 1X2Y3Z (DP-5 via HDMI)",
+                "DP-5",
+                "Dell Inc.",
+                "DELL U2720Q",
+            ),
+            // niri (smithay): `make - model - connector`, as its nested
+            // `wl_output` says `Smithay - Winit - winit`.
+            (
+                "Dell Inc.",
+                "DELL U2720Q",
+                "Dell Inc. - DELL U2720Q - DP-3",
+                "DP-3",
+                "Dell Inc.",
+                "DELL U2720Q",
+            ),
+            (
+                "Smithay",
+                "Winit",
+                "Smithay - Winit - winit",
+                "winit",
+                "Smithay",
+                "Winit",
+            ),
         ] {
             let screen = MonitorId::new(
                 wl_make,
@@ -5225,6 +5253,20 @@ mod output_id {
                 output_id(make, model, description, connector),
                 screen.as_str(),
                 "{description} on {connector}"
+            );
+        }
+        // A monitor's id holds on every port: the connector is not in it.
+        for ((a, ca), (b, cb)) in [
+            (
+                ("Dell X (DP-5 via HDMI)", "DP-5"),
+                ("Dell X (DP-6)", "DP-6"),
+            ),
+            (("Dell - X - DP-3", "DP-3"), ("Dell - X - DP-4", "DP-4")),
+        ] {
+            assert_eq!(
+                output_id("Dell", "X", a, ca),
+                output_id("Dell", "X", b, cb),
+                "{a} and {b}"
             );
         }
     }

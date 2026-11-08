@@ -3,13 +3,19 @@
 //! niri and labwc implement; owner-testing gap 18, decisions.md
 //! m6-owner-fixes).
 //!
-//! `all` lists every head the manager announces, on or off, published at
-//! each manager `done` (the protocol's atomic update): its name,
-//! description, make, model and serial, its modes (deduplicated, in the
-//! compositor's order), the current and preferred mode, its place, scale,
-//! transform and adaptive sync. (output-id) `id` is the identity a
-//! `Screen` has for the same monitor ([`output_id`]). `available` is the
-//! manager being offered.
+//! `all` lists every head the manager announces, on or off, in the order
+//! of their names, published at each manager `done` (the protocol's
+//! atomic update): its name, description, make, model and serial, its
+//! modes (deduplicated, in the compositor's order), the current and
+//! preferred mode, its place, scale, transform and adaptive sync.
+//! (output-id) `id` is the identity a `Screen` has for the same monitor
+//! ([`output_id`]). `available` is the manager being offered.
+//! (outputs-mode) A head on that names no current mode (Hyprland 0.57,
+//! for a mode not in its list) has the one its `wl_output` shows, which
+//! the service binds for that. (outputs-resync) A change the manager
+//! sends with no `done` for 250 ms (Hyprland 0.57, whose change events
+//! carry the values from before the change) has the manager bound again,
+//! which gets the outputs as they are ([`Client::resync`]).
 //!
 //! `apply(changes)` and `test(changes)` each make one
 //! `zwlr_output_configuration_v1` against the last `done`'s serial. The
@@ -74,6 +80,10 @@ pub const MAX_TRIES: u32 = 3;
 /// sent, so the compositor reads it before the connection closes.
 const STOP_WAIT: Duration = Duration::from_millis(500);
 
+/// (outputs-resync) How long a manager's change may go without a `done`
+/// before the manager is bound again ([`Client::resync`]).
+const RESYNC_AFTER: Duration = Duration::from_millis(250);
+
 /// The highest manager version this client speaks (4: adaptive sync).
 const VERSION: u32 = 4;
 
@@ -88,19 +98,89 @@ const RATE_SLACK: i64 = 500;
 
 static TARGET: Mutex<Option<WaylandTarget>> = Mutex::new(None);
 
-/// (output-id, review round 3) The ids of the monitors connected, on or
-/// off, by connector, as the last snapshot numbered them ([`ids`]). Kept
-/// when a run ends, so the next run's heads keep their ids.
-static IDS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+/// (output-id, review rounds 3 and 4) The monitors' ids between the
+/// `outputs` service and strand-surface ([`ids`], [`shown`]).
+struct Ids {
+    /// Connector and `Output.id` of every monitor connected, on or off,
+    /// as the last snapshot numbered them.
+    given: Vec<(String, String)>,
+    /// A run is up and `given` is its last snapshot. A stopped run (no
+    /// reader, a reload, a failure) sees no plug, unplug or move, so its
+    /// list is not given out ([`ids`]).
+    live: bool,
+    /// Connector and `Screen.id` of every monitor strand-surface shows
+    /// ([`shown`]), which a run's new heads take first.
+    shown: Vec<(String, String)>,
+}
 
-/// (output-id, review round 3) Each connected monitor's connector and
-/// `Output.id`, as the last snapshot gave them, on or off. strand-surface
+static IDS: Mutex<Ids> = Mutex::new(Ids {
+    given: Vec::new(),
+    live: false,
+    shown: Vec::new(),
+});
+
+/// (output-id, review rounds 3 and 4) Each connected monitor's connector
+/// and `Output.id`, on or off, while an `outputs` run is up. strand-surface
 /// numbers a monitor's `Screen.id` from this (`SurfaceHost::output_ids`):
 /// a monitor off has no `wl_output`, so only this list shows that it is
-/// still connected and holds its number. Empty before the first snapshot
-/// of this process.
+/// still connected and holds its number. Empty while no run is up (none
+/// yet, or stopped, backing off, its manager gone): what the last run
+/// said may no longer hold (a monitor moved to another port since), and
+/// `Screen.id` is numbered by plug order alone.
 pub fn ids() -> Vec<(String, String)> {
-    IDS.lock().map(|i| i.clone()).unwrap_or_default()
+    IDS.lock()
+        .map(|i| match i.live {
+            true => i.given.clone(),
+            false => Vec::new(),
+        })
+        .unwrap_or_default()
+}
+
+/// (output-id, review round 4) A monitor strand-surface shows on
+/// `connector` has `Screen.id` `id` (`None`: it is no longer shown). A
+/// run's heads new to it take these ids first, then the ids the last run
+/// gave their connectors, so `Output.id` is `Screen.id` for every monitor
+/// shown whatever happened while no run was up.
+pub fn shown(connector: &str, id: Option<&str>) {
+    if let Ok(mut i) = IDS.lock() {
+        i.shown.retain(|(c, _)| c != connector);
+        if let Some(id) = id {
+            i.shown.push((connector.to_string(), id.to_string()));
+        }
+    }
+}
+
+/// The ids a run's new heads take, by connector: [`shown`]'s, then the
+/// last run's for the connectors not shown (a monitor off).
+fn remembered_ids() -> Vec<(String, String)> {
+    IDS.lock()
+        .map(|i| {
+            let mut all = i.shown.clone();
+            all.extend(
+                i.given
+                    .iter()
+                    .filter(|(c, _)| !i.shown.iter().any(|(s, _)| s == c))
+                    .cloned(),
+            );
+            all
+        })
+        .unwrap_or_default()
+}
+
+/// A run's snapshot numbered `all`: [`ids`] gives it out.
+fn share(all: &[Output]) {
+    if let Ok(mut i) = IDS.lock() {
+        i.given = all.iter().map(|o| (o.name.clone(), o.id.clone())).collect();
+        i.live = true;
+    }
+}
+
+/// The run ended, or its manager went: [`ids`] gives nothing until a
+/// snapshot again.
+fn unshare() {
+    if let Ok(mut i) = IDS.lock() {
+        i.live = false;
+    }
 }
 
 /// Which display `outputs` connects to from its next start on (tests: a
@@ -211,12 +291,12 @@ pub struct Output {
 /// (output-id) A monitor's identity from its head, as strand-surface's
 /// `MonitorId` makes it from its `wl_output` (`Screen.id`): make, model
 /// and description joined by `" | "`, the description without the
-/// `" (<connector>)"` wlroots appends (a copy of strand-surface's
-/// `identity_description`, which this crate does not depend on; a test
-/// in crates/strand holds the two equal). A make or model the head does
-/// not give is `Unknown`, as wlroots' `wl_output` says it (seen on
-/// headless sway). [`Outputs`] numbers identical heads ` #2`, ` #3`, the
-/// ones on first, in the compositor's order.
+/// connector the compositor puts in it ([`without_connector`]; a copy of
+/// strand-surface's `identity_description`, which this crate does not
+/// depend on; a test in crates/strand holds the two equal). A make or
+/// model the head does not give is `Unknown`, as wlroots' `wl_output`
+/// says it (seen on headless sway). [`Outputs`] numbers identical heads
+/// ` #2`, ` #3`, the ones on first, in the order of their names.
 pub fn output_id(make: &str, model: &str, description: &str, connector: &str) -> String {
     let known = |s: &'_ str| -> String {
         match s {
@@ -225,15 +305,73 @@ pub fn output_id(make: &str, model: &str, description: &str, connector: &str) ->
         }
     };
     let (make, model) = (known(make), known(model));
-    let description = match connector {
-        "" => description,
-        c => description
-            .strip_suffix(')')
-            .and_then(|d| d.strip_suffix(c))
-            .and_then(|d| d.strip_suffix(" ("))
-            .unwrap_or(description),
-    };
-    format!("{make} | {model} | {description}")
+    format!(
+        "{make} | {model} | {}",
+        without_connector(description, connector)
+    )
+}
+
+/// (output-id, review round 4) `description` without the output's own
+/// connector `c`, which changes when the monitor is plugged into another
+/// port: wlroots ends it with `" (<c>)"`, or `" (<c> via <sub>)"` when a
+/// DP connector drives an HDMI or DVI sink, and smithay (niri) with
+/// `" - <c>"` (`make - model - connector`). Anything else is kept.
+fn without_connector<'a>(description: &'a str, c: &str) -> &'a str {
+    if c.is_empty() {
+        return description;
+    }
+    if let Some(inner) = description.strip_suffix(')')
+        && let Some(open) = inner.rfind(" (")
+    {
+        let within = &inner[open + 2..];
+        let via = within
+            .strip_prefix(c)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(" via "));
+        if via {
+            return &description[..open];
+        }
+    }
+    description
+        .strip_suffix(c)
+        .and_then(|d| d.strip_suffix(" - "))
+        .unwrap_or(description)
+}
+
+/// (outputs-order) Connector names in order, a run of digits by its
+/// number (`DP-2` before `DP-10`), so `outputs.all` lists the outputs the
+/// same way at every start, whatever order the compositor announces them
+/// in (sway announces them in reverse order after a restart).
+fn by_name(a: &str, b: &str) -> std::cmp::Ordering {
+    let (mut a, mut b) = (a.as_bytes(), b.as_bytes());
+    loop {
+        match (a.first(), b.first()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let run = |s: &[u8]| s.iter().take_while(|c| c.is_ascii_digit()).count();
+                let (na, nb) = (run(a), run(b));
+                let trim = |s: &[u8]| -> usize { s.iter().take_while(|c| **c == b'0').count() };
+                let (da, db) = (
+                    &a[trim(&a[..na]).min(na)..na],
+                    &b[trim(&b[..nb]).min(nb)..nb],
+                );
+                let o = da.len().cmp(&db.len()).then_with(|| da.cmp(db));
+                if o != std::cmp::Ordering::Equal {
+                    return o;
+                }
+                a = &a[na..];
+                b = &b[nb..];
+            }
+            (Some(x), Some(y)) => {
+                if x != y {
+                    return x.cmp(y);
+                }
+                a = &a[1..];
+                b = &b[1..];
+            }
+        }
+    }
 }
 
 /// Fills each output's `id`, numbering identical monitors (the second
@@ -243,7 +381,7 @@ pub fn output_id(make: &str, model: &str, description: &str, connector: &str) ->
 /// configuration, which connects and disconnects nothing, renames no
 /// monitor, and a profile chosen by id is still the one chosen after it
 /// is applied. A new one takes the lowest number no connected monitor of
-/// its identity holds, those on first, in the compositor's order, then
+/// its identity holds, those on first, in the order of their names, then
 /// those off. strand-surface takes `Screen.id` from this numbering
 /// ([`ids`]), so the two agree for every monitor shown.
 fn number_ids(all: &mut [Output]) {
@@ -348,7 +486,9 @@ impl OutputsAction {
 #[service(name = "outputs", action = OutputsAction, refused = refused, thread)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Outputs {
-    /// Every output, on or off, keyed by `name`.
+    /// Every output, on or off, keyed by `name`, in the order of their
+    /// names (`DP-2` before `DP-10`), whatever order the compositor
+    /// announces them in.
     #[store(keyed)]
     pub all: Vec<Output>,
     /// The compositor offers output configuration: false without it, when
@@ -473,6 +613,33 @@ struct Client {
     /// the last run gave its connector, and strand-surface reads them.
     /// Off in unit tests, which run side by side.
     shared: bool,
+    /// (outputs-resync) The registry, to bind the manager again.
+    registry: Option<wl_registry::WlRegistry>,
+    /// The version the manager was bound at.
+    manager_version: u32,
+    /// (outputs-resync) When the current manager sent a head or mode
+    /// event after its last `done` with no `done` since: Hyprland 0.57
+    /// sends a change that way, its values one change behind, so the
+    /// manager is bound again ([`Client::resync`]) once [`RESYNC_AFTER`]
+    /// passes without a `done`.
+    undone: Option<Instant>,
+    /// (outputs-resync) Name and id of each head before a resync, which
+    /// the new manager's heads take.
+    carried: Vec<(String, String)>,
+    /// (outputs-mode) The `wl_output`s, for the current mode of a head
+    /// that names none.
+    wl_outputs: Vec<WlOut>,
+}
+
+/// (outputs-mode) A `wl_output` as the outputs service binds it: its
+/// connector name and current mode (`wl_output.mode` with `current`),
+/// which every `wl_output` sends while its output is on.
+#[derive(Debug)]
+struct WlOut {
+    global: u32,
+    proxy: wl_output::WlOutput,
+    name: String,
+    mode: Option<OutputMode>,
 }
 
 impl Client {
@@ -481,12 +648,15 @@ impl Client {
     }
 
     /// The outputs as published: every head with a name, modes
-    /// deduplicated; each head keeps its id ([`number_ids`]).
+    /// deduplicated, in the order of their names ([`by_name`]); each head
+    /// keeps its id ([`number_ids`]). (outputs-mode) A head on that names
+    /// no current mode (Hyprland, for a mode not in its list) has the one
+    /// its `wl_output` shows.
     fn snapshot(&mut self) -> Vec<Output> {
-        let remembered = match self.shared {
-            true => Some(ids()),
-            false => None,
-        };
+        let mut remembered = std::mem::take(&mut self.carried);
+        if self.shared {
+            remembered.extend(remembered_ids());
+        }
         let mut all: Vec<Output> = self
             .heads
             .iter()
@@ -505,20 +675,28 @@ impl Client {
                     .filter_map(|id| self.modes.get(id))
                     .find(|m| m.preferred)
                     .map(ModeEntry::public);
-                let mode = h
-                    .current_mode
-                    .as_ref()
-                    .filter(|_| h.enabled)
-                    .and_then(|id| self.modes.get(id))
-                    .map(ModeEntry::public);
+                let mode = match h.enabled {
+                    true => h
+                        .current_mode
+                        .as_ref()
+                        .and_then(|id| self.modes.get(id))
+                        .map(ModeEntry::public)
+                        .or_else(|| {
+                            self.wl_outputs
+                                .iter()
+                                .find(|o| o.name == h.name)
+                                .and_then(|o| o.mode.clone())
+                        }),
+                    false => None,
+                };
                 // New to this run: what the last run called it, if any.
-                let id = match (h.id.is_empty(), &remembered) {
-                    (true, Some(ids)) => ids
+                let id = match h.id.is_empty() {
+                    true => remembered
                         .iter()
                         .find(|(n, _)| *n == h.name)
                         .map(|(_, id)| id.clone())
                         .unwrap_or_default(),
-                    _ => h.id.clone(),
+                    false => h.id.clone(),
                 };
                 Output {
                     name: h.name.clone(),
@@ -541,17 +719,74 @@ impl Client {
                 }
             })
             .collect();
+        all.sort_by(|a, b| by_name(&a.name, &b.name));
         number_ids(&mut all);
-        let named = self.heads.iter_mut().filter(|h| !h.name.is_empty());
-        for (h, o) in named.zip(&all) {
-            h.id.clone_from(&o.id);
+        for h in self.heads.iter_mut().filter(|h| !h.name.is_empty()) {
+            if let Some(o) = all.iter().find(|o| o.name == h.name) {
+                h.id.clone_from(&o.id);
+            }
         }
-        if self.shared
-            && let Ok(mut ids) = IDS.lock()
-        {
-            *ids = all.iter().map(|o| (o.name.clone(), o.id.clone())).collect();
+        if self.shared {
+            share(&all);
         }
         all
+    }
+
+    /// (outputs-resync) Binds the manager again, as a fresh client would,
+    /// and stops the one bound: Hyprland 0.57 sends a change with no
+    /// `done` and the values it had before the change, while a manager
+    /// bound after it gets the outputs as they are, and a `done`. What
+    /// was published stands until the new manager's first `done`; each
+    /// head keeps its id ([`Client::carried`]), and the run stays ready.
+    fn resync(&mut self, qh: &QueueHandle<Client>) {
+        self.undone = None;
+        let (Some(registry), Some(global), Some(old)) =
+            (&self.registry, self.manager_global, self.manager.take())
+        else {
+            return;
+        };
+        // Hyprland 0.57 never answers `finished`, and goes on sending
+        // the stopped manager's changes: they are not this state's
+        // (`Dispatch<ZwlrOutputManagerV1>`), and nothing is kept of it.
+        old.stop();
+        self.carried = self
+            .heads
+            .iter()
+            .filter(|h| !h.id.is_empty())
+            .map(|h| (h.name.clone(), h.id.clone()))
+            .collect();
+        for h in self.heads.drain(..) {
+            if h.proxy.version() >= 3 {
+                h.proxy.release();
+            }
+        }
+        for (_, m) in self.modes.drain() {
+            if m.proxy.version() >= 3 {
+                m.proxy.release();
+            }
+        }
+        self.serial = None;
+        self.changed = false;
+        self.manager = Some(registry.bind(global, self.manager_version, qh, ()));
+    }
+
+    /// (outputs-resync) A resync is due: the manager sent a change and no
+    /// `done` for [`RESYNC_AFTER`].
+    fn resync_due(&self, now: Instant) -> bool {
+        self.manager.is_some() && self.resync_at().is_some_and(|d| now >= d)
+    }
+
+    /// When the next resync falls due, for the poll's timeout.
+    fn resync_at(&self) -> Option<Instant> {
+        self.undone.map(|t| t + RESYNC_AFTER)
+    }
+
+    /// An event of the current manager, or one of its heads or modes,
+    /// changed what a `done` will publish.
+    fn touched(&mut self) {
+        if self.serial.is_some() && self.undone.is_none() {
+            self.undone = Some(Instant::now());
+        }
     }
 
     /// What to publish after a dispatch (`ready`: the service is): the
@@ -758,11 +993,25 @@ fn pick<K>(
 }
 
 /// The mode `h` is configured with when no change names one: what it
-/// shows, else (turned on) its preferred, else its first.
+/// shows, else (turned on) its preferred, else its first. (outputs-mode)
+/// What it shows is the one its `wl_output` says when the head names
+/// none (a mode not in its list on Hyprland), so a change to another
+/// head leaves it as it is.
 fn default_mode(client: &Client, h: &HeadEntry) -> ModeChoice {
     let listed = |id: &ObjectId| client.modes.contains_key(id);
     if let Some(id) = h.current_mode.as_ref().filter(|id| listed(id)) {
         return ModeChoice::Listed(id.clone());
+    }
+    let shown = client
+        .wl_outputs
+        .iter()
+        .find(|o| o.name == h.name)
+        .and_then(|o| o.mode.clone())
+        .filter(|_| h.enabled);
+    if let Some(m) = shown
+        && let Ok(choice) = choose_mode(client, h, m)
+    {
+        return choice;
     }
     let preferred = h
         .modes
@@ -881,6 +1130,9 @@ impl Outputs {
         });
         let mut pending = Pending::default();
         let r = Self::serve(&mut cx, &wake, &mut pending);
+        // (output-id, review round 4) No run, no plug or move seen: the
+        // ids are no longer given out.
+        unshare();
         if let Err(e) = &r {
             // What it showed no longer holds, and what it was asked to do
             // will not be done: each is `failed`, as an action reaching no
@@ -921,10 +1173,11 @@ impl Outputs {
         let mut queue: EventQueue<Client> = conn.new_event_queue();
         let qh = queue.handle();
         let display = conn.display();
-        let _registry = display.get_registry(&qh, ());
+        let registry = display.get_registry(&qh, ());
         display.sync(&qh, ());
         let mut client = Client {
             shared: true,
+            registry: Some(registry),
             ..Client::default()
         };
         let Pending { waiting, in_flight } = pending;
@@ -955,6 +1208,7 @@ impl Outputs {
             // State, at each `done` (or once the registry shows no manager).
             match client.publish(cx.is_ready()) {
                 Publish::Cleared => {
+                    unshare();
                     cx.unready();
                     cx.update(|s| {
                         s.all.clear();
@@ -1010,6 +1264,14 @@ impl Outputs {
                 let _ = conn.flush();
                 return Ok(());
             }
+            // (outputs-resync) A change with no `done`: bound again, once
+            // no configuration is in flight (its answer is the old
+            // manager's).
+            if client.resync_due(Instant::now()) && in_flight.is_none() && stopping.is_none() {
+                log::debug!("outputs: a change came with no done; binding the manager again");
+                client.resync(&qh);
+                continue;
+            }
             // The next configuration, once the first state is in (a
             // manager announced with no `done` yet is waited for).
             let settled = client.synced && (client.manager.is_none() || client.serial.is_some());
@@ -1054,8 +1316,13 @@ impl Outputs {
                     PollFlags::IN
                 };
                 let mut fds = [PollFd::new(&fd, flags), PollFd::new(wake, PollFlags::IN)];
+                let deadline = match (stopping, client.resync_at().filter(|_| in_flight.is_none()))
+                {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
                 let timeout =
-                    stopping.map(|d| timespec(d.saturating_duration_since(Instant::now())));
+                    deadline.map(|d| timespec(d.saturating_duration_since(Instant::now())));
                 match rustix::event::poll(&mut fds, timeout.as_ref()) {
                     Ok(_) => (
                         fds[0]
@@ -1102,15 +1369,68 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
                 interface,
                 version,
             } if interface == ZwlrOutputManagerV1::interface().name && state.manager.is_none() => {
-                state.manager = Some(registry.bind(name, version.min(VERSION), qh, ()));
+                state.manager_version = version.min(VERSION);
+                state.manager = Some(registry.bind(name, state.manager_version, qh, ()));
                 state.manager_global = Some(name);
                 state.lost = false;
+            }
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } if interface == wl_output::WlOutput::interface().name && version >= 4 => {
+                state.wl_outputs.push(WlOut {
+                    global: name,
+                    proxy: registry.bind(name, 4, qh, name),
+                    name: String::new(),
+                    mode: None,
+                });
             }
             wl_registry::Event::GlobalRemove { name } if state.manager_global == Some(name) => {
                 if let Some(m) = &state.manager {
                     m.stop();
                 }
                 state.drop_manager();
+            }
+            wl_registry::Event::GlobalRemove { name } => {
+                if let Some(i) = state.wl_outputs.iter().position(|o| o.global == name) {
+                    let o = state.wl_outputs.remove(i);
+                    if o.proxy.version() >= 3 {
+                        o.proxy.release();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// (outputs-mode) A `wl_output`'s name and current mode.
+impl Dispatch<wl_output::WlOutput, u32> for Client {
+    fn event(
+        state: &mut Self,
+        _: &wl_output::WlOutput,
+        event: wl_output::Event,
+        global: &u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(o) = state.wl_outputs.iter_mut().find(|o| o.global == *global) else {
+            return;
+        };
+        match event {
+            wl_output::Event::Name { name } => o.name = name,
+            wl_output::Event::Mode {
+                flags: WEnum::Value(flags),
+                width,
+                height,
+                refresh,
+            } if flags.contains(wl_output::Mode::Current) => {
+                o.mode = Some(OutputMode {
+                    width: i64::from(width),
+                    height: i64::from(height),
+                    refresh: f64::from(refresh) / 1000.0,
+                });
             }
             _ => {}
         }
@@ -1135,19 +1455,31 @@ impl Dispatch<wl_callback::WlCallback, ()> for Client {
 impl Dispatch<ZwlrOutputManagerV1, ()> for Client {
     fn event(
         state: &mut Self,
-        _: &ZwlrOutputManagerV1,
+        manager: &ZwlrOutputManagerV1,
         event: zwlr_output_manager_v1::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        // (outputs-resync) A manager stopped for a resync: its heads are
+        // not this state's, and its end is not the manager going.
+        if state.manager.as_ref() != Some(manager) {
+            if let zwlr_output_manager_v1::Event::Head { head } = event
+                && head.version() >= 3
+            {
+                head.release();
+            }
+            return;
+        }
         match event {
             zwlr_output_manager_v1::Event::Head { head } => {
+                state.touched();
                 state.heads.push(HeadEntry::new(head));
             }
             zwlr_output_manager_v1::Event::Done { serial } => {
                 state.serial = Some(serial);
                 state.changed = true;
+                state.undone = None;
             }
             zwlr_output_manager_v1::Event::Finished => state.drop_manager(),
             _ => {}
@@ -1170,6 +1502,16 @@ impl Dispatch<ZwlrOutputHeadV1, ()> for Client {
     ) {
         use zwlr_output_head_v1::Event as E;
         let id = head.id();
+        // A head of a manager stopped for a resync, or one released.
+        if !state.heads.iter().any(|h| h.proxy.id() == id) {
+            if let E::Mode { mode } = &event
+                && mode.version() >= 3
+            {
+                mode.release();
+            }
+            return;
+        }
+        state.touched();
         if let E::Finished = event {
             if let Some(i) = state.heads.iter().position(|h| h.proxy.id() == id) {
                 let h = state.heads.remove(i);
@@ -1242,6 +1584,10 @@ impl Dispatch<ZwlrOutputModeV1, ()> for Client {
     ) {
         use zwlr_output_mode_v1::Event as E;
         let id = mode.id();
+        if !state.modes.contains_key(&id) {
+            return;
+        }
+        state.touched();
         if let E::Finished = event {
             if let Some(m) = state.modes.remove(&id)
                 && m.proxy.version() >= 3
@@ -1559,6 +1905,148 @@ mod tests {
         c.heads[0].enabled = true;
         let ids: Vec<String> = c.snapshot().into_iter().map(|o| o.id).collect();
         assert_eq!(ids, [x2, x]);
+    }
+
+    /// (output-id, review round 4) The ids are given to strand-surface
+    /// only while a run is up: one stopped sees no monitor moved to
+    /// another port, and its list would number that monitor ` #2` (a
+    /// connector it left still holding its id). A run's new heads take
+    /// the ids of the monitors shown first, then the last run's.
+    #[test]
+    fn ids_are_given_only_while_a_run_is_up() {
+        let dell = "Dell Inc. | DELL U2720Q | Dell Inc. DELL U2720Q 6Y1ZW13";
+        let out = |name: &str, id: &str| Output {
+            name: name.into(),
+            id: id.into(),
+            ..Output::default()
+        };
+        share(&[out("eDP-1", "BOE"), out("DP-1", dell)]);
+        assert_eq!(
+            ids(),
+            [("eDP-1".into(), "BOE".into()), ("DP-1".into(), dell.into())]
+        );
+        // The run stops (nobody reads `outputs`), or its manager goes.
+        unshare();
+        assert_eq!(ids(), Vec::<(String, String)>::new());
+        // Meanwhile the Dell is moved to DP-2, where strand-surface shows
+        // it (numbered by plug order, so plain): the next run's DP-2 takes
+        // that, and the last run's DP-1 is only a fallback.
+        shown("DP-2", Some(dell));
+        shown("eDP-1", Some("BOE"));
+        assert_eq!(
+            remembered_ids(),
+            [
+                ("DP-2".into(), dell.into()),
+                ("eDP-1".into(), "BOE".into()),
+                ("DP-1".into(), dell.into())
+            ]
+        );
+        shown("DP-2", None);
+        shown("eDP-1", None);
+        share(&[out("DP-2", dell)]);
+        assert_eq!(ids(), [("DP-2".into(), dell.into())]);
+        unshare();
+    }
+
+    /// (outputs-order) The outputs are listed by name, a number by its
+    /// value, whatever order the compositor announced them in.
+    #[test]
+    fn outputs_are_listed_by_name() {
+        let mut names = vec!["eDP-1", "DP-10", "HDMI-A-1", "DP-2", "DP-1", "DP-02"];
+        names.sort_by(|a, b| by_name(a, b));
+        assert_eq!(
+            names,
+            ["DP-1", "DP-2", "DP-02", "DP-10", "HDMI-A-1", "eDP-1"]
+        );
+        let (a, _b) = UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(a).unwrap();
+        let head = |name: &str| HeadEntry {
+            name: name.into(),
+            description: format!("Headless {name}"),
+            enabled: true,
+            ..HeadEntry::new(ZwlrOutputHeadV1::inert(conn.backend().downgrade()))
+        };
+        // sway after a restart: the last made first.
+        let mut c = Client {
+            heads: vec![head("HEADLESS-3"), head("HEADLESS-2"), head("HEADLESS-10")],
+            ..Client::default()
+        };
+        let all: Vec<String> = c.snapshot().into_iter().map(|o| o.name).collect();
+        assert_eq!(all, ["HEADLESS-2", "HEADLESS-3", "HEADLESS-10"]);
+        // Each head keeps its own id, not its place's.
+        let ids: Vec<(String, String)> = c
+            .heads
+            .iter()
+            .map(|h| (h.name.clone(), h.id.clone()))
+            .collect();
+        assert!(
+            ids.iter().all(|(n, id)| id.ends_with(n.as_str())),
+            "{ids:?}"
+        );
+    }
+
+    /// (outputs-mode) A head that is on and names no current mode
+    /// (Hyprland 0.57, for a mode not in its list) has the one its
+    /// `wl_output` shows, and keeps it when a configuration changes
+    /// another head; one off has none.
+    #[test]
+    fn a_head_on_with_no_current_mode_has_its_wl_outputs() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(a).unwrap();
+        let head = |name: &str, enabled: bool| HeadEntry {
+            name: name.into(),
+            enabled,
+            ..HeadEntry::new(ZwlrOutputHeadV1::inert(conn.backend().downgrade()))
+        };
+        let shows = OutputMode {
+            width: 1280,
+            height: 720,
+            refresh: 60.0,
+        };
+        let wl = |global: u32, name: &str| WlOut {
+            global,
+            proxy: wl_output::WlOutput::inert(conn.backend().downgrade()),
+            name: name.into(),
+            mode: Some(shows.clone()),
+        };
+        let mut c = Client {
+            heads: vec![head("NESTED-1", true), head("NESTED-2", false)],
+            wl_outputs: vec![wl(7, "NESTED-1"), wl(8, "NESTED-2")],
+            ..Client::default()
+        };
+        let modes: Vec<Option<OutputMode>> = c.snapshot().into_iter().map(|o| o.mode).collect();
+        assert_eq!(modes, [Some(shows), None]);
+        // A change to another head sends this one with the mode it shows,
+        // not its preferred.
+        assert_eq!(
+            default_mode(&c, &c.heads[0]),
+            ModeChoice::Custom(1280, 720, 60_000)
+        );
+        assert_eq!(default_mode(&c, &c.heads[1]), ModeChoice::Keep);
+    }
+
+    /// (outputs-resync) A head or mode event after a `done` with no
+    /// `done` since makes a resync due after [`RESYNC_AFTER`]; a `done`
+    /// takes it back, and the first state (no `done` yet) never does.
+    #[test]
+    fn a_change_with_no_done_is_resynced() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(a).unwrap();
+        let mut c = Client {
+            manager: Some(ZwlrOutputManagerV1::inert(conn.backend().downgrade())),
+            ..Client::default()
+        };
+        let now = Instant::now();
+        c.touched();
+        assert_eq!(c.resync_at(), None, "the first state is not a change");
+        c.serial = Some(1);
+        c.touched();
+        let at = c.resync_at().expect("a change with no done");
+        assert!(!c.resync_due(now));
+        assert!(c.resync_due(at + Duration::from_millis(1)));
+        // A `done` in time: nothing to do.
+        c.undone = None;
+        assert!(!c.resync_due(at + RESYNC_AFTER * 4));
     }
 
     /// (service-ready, review round 1) The output manager going while

@@ -26,8 +26,10 @@ beside your bar.
 
 ## A best guess
 
-Monitors left to right in the order the compositor lists them, the
-laptop's own panel last, each at its preferred mode:
+Monitors left to right in the order of their connector names, the
+laptop's own panel last, each at its preferred mode. `outputs.all`
+lists them by name (`DP-2` before `DP-10`), so the guess is the same at
+every start, whatever order the compositor finds them in:
 
 ```strand file=layout.strand
 // layout.strand: a best guess, left to right, the laptop's panel last
@@ -211,9 +213,9 @@ fn turned(t: OutputTransform) -> int {
 }
 fn line(o: Output) -> text {
   let m = o.mode
-  let fields = o.enabled && m != null
-    ? join(", ", "output = " + lua(o.name),
-      "mode = " + lua(join("@", join("x", m?.width, m?.height), m?.refresh)),
+  let mode = m == null ? "preferred" : join("@", join("x", m?.width, m?.height), m?.refresh)
+  let fields = o.enabled
+    ? join(", ", "output = " + lua(o.name), "mode = " + lua(mode),
       "position = " + lua(join("x", o.x, o.y)),
       join(" = ", "scale", o.scale), join(" = ", "transform", turned(o.transform)))
     : "output = " + lua(o.name) + ", disabled = true"
@@ -273,7 +275,14 @@ on change big?.name, workspaces.ready after 1500ms {
   when the shell starts too, since `on change` never runs for the
   first value.
 - **`number(w.name) ?? 99`**: a named workspace (`web`, a special
-  one) has no number, and counts as 99, so only 1 to 5 move.
+  one) has no number, and counts as 99, so only 1 to 5 move. That is
+  Hyprland's and sway's numbering, where a workspace's number is the
+  same on every monitor.
+- **On niri**, a workspace without a name is numbered by its place on
+  its own monitor (each monitor has a `1`), so the filter above would
+  take every one. Name the workspaces to place in niri's config
+  (`workspace "code"`) and filter by those names instead:
+  `workspaces.all.filter(w => ["code", "web"].contains(w.name))`.
 - **`ws.move_to(s)`** leaves the focus on the workspace that had it,
   and a workspace on that screen already is left alone, so placing
   them again does nothing. Each call is its own request, so a `for`

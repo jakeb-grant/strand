@@ -529,7 +529,7 @@ with `outputs.apply`.
 | `model` | `text` | Its model, or "" when the compositor does not say. |
 | `serial` | `text` | Its serial number, or "" when the compositor does not say. |
 | `enabled` | `bool` | It is on: shown, and part of the layout. |
-| `mode` | `OutputMode?` | The mode it shows, or null while it is off. |
+| `mode` | `OutputMode?` | The mode it shows (one not in `modes` too), or null while it is off. |
 | `preferred` | `OutputMode?` | The mode the monitor prefers, if it names one. |
 | `modes` | `[OutputMode]` | Every mode it can show, each once, in the compositor's order (plain data: `for m in o.modes key join("x", m.width, m.height, m.refresh)`). |
 | `x` | `int` | Its left edge in the layout, in logical pixels (its last place while it is off). |

@@ -38,7 +38,8 @@ record Output key name {
   serial: text
   /// It is on: shown, and part of the layout.
   enabled: bool
-  /// The mode it shows, or null while it is off.
+  /// The mode it shows (one not in `modes` too), or null while it is
+  /// off.
   mode: OutputMode?
   /// The mode the monitor prefers, if it names one.
   preferred: OutputMode?
@@ -93,7 +94,9 @@ record OutputChange {
 /// rotation, changed together with `outputs.apply` and checked first with
 /// `outputs.test`.
 service outputs {
-  /// Every output, on or off, keyed by `name`.
+  /// Every output, on or off, keyed by `name`, in the order of their
+  /// names (`DP-2` before `DP-10`), whatever order the compositor
+  /// announces them in.
   all: [Output]
   /// The compositor offers output configuration: false without it, when
   /// `apply` and `test` fail with `outputs.failed`.

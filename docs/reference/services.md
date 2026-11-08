@@ -404,7 +404,7 @@ rotation, changed together with `outputs.apply` and checked first with
 
 | Field | Type | |
 | --- | --- | --- |
-| `all` | `[Output]` | Every output, on or off, keyed by `name`. |
+| `all` | `[Output]` | Every output, on or off, keyed by `name`, in the order of their names (`DP-2` before `DP-10`), whatever order the compositor announces them in. |
 | `available` | `bool` | The compositor offers output configuration: false without it, when `apply` and `test` fail with `outputs.failed`. |
 
 | Method | |
