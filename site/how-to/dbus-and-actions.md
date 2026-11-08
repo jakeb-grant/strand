@@ -103,7 +103,8 @@ on change upower.lid_closed { if upower.lid_closed { session.lock() } }
 ```
 
 `lid_present` is false on a machine without a lid, and `on_battery`
-is true while it runs from its battery.
+is true while it runs from its battery (the built-in
+`battery.on_battery` says the same, without declaring anything).
 
 ## A declared action runs a command
 

@@ -3938,3 +3938,10 @@ page   = "site/how-to/monitor-layouts.md"
 text   = "them again does nothing. Each call is its own request, so a `for`"
 source = ['crates/strand-services/src/wm/service.rs "WorkspaceAction::MoveTo { item, screen } => WmAction::MoveWorkspace {"']
 proof  = "crates/strand-services/tests/wm_services.rs::the_compositor_stores_follow_hyprland (two moves in a row both sent)"
+
+# --- battery-on-battery (blocks-more) ---
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "`battery.on_battery` says the same, without declaring anything)."
+source = ['crates/strand-services-schema/src/battery.schema "on_battery: bool"']
+proof  = "crates/strand-services/tests/battery.rs::on_battery_follows_upowers_root_object"

@@ -68,6 +68,9 @@ pub struct Battery {
     pub percent: f64,
     /// It is charging.
     pub charging: bool,
+    /// The machine runs from its battery (UPower's `OnBattery`): false on
+    /// line power, a full battery or not, and without UPower.
+    pub on_battery: bool,
     /// Time until empty, or until full while charging; null when unknown.
     pub time_left: Option<Duration>,
     /// An icon name for its charge and state.
@@ -146,6 +149,8 @@ impl Battery {
             present,
             percent: fraction(display),
             charging: is_charging,
+            // The root object's, set by the service.
+            on_battery: false,
             time_left: (present && seconds > 0.0).then(|| Duration::from_secs(seconds as u64)),
             icon: if present {
                 icon(display)
@@ -297,11 +302,17 @@ async fn history(
 struct UPower {
     display: Props,
     devices: BTreeMap<String, Props>,
+    /// (battery-on-battery) The root object's own properties
+    /// (`OnBattery`).
+    root: Props,
 }
 
 impl UPower {
     fn state(&self) -> Battery {
-        Battery::from_upower(&self.display, &self.devices)
+        Battery {
+            on_battery: dbus::boolean(&self.root, "OnBattery").unwrap_or(false),
+            ..Battery::from_upower(&self.display, &self.devices)
+        }
     }
 
     /// The battery whose history `history` asks: the first (by path)
@@ -353,10 +364,16 @@ impl UPower {
     async fn read(&mut self, daemon: &Daemon) -> zbus::Result<()> {
         self.display.clear();
         self.devices.clear();
+        self.root.clear();
         if daemon.owner().is_none() {
             return Ok(());
         }
         let conn = daemon.conn();
+        match dbus::get_all(conn, UPOWER, ROOT, UPOWER).await {
+            Ok(p) => self.root = p,
+            Err(e) if dbus::is_timeout(&e) => return Err(e),
+            Err(e) => log::debug!("battery: no UPower properties: {e}"),
+        }
         match dbus::get_all(conn, UPOWER, DISPLAY, DEVICE).await {
             Ok(p) => self.display = p,
             Err(e) if dbus::is_timeout(&e) => return Err(e),
@@ -395,6 +412,11 @@ impl UPower {
     /// Apply a signal; whether anything changed.
     async fn signal(&mut self, daemon: &Daemon, m: &zbus::Message) -> bool {
         if let Some(c) = dbus::properties_changed(m) {
+            // (battery-on-battery) The root object: `OnBattery`.
+            if c.iface == UPOWER && c.path == ROOT {
+                dbus::apply_changed(daemon.conn(), UPOWER, &mut self.root, c).await;
+                return true;
+            }
             if c.iface != DEVICE {
                 return false;
             }

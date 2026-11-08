@@ -258,7 +258,8 @@ the compositor's command line:
   p.name`, each switched by `p.select()`), and the programs taking
   video (`video.streams`) for a camera or screen-cast light;
 - battery, with the charge UPower recorded over past hours
-  (`battery.history(10800s)`);
+  (`battery.history(10800s)`) and whether the machine runs from it
+  (`battery.on_battery`, true only while unplugged);
 - bluetooth, with a pairing dialog for a device that asks for a PIN or
   a code: a panel with `open: bluetooth.request != null`, answered by
   `respond(typed)`, `accept()` or `reject()`;

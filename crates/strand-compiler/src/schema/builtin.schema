@@ -877,6 +877,9 @@ provisional service battery {
   percent: float
   /// It is charging.
   charging: bool
+  /// The machine runs from its battery (UPower's `OnBattery`): false on
+  /// line power, a full battery or not, and without UPower.
+  on_battery: bool
   /// Time until empty, or until full while charging; null when unknown.
   time_left: duration?
   /// An icon name for its charge and state.

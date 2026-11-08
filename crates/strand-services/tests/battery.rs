@@ -184,6 +184,59 @@ fn battery_follows_upower_and_its_restarts() {
     s.shutdown();
 }
 
+/// (battery-on-battery) `battery.on_battery` is UPower's own `OnBattery`
+/// on its root object: read at start, each change UPower signals
+/// followed (the charger unplugged, plugged in again, whatever the
+/// battery's state), and false once UPower is gone.
+#[test]
+fn on_battery_follows_upowers_root_object() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some(mock1) = upower(&tokio, &bus, &conn, 100.0) else {
+        return;
+    };
+    let on_battery = |v: bool| {
+        mock(
+            &tokio,
+            &conn,
+            UPOWER,
+            ROOT,
+            "UpdateProperties",
+            &(UPOWER, HashMap::from([("OnBattery", Value::from(v))])),
+        );
+    };
+    on_battery(true);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.battery.cells();
+    b.battery.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)), "the boot read");
+    rt.flush();
+    assert_eq!(
+        cells.on_battery.get_untracked(&rt),
+        Ok(true),
+        "read at start"
+    );
+    on_battery(false);
+    until(&rt, &s, "on line power", || {
+        cells.on_battery.get_untracked(&rt) == Ok(false)
+    });
+    // A full battery on line power is not charging, and not on battery.
+    assert_eq!(cells.charging.get_untracked(&rt), Ok(false));
+    on_battery(true);
+    until(&rt, &s, "unplugged", || {
+        cells.on_battery.get_untracked(&rt) == Ok(true)
+    });
+    drop(mock1);
+    until(&rt, &s, "UPower gone", || {
+        cells.on_battery.get_untracked(&rt) == Ok(false)
+    });
+    s.shutdown();
+}
+
 #[test]
 fn without_upower_there_is_no_battery() {
     let Some(bus) = PrivateBus::start() else {
