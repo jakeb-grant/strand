@@ -161,7 +161,9 @@ new watcher first gets a `notices` event with the running config's
 check warnings, when it has any. A reload event's `total_ms` runs from
 the watcher's last event behind the save to the send of the diff
 holding the reload. A client that cannot take its output gets a write
-source on the logic loop; one more than 1 MiB behind is dropped.
+source on the logic loop; one more than 1 MiB behind when another line
+is queued is dropped, and a line of any size is queued whole
+(decisions.md ipc-large-answer).
 
 **M4 additions.** The GPU thread, promotion and hand-off are in
 "`strand-gpu`".
@@ -521,8 +523,10 @@ name them.
   share `Instance::path_to`; a dictionary is an object in `get`'s
   answer). `call` reaches service-level actions only. `toggle` is bool
   only. Token paths are spelled `$accent`.
-- `MAX_LINE` (64 KiB) bounds requests; an answer is bounded by the
-  connection's 1 MiB queue.
+- `MAX_LINE` (64 KiB) bounds requests; an answer is delivered whole,
+  whatever its size: the connection's 1 MiB queue drops a client only
+  when that much it has not read is queued before another line
+  (decisions.md ipc-large-answer).
 - **The D-Bus name**: `DBUS_NAME` (`io.github.jakeb_grant.Strand`), bus
   and interface name, object path `/`; its only spelling (a
   strand-services test holds any zbus literal equal to it). It may be
@@ -741,8 +745,9 @@ hidden `strand::cli` module.
   calls and actions with the notice; its first `acquire` raises a
   `ServiceDiagnostic` notice ("`hello` is declared by `<path>` but this
   binary does not serve it; …") which the last `release` resolves; like
-  every service notice it reaches only the watchers connected when it
-  is taken (`watch` does not replay it). A
+  every service diagnostic still open it is sent to a `strand watch`
+  that subscribes later (`Shell::service_open`, decisions.md
+  build-ready). A
   linked service whose file differs logs "stale; run `<binary>
   --write-schemas`".
 - **Schema files** (`strand_compiler::schema::plugins`, std only):
@@ -1084,7 +1089,10 @@ is being saved, so the idle-wakeup windows hold.
   surface logical pixels (`Renderer::boxes`), `x`/`y` applied at flatten
   time as paint offsets. `Renderer::scroll` and `scroll_into_view(list,
   row)`; a `list` lays out only the rows in view. Text takes no room
-  until its first layout arrives (decisions.md late-text-dip).
+  until its first layout arrives (decisions.md late-text-dip). The pass
+  that sizes a content-sized surface asks for each wrapping text's
+  layout at its box's width too (`natural_texts`), so its size never
+  depends on a surface drawing it (decisions.md build-ready).
 - **Animation** (`anim/`): the render thread owns every spring. A prop in
   `ANIMATED` (`x`, `y`, `opacity`, `scale`, `rotate`, `bg`, `color`,
   `border`, `shadow`, `radius`, `value`, `track`, `stroke`, `trim`,
@@ -1578,7 +1586,11 @@ owner-approved theming design" and after) and m5-palette.
     at the window's end), and a `run:` written into by its own runs
     three rounds in a row is held (`LOOP_ROUNDS`, a standing notice).
     A `Waiting` output whose service has no run up
-    (`Services::snapshot`) is a standing notice.
+    (`Services::snapshot`) is a standing notice, and (build-ready) so is
+    one still waiting after `SLOW_WAIT` (10 s) on a service that is up
+    (`Files::slow_due`, the loop woken at `Files::wait`); a wait whose
+    path no output writes any more (a reload removed or moved the
+    `file`) is let go with its notice (`Files::let_go`).
   - `entry.rs` serves every one-shot command from one table
     (`entry::one_shot`).
 
@@ -2001,7 +2013,15 @@ Public interfaces:
     innermost failing operation's. `Instance::origin(node)` maps a scene
     node to its element. `Instance::freeze(&err)` suspends the faulting
     component and outlines it in red; `thaw` and reloads clear it. A
-    top-level fault is outlined and nothing is frozen.
+    top-level fault is outlined and nothing is frozen. A handler's error
+    (`RuntimeError::handler`, set by the handler's `reporting` wrapper)
+    freezes and outlines nothing (decisions.md handler-fault); the
+    wrapper reports a handler's error only when it differs from the one
+    its last failing run reported with no run completing between
+    (`Site::reported`, decisions.md handler-fault-repeat), or was
+    reported in an earlier fault epoch: each `strand watch` that starts
+    calls `Instance::report_faults_again`, which bumps it (decisions.md
+    handler-fault-repeat-watch).
   - The host loop: `Instance::step(now, wall) -> (Update, Wake)`. The
     `strand run` logic thread feeds `screens` from the surface layer's
     monitor hooks, maps render's input to `event(node, name, args)`
@@ -3020,11 +3040,22 @@ itself.
 - **Failures are diagnostics.** A run that errs or panics is a
   `ServiceDiagnostic { service, message, notice: false, .. }`;
   `Cx::notice` raises one the user must act on (`notice: true`),
-  `Cx::warn` one the run retries itself. `take_diagnostics()` yields
-  each distinct message once (until a run stays up `RETRY_MAX` or ends
-  cleanly); a notice that no longer holds comes back once with
-  `resolved: true`. `strand run` logs them, sends them to `strand
-  watch`, and shows notices as overlay rows under `strand: services`.
+  `Cx::failing` one that holds while the run goes on (a failing poll),
+  `Cx::warn` a one-off event the run survives (a copied image not
+  kept; `standing: false`, every other diagnostic is `standing: true`).
+  `take_diagnostics()` yields each distinct message once (until a run
+  stays up `RETRY_MAX` or ends cleanly); a notice that no longer holds
+  comes back once with `resolved: true`, and (build-ready) so does a
+  standing failure: a run's end, or an earlier run's `Cx::failing`,
+  once a later run that said it is ready has stayed up `RETRY_MAX` since
+  it started (`ClientInner::arm_settle`, so a run failing right after
+  its first read is reported once over its retries); a `Cx::failing` by
+  the run's `Cx::resolve`; any by a clean end, another failure in its
+  place, `Client::restart`, `Client::stop_now` (a reload changing or
+  removing a no-code service) or the stop after the last reader left.
+  `strand run` logs them, sends them to `strand watch`, keeps the
+  standing ones still open for a later watcher (`Shell::service_open`),
+  and shows notices as overlay rows under `strand: services`.
 - **Calls of one name on several records.** Variants sharing a
   `#[call(name)]` and taking items of different records
   (`TrayItem.activate()`, `TrayMenuItem.activate()`) are told apart by

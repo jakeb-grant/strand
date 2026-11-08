@@ -752,7 +752,9 @@ monitor, the keyboard always).
   November 2026, and `2026` or `0` is no date. An instant is
   moved to the local zone and cut to the minute; one whose wall time
   falls outside the dates Strand holds is no date. Other text does not
-  convert: the default and one report, or null for `Date?`.
+  convert: the default and one report, or null for `Date?`. A `Date`'s
+  default is 1970-01-01 with no time of day, and a `Date` without a
+  time of day formats as its midnight (`%H:%M` is `00:00`).
   `strand set` and `strand call` read date text the same way. A
   `key=value` line's key starts with no digit, so a date or a time
   printed alone is text, not a pair.
@@ -865,7 +867,10 @@ monitor, the keyboard always).
 - (service-ready) Every service, builtin or declared, has a read-only
   `ready: bool`: a run of it is up and has answered. A `from file` or
   `from dir` service is ready once its first read is in, a `from poll`
-  one after its first poll, a `from listen` one once its command runs,
+  one after its first poll that answers (a command that fails, times out
+  or prints more than a document leaves it not ready, though the first
+  frame does not wait for it, and later keeps its last values), a
+  `from listen` one once its command runs,
   and a `from dbus` one once its properties are read and while the
   daemon owns its name (false while it is gone, true again once a new
   one has been read). The name is reserved: a declared field or action
@@ -2160,7 +2165,16 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   field is a load error with a fix. Assignment is a statement, never an
   expression.
 - A handler's errors are values: a failing action or expression never
-  stops other handlers or the shell.
+  stops other handlers or the shell. A failed `await` (an action that
+  exits non-zero or prints what does not read as its `T`), or any other
+  error in a handler's body, ends that run of the handler only: it is
+  logged and told to `strand watch` as a fault that froze nothing, and
+  every handler, that one included, runs at its next event (section 12;
+  decisions.md handler-fault). A handler that fails the same way again
+  (an `every` timer on each tick) is not reported again until a run of
+  it completes (decisions.md handler-fault-repeat); a `strand watch`
+  started since hears it at its next failing run (decisions.md
+  handler-fault-repeat-watch).
 - When a handler's node unmounts, the handler is cancelled at its next
   `await`. A reload that changes a handler's code, or anything it calls,
   restarts it and cancels and reports an in-flight `await`
@@ -2499,7 +2513,9 @@ from a service, a compositor fragment from `outputs.all`.
   by 9.8's Values rule: text as is, a number in shortest form, a bool, a
   colour as `hex(c)`, a token's current value (inside `join` too, as a
   template's `join` writes it); a list or record is an
-  error naming its type. `.light()` and `.dark()` in such a text are an
+  error naming its type. One that reads a token on its way (`join`,
+  `hex`, a `let` that reads one) waits for the palette as a template
+  does, so it is never written from the fallback palette first. `.light()` and `.dark()` in such a text are an
   error (`file::other_mode`): the other mode needs a text that reads
   only the theme, or a template file. A `text:` that is `null` writes
   nothing and runs nothing: the file is left as it is, and bytes not yet
@@ -2515,8 +2531,9 @@ from a service, a compositor fragment from `outputs.all`.
   values that held. A service with no run up (failed, backing
   off) makes it a standing notice naming that service, kept while it
   waits (that earlier write landing does not take it away); one starting is
-  no news, and so is one that is up but not ready (a declared `from
-  dbus` service whose daemon is absent waits for it with no notice). A
+  no news, and one that is up but has not answered within 10 s (a
+  declared `from dbus` service whose daemon is absent, a poll that has
+  not succeeded) is a standing notice naming it, given once per wait. A
   builtin whose backend is absent (`battery` without UPower) is ready
   with its defaults, and is written. A top-level `file` holds the services it reads. The positional path resolves as
   a settings file's does (section 11): `~/…` from `$HOME`, an absolute
@@ -2841,11 +2858,19 @@ people can edit by hand.
   the file in `$EDITOR`. A save fixed within those 250 ms (format on
   save, delete then create) never opens it.
 - **Runtime faults** freeze only their own component, outlined in red,
-  until a reload fixes it; the rest of the shell runs on. A fault inside
-  the `lock` shows the built-in password field (section 5.1).
+  until a reload fixes it; the rest of the shell runs on. A handler's
+  error (section 8.3) is a value, not such a fault: it freezes and
+  outlines nothing. A fault inside the `lock` shows the built-in password field
+  (section 5.1), a handler's error there included.
 - **Service failures** reach the program as values (an action's error,
   an `Async`'s `.error`) and as service diagnostics; they never stop the
-  shell. An action of a builtin service that cannot run (its daemon or
+  shell. A diagnostic names its service (a `from poll` command that
+  fails is one, said once until a poll answers); one that no longer
+  holds is resolved (a poll that answers; a reload that changes or
+  removes its service; a later run that stays up 30 s, for a run that
+  failed), and `strand watch` tells a watcher that starts later the
+  ones still open, not a one-off warning such as a copied image that
+  could not be kept (decisions.md build-ready-failures). An action of a builtin service that cannot run (its daemon or
   bus missing) is never a runtime fault: it is logged and arrives as
   that service's failure event where it has one (`session.failed`,
   `network.failed`, `bluetooth.failed`, `outputs.failed`,

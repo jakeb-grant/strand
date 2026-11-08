@@ -1,6 +1,7 @@
 //! The socket's server, on the logic thread's loop: every socket is
 //! non-blocking, and a client that does not read its events is dropped
-//! once [`MAX_QUEUED`] is queued for it.
+//! once it is more than [`MAX_QUEUED`] behind as another line comes; a
+//! line of any size is queued whole.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -13,7 +14,8 @@ use serde_json::{Value as Json, json};
 
 use super::{MAX_LINE, Request, parse};
 
-/// Output queued for one client before it is dropped.
+/// Output a client may leave unread before it is dropped, checked as
+/// another line is queued (never against the line itself).
 const MAX_QUEUED: usize = 1 << 20;
 
 /// A connected client, by number.
@@ -221,17 +223,28 @@ impl Server {
         out
     }
 
-    /// Queue `v` as one line for `id`.
+    /// Queue `v` as one line for `id`. A client still more than
+    /// [`MAX_QUEUED`] behind on what was queued before is dropped: the
+    /// cap is for a client that does not read, so one line of any size
+    /// (a `get` of a long list) is always queued whole and delivered to
+    /// a client that reads it (decisions.md ipc-large-answer).
     pub fn send(&mut self, id: ClientId, v: &Json) {
         let Some(c) = self.clients.get_mut(&id) else {
             return;
         };
+        if c.closed {
+            return;
+        }
+        if c.out.len() > MAX_QUEUED {
+            log::warn!(
+                "ipc: client {id} does not read its events: dropped with {} bytes unread",
+                c.out.len()
+            );
+            c.closed = true;
+            return;
+        }
         c.out.extend_from_slice(v.to_string().as_bytes());
         c.out.push(b'\n');
-        if c.out.len() > MAX_QUEUED {
-            log::warn!("ipc: client {id} does not read its events: dropped");
-            c.closed = true;
-        }
     }
 
     /// Queue the answer to one of `id`'s requests that [`Server::read`]
@@ -440,6 +453,86 @@ mod tests {
         }
         assert_eq!(reader.join().unwrap(), 601);
         assert!(server.clients.values().all(|c| c.wtoken.is_none()));
+        drop(server);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (ipc-large-answer) An answer over the cap (a `get` of a long list
+    /// of documents) is delivered whole to a client that reads it, and a
+    /// line after it is still queued once it has been read; a watcher
+    /// that reads nothing is dropped once more than the cap is unread.
+    #[test]
+    fn an_answer_over_the_cap_is_delivered_and_a_stalled_watcher_dropped() {
+        use calloop::EventLoop;
+        let dir = std::env::temp_dir().join(format!("strand-ipc-large-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.sock");
+        let mut el = EventLoop::<Data>::try_new().unwrap();
+        let handle = el.handle();
+        let mut server = Server::bind(&path, &handle).unwrap();
+        let mut data = Data::default();
+        let mut pump = |server: &mut Server, data: &mut Data| {
+            el.dispatch(Some(Duration::from_millis(50)), data).unwrap();
+            let ready = std::mem::take(&mut data.0);
+            if ready.accept {
+                server.accept(&handle);
+            }
+            for id in ready.readable {
+                server.read(id);
+            }
+            server.flush(&handle)
+        };
+        let mut getter = std::io::BufReader::new(UnixStream::connect(&path).unwrap());
+        while server.clients.is_empty() {
+            pump(&mut server, &mut data);
+        }
+        let id = *server.clients.keys().next().unwrap();
+        let big = "x".repeat(3 * MAX_QUEUED);
+        server.answer(id, &json!({"ok": true, "value": big}));
+        let reader = std::thread::spawn(move || {
+            let mut lines = Vec::new();
+            for _ in 0..2 {
+                let mut line = String::new();
+                getter.read_line(&mut line).unwrap();
+                lines.push(line);
+            }
+            lines
+        });
+        while pump(&mut server, &mut data) {}
+        // Read whole: the next line is queued, not taken for a stall.
+        server.send(id, &json!({"ok": true, "value": "after"}));
+        while pump(&mut server, &mut data) {}
+        let lines = reader.join().unwrap();
+        let first: Json = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(first["value"].as_str().map(str::len), Some(3 * MAX_QUEUED));
+        assert_eq!(lines[1].trim(), r#"{"ok":true,"value":"after"}"#);
+
+        // A watcher that never reads: kept up to the cap, then dropped.
+        let mut watcher = UnixStream::connect(&path).unwrap();
+        watcher
+            .write_all(encode(&Request::Watch).as_bytes())
+            .unwrap();
+        while server.clients.values().all(|c| !c.watching) {
+            pump(&mut server, &mut data);
+        }
+        let w = *server
+            .clients
+            .iter()
+            .find(|(_, c)| c.watching)
+            .map(|(id, _)| id)
+            .unwrap();
+        let ev = json!({"event": "reload", "pad": "x".repeat(1000)});
+        for _ in 0..(2 * MAX_QUEUED / 1000) {
+            server.broadcast(&ev);
+            // What its socket takes is written; the rest stays queued.
+            server.flush(&handle);
+            if !server.has(w) {
+                break;
+            }
+        }
+        assert!(!server.has(w), "a watcher that does not read is dropped");
+        drop(watcher);
         drop(server);
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -783,3 +783,156 @@ fn file_and_poll_declarations_are_ready_after_their_first_read() {
         custom::forget(id);
     }
 }
+
+/// (build-ready) A `from poll` command that fails is a warning naming
+/// the service (the log, `strand watch`), once while it fails the same
+/// way, and a service whose polls have never answered is not `ready`
+/// (though the first frame does not wait for it); the first poll that
+/// answers makes it ready with its values.
+#[test]
+fn a_failing_poll_is_reported_under_its_name_and_is_not_ready() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ok = tmp.path().join("ok");
+    let runs = tmp.path().join("runs");
+    let script = format!(
+        "echo x >> '{}'; [ -e '{}' ] && echo '{{\"level\": 2}}' || exit 22",
+        runs.display(),
+        ok.display()
+    );
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let client = services.register_as::<Custom>(&rt, "flaky");
+    let id = custom::register(Spec {
+        name: "flaky".into(),
+        source: Source::Poll {
+            target: custom::PollTarget::Command(vec!["sh".into(), "-c".into(), script]),
+            every: Duration::from_millis(100),
+        },
+        fields: vec![FieldSpec {
+            name: "level".into(),
+            key: vec!["level".into()],
+            rw: false,
+            text: Default::default(),
+        }],
+        actions: Vec::new(),
+    });
+    client.seed(&rt, |s| *s = Custom::seeded(id, 1)).unwrap();
+    client.acquire(&rt);
+    let mut seen = Vec::new();
+    until(&rt, &services, "the failure reported", || {
+        seen.extend(services.take_diagnostics());
+        !seen.is_empty()
+    });
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0].service, "flaky");
+    assert!(!seen[0].notice);
+    assert_eq!(seen[0].message, "`sh` failed (exit status: 22)");
+    assert_eq!(
+        seen[0].to_string(),
+        "service `flaky`: `sh` failed (exit status: 22)"
+    );
+    // The first frame's hold is over, and it is not ready.
+    assert!(services.wait_ready_of(&rt, Some("flaky"), Duration::from_secs(10)));
+    assert!(!client.ready(&rt), "ready with no poll answered");
+    // More failing polls of the same kind: no more reports.
+    let count = || std::fs::read_to_string(&runs).map_or(0, |r| r.lines().count());
+    let after = count();
+    until(&rt, &services, "two more polls", || count() >= after + 2);
+    services.pump(&rt);
+    rt.flush();
+    assert!(services.take_diagnostics().is_empty(), "reported again");
+    assert!(!client.ready(&rt));
+    std::fs::write(&ok, "").unwrap();
+    until(&rt, &services, "ready once a poll answers", || {
+        client.ready(&rt)
+    });
+    let level = client
+        .cells()
+        .values
+        .with_untracked(&rt, |v| v.get(&0i64).map(|v| v.value.clone()))
+        .ok()
+        .flatten();
+    assert_eq!(level, Some(Data::Int(2)));
+    // The failure is resolved, so a late `strand watch` is not told it;
+    // failing again is news again.
+    let mut seen = Vec::new();
+    until(&rt, &services, "the failure resolved", || {
+        seen.extend(services.take_diagnostics());
+        !seen.is_empty()
+    });
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert!(seen[0].resolved, "{seen:?}");
+    assert_eq!(seen[0].message, "`sh` failed (exit status: 22)");
+    std::fs::remove_file(&ok).unwrap();
+    let mut seen = Vec::new();
+    until(&rt, &services, "the failure reported again", || {
+        seen.extend(services.take_diagnostics());
+        !seen.is_empty()
+    });
+    assert!(!seen[0].resolved, "{seen:?}");
+    assert!(client.ready(&rt), "it answered once: its values hold");
+    services.shutdown();
+    custom::forget(id);
+}
+
+/// (build-ready review) A poll service whose first poll failed is not
+/// made ready by its reader going hidden meanwhile (a popup closed while
+/// the poll ran): it is ready only once a poll answers.
+#[test]
+fn a_failed_first_poll_hidden_meanwhile_is_still_not_ready() {
+    let tmp = tempfile::tempdir().unwrap();
+    let go = tmp.path().join("go");
+    let ok = tmp.path().join("ok");
+    let runs = tmp.path().join("runs");
+    // Each poll is counted, waits for `go`, then fails until `ok` exists.
+    let script = format!(
+        "echo x >> '{runs}'; while [ ! -e '{go}' ]; do sleep 0.02; done; \
+         [ -e '{ok}' ] && echo '{{\"level\": 2}}' || exit 22",
+        runs = runs.display(),
+        go = go.display(),
+        ok = ok.display()
+    );
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let client = services.register_as::<Custom>(&rt, "hidden");
+    let id = custom::register(Spec {
+        name: "hidden".into(),
+        source: Source::Poll {
+            target: custom::PollTarget::Command(vec!["sh".into(), "-c".into(), script]),
+            every: Duration::from_millis(100),
+        },
+        fields: vec![FieldSpec {
+            name: "level".into(),
+            key: vec!["level".into()],
+            rw: false,
+            text: Default::default(),
+        }],
+        actions: Vec::new(),
+    });
+    client.seed(&rt, |s| *s = Custom::seeded(id, 1)).unwrap();
+    client.acquire(&rt);
+    let count = || std::fs::read_to_string(&runs).map_or(0, |r| r.lines().count());
+    until(&rt, &services, "the first poll running", || count() >= 1);
+    // Its reader goes hidden while the poll runs; then the poll fails.
+    client.release(&rt);
+    std::thread::sleep(Duration::from_millis(200));
+    std::fs::write(&go, "").unwrap();
+    until(&rt, &services, "the failure reported", || {
+        !services.take_diagnostics().is_empty()
+    });
+    // Shown again: the next poll (also failing) is past the loop's top,
+    // where a hidden reader made it ready.
+    client.acquire(&rt);
+    until(&rt, &services, "a second poll", || count() >= 2);
+    let after = count();
+    until(&rt, &services, "a third poll", || count() > after);
+    services.pump(&rt);
+    rt.flush();
+    assert!(!client.ready(&rt), "ready with no poll answered");
+    std::fs::write(&ok, "").unwrap();
+    until(&rt, &services, "ready once a poll answers", || {
+        client.ready(&rt)
+    });
+    services.shutdown();
+    custom::forget(id);
+}

@@ -1091,6 +1091,96 @@ fn check_warnings_reach_strand_watch_and_are_resolved() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// (build-ready review) A handler failing the same way is reported once
+/// (decisions.md handler-fault-repeat), but a `strand watch` started
+/// after that hears it at its next failing run, then once only
+/// (decisions.md handler-fault-repeat-watch). Each step is read up to a
+/// host notice sent after it, so "nothing heard" is a sequence, not a
+/// quiet window.
+#[test]
+fn a_late_watch_hears_a_handler_still_failing_the_same_way() {
+    let dir = temp_dir("fault-late-watch");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "state zero = 0\nstate tries = 0\nstate n = 0\n\
+         bar Top {\n  box { on click { tries += 1; n = 1 / zero } }\n  \
+         text join(\"\", \"t\", tries)\n}\n",
+    )
+    .unwrap();
+    let socket = dir.join("ipc.sock");
+    let (compiler, to_logic, t, mut m) = spawn_live(&dir, Some(socket.clone()));
+    m.until("the bar", |s| s.texts() == ["t0"]);
+    let boxes = m.scene.of_kind(NodeKind::Box);
+    let watch = || {
+        let s = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut r = std::io::BufReader::new(s);
+        let ok = ipc::request(&mut r, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+        assert_eq!(ok["ok"], true);
+        r
+    };
+    // The events `w` hears up to the host notice `mark`: whether a fault
+    // came first.
+    let faulted_before = |w: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
+                          mark: &str| {
+        let mut fault = false;
+        loop {
+            let mut line = String::new();
+            std::io::BufRead::read_line(w, &mut line)
+                .unwrap_or_else(|e| panic!("no `{mark}`: {e}"));
+            let ev: Json = serde_json::from_str(&line).unwrap();
+            if ev["event"] == "fault" {
+                assert!(
+                    ev["message"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("on click"),
+                    "{ev}"
+                );
+                fault = true;
+            } else if ev["notices"] == json!([mark]) {
+                return fault;
+            }
+        }
+    };
+    let mut click = |n: usize| {
+        to_logic
+            .send(ToLogic::Event {
+                input: None,
+                node: boxes[0],
+                event: NodeEvent::Click,
+            })
+            .unwrap();
+        let want = format!("t{n}");
+        m.until(&want, |s| s.texts().contains(&want));
+        to_logic
+            .send(ToLogic::Notice(format!("after {n}")))
+            .unwrap();
+    };
+    let mut early = watch();
+    click(1);
+    assert!(faulted_before(&mut early, "after 1"), "the first failure");
+    click(2);
+    assert!(
+        !faulted_before(&mut early, "after 2"),
+        "the same failure again"
+    );
+    let mut late = watch();
+    click(3);
+    assert!(
+        faulted_before(&mut late, "after 3"),
+        "a watch started since hears the failure at its next run"
+    );
+    assert!(faulted_before(&mut early, "after 3"), "the early watch too");
+    click(4);
+    assert!(!faulted_before(&mut late, "after 4"), "then once only");
+    assert!(!faulted_before(&mut early, "after 4"), "then once only");
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    drop(compiler);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn saves_reload_live_with_state_kept() {
     let dir = temp_dir("live");
@@ -1708,11 +1798,7 @@ fn lock_edits_wait_for_the_unlock_and_then_land() {
         std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
     let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
     assert_eq!(ok["ok"], true);
-    let mut next_event = || {
-        let mut line = String::new();
-        std::io::BufRead::read_line(&mut events, &mut line).unwrap();
-        serde_json::from_str::<Json>(&line).unwrap()
-    };
+    let mut next_event = || heard(&mut events);
     // An edit that leaves the lock alone commits at once, lock shown.
     std::fs::write(&file, src("lock a", "bar a2")).unwrap();
     let ev = next_event();
@@ -1870,16 +1956,39 @@ fn a_password_value_is_redacted_from_fault_messages() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A watcher on `socket`: the next event it hears.
+/// A watcher on `socket`: the next event it hears, past the `auth`
+/// service's warning that no helper is installed ([`heard`]).
 fn watch(socket: &Path) -> impl FnMut() -> Json {
     let mut events =
         std::io::BufReader::new(std::os::unix::net::UnixStream::connect(socket).unwrap());
     let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
     assert_eq!(ok["ok"], true);
-    move || {
+    move || heard(&mut events)
+}
+
+/// The next event on `events`. (build-ready) A watcher hears the service
+/// diagnostics still open as it subscribes: the `auth` service's warning
+/// that no `strand-auth` helper is installed is one on a target that has
+/// none built, whatever [`spawn_live_on`] tells the logic thread, so an
+/// event of that warning alone is passed over, as the lock tests' events
+/// are the same on any target.
+fn heard(events: &mut std::io::BufReader<std::os::unix::net::UnixStream>) -> Json {
+    loop {
         let mut line = String::new();
-        std::io::BufRead::read_line(&mut events, &mut line).unwrap();
-        serde_json::from_str::<Json>(&line).unwrap()
+        std::io::BufRead::read_line(events, &mut line).unwrap();
+        let ev = serde_json::from_str::<Json>(&line).unwrap();
+        let only_auth = ev["event"] == "notices"
+            && ev["notices"].as_array().is_some_and(|n| {
+                !n.is_empty()
+                    && n.iter().all(|n| {
+                        n.as_str()
+                            .is_some_and(|n| n.starts_with("service `auth`: no `strand-auth`"))
+                    })
+            })
+            && ev["diagnostics"].as_array().is_none_or(Vec::is_empty);
+        if !only_auth {
+            return ev;
+        }
     }
 }
 
@@ -3914,6 +4023,107 @@ fn a_failing_action_with_a_result_leaves_its_error_null() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (handler-fault) A handler's error is a value (spec.md 8.3): an awaited
+/// action that fails (a non-zero exit, output that does not read as its
+/// `-> int`) or an expression that fails in a handler ends that run
+/// only. Each is reported as a fault that froze nothing, and the bar's
+/// other handlers, and the failed one clicked again, still run. Before,
+/// the shell froze the bar's instance for it, outlined red, so no click
+/// reached it again.
+#[test]
+fn a_failed_await_in_a_handler_stops_no_other_handler() {
+    let dir = temp_dir("handler-fault");
+    let src = "permit exec \"false\", \"echo\"\n\
+         action fails() -> int [\"false\"]\n\
+         action num() -> int [\"echo\", \"abc\"]\n\
+         state zero = 0\nstate f = 0\nstate p = 0\nstate e = 0\n\
+         bar Top {\n  row {\n    \
+         box { on click { f += 1; let n = await fails(); f = n } }\n    \
+         box { on click { p += 1 } }\n    \
+         box { on click { e += 1; let n = await num(); e = n } }\n    \
+         box { on click { e += 1; e = 1 / zero } }\n  }\n  \
+         text join(\" \", f, p, e)\n}\n";
+    std::fs::write(dir.join("bar.strand"), src).unwrap();
+    let program = load(&dir);
+    let storage = Storage::in_dirs(dir.join("state"), &dir);
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let (heard, events) = std::sync::mpsc::channel();
+    let heard = std::sync::Mutex::new(heard);
+    let live = Live {
+        events_to: Some(ipc::EventSink::new(move |ev| {
+            let _ = heard.lock().unwrap().send(ev.clone());
+        })),
+        ..Live::default()
+    };
+    let t = std::thread::spawn(move || logic(program, storage, from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| s.texts() == ["0 0 0"]);
+    let boxes = m.scene.of_kind(NodeKind::Box);
+    assert_eq!(boxes.len(), 4, "{}", m.scene.render());
+    let click = |node| {
+        to_logic
+            .send(ToLogic::Event {
+                input: None,
+                node,
+                event: NodeEvent::Click,
+            })
+            .unwrap();
+    };
+    // The next fault event, which must say it froze nothing.
+    let fault = |want: &str| loop {
+        let ev = events
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap_or_else(|_| panic!("no fault for {want}"));
+        if ev["event"] == "fault" {
+            let message = ev["message"].as_str().unwrap_or_default();
+            assert!(message.contains(want), "{ev}");
+            assert_eq!(ev["frozen"], false, "{ev}");
+            return;
+        }
+    };
+    let outlined = |s: &SceneMirror| {
+        s.of_kind(NodeKind::Bar)
+            .into_iter()
+            .chain(s.of_kind(NodeKind::Row))
+            .chain(s.of_kind(NodeKind::Box))
+            .any(|n| s.prop(n, Prop::Border).is_some())
+    };
+    // Each failing run: its write before the `await` lands and its error
+    // is reported; then a click on the plain box still runs.
+    click(boxes[0]);
+    fault("`false` failed (exit status: 1)");
+    m.until("the failed exit's run", |s| s.texts() == ["1 0 0"]);
+    click(boxes[1]);
+    m.until("the plain box after a failed exit", |s| {
+        s.texts() == ["1 1 0"]
+    });
+    click(boxes[2]);
+    fault("on click");
+    m.until("the run that reads no int", |s| s.texts() == ["1 1 1"]);
+    click(boxes[1]);
+    m.until("the plain box after a bad result", |s| {
+        s.texts() == ["1 2 1"]
+    });
+    click(boxes[3]);
+    fault("has no value");
+    m.until("the run that divides by zero", |s| s.texts() == ["1 2 2"]);
+    // (build-ready review) Failing the same way again, it runs and is
+    // not reported twice.
+    click(boxes[0]);
+    click(boxes[1]);
+    m.until("the failed box runs again, and the plain one", |s| {
+        s.texts() == ["2 3 2"]
+    });
+    assert!(!outlined(&m.scene), "nothing froze:\n{}", m.scene.render());
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// (M6, decisions.md m6-w2-surface) A popup grabs by its cause: the diff
 /// a click's handler produces carries that click's serial
 /// (`SceneDiff::press`, and so does every diff after it until a hover
@@ -4118,4 +4328,187 @@ fn an_empty_config_has_nothing_to_run() {
     assert!(!nothing_to_run(&broken));
     let _ = std::fs::remove_dir_all(dir);
     assert!(not_a_config_dir(&std::env::temp_dir()).is_none());
+}
+
+/// (build-ready review) A failing service's diagnostic no longer reaches
+/// a later `strand watch` once a reload fixes the service or removes it,
+/// and the same failure after a fix is reported again; a service the
+/// reloads leave alone keeps its open failure.
+#[test]
+fn a_reload_that_fixes_or_removes_a_service_takes_its_failure_away() {
+    let dir = temp_dir("service-notices-reload");
+    let config = |gone: Option<&str>| {
+        let (decl, read) = match gone {
+            Some(argv) => (
+                format!("service gone from poll [{argv}] every 1h {{ n: int = n }}\n"),
+                ", gone.n",
+            ),
+            None => (String::new(), ""),
+        };
+        format!(
+            "permit exec \"false\", \"echo\"\n\
+             {decl}\
+             service still from poll [\"false\"] every 1h {{ n: int = n }}\n\
+             bar Top {{ text join(\" \", \"n\"{read}, still.n) }}\n"
+        )
+    };
+    let failing = r#""false""#;
+    std::fs::write(dir.join("bar.strand"), config(Some(failing))).unwrap();
+    let socket = dir.join("ipc.sock");
+    let (wtx, wrx) = calloop::channel::channel();
+    let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+    assert!(boot.build.is_some(), "{:?}", boot.diagnostics);
+    let live = Live {
+        worker: Some(wrx),
+        jobs: Some(compiler.jobs()),
+        socket: Some(socket.clone()),
+        buses: None,
+        icon_theme_switched: None,
+        requests_to: None,
+        events_to: None,
+        own_writes: None,
+        to_main: None,
+        tokens: None,
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(boot, Storage::none(), from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| s.texts() == ["n 0 0"]);
+    let watch = || {
+        let mut events =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+        assert_eq!(ok["ok"], true);
+        events
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        events
+    };
+    let next = |events: &mut std::io::BufReader<std::os::unix::net::UnixStream>| {
+        let mut line = String::new();
+        std::io::BufRead::read_line(events, &mut line).unwrap();
+        serde_json::from_str::<Json>(&line).unwrap()
+    };
+    let gone = json!("service `gone`: `false` failed (exit status: 1)");
+    let still = json!("service `still`: `false` failed (exit status: 1)");
+    // Until every one of `want` has been said.
+    let hears = |events: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
+                 want: &[&Json]| {
+        let mut left: Vec<&Json> = want.to_vec();
+        while !left.is_empty() {
+            let ev = next(events);
+            if ev["event"] == "notices"
+                && let Some(n) = ev["notices"].as_array()
+            {
+                left.retain(|w| !n.contains(w));
+            }
+        }
+    };
+    let mut first = watch();
+    hears(&mut first, &[&gone, &still]);
+    let mut late = watch();
+    let ev = next(&mut late);
+    assert_eq!(ev["event"], "notices", "{ev}");
+    let mut open = ev["notices"].as_array().cloned().unwrap_or_default();
+    open.sort_by_key(ToString::to_string);
+    assert_eq!(open, [gone.clone(), still.clone()], "{ev}");
+    // Fixed by a reload: a later watcher hears only `still`.
+    std::fs::write(
+        dir.join("bar.strand"),
+        config(Some(r#""echo", "{\"n\": 7}""#)),
+    )
+    .unwrap();
+    m.until("the fixed service", |s| s.texts() == ["n 7 0"]);
+    let mut late = watch();
+    let ev = next(&mut late);
+    assert_eq!(ev["notices"], json!([still]), "after the fix: {ev}");
+    // Failing again after the fix is news again.
+    std::fs::write(dir.join("bar.strand"), config(Some(failing))).unwrap();
+    hears(&mut first, &[&gone]);
+    // Removed by a reload: its failure goes with it.
+    std::fs::write(dir.join("bar.strand"), config(None)).unwrap();
+    m.until("the service removed", |s| s.texts() == ["n 0"]);
+    let mut late = watch();
+    let ev = next(&mut late);
+    assert_eq!(ev["notices"], json!([still]), "after the removal: {ev}");
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (build-ready) A service diagnostic (here a `from poll` command that
+/// fails) names the service, reaches the watcher already there, and is
+/// heard at once by a `strand watch` that subscribes after it was said,
+/// as the `file` outputs' standing notices are.
+#[test]
+fn open_service_diagnostics_reach_watchers_that_come_later() {
+    let dir = temp_dir("service-notices");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "permit exec \"false\"\n\
+         service gone from poll [\"false\"] every 1h { n: int = n }\n\
+         bar Top { text join(\" \", \"n\", gone.n) }\n",
+    )
+    .unwrap();
+    let socket = dir.join("ipc.sock");
+    let (wtx, wrx) = calloop::channel::channel();
+    let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+    assert!(boot.build.is_some(), "{:?}", boot.diagnostics);
+    let live = Live {
+        worker: Some(wrx),
+        jobs: Some(compiler.jobs()),
+        socket: Some(socket.clone()),
+        buses: None,
+        icon_theme_switched: None,
+        requests_to: None,
+        events_to: None,
+        own_writes: None,
+        to_main: None,
+        tokens: None,
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(boot, Storage::none(), from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| s.texts() == ["n 0"]);
+    let watch = || {
+        let mut events =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+        assert_eq!(ok["ok"], true);
+        // Nothing said: an error, not a hang.
+        events
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        events
+    };
+    let next = |events: &mut std::io::BufReader<std::os::unix::net::UnixStream>| {
+        let mut line = String::new();
+        std::io::BufRead::read_line(events, &mut line).unwrap();
+        serde_json::from_str::<Json>(&line).unwrap()
+    };
+    let said = json!("service `gone`: `false` failed (exit status: 1)");
+    let mut first = watch();
+    loop {
+        let ev = next(&mut first);
+        if ev["event"] == "notices" && ev["notices"].as_array().is_some_and(|n| n.contains(&said)) {
+            break;
+        }
+    }
+    let mut late = watch();
+    let ev = next(&mut late);
+    assert_eq!(ev["event"], "notices", "{ev}");
+    assert_eq!(ev["notices"], json!([said]), "at once: {ev}");
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(&dir);
 }

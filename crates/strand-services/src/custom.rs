@@ -2137,47 +2137,41 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
     }
 }
 
-/// Run `argv` once and parse what it printed (`None`: it failed, logged).
-/// At most [`MAX_DOCUMENT`] bytes are read (a command printing more is
-/// ended at once, its output ignored); the command's group ends with it.
-async fn poll_command(argv: &[String]) -> Option<Document> {
+/// Run `argv` once and parse what it printed (`Err`: why it failed, for
+/// the caller to report under the service's name). At most
+/// [`MAX_DOCUMENT`] bytes are read (a command printing more is ended at
+/// once, its output ignored); the command's group ends with it.
+async fn poll_command(argv: &[String]) -> Result<Document, String> {
     use tokio::io::AsyncReadExt;
-    let (mut proc, stdout) = match Proc::spawn(argv) {
-        Ok(p) => p,
-        Err(e) => {
-            log::warn!("{}", e.0);
-            return None;
-        }
-    };
+    let (mut proc, stdout) = Proc::spawn(argv).map_err(|e| e.0)?;
+    let cmd = argv.first().map_or("", String::as_str);
     let run = async {
         let mut out = Vec::new();
         stdout
             .take(MAX_DOCUMENT as u64 + 1)
             .read_to_end(&mut out)
             .await
-            .ok()?;
+            .map_err(|e| format!("reading `{cmd}`: {e}"))?;
         // More than a document: no wait for it to end (it would block on
         // its full pipe until the timeout); its group ends with `proc`.
         if out.len() > MAX_DOCUMENT {
-            log::warn!(
-                "`{}` printed more than {MAX_DOCUMENT} bytes; ignored and ended",
-                argv[0]
-            );
-            return None;
+            return Err(format!(
+                "`{cmd}` printed more than {MAX_DOCUMENT} bytes; ignored and ended"
+            ));
         }
-        let status = proc.child.wait().await.ok()?;
+        let status = proc
+            .child
+            .wait()
+            .await
+            .map_err(|e| format!("waiting for `{cmd}`: {e}"))?;
         if !status.success() {
-            log::warn!("`{}` failed ({status})", argv[0]);
-            return None;
+            return Err(format!("`{cmd}` failed ({status})"));
         }
-        Some(Document::parse(&decode_document(&out)))
+        Ok(Document::parse(&decode_document(&out)))
     };
     match tokio::time::timeout(POLL_TIMEOUT, run).await {
         Ok(d) => d,
-        Err(_) => {
-            log::warn!("`{}` took more than {POLL_TIMEOUT:?}; killed", argv[0]);
-            None
-        }
+        Err(_) => Err(format!("`{cmd}` took more than {POLL_TIMEOUT:?}; killed")),
     }
 }
 
@@ -2199,8 +2193,15 @@ async fn run_poll(
     let mut last: Option<tokio::time::Instant> = None;
     let mut not_xml = false;
     let mut over = None;
+    // (build-ready) The failure last reported, until a poll answers: a
+    // command failing the same way every poll is reported once.
+    let mut failing: Option<String> = None;
+    // Whether the first frame's hold was ended by a failed first poll.
+    let mut hold_ended = false;
     loop {
-        if first && cx.period(every).is_none() {
+        // (build-ready review) Not after a failed first poll ended the
+        // hold: the service is ready only once a poll answers.
+        if first && !hold_ended && cx.period(every).is_none() {
             cx.ready();
             first = false;
         }
@@ -2233,7 +2234,7 @@ async fn run_poll(
         let fetch = async {
             match target {
                 PollTarget::Command(argv) => Ok(poll_command(argv).await.map(Got::Doc)),
-                PollTarget::File(path) => read_doc_bounded(path).await.map(Some),
+                PollTarget::File(path) => read_doc_bounded(path).await.map(Ok),
             }
         };
         tokio::pin!(fetch);
@@ -2249,10 +2250,38 @@ async fn run_poll(
         };
         // A file too large keeps the last value (as a command's output
         // past the cap does), said once per size.
-        if let (PollTarget::File(path), Some(got)) = (target, &doc) {
+        if let (PollTarget::File(path), Ok(got)) = (target, &doc) {
             note_over(&spec.name, path, got, &mut over);
         }
-        if let Some(Got::Doc(doc)) = doc {
+        let doc = match doc {
+            Ok(d) => {
+                // The failure reported no longer holds.
+                if failing.take().is_some() && !cx.resolve() {
+                    return Ok(());
+                }
+                d
+            }
+            // (build-ready) A failed poll keeps the last values. It is
+            // a warning under the service's name (the log, `strand
+            // watch`), once until a poll answers; a service whose polls
+            // have never answered is not `ready` (spec.md 5.6).
+            Err(why) => {
+                if failing.as_deref() != Some(why.as_str()) {
+                    if !cx.failing(why.clone()) {
+                        return Ok(());
+                    }
+                    failing = Some(why);
+                }
+                if first && !hold_ended {
+                    // The first frame need not wait for it.
+                    cx.ready();
+                    cx.unready();
+                    hold_ended = true;
+                }
+                continue;
+            }
+        };
+        if let Got::Doc(doc) = doc {
             let mut state = cx.state().clone();
             note_not_xml(&spec.name, &doc, &mut not_xml);
             replace_doc(spec, &doc, &mut state);
@@ -2835,7 +2864,8 @@ mod tests {
     #[test]
     fn an_oversized_poll_ends_at_once() {
         let started = std::time::Instant::now();
-        assert_eq!(block_on(poll_command(&["yes".to_string()])), None);
+        let why = block_on(poll_command(&["yes".to_string()])).unwrap_err();
+        assert!(why.starts_with("`yes` printed more than"), "{why}");
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "blocked on the full pipe, towards POLL_TIMEOUT: {:?}",
@@ -2929,7 +2959,7 @@ mod tests {
             format!("sleep 30 >/dev/null & echo $! > {}; echo 1", file.display()),
         ];
         let doc = block_on(poll_command(&argv));
-        assert!(doc.is_some());
+        assert!(doc.is_ok());
         let pid = std::fs::read_to_string(&file).unwrap();
         assert!(wait_gone(pid.trim()), "the poll's leftover {pid} ended");
         let _ = std::fs::remove_dir_all(&dir);

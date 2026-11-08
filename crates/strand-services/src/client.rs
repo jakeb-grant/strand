@@ -397,6 +397,12 @@ pub struct ServiceDiagnostic {
     /// name was taken over), or the service stopped cleanly. The host
     /// takes the notice's rows away.
     pub resolved: bool,
+    /// (build-ready review) It holds until a resolved diagnostic for it
+    /// says otherwise (a failed run, a failing poll, a notice, a field
+    /// that does not convert), so a host keeps it for whoever asks later
+    /// (`strand watch`); false for a one-off event's warning
+    /// ([`Cx::warn`]: a copied image not kept), which is told once.
+    pub standing: bool,
 }
 
 impl fmt::Display for ServiceDiagnostic {
@@ -524,6 +530,9 @@ impl Services {
             stops: Cell::new(0),
             reports: Cell::new(0),
             last_error: RefCell::new(None),
+            last_warning: RefCell::new(None),
+            open_failure: RefCell::new(None),
+            settle: Cell::new(None),
             last_notice: RefCell::new(None),
             live,
             ready_at: Cell::new(None),
@@ -793,6 +802,19 @@ struct ClientInner<S: Service> {
     reports: Cell<u64>,
     /// The failure last logged.
     last_error: RefCell<Option<String>>,
+    /// (build-ready review) The one-off warning last logged
+    /// ([`Cx::warn`]), its repeats dropped apart from the failures'.
+    last_warning: RefCell<Option<String>>,
+    /// (build-ready) The failure reported and not resolved yet, and the
+    /// run that raised it with [`Cx::failing`] (its number, as
+    /// [`ClientInner::starts`] counts them), `None` for a run's end: a
+    /// later run that stays up resolves it, the run that raised it does
+    /// not by staying up.
+    open_failure: RefCell<Option<(String, Option<u64>)>>,
+    /// (build-ready review) Fires once the run up now has stayed up
+    /// [`RETRY_MAX`], to resolve an earlier run's open failure
+    /// ([`ClientInner::arm_settle`]).
+    settle: Cell<Option<Timer>>,
     /// The notice last reported ([`ServiceDiagnostic`]).
     last_notice: RefCell<Option<String>>,
     /// (service-ready) The language's `svc.ready`: a run is up and has
@@ -894,6 +916,18 @@ fn removed_by(mut items: Vec<Data>, diffs: &[VecDiff<Data, Data>]) -> Vec<Data> 
     out
 }
 
+/// (build-ready review) Who raised a failure ([`ClientInner::diagnose_as`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Raised {
+    /// A run's end (an error, a panic).
+    End,
+    /// The live run, as a failure that holds while it goes on
+    /// ([`Cx::failing`]).
+    Failing,
+    /// The live run, as a one-off event ([`Cx::warn`]).
+    Once,
+}
+
 /// A lock that a panic elsewhere does not poison for us.
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -927,6 +961,11 @@ impl<S: Service> ClientInner<S> {
     }
 
     fn diagnose(&self, rt: &Runtime, message: &str, notice: bool) {
+        self.diagnose_as(rt, message, notice, Raised::End);
+    }
+
+    /// [`ClientInner::diagnose`] of a failure `how` says who raised.
+    fn diagnose_as(&self, rt: &Runtime, message: &str, notice: bool, how: Raised) {
         let stable = self
             .run
             .borrow()
@@ -938,6 +977,8 @@ impl<S: Service> ClientInner<S> {
         }
         let slot = if notice {
             &self.last_notice
+        } else if how == Raised::Once {
+            &self.last_warning
         } else {
             &self.last_error
         };
@@ -945,13 +986,42 @@ impl<S: Service> ClientInner<S> {
         if stable {
             *last = None;
         }
+        // The run up now, as `open_failure` names a live run's failure.
+        let raiser = match how {
+            Raised::Failing => Some(self.starts.get()),
+            Raised::End | Raised::Once => None,
+        };
         if last.as_deref() == Some(message) {
+            drop(last);
+            // (build-ready review) The same failure from the run up now
+            // is that run's: its staying up does not resolve it.
+            if let Some((m, r)) = self.open_failure.borrow_mut().as_mut()
+                && m == message
+                && how == Raised::Failing
+            {
+                *r = raiser;
+            }
             return;
         }
         *last = Some(message.to_string());
+        drop(last);
+        let standing = how != Raised::Once;
         if notice {
             log::error!("service `{}`: {message}", self.name);
         } else {
+            if standing {
+                // (build-ready) Another failure replaces the open one: it
+                // no longer holds as said.
+                if self
+                    .open_failure
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|(m, _)| m != message)
+                {
+                    self.resolve_failure(None);
+                }
+                *self.open_failure.borrow_mut() = Some((message.to_string(), raiser));
+            }
             log::warn!("service `{}` failed: {message}", self.name);
         }
         if let Some(reg) = self.reg.upgrade() {
@@ -960,7 +1030,111 @@ impl<S: Service> ClientInner<S> {
                 message: message.to_string(),
                 notice,
                 resolved: false,
+                standing,
             });
+        }
+    }
+
+    /// (build-ready) The open failure no longer holds (a later run stayed
+    /// up, the live run said so with [`Cx::resolve`], a run ended
+    /// cleanly, or the service was restarted or stopped): a resolved
+    /// [`ServiceDiagnostic`] for it, and the same failure later is news
+    /// again. `unless`: not one run `unless` raised itself (a run's
+    /// staying up says nothing of its own failure).
+    fn resolve_failure(&self, unless: Option<u64>) {
+        let open = self.open_failure.borrow().clone();
+        let Some((message, raiser)) = open else {
+            return;
+        };
+        if unless.is_some() && raiser == unless {
+            return;
+        }
+        *self.open_failure.borrow_mut() = None;
+        if self.last_error.borrow().as_deref() == Some(message.as_str()) {
+            *self.last_error.borrow_mut() = None;
+        }
+        log::info!("service `{}`: resolved: {message}", self.name);
+        if let Some(reg) = self.reg.upgrade() {
+            reg.diagnostics.borrow_mut().push(ServiceDiagnostic {
+                service: self.name.to_string(),
+                message,
+                notice: false,
+                resolved: true,
+                standing: true,
+            });
+        }
+    }
+
+    /// (build-ready review) Every diagnostic the service has open no
+    /// longer holds: it was restarted afresh (a reload changed its
+    /// declaration), stopped for good (a reload removed it) or stopped
+    /// for lack of readers. Each is resolved, and the same failure from a
+    /// later run is news again.
+    fn resolve_all(&self, rt: &Runtime) {
+        self.disarm_settle(rt);
+        self.resolve();
+        self.resolve_failure(None);
+        *self.last_error.borrow_mut() = None;
+        *self.last_warning.borrow_mut() = None;
+    }
+
+    /// (build-ready review) A run said it is ready: an earlier run's open
+    /// failure (its end, or a failure it raised) is resolved once this run
+    /// has stayed up [`RETRY_MAX`] since it started, as the backoff and
+    /// the dedupe count a run that stayed up; a run that fails right
+    /// after saying it is ready (a daemon that crashes after its first
+    /// read) leaves it open, reported once.
+    fn arm_settle(self: &Rc<Self>, rt: &Runtime) {
+        let run = self.starts.get();
+        let earlier = self
+            .open_failure
+            .borrow()
+            .as_ref()
+            .is_some_and(|(_, r)| *r != Some(run));
+        let Some(started) = self.run.borrow().as_ref().map(|r| r.started) else {
+            return;
+        };
+        if !earlier {
+            return;
+        }
+        let up = rt.now().saturating_sub(started);
+        if up >= RETRY_MAX {
+            self.resolve_failure(Some(run));
+            return;
+        }
+        let Some(reg) = self.reg.upgrade() else {
+            return;
+        };
+        self.disarm_settle(rt);
+        let weak = Rc::downgrade(self);
+        let timer = reg.anchor.run(rt, |rt| {
+            rt.after(
+                RETRY_MAX - up,
+                |_| Ok(true),
+                move |_| {
+                    if let Some(c) = weak.upgrade() {
+                        c.settle.set(None);
+                        let up = c.run.borrow().as_ref().is_some_and(|r| !r.ended);
+                        if up && c.starts.get() == run {
+                            c.resolve_failure(Some(run));
+                        }
+                    }
+                    Ok(())
+                },
+            )
+        });
+        match timer {
+            Ok(t) => {
+                rt.set_name(t.id(), format!("{} settle", self.name));
+                self.settle.set(Some(t));
+            }
+            Err(e) => log::warn!("{}: no settle timer: {e}", self.name),
+        }
+    }
+
+    fn disarm_settle(&self, rt: &Runtime) {
+        if let Some(t) = self.settle.take() {
+            t.dispose(rt);
         }
     }
 
@@ -977,6 +1151,7 @@ impl<S: Service> ClientInner<S> {
                 message,
                 notice: true,
                 resolved: true,
+                standing: true,
             });
         }
     }
@@ -1102,6 +1277,7 @@ impl<S: Service> ClientInner<S> {
 
     /// Stop the run ([`ClientInner::stop_run`]); `ready` turns false.
     fn stop(&self, rt: &Runtime) {
+        self.disarm_settle(rt);
         self.unready(rt);
         self.stop_run();
     }
@@ -1176,10 +1352,10 @@ impl<S: Service> ClientInner<S> {
                         c.disarm_retry(rt);
                         c.failures.set(0);
                         c.stop(rt);
-                        // A notice from a failed run no longer holds for
-                        // a service nobody uses (its rows leave the
-                        // overlay).
-                        c.resolve();
+                        // A notice or failure no longer holds for a
+                        // service nobody uses (its rows leave the overlay,
+                        // a later watcher is not told it).
+                        c.resolve_all(rt);
                         // Writes it never answered never will be.
                         c.cells.forget_echoes(rt);
                     }
@@ -1261,6 +1437,7 @@ impl<S: Service> ClientInner<S> {
         if was {
             return;
         }
+        self.disarm_settle(rt);
         // No run is up: the service is not ready.
         self.unready(rt);
         // Writes it never answered never will be.
@@ -1632,8 +1809,10 @@ impl<S: Service> ClientInner<S> {
                         run.noticed = false;
                     }
                     self.resolve();
+                    self.resolve_failure(None);
                 }
-                Envelope::Warning(m) => self.diagnose(rt, &m, false),
+                Envelope::Warning(m) => self.diagnose_as(rt, &m, false, Raised::Once),
+                Envelope::Failing(m) => self.diagnose_as(rt, &m, false, Raised::Failing),
                 Envelope::Ready => {
                     // Ready without a notice (raised before readiness):
                     // the last notice no longer holds.
@@ -1646,6 +1825,11 @@ impl<S: Service> ClientInner<S> {
                     };
                     if resolves {
                         self.resolve();
+                    }
+                    // (build-ready) A run that is up and ready: an earlier
+                    // run's failure no longer holds once it stays up.
+                    if let Some(me) = self.me.upgrade() {
+                        me.arm_settle(rt);
                     }
                     // `ready` turns true after the next flush, which
                     // takes the boot values as baselines; the loop is
@@ -1662,6 +1846,7 @@ impl<S: Service> ClientInner<S> {
                     match &r {
                         Err(e) => self.diagnose(rt, e, false),
                         Ok(()) => {
+                            self.resolve_failure(None);
                             *self.last_error.borrow_mut() = None;
                             self.resolve();
                         }
@@ -1886,6 +2071,9 @@ impl<S: Service> Client<S> {
         self.0.disarm_retry(rt);
         self.0.failures.set(0);
         self.0.stop(rt);
+        // (build-ready review) What the old declaration's runs reported
+        // does not hold for the new one.
+        self.0.resolve_all(rt);
         self.0.cells.forget_echoes(rt);
         if self.0.refs.get() > 0 || self.0.kept.get().is_some() {
             self.0.disarm_stop(rt);
@@ -1903,7 +2091,7 @@ impl<S: Service> Client<S> {
         self.0.disarm_stop(rt);
         self.0.failures.set(0);
         self.0.stop(rt);
-        self.0.resolve();
+        self.0.resolve_all(rt);
         self.0.cells.forget_echoes(rt);
     }
 

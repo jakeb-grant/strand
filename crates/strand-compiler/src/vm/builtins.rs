@@ -74,6 +74,13 @@ fn default_depth(types: &TypeTable, ty: &Ty, depth: u32) -> Value {
             error: None,
             op: None,
         })),
+        // (build-ready) The schema's `Date` defaults to 1970-01-01 with
+        // no time of day, a date its methods work on: a record of zeros
+        // is no date, so `format` on a field no source has filled yet
+        // faulted and froze its component until a reload.
+        Ty::Record(r) if super::clock::is_date(types, *r) => {
+            super::clock::date_record(*r, chrono::NaiveDate::default())
+        }
         Ty::Record(r) if depth < 8 => {
             let def = types.record(*r);
             let fields = def

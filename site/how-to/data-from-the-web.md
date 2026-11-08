@@ -81,7 +81,7 @@ bar Top {
         popup { open: <-> open; News }
       }
     }
-    end {
+    end { gap: $space.2
       text join(" ", "USD", ecb.day.Cube.find(r => r.currency == "USD")?.rate ?? 0.0)
       button up == null ? "Scan" : join(" ", up, "up") {
         on click {
@@ -179,7 +179,10 @@ exceeded"}`, fails and says why in `.error`, rather than returning one
 empty release. A service field is different: the error object lacks the
 field's key (`releases`), and a missing key reads as `[]` with no
 report. That is why the recipes call `curl -f`, which fails on an HTTP
-error instead of printing its body.
+error instead of printing its body. A poll whose command fails keeps
+its last values, and `strand watch` names the service it failed for.
+A save that fixes the command, or removes the service, takes the
+report away. Until one of its polls succeeds, the service is not `ready`.
 
 When something does not convert, the field reads as its type's
 default, an item that does not convert is left out of its list, and

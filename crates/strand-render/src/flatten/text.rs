@@ -377,11 +377,21 @@ pub(crate) fn slot_color(run: Option<Color>, spans: &[Color], node: Color) -> Co
 /// (`laid`), at `scale`: what laying it out by its content measures,
 /// before any surface shows it. Rows a virtualised list left out are not
 /// walked, so a 2,000-row list asks for its visible rows only.
+///
+/// (build-ready) A text whose box is narrower than its unbounded layout
+/// in `shaped` (it wraps or is cut) also asks for its layout at that
+/// width, as drawing it does: the content pass measures its height by
+/// it, and without it that height came from an estimate whenever no
+/// surface drew the text. A popup made again (an `xdg_wm_base` older
+/// than version 3) draws nothing until it maps, so its first measure
+/// guessed one height and the drawn one another, and it was made again
+/// at each, never mapping.
 pub fn natural_texts(
     tree: &SceneTree,
     root: NodeId,
     scale: Scale,
     laid: &HashMap<NodeId, LogicalRect>,
+    shaped: &HashMap<NodeId, Vec<Shaped>>,
 ) -> Vec<(NodeId, TextSpec)> {
     let mut out = Vec::new();
     let Some(node) = tree.get(root) else {
@@ -418,11 +428,12 @@ pub fn natural_texts(
         inh: &Inherited<'a>,
         scale: Scale,
         laid: &HashMap<NodeId, LogicalRect>,
+        shaped: &HashMap<NodeId, Vec<Shaped>>,
         out: &mut Vec<(NodeId, TextSpec)>,
     ) {
-        if !laid.contains_key(&node.id) {
+        let Some(rect) = laid.get(&node.id) else {
             return;
-        }
+        };
         let mut inh = inh.clone();
         inherit(node, &mut inh);
         if matches!(node.kind, NodeKind::Text | NodeKind::Button) {
@@ -438,8 +449,35 @@ pub fn natural_texts(
             if let Some(w) = inh.weight {
                 font.weight = w;
             }
-            if let Some((spec, _, _)) = natural_spec(&get, &scope, &font, scale) {
+            if let Some((spec, align, _)) = natural_spec(&get, &scope, &font, scale) {
+                // Its content box, as drawing it takes it (`flatten::node`):
+                // inside `pad`, a button's label inside its own.
+                let button = node.kind == NodeKind::Button;
+                let pad = get(Prop::Pad)
+                    .and_then(PropValue::insets)
+                    .or(button.then_some(crate::widgets::BUTTON_PAD))
+                    .unwrap_or_default();
+                let w = (rect.w - pad.left - pad.right).max(0.0);
+                let align = match get(Prop::Align) {
+                    None if button => TextAlign::Center,
+                    _ => align,
+                };
+                let narrower = shaped
+                    .get(&node.id)
+                    .and_then(|s| pick(s, scale, None))
+                    .is_some_and(|n| w + 1.0 < n.size.w);
+                let fitted = narrower.then(|| TextSpec {
+                    style: TextStyle {
+                        align,
+                        ..spec.style.clone()
+                    },
+                    max_width: Some(w.round().max(0.0)),
+                    ..spec.clone()
+                });
                 out.push((node.id, spec));
+                if let Some(f) = fitted {
+                    out.push((node.id, f));
+                }
             }
         }
         if node.kind == NodeKind::Segmented {
@@ -456,11 +494,11 @@ pub fn natural_texts(
         }
         for c in &node.children {
             if let Some(child) = tree.get(*c).filter(|n| !crate::layout::out_of_flow(n.kind)) {
-                walk(tree, child, &inh, scale, laid, out);
+                walk(tree, child, &inh, scale, laid, shaped, out);
             }
         }
     }
-    walk(tree, node, &inh, scale, laid, &mut out);
+    walk(tree, node, &inh, scale, laid, shaped, &mut out);
     out
 }
 

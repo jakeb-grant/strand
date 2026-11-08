@@ -20,6 +20,16 @@ strand --version
 prints the version and the commit it was built from, such as
 `strand 0.1.0 (a764f45c0d1e)`.
 
+This site follows the newest build of `main`, and a release can be
+older than its pages: an example that names something a release does
+not have gives load errors there. To build from the pages as they
+are, install the newest build of `main` instead,
+[edge](#releases-and-edge):
+
+```sh
+curl -fsSL https://strand.jacobgrant.dev/install.sh | sh -s -- --edge
+```
+
 To read the script before it runs, download it first:
 
 ```sh

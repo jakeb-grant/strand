@@ -2688,6 +2688,88 @@ fn runtime_errors_are_located_and_freeze_their_component() {
     assert_eq!(shell.inst.value_of("t", "ticks").unwrap(), Value::int(2));
 }
 
+/// (handler-fault) A handler's error is a value (spec.md 8.3): it is
+/// located and marked as a handler's, and freezing it freezes and
+/// outlines nothing, so the component's timer and its other handlers
+/// run on; a binding's fault in the same component still freezes it.
+#[test]
+fn a_handlers_error_freezes_nothing() {
+    let src = "state zero = 0\nstate one = 1\nstate ticks = 0\nstate n = 0\nstate tries = 0\ncomponent Faulty() {\n  every 1s { ticks += 1 }\n  row {\n    box { on click { tries += 1; n = 1 / zero } }\n    box { on click { n += 1 } }\n  }\n  text pct(10 / one)\n}\nbar B { Faulty }\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    shell.inst.event(boxes[0], "click", Vec::new());
+    let u = shell.flush();
+    assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+    let e = &u.errors[0];
+    assert!(e.handler && e.scope.is_some() && e.span.is_some(), "{e:?}");
+    assert!(!shell.inst.freeze(e), "a handler's error freezes nothing");
+    shell.flush();
+    assert!(shell.inst.outlined().is_empty());
+    shell.at(1.0);
+    assert_eq!(shell.inst.value_of("t", "ticks").unwrap(), Value::int(1));
+    shell.inst.event(boxes[1], "click", Vec::new());
+    shell.inst.event(boxes[0], "click", Vec::new());
+    shell.flush();
+    // (build-ready review) The failing handler ran again; failing the
+    // same way, it is not reported twice.
+    assert_eq!(shell.inst.value_of("t", "tries").unwrap(), Value::int(2));
+    assert_eq!(shell.inst.value_of("t", "n").unwrap(), Value::float(1.0));
+    // A binding's fault is no handler's: it freezes the component.
+    shell.inst.set_value("t", "one", Value::int(0)).unwrap();
+    let u = shell.flush();
+    assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+    assert!(!u.errors[0].handler);
+    assert!(shell.inst.freeze(&u.errors[0]));
+}
+
+/// (build-ready review) A handler failing the same way on every run is
+/// reported once, until a run of it completes: a timer dividing by zero
+/// every tick is one fault, not one a tick, and after a run that
+/// completes the next failure is reported again. Another handler's
+/// error is its own.
+#[test]
+fn a_handler_failing_the_same_way_is_reported_once_until_a_run_completes() {
+    let src = "state zero = 0\nstate ticks = 0\nstate n = 0\ncomponent T() {\n  every 1s { ticks += 1; n = 10 / zero }\n  box { on click { n = 5 / zero } }\n}\nbar B { T }\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let u = shell.at(1.0);
+    assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+    assert!(u.errors[0].handler, "{:?}", u.errors);
+    for t in [2.0, 3.0, 4.0] {
+        let u = shell.at(t);
+        assert!(
+            u.errors.is_empty(),
+            "reported again at {t} s: {:?}",
+            u.errors
+        );
+    }
+    assert_eq!(shell.inst.value_of("t", "ticks").unwrap(), Value::int(4));
+    // Another handler's error is reported.
+    let boxes = shell.scene.of_kind(NodeKind::Box);
+    shell.inst.event(boxes[0], "click", Vec::new());
+    let u = shell.flush();
+    assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+    assert!(u.errors[0].what.contains("on click"), "{:?}", u.errors);
+    // A run that completes; the next failure is news again.
+    shell.inst.set_value("t", "zero", Value::int(1)).unwrap();
+    let u = shell.at(5.0);
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(shell.inst.value_of("t", "n").unwrap(), Value::float(10.0));
+    shell.inst.set_value("t", "zero", Value::int(0)).unwrap();
+    let u = shell.at(6.0);
+    assert_eq!(u.errors.len(), 1, "reported again after a run completed");
+    // (handler-fault-repeat-watch) A `strand watch` started since: the
+    // same failure is reported once more at its next run, then not.
+    assert!(shell.at(7.0).errors.is_empty());
+    shell.inst.report_faults_again();
+    let u = shell.at(8.0);
+    assert_eq!(u.errors.len(), 1, "reported again for a new watch");
+    assert!(shell.at(9.0).errors.is_empty(), "then once only");
+}
+
 /// Changing one item of a long keyed list re-runs that item's bindings
 /// only: each mounted key has its own value cell, and a `for` over a
 /// keyed `state` follows its diffs.
@@ -8034,4 +8116,34 @@ fn the_monitor_profiles_page_works_together() {
     assert_eq!(applied(&shell), ["eDP-1@0,0 DP-3@1536,200"]);
     drop(shell);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (build-ready) A `Date` no source has filled yet is 1970-01-01 with no
+/// time of day, so `format` on it is a date, not a fault that freezes the
+/// component until a reload; and a date without a time of day formats
+/// its hour and minute as midnight, so `%H:%M` over a document's
+/// `YYYY-MM-DD` is `00:00`, not an error.
+#[test]
+fn an_unfilled_date_formats_and_a_date_only_one_formats_midnight() {
+    let src = "service feed from file \"/tmp/feed.json\" { at: Date }\nbar B { col {\n  text feed.at.format(\"%Y-%m-%d %H:%M\")\n  text feed.at.add(days: 3).format(\"%a %d %b %H:%M\")\n  text clock.today.format(\"%H:%M\")\n} }\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert!(shell.inst.outlined().is_empty());
+    let texts = shell.scene.texts();
+    assert_eq!(texts[0], "1970-01-01 00:00");
+    assert_eq!(texts[1], "Sun 04 Jan 00:00");
+    assert_eq!(texts[2], "00:00");
+    // The data arriving is an ordinary change.
+    let date = shell.inst.vm().types().find_schema_record("Date").unwrap();
+    let at = strand_compiler::vm::clock::date_record(
+        date,
+        chrono::NaiveDate::from_ymd_opt(2026, 11, 8).unwrap(),
+    );
+    shell.host.set(&shell.rt, "feed.at", at).unwrap();
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(shell.scene.texts()[0], "2026-11-08 00:00");
 }

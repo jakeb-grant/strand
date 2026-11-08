@@ -2640,6 +2640,7 @@ mod tests {
             node: None,
             component: None,
             scope: None,
+            handler: false,
         };
         let mut secrets = Secrets::default();
         // No password input: the message stays.

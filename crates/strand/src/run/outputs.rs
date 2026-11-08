@@ -63,6 +63,10 @@ const LOOP_ROUNDS: u32 = 3;
 /// (live-files) A file whose text was seen to change on its own is
 /// watched for loops again once it is quiet this long.
 const OWN_QUIET: Duration = Duration::from_secs(2);
+/// (build-ready) A `file` waiting this long for a service that is up but
+/// has not answered (a declared `from dbus` service whose daemon is
+/// absent, a poll whose first run hangs) is a standing notice naming it.
+const SLOW_WAIT: Duration = Duration::from_secs(10);
 /// The loop guard's notice.
 const LOOP_NOTICE: &str = "its `run:` changes what it is written from: the `run:` is held \
                            until the file is quiet for a second";
@@ -176,6 +180,17 @@ pub(super) struct Files {
     /// before (or a held `run:`'s catch-up) that lands meanwhile takes
     /// the notice away as any write does, and it is posted again.
     waiting: Vec<(PathBuf, String)>,
+    /// (build-ready) The outputs waiting for services, since when, and
+    /// whether the slow-wait notice was given ([`SLOW_WAIT`]).
+    slow: Vec<Slow>,
+}
+
+/// (build-ready) One output's wait for its services.
+struct Slow {
+    path: PathBuf,
+    services: Vec<String>,
+    since: Instant,
+    told: bool,
 }
 
 impl Drop for Files {
@@ -203,7 +218,68 @@ impl Files {
             targets: Vec::new(),
             notices: Vec::new(),
             waiting: Vec::new(),
+            slow: Vec::new(),
         }
+    }
+
+    /// (build-ready) `path` waits for `services` from `now` (`None`: it
+    /// no longer waits). A wait for the same first service keeps its
+    /// start; one for another starts again.
+    fn set_slow(&mut self, path: &Path, services: Option<Vec<String>>, now: Instant) {
+        match services {
+            None => self.slow.retain(|w| w.path != path),
+            Some(services) => match self.slow.iter_mut().find(|w| w.path == path) {
+                Some(w) => {
+                    if w.services.first() != services.first() {
+                        (w.since, w.told) = (now, false);
+                    }
+                    w.services = services;
+                }
+                None => self.slow.push(Slow {
+                    path: path.to_path_buf(),
+                    services,
+                    since: now,
+                    told: false,
+                }),
+            },
+        }
+    }
+
+    /// (build-ready) The waits past [`SLOW_WAIT`] not told yet, each with
+    /// its notice, marked told; one that already has a no-run-up notice
+    /// is not told again.
+    fn slow_due(&mut self, now: Instant) -> Vec<(PathBuf, String)> {
+        let mut due = Vec::new();
+        for w in &mut self.slow {
+            if w.told || now.saturating_duration_since(w.since) < SLOW_WAIT {
+                continue;
+            }
+            w.told = true;
+            if self.waiting.iter().any(|(p, _)| *p == w.path) {
+                continue;
+            }
+            let Some(first) = w.services.first() else {
+                continue;
+            };
+            due.push((
+                w.path.clone(),
+                format!(
+                    "waits for `{first}`, which has not answered in {} s (a `from dbus` \
+                     service waits for its daemon); nothing is written until it answers",
+                    SLOW_WAIT.as_secs()
+                ),
+            ));
+        }
+        due
+    }
+
+    /// (build-ready) When the next slow-wait notice is due.
+    pub(super) fn wait(&self, now: Instant) -> Option<Duration> {
+        self.slow
+            .iter()
+            .filter(|w| !w.told)
+            .map(|w| (w.since + SLOW_WAIT).saturating_duration_since(now))
+            .min()
     }
 
     /// (live-files, review round 3) `path`'s content now waits, with
@@ -226,10 +302,14 @@ impl Files {
     }
 
     /// Tells the writer the paths `inst`'s outputs write now, when they
-    /// changed since last told.
-    fn keep(&mut self, inst: &strand_compiler::instantiate::Instance) {
+    /// changed since last told. (build-ready review) The waits of paths
+    /// no output writes any more (a reload removed the `file` or moved
+    /// it) go, writer or not; those paths are returned, for their notices
+    /// to go too.
+    fn keep(&mut self, inst: &strand_compiler::instantiate::Instance) -> Vec<PathBuf> {
+        let gone = self.let_go(|each| inst.output_targets(each));
         if self.shared.is_none() {
-            return;
+            return gone;
         }
         let (mut count, mut same) = (0, true);
         inst.output_targets(|p| {
@@ -237,12 +317,36 @@ impl Files {
             same &= self.targets.iter().any(|t| t == p);
         });
         if same && count == self.targets.len() {
-            return;
+            return gone;
         }
         let mut now = Vec::with_capacity(count);
         inst.output_targets(|p| now.push(p.to_path_buf()));
         self.targets.clone_from(&now);
         self.send(Job::Keep(now));
+        gone
+    }
+
+    /// (build-ready review) Forgets the waits (slow, and with no run up)
+    /// of the paths `targets` no longer lists: no write will ever land
+    /// there to end them, so a slow-wait notice would come for a `file`
+    /// that is gone. The paths forgotten, once each.
+    fn let_go(&mut self, targets: impl FnOnce(&mut dyn FnMut(&Path))) -> Vec<PathBuf> {
+        if self.slow.is_empty() && self.waiting.is_empty() {
+            return Vec::new();
+        }
+        let mut now: Vec<PathBuf> = Vec::new();
+        targets(&mut |p| now.push(p.to_path_buf()));
+        let mut gone: Vec<PathBuf> = Vec::new();
+        let mut forget = |p: &Path| {
+            let kept = now.iter().any(|t| t == p);
+            if !kept && !gone.iter().any(|g| g == p) {
+                gone.push(p.to_path_buf());
+            }
+            kept
+        };
+        self.slow.retain(|w| forget(&w.path));
+        self.waiting.retain(|(p, _)| forget(p));
+        gone
     }
 
     fn send(&mut self, job: Job) -> bool {
@@ -293,7 +397,14 @@ impl Shell {
         for change in self.inst.take_outputs() {
             self.output(change);
         }
-        self.files.keep(&self.inst);
+        // (build-ready review) A `file` a reload took away while it
+        // waited: its notice goes with it.
+        for path in self.files.keep(&self.inst) {
+            self.output_ok(&path);
+        }
+        for (path, why) in self.files.slow_due(Instant::now()) {
+            self.output_notice(&path, &why, false);
+        }
         for o in self.files.outcomes() {
             match o {
                 Outcome::Written(path) => {
@@ -301,6 +412,9 @@ impl Shell {
                     // An earlier write landed while the content waits.
                     if let Some(why) = self.files.still_waiting(&path).map(str::to_string) {
                         self.output_notice(&path, &why, false);
+                    } else if let Some(w) = self.files.slow.iter_mut().find(|w| w.path == path) {
+                        // A slow wait's notice is given again when due.
+                        w.told = false;
                     }
                 }
                 Outcome::Failed(path, why) => self.output_notice(&path, &why, false),
@@ -314,6 +428,7 @@ impl Shell {
             && !matches!(c.content, OutputContent::Waiting { .. })
         {
             self.files.set_waiting(p, None);
+            self.files.set_slow(p, None, Instant::now());
         }
         match c.content {
             OutputContent::Write { bytes, run } => {
@@ -353,6 +468,8 @@ impl Shell {
             // a standing notice, until the next write lands.
             OutputContent::Waiting { services } => {
                 let Some(path) = c.path else { return };
+                self.files
+                    .set_slow(&path, Some(services.clone()), Instant::now());
                 let Some(r) = &self.real else { return };
                 let snap = r.services.snapshot(self.inst.runtime());
                 let why = waiting_notice(&services, &snap);
@@ -2065,6 +2182,97 @@ mod tests {
         assert_eq!(files.still_waiting(a), Some("waits for `media`"));
         files.set_waiting(a, None);
         assert_eq!(files.still_waiting(a), None);
+    }
+
+    /// (build-ready) A `file` waiting for a service that is up but has
+    /// not answered is told after [`SLOW_WAIT`], once, naming it; a wait
+    /// that ends, or one with a no-run-up notice, is not.
+    #[test]
+    fn a_long_wait_on_a_service_that_is_up_is_a_notice() {
+        let (ping, _source) = calloop::ping::make_ping().unwrap();
+        let mut files = Files::new(ping, None, None);
+        let t0 = Instant::now();
+        let (a, b, c) = (Path::new("/x/a"), Path::new("/x/b"), Path::new("/x/c"));
+        files.set_slow(a, Some(vec!["news".into(), "rate".into()]), t0);
+        files.set_slow(b, Some(vec!["rate".into()]), t0);
+        files.set_slow(c, Some(vec!["media".into()]), t0);
+        files.set_waiting(c, Some("waits for `media`, which has no run up".into()));
+        assert_eq!(files.wait(t0), Some(SLOW_WAIT));
+        assert!(files.slow_due(t0 + SLOW_WAIT / 2).is_empty());
+        // The same wait seen again keeps its start.
+        files.set_slow(a, Some(vec!["news".into()]), t0 + SLOW_WAIT / 2);
+        files.set_slow(b, None, t0 + SLOW_WAIT / 2);
+        let due = files.slow_due(t0 + SLOW_WAIT);
+        assert_eq!(due.len(), 1, "{due:?}");
+        assert_eq!(due[0].0, a);
+        assert!(
+            due[0]
+                .1
+                .starts_with("waits for `news`, which has not answered in 10 s"),
+            "{}",
+            due[0].1
+        );
+        assert!(files.slow_due(t0 + SLOW_WAIT * 3).is_empty(), "told once");
+        assert_eq!(files.wait(t0 + SLOW_WAIT), None);
+        // Waiting on another service starts the count again.
+        files.set_slow(a, Some(vec!["rate".into()]), t0 + SLOW_WAIT * 3);
+        assert_eq!(files.wait(t0 + SLOW_WAIT * 3), Some(SLOW_WAIT));
+    }
+
+    /// (build-ready review) A waiting `file` that a reload took away (or
+    /// moved) is let go: no slow-wait notice comes for it later, and its
+    /// path is given back once so its waiting notice goes; one still
+    /// written keeps its wait.
+    #[test]
+    fn a_wait_whose_file_is_gone_is_let_go() {
+        let (ping, _source) = calloop::ping::make_ping().unwrap();
+        let mut files = Files::new(ping, None, None);
+        let t0 = Instant::now();
+        let (a, b) = (Path::new("/x/news.conf"), Path::new("/x/kept.conf"));
+        files.set_slow(a, Some(vec!["news".into()]), t0);
+        files.set_waiting(a, Some("waits for `news`, which has no run up".into()));
+        files.set_slow(b, Some(vec!["news".into()]), t0);
+        let gone = files.let_go(|each| each(b));
+        assert_eq!(gone, [a.to_path_buf()]);
+        assert_eq!(files.still_waiting(a), None);
+        let due = files.slow_due(t0 + SLOW_WAIT);
+        assert_eq!(due.len(), 1, "{due:?}");
+        assert_eq!(due[0].0, b);
+        assert!(files.let_go(|each| each(b)).is_empty(), "let go once");
+    }
+
+    /// (build-ready review) [`Files::keep`], which `after_diff` calls
+    /// each tick, lets go of the waits of the paths the running config's
+    /// `file`s no longer write (here the instance writes only `kept`),
+    /// writer or not, and gives each such path back once for its notice
+    /// to go.
+    #[test]
+    fn keep_lets_go_of_the_waits_no_file_writes() {
+        use strand_compiler::instantiate::{Instance, Storage};
+        let mut map = strand_compiler::source::SourceMap::new();
+        map.add("a.strand", "file \"/x/kept.conf\" { text: \"k\" }\n");
+        let b = strand_compiler::reconcile::Build::compile(None, map).unwrap();
+        let rt = strand_core::Runtime::new();
+        let host = std::rc::Rc::new(strand_compiler::vm::schema_host::SchemaHost::mock(
+            &rt,
+            &b.program.types,
+        ));
+        let inst = Instance::from_build(&rt, &b, host, Storage::none());
+        let _ = inst.flush();
+        let _ = inst.take_outputs();
+        let (ping, _source) = calloop::ping::make_ping().unwrap();
+        let mut files = Files::new(ping, None, None);
+        let t0 = Instant::now();
+        let (gone, kept) = (Path::new("/x/gone.conf"), Path::new("/x/kept.conf"));
+        files.set_slow(gone, Some(vec!["news".into()]), t0);
+        files.set_waiting(gone, Some("waits for `news`, which has no run up".into()));
+        files.set_slow(kept, Some(vec!["news".into()]), t0);
+        assert_eq!(files.keep(&inst), [gone.to_path_buf()]);
+        assert_eq!(files.still_waiting(gone), None);
+        let due = files.slow_due(t0 + SLOW_WAIT);
+        assert_eq!(due.len(), 1, "{due:?}");
+        assert_eq!(due[0].0, kept, "{due:?}");
+        assert!(files.keep(&inst).is_empty(), "given back once");
     }
 
     #[test]

@@ -431,3 +431,79 @@ fn a_tooltip_waits_on_the_clock_the_host_pins() {
     r.update();
     assert!(r.tooltip_popup().is_some(), "shown at its delay");
 }
+
+/// (build-ready) A popup whose content wraps text asks for the height it
+/// is drawn at whether or not a surface draws it. A popup made again (an
+/// `xdg_wm_base` older than version 3 cannot reposition one) has no
+/// surface until it maps: its text measured by an estimate there asked
+/// for one height, drawn for another, and it was made again at each,
+/// never mapping (sway 1.9).
+#[test]
+fn a_wrapping_popup_asks_for_one_height_drawn_or_not() {
+    // Sizes whose line height is no whole number of pixels among them,
+    // where two lines estimated from one differ from two lines shaped.
+    for size in [12.0, 13.0, 14.0, 15.0, 16.0] {
+        one_height_drawn_or_not(size);
+    }
+}
+
+fn one_height_drawn_or_not(size: f32) {
+    let mut r = renderer();
+    let mut b = Builder::default();
+    let bar = b.node(
+        NodeKind::Bar,
+        None,
+        vec![
+            (Prop::Name, text("Top")),
+            (Prop::Height, num(32.0)),
+            (Prop::Font, PropValue::Font(font(size))),
+        ],
+    );
+    let news = b.node(NodeKind::Text, Some(bar), vec![(Prop::Text, text("News"))]);
+    let popup = b.node(
+        NodeKind::Popup,
+        Some(news),
+        vec![(Prop::Open, PropValue::Bool(true))],
+    );
+    let card = b.node(
+        NodeKind::Col,
+        Some(popup),
+        vec![(Prop::Width, num(420.0)), (Prop::Pad, num(12.0))],
+    );
+    b.node(
+        NodeKind::Text,
+        Some(card),
+        vec![(
+            Prop::Text,
+            text("Update to php 8.5.12 and/or php-legacy 8.3.36 to prevent remote code execution"),
+        )],
+    );
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(BAR, bar);
+    r.configure_surface(BAR, Size::new(800, 32), Scale::ONE);
+    let mut buf = Buffer::new(800, 32, Scale::ONE);
+    buf.paint(&mut r, BAR, 0);
+    let changes = r.take_surface_changes();
+    let asked = spec_of(&changes, popup).expect("the popup's spec");
+    let (w, h) = (asked.width.unwrap(), asked.height.unwrap());
+    assert_eq!(w, 420.0);
+    // Drawn at that size: it asks for no other.
+    r.attach_surface(POP, popup);
+    r.configure_surface(POP, Size::new(w as u32, h as u32), Scale::ONE);
+    let mut pop = Buffer::new(w as u32, h as u32, Scale::ONE);
+    pop.paint(&mut r, POP, 0);
+    let drawn = spec_of(&r.take_surface_changes(), popup).map_or(h, |s| s.height.unwrap());
+    assert_eq!(drawn, h, "{size}px: asked for {h} undrawn, {drawn} drawn");
+    // Made again: no surface draws it until it maps, and it still asks
+    // for the same height.
+    r.detach_surface(POP);
+    let mut tick = SceneDiff::new();
+    tick.set(news, Prop::Text, text("News!"));
+    assert!(r.apply(tick).is_empty());
+    buf.paint(&mut r, BAR, 1);
+    let again = spec_of(&r.take_surface_changes(), popup).map_or(h, |s| s.height.unwrap());
+    assert_eq!(
+        again, h,
+        "{size}px: asked for {again} with no surface, {h} drawn"
+    );
+}

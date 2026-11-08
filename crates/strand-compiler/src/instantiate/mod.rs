@@ -142,6 +142,10 @@ pub struct RuntimeError {
     pub component: Option<DefId>,
     /// The core scope of that instance: [`Instance::freeze`] suspends it.
     pub scope: Option<CoreId>,
+    /// (handler-fault) Raised by a handler's body (`on`, `after`,
+    /// `every`): a value that ends that run only (spec.md 8.3), so
+    /// [`Instance::freeze`] freezes nothing for it.
+    pub handler: bool,
 }
 
 impl std::fmt::Display for RuntimeError {
@@ -187,6 +191,12 @@ pub(crate) struct Site {
     pub node: Option<NodeId>,
     pub component: Option<DefId>,
     pub scope: Option<CoreId>,
+    /// (build-ready review) A handler's error last reported, until a run
+    /// of it completes: the same error again is not reported again, so a
+    /// timer failing every tick is one fault, not one a tick. With the
+    /// [`Ctx::fault_epoch`] it was reported in: a later epoch (a new
+    /// `strand watch`) hears it again.
+    pub reported: std::cell::RefCell<Option<(u64, String)>>,
 }
 
 /// What one tick produced.
@@ -244,6 +254,9 @@ pub(crate) struct Ctx {
     /// Persisted cells kept over a changed default since the last tick.
     pub kept: RefCell<Vec<crate::reconcile::KeptCell>>,
     play_seq: Cell<u32>,
+    /// (build-ready review) Bumped by [`Instance::report_faults_again`]:
+    /// a handler's repeated error is reported again once in each epoch.
+    pub fault_epoch: Cell<u64>,
     /// Reload identities and handler hashes of the program (`None`: made
     /// from a bare program, keyed by span).
     pub identity: Option<Arc<crate::reconcile::Identity>>,
@@ -557,6 +570,7 @@ impl Ctx {
             node: site.node,
             component: site.component,
             scope: site.scope,
+            handler: false,
         }
     }
 
@@ -571,6 +585,7 @@ impl Ctx {
             node: None,
             component: None,
             scope: None,
+            handler: false,
         }
     }
 
@@ -594,6 +609,7 @@ impl Ctx {
             node,
             component: env.component,
             scope: env.fault_scope(),
+            reported: Default::default(),
         });
         self.sites.borrow_mut().insert(id, site.clone());
         let weak = Rc::downgrade(self);
@@ -934,6 +950,7 @@ impl Ctx {
             notices: RefCell::default(),
             kept: RefCell::default(),
             play_seq: Cell::new(0),
+            fault_epoch: Cell::new(0),
             identity,
             hashes,
             registry: RefCell::default(),
@@ -2558,12 +2575,26 @@ impl Instance {
         em.nodes.get(&node).map(|e| (e.file, e.idx, e.span))
     }
 
+    /// (build-ready review) A handler failing the same way again is
+    /// reported once more at its next failing run, as if new: called when
+    /// a `strand watch` starts, which hears no fault reported before it
+    /// (decisions.md handler-fault-repeat-watch).
+    pub fn report_faults_again(&self) {
+        let epoch = &self.ctx.fault_epoch;
+        epoch.set(epoch.get().wrapping_add(1));
+    }
+
     /// Freeze the component instance a runtime error happened in
     /// (design.md: "a runtime fault freezes one component outlined red"):
     /// its effects, timers and handlers stop, its state is kept. Returns
     /// whether something was frozen. [`Instance::thaw`] undoes it (the
-    /// fixing reload).
+    /// fixing reload). (handler-fault) A handler's error
+    /// ([`RuntimeError::handler`]) is a value that ended that run only
+    /// (spec.md 8.3): nothing is frozen or outlined for it.
     pub fn freeze(&self, err: &RuntimeError) -> bool {
+        if err.handler {
+            return false;
+        }
         let frozen = match err.scope {
             Some(s) if !self.rt.is_suspended(s) => self.rt.suspend(s).is_ok(),
             _ => false,

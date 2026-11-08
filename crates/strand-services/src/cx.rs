@@ -41,8 +41,10 @@ pub enum Envelope<P> {
     Notice(String),
     /// The run's notice no longer holds ([`Cx::resolve`]).
     Resolved,
-    /// A failure the run survives and retries ([`Cx::warn`]).
+    /// A one-off failure the run survives ([`Cx::warn`]).
     Warning(String),
+    /// A failure that holds while the run goes on ([`Cx::failing`]).
+    Failing(String),
     /// The first read is complete.
     Ready,
     /// The values no longer hold ([`Cx::unready`]): the service is not
@@ -456,15 +458,27 @@ impl<S: Service> Cx<S> {
         self.out.send(Envelope::Resolved)
     }
 
-    /// Report a failure the run survives and retries on its own (the
-    /// compositor adapter does not understand the compositor, and the
-    /// standard protocols serve meanwhile): a [`crate::ServiceDiagnostic`]
-    /// with `notice: false`, as a failed run's, which the host logs and
-    /// sends to `strand watch` but does not put on the overlay. Repeats of
-    /// the last one are dropped as a failed run's are. `false` once
-    /// stopped.
+    /// Report a failure the run survives (the compositor adapter does
+    /// not understand the compositor, and the standard protocols serve
+    /// meanwhile; a copied image that could not be kept): a
+    /// [`crate::ServiceDiagnostic`] with `notice: false`, as a failed
+    /// run's, which the host logs and sends to `strand watch` but does
+    /// not put on the overlay. It is told once, as an event
+    /// (`standing: false`): a watcher that starts later is not told it.
+    /// Repeats of the last one are dropped as a failed run's are. `false`
+    /// once stopped.
     pub fn warn(&mut self, message: impl Into<String>) -> bool {
         self.out.send(Envelope::Warning(message.into()))
+    }
+
+    /// (build-ready review) Report a failure that holds while the run
+    /// goes on (a poll whose command fails): as [`Cx::warn`], and it
+    /// stays open (`standing: true`, so a `strand watch` that starts
+    /// later hears it) until [`Cx::resolve`], the run's end, another
+    /// failure in its place, or a later run that stays up. `false` once
+    /// stopped.
+    pub fn failing(&mut self, message: impl Into<String>) -> bool {
+        self.out.send(Envelope::Failing(message.into()))
     }
 
     /// Whether [`Cx::ready`] was called.

@@ -739,6 +739,7 @@ impl Mismatch {
             message: message.1.clone(),
             notice: false,
             resolved: false,
+            standing: true,
         });
         *self.reported.borrow_mut() = Some(message);
     }
@@ -755,6 +756,7 @@ impl Mismatch {
                 message,
                 notice: false,
                 resolved: true,
+                standing: true,
             });
         }
     }
