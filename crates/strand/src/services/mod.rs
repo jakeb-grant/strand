@@ -4647,3 +4647,66 @@ service counter {
         }
     }
 }
+
+/// (output-id) `Output.id` is `Screen.id`: strand-services' copy of the
+/// identity rule agrees with strand-surface's `MonitorId` over what
+/// `wl_output` says of the same monitor (wlroots: an absent make or model
+/// is `Unknown`), the connector suffix dropped only when it is the head's
+/// own.
+#[cfg(test)]
+mod output_id {
+    use strand_services::outputs::output_id;
+    use strand_surface::{MonitorId, identity_description};
+
+    #[test]
+    fn an_outputs_id_is_its_screens_id() {
+        // The head's make, model, description and name; what `wl_output`
+        // gives for make and model.
+        for (make, model, description, connector, wl_make, wl_model) in [
+            (
+                "Dell Inc.",
+                "DELL U2720Q",
+                "Dell Inc. DELL U2720Q 1X2Y3Z (DP-1)",
+                "DP-1",
+                "Dell Inc.",
+                "DELL U2720Q",
+            ),
+            (
+                "Dell Inc.",
+                "DELL U2720Q",
+                "Dell Inc. DELL U2720Q 1X2Y3Z (DP-1)",
+                "DP-2",
+                "Dell Inc.",
+                "DELL U2720Q",
+            ),
+            (
+                "BOE",
+                "0x0BCA",
+                "BOE 0x0BCA (eDP-1)",
+                "eDP-1",
+                "BOE",
+                "0x0BCA",
+            ),
+            (
+                "",
+                "",
+                "Headless output 1",
+                "HEADLESS-1",
+                "Unknown",
+                "Unknown",
+            ),
+            ("Acme", "X", "Acme X ()", "", "Acme", "X"),
+        ] {
+            let screen = MonitorId::new(
+                wl_make,
+                wl_model,
+                identity_description(description, Some(connector)),
+            );
+            assert_eq!(
+                output_id(make, model, description, connector),
+                screen.as_str(),
+                "{description} on {connector}"
+            );
+        }
+    }
+}

@@ -666,3 +666,38 @@ panel Wide { screens: all; anchor: top_left; width: 2000; height: 40; bg: #22222
 "#,
     );
 }
+
+/// (output-id) A shell that exports each monitor's id as `outputs` and as
+/// `screens` see it, by connector.
+const IDS: &str = r#"
+export let n = 5
+export let outs = outputs.all.sort_by(o => o.name).map(o => o.name + "=" + o.id).join(", ")
+export let scrs = screens.all.sort_by(s => s.name).map(s => s.name + "=" + s.id).join(", ")
+export let first = outputs.all.first?.id == screens.all.filter(s => s.name == outputs.all.first?.name).first?.id
+bar Top { height: 30
+  text screen.name
+}
+"#;
+
+/// (output-id) `Output.id` is `Screen.id` for every monitor shown, on a
+/// real compositor: a saved layout can name a monitor the way `screens:`
+/// does.
+#[test]
+fn an_outputs_id_is_its_screens_id_on_sway() {
+    let Some(mut desk) = start("ids", IDS, "HEADLESS-1", false) else {
+        return;
+    };
+    desk.until("outputs and screens agree on ids", |d| {
+        match (d.get("outs"), d.get("scrs"), d.get("first")) {
+            (Some(o), Some(s), Some(f)) if o.contains("HEADLESS-2=") && o == s && f == "true" => {
+                Ok(())
+            }
+            got => Err(format!("{got:?}")),
+        }
+    });
+    let outs = desk.get("outs").unwrap_or_default();
+    assert!(
+        outs.contains(" | "),
+        "an id is make | model | description: {outs}"
+    );
+}

@@ -17,6 +17,13 @@ record Output key name {
   /// Its connector name, such as `DP-1`: the same as `Screen.name` while
   /// it is on.
   name: text
+  /// The monitor's identity: make, model and description (without the
+  /// connector some compositors append; a make or model it does not give
+  /// is `Unknown`, as `wl_output` says), with ` #2` for a second
+  /// identical one (those on first). The same as `Screen.id` while it is
+  /// on, and kept when it moves to another port: what a saved layout
+  /// names a monitor by.
+  id: text
   /// A readable description of it.
   description: text
   /// Its maker, or "" when the compositor does not say.

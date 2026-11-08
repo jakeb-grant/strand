@@ -1356,6 +1356,8 @@ provisional record OutputMode {
 provisional record Output key name {
   /// Its connector name.
   name: text
+  /// Its monitor's identity, as `Screen.id` gives it.
+  id: text
   /// A readable description of it.
   description: text
   /// Its maker.

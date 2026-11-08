@@ -7,7 +7,9 @@
 //! each manager `done` (the protocol's atomic update): its name,
 //! description, make, model and serial, its modes (deduplicated, in the
 //! compositor's order), the current and preferred mode, its place, scale,
-//! transform and adaptive sync. `available` is the manager being offered.
+//! transform and adaptive sync. (output-id) `id` is the identity a
+//! `Screen` has for the same monitor ([`output_id`]). `available` is the
+//! manager being offered.
 //!
 //! `apply(changes)` and `test(changes)` each make one
 //! `zwlr_output_configuration_v1` against the last `done`'s serial. The
@@ -171,6 +173,9 @@ impl OutputTransform {
 #[data(name = "Output", key = name)]
 pub struct Output {
     pub name: String,
+    /// (output-id) The monitor's identity, as `Screen.id` gives it
+    /// ([`output_id`]): kept across ports, so a saved profile names it.
+    pub id: String,
     pub description: String,
     pub make: String,
     pub model: String,
@@ -186,6 +191,53 @@ pub struct Output {
     pub adaptive_sync: bool,
     pub physical_width: i64,
     pub physical_height: i64,
+}
+
+/// (output-id) A monitor's identity from its head, as strand-surface's
+/// `MonitorId` makes it from its `wl_output` (`Screen.id`): make, model
+/// and description joined by `" | "`, the description without the
+/// `" (<connector>)"` wlroots appends (a copy of strand-surface's
+/// `identity_description`, which this crate does not depend on; a test
+/// in crates/strand holds the two equal). A make or model the head does
+/// not give is `Unknown`, as wlroots' `wl_output` says it (seen on
+/// headless sway). [`Outputs`] numbers identical heads ` #2`, ` #3`, the
+/// ones on first, in the compositor's order.
+pub fn output_id(make: &str, model: &str, description: &str, connector: &str) -> String {
+    let known = |s: &'_ str| -> String {
+        match s {
+            "" => "Unknown".into(),
+            s => s.into(),
+        }
+    };
+    let (make, model) = (known(make), known(model));
+    let description = match connector {
+        "" => description,
+        c => description
+            .strip_suffix(')')
+            .and_then(|d| d.strip_suffix(c))
+            .and_then(|d| d.strip_suffix(" ("))
+            .unwrap_or(description),
+    };
+    format!("{make} | {model} | {description}")
+}
+
+/// Fills each output's `id`, numbering identical monitors as
+/// strand-surface does (its second ` #2`): those on first, in order, then
+/// those off, so an id agrees with `Screen.id` for every monitor shown.
+fn number_ids(all: &mut [Output]) {
+    let mut order: Vec<usize> = (0..all.len()).collect();
+    order.sort_by_key(|&i| !all[i].enabled);
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for i in order {
+        let o = &all[i];
+        let base = output_id(&o.make, &o.model, &o.description, &o.name);
+        let n = seen.entry(base.clone()).or_insert(0);
+        *n += 1;
+        all[i].id = match *n {
+            1 => base,
+            n => format!("{base} #{n}"),
+        };
+    }
 }
 
 /// One output's part of a configuration (the schema's `OutputChange`): a
@@ -364,7 +416,8 @@ impl Client {
     /// The outputs as published: every head with a name, modes
     /// deduplicated.
     fn snapshot(&self) -> Vec<Output> {
-        self.heads
+        let mut all: Vec<Output> = self
+            .heads
             .iter()
             .filter(|h| !h.name.is_empty())
             .map(|h| {
@@ -389,6 +442,7 @@ impl Client {
                     .map(ModeEntry::public);
                 Output {
                     name: h.name.clone(),
+                    id: String::new(),
                     description: h.description.clone(),
                     make: h.make.clone(),
                     model: h.model.clone(),
@@ -406,7 +460,9 @@ impl Client {
                     physical_height: i64::from(h.physical.1),
                 }
             })
-            .collect()
+            .collect();
+        number_ids(&mut all);
+        all
     }
 
     /// The manager is gone (finished, or its global removed): its heads
@@ -1206,6 +1262,42 @@ mod tests {
         assert_eq!(
             refused(&a, "no run"),
             Some(OutputsEvent::Failed(("test".into(), "no run".into())))
+        );
+    }
+
+    /// (output-id) An output's id is its monitor's identity: the
+    /// connector wlroots appends to the description dropped, identical
+    /// monitors numbered, the ones on first.
+    #[test]
+    fn identical_heads_are_numbered_the_ones_on_first() {
+        let head = |name: &str, desc: &str, enabled: bool| Output {
+            name: name.into(),
+            make: "Dell Inc.".into(),
+            model: "DELL U2720Q".into(),
+            description: desc.into(),
+            enabled,
+            ..Output::default()
+        };
+        let mut all = vec![
+            head("DP-1", "Dell Inc. DELL U2720Q (DP-1)", false),
+            head("DP-2", "Dell Inc. DELL U2720Q (DP-2)", true),
+            head("DP-3", "Dell Inc. DELL U2720Q (DP-3)", true),
+            Output {
+                make: String::new(),
+                ..head("eDP-1", "Built-in (not eDP-2)", true)
+            },
+        ];
+        number_ids(&mut all);
+        let ids: Vec<&str> = all.iter().map(|o| o.id.as_str()).collect();
+        let base = "Dell Inc. | DELL U2720Q | Dell Inc. DELL U2720Q";
+        assert_eq!(
+            ids,
+            [
+                format!("{base} #3"),
+                base.to_string(),
+                format!("{base} #2"),
+                "Unknown | DELL U2720Q | Built-in (not eDP-2)".to_string(),
+            ]
         );
     }
 }
