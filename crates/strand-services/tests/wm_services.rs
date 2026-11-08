@@ -19,7 +19,7 @@ use strand_core::{Runtime, VecDiff};
 use strand_services::wm::{
     self, Backend, WaylandTarget, WindowAction, WmConfig, WorkspaceAction, WorkspaceItem,
 };
-use strand_services::{Applied, Builtin, Buses, Cells, Data, STOP_GRACE, Services};
+use strand_services::{Applied, Builtin, Buses, Cells, Data, STOP_GRACE, Services, ToData};
 
 /// The tests configure the process-wide compositor config: one at a time,
 /// each linking windows to no desktop entry unless it sets its own
@@ -462,6 +462,71 @@ fn the_compositor_stores_follow_hyprland() {
         s.pump(&rt);
         std::thread::sleep(Duration::from_millis(10));
     }
+    // (ws-move) `ws.move_to(screen)`, as a config calls it: the
+    // workspace and a `Screen` record (its `name` the monitor).
+    let screen = |name: &str| Data::Record {
+        ty: "Screen".into(),
+        fields: vec![
+            ("id".into(), Data::Text(format!("Monitor {name}").into())),
+            ("name".into(), Data::Text(name.to_string().into())),
+        ],
+    };
+    let ws3 = workspace(&b, &rt, "3").unwrap().to_data();
+    b.workspaces
+        .dynamic()
+        .action(
+            &rt,
+            "move_to",
+            Some(&ws3),
+            &[screen("DP-1")],
+            Default::default(),
+        )
+        .unwrap();
+    let sent = "dispatch moveworkspacetomonitor 3 DP-1".to_string();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !fake.requests().contains(&sent) {
+        assert!(Instant::now() < deadline, "{:?}", fake.requests());
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Each call is its own request: two in a row both go out.
+    for name in ["1", "2"] {
+        let ws = workspace(&b, &rt, name).unwrap().to_data();
+        b.workspaces
+            .dynamic()
+            .action(
+                &rt,
+                "move_to",
+                Some(&ws),
+                &[screen("HDMI-A-1")],
+                Default::default(),
+            )
+            .unwrap();
+    }
+    for sent in [
+        "dispatch moveworkspacetomonitor 1 HDMI-A-1",
+        "dispatch moveworkspacetomonitor 2 HDMI-A-1",
+    ] {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !fake.requests().iter().any(|r| r == sent) {
+            assert!(Instant::now() < deadline, "{:?}", fake.requests());
+            s.pump(&rt);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    // A screen with no name is not one.
+    assert!(
+        b.workspaces
+            .dynamic()
+            .action(
+                &rt,
+                "move_to",
+                Some(&ws3),
+                &[screen("")],
+                Default::default()
+            )
+            .is_err()
+    );
     b.windows.release(&rt);
     fake.send(&bursts["reload"]);
     until(&rt, &s, "configreloaded", || {

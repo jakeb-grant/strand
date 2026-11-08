@@ -434,7 +434,10 @@ before the theme) and watches it (`live::config_icons_source`);
 **`strand-introspect`** reads properties and methods from D-Bus
 introspection (`properties_on`, `members_on`; blocking `properties`
 and `methods` with a 2 s bound over one kept connection per bus;
-`Cache<T>` remembering answers for `TTL`, 10 s). `from dbus` services
+`Cache<T>` remembering answers for `TTL`, 10 s). A `Property` carries
+its `emits: Emits` (`True`, `Invalidates`, `Const`, `False`), read from
+the `EmitsChangedSignal` annotation on the property or its interface
+(dbus-unfollowed). `from dbus` services
 are checked against it (`strand check`, the loader, the LSP, whose
 `check::dbus::Introspect` answers `None` while a question is out) and
 the running service binds its actions' methods with it.
@@ -1768,6 +1771,9 @@ Public interfaces:
   `check::paths::check` touch the outside world, so they are not part
   of `compile`; `strand check`, the loader and the LSP run them, each
   bringing the bus as its own `Introspect` (`properties`, `methods`).
+  A `check::dbus::BusProperty` carries `emits: check::dbus::Emits`, the
+  compiler's copy of strand-introspect's (crates/strand's `bus_emits`
+  and strand-dev's workspace convert), for `check::dbus_unfollowed`.
   A top-level `action` is `hir::Item::Action`.
   `check::names::{is_identifier, nameable, listed, naming}` are public
   for the language server's hover and completion.
@@ -3092,8 +3098,11 @@ itself.
   `WmSubscription::request(action) -> WmReply`, answered `Ok` or a
   `WmError`; a request dropped unanswered reads as `NotConnected`.
   Window actions (`focus`, `close`, `minimize`, `maximize` and
-  `fullscreen` as toggles, `move_to`) and workspace focus by id, number
-  or name are translated per adapter (Hyprland in both dialects, sway,
+  `fullscreen` as toggles, `move_to`), workspace focus by id, number
+  or name, and (ws-move) a workspace's move to a screen
+  (`WmAction::MoveWorkspace`, failing `WmError::UnknownScreen` for a
+  screen that is not on; `WorkspaceAction::MoveTo` takes the `Screen`
+  record as a `ScreenName`) are translated per adapter (Hyprland in both dialects, sway,
   niri, the protocols); unsupported combinations answer `Unsupported`.
   `wm::detect()` picks the `Backend` (Hyprland, niri behind the
   default-on `niri` feature, sway through swayipc-types). The protocol

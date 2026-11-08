@@ -79,6 +79,33 @@ Strand's built-in `power` service already reads and sets the profile
 A service declared this way starts when the shell first reads it and
 stops 5 s after its last reader goes, as the built-in ones do.
 
+### Properties that change without a signal
+
+A field follows its property as the daemon signals each change. Some
+properties change without a signal, and the object's introspection
+says so (logind's `Docked` is one). Strand warns about a field bound
+to such a property, `check::dbus_unfollowed`, because it would keep the
+value it read at start; read it some other way, or with `from poll`.
+
+### The laptop's lid
+
+UPower signals the lid, so a `from dbus` service follows it. This one
+locks the screen when the lid closes, also on a dock, where the system
+leaves the lid alone:
+
+```strand fragment
+service upower from dbus system "org.freedesktop.UPower" {
+  lid_closed: bool = LidIsClosed
+  lid_present: bool = LidIsPresent
+  on_battery: bool = OnBattery
+}
+on change upower.lid_closed { if upower.lid_closed { session.lock() } }
+```
+
+`lid_present` is false on a machine without a lid, and `on_battery`
+is true while it runs from its battery (the built-in
+`battery.on_battery` says the same, without declaring anything).
+
 ## A declared action runs a command
 
 `action dispatch(ws: int) ["hyprctl", "dispatch", "workspace", ws]`

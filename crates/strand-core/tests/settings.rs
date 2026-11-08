@@ -23,6 +23,10 @@ use strand_core::{
 enum V {
     Color(String),
     Bool(bool),
+    /// (settings-tables) A value in the form the compiler encodes it, as
+    /// the TOML of a key `x`: a dictionary a `[x]` section of inline
+    /// values, a list of records an array of inline tables.
+    Toml(String),
 }
 
 fn color(name: &str, default: &str) -> FieldSpec<V> {
@@ -38,6 +42,7 @@ fn color(name: &str, default: &str) -> FieldSpec<V> {
         |v: &V| match v {
             V::Color(c) => toml_edit::value(c.as_str()),
             V::Bool(b) => toml_edit::value(*b),
+            V::Toml(_) => Item::None,
         },
     )
     .with_type("color")
@@ -55,6 +60,7 @@ fn flag(name: &str, default: bool) -> FieldSpec<V> {
         |v: &V| match v {
             V::Bool(b) => toml_edit::value(*b),
             V::Color(c) => toml_edit::value(c.as_str()),
+            V::Toml(_) => Item::None,
         },
     )
     .with_type("bool")
@@ -1115,6 +1121,7 @@ fn redeclare_carries_each_layer_through_its_carry() {
     let upper = |v: &V| match v {
         V::Color(c) => Some(V::Color(c.to_uppercase())),
         V::Bool(b) => Some(V::Bool(*b)),
+        V::Toml(t) => Some(V::Toml(t.clone())),
     };
     s.redeclare(
         &rt,
@@ -1319,4 +1326,295 @@ fn redeclare_does_not_fire_on_change() {
     rt.flush();
     assert_eq!(*fired.borrow(), vec![V::Color("#111111".into())]);
     rt.shutdown();
+}
+
+/// (settings-tables) A field whose values are TOML as the compiler
+/// encodes them ([`V::Toml`]); it reads anything.
+fn toml_field(name: &str) -> FieldSpec<V> {
+    FieldSpec::new(
+        name,
+        V::Toml(String::new()),
+        |item: &Item| {
+            let mut doc = toml_edit::DocumentMut::new();
+            doc.insert("x", item.clone());
+            Ok(V::Toml(doc.to_string()))
+        },
+        |v: &V| match v {
+            V::Toml(t) => {
+                let doc: toml_edit::DocumentMut = t.parse().unwrap();
+                doc["x"].clone()
+            }
+            _ => Item::None,
+        },
+    )
+}
+
+/// (settings-tables) Write `value` (the TOML of a key `x`) to `field` of
+/// `file` as it reads `before`, and return the file as written.
+fn write_toml(name: &str, before: &str, field: &str, value: &str) -> String {
+    let tmp = TempDir::new(name);
+    let file = tmp.config("prefs.toml");
+    fs::write(&file, before).unwrap();
+    let rt = Runtime::new();
+    let store = tmp.store();
+    let s = rt.settings_file(
+        &store,
+        &file,
+        vec![toml_field(field), flag("compact", false)],
+    );
+    rt.flush();
+    let d = write(
+        &rt,
+        &s,
+        &store,
+        field,
+        V::Toml(value.into()),
+        Duration::from_millis(10),
+    );
+    assert!(settings_notices(&d).is_empty(), "{d:?}");
+    let out = fs::read_to_string(&file).unwrap();
+    rt.shutdown();
+    out
+}
+
+const PROFILES: &str = "\
+# Display profiles, kept in chezmoi
+compact = true
+
+# At the desk: the Dell on the left.
+[profiles.desk]
+lid = \"BOE 0x0BCA\"   # the laptop's own panel
+
+# the big one
+[[profiles.desk.mons]]
+id = \"Dell U2720Q\"   # left
+scale = 1.5
+
+[[profiles.desk.mons]]
+id = \"BOE 0x0BCA\"
+scale = 1.25
+
+# On the couch: just the laptop.
+[profiles.couch]
+[[profiles.couch.mons]]
+id = \"BOE 0x0BCA\"   # alone
+scale = 1
+";
+
+/// (settings-tables) A write to one record of a dictionary written as
+/// sections leaves every other record's text and comments as they were,
+/// byte for byte (`scale = 1` is the `1.0` written); the changed one
+/// stays a `[section]` with its `[[…]]` tables, each table that reads the
+/// same keeping its own text and comments.
+#[test]
+fn a_write_to_one_record_leaves_the_others_as_written() {
+    let out = write_toml(
+        "one-record",
+        PROFILES,
+        "profiles",
+        "[x]\n\
+         desk = { lid = \"BOE 0x0BCA\", mons = [{ id = \"Dell U2720Q\", scale = 1.5 }, { id = \"BOE 0x0BCA\", scale = 1.0 }] }\n\
+         couch = { mons = [{ id = \"BOE 0x0BCA\", scale = 1.0 }] }\n",
+    );
+    assert_eq!(
+        out,
+        PROFILES.replace("scale = 1.25", "scale = 1.0"),
+        "{out}"
+    );
+    // A new record among records written as sections is a section too,
+    // shaped like them, after them.
+    let out = write_toml(
+        "new-record",
+        PROFILES,
+        "profiles",
+        "[x]\n\
+         desk = { lid = \"BOE 0x0BCA\", mons = [{ id = \"Dell U2720Q\", scale = 1.5 }, { id = \"BOE 0x0BCA\", scale = 1.25 }] }\n\
+         couch = { mons = [{ id = \"BOE 0x0BCA\", scale = 1.0 }] }\n\
+         tv = { lid = \"BOE 0x0BCA\", mons = [{ id = \"LG TV\", scale = 2.0 }] }\n",
+    );
+    assert_eq!(
+        out,
+        format!(
+            "{PROFILES}\n[profiles.tv]\nlid = \"BOE 0x0BCA\"\n\n[[profiles.tv.mons]]\nid = \"LG TV\"\nscale = 2.0\n"
+        ),
+        "{out}"
+    );
+}
+
+/// (settings-tables) A list of records written over `[[name]]` is merged
+/// by value: an element inserted in the middle is written fresh where it
+/// goes, and every other keeps the comments written on it, also when the
+/// list is reordered; an element no longer there goes with its comments.
+#[test]
+fn an_array_of_tables_is_merged_by_value() {
+    let before = "\
+compact = true
+
+# Pinned apps, in the launcher's order.
+[[pins]]
+id = \"firefox\"   # the browser
+
+# the terminal
+[[pins]]
+id = \"kitty\"
+";
+    let out = write_toml(
+        "aot-insert",
+        before,
+        "pins",
+        "x = [{ id = \"firefox\" }, { id = \"files\" }, { id = \"kitty\" }]",
+    );
+    assert_eq!(
+        out,
+        "\
+compact = true
+
+# Pinned apps, in the launcher's order.
+[[pins]]
+id = \"firefox\"   # the browser
+
+[[pins]]
+id = \"files\"
+
+# the terminal
+[[pins]]
+id = \"kitty\"
+",
+        "{out}"
+    );
+    // Reordered, one gone: each keeps its comments, in the new order.
+    let out = write_toml(
+        "aot-reorder",
+        &out,
+        "pins",
+        "x = [{ id = \"kitty\" }, { id = \"firefox\" }]",
+    );
+    assert_eq!(
+        out,
+        "\
+compact = true
+
+# the terminal
+[[pins]]
+id = \"kitty\"
+
+# Pinned apps, in the launcher's order.
+[[pins]]
+id = \"firefox\"   # the browser
+",
+        "{out}"
+    );
+    // An element that left a field to its default takes the record that
+    // adds it, keeping its comment.
+    let out = write_toml(
+        "aot-default",
+        before,
+        "pins",
+        "x = [{ id = \"firefox\", hidden = false }, { id = \"kitty\", hidden = false }]",
+    );
+    assert_eq!(
+        out,
+        "\
+compact = true
+
+# Pinned apps, in the launcher's order.
+[[pins]]
+id = \"firefox\"   # the browser
+hidden = false
+
+# the terminal
+[[pins]]
+id = \"kitty\"
+hidden = false
+",
+        "{out}"
+    );
+    // An empty list is `pins = []`: no `[[pins]]` would be the default.
+    let out = write_toml("aot-empty", before, "pins", "x = []");
+    assert_eq!(
+        out,
+        "compact = true
+pins = []
+",
+        "{out}"
+    );
+}
+
+/// (settings-tables) An array the user spread over lines keeps its layout
+/// when what it reads does not change (`1` for `1.0` included), and when
+/// it does, each element that stays keeps the comment on its line.
+#[test]
+fn a_multi_line_array_keeps_its_layout() {
+    let before = "\
+compact = true
+order = [
+  \"DP-1\",    # left
+  \"eDP-1\",   # laptop
+]
+";
+    let out = write_toml("array-same", before, "order", "x = [\"DP-1\", \"eDP-1\"]");
+    assert_eq!(out, before);
+    let out = write_toml(
+        "array-insert",
+        before,
+        "order",
+        "x = [\"eDP-1\", \"HDMI-A-1\", \"DP-1\"]",
+    );
+    assert_eq!(
+        out,
+        "\
+compact = true
+order = [
+  \"eDP-1\",   # laptop
+  \"HDMI-A-1\",
+  \"DP-1\",    # left
+]
+",
+        "{out}"
+    );
+    // A record nested in a section keeps its inline array as it was.
+    let before = "\
+[profiles.desk]
+lid = \"a\"
+order = [
+  \"DP-1\",  # left
+  \"eDP-1\",
+]
+";
+    let out = write_toml(
+        "array-nested",
+        before,
+        "profiles",
+        "[x]\ndesk = { lid = \"b\", order = [\"DP-1\", \"eDP-1\"] }\n",
+    );
+    assert_eq!(out, before.replace("\"a\"", "\"b\""), "{out}");
+}
+
+/// (settings-tables) A record the user wrote as a `[section]` stays one
+/// after a write, merged key by key; so does a dictionary of records,
+/// each of its records a section.
+#[test]
+fn a_record_section_stays_a_section() {
+    let before = "\
+compact = true
+
+[size]  # the panel
+w = 3   # wide
+h = 4
+";
+    let out = write_toml("record-section", before, "size", "x = { w = 5, h = 4 }");
+    assert_eq!(out, before.replace("w = 3", "w = 5"), "{out}");
+    let out = write_toml(
+        "dict-section",
+        PROFILES,
+        "profiles",
+        "[x]\n\
+         desk = { mons = [{ id = \"Dell U2720Q\", scale = 1.5 }, { id = \"BOE 0x0BCA\", scale = 1.25 }] }\n\
+         couch = { mons = [{ id = \"BOE 0x0BCA\", scale = 1.0 }] }\n",
+    );
+    assert!(
+        out.contains("\n[profiles.desk]\n\n# the big one\n[[profiles.desk.mons]]"),
+        "{out}"
+    );
+    assert!(!out.contains("lid"), "{out}");
 }

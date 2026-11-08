@@ -205,6 +205,48 @@ fn text_and_number_helpers() {
 }
 
 /// Text `slice` and `index_of` count characters, as `len` does.
+/// (json-fn) `json(value)` writes plain data as compact JSON: a record
+/// by its fields in order, nested lists and records, a dictionary as an
+/// object of its keys' texts, null, an enum's name, a colour's hex, a
+/// duration's milliseconds, an `int` whole and a float in its shortest
+/// form; a text escaped as JSON requires, other characters kept. What it
+/// writes reads back as the same data.
+#[test]
+fn json_writes_plain_data() {
+    let (_, _, inst) = run("enum Look { light, dark_mode }\n\
+         type Mon { id: text; scale: float; on: bool; look: Look; note: text? }\n\
+         let m = Mon(id: \"DP-1 \\\"é\\\"\\n\\ttab\\\\\", scale: 1.25, on: true, look: dark_mode, note: null)\n\
+         let j1 = json(m)\n\
+         let j2 = json([m, Mon(id: \"x\", scale: 2, on: false, look: light, note: \"n\")])\n\
+         let j3 = json([\"b\": [1, 2], \"a\": []])\n\
+         let j4 = json([3: \"x\"])\n\
+         let j5 = json(null)\n\
+         let j6 = json(1500ms)\n\
+         let j7 = json(0.1 + 0.2)\n\
+         let j8 = json(7)\n\
+         let j9 = json(#ff8800)\n");
+    let j1 = text(&inst, "j1");
+    assert_eq!(
+        j1,
+        r#"{"id":"DP-1 \"é\"\n\ttab\\","scale":1.25,"on":true,"look":"dark_mode","note":null}"#
+    );
+    let back: serde_json::Value = serde_json::from_str(&j1).unwrap();
+    assert_eq!(back["id"], "DP-1 \"é\"\n\ttab\\");
+    assert_eq!(
+        text(&inst, "j2"),
+        format!(r#"[{j1},{{"id":"x","scale":2,"on":false,"look":"light","note":"n"}}]"#)
+    );
+    assert_eq!(text(&inst, "j3"), r#"{"a":[],"b":[1,2]}"#, "in key order");
+    assert_eq!(text(&inst, "j4"), r#"{"3":"x"}"#);
+    assert_eq!(text(&inst, "j5"), "null");
+    assert_eq!(text(&inst, "j6"), "1500");
+    assert_eq!(text(&inst, "j7"), "0.30000000000000004");
+    assert_eq!(text(&inst, "j8"), "7");
+    let j9 = text(&inst, "j9");
+    assert!(j9.starts_with("\"#ff8800"), "{j9}");
+    assert_eq!(ty("let a = json([1])\n", "a"), "text");
+}
+
 #[test]
 fn text_slices_by_characters() {
     let (_, _, inst) = run("let s = \"héllo 😀 world\"\n\

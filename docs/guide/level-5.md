@@ -269,7 +269,8 @@ the compositor's command line:
   p.name`, each switched by `p.select()`), and the programs taking
   video (`video.streams`) for a camera or screen-cast light;
 - battery, with the charge UPower recorded over past hours
-  (`battery.history(10800s)`);
+  (`battery.history(10800s)`) and whether the machine runs from it
+  (`battery.on_battery`, true only while unplugged);
 - bluetooth, with a pairing dialog for a device that asks for a PIN or
   a code: a panel with `open: bluetooth.request != null`, answered by
   `respond(typed)`, `accept()` or `reject()`;
@@ -321,6 +322,17 @@ profile. Strand checks every field against the object's
 introspection, so a misspelt property is an error with a
 did-you-mean. If the daemon is not running, that is a
 warning: your config is not broken because a daemon is down.
+
+A field follows its property as the daemon signals each change. A few
+properties change without a signal (logind's `Docked` is one), and the
+object's introspection says so: Strand warns about a field bound to one
+(`check::dbus_unfollowed`), since it would keep the value it read at
+start. The laptop's lid does signal: UPower follows it, so locking the
+screen when the lid closes, also on a dock where the system ignores the
+lid, takes a service, `service upower from dbus system
+"org.freedesktop.UPower" { lid_closed: bool = LidIsClosed }`, and a
+handler, `on change upower.lid_closed { if upower.lid_closed {
+session.lock() } }`.
 
 **`from file`** reads a file and watches it. The kernel keeps the name
 your computer runs under in `/proc/sys/kernel/hostname`: one word, on

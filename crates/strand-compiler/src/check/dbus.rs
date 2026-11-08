@@ -4,6 +4,9 @@
 //! type, and an `rw` field's property is writable; (M6) each `action
 //! name(params) = Method`'s method exists, takes as many arguments, and
 //! each parameter converts to its argument's D-Bus type.
+//! (dbus-unfollowed) A field bound to a property whose changes are never
+//! signalled (`EmitsChangedSignal` `false`) is a warning: it would keep
+//! the value it read at start.
 //!
 //! The compiler has no bus of its own: the caller hands it an
 //! [`Introspect`] (`strand check`, `strand run`'s loader and the LSP use
@@ -16,13 +19,31 @@ use crate::hir::{self, SourceSpec};
 use crate::ty::{Prim, Ty};
 
 /// One property of an introspected object.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BusProperty {
     pub interface: String,
     pub name: String,
     /// Its D-Bus type signature.
     pub signature: String,
     pub writable: bool,
+    /// (dbus-unfollowed) Whether its changes are signalled.
+    pub emits: Emits,
+}
+
+/// (dbus-unfollowed) Whether a property's changes are signalled, as its
+/// `org.freedesktop.DBus.Property.EmitsChangedSignal` annotation says
+/// (strand-introspect's `Emits`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Emits {
+    /// `PropertiesChanged` carries each new value (no annotation).
+    #[default]
+    True,
+    /// `PropertiesChanged` names it, and it is read again.
+    Invalidates,
+    /// It never changes.
+    Const,
+    /// It changes without a signal.
+    False,
 }
 
 /// (M6) One method of an introspected object.
@@ -188,6 +209,22 @@ pub fn check(program: &hir::Program, intro: &dyn Introspect) -> Vec<Diagnostic> 
                     )
                     .with_label_in(s.file, f.span, "the declared type");
                     d.help = Some(format!("declare it as {}", suggested_type(&p.signature)));
+                    out.push(d);
+                }
+                if p.emits == Emits::False {
+                    let service = &program.def(s.def).name;
+                    let mut d = Diagnostic::warning(
+                        "check::dbus_unfollowed",
+                        format!(
+                            "`{name}`'s `{prop}` sends no change signal: `{service}.{}` keeps the value it read at start",
+                            f.name
+                        ),
+                    )
+                    .with_label_in(s.file, f.key_span, "never signalled");
+                    d.help = Some(
+                        "read it from a source that signals its changes, or poll it with                          `from poll` (`busctl get-property …` every few seconds)"
+                            .into(),
+                    );
                     out.push(d);
                 }
                 if f.rw && !p.writable {

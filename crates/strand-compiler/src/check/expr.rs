@@ -1604,6 +1604,9 @@ impl<'a> Checker<'a> {
                 } else {
                     self.action_check(name, id.span)
                 };
+                if !result && !reported {
+                    self.action_coalesced(d, name, id.span);
+                }
                 let Some(sig) = sig else {
                     for a in args {
                         self.expr(&a.value, None);

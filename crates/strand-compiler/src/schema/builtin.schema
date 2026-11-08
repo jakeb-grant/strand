@@ -457,6 +457,8 @@ provisional record Workspace key id {
   windows: [Window]
   /// Switches to it: `on click { ws.focus() }`.
   action focus()
+  /// `ws.move_to(screen)` moves it, with its windows, to `screen`.
+  action move_to(screen: Screen)
 }
 
 /// A program's audio stream, from PipeWire: what it plays or records.
@@ -875,6 +877,9 @@ provisional service battery {
   percent: float
   /// It is charging.
   charging: bool
+  /// The machine runs from its battery (UPower's `OnBattery`): false on
+  /// line power, a full battery or not, and without UPower.
+  on_battery: bool
   /// Time until empty, or until full while charging; null when unknown.
   time_left: duration?
   /// An icon name for its charge and state.
@@ -1684,6 +1689,14 @@ fn bytes(n: float) -> text lift
 /// trailing white space is ignored; `1e3` and `-0.5` are numbers.
 /// Null in, null out.
 fn number(t: text) -> float? lift
+/// `value` as compact JSON, for a file a tool reads or an action's
+/// argument: `json(prefs)` is `{"size":3,"dark":true}`. A record is an
+/// object of its fields, a list an array, a dictionary an object of its
+/// keys, null `null`, an enum its variant's name, a colour its `hex`, a
+/// duration its milliseconds. Not a quoter for Lua: a control character
+/// is written `\u001b`, which Lua reads otherwise, so Lua takes a `fn`
+/// of its own.
+fn json(value: any?) -> text
 
 /// A Material 3 palette from a seed colour, or from a wallpaper image
 /// (quantised off-thread and cached; the old palette holds until the new

@@ -75,6 +75,7 @@ and every power source it reports.
 | `present` | `bool` | A battery is present: `if battery.present { Battery }`. |
 | `percent` | `float` | Charge, 0 to 1: `pct(battery.percent)`. |
 | `charging` | `bool` | It is charging. |
+| `on_battery` | `bool` | The machine runs from its battery (UPower's `OnBattery`): false on line power, a full battery or not, and without UPower. |
 | `time_left` | `duration?` | Time until empty, or until full while charging; null when unknown. |
 | `icon` | `text` | An icon name for its charge and state. |
 | `power` | `float` | Power draw in watts. |

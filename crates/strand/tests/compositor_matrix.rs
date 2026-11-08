@@ -36,7 +36,9 @@
 //! window's fullscreen and maximize on and off through the `windows` store
 //! and checks the compositor's report and the window's own configures.
 //! (lockmon) On all four, too, `a_window_is_placed_and_moved_by_the_stores`
-//! checks `win.rect` and `win.move_to(ws)`, `modes_and_layouts_follow_the_compositor`
+//! checks `win.rect` and `win.move_to(ws)`, (ws-move)
+//! `a_workspace_is_moved_to_another_screen` `ws.move_to(screen)`,
+//! `modes_and_layouts_follow_the_compositor`
 //! `wm.mode` and the keyboard layouts, and
 //! `idle_follows_the_compositor_and_a_surface_holds_it_awake` `idle.after`
 //! and a panel's `inhibit_idle`, each against the compositor's own report
@@ -1879,6 +1881,245 @@ fn a_window_is_placed_and_moved_by_the_stores() {
     drop(keeper);
     drop(win);
     s.shutdown();
+}
+
+/// (ws-move) A request of the adapter's own, once it has read the
+/// compositor (any workspace in its state).
+fn wm_reply(action: WmAction) -> Result<(), WmError> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mirror = Arc::new(std::sync::Mutex::new(wm::Mirror::default()));
+        let m = mirror.clone();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let service = tokio::spawn(wm::run(
+            WmConfig::from_env(None),
+            move |batch: Vec<wm::WmChange>| {
+                let mut m = m.lock().unwrap();
+                for c in &batch {
+                    m.apply(c).unwrap();
+                }
+            },
+            rx,
+        ));
+        let deadline = Instant::now() + PATIENCE;
+        while mirror.lock().unwrap().workspaces.is_empty() {
+            assert!(Instant::now() < deadline, "wm::run never read workspaces");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let (req, reply) = WmRequest::new(action);
+        tx.send(req).unwrap();
+        let out = tokio::time::timeout(PATIENCE, reply).await.unwrap();
+        service.abort();
+        out
+    })
+}
+
+/// (ws-move) `ws.move_to(screen)` through the `workspaces` store against
+/// the compositor's own report. With two outputs (sway, Hyprland): a
+/// workspace kept by a window moves to the other output, the focus
+/// staying on the workspace that had it; the same move again is `Ok` and
+/// changes nothing; the focused workspace moves with the focus, and both
+/// come back. niri's matrix has one output: its request is sent as the
+/// adapter writes it and niri takes it, and a move to the output a
+/// workspace is on is `Ok`. Everywhere an output that is not there is
+/// `UnknownScreen`; labwc, without an adapter, `Unsupported`.
+#[test]
+fn a_workspace_is_moved_to_another_screen() {
+    let Ok(kind) = std::env::var("STRAND_MATRIX") else {
+        skipped("the workspace move test");
+        return;
+    };
+    let Some(live) = live() else {
+        assert!(
+            matches!(
+                wm_reply(WmAction::MoveWorkspace {
+                    workspace: 1,
+                    screen: "HEADLESS-1".into()
+                }),
+                Err(WmError::Unsupported(_))
+            ),
+            "{kind} cannot move a workspace"
+        );
+        return;
+    };
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"));
+    let socket = runtime.join(std::env::var_os("WAYLAND_DISPLAY").expect("WAYLAND_DISPLAY"));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    b.workspaces.acquire(&rt);
+    b.windows.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)), "the first read");
+    let real = live.real();
+    let home = real.focused.clone().expect("a focused workspace");
+    let home_id = || {
+        s.pump(&rt);
+        rt.flush();
+        workspace_named(&b, &rt, &home).id
+    };
+    assert_eq!(
+        wm_reply(WmAction::MoveWorkspace {
+            workspace: home_id(),
+            screen: "NOPE-9".into()
+        }),
+        Err(WmError::UnknownScreen("NOPE-9".into())),
+        "{kind}"
+    );
+    let move_to = |name: &str, screen: &str| {
+        s.pump(&rt);
+        rt.flush();
+        b.workspaces
+            .act(
+                &rt,
+                WorkspaceAction::MoveTo {
+                    item: workspace_named(&b, &rt, name),
+                    screen: wm::ScreenName(screen.into()),
+                },
+            )
+            .unwrap();
+    };
+    // Where the compositor and the stores have workspace `name`.
+    let on = |what: &str, name: &str, screen: &str, focused: &str| {
+        until(what, || {
+            s.pump(&rt);
+            rt.flush();
+            let theirs = live.real_on(screen);
+            let ours = stored_on(&b, &rt, screen)?;
+            let all = live.real();
+            if !theirs.workspaces.iter().any(|w| w.name == name) {
+                Err(format!("{kind}: {name} is not on {screen}: {theirs}"))
+            } else if all.focused.as_deref() != Some(focused) {
+                Err(format!("{kind}: the focus is not on {focused}: {all}"))
+            } else if !ours.workspaces.iter().any(|w| w.name == name)
+                || ours.focused.as_deref() != Some(focused)
+            {
+                Err(format!("{kind}: {theirs}\nthe stores: {ours}"))
+            } else {
+                Ok(())
+            }
+        });
+        eprintln!(
+            "matrix: {what}: {}",
+            live.outputs()
+                .iter()
+                .map(|o| format!("{}: {}", o.name, live.real_on(&o.name)))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        );
+    };
+
+    let Some(there) = second_output(&live) else {
+        // niri: one output. The adapter's request, as niri takes it.
+        if live.kind == Kind::Niri {
+            let id = json("niri", &["msg", "--json", "workspaces"])
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|w| w["is_focused"] == true)
+                .and_then(|w| w["id"].as_u64())
+                .expect("niri's focused workspace");
+            let request = serde_json::json!({"Action": {"MoveWorkspaceToMonitor": {
+                "output": live.output, "reference": {"Id": id},
+            }}});
+            let reply = niri_request(&request);
+            assert!(
+                reply.get("Ok").is_some(),
+                "niri: {request} answered {reply}"
+            );
+        }
+        move_to(&home, &live.output);
+        on("moved to its own output", &home, &live.output, &home);
+        assert_eq!(
+            wm_reply(WmAction::MoveWorkspace {
+                workspace: home_id(),
+                screen: live.output.clone()
+            }),
+            Ok(()),
+            "{kind}: already there"
+        );
+        s.shutdown();
+        return;
+    };
+
+    // Another workspace, kept by a window, then the focus home again.
+    let other = live.other(&real);
+    live.switch(&other);
+    until("the other workspace focused", || {
+        let r = live.real();
+        if r.focused.as_deref() == Some(other.as_str()) {
+            Ok(())
+        } else {
+            Err(format!("{r}"))
+        }
+    });
+    let keeper = TestWindow::open(&socket, "strand-ws-keeper", "keeper");
+    until(
+        "the keeper on the other workspace",
+        || match compositor_window(live.kind, "strand-ws-keeper") {
+            Some((ws, _)) if ws == other => Ok(()),
+            got => Err(format!("{got:?}")),
+        },
+    );
+    live.switch(&home);
+    on("home again", &other, &live.output, &home);
+
+    move_to(&other, &there);
+    on("ws.move_to(there)", &other, &there, &home);
+    let after: Vec<Real> = live
+        .outputs()
+        .iter()
+        .map(|o| live.real_on(&o.name))
+        .collect();
+    let other_id = workspace_named(&b, &rt, &other).id;
+    assert_eq!(
+        wm_reply(WmAction::MoveWorkspace {
+            workspace: other_id,
+            screen: there.clone()
+        }),
+        Ok(()),
+        "{kind}: the same move again"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    let again: Vec<Real> = live
+        .outputs()
+        .iter()
+        .map(|o| live.real_on(&o.name))
+        .collect();
+    assert_eq!(
+        again, after,
+        "{kind}: the same move again changed something"
+    );
+    assert_eq!(
+        compositor_window(live.kind, "strand-ws-keeper").map(|(ws, _)| ws),
+        Some(other.clone()),
+        "{kind}: the window went with its workspace"
+    );
+
+    // The focused workspace: the focus goes with it.
+    move_to(&home, &there);
+    on("the focused one moved", &home, &there, &home);
+    move_to(&home, &live.output);
+    on("the focused one back", &home, &live.output, &home);
+    move_to(&other, &live.output);
+    on("the other one back", &other, &live.output, &home);
+    drop(keeper);
+    s.shutdown();
+}
+
+/// (ws-move) One request on niri's socket and its reply.
+fn niri_request(request: &Value) -> Value {
+    use std::io::{BufRead, Write};
+    let path = std::env::var_os("NIRI_SOCKET").expect("NIRI_SOCKET");
+    let mut stream = std::os::unix::net::UnixStream::connect(path).unwrap();
+    stream.write_all(format!("{request}\n").as_bytes()).unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(stream)
+        .read_line(&mut line)
+        .unwrap();
+    serde_json::from_str(&line).unwrap()
 }
 
 // ---- a window's own move and resize -----------------------------------------

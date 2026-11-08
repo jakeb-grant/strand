@@ -7219,6 +7219,203 @@ fn a_settings_dictionary_writes_back_key_by_key() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (settings-tables) Display profiles in a settings file: a dictionary
+/// of records, each a `[profiles.name]` section with its monitors as
+/// `[[profiles.name.mons]]`.
+const PROFILES_SRC: &str = "type Mon { id: text; scale: float }\ntype Profile { mons: [Mon]; lid: text? }\nstate mon from \"monitors.toml\" { profiles: [text: Profile] = [] }\nstate seen = 0\non change mon.profiles { seen += 1 }\nbar B {\n  text mon.profiles.entries.map(e => join(\":\", e.key, e.value.lid ?? \"-\", e.value.mons.map(m => join(\"@\", m.id, m.scale)).join(\"+\"))).join(\",\")\n  text join(\" \", \"seen\", seen)\n  box { on click { mon.profiles[\"desk\"] = Profile(mons: [Mon(id: \"Dell\", scale: 2.0), Mon(id: \"BOE\", scale: 1.25)], lid: \"BOE\") } }\n}\n";
+
+/// (settings-tables) A settings field of records reads TOML's table
+/// forms, a hand edit applies live (`on change` sees it), a key a record
+/// does not have keeps the field's last good value with a notice naming
+/// where it is, and a write of one profile goes back into the sections
+/// the file has, every other profile as it was written.
+#[test]
+fn settings_records_read_and_write_table_forms() {
+    let dir = temp_dir("settings-tables");
+    let config = dir.join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    let file = config.join("monitors.toml");
+    let couch = "# just the laptop\n[profiles.couch]\n[[profiles.couch.mons]]\nid = \"BOE\"   # alone\nscale = 1\n";
+    std::fs::write(
+        &file,
+        format!("[profiles.desk]\nlid = \"BOE\"\n\n[[profiles.desk.mons]]\nid = \"Dell\"   # left\nscale = 1.5\n\n{couch}"),
+    )
+    .unwrap();
+    let storage = Storage::in_dirs(dir.join("state"), &config);
+    let mut shell = boot_with(&[("t.strand", PROFILES_SRC)], dp1, storage.clone());
+    assert!(settings_notices(&shell.boot_diagnostics, &config).is_empty());
+    assert_eq!(
+        shell.scene.texts(),
+        ["couch:-:BOE@1,desk:BOE:Dell@1.5", "seen 0"]
+    );
+    let reload = |shell: &mut Shell, text: &str| {
+        std::fs::write(&file, text).unwrap();
+        assert!(shell.inst.reload_settings(&file));
+        settings_notices(&shell.flush().diagnostics, &config)
+    };
+    // A hand edit applies live, and `on change` sees it.
+    let notes = reload(
+        &mut shell,
+        &format!(
+            "[profiles.desk]\nlid = \"BOE\"\n[[profiles.desk.mons]]\nid = \"Dell\"\nscale = 2\n[[profiles.desk.mons]]\nid = \"LG\"\nscale = 1\n\n{couch}"
+        ),
+    );
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(
+        shell.scene.texts(),
+        ["couch:-:BOE@1,desk:BOE:Dell@2+LG@1", "seen 1"]
+    );
+    // A typo keeps the last good value, with a notice naming it.
+    let notes = reload(
+        &mut shell,
+        &format!("[profiles.desk]\n[[profiles.desk.mons]]\nid = \"Dell\"\nscael = 2\n\n{couch}"),
+    );
+    assert_eq!(
+        notes,
+        [
+            "monitors.toml: profiles: \"desk\": mons[0]: unknown field \"scael\"; keeping its last good value"
+        ]
+    );
+    assert_eq!(
+        shell.scene.texts(),
+        ["couch:-:BOE@1,desk:BOE:Dell@2+LG@1", "seen 1"]
+    );
+    // A write of one profile from the shell.
+    let before = format!(
+        "# at the desk\n[profiles.desk]\nlid = \"BOE\"\n\n# the big one\n[[profiles.desk.mons]]\nid = \"Dell\"   # left\nscale = 1.5\n\n{couch}"
+    );
+    assert!(reload(&mut shell, &before).is_empty());
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    assert_eq!(
+        shell.scene.texts(),
+        ["couch:-:BOE@1,desk:BOE:Dell@2+BOE@1.25", "seen 3"]
+    );
+    shell.at(1.0);
+    assert!(
+        storage
+            .settings
+            .as_ref()
+            .unwrap()
+            .sync(Duration::from_secs(5))
+    );
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(
+        written,
+        format!(
+            "# at the desk\n[profiles.desk]\nlid = \"BOE\"\n\n[[profiles.desk.mons]]\nid = \"Dell\"\nscale = 2.0\n\n[[profiles.desk.mons]]\nid = \"BOE\"\nscale = 1.25\n\n{couch}"
+        )
+    );
+    // And it reads back as it was.
+    assert!(shell.inst.reload_settings(&file));
+    assert!(settings_notices(&shell.flush().diagnostics, &config).is_empty());
+    assert_eq!(
+        shell.scene.texts()[0],
+        "couch:-:BOE@1,desk:BOE:Dell@2+BOE@1.25"
+    );
+    drop(shell);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// (monitor-layout) The best-guess arrangement site/how-to/monitor-layouts.md
+/// shows, as written there: the laptop's panel last, the others left to
+/// right in `outputs.all` order, each one's x the sum of the logical
+/// widths before it (a rotated head is as wide as its mode is tall, a
+/// scaled one narrower), y 0, every head on at its preferred mode.
+const BEST_GUESS_SRC: &str = "\
+fn wide(o: Output) -> int {
+  let m = o.preferred ?? o.mode
+  let w = match o.transform {
+    rotate_90 => m?.height ?? 0
+    rotate_270 => m?.height ?? 0
+    flipped_90 => m?.height ?? 0
+    flipped_270 => m?.height ?? 0
+    _ => m?.width ?? 0
+  }
+  (w / o.scale).round()
+}
+let order = outputs.all.sort_by(o => o.name.starts_with(\"eDP\"))
+let guess = order.map(o => OutputChange(
+  name: o.name, enabled: true, mode: o.preferred,
+  x: order.take(order.index_of(p => p.name == o.name) ?? 0).sum(p => wide(p)), y: 0))
+bar B {
+  text guess.map(c => join(\"@\", c.name, c.x ?? -1, c.y ?? -1, c.enabled ?? false, c.mode?.width ?? 0)).join(\" \")
+  box { on click { outputs.apply(guess) } }
+}
+";
+
+/// (monitor-layout) No list operation was added for the best guess:
+/// `sort_by`, `take`, `index_of` and `sum` already write it, and
+/// `outputs.apply(guess)` type-checks (decisions.md monitor-layout).
+#[test]
+fn a_best_guess_layout_is_written_with_the_list_operations_there_are() {
+    let mut shell = boot(&[("t.strand", BEST_GUESS_SRC)], |rt, host| {
+        screens(rt, host, &["DP-1"]);
+        let mode = |w: i64, h: i64| {
+            host.record(
+                "OutputMode",
+                &[
+                    ("width", Value::int(w)),
+                    ("height", Value::int(h)),
+                    ("refresh", Value::float(60.0)),
+                ],
+            )
+        };
+        let output = |name: &str, on: bool, m: Option<Value>, pref: Value, scale: f64, t: &str| {
+            host.record(
+                "Output",
+                &[
+                    ("name", Value::text(name)),
+                    ("enabled", Value::Bool(on)),
+                    ("mode", m.unwrap_or(Value::Null)),
+                    ("preferred", pref),
+                    ("scale", Value::float(scale)),
+                    ("transform", host.variant("OutputTransform", t)),
+                ],
+            )
+        };
+        let all = Value::list(vec![
+            output(
+                "eDP-1",
+                true,
+                Some(mode(1920, 1200)),
+                mode(1920, 1200),
+                1.25,
+                "normal",
+            ),
+            output(
+                "DP-3",
+                true,
+                Some(mode(3840, 2160)),
+                mode(3840, 2160),
+                1.5,
+                "rotate_90",
+            ),
+            output("DP-4", false, None, mode(2560, 1440), 1.0, "normal"),
+        ]);
+        host.set(rt, "outputs.all", all).unwrap();
+    });
+    // DP-3 rotated: 2160 / 1.5 = 1440 wide; DP-4: 2560; eDP-1 last.
+    assert_eq!(
+        shell.scene.texts(),
+        ["DP-3@0@0@true@3840 DP-4@1440@0@true@2560 eDP-1@4000@0@true@1920"]
+    );
+    let b = shell.inst.nodes_handling("click")[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.flush();
+    let calls = shell.host.take_actions();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(
+        (calls[0].target.as_str(), calls[0].name.as_str()),
+        ("outputs", "apply")
+    );
+    let Value::List(changes) = &calls[0].args[0] else {
+        panic!("{calls:?}")
+    };
+    assert_eq!(changes.len(), 3);
+}
+
 /// (dictionary) `strand get` and `strand set` reach one entry by a key
 /// path segment: the rest of the path after the dictionary is one key,
 /// read by the key type. `get` of an absent entry is null; `set` inserts

@@ -264,6 +264,25 @@ pub enum WorkspaceAction {
     /// `workspaces.focus(target)`: by id or by name (Gaps 2).
     #[call(name = "focus")]
     FocusTarget { target: WorkspaceTarget },
+    /// (ws-move) `ws.move_to(screen)`.
+    MoveTo {
+        item: WorkspaceItem,
+        screen: ScreenName,
+    },
+}
+
+/// (ws-move) The screen an action names: the `name` of the schema's
+/// `Screen` (its connector), which the compositors move a workspace to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenName(pub String);
+
+impl crate::FromData for ScreenName {
+    fn from_data(d: &Data) -> Result<Self, crate::DataError> {
+        match crate::record_field(d, "Screen", "name")? {
+            Data::Text(t) if !t.is_empty() => Ok(Self(t.to_string())),
+            other => Err(crate::DataError::expected("text", other).within("name")),
+        }
+    }
 }
 
 /// What `workspaces.focus(target)` switches to: an `int` is a
@@ -604,6 +623,10 @@ impl Workspaces {
                     WorkspaceAction::FocusTarget {
                         target: WorkspaceTarget::Name(name),
                     } => WmAction::FocusWorkspaceNamed(name),
+                    WorkspaceAction::MoveTo { item, screen } => WmAction::MoveWorkspace {
+                        workspace: item.id,
+                        screen: screen.0,
+                    },
                 })
             },
         )

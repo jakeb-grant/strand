@@ -829,6 +829,7 @@ A workspace, from `ext-workspace-v1`, keyed by `id`.
 | Method | |
 | --- | --- |
 | `action focus()` | Switches to it: `on click { ws.focus() }`. |
+| `action move_to(screen: Screen)` | `ws.move_to(screen)` moves it, with its windows, to `screen`, the focus staying on the workspace that had it (on the compositors' IPC: Hyprland, sway, niri). Moving it to the screen it is on does nothing, so a placement can run again; a screen that is not on fails it. |
 
 ## Enums
 

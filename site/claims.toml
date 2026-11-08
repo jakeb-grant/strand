@@ -3637,6 +3637,36 @@ source = ['docs/spec.md "spacing and order. A dictionary is written key by key i
 proof  = "crates/strand-core/src/settings.rs::a_table_is_written_key_by_key; crates/strand-compiler/tests/instantiate.rs::a_settings_dictionary_writes_back_key_by_key"
 
 [[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "In the file, a list of records can be one `[[apps]]` section per"
+source = ['''docs/spec.md "records** as an array of inline tables or as TOML's array of tables,"''', 'crates/strand-compiler/src/vm/persist.rs "(Ty::List(e, _), toml_edit::Item::ArrayOfTables(a)) => Ok(Value::list("']
+proof  = "crates/strand-compiler/src/vm/persist.rs::records_read_from_sections_and_arrays_of_tables; crates/strand-compiler/tests/instantiate.rs::settings_records_read_and_write_table_forms"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "A field you leave out of a record is its default"
+source = ['docs/spec.md "default. A key the record does not have is a bad value, so a typo"', 'crates/strand-compiler/src/vm/persist.rs "None => super::builtins::default_of(types, &f.ty),"']
+proof  = "crates/strand-compiler/src/vm/persist.rs::records_read_from_sections_and_arrays_of_tables"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "the field's last good value with a notice naming where it is, so a"
+source = ['crates/strand-compiler/src/vm/persist.rs "return Err(format!("unknown field {key:?}"));"', '''docs/spec.md "A bad value keeps that field's last good value with a diagnostic; the other fields still apply."''']
+proof  = "crates/strand-compiler/tests/instantiate.rs::settings_records_read_and_write_table_forms"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "form the file has, matching elements by value: when the click moves"
+source = ['crates/strand-core/src/settings.rs "fn merge_tables(old: &mut toml_edit::ArrayOfTables, new: &toml_edit::Array) {"', 'docs/spec.md "list, inline or `[[name]]`, is merged by value: an element that reads"']
+proof  = "crates/strand-core/tests/settings.rs::an_array_of_tables_is_merged_by_value"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "and an element you changed is written afresh"
+source = ['''docs/spec.md "the same as one the file has keeps that one's text and the comments on"''', 'crates/strand-core/src/settings.rs "None => out.push(shaped(nt, &like)),"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::settings_records_read_and_write_table_forms"
+
+[[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "TOML table, and one bad entry keeps the whole field as it was, with a"
 source = ['docs/spec.md "that does not fit) keeps the whole field"', 'crates/strand-compiler/src/vm/persist.rs "the same key as {:?}"']
@@ -3893,3 +3923,85 @@ page   = "site/how-to/dbus-and-actions.md"
 text   = "`key=value` lines. A result cannot be a dictionary yet"
 source = ['crates/strand-compiler/src/check/tree.rs "cannot hold a dictionary yet: `{shown}`"']
 proof  = "crates/strand-compiler/tests/negative/dict_in_service_field.strand (a command's output)"
+
+# --- monitor-layouts (blocks-more) ---
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "`outputs.all` lists every connected monitor, on or off, and"
+source = ['crates/strand-compiler/src/schema/builtin.schema "/// Every output, on or off, keyed by `name`."', 'crates/strand-compiler/src/schema/builtin.schema "/// Applies `changes` together, as one configuration."']
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_best_guess_layout_is_written_with_the_list_operations_there_are"
+
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "keeps the order it finds among equals, and `false`"
+source = ['crates/strand-core/src/keyed/ops.rs "/// `.sort_by(cmp)`: a stable sort (ties keep source order). A comparator"', 'crates/strand-compiler/src/vm/builtins.rs "(Value::Bool(x), Value::Bool(y)) => x.cmp(y),"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_best_guess_layout_is_written_with_the_list_operations_there_are (DP-3, DP-4 keep their order, eDP-1 goes last)"
+
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "on its side is 2160 / 1.5 = 1440 wide, so the next one starts at"
+source = ['crates/strand-compiler/src/schema/members.rs "The items added up (`xs.sum()`), or what `of` gives for each"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::a_best_guess_layout_is_written_with_the_list_operations_there_are (DP-4 at x 1440 after a rotated 4K head at scale 1.5)"
+
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "`scale` and `transform`) stays as it is."
+source = ['''crates/strand-compiler/src/schema/builtin.schema "/// One output's part of a configuration; a null field keeps its value."''']
+proof  = "read: OutputChange's doc"
+
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "when the set changes. `on change` never runs for the first value, so"
+source = ['docs/spec.md "**never** runs for the first value (at boot or mount), for a value a"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::on_change_over_an_identity_fires_on_a_switch (never at boot)"
+
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "and keep with your dotfiles: an edit applies live, and Strand writes a"
+source = ['docs/spec.md "- Edits to the file apply live, as per-field writes."', 'crates/strand-core/src/settings.rs "fn merge_tables(old: &mut toml_edit::ArrayOfTables, new: &toml_edit::Array) {"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::settings_records_read_and_write_table_forms"
+
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "good layouts with a notice naming it, so a typo never reaches your"
+source = ['crates/strand-compiler/src/vm/persist.rs "return Err(format!("unknown field {key:?}"));"']
+proof  = "crates/strand-compiler/tests/instantiate.rs::settings_records_read_and_write_table_forms"
+
+# --- dbus-unfollowed (blocks-more) ---
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "to such a property, `check::dbus_unfollowed`, because it would keep the"
+source = ['crates/strand-compiler/src/check/dbus.rs ""check::dbus_unfollowed","', 'crates/strand-introspect/src/lib.rs "pub const EMITS_CHANGED: &str = "org.freedesktop.DBus.Property.EmitsChangedSignal";"']
+proof  = "crates/strand/src/services/custom.rs::a_never_signalled_property_from_introspection_is_warned_about; crates/strand-compiler/tests/checker.rs::a_property_that_never_signals_is_warned_about"
+
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "UPower signals the lid, so a `from dbus` service follows it."
+source = ['crates/strand-services/tests/custom.rs "fn the_lid_recipe_follows_upower() {"']
+proof  = "crates/strand-services/tests/custom.rs::the_lid_recipe_follows_upower (dbusmock's upower template: LidIsClosed, OnBattery followed)"
+
+# --- ws-move (blocks-more) ---
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "`ws.move_to(screen)` moves a workspace, with its windows, to a screen,"
+source = ['crates/strand-services-schema/src/workspaces.schema "action move_to(screen: Screen)"', 'crates/strand-services/src/wm/mod.rs "UnknownScreen(String),"']
+proof  = "crates/strand/tests/compositor_matrix.rs::a_workspace_is_moved_to_another_screen; crates/strand-services/tests/sway.rs::sway_moves_a_workspace_to_another_output"
+
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "and a workspace on that screen already is left alone, so placing"
+source = ['crates/strand-services/src/wm/sway.rs "pub(crate) fn in_place(&self, action: &WmAction) -> bool {"']
+proof  = "crates/strand-services/tests/sway.rs::sway_moves_a_workspace_to_another_output (the same move again: nothing sent, nothing changes)"
+
+[[claim]]
+page   = "site/how-to/monitor-layouts.md"
+text   = "them again does nothing. Each call is its own request, so a `for`"
+source = ['crates/strand-services/src/wm/service.rs "WorkspaceAction::MoveTo { item, screen } => WmAction::MoveWorkspace {"']
+proof  = "crates/strand-services/tests/wm_services.rs::the_compositor_stores_follow_hyprland (two moves in a row both sent)"
+
+# --- battery-on-battery (blocks-more) ---
+[[claim]]
+page   = "site/how-to/dbus-and-actions.md"
+text   = "`battery.on_battery` says the same, without declaring anything)."
+source = ['crates/strand-services-schema/src/battery.schema "on_battery: bool"']
+proof  = "crates/strand-services/tests/battery.rs::on_battery_follows_upowers_root_object"

@@ -712,7 +712,12 @@ monitor, the keyboard always).
   { fields }` declares a service backed by a D-Bus object. Its fields
   are checked against the object's introspection. A field written
   `name: type rw = Property` is writable (section 8.1); without `rw` it
-  is read-only.
+  is read-only. (dbus-unfollowed) A field bound to a property that its
+  introspection annotates as never signalling its changes
+  (`org.freedesktop.DBus.Property.EmitsChangedSignal` `false`, on the
+  property or its interface) is a warning, `check::dbus_unfollowed`: the
+  field would keep the value it read at start; `const` and
+  `invalidates` are followed.
 - `from file path { fields }` reads a file, again whenever it changes
   (a file a change leaves empty is read again 50 ms later, since a
   rewrite in place truncates before it writes); `from listen command`
@@ -822,7 +827,13 @@ monitor, the keyboard always).
 - An action without a result (no `-> T`) runs at most once at a time:
   a call while its command still
   runs queues one re-run, the latest call's, started when the command
-  ends, as a `file`'s `run` is (section 9.7).
+  ends, as a `file`'s `run` is (section 9.7). (action-coalesced) So
+  calls made together are lost but for the first and the latest: a
+  call in a `for` body of a handler, or one after a call of the same
+  action that runs first on every path of the handler, is a warning
+  (`check::action_coalesced`), whose help offers one call for all
+  items or a `-> text` action awaited each time. A service's own
+  actions are each their own request and are not warned about.
 - Its command runs detached, in its own process group, with stdin and
   stdout on `/dev/null`; the handler does not wait for it, and logic is
   never blocked by it. A program that cannot start or exits non-zero is
@@ -1848,7 +1859,10 @@ monitor, the keyboard always).
   result is its value (`init` for an empty list). Its type is `init`'s:
   `xs.reduce(0, (a, x) => a + x.n)` is an `int` when `x.n` is, and a
   `float` when `f` gives fractions (a whole-number `init` follows `f`,
-  as an untyped `state` does).
+  as an untyped `state` does). A running total needs no operation of its
+  own: `xs.take(i).sum(x => x.w)` is the total before item `i`, as the
+  best-guess monitor layout in site/how-to/monitor-layouts.md writes it
+  (decisions.md monitor-layout).
 - A `text`'s members (`len`, `slice`, `index_of`, `split`, …) count
   characters (Unicode scalar values), not bytes: `"héllo".len` is 5,
   `s.slice(from, to)` is the characters from `from` up to `to` (a
@@ -1856,7 +1870,11 @@ monitor, the keyboard always).
   so `s.slice(-3)` is its last three), and `s.index_of(part)` is the
   index of `part`'s first occurrence, as an `int?`. `number(t)` reads a
   decimal number from a text, spaces around it allowed, and is `null`
-  when the text is not one (decisions.md flex).
+  when the text is not one (decisions.md flex). (json-fn) `json(v)`
+  writes any plain-data value as compact JSON, records by their fields
+  in order, enums by name, colours as `hex`, durations in
+  milliseconds (docs/reference/functions.md; decisions.md json-fn), for
+  a file a tool reads or an action's one argument.
 
 A bare number where a length is expected is logical pixels: `width: 90`
 is `width: 90px`. Where an angle is expected it is degrees, and where a
@@ -2551,8 +2569,12 @@ new program with the running one.
   pairs in key order, `[[3,"0x55"],[5,"0x7a"]]` (an `int` key a
   number, an enum key its variant's name), so the same entries are the
   same stored value and the same default however a literal ordered
-  them. A store edited by hand may hold pairs in any order (of two with
-  one key the later wins) or an object of key texts, `{"3": "0x55"}`.
+  them. The reader also takes pairs in any order (of two with one key
+  the later wins) and an object of key texts, `{"3": "0x55"}`, but a
+  store is not for editing by hand: its header holds a checksum of the
+  value, so a store edited by hand reads as corrupt (it is moved aside,
+  and the cell gets the default and a warning). Values people edit
+  belong in a settings file (section 11).
   An entry whose enum key the config no longer declares is dropped as
   the store is read, with the line a reload gives (10.1), at each start
   until the cell is next written; anything else that does not read as the type, a list of
@@ -2624,6 +2646,16 @@ people can edit by hand.
   diagnostic naming the key: `prefs.toml: wallpapers: "DP-1": expected
   path; keeping its last good value`. A deleted table springs back to
   its default, as a deleted key does.
+- (settings-tables) **A record** may be written as an inline table,
+  `size = { w = 3, h = 4 }`, or as a `[size]` section, and **a list of
+  records** as an array of inline tables or as TOML's array of tables,
+  one `[[pins]]` section per element; so may a record wherever a type
+  puts one, a dictionary's values and a record's own fields among them:
+  `profiles: [text: Profile]` reads `[profiles.desk]` with its monitors
+  as `[[profiles.desk.mons]]`. A field the record leaves out is its
+  default. A key the record does not have is a bad value, so a typo
+  does not pass for the default: `monitors.toml: profiles: "desk":
+  mons[0]: unknown field "scael"; keeping its last good value`.
 - **Writes** (`<->`, handler assignments, `strand set prefs.compact
   true`) are saved after 250 ms of quiet and keep the file's comments,
   spacing and order. A dictionary is written key by key into the table
@@ -2631,7 +2663,16 @@ people can edit by hand.
   place and comment, a removed one is deleted, a new one goes at the
   table's end; a field the file does not have yet is written as its own
   `[name]` section, after the file's other keys. A record written as an
-  inline table keeps the spacing of each field the same way. They follow
+  inline table keeps the spacing of each field the same way.
+  (settings-tables) A record goes back into the form the file has it
+  in: a `[section]` stays a section, merged key by key, and a new record
+  among records written as sections is a section shaped like them. A
+  list, inline or `[[name]]`, is merged by value: an element that reads
+  the same as one the file has keeps that one's text and the comments on
+  it, in the new order; any other (a changed element among them) is
+  written afresh, and one no longer in the list goes with its comments.
+  A value that reads the same as what the file says (`1` for `1.0`, keys
+  in another order) is left as written. Writes follow
   symbolic links and replace the file through a temporary file and a
   rename. A read-only target (such as a file in `/nix/store`) gets the
   write in an overlay in the state directory instead, with a

@@ -829,6 +829,23 @@ impl State {
                     format!("dispatch movetoworkspacesilent {target},address:{window}")
                 })
             }
+            // (ws-move) A workspace that exists, to a monitor that is on:
+            // the classic `moveworkspacetomonitor`, the Lua dispatcher's
+            // `hl.dsp.workspace.move`. One already there is not sent
+            // ([`State::in_place`]).
+            WmAction::MoveWorkspace { workspace, screen } => {
+                self.move_target(*workspace, screen)?;
+                let target = self.workspace_target(*workspace)?;
+                Ok(if lua {
+                    format!(
+                        "dispatch hl.dsp.workspace.move({{ workspace = {}, monitor = {} }})",
+                        lua_string(&target),
+                        lua_string(screen)
+                    )
+                } else {
+                    format!("dispatch moveworkspacetomonitor {target} {screen}")
+                })
+            }
             // (services-round) Not a dispatcher: Hyprland's own request,
             // the same in both dialects, on every keyboard.
             WmAction::SwitchLayout(to) => Ok(match to {
@@ -857,6 +874,35 @@ impl State {
                     )
                 })
             }
+        }
+    }
+
+    /// (ws-move) The workspace `id` (made, not special) and whether it is
+    /// on monitor `screen` (on) already.
+    fn move_target(&self, id: i64, screen: &str) -> Result<bool, WmError> {
+        let ws = self
+            .workspaces
+            .iter()
+            .find(|w| w.id == id && !is_special(&w.name))
+            .ok_or(WmError::UnknownWorkspace(id))?;
+        if !self
+            .monitors
+            .iter()
+            .any(|m| m.name == screen && !m.disabled)
+        {
+            return Err(WmError::UnknownScreen(screen.to_string()));
+        }
+        Ok(ws.monitor == screen)
+    }
+
+    /// (ws-move) An action already done: a workspace moved to the
+    /// monitor it is on, answered `Ok` without a request.
+    pub(crate) fn in_place(&self, action: &WmAction) -> bool {
+        match action {
+            WmAction::MoveWorkspace { workspace, screen } => {
+                self.move_target(*workspace, screen) == Ok(true)
+            }
+            _ => false,
         }
     }
 
@@ -1129,6 +1175,11 @@ async fn session(
                 Some((_, reply)) if !up => {
                     if let Some(r) = reply {
                         let _ = r.send(Err(WmError::NotConnected));
+                    }
+                }
+                Some((action, reply)) if state.in_place(&action) => {
+                    if let Some(r) = reply {
+                        let _ = r.send(Ok(()));
                     }
                 }
                 Some((action, reply)) => {
@@ -1447,6 +1498,47 @@ mod tests {
                 "switchxkblayout all 2"
             );
         }
+    }
+
+    /// (ws-move) `ws.move_to(screen)` in each dialect; a workspace on
+    /// that monitor already is done without a request; a workspace not
+    /// made, a special one, and a monitor that is not there fail it.
+    #[test]
+    fn a_workspace_is_moved_to_a_monitor() {
+        let s = state();
+        let mv = |workspace: i64, screen: &str| WmAction::MoveWorkspace {
+            workspace,
+            screen: screen.into(),
+        };
+        assert_eq!(
+            s.dispatch_for(&mv(2, "HDMI-A-1"), Dialect::Classic)
+                .unwrap(),
+            "dispatch moveworkspacetomonitor 2 HDMI-A-1"
+        );
+        assert_eq!(
+            s.dispatch_for(&mv(2, "HDMI-A-1"), Dialect::Lua).unwrap(),
+            r#"dispatch hl.dsp.workspace.move({ workspace = "2", monitor = "HDMI-A-1" })"#
+        );
+        assert!(!s.in_place(&mv(2, "HDMI-A-1")));
+        assert!(s.in_place(&mv(2, "DP-1")), "on DP-1 already");
+        assert!(!s.in_place(&WmAction::FocusWorkspace(2)));
+        for d in [Dialect::Classic, Dialect::Lua] {
+            assert_eq!(
+                s.dispatch_for(&mv(7, "HDMI-A-1"), d),
+                Err(WmError::UnknownWorkspace(7)),
+                "not made yet: the compositor's rules place it"
+            );
+            assert_eq!(
+                s.dispatch_for(&mv(-98, "HDMI-A-1"), d),
+                Err(WmError::UnknownWorkspace(-98)),
+                "a special workspace"
+            );
+            assert_eq!(
+                s.dispatch_for(&mv(2, "DP-9"), d),
+                Err(WmError::UnknownScreen("DP-9".into()))
+            );
+        }
+        assert!(!s.in_place(&mv(2, "DP-9")), "a failure is sent to fail");
     }
 
     #[test]

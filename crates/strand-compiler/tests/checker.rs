@@ -1477,6 +1477,22 @@ fn workspace_and_window_members_check() {
         codes("bar B { text \"x\" { on click { workspaces.focus(true) } } }\n"),
         ["check::type_mismatch"]
     );
+    // (ws-move) `ws.move_to(screen)` takes a screen, in a loop as well.
+    assert_eq!(
+        codes(
+            "bar B {\n  text \"place\" { on click {\n    \
+             for ws in workspaces.all.filter(w => w.name == \"1\") { ws.move_to(screen) }\n    \
+             for s in screens.all.filter(s => s.name == \"DP-1\") { workspaces.focused?.move_to(s) }\n  \
+             } }\n}\n"
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        codes(
+            "bar B { text \"x\" { on click { for ws in workspaces.all { ws.move_to(\"DP-1\") } } } }\n"
+        ),
+        ["check::type_mismatch"]
+    );
 }
 
 /// Gaps 17 (m6-w2-services): a power menu over the builtin `session`
@@ -1800,6 +1816,7 @@ fn dbus_services_are_checked_against_introspection() {
         name: name.into(),
         signature: sig.into(),
         writable,
+        ..Default::default()
     };
     let ppd = Fake(Some(Ok(vec![
         prop("ActiveProfile", "s", true),
@@ -2207,6 +2224,7 @@ fn dbus_actions_are_checked_against_introspection() {
                 name: "ActiveProfile".into(),
                 signature: "s".into(),
                 writable: true,
+                ..Default::default()
             }]))
         }
         fn methods(&self, _: bool, _: &str, _: &str) -> Option<Result<Vec<BusMethod>, String>> {
@@ -2636,6 +2654,7 @@ fn unread_methods_leave_actions_unchecked_with_a_warning() {
                 name: "ActiveProfile".into(),
                 signature: "s".into(),
                 writable: true,
+                ..Default::default()
             }]))
         }
         fn methods(&self, _: bool, _: &str, _: &str) -> Option<Result<Vec<BusMethod>, String>> {
@@ -2649,6 +2668,142 @@ fn unread_methods_leave_actions_unchecked_with_a_warning() {
     assert_eq!(d.len(), 1, "{d:?}");
     assert_eq!(d[0].code, "check::dbus_unchecked");
     assert!(d[0].message.contains("timed out"), "{}", d[0].message);
+}
+
+/// (action-coalesced) A declared action without a result runs once at
+/// a time, a call while it runs replacing the one waiting (spec.md 5.7):
+/// called for each item of a `for`, or again after a call that runs first
+/// on every path of the handler, it is a warning. Calls on exclusive
+/// branches, one call per handler, a `-> text` action awaited in a loop
+/// and a builtin service action in a loop are silent.
+#[test]
+fn an_action_without_a_result_called_together_is_warned_about() {
+    let head = "permit exec \"notify-send\", \"qalc\"\n\
+        action notify(m: text) [\"notify-send\", m]\n\
+        action calc(q: text) -> text [\"qalc\", \"-t\", q]\n\
+        state xs = [\"a\", \"b\"]\n";
+    let warned = |body: &str| {
+        let (out, _) = compile_files(&[("a.strand", format!("{head}{body}"))]);
+        let d: Vec<_> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.code != "check::unused")
+            .collect();
+        assert!(
+            d.iter().all(|d| d.code == "check::action_coalesced"),
+            "{body}: {:?}",
+            d.iter().map(|d| (d.code, &d.message)).collect::<Vec<_>>()
+        );
+        d.len()
+    };
+    assert_eq!(
+        warned("bar B { text \"x\" { on click { for x in xs key x { notify(x) } } } }\n"),
+        1,
+        "in a loop"
+    );
+    assert_eq!(
+        warned(
+            "bar B { text \"x\" { on click { notify(\"a\")\n if xs.count(x => true) > 1 { notify(\"b\") } } } }\n"
+        ),
+        1,
+        "again, in a block inside"
+    );
+    assert_eq!(
+        warned(
+            "bar B { text \"x\" { on click { notify(\"a\")\n notify(\"b\")\n notify(\"c\") } } }\n"
+        ),
+        2,
+        "the second and the third"
+    );
+    for silent in [
+        "bar B { text \"x\" { on click { if xs.count(x => true) > 1 { notify(\"a\") } else { notify(\"b\") } } } }\n",
+        "bar B { text \"x\" { on click { notify(\"a\") } }\n text \"y\" { on click { notify(\"b\") } } }\n",
+        "bar B { state r = \"\"\n text r { on click { for x in xs key x { r = await calc(x) } } } }\n",
+        "bar B { text \"x\" { on click { for p in media.players key p.id { p.select() } } } }\n",
+    ] {
+        assert_eq!(warned(silent), 0, "{silent}");
+    }
+    let (out, _) = compile_files(&[(
+        "a.strand",
+        format!(
+            "{head}bar B {{ text \"x\" {{ on click {{ for x in xs key x {{ notify(x) }} }} }} }}\n"
+        ),
+    )]);
+    let d = out
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "check::action_coalesced")
+        .unwrap();
+    assert!(
+        d.message.contains("`notify` has no result"),
+        "{}",
+        d.message
+    );
+    let help = d.help.as_deref().unwrap_or("");
+    assert!(help.contains("-> text") && help.contains("await"), "{help}");
+}
+
+/// (dbus-unfollowed) A field bound to a property annotated
+/// `EmitsChangedSignal=false` (logind's `Docked`) is a warning naming
+/// the field, with a way out; a `const` property, one signalled with
+/// `invalidates` and one with no annotation are silent.
+#[test]
+fn a_property_that_never_signals_is_warned_about() {
+    use strand_compiler::check::dbus::{BusProperty, Emits, Introspect, check};
+    struct Logind;
+    impl Introspect for Logind {
+        fn properties(
+            &self,
+            system: bool,
+            name: &str,
+            _: &str,
+        ) -> Option<Result<Vec<BusProperty>, String>> {
+            assert!(system);
+            assert_eq!(name, "org.freedesktop.login1");
+            let prop = |name: &str, sig: &str, emits: Emits| BusProperty {
+                interface: "org.freedesktop.login1.Manager".into(),
+                name: name.into(),
+                signature: sig.into(),
+                writable: false,
+                emits,
+            };
+            Some(Ok(vec![
+                prop("Docked", "b", Emits::False),
+                prop("HandleLidSwitch", "s", Emits::Const),
+                prop("PreparingForSleep", "b", Emits::Invalidates),
+                prop("IdleHint", "b", Emits::True),
+            ]))
+        }
+    }
+    let run = |fields: &str| {
+        let src = format!(
+            "service login from dbus system \"org.freedesktop.login1\" \"/org/freedesktop/login1\" {{ {fields} }}\nbar B {{ text \"x\" }}\n"
+        );
+        let (out, _) = compile_files(&[("a.strand", src)]);
+        assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+        check(&out.program, &Logind)
+    };
+    let d = run("docked: bool = Docked; idle: bool = IdleHint");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0].code, "check::dbus_unfollowed");
+    assert!(!d[0].is_error(), "a warning: the config still loads");
+    assert_eq!(
+        d[0].message,
+        "`org.freedesktop.login1`'s `Docked` sends no change signal: `login.docked` keeps the value it read at start"
+    );
+    assert!(
+        d[0].help
+            .as_deref()
+            .is_some_and(|h| h.contains("from poll")),
+        "{:?}",
+        d[0].help
+    );
+    assert!(
+        run(
+            "lid: text = HandleLidSwitch; sleeping: bool = PreparingForSleep; idle: bool = IdleHint"
+        )
+        .is_empty()
+    );
 }
 
 /// (M6, the review of the owner's ruling) A command `permit exec` does
