@@ -505,18 +505,27 @@ fn a_lost_compositor_is_unready_before_its_heads_clear() {
     outputs::configure(None);
 }
 
-/// (outputs-resync) Hyprland 0.57's output management: a change comes as
-/// the head's values from before it, with no manager `done`, so the list
-/// would stay as it was at bind until the next start. `outputs` binds the
-/// manager again when a change has no `done` for 250 ms, and a manager
-/// bound after the change gets the outputs as they are. The list stays
-/// ready and each output keeps its id. The fake's wlroots shape (a
-/// change and a `done`) is followed at once.
+/// (outputs-resync) Hyprland 0.57's output management is right only at
+/// bind: a change comes as the head's values from before it with no
+/// manager `done` (`Lagging`), or as nothing at all (`Silent`: a move
+/// made with `hyprctl eval 'hl.monitor(…)'`), and a manager stopped for a
+/// resync is sent `done`s while the one bound after it is sent nothing
+/// (review round 4, seen on nested Hyprland 0.57). `outputs` checks its
+/// heads against each output's xdg-output place once the `wl_output`s
+/// settle, binds the manager again when they disagree (or a change has
+/// no `done` for 250 ms), and a manager bound after the change gets the
+/// outputs as they are: every move is followed, not only the first. The
+/// list stays ready and each output keeps its id. The fake's wlroots
+/// shape (a change and a `done`) is followed at once.
 #[test]
 fn a_change_with_no_done_is_read_again() {
     use strand_fake_wayland::{Cmd, Fake, OutputManagement};
     let _serial = serial();
-    for shape in [OutputManagement::Lagging, OutputManagement::Wlroots] {
+    for shape in [
+        OutputManagement::Lagging,
+        OutputManagement::Silent,
+        OutputManagement::Wlroots,
+    ] {
         let fake = Fake::builder()
             .toplevel_list(false)
             .outputs(&["FAKE-1", "FAKE-2"])
@@ -530,22 +539,55 @@ fn a_change_with_no_done_is_read_again() {
             ids,
             ["Fake | FAKE-1 | Fake FAKE-1", "Fake | FAKE-2 | Fake FAKE-2"]
         );
-        fake.cmd(Cmd::MoveOutput(1, 3000, 40));
-        h.until(&format!("{shape:?}: FAKE-2 at 3000, 40"), |h| {
-            let o = h.output("FAKE-2");
-            (o.x, o.y) == (3000, 40)
-        });
-        // Again: each change is read.
-        fake.cmd(Cmd::MoveOutput(0, 0, 500));
-        h.until(&format!("{shape:?}: FAKE-1 at 0, 500"), |h| {
-            h.output("FAKE-1").y == 500
-        });
+        // Each change is read, the ones after a resync too.
+        for (n, x, y) in [(1, 3000, 40), (1, 2000, 0), (0, 0, 500), (1, 4000, 0)] {
+            fake.cmd(Cmd::MoveOutput(n, x, y));
+            let name = ["FAKE-1", "FAKE-2"][n];
+            h.until(&format!("{shape:?}: {name} at {x}, {y}"), |h| {
+                let o = h.output(name);
+                (o.x, o.y) == (i64::from(x), i64::from(y))
+            });
+        }
         assert!(h.b.outputs.ready(&h.rt), "{shape:?}: still ready");
         let again: Vec<String> = h.all().into_iter().map(|o| o.id).collect();
         assert_eq!(again, ids, "{shape:?}: the same ids");
         // An apply goes to the manager bound now.
         h.act("apply", &[OutputChange::of("FAKE-1")]);
         assert_eq!(h.next_event("the answer").0, "succeeded", "{shape:?}");
+        h.s.shutdown();
+    }
+    outputs::configure(None);
+}
+
+/// (outputs-mode, review round 4) A monitor plugged in during the session
+/// showing a mode not in its list: Hyprland 0.57 sends its head (naming no
+/// current mode) and the manager's `done` before the client can bind its
+/// `wl_output`, whose mode comes after. The list is published again then,
+/// so `Output.mode` is that mode, not null (seen on nested Hyprland:
+/// `hyprctl output create headless HOT-1`).
+#[test]
+fn a_monitor_plugged_in_has_its_wl_outputs_mode() {
+    use strand_fake_wayland::{Cmd, Fake, OutputManagement};
+    let _serial = serial();
+    for shape in [OutputManagement::Silent, OutputManagement::Lagging] {
+        let fake = Fake::builder()
+            .toplevel_list(false)
+            .outputs(&["FAKE-1", "FAKE-2"])
+            .output_management(shape)
+            .start();
+        let h = Harness::start_on(fake.socket.clone());
+        h.until("ready", |h| h.b.outputs.ready(&h.rt));
+        fake.cmd(Cmd::AddOutput("HOT-1", 1280, 720));
+        h.until(&format!("{shape:?}: HOT-1 with its mode"), |h| {
+            h.all()
+                .iter()
+                .any(|o| o.name == "HOT-1" && o.mode == Some(mode(1280, 720, 60.0)))
+        });
+        let o = h.output("HOT-1");
+        assert!(o.enabled, "{shape:?}");
+        assert_eq!((o.x, o.y), (3840, 0), "{shape:?}");
+        assert_eq!(o.id, "Fake | HOT-1 | Fake HOT-1", "{shape:?}");
+        assert_eq!(h.output("FAKE-1").mode, Some(mode(1920, 1080, 60.0)));
         h.s.shutdown();
     }
     outputs::configure(None);

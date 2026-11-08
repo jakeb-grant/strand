@@ -3202,7 +3202,13 @@ itself.
 - **Monitor configuration (`strand_services::outputs`, the `outputs`
   service).** `outputs::Outputs` runs on its own `strand-outputs`
   thread and Wayland connection and binds `zwlr_output_manager_v1`
-  (≤ 4). `all` and `available` are published at each manager `done`.
+  (≤ 4), the `wl_output`s (v4) and `zxdg_output_manager_v1` (≤ 3).
+  `all` and `available` are published at each manager `done`, and
+  again at a `wl_output`'s `done` that changed its name or mode (a head
+  naming no current mode takes the `wl_output`'s). The manager is bound
+  again (`Client::resync`, decisions.md outputs-resync) when a change
+  has no `done` for 250 ms, or when its heads disagree with the
+  `wl_output`s and xdg-outputs 250 ms after they last changed.
   `OutputsAction::{Apply, Test}` queue in order, one configuration in
   flight against the last `done`'s serial, every head included (the
   protocol's rule); changes are validated before sending, since the

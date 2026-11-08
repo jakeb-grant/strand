@@ -1,15 +1,23 @@
 //! (outputs-resync) Output management: `zwlr_output_manager_v1` (v4,
 //! [`crate::FakeBuilder::output_management`]), one head per output name
 //! (`Fake <name>`, one 1920x1080 mode at 60 Hz, preferred; laid out left
-//! to right), and every `wl_output` sending its current mode. Two shapes:
-//! wlroots', where a change is the head's new values and a manager
-//! `done`, and Hyprland 0.57's, where a change is the head's values from
-//! before it and no `done` (a manager bound after it gets the outputs as
-//! they are). [`crate::Cmd::MoveOutput`] moves an output;
-//! [`crate::Cmd::CustomMode`] sets one to a mode not in its list, which
-//! Hyprland names no current mode for. A configuration is answered
-//! `succeeded` and changes nothing.
+//! to right), every `wl_output` sending its current mode, and
+//! `zxdg_output_manager_v1` (v3) giving each output its logical place.
+//! Three shapes: wlroots', where a change is the head's new values and a
+//! manager `done`; and two of Hyprland 0.57's, whose `stop` is never
+//! answered and whose stopped managers are sent a `done` at every change
+//! (its `ensureMonitorSent` on heads released), while the manager bound
+//! gets either the head's values from before the change and no `done`
+//! (`Lagging`) or nothing at all (`Silent`): a manager bound after the
+//! change gets the outputs as they are. In every shape a change moves
+//! the output's xdg-output place, ended by its `wl_output.done`.
+//! [`crate::Cmd::MoveOutput`] moves an output; [`crate::Cmd::CustomMode`]
+//! sets one to a mode not in its list, which Hyprland names no current
+//! mode for; [`crate::Cmd::AddOutput`] plugs one in showing such a mode,
+//! its head and `done` sent before a client can bind its `wl_output`. A
+//! configuration is answered `succeeded` and changes nothing.
 
+use wayland_protocols::xdg::xdg_output::zv1::server::zxdg_output_v1::ZxdgOutputV1;
 use wayland_protocols_wlr::output_management::v1::server::{
     zwlr_output_configuration_head_v1::{self, ZwlrOutputConfigurationHeadV1},
     zwlr_output_configuration_v1::{self, ZwlrOutputConfigurationV1},
@@ -33,6 +41,17 @@ pub enum OutputManagement {
     /// Hyprland 0.57's: a change sent with the values from before it, and
     /// no `done`.
     Lagging,
+    /// Hyprland 0.57's for a change that emits no mode change (a move
+    /// made with `hyprctl eval 'hl.monitor(…)'`): nothing to the manager
+    /// bound, a `done` to each one stopped.
+    Silent,
+}
+
+impl OutputManagement {
+    /// Hyprland's: `stop` unanswered, stopped managers sent `done`s.
+    fn hyprland(self) -> bool {
+        matches!(self, OutputManagement::Lagging | OutputManagement::Silent)
+    }
 }
 
 /// The width of the one mode, and of each output in the layout.
@@ -49,13 +68,28 @@ pub(crate) struct Head {
     custom: Option<(i32, i32)>,
 }
 
+impl Head {
+    fn size(&self) -> (i32, i32) {
+        self.custom.unwrap_or((WIDTH, HEIGHT))
+    }
+}
+
+/// A bound manager, with what it was sent, by head.
+struct Manager {
+    resource: ZwlrOutputManagerV1,
+    heads: Vec<Option<ZwlrOutputHeadV1>>,
+    /// Asked to stop (Hyprland's shapes, which never answer it).
+    stopped: bool,
+}
+
 /// The output-management side of the fake's state.
 #[derive(Default)]
 pub(crate) struct State {
     pub(crate) kind: OutputManagement,
     pub(crate) heads: Vec<Head>,
-    /// Each bound manager, with what it was sent, by head.
-    managers: Vec<(ZwlrOutputManagerV1, Vec<ZwlrOutputHeadV1>)>,
+    managers: Vec<Manager>,
+    /// The xdg-outputs given, with the index of their output.
+    xdg: Vec<(usize, ZxdgOutputV1)>,
     serial: u32,
 }
 
@@ -78,28 +112,62 @@ impl State {
 
     /// The current mode `wl_output` `index` sends: width, height, mHz.
     pub(crate) fn current(&self, index: usize) -> Option<(i32, i32, i32)> {
-        let h = self.heads.get(index)?;
-        let (w, hh) = h.custom.unwrap_or((WIDTH, HEIGHT));
-        Some((w, hh, REFRESH))
+        let (w, h) = self.heads.get(index)?.size();
+        Some((w, h, REFRESH))
     }
 
-    /// Output `index` moves to `(x, y)`.
-    pub(crate) fn move_output(&mut self, index: usize, x: i32, y: i32) {
+    /// An xdg-output for output `index`: its logical place and size.
+    pub(crate) fn xdg_output(&mut self, index: usize, x: ZxdgOutputV1) {
+        if let Some(h) = self.heads.get(index) {
+            x.logical_position(h.position.0, h.position.1);
+            let (w, hh) = h.size();
+            x.logical_size(w, hh);
+        }
+        self.xdg.push((index, x));
+    }
+
+    fn next_serial(&mut self) -> u32 {
+        self.serial += 1;
+        self.serial
+    }
+
+    /// Output `index` moves to `(x, y)`; `outputs` are the `wl_output`s
+    /// bound, with the index of their output.
+    pub(crate) fn move_output(
+        &mut self,
+        index: usize,
+        x: i32,
+        y: i32,
+        outputs: &[(usize, wl_output::WlOutput)],
+    ) {
         let Some(h) = self.heads.get_mut(index) else {
             return;
         };
         let before = std::mem::replace(&mut h.position, (x, y));
-        let sent = match self.kind {
-            OutputManagement::Lagging => before,
-            _ => (x, y),
-        };
-        self.serial += 1;
-        for (m, heads) in &self.managers {
-            if let Some(head) = heads.get(index) {
-                head.position(sent.0, sent.1);
-                if self.kind != OutputManagement::Lagging {
-                    m.done(self.serial);
+        let serial = self.next_serial();
+        for m in &self.managers {
+            match (self.kind, m.stopped) {
+                (OutputManagement::Wlroots, _) => {
+                    if let Some(Some(head)) = m.heads.get(index) {
+                        head.position(x, y);
+                    }
+                    m.resource.done(serial);
                 }
+                (OutputManagement::Lagging, false) => {
+                    if let Some(Some(head)) = m.heads.get(index) {
+                        head.position(before.0, before.1);
+                    }
+                }
+                (_, true) => m.resource.done(serial),
+                _ => {}
+            }
+        }
+        for (_, xdg) in self.xdg.iter().filter(|(i, x)| *i == index && x.is_alive()) {
+            xdg.logical_position(x, y);
+        }
+        for (_, o) in outputs.iter().filter(|(i, _)| *i == index) {
+            if o.version() >= 2 {
+                o.done();
             }
         }
     }
@@ -111,11 +179,73 @@ impl State {
             head.custom = Some((w, h));
         }
     }
+
+    /// Output `name` is plugged in as output `index` (its `wl_output`
+    /// global just made), right of the others, showing `(w, h)`, a mode
+    /// not in its list: each manager bound gets its head and a `done`,
+    /// each stopped one a `done` (Hyprland's `ensureMonitorSent`).
+    pub(crate) fn add_output(&mut self, dh: &DisplayHandle, name: &str, w: i32, h: i32) {
+        let x = self
+            .heads
+            .iter()
+            .map(|h| h.position.0 + h.size().0)
+            .max()
+            .unwrap_or(0);
+        let head = Head {
+            name: name.into(),
+            position: (x, 0),
+            custom: Some((w, h)),
+        };
+        let serial = self.next_serial();
+        for m in &mut self.managers {
+            if !m.stopped {
+                m.heads.push(send_head(dh, &m.resource, &head));
+            }
+            m.resource.done(serial);
+        }
+        self.heads.push(head);
+    }
 }
 
-pub(crate) fn create_globals(dh: &DisplayHandle, kind: OutputManagement) {
+/// Sends manager `m` head `h`, all its data and its one mode.
+fn send_head(dh: &DisplayHandle, m: &ZwlrOutputManagerV1, h: &Head) -> Option<ZwlrOutputHeadV1> {
+    let client = m.client()?;
+    let head = client
+        .create_resource::<ZwlrOutputHeadV1, (), Server>(dh, m.version(), ())
+        .ok()?;
+    m.head(&head);
+    head.name(h.name.clone());
+    head.description(format!("Fake {}", h.name));
+    head.make("Fake".into());
+    head.model(h.name.clone());
+    let mode = client
+        .create_resource::<ZwlrOutputModeV1, (), Server>(dh, m.version(), ())
+        .ok()?;
+    head.mode(&mode);
+    mode.size(WIDTH, HEIGHT);
+    mode.refresh(REFRESH);
+    mode.preferred();
+    head.enabled(1);
+    if h.custom.is_none() {
+        head.current_mode(&mode);
+    }
+    head.position(h.position.0, h.position.1);
+    head.transform(wl_output::Transform::Normal);
+    head.scale(1.0);
+    Some(head)
+}
+
+/// The manager, and xdg-output unless the surface globals offer it.
+pub(crate) fn create_globals(dh: &DisplayHandle, kind: OutputManagement, xdg_output: bool) {
     if kind != OutputManagement::None {
         dh.create_global::<Server, ZwlrOutputManagerV1, ()>(4, ());
+        if !xdg_output {
+            dh.create_global::<
+                Server,
+                wayland_protocols::xdg::xdg_output::zv1::server::zxdg_output_manager_v1::ZxdgOutputManagerV1,
+                (),
+            >(3, ());
+        }
     }
 }
 
@@ -123,45 +253,21 @@ impl GlobalDispatch<ZwlrOutputManagerV1, ()> for Server {
     fn bind(
         state: &mut Self,
         dh: &DisplayHandle,
-        client: &Client,
+        _: &Client,
         resource: New<ZwlrOutputManagerV1>,
         _: &(),
         init: &mut DataInit<'_, Self>,
     ) {
         let m = init.init(resource, ());
-        let mut sent = Vec::new();
-        for h in &state.om.heads {
-            let Ok(head) =
-                client.create_resource::<ZwlrOutputHeadV1, (), Server>(dh, m.version(), ())
-            else {
-                continue;
-            };
-            m.head(&head);
-            head.name(h.name.clone());
-            head.description(format!("Fake {}", h.name));
-            head.make("Fake".into());
-            head.model(h.name.clone());
-            let Ok(mode) =
-                client.create_resource::<ZwlrOutputModeV1, (), Server>(dh, m.version(), ())
-            else {
-                continue;
-            };
-            head.mode(&mode);
-            mode.size(WIDTH, HEIGHT);
-            mode.refresh(REFRESH);
-            mode.preferred();
-            head.enabled(1);
-            if h.custom.is_none() {
-                head.current_mode(&mode);
-            }
-            head.position(h.position.0, h.position.1);
-            head.transform(wl_output::Transform::Normal);
-            head.scale(1.0);
-            sent.push(head);
-        }
-        state.om.serial += 1;
-        m.done(state.om.serial);
-        state.om.managers.push((m, sent));
+        let heads = state.om.heads.clone();
+        let sent = heads.iter().map(|h| send_head(dh, &m, h)).collect();
+        let serial = state.om.next_serial();
+        m.done(serial);
+        state.om.managers.push(Manager {
+            resource: m,
+            heads: sent,
+            stopped: false,
+        });
     }
 }
 
@@ -180,10 +286,20 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for Server {
                 init.init(id, ());
             }
             // Hyprland 0.57 never answers `stop`, and goes on sending the
-            // stopped manager its changes.
-            zwlr_output_manager_v1::Request::Stop if state.om.kind != OutputManagement::Lagging => {
+            // stopped manager a `done` at each change.
+            zwlr_output_manager_v1::Request::Stop if state.om.kind.hyprland() => {
+                for m in state
+                    .om
+                    .managers
+                    .iter_mut()
+                    .filter(|m| m.resource == *manager)
+                {
+                    m.stopped = true;
+                }
+            }
+            zwlr_output_manager_v1::Request::Stop => {
                 manager.finished();
-                state.om.managers.retain(|(m, _)| m != manager);
+                state.om.managers.retain(|m| m.resource != *manager);
             }
             _ => {}
         }

@@ -12,9 +12,13 @@
 //! ([`output_id`]). `available` is the manager being offered.
 //! (outputs-mode) A head on that names no current mode (Hyprland 0.57,
 //! for a mode not in its list) has the one its `wl_output` shows, which
-//! the service binds for that. (outputs-resync) A change the manager
-//! sends with no `done` for 250 ms (Hyprland 0.57, whose change events
-//! carry the values from before the change) has the manager bound again,
+//! the service binds for that, published again when that mode comes
+//! after the manager's `done` (a monitor plugged in). (outputs-resync)
+//! Hyprland 0.57's manager is right only when bound: a change comes as
+//! the values from before it with no `done`, or as nothing at all, so
+//! the service checks the heads against what each `wl_output` and its
+//! xdg-output say once they settle after a change, and binds the manager
+//! again when they disagree or a change came with no `done` for 250 ms,
 //! which gets the outputs as they are ([`Client::resync`]).
 //!
 //! `apply(changes)` and `test(changes)` each make one
@@ -58,6 +62,10 @@ use wayland_client::protocol::{wl_callback, wl_output, wl_registry};
 use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, event_created_child,
 };
+use wayland_protocols::xdg::xdg_output::zv1::client::{
+    zxdg_output_manager_v1::{self, ZxdgOutputManagerV1},
+    zxdg_output_v1::{self, ZxdgOutputV1},
+};
 use wayland_protocols_wlr::output_management::v1::client::{
     zwlr_output_configuration_head_v1::{self, ZwlrOutputConfigurationHeadV1},
     zwlr_output_configuration_v1::{self, ZwlrOutputConfigurationV1},
@@ -81,8 +89,15 @@ pub const MAX_TRIES: u32 = 3;
 const STOP_WAIT: Duration = Duration::from_millis(500);
 
 /// (outputs-resync) How long a manager's change may go without a `done`
-/// before the manager is bound again ([`Client::resync`]).
+/// before the manager is bound again ([`Client::resync`]), and how long
+/// the `wl_output`s are let settle after a change before the heads are
+/// checked against them ([`Client::disagrees`]).
 const RESYNC_AFTER: Duration = Duration::from_millis(250);
+
+/// (outputs-resync) How far, in logical pixels, xdg-output's size may be
+/// from a head's mode over its scale before they disagree (compositors
+/// round it each their own way).
+const SIZE_SLACK: f64 = 2.0;
 
 /// The highest manager version this client speaks (4: adaptive sync).
 const VERSION: u32 = 4;
@@ -627,19 +642,52 @@ struct Client {
     /// the new manager's heads take.
     carried: Vec<(String, String)>,
     /// (outputs-mode) The `wl_output`s, for the current mode of a head
-    /// that names none.
+    /// that names none, and (outputs-resync) to check the heads against.
     wl_outputs: Vec<WlOut>,
+    /// (outputs-resync) xdg-output, for each `wl_output`'s logical place
+    /// and size.
+    xdg_manager: Option<ZxdgOutputManagerV1>,
+    /// (outputs-resync, review round 4) When a `wl_output` last ended a
+    /// batch of changes (its `done`) after the manager's first `done`:
+    /// once [`RESYNC_AFTER`] passes the heads are checked against the
+    /// `wl_output`s ([`Client::disagrees`]), since Hyprland 0.57 sends
+    /// the manager nothing for some changes, and nothing at all to a
+    /// manager bound again for the ones after.
+    shown_at: Option<Instant>,
 }
 
 /// (outputs-mode) A `wl_output` as the outputs service binds it: its
 /// connector name and current mode (`wl_output.mode` with `current`),
-/// which every `wl_output` sends while its output is on.
+/// which every `wl_output` sends while its output is on; (outputs-resync)
+/// its transform, and its xdg-output's logical place and size.
 #[derive(Debug)]
 struct WlOut {
     global: u32,
     proxy: wl_output::WlOutput,
     name: String,
     mode: Option<OutputMode>,
+    transform: Option<wl_output::Transform>,
+    xdg: Option<ZxdgOutputV1>,
+    place: Option<(i32, i32)>,
+    size: Option<(i32, i32)>,
+    /// Its name or mode changed since its last `done`.
+    dirty: bool,
+}
+
+impl WlOut {
+    fn new(global: u32, proxy: wl_output::WlOutput) -> WlOut {
+        WlOut {
+            global,
+            proxy,
+            name: String::new(),
+            mode: None,
+            transform: None,
+            xdg: None,
+            place: None,
+            size: None,
+            dirty: false,
+        }
+    }
 }
 
 impl Client {
@@ -685,7 +733,7 @@ impl Client {
                             self.wl_outputs
                                 .iter()
                                 .find(|o| o.name == h.name)
-                                .and_then(|o| o.mode.clone())
+                                .and_then(|o| o.mode)
                         }),
                     false => None,
                 };
@@ -740,6 +788,7 @@ impl Client {
     /// head keeps its id ([`Client::carried`]), and the run stays ready.
     fn resync(&mut self, qh: &QueueHandle<Client>) {
         self.undone = None;
+        self.shown_at = None;
         let (Some(registry), Some(global), Some(old)) =
             (&self.registry, self.manager_global, self.manager.take())
         else {
@@ -771,14 +820,116 @@ impl Client {
     }
 
     /// (outputs-resync) A resync is due: the manager sent a change and no
-    /// `done` for [`RESYNC_AFTER`].
-    fn resync_due(&self, now: Instant) -> bool {
-        self.manager.is_some() && self.resync_at().is_some_and(|d| now >= d)
+    /// `done` for [`RESYNC_AFTER`], or the `wl_output`s settled after a
+    /// change and the heads disagree with them ([`Client::disagrees`]).
+    /// A check that finds them agreeing is done with.
+    fn resync_due(&mut self, now: Instant) -> bool {
+        if self.manager.is_none() {
+            return false;
+        }
+        let due = |t: Option<Instant>| t.is_some_and(|t| now >= t + RESYNC_AFTER);
+        if due(self.undone) {
+            return true;
+        }
+        if due(self.shown_at) {
+            self.shown_at = None;
+            if self.disagrees() {
+                return true;
+            }
+        }
+        false
     }
 
-    /// When the next resync falls due, for the poll's timeout.
+    /// When the next resync or check falls due, for the poll's timeout.
     fn resync_at(&self) -> Option<Instant> {
-        self.undone.map(|t| t + RESYNC_AFTER)
+        match (self.undone, self.shown_at) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+        .map(|t| t + RESYNC_AFTER)
+    }
+
+    /// (outputs-resync, review round 4) A head on disagrees with what its
+    /// `wl_output` and xdg-output say of it: its place, its mode's size
+    /// or rate, its transform, or its size in logical pixels (its scale).
+    /// What either side does not say is not compared.
+    fn disagrees(&self) -> bool {
+        self.heads
+            .iter()
+            .filter(|h| h.enabled && !h.name.is_empty())
+            .any(|h| {
+                let Some(o) = self.wl_outputs.iter().find(|o| o.name == h.name) else {
+                    return false;
+                };
+                let place = o.place.is_some_and(|p| p != h.position);
+                let transform = o.transform.is_some_and(|t| t != h.transform);
+                let current = h
+                    .current_mode
+                    .as_ref()
+                    .and_then(|id| self.modes.get(id))
+                    .map(ModeEntry::public);
+                let mode = match (current, o.mode) {
+                    (Some(c), Some(m)) => {
+                        let mhz = |r: f64| (r * 1000.0).round() as i64;
+                        (c.width, c.height) != (m.width, m.height)
+                            || c.refresh > 0.0
+                                && m.refresh > 0.0
+                                && (mhz(c.refresh) - mhz(m.refresh)).abs() > RATE_SLACK
+                    }
+                    _ => false,
+                };
+                let size = match (current.or(o.mode), o.size) {
+                    (Some(m), Some((w, hh))) if h.scale > 0.0 => {
+                        let (mw, mh) = match h.transform {
+                            wl_output::Transform::_90
+                            | wl_output::Transform::_270
+                            | wl_output::Transform::Flipped90
+                            | wl_output::Transform::Flipped270 => (m.height, m.width),
+                            _ => (m.width, m.height),
+                        };
+                        let off = |px: i64, logical: i32| {
+                            (px as f64 / h.scale - f64::from(logical)).abs() > SIZE_SLACK
+                        };
+                        off(mw, w) || off(mh, hh)
+                    }
+                    _ => false,
+                };
+                place || transform || mode || size
+            })
+    }
+
+    /// (outputs-resync, outputs-mode; review round 4) `wl_output`
+    /// `global` ended a batch of changes. Once the manager has given its
+    /// first `done`, the heads are checked against it when it settles,
+    /// and a changed name or mode is published again (a monitor plugged
+    /// in gets its `wl_output`'s mode after the manager's `done`), unless
+    /// the manager's own change is still waiting for its `done`.
+    fn output_done(&mut self, global: u32) {
+        let Some(o) = self.wl_outputs.iter_mut().find(|o| o.global == global) else {
+            return;
+        };
+        let dirty = std::mem::take(&mut o.dirty);
+        if self.manager.is_none() || self.serial.is_none() {
+            return;
+        }
+        if dirty && self.undone.is_none() {
+            self.changed = true;
+        }
+        self.shown_at = Some(Instant::now());
+    }
+
+    /// An xdg-output for `wl_output` `global`'s proxy, once both are bound.
+    fn get_xdg_output(&mut self, global: u32, qh: &QueueHandle<Client>) {
+        let Some(manager) = &self.xdg_manager else {
+            return;
+        };
+        if let Some(o) = self
+            .wl_outputs
+            .iter_mut()
+            .find(|o| o.global == global && o.xdg.is_none())
+        {
+            o.xdg = Some(manager.get_xdg_output(&o.proxy, qh, global));
+        }
     }
 
     /// An event of the current manager, or one of its heads or modes,
@@ -1006,7 +1157,7 @@ fn default_mode(client: &Client, h: &HeadEntry) -> ModeChoice {
         .wl_outputs
         .iter()
         .find(|o| o.name == h.name)
-        .and_then(|o| o.mode.clone())
+        .and_then(|o| o.mode)
         .filter(|_| h.enabled);
     if let Some(m) = shown
         && let Ok(choice) = choose_mode(client, h, m)
@@ -1267,8 +1418,8 @@ impl Outputs {
             // (outputs-resync) A change with no `done`: bound again, once
             // no configuration is in flight (its answer is the old
             // manager's).
-            if client.resync_due(Instant::now()) && in_flight.is_none() && stopping.is_none() {
-                log::debug!("outputs: a change came with no done; binding the manager again");
+            if in_flight.is_none() && stopping.is_none() && client.resync_due(Instant::now()) {
+                log::debug!("outputs: the heads are behind the outputs; binding the manager again");
                 client.resync(&qh);
                 continue;
             }
@@ -1379,12 +1530,23 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
                 interface,
                 version,
             } if interface == wl_output::WlOutput::interface().name && version >= 4 => {
-                state.wl_outputs.push(WlOut {
-                    global: name,
-                    proxy: registry.bind(name, 4, qh, name),
-                    name: String::new(),
-                    mode: None,
-                });
+                state
+                    .wl_outputs
+                    .push(WlOut::new(name, registry.bind(name, 4, qh, name)));
+                state.get_xdg_output(name, qh);
+            }
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } if interface == ZxdgOutputManagerV1::interface().name
+                && state.xdg_manager.is_none() =>
+            {
+                state.xdg_manager = Some(registry.bind(name, version.min(3), qh, ()));
+                let globals: Vec<u32> = state.wl_outputs.iter().map(|o| o.global).collect();
+                for g in globals {
+                    state.get_xdg_output(g, qh);
+                }
             }
             wl_registry::Event::GlobalRemove { name } if state.manager_global == Some(name) => {
                 if let Some(m) = &state.manager {
@@ -1395,6 +1557,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
             wl_registry::Event::GlobalRemove { name } => {
                 if let Some(i) = state.wl_outputs.iter().position(|o| o.global == name) {
                     let o = state.wl_outputs.remove(i);
+                    if let Some(x) = o.xdg {
+                        x.destroy();
+                    }
                     if o.proxy.version() >= 3 {
                         o.proxy.release();
                     }
@@ -1405,7 +1570,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
     }
 }
 
-/// (outputs-mode) A `wl_output`'s name and current mode.
+/// (outputs-mode) A `wl_output`'s name and current mode; (outputs-resync)
+/// its transform, and its `done`, which ends a batch of changes to it and
+/// to its xdg-output (version 3).
 impl Dispatch<wl_output::WlOutput, u32> for Client {
     fn event(
         state: &mut Self,
@@ -1419,19 +1586,66 @@ impl Dispatch<wl_output::WlOutput, u32> for Client {
             return;
         };
         match event {
-            wl_output::Event::Name { name } => o.name = name,
+            wl_output::Event::Name { name } => {
+                o.dirty |= o.name != name;
+                o.name = name;
+            }
             wl_output::Event::Mode {
                 flags: WEnum::Value(flags),
                 width,
                 height,
                 refresh,
             } if flags.contains(wl_output::Mode::Current) => {
-                o.mode = Some(OutputMode {
+                let mode = Some(OutputMode {
                     width: i64::from(width),
                     height: i64::from(height),
                     refresh: f64::from(refresh) / 1000.0,
                 });
+                o.dirty |= o.mode != mode;
+                o.mode = mode;
             }
+            wl_output::Event::Geometry {
+                transform: WEnum::Value(t),
+                ..
+            } => o.transform = Some(t),
+            wl_output::Event::Done => state.output_done(*global),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZxdgOutputManagerV1, ()> for Client {
+    fn event(
+        _: &mut Self,
+        _: &ZxdgOutputManagerV1,
+        _: zxdg_output_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+/// (outputs-resync) A `wl_output`'s logical place and size; its own
+/// `done` before version 3.
+impl Dispatch<ZxdgOutputV1, u32> for Client {
+    fn event(
+        state: &mut Self,
+        _: &ZxdgOutputV1,
+        event: zxdg_output_v1::Event,
+        global: &u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(o) = state.wl_outputs.iter_mut().find(|o| o.global == *global) else {
+            return;
+        };
+        match event {
+            zxdg_output_v1::Event::LogicalPosition { x, y } => o.place = Some((x, y)),
+            zxdg_output_v1::Event::LogicalSize { width, height } => {
+                o.size = Some((width, height));
+            }
+            zxdg_output_v1::Event::Done => state.output_done(*global),
             _ => {}
         }
     }
@@ -2004,10 +2218,12 @@ mod tests {
             refresh: 60.0,
         };
         let wl = |global: u32, name: &str| WlOut {
-            global,
-            proxy: wl_output::WlOutput::inert(conn.backend().downgrade()),
             name: name.into(),
-            mode: Some(shows.clone()),
+            mode: Some(shows),
+            ..WlOut::new(
+                global,
+                wl_output::WlOutput::inert(conn.backend().downgrade()),
+            )
         };
         let mut c = Client {
             heads: vec![head("NESTED-1", true), head("NESTED-2", false)],
@@ -2047,6 +2263,149 @@ mod tests {
         // A `done` in time: nothing to do.
         c.undone = None;
         assert!(!c.resync_due(at + RESYNC_AFTER * 4));
+    }
+
+    /// (outputs-resync, review round 4) Once the `wl_output`s settle
+    /// after a change, the heads are checked against them: a place, mode
+    /// size, transform or scale they disagree on makes a resync due, and
+    /// heads that agree make none (sway, which sends its own change). A
+    /// check is made once per change: the next waits for another `done`.
+    #[test]
+    fn heads_behind_their_outputs_are_resynced() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(a).unwrap();
+        // DP-1 at 1920, 0, 3840x2160 at scale 2, as both sides say.
+        let agreeing = || {
+            let mode = ZwlrOutputModeV1::inert(conn.backend().downgrade());
+            let mut c = Client {
+                manager: Some(ZwlrOutputManagerV1::inert(conn.backend().downgrade())),
+                serial: Some(1),
+                heads: vec![HeadEntry {
+                    name: "DP-1".into(),
+                    enabled: true,
+                    position: (1920, 0),
+                    scale: 2.0,
+                    current_mode: Some(mode.id()),
+                    ..HeadEntry::new(ZwlrOutputHeadV1::inert(conn.backend().downgrade()))
+                }],
+                wl_outputs: vec![WlOut {
+                    name: "DP-1".into(),
+                    mode: Some(OutputMode {
+                        width: 3840,
+                        height: 2160,
+                        refresh: 60.0,
+                    }),
+                    transform: Some(wl_output::Transform::Normal),
+                    place: Some((1920, 0)),
+                    size: Some((1920, 1080)),
+                    ..WlOut::new(9, wl_output::WlOutput::inert(conn.backend().downgrade()))
+                }],
+                ..Client::default()
+            };
+            c.modes.insert(
+                mode.id(),
+                ModeEntry {
+                    proxy: mode,
+                    width: 3840,
+                    height: 2160,
+                    refresh: 60_000,
+                    preferred: true,
+                },
+            );
+            c
+        };
+        let due = |c: &Client| c.resync_at().expect("a check is due");
+        let mut c = agreeing();
+        assert!(!c.disagrees(), "they agree");
+        c.output_done(9);
+        let t = due(&c);
+        assert!(!c.resync_due(t), "agreeing heads are not resynced");
+        assert_eq!(c.resync_at(), None, "the check is done with");
+        // Before the manager's first `done`, nothing is checked.
+        c.serial = None;
+        c.output_done(9);
+        assert_eq!(c.resync_at(), None);
+        // Each field the heads may lag on.
+        type Lag = fn(&mut WlOut);
+        let lag: [(&str, Lag); 4] = [
+            ("place", |o| o.place = Some((0, 0))),
+            ("mode", |o| {
+                o.mode = Some(OutputMode {
+                    width: 2560,
+                    height: 1440,
+                    refresh: 60.0,
+                });
+            }),
+            ("transform", |o| {
+                o.transform = Some(wl_output::Transform::_90)
+            }),
+            ("scale", |o| o.size = Some((3840, 2160))),
+        ];
+        for (what, f) in lag {
+            let mut c = agreeing();
+            f(&mut c.wl_outputs[0]);
+            assert!(c.disagrees(), "{what}");
+            c.output_done(9);
+            let t = due(&c);
+            assert!(
+                !c.resync_due(t - Duration::from_millis(1)),
+                "{what}: settling"
+            );
+            assert!(c.resync_due(t), "{what}: resynced");
+        }
+    }
+
+    /// (outputs-mode, review round 4) A `wl_output` whose name or mode
+    /// changes after the manager's `done` (a monitor plugged in: its head
+    /// and the `done` come before its `wl_output` is bound) has the list
+    /// published again at its own `done`; one that says nothing new does
+    /// not, and neither does one while the manager's change waits for its
+    /// `done`.
+    #[test]
+    fn a_wl_output_mode_after_the_done_is_published() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(a).unwrap();
+        let mut c = Client {
+            manager: Some(ZwlrOutputManagerV1::inert(conn.backend().downgrade())),
+            serial: Some(1),
+            synced: true,
+            heads: vec![HeadEntry {
+                name: "HOT-1".into(),
+                enabled: true,
+                ..HeadEntry::new(ZwlrOutputHeadV1::inert(conn.backend().downgrade()))
+            }],
+            wl_outputs: vec![WlOut::new(
+                5,
+                wl_output::WlOutput::inert(conn.backend().downgrade()),
+            )],
+            ..Client::default()
+        };
+        assert!(matches!(c.publish(false), Publish::Shown(..)));
+        assert_eq!(c.publish(true), Publish::Nothing);
+        c.wl_outputs[0].name = "HOT-1".into();
+        c.wl_outputs[0].mode = Some(OutputMode {
+            width: 1280,
+            height: 720,
+            refresh: 60.0,
+        });
+        c.wl_outputs[0].dirty = true;
+        c.output_done(5);
+        match c.publish(true) {
+            Publish::Shown(all, _) => {
+                assert_eq!(all[0].mode.map(|m| (m.width, m.height)), Some((1280, 720)))
+            }
+            p => panic!("published again: {p:?}"),
+        }
+        c.output_done(5);
+        assert_eq!(c.publish(true), Publish::Nothing, "nothing new");
+        c.wl_outputs[0].dirty = true;
+        c.undone = Some(Instant::now());
+        c.output_done(5);
+        assert_eq!(
+            c.publish(true),
+            Publish::Nothing,
+            "the manager's change waits"
+        );
     }
 
     /// (service-ready, review round 1) The output manager going while

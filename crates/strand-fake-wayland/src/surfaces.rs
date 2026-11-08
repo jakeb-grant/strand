@@ -1634,6 +1634,14 @@ impl Dispatch<ZxdgOutputManagerV1, ()> for Server {
     ) {
         if let zxdg_output_manager_v1::Request::GetXdgOutput { id, output } = request {
             let x = init.init(id, ());
+            // (outputs-resync) With output management: the place it has.
+            if state.om.kind != crate::OutputManagement::None
+                && let Some(index) = output.data::<usize>()
+            {
+                state.om.xdg_output(*index, x);
+                output.done();
+                return;
+            }
             let (w, h) = state
                 .surf
                 .globals

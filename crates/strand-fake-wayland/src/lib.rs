@@ -36,7 +36,8 @@
 //! - (outputs-resync) `strand-services`' outputs:
 //!   `zwlr_output_manager_v1` in wlroots' shape or Hyprland 0.57's
 //!   ([`FakeBuilder::output_management`]; `output_management.rs`), its
-//!   outputs moved by [`Cmd::MoveOutput`].
+//!   outputs moved by [`Cmd::MoveOutput`] and plugged in by
+//!   [`Cmd::AddOutput`].
 //!
 //! It runs on its own thread and is driven by [`Cmd`]s.
 
@@ -111,6 +112,11 @@ pub enum Cmd {
     /// width and height: its head names no current mode, its `wl_output`
     /// sends it (before a client binds).
     CustomMode(usize, i32, i32),
+    /// (outputs-mode, review round 4) An output of this name is plugged
+    /// in (a `wl_output` global, and one head to every output manager
+    /// with a `done`, before a client can bind the `wl_output`), showing
+    /// a mode not in its list of this width and height.
+    AddOutput(&'static str, i32, i32),
     /// Removes seat `n`'s global (by the order they were offered), as a
     /// seat going away would.
     RemoveSeat(usize),
@@ -495,7 +501,13 @@ impl Server {
                 }
             }
             Cmd::Done => self.done(),
-            Cmd::MoveOutput(n, x, y) => self.om.move_output(n, x, y),
+            Cmd::MoveOutput(n, x, y) => self.om.move_output(n, x, y, &self.outputs),
+            Cmd::AddOutput(name, w, h) => {
+                let index = self.output_names.len();
+                self.output_names.push(name.to_string());
+                dh.create_global::<Server, wl_output::WlOutput, usize>(4, index);
+                self.om.add_output(dh, name, w, h);
+            }
             Cmd::CustomMode(n, w, h) => self.om.custom_mode(n, w, h),
             Cmd::SetEffectCapabilities(flags) => self.surf.set_effect_caps(flags),
             Cmd::Paint(ident, colour) => self.capture_paint(ident, colour),
@@ -788,8 +800,10 @@ impl GlobalDispatch<wl_output::WlOutput, usize> for Server {
             o.done();
         }
         for (m, gs) in state.managers.iter().zip(&state.groups) {
-            if m.client().as_ref() == Some(client) {
-                gs[*index].output_enter(&o);
+            if m.client().as_ref() == Some(client)
+                && let Some(g) = gs.get(*index)
+            {
+                g.output_enter(&o);
                 m.done();
             }
         }
@@ -1255,7 +1269,11 @@ impl Fake {
                 capture::create_globals(&dh, surface_globals.is_none());
             }
             data_control::create_globals(&dh, data_control);
-            output_management::create_globals(&dh, output_management);
+            output_management::create_globals(
+                &dh,
+                output_management,
+                surface_globals.as_ref().is_some_and(|g| g.xdg_output),
+            );
             let seat_globals = (0..seats)
                 .map(|n| Some(dh.create_global::<Server, wl_seat::WlSeat, usize>(1, n)))
                 .collect();
