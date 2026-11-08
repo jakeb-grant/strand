@@ -757,6 +757,22 @@ pub fn clock_dur(d: Duration) -> String {
     }
 }
 
+/// (live-files) A value as `join` writes it: a token (`$fg`,
+/// `$fg.alpha(0.5)`) as its current value over the token table
+/// (`VmHooks::token`), written as a template writes it; anything else by
+/// [`Value::show`]. Without the token's value it is an error, never the
+/// token's inner form.
+fn joined(vm: &Rc<Vm>, rt: &Runtime, v: &Value) -> Result<String, Error> {
+    match v {
+        Value::Token(t) => match vm.hooks().and_then(|h| h.token(rt, t)) {
+            Some(pv) => crate::template::write_value(&pv, crate::syntax::Span::default())
+                .map_err(|d| fail(format!("`join`: {}", d.message))),
+            None => Err(fail("`join`: the token has no value")),
+        },
+        v => Ok(v.show(vm.types())),
+    }
+}
+
 pub(crate) fn call(
     vm: &Rc<Vm>,
     rt: &Runtime,
@@ -807,13 +823,16 @@ pub(crate) fn call(
             None => Value::Null,
         },
         "join" => {
-            let sep = args.get(0).map(|v| v.show(types)).unwrap_or_default();
-            let parts: Vec<String> = args
+            let sep = match args.get(0) {
+                Some(v) => joined(vm, rt, v)?,
+                None => String::new(),
+            };
+            let parts = args
                 .rest
                 .iter()
                 .filter(|v| !v.is_null())
-                .map(|v| v.show(types))
-                .collect();
+                .map(|v| joined(vm, rt, v))
+                .collect::<Result<Vec<String>, Error>>()?;
             Value::text(parts.join(&sep))
         }
         "material" => {

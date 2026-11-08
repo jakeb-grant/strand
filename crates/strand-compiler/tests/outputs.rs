@@ -606,6 +606,27 @@ fn an_unready_service_clearing_writes_nothing() {
     assert!(shell.take().is_empty());
 }
 
+/// (live-files) A file that turns to waiting keeps its target, so the
+/// writer still lands the newest content it was pacing (written while
+/// the service was ready) instead of letting it go.
+#[test]
+fn a_waiting_file_keeps_its_target() {
+    let dir = temp_dir("waiting-target");
+    let src = "file \"out/w.txt\" { text: media.title ?? \"none\" }\n";
+    let shell = boot(&[("a.strand", src)], &dir);
+    let _ = shell.take();
+    let at = dir.join("out").join("w.txt");
+    assert_eq!(targets(&shell), vec![at.clone()]);
+    shell.host.set_ready(&shell.rt, "media", false).unwrap();
+    shell.flush();
+    let c = shell.take();
+    assert!(
+        matches!(&c[0].content, OutputContent::Waiting { .. }),
+        "{c:?}"
+    );
+    assert_eq!(targets(&shell), vec![at]);
+}
+
 /// (live-files, e) A `text:` that reads the theme only is the template
 /// it was: the same bytes as a template file's hole, `.light()` included.
 #[test]
@@ -625,6 +646,35 @@ fn a_theme_text_is_still_a_template() {
     assert_eq!(get("out/l.txt"), get("out/lt.txt"));
     assert!(get("out/a.txt").starts_with('#'));
     assert_eq!(shell.inst.other_mode_holders(), 2);
+}
+
+/// (live-files) A token inside `join`, in a text that reads the scope, is
+/// written as its value (as a template's `join` writes it), never as the
+/// token's inner form.
+#[test]
+fn a_token_joined_in_a_scope_text_is_its_value() {
+    let dir = temp_dir("join-token");
+    std::fs::write(dir.join("a.tmpl"), "{{ $accent }}").unwrap();
+    let src = "export state size = 11\n\
+               file \"out/j.txt\" { text: join(\"\\n\", join(\"=\", \"fg\", $accent), \
+               join(\"=\", \"size\", size)) }\n\
+               file \"out/m.txt\" { text: join(\"\", $accent.alpha(0.5), size) }\n\
+               file \"out/at.txt\" { template: \"a.tmpl\" }\n";
+    let shell = boot(&[("a.strand", src)], &dir);
+    shell.dark(true);
+    let c = shell.take();
+    let get = |n: &str| written(change(&c, &dir, n).unwrap());
+    let accent = get("out/at.txt");
+    assert!(accent.starts_with('#'), "{accent}");
+    assert_eq!(get("out/j.txt"), format!("fg={accent}\nsize=11"));
+    // A translucent token is refused as a template refuses it.
+    assert!(
+        matches!(
+            &change(&c, &dir, "out/m.txt").unwrap().content,
+            OutputContent::Failed { .. }
+        ),
+        "{c:?}"
+    );
 }
 
 /// (live-files, f) The other mode needs a text that reads only the theme.

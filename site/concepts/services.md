@@ -82,8 +82,12 @@ UDisks2, power-profiles-daemon, the backlight), the service's
 cannot work. A missing daemon never stops the shell.
 
 Every service, built in or your own, also has `ready`: true once a run
-of it is up and has answered, and false before its first values, while
-its source is gone, and while it is not running. A placeholder reads it
+of it is up and has answered, and false before its first values and
+while it is not running. `outputs` and a service you declare `from
+dbus` are also not ready while their source is gone (the compositor's
+output manager, the daemon); a built-in D-Bus service such as `battery`
+or `network` stays ready when its daemon goes, and what it shows then
+is a change. A placeholder reads it
 (`if !workspaces.ready { … }`), and so does a handler that should act on
 the first answer as well as on later changes (see
 [Events and timers](state.md#events-and-timers)).

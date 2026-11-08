@@ -581,10 +581,13 @@ impl Writer {
     /// [`LOOP_WINDOW`]: `run:` runs once for the last content (a slider
     /// dragged past three rounds is caught up), and its next write runs
     /// it again; a round right after that catch-up run is a loop, held
-    /// again and let go without a run.
+    /// again and let go without a run. A catch-up run takes the loop
+    /// notice away: the `run:` is no longer held (its next round, if it
+    /// loops, says so again).
     fn unhold_due(&mut self) {
         let now = Instant::now();
-        for (_, r) in &mut self.runs {
+        let mut caught_up = Vec::new();
+        for (path, r) in &mut self.runs {
             if r.held_until.is_some_and(|at| at <= now) {
                 r.held_until = None;
                 r.rounds = 0;
@@ -593,10 +596,14 @@ impl Writer {
                 if std::mem::take(&mut r.skipped) && !std::mem::take(&mut r.stuck) {
                     r.due = Some(now);
                     r.probation = true;
+                    caught_up.push(path.clone());
                 } else {
                     r.probation = false;
                 }
             }
+        }
+        for path in caught_up {
+            self.tell(Outcome::Written(path));
         }
     }
 
@@ -1827,6 +1834,51 @@ mod tests {
             assert!(later.elapsed() < Duration::from_secs(5), "ran again");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// (live-files, review round 2) A slider dragged past three rounds:
+    /// the hold ends with its catch-up run, and that takes the loop
+    /// notice away (the `run:` is no longer held).
+    #[test]
+    fn a_catch_up_run_takes_the_loop_notice_away() {
+        let dir = temp("catch-up");
+        let log = dir.join("runs.log");
+        let out = dir.join("kitty.conf");
+        let (jobs, rx) = spawned(&dir, RUN_TIMEOUT);
+        let run = Some(vec![
+            "sh".to_string(),
+            "-c".into(),
+            format!("echo x >> {}", log.display()),
+        ]);
+        // Four clicks 0.55 s apart: each lands at once, within a second
+        // of the last run ending, so the fourth is held.
+        let mut seen: Vec<Outcome> = Vec::new();
+        for n in 0..4 {
+            jobs.send(Job::Write {
+                path: out.clone(),
+                bytes: format!("size {n}").into_bytes(),
+                run: run.clone(),
+            })
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(550));
+            seen.extend(rx.drain());
+        }
+        // Quiet: the hold ends a second after the held write, with one
+        // catch-up run.
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(50));
+            seen.extend(rx.drain());
+        }
+        let held = seen
+            .iter()
+            .position(|o| matches!(o, Outcome::Failed(p, why) if *p == out && why == LOOP_NOTICE));
+        assert!(held.is_some(), "held: {seen:?}");
+        assert_eq!(lines(&log), 4, "three runs and the catch-up: {seen:?}");
+        assert!(
+            matches!(seen.last(), Some(Outcome::Written(p)) if *p == out),
+            "the notice goes with the catch-up run: {seen:?}"
+        );
     }
 
     /// (live-files, review round 1) A file whose text changes on its own

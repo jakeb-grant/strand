@@ -2092,7 +2092,7 @@ proof  = "crates/strand-compiler/tests/reload.rs::a_lock_edit_is_deferred_while_
 
 [[claim]]
 page   = "site/concepts/services.md"
-text   = "of it is up and has answered, and false before its first values, while"
+text   = "of it is up and has answered, and false before its first values and while it is not running."
 source = ['docs/spec.md "`ready: bool`: a run of it is up and has answered."', 'crates/strand-services/src/client.rs "False before the first report, after"']
 proof  = "crates/strand-services/tests/custom.rs::a_dbus_declaration_is_ready_while_its_daemon_answers; ::file_and_poll_declarations_are_ready_after_their_first_read; crates/strand-services/tests/outputs.rs::a_lost_compositor_is_unready_before_its_heads_clear"
 
@@ -3989,7 +3989,7 @@ proof  = "crates/strand-services/src/outputs.rs::tests::identical_heads_are_numb
 page   = "site/how-to/monitor-profiles.md"
 text   = "file is written again whenever a monitor is moved, turned or plugged in, at most twice a second."
 source = ['docs/spec.md "path is written at most once per 500 ms: the first write lands at"']
-proof  = "crates/strand/tests/screens_focus.rs::the_monitor_profiles_page_arranges_sways_monitors (monitors.conf follows sway's layout and then the profile)"
+proof  = "crates/strand/tests/screens_focus.rs::the_monitor_profiles_page_arranges_sways_monitors (monitors.lua follows sway's layout and then the profile)"
 
 [[claim]]
 page   = "site/how-to/monitor-profiles.md"

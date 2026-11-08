@@ -1671,7 +1671,8 @@ fn pct(fraction: float) -> text lift
 /// `h:mm:ss` (`dur(media.length, clock: true)` is `3:45`). Null in, null
 /// out.
 fn dur(duration: duration, clock: bool = false) -> text lift
-/// Joins the parts that are not null.
+/// Joins the parts that are not null; a token (`$fg`) is written as its
+/// current value, as a template writes it.
 fn join(sep: text, ...parts: any?) -> text
 /// A number as text with `digits` decimals and its whole part padded
 /// with zeros to `pad` digits: `num(3.14159, digits: 2)` is `3.14`,

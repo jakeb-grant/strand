@@ -611,14 +611,20 @@ impl Instance {
 
     /// (M5) Calls `each` with every path a mounted `file` writes now:
     /// the outputs whose last [`Instance::take_outputs`] change was a
-    /// write (one pending since keeps its target). A removed `file`, one
-    /// whose path changed and one that fails have no target here, so the
-    /// writer lets go of what it was still trying to write there
-    /// (spec.md 9.7, "Removing a `file` stops its updates").
+    /// write (one pending since keeps its target), or that wait for a
+    /// service (live-files: what was written while it was ready still
+    /// lands, so a paced write is not dropped when it turns unready). A
+    /// removed `file`, one whose path changed and one that fails have no
+    /// target here, so the writer lets go of what it was still trying to
+    /// write there (spec.md 9.7, "Removing a `file` stops its updates").
     pub fn output_targets(&self, mut each: impl FnMut(&Path)) {
         for s in self.ctx.outputs.borrow().iter() {
-            if let Some(Content::Ready { path, .. }) = s.last.borrow().as_ref() {
-                each(path);
+            match s.last.borrow().as_ref() {
+                Some(Content::Ready { path, .. })
+                | Some(Content::Waiting {
+                    path: Some(path), ..
+                }) => each(path),
+                _ => {}
             }
         }
     }

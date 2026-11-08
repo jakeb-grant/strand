@@ -2076,8 +2076,10 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   reconciles the starting state, every change, and each restart.
   `ready` means *reported*, not *settled* (docks enumerate late,
   daemons restore volumes after login), so a reconciling handler
-  debounces. It turns false at once when the run ends or its source
-  goes; a handler that names both a list and `ready` does not run for a
+  debounces. It turns false at once when the run ends or, for
+  `outputs` and a declared `from dbus` service, its source goes (a
+  builtin D-Bus service whose daemon goes stays ready, section 12); a
+  handler that names both a list and `ready` does not run for a
   list a failing service clears, since that is a boot value again,
   while one that names only `ready` does. Other idioms: a one-shot once
   the answer is real, `after 0s while battery.ready { … }`, and a
@@ -2374,7 +2376,8 @@ from a service, a compositor fragment from `outputs.all`.
   hole, and has the template-only methods (`$surface.light()`). One that
   reads anything else is an ordinary expression whose value is written
   by 9.8's Values rule: text as is, a number in shortest form, a bool, a
-  colour as `hex(c)`, a token's current value; a list or record is an
+  colour as `hex(c)`, a token's current value (inside `join` too, as a
+  template's `join` writes it); a list or record is an
   error naming its type. `.light()` and `.dark()` in such a text are an
   error (`file::other_mode`): the other mode needs a text that reads
   only the theme, or a template file. A `text:` that is `null` writes
@@ -2386,7 +2389,9 @@ from a service, a compositor fragment from `outputs.all`.
   service the `file` reads (in its path, `text:`, `run:` or a `when`,
   through `let`s and `fn`s) has `ready` false (section 5.6): its values
   are defaults, so a `??` fallback is not written either. It is written
-  once every one has answered. A service with no run up (failed, backing
+  once every one has answered. A write from before it turned false, still
+  waiting for its turn (the 500 ms pacing below), lands: it was made from
+  values that held. A service with no run up (failed, backing
   off) makes it a standing notice naming that service; one starting is
   no news, and so is one that is up but not ready (a declared `from
   dbus` service whose daemon is absent waits for it with no notice). A

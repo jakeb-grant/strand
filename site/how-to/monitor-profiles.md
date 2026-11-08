@@ -187,11 +187,15 @@ file, and the ones it could not read would go.
 
 `outputs.apply` arranges the monitors while the shell runs. To have
 your compositor start with the same arrangement, write its monitor
-lines from `outputs.all`, here for Hyprland (`source =
-~/.config/hypr/monitors.conf` in `hyprland.conf`):
+lines from `outputs.all`, here for Hyprland's Lua config (load it with
+`pcall(require, "monitors")` in `~/.config/hypr/hyprland.lua`, so the
+very first start, before Strand has written it, still loads):
 
 ```strand file=hyprland.strand
 // hyprland.strand: the monitors as they are now, for Hyprland's next start
+fn lua(s: text) -> text {
+  "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+}
 fn turned(t: OutputTransform) -> int {
   let n = match t {
     normal => 0
@@ -207,14 +211,16 @@ fn turned(t: OutputTransform) -> int {
 }
 fn line(o: Output) -> text {
   let m = o.mode
-  o.enabled && m != null
-    ? join(", ", "monitor = " + o.name,
-      join("@", join("x", m?.width, m?.height), m?.refresh),
-      join("x", o.x, o.y), o.scale, "transform", turned(o.transform))
-    : "monitor = " + o.name + ", disable"
+  let fields = o.enabled && m != null
+    ? join(", ", "output = " + lua(o.name),
+      "mode = " + lua(join("@", join("x", m?.width, m?.height), m?.refresh)),
+      "position = " + lua(join("x", o.x, o.y)),
+      join(" = ", "scale", o.scale), join(" = ", "transform", turned(o.transform)))
+    : "output = " + lua(o.name) + ", disabled = true"
+  "hl.monitor({ " + fields + " })"
 }
-file "~/.config/hypr/monitors.conf" {
-  text: "# Written by Strand from outputs.all\n" + outputs.all.map(o => line(o)).join("\n") + "\n"
+file "~/.config/hypr/monitors.lua" {
+  text: "-- Written by Strand from outputs.all\n" + outputs.all.map(o => line(o)).join("\n") + "\n"
 }
 
 // The same monitors as JSON, by id, for a script of your own.
@@ -232,12 +238,16 @@ file "~/.cache/monitors.json" {
   `outputs` is ready, what it says is written, an empty list too (a
   compositor with no monitors).
 - **Names, not ids, in code.** The connector names are what the file
-  is for now, and it is rewritten when they change. The `id`s, which
-  hold text from the monitor itself, go into JSON, where `json` quotes
-  them.
+  is for now, and it is rewritten when they change; `lua` quotes them,
+  as text from outside belongs quoted in a file a program runs. The
+  `id`s, which hold text from the monitor itself, go into JSON, where
+  `json` quotes them.
 
-For sway, the line is `output <name> mode <w>x<h>@<r>Hz pos <x> <y>
-scale <s> transform <degrees>`, with the same parts.
+For Hyprland before 0.57, which also reads a hyprlang `hyprland.conf`
+(`source = ~/.config/hypr/monitors.conf`), the line is `monitor =
+<name>, <w>x<h>@<r>, <x>x<y>, <scale>, transform, <n>`, or `monitor =
+<name>, disable`. For sway, it is `output <name> mode <w>x<h>@<r>Hz pos
+<x> <y> scale <s> transform <degrees>`, with the same parts.
 
 ## Workspaces on their monitors
 
@@ -248,7 +258,7 @@ on Hyprland, sway and niri.
 ```strand file=workspaces.strand
 // workspaces.strand: workspaces 1 to 5 on the big monitor while it is on
 let big = screens.all.find(s => s.id.starts_with("Dell Inc. | DELL U2720Q"))
-on change big?.name, screens.ready, workspaces.ready after 1500ms {
+on change big?.name, workspaces.ready after 1500ms {
   for s in screens.all.filter(s => s.name == big?.name) {
     for ws in workspaces.all.filter(w => (number(w.name) ?? 99) <= 5) { ws.move_to(s) }
   }
@@ -259,9 +269,9 @@ on change big?.name, screens.ready, workspaces.ready after 1500ms {
   as its output), so it is found on whichever port it is plugged into.
   `on change big?.name` places the workspaces when it is connected or
   moves to another port, not on every switch: a workspace you move by
-  hand stays where you put it. Naming `screens.ready` and
-  `workspaces.ready` places them when the shell starts too, since
-  `on change` never runs for the first value.
+  hand stays where you put it. Naming `workspaces.ready` places them
+  when the shell starts too, since `on change` never runs for the
+  first value.
 - **`number(w.name) ?? 99`**: a named workspace (`web`, a special
   one) has no number, and counts as 99, so only 1 to 5 move.
 - **`ws.move_to(s)`** leaves the focus on the workspace that had it,
@@ -270,7 +280,9 @@ on change big?.name, screens.ready, workspaces.ready after 1500ms {
   moves every one.
 - **A workspace not made yet** is not moved: your compositor's own
   rules place it when it is made (`workspace 3 output DP-3` in sway,
-  a workspace rule in Hyprland).
+  a workspace rule in Hyprland). Nor, on sway, is an empty one that
+  another screen shows, onto the screen with the focus: sway keeps an
+  empty workspace only while it is shown, so it would be removed.
 
 ## The laptop's lid
 
@@ -288,6 +300,13 @@ fn lit(o: Output) -> bool {
   !inside(o) || !upower.lid_closed || outputs.all.len == 1
 }
 ```
+
+and name `upower.ready` in `monitors.strand`'s handler, `on change
+chosen, outputs.ready, upower.ready after 1500ms`: UPower's first
+report of the lid is a first value, which `on change` never runs for,
+so without it a lid that UPower reports after the monitors are in (at
+start, or after UPower restarts) is not applied until something else
+changes.
 
 The best guess then leaves the panel out of the row and turns it off,
 and turns it back on when the lid opens. `chosen` reads `lit` through

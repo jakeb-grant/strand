@@ -18,6 +18,14 @@ use strand_scene::Scale;
 /// How long an unplugged monitor is remembered.
 pub const MONITOR_RETENTION: Duration = Duration::from_secs(30);
 
+/// A make or model as an identity writes it: `Unknown` when empty.
+fn known(s: &str) -> &str {
+    match s {
+        "" => "Unknown",
+        s => s,
+    }
+}
+
 /// A monitor's stable identity: make, model and description.
 ///
 /// The string form ([`MonitorId::as_str`]) is what `screens:` names in a
@@ -29,9 +37,16 @@ impl MonitorId {
     /// `make`, `model` and `description` joined by `" | "` (pass the
     /// description through [`identity_description`] first). A second
     /// monitor with the same three values gets `" #2"` appended (see
-    /// `docs/decisions.md`).
+    /// `docs/decisions.md`). An empty make or model is `Unknown`, as
+    /// wlroots' `wl_output` says it; Hyprland's sends it empty, and the
+    /// `outputs` service's `Output.id` writes it `Unknown` on every
+    /// compositor (decisions.md output-id, review round 2).
     pub fn new(make: &str, model: &str, description: &str) -> Self {
-        Self(format!("{make} | {model} | {description}"))
+        Self(format!(
+            "{} | {} | {description}",
+            known(make),
+            known(model)
+        ))
     }
 
     pub fn as_str(&self) -> &str {

@@ -221,13 +221,26 @@ pub fn output_id(make: &str, model: &str, description: &str, connector: &str) ->
     format!("{make} | {model} | {description}")
 }
 
+/// (output-id, review round 2) The id an output comes to
+/// [`number_ids`] with: none for one turned on since the last snapshot,
+/// which so takes the lowest number no monitor on holds, as
+/// strand-surface's `Monitors::plug` numbers the `wl_output` a monitor
+/// turned on gets; else the one it had.
+fn turned_on_afresh(id: &str, was_on: bool, on: bool) -> String {
+    match on && !was_on {
+        true => String::new(),
+        false => id.to_string(),
+    }
+}
+
 /// Fills each output's `id`, numbering identical monitors as
 /// strand-surface does (its second ` #2`), so an id agrees with
 /// `Screen.id` for every monitor shown. An output comes with the id it
 /// had at the last snapshot (empty when new) and keeps it: turning one of
 /// two identical monitors off or on, or unplugging one, renumbers neither
 /// (review round 1). A monitor turned on whose id another one on holds,
-/// or a new one, takes the lowest number no monitor on holds, as
+/// a new one, or one turned on since the last snapshot (it comes with no
+/// id, [`turned_on_afresh`]), takes the lowest number no monitor on holds, as
 /// strand-surface's `Monitors::plug` reclaims a record; one off takes
 /// what no other output holds. New ones are numbered those on first, in
 /// the compositor's order, then those off.
@@ -400,6 +413,9 @@ struct HeadEntry {
     /// (output-id) Its id at the last snapshot, kept while the head is
     /// there ([`number_ids`]).
     id: String,
+    /// (output-id) Whether it was on at the last snapshot: one turned on
+    /// since is numbered afresh ([`turned_on_afresh`]).
+    was_on: bool,
 }
 
 impl HeadEntry {
@@ -420,6 +436,7 @@ impl HeadEntry {
             scale: 1.0,
             adaptive_sync: false,
             id: String::new(),
+            was_on: false,
         }
     }
 }
@@ -489,7 +506,7 @@ impl Client {
                     .map(ModeEntry::public);
                 Output {
                     name: h.name.clone(),
-                    id: h.id.clone(),
+                    id: turned_on_afresh(&h.id, h.was_on, h.enabled),
                     description: h.description.clone(),
                     make: h.make.clone(),
                     model: h.model.clone(),
@@ -512,6 +529,7 @@ impl Client {
         let named = self.heads.iter_mut().filter(|h| !h.name.is_empty());
         for (h, o) in named.zip(&all) {
             h.id.clone_from(&o.id);
+            h.was_on = o.enabled;
         }
         all
     }
@@ -1428,6 +1446,21 @@ mod tests {
         all.push(head("DP-1", true));
         number_ids(&mut all);
         assert_eq!(ids(&all), [second.clone(), base.to_string()]);
+        // Both off, then DP-2 on again: its new `wl_output` takes the
+        // lowest number no monitor on holds, as strand-surface's plug
+        // does, and DP-1 (off) the next.
+        let mut all = vec![head("DP-1", false), head("DP-2", false)];
+        all[0].id = base.to_string();
+        all[1].id = second.clone();
+        number_ids(&mut all);
+        assert_eq!(ids(&all), [base.to_string(), second.clone()]);
+        all[1].enabled = true;
+        all[1].id = turned_on_afresh(&all[1].id, false, true);
+        number_ids(&mut all);
+        assert_eq!(ids(&all), [second.clone(), base.to_string()]);
+        // On all along, it keeps its number.
+        assert_eq!(turned_on_afresh(&second, true, true), second);
+        assert_eq!(turned_on_afresh(&second, false, false), second);
         // A monitor turned on takes over the id of one that is off (as
         // strand-surface's record is reclaimed), which takes the next.
         let mut all = vec![head("DP-1", false), head("DP-2", true)];

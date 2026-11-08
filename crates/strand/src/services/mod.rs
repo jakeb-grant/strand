@@ -4695,6 +4695,9 @@ mod output_id {
                 "Unknown",
                 "Unknown",
             ),
+            // Hyprland's headless output: `wl_output` gives the make and
+            // model empty, as the head does (nested Hyprland 0.57).
+            ("", "", "", "NESTED-1", "", ""),
             ("Acme", "X", "Acme X ()", "", "Acme", "X"),
         ] {
             let screen = MonitorId::new(

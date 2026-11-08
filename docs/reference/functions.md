@@ -33,7 +33,7 @@ Builtin functions and values, every name in scope in every file, and the methods
 | `fn hue(angle: angle) -> Filter` | A colour filter turning hues: `filter: hue(30deg)`. |
 | `fn import(source: text) -> Palette` | A palette from another scheme: `import("catppuccin:mocha")`. It must fill the whole palette schema. |
 | `fn invert(amount: float) -> Filter` | A colour filter inverting colours. |
-| `fn join(sep: text, ...parts: any) -> text` | Joins the parts that are not null. |
+| `fn join(sep: text, ...parts: any) -> text` | Joins the parts that are not null; a token (`$fg`) is written as its current value, as a template writes it. |
 | `fn json(value: any) -> text` | `value` as compact JSON, for a file a tool reads or an action's argument: `json(prefs)` is `{"size":3,"dark":true}`. A record is an object of its fields, a list an array, a dictionary an object of its keys, null `null`, an enum its variant's name, a colour `"#rrggbb"`, or `"#rrggbbaa"` when translucent, a duration its milliseconds. Not a quoter for Lua: a control character is written `\u001b`, which Lua reads otherwise, so Lua takes a `fn` of its own. |
 | `fn linear(angle: angle, ...stops: color) -> paint` | A linear gradient: `linear(45deg, $accent, $tertiary)`. Banding is removed by dithering. |
 | `fn ln(x: float) -> float` | The natural logarithm; 0 and negative numbers have none (an error value). |

@@ -630,22 +630,31 @@ impl State {
             // workspace of the window the criteria pick (else the focused
             // one) and then focuses it, so the focus goes back in the same
             // command. An empty workspace exists only while it is shown,
-            // and has no window to pick: it is switched to first.
+            // and has no window to pick: it is switched to first. Going
+            // back to the focused workspace on the output it moved to
+            // would hide it there, and sway removes it: refused.
             WmAction::MoveWorkspace { workspace, screen } => {
                 let ws = self.move_target(*workspace, screen)?;
                 let output = quoted(screen)?;
                 let on = self.windows.iter().find(|(w, _)| *w == Some(ws.id));
+                let focused = self.workspaces.iter().find(|w| w.focused);
                 let mut command = match on {
                     Some((_, node)) => {
                         format!("[con_id={}] move workspace to output {output}", node.id)
                     }
                     None if ws.focused => format!("move workspace to output {output}"),
+                    None if focused.is_some_and(|f| f.output == *screen) => {
+                        return Err(WmError::Unsupported(
+                            "sway keeps an empty workspace only while it is shown, and the \
+                             screen it would move to shows the focused one",
+                        ));
+                    }
                     None => format!(
                         "{}; move workspace to output {output}",
                         Self::switch_to(&ws.name)?
                     ),
                 };
-                if let Some(back) = self.workspaces.iter().find(|w| w.focused)
+                if let Some(back) = focused
                     && back.id != ws.id
                 {
                     command.push_str("; ");
@@ -1331,12 +1340,19 @@ mod tests {
             state.command_for(&mv(9, "HEADLESS-1")).unwrap(),
             r#"move workspace to output "HEADLESS-1""#
         );
+        // An empty workspace is switched to, moved, and the focus goes
+        // back; onto the screen of the focused one, it would be hidden
+        // there and removed, so it is refused.
         assert_eq!(
-            state.command_for(&mv(11, "HEADLESS-2")).unwrap(),
+            state.command_for(&mv(11, "HEADLESS-1")).unwrap(),
             format!(
-                r#"workspace --no-auto-back-and-forth "3"; move workspace to output "HEADLESS-2"; {back}"#
+                r#"workspace --no-auto-back-and-forth "3"; move workspace to output "HEADLESS-1"; {back}"#
             )
         );
+        assert!(matches!(
+            state.command_for(&mv(11, "HEADLESS-2")),
+            Err(WmError::Unsupported(_))
+        ));
         assert!(state.in_place(&mv(4, "HEADLESS-1")));
         assert!(!state.in_place(&mv(4, "HEADLESS-2")));
         assert!(!state.in_place(&WmAction::FocusWorkspace(4)));

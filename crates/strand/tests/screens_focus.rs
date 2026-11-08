@@ -843,7 +843,7 @@ fn the_monitor_profiles_page_arranges_sways_monitors() {
         }
     });
     let home = desk.dir.join("home");
-    let conf = home.join(".config/hypr/monitors.conf");
+    let conf = home.join(".config/hypr/monitors.lua");
     // The compositor file follows sway's layout: a line for each monitor
     // at its place and scale (a whole number written whole).
     let follows = |d: &Desk| -> Result<(), String> {
@@ -854,17 +854,17 @@ fn the_monitor_profiles_page_arranges_sways_monitors() {
             } else {
                 format!("{s}")
             };
-            let place = format!(", {x}x{y}, {scale}, transform, 0");
-            if !text
-                .lines()
-                .any(|l| l.starts_with(&format!("monitor = {name}, ")) && l.ends_with(&place))
-            {
+            let place = format!("position = \"{x}x{y}\", scale = {scale}, transform = 0 }})");
+            if !text.lines().any(|l| {
+                l.starts_with(&format!("hl.monitor({{ output = \"{name}\", "))
+                    && l.ends_with(&place)
+            }) {
                 return Err(format!("no line for {name}{place} in {text:?}"));
             }
         }
         Ok(())
     };
-    desk.until("monitors.conf follows sway", follows);
+    desk.until("monitors.lua follows sway", follows);
     // The JSON file has every monitor's id.
     let ids = get(&desk, "ids").unwrap_or_default();
     let json = std::fs::read_to_string(home.join(".cache/monitors.json")).unwrap();
@@ -916,7 +916,10 @@ fn the_monitor_profiles_page_arranges_sways_monitors() {
             _ => Err(format!("{r:?}")),
         }
     });
-    desk.until("monitors.conf follows the profile", follows);
+    desk.until("monitors.lua follows the profile", follows);
     let text = std::fs::read_to_string(&conf).unwrap();
-    assert!(text.contains(", 1600x0, 1, transform, 0"), "{text}");
+    assert!(
+        text.contains("position = \"1600x0\", scale = 1, transform = 0 })"),
+        "{text}"
+    );
 }

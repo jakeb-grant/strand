@@ -1160,9 +1160,10 @@ async fn sways_mode_window_rects_and_moves() {
 /// workspace kept by a window lands on the other output with it, the
 /// focus staying where it was; the same move again is `Ok` and changes
 /// nothing; the focused workspace moves with the focus; an empty one
-/// shown on another output is moved and, no longer shown there, let go
-/// as sway lets go of every empty workspace it does not show; an output
-/// that is not there fails it.
+/// shown on another output is not moved onto the output with the focus
+/// (it would not be shown there, and sway lets go of every empty
+/// workspace it does not show): refused, nothing changes; an output that
+/// is not there fails it.
 #[tokio::test]
 async fn sway_moves_a_workspace_to_another_output() {
     let Some(sway) = Sway::start("sway_moves_a_workspace_to_another_output") else {
@@ -1219,7 +1220,9 @@ async fn sway_moves_a_workspace_to_another_output() {
     };
     eprintln!("sway before: {:?}", theirs());
 
-    // The empty workspace shown on HEADLESS-2, moved off focus: gone.
+    // The empty workspace shown on HEADLESS-2, onto the output with the
+    // focus: refused, and sway keeps it where it is.
+    let before = theirs();
     let shown = c
         .mirror
         .workspaces
@@ -1228,16 +1231,15 @@ async fn sway_moves_a_workspace_to_another_output() {
         .find(|w| w.screen == "HEADLESS-2")
         .unwrap()
         .clone();
-    assert_eq!(mv(shown.id, "HEADLESS-1").await, Ok(()));
-    c.until("the empty one let go, the focus on 1", |m| {
-        m.workspace(&shown.name).is_none()
-            && m.focused_workspace.as_ref().is_some_and(|w| w.name == "1")
-    })
-    .await;
-    eprintln!("sway after the empty move: {:?}", theirs());
+    assert!(matches!(
+        mv(shown.id, "HEADLESS-1").await,
+        Err(WmError::Unsupported(_))
+    ));
+    assert_eq!(c.quiet_for(Duration::from_millis(300)).await, 0);
+    assert_eq!(theirs(), before);
 
     // A window keeps workspace 1; the focus goes to 5, made on
-    // HEADLESS-1 (sway made a 3 on HEADLESS-2 for the one let go).
+    // HEADLESS-1 (the empty one still shown on HEADLESS-2).
     let _win = TestWindow::open(&sway.socket(), "strand-ws-move", "moved");
     c.until("the window on 1", |m| {
         m.window_by_app("strand-ws-move").is_some() && m.workspace("1").is_some_and(|w| w.occupied)
@@ -1262,8 +1264,8 @@ async fn sway_moves_a_workspace_to_another_output() {
     eprintln!("sway after moving 1: {after:?}");
     assert!(
         after.contains(&("1".into(), "HEADLESS-2".into(), true, false))
-            && !after.iter().any(|w| w.0 == "3"),
-        "1 shown on HEADLESS-2 in place of the empty 3, not focused: {after:?}"
+            && !after.iter().any(|w| w.0 == shown.name),
+        "1 shown on HEADLESS-2 in place of the empty one, not focused: {after:?}"
     );
     assert!(
         after.contains(&("5".into(), "HEADLESS-1".into(), true, true)),

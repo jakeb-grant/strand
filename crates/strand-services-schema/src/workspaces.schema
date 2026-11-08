@@ -23,7 +23,9 @@ record Workspace key id {
   /// focus staying on the workspace that had it (on the compositors'
   /// IPC: Hyprland, sway, niri). Moving it to the screen it is on does
   /// nothing, so a placement can run again; a screen that is not on
-  /// fails it.
+  /// fails it. On sway, an empty workspace cannot move to the screen
+  /// that shows the focused one (sway removes an empty workspace it does
+  /// not show), and that fails it too.
   action move_to(screen: Screen)
 }
 

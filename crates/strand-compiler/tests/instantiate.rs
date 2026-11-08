@@ -7672,8 +7672,8 @@ fn the_monitor_profiles_page_works_together() {
     assert_eq!(
         outputs(&shell),
         [
-            ("monitors.conf".to_string(), waiting.clone()),
-            ("monitors.json".to_string(), waiting)
+            ("monitors.json".to_string(), waiting.clone()),
+            ("monitors.lua".to_string(), waiting)
         ]
     );
     shell.at(5.0);
@@ -7687,15 +7687,17 @@ fn the_monitor_profiles_page_works_together() {
         outputs(&shell),
         [
             (
-                "monitors.conf".to_string(),
-                "# Written by Strand from outputs.all\n\
-                 monitor = eDP-1, 1920x1200@60, 0x0, 1.25, transform, 0\n\
-                 monitor = DP-3, 3840x2160@59.997, 1920x0, 1.5, transform, 1\n"
-                    .to_string()
-            ),
-            (
                 "monitors.json".to_string(),
                 format!("[[\"{PANEL}\",\"eDP-1\"],[\"{DELL}\",\"DP-3\"]]")
+            ),
+            (
+                "monitors.lua".to_string(),
+                "-- Written by Strand from outputs.all\n\
+                 hl.monitor({ output = \"eDP-1\", mode = \"1920x1200@60\", position = \"0x0\", \
+                 scale = 1.25, transform = 0 })\n\
+                 hl.monitor({ output = \"DP-3\", mode = \"3840x2160@59.997\", position = \"1920x0\", \
+                 scale = 1.5, transform = 1 })\n"
+                    .to_string()
             )
         ]
     );
@@ -7716,7 +7718,9 @@ fn the_monitor_profiles_page_works_together() {
     shell.at(7.0);
     let conf = outputs(&shell);
     assert!(
-        conf[0].1.contains("monitor = eDP-1, 1920x1200@60, 1440x0,"),
+        conf[0].1.contains(
+            "hl.monitor({ output = \"eDP-1\", mode = \"1920x1200@60\", position = \"1440x0\","
+        ),
         "{conf:?}"
     );
     shell.at(9.0);
