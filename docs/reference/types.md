@@ -524,7 +524,7 @@ with `outputs.apply`.
 | Field | Type | |
 | --- | --- | --- |
 | `name` | `text` | Its connector name, such as `DP-1`: the same as `Screen.name` while it is on. |
-| `id` | `text` | The monitor's identity: make, model and description (without the connector some compositors append; a make or model it does not give is `Unknown`, as `wl_output` says), with ` #2` for a second identical one (those on first). The same as `Screen.id` while it is on, and kept when it moves to another port: what a saved layout names a monitor by. A monitor keeps its ` #n` while it is connected, turned off or on, so applying a layout renames none; one plugged in takes the lowest number no connected monitor holds, and which of two identical ones is ` #2` can change when Strand restarts. |
+| `id` | `text` | The monitor's identity: make, model and description (without the connector some compositors append; a make or model it does not give is `Unknown`, as `wl_output` says; a description it does not give is left out, so `Unknown \| Unknown`), with ` #2`, ` #3` for identical ones, numbered by their connectors' names (`DP-2` before `DP-10`), on or off. The same as `Screen.id` while it is on, and kept when it moves to another port: what a saved layout names a monitor by. It depends only on which monitors are connected, so it is the same after a restart and applying a layout renames none; an identical monitor plugged in on a port named before another's, or unplugged, renumbers that one. |
 | `description` | `text` | A readable description of it. |
 | `make` | `text` | Its maker, or "" when the compositor does not say. |
 | `model` | `text` | Its model, or "" when the compositor does not say. |
@@ -687,7 +687,7 @@ Keyed by `id`.
 
 | Field | Type | |
 | --- | --- | --- |
-| `id` | `text` | Its identity: make, model and description, with ` #2` for a second identical one. Kept across a replug to another port. |
+| `id` | `text` | Its identity: make, model and description, with ` #2`, ` #3` for identical ones by their connectors' names (`outputs`' `Output.id`). Kept across a replug to another port. A monitor turned off counts only while `outputs` runs (nothing else says it is still connected): without it, identical monitors shown are numbered among themselves. |
 | `name` | `text` | Its connector name, such as `DP-1`. |
 | `make` | `text` | Its maker. |
 | `model` | `text` | Its model. |

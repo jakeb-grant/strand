@@ -4224,25 +4224,31 @@ proof  = "crates/strand-compiler/tests/instantiate.rs::settings_records_read_and
 [[claim]]
 page   = "site/how-to/monitor-profiles.md"
 text   = "usually carries its serial number), whatever port it is plugged into."
-source = ['crates/strand-services-schema/src/outputs.schema "on, and kept when it moves to another port: what a saved layout"']
+source = ['crates/strand-services-schema/src/outputs.schema "kept when it moves to another port: what a saved layout names a"']
 proof  = "crates/strand/src/services/mod.rs::output_id::an_outputs_id_is_its_screens_id (the connector left out); crates/strand/tests/screens_focus.rs::an_outputs_id_is_its_screens_id_on_sway"
 
 [[claim]]
 page   = "site/how-to/monitor-profiles.md"
 text   = "(a screen has the same `id` as its output)"
-source = ['crates/strand-services-schema/src/outputs.schema "identical one (those on first). The same as `Screen.id` while it is"']
+source = ['crates/strand-services-schema/src/outputs.schema "`DP-10`), on or off. The same as `Screen.id` while it is on, and"']
 proof  = "crates/strand/tests/screens_focus.rs::an_outputs_id_is_its_screens_id_on_sway"
 
 [[claim]]
 page   = "site/how-to/monitor-profiles.md"
-text   = "described alike get ` #2` on the second, the monitors that are on numbered first."
-source = ['''crates/strand-services/src/outputs.rs "/// its identity holds, those on first, in the order of their names, then"''']
-proof  = "crates/strand-services/src/outputs.rs::tests::identical_heads_are_numbered_the_ones_on_first"
+text   = "described alike are numbered by their ports' names, on or off: the one on `DP-2` is plain and the one on `DP-10` gets ` #2`."
+source = ['''crates/strand-services/src/outputs.rs "/// connected, on or off, are numbered in the order of their connectors'"''']
+proof  = "crates/strand-services/src/outputs.rs::tests::identical_heads_are_numbered_by_name"
 
 [[claim]]
 page   = "site/how-to/monitor-profiles.md"
-text   = "turned off or on, so a profile that turns one of the two off names"
-source = ['crates/strand-services/src/outputs.rs "/// keeps it for as long as it is connected, on or off, so applying a"', 'crates/strand-surface/src/monitor.rs "/// renumbers neither: a monitor off has no `wl_output`, so only the"']
+text   = "depend only on which monitors are connected, so they are the same after Strand restarts"
+source = ['crates/strand-services/src/outputs.rs "/// they came in or on what was numbered before: a restart of Strand"', 'crates/strand-surface/src/monitor.rs "/// first plain, then ` #2`, ` #3`: an id depends only on which"']
+proof  = "crates/strand-services/src/outputs.rs::tests::identical_monitors_have_the_same_ids_after_a_restart; crates/strand-surface/src/monitor.rs::tests::identical_monitors_are_numbered_by_name_whatever_their_order; crates/strand/tests/compositor_matrix.rs::identical_outputs_are_numbered_by_name"
+
+[[claim]]
+page   = "site/how-to/monitor-profiles.md"
+text   = "a profile that turns one of the two off names the same one afterwards and is applied once"
+source = ['crates/strand-services/src/outputs.rs "/// gives the same ids, and applying a configuration, which connects and"', 'crates/strand-surface/src/monitor.rs "/// but off (which have no `wl_output`), its ids, so `Screen.id` is"']
 proof  = "crates/strand-services/src/outputs.rs::tests::a_profile_that_swaps_identical_monitors_is_applied_once; crates/strand-surface/src/monitor.rs::tests::identical_monitors_take_the_outputs_numbers"
 
 [[claim]]

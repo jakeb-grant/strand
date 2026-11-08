@@ -173,8 +173,8 @@ const RATE_SLACK: i64 = 500;
 
 static TARGET: Mutex<Option<WaylandTarget>> = Mutex::new(None);
 
-/// (output-id, review rounds 3 and 4) The monitors' ids between the
-/// `outputs` service and strand-surface ([`ids`], [`shown`]).
+/// (output-id, review rounds 3 and 4) The monitors' ids, for
+/// strand-surface ([`ids`]).
 struct Ids {
     /// Connector and `Output.id` of every monitor connected, on or off,
     /// as the last snapshot numbered them.
@@ -183,61 +183,27 @@ struct Ids {
     /// reader, a reload, a failure) sees no plug, unplug or move, so its
     /// list is not given out ([`ids`]).
     live: bool,
-    /// Connector and `Screen.id` of every monitor strand-surface shows
-    /// ([`shown`]), which a run's new heads take first.
-    shown: Vec<(String, String)>,
 }
 
 static IDS: Mutex<Ids> = Mutex::new(Ids {
     given: Vec::new(),
     live: false,
-    shown: Vec::new(),
 });
 
 /// (output-id, review rounds 3 and 4) Each connected monitor's connector
 /// and `Output.id`, on or off, while an `outputs` run is up. strand-surface
 /// numbers a monitor's `Screen.id` from this (`SurfaceHost::output_ids`):
 /// a monitor off has no `wl_output`, so only this list shows that it is
-/// still connected and holds its number. Empty while no run is up (none
-/// yet, or stopped, backing off, its manager gone): what the last run
-/// said may no longer hold (a monitor moved to another port since), and
-/// `Screen.id` is numbered by plug order alone.
+/// still connected and counts in its identity's numbering. Empty while no
+/// run is up (none yet, or stopped, backing off, its manager gone): what
+/// the last run said may no longer hold (a monitor moved to another port
+/// since), and `Screen.id` numbers the monitors shown by their
+/// connectors' names alone.
 pub fn ids() -> Vec<(String, String)> {
     IDS.lock()
         .map(|i| match i.live {
             true => i.given.clone(),
             false => Vec::new(),
-        })
-        .unwrap_or_default()
-}
-
-/// (output-id, review round 4) A monitor strand-surface shows on
-/// `connector` has `Screen.id` `id` (`None`: it is no longer shown). A
-/// run's heads new to it take these ids first, then the ids the last run
-/// gave their connectors, so `Output.id` is `Screen.id` for every monitor
-/// shown whatever happened while no run was up.
-pub fn shown(connector: &str, id: Option<&str>) {
-    if let Ok(mut i) = IDS.lock() {
-        i.shown.retain(|(c, _)| c != connector);
-        if let Some(id) = id {
-            i.shown.push((connector.to_string(), id.to_string()));
-        }
-    }
-}
-
-/// The ids a run's new heads take, by connector: [`shown`]'s, then the
-/// last run's for the connectors not shown (a monitor off).
-fn remembered_ids() -> Vec<(String, String)> {
-    IDS.lock()
-        .map(|i| {
-            let mut all = i.shown.clone();
-            all.extend(
-                i.given
-                    .iter()
-                    .filter(|(c, _)| !i.shown.iter().any(|(s, _)| s == c))
-                    .cloned(),
-            );
-            all
         })
         .unwrap_or_default()
 }
@@ -370,20 +336,23 @@ pub struct Output {
 /// strand-surface's `identity_description`, which this crate does not
 /// depend on; a test in crates/strand holds the two equal). A make or
 /// model the head does not give is `Unknown`, as wlroots' `wl_output`
-/// says it (seen on headless sway). [`Outputs`] numbers identical heads
-/// ` #2`, ` #3`, the ones on first, in the order of their names.
+/// says it (seen on headless sway). (output-id-order) Each part is
+/// trimmed, and an empty description is left out with its separator
+/// (`Unknown | Unknown`, not `Unknown | Unknown | `), so no id ends in a
+/// space. [`Outputs`] numbers identical heads ` #2`, ` #3` by the order
+/// of their connectors' names ([`number_ids`]).
 pub fn output_id(make: &str, model: &str, description: &str, connector: &str) -> String {
     let known = |s: &'_ str| -> String {
-        match s {
+        match s.trim() {
             "" => "Unknown".into(),
             s => s.into(),
         }
     };
     let (make, model) = (known(make), known(model));
-    format!(
-        "{make} | {model} | {}",
-        without_connector(description, connector)
-    )
+    match without_connector(description, connector).trim() {
+        "" => format!("{make} | {model}"),
+        d => format!("{make} | {model} | {d}"),
+    }
 }
 
 /// (output-id, review round 4) `description` without the output's own
@@ -415,8 +384,10 @@ fn without_connector<'a>(description: &'a str, c: &str) -> &'a str {
 /// (outputs-order) Connector names in order, a run of digits by its
 /// number (`DP-2` before `DP-10`), so `outputs.all` lists the outputs the
 /// same way at every start, whatever order the compositor announces them
-/// in (sway announces them in reverse order after a restart).
-fn by_name(a: &str, b: &str) -> std::cmp::Ordering {
+/// in (sway announces them in reverse order after a restart), and
+/// (output-id-order) numbers identical monitors in that order
+/// ([`number_ids`]; strand-surface's `connector_order` is a copy).
+pub fn by_name(a: &str, b: &str) -> std::cmp::Ordering {
     let (mut a, mut b) = (a.as_bytes(), b.as_bytes());
     loop {
         match (a.first(), b.first()) {
@@ -450,60 +421,45 @@ fn by_name(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 /// Fills each output's `id`, numbering identical monitors (the second
-/// ` #2`). The rule (decisions.md output-id, review round 3): an output
-/// comes with the id it had at the last snapshot (empty when new) and
-/// keeps it for as long as it is connected, on or off, so applying a
-/// configuration, which connects and disconnects nothing, renames no
-/// monitor, and a profile chosen by id is still the one chosen after it
-/// is applied. A new one takes the lowest number no connected monitor of
-/// its identity holds, those on first, in the order of their names, then
-/// those off. strand-surface takes `Screen.id` from this numbering
-/// ([`ids`]), so the two agree for every monitor shown.
+/// ` #2`). The rule (decisions.md output-id-order): identical monitors
+/// connected, on or off, are numbered in the order of their connectors'
+/// names ([`by_name`]: `DP-2` before `DP-10`), the first plain. An id
+/// depends only on which monitors are connected, never on the order
+/// they came in or on what was numbered before: a restart of Strand
+/// gives the same ids, and applying a configuration, which connects and
+/// disconnects nothing, renames no monitor. Plugging in or unplugging an
+/// identical monitor can renumber the others of its identity (one on a
+/// port named before theirs comes first). strand-surface takes
+/// `Screen.id` from this numbering ([`ids`]), so the two agree for every
+/// monitor shown.
 fn number_ids(all: &mut [Output]) {
     let bases: Vec<String> = all
         .iter()
         .map(|o| output_id(&o.make, &o.model, &o.description, &o.name))
         .collect();
-    let nth = |base: &str, n: usize| match n {
-        1 => base.to_string(),
-        n => format!("{base} #{n}"),
-    };
-    // The number of the id an output had, when it is still of its base.
-    let prior: Vec<Option<usize>> = all
-        .iter()
-        .zip(&bases)
-        .map(|(o, base)| match o.id.strip_prefix(base.as_str())? {
-            "" => Some(1),
-            rest => rest.strip_prefix(" #")?.parse().ok().filter(|&n| n >= 2),
-        })
-        .collect();
-    let mut held: Vec<Option<usize>> = vec![None; all.len()];
-    let taken = |held: &[Option<usize>], i: usize, n: usize| {
-        held.iter()
-            .enumerate()
-            .any(|(j, h)| *h == Some(n) && bases[j] == bases[i])
-    };
-    let order: Vec<usize> = (0..all.len())
-        .filter(|&i| all[i].enabled)
-        .chain((0..all.len()).filter(|&i| !all[i].enabled))
-        .collect();
-    // Every one connected keeps its number (two with the same, after a
-    // change of description: the first, those on first), then the new.
-    for &i in &order {
-        if let Some(n) = prior[i]
-            && !taken(&held, i, n)
-        {
-            held[i] = Some(n);
-        }
+    let mut order: Vec<usize> = (0..all.len()).collect();
+    order.sort_by(|&a, &b| by_name(&all[a].name, &all[b].name).then(a.cmp(&b)));
+    let mut seen: Vec<(&str, usize)> = Vec::new();
+    let mut ids = vec![String::new(); all.len()];
+    for i in order {
+        let base = bases[i].as_str();
+        let n = match seen.iter_mut().find(|(b, _)| *b == base) {
+            Some((_, n)) => {
+                *n += 1;
+                *n
+            }
+            None => {
+                seen.push((base, 1));
+                1
+            }
+        };
+        ids[i] = match n {
+            1 => base.to_string(),
+            n => format!("{base} #{n}"),
+        };
     }
-    for &i in &order {
-        if held[i].is_none() {
-            let n = (1..).find(|&n| !taken(&held, i, n)).unwrap_or(1);
-            held[i] = Some(n);
-        }
-    }
-    for (i, o) in all.iter_mut().enumerate() {
-        o.id = nth(&bases[i], held[i].unwrap_or(1));
+    for (o, id) in all.iter_mut().zip(ids) {
+        o.id = id;
     }
 }
 
@@ -633,9 +589,6 @@ struct HeadEntry {
     transform: wl_output::Transform,
     scale: f64,
     adaptive_sync: bool,
-    /// (output-id) Its id at the last snapshot, kept while the head is
-    /// there ([`number_ids`]).
-    id: String,
 }
 
 impl HeadEntry {
@@ -656,7 +609,6 @@ impl HeadEntry {
             transform: wl_output::Transform::Normal,
             scale: 1.0,
             adaptive_sync: false,
-            id: String::new(),
         }
     }
 }
@@ -691,9 +643,8 @@ struct Client {
     /// Answers to configurations, by the configuration's own number.
     answers: Vec<(u64, Outcome)>,
     /// (output-id, review round 3) Whether the snapshot shares its ids
-    /// with the process ([`IDS`]): a head new to this run takes the id
-    /// the last run gave its connector, and strand-surface reads them.
-    /// Off in unit tests, which run side by side.
+    /// with the process ([`IDS`]), for strand-surface. Off in unit tests,
+    /// which run side by side.
     shared: bool,
     /// (outputs-apply) A client that reads the outputs once on a
     /// connection of its own ([`read_again`]): it binds the manager
@@ -878,15 +829,11 @@ impl Client {
     }
 
     /// The outputs as published: every head with a name, modes
-    /// deduplicated, in the order of their names ([`by_name`]); each head
-    /// keeps its id ([`number_ids`]). (outputs-mode) A head on that names
+    /// deduplicated, in the order of their names ([`by_name`]), numbered
+    /// ([`number_ids`]). (outputs-mode) A head on that names
     /// no current mode (Hyprland, for a mode not in its list) has the one
     /// its `wl_output` shows.
     fn snapshot(&mut self) -> Vec<Output> {
-        let remembered = match self.shared {
-            true => remembered_ids(),
-            false => Vec::new(),
-        };
         let mut all: Vec<Output> = self
             .heads
             .iter()
@@ -920,18 +867,9 @@ impl Client {
                         .or(h.shown_mode),
                     false => None,
                 };
-                // New to this run: what the last run called it, if any.
-                let id = match h.id.is_empty() {
-                    true => remembered
-                        .iter()
-                        .find(|(n, _)| *n == h.name)
-                        .map(|(_, id)| id.clone())
-                        .unwrap_or_default(),
-                    false => h.id.clone(),
-                };
                 Output {
                     name: h.name.clone(),
-                    id,
+                    id: String::new(),
                     description: h.description.clone(),
                     make: h.make.clone(),
                     model: h.model.clone(),
@@ -952,11 +890,6 @@ impl Client {
             .collect();
         all.sort_by(|a, b| by_name(&a.name, &b.name));
         number_ids(&mut all);
-        for h in self.heads.iter_mut().filter(|h| !h.name.is_empty()) {
-            if let Some(o) = all.iter().find(|o| o.name == h.name) {
-                h.id.clone_from(&o.id);
-            }
-        }
         if self.shared {
             share(&all);
         }
@@ -970,8 +903,7 @@ impl Client {
     /// when bound. The manager bound here stays the one every
     /// configuration is made on, never stopped, so no stopped manager
     /// piles up and Hyprland follows each configuration (it follows the
-    /// oldest manager that configured a monitor). The heads keep their
-    /// ids and the run stays ready; a read that fails keeps what was
+    /// oldest manager that configured a monitor). The run stays ready; a read that fails keeps what was
     /// published, and the next change tries again.
     fn resync(&mut self, path: &std::path::Path) {
         self.undone = None;
@@ -2684,11 +2616,12 @@ mod tests {
         );
     }
 
-    /// (output-id) An output's id is its monitor's identity: the
-    /// connector wlroots appends to the description dropped, identical
-    /// monitors numbered, the ones on first.
+    /// (output-id, output-id-order) An output's id is its monitor's
+    /// identity: the connector wlroots appends to the description
+    /// dropped, identical monitors numbered by their connectors' names,
+    /// on or off.
     #[test]
-    fn identical_heads_are_numbered_the_ones_on_first() {
+    fn identical_heads_are_numbered_by_name() {
         let head = |name: &str, desc: &str, enabled: bool| Output {
             name: name.into(),
             make: "Dell Inc.".into(),
@@ -2700,7 +2633,7 @@ mod tests {
         let mut all = vec![
             head("DP-1", "Dell Inc. DELL U2720Q (DP-1)", false),
             head("DP-2", "Dell Inc. DELL U2720Q (DP-2)", true),
-            head("DP-3", "Dell Inc. DELL U2720Q (DP-3)", true),
+            head("DP-10", "Dell Inc. DELL U2720Q (DP-10)", true),
             Output {
                 make: String::new(),
                 ..head("eDP-1", "Built-in (not eDP-2)", true)
@@ -2712,21 +2645,113 @@ mod tests {
         assert_eq!(
             ids,
             [
-                format!("{base} #3"),
                 base.to_string(),
                 format!("{base} #2"),
+                format!("{base} #3"),
                 "Unknown | DELL U2720Q | Built-in (not eDP-2)".to_string(),
             ]
         );
     }
 
-    /// (output-id, review rounds 1 and 3) Two identical monitors keep
-    /// their ids while they are connected, whichever is turned off or on;
-    /// one unplugged and plugged in again takes the lowest number no
-    /// connected monitor holds, and a new one does not take the number of
-    /// one that is off.
+    /// (output-id-order) No id ends in a separator or a space: an empty
+    /// description is left out with its `" | "` (Hyprland's headless
+    /// outputs give none), and a part that ends in spaces (a description
+    /// `make model serial` with no serial) is trimmed. Every id with a
+    /// description is as it was, byte for byte (the owner's saved
+    /// profiles name these).
     #[test]
-    fn an_identical_monitor_keeps_its_id_while_it_is_there() {
+    fn an_id_has_no_trailing_separator() {
+        assert_eq!(output_id("", "", "", "NESTED-1"), "Unknown | Unknown");
+        assert_eq!(output_id(" ", "", "  ", "DP-1"), "Unknown | Unknown");
+        assert_eq!(
+            output_id("LG Display", "0x07C7", "LG Display 0x07C7 (eDP-1)", "eDP-1"),
+            "LG Display | 0x07C7 | LG Display 0x07C7"
+        );
+        assert_eq!(
+            output_id(
+                "LG Display",
+                "0x07C7",
+                "LG Display 0x07C7  (eDP-1)",
+                "eDP-1"
+            ),
+            "LG Display | 0x07C7 | LG Display 0x07C7"
+        );
+        assert_eq!(
+            output_id("LG Display", "0x07C7", "LG Display 0x07C7 ", "eDP-1"),
+            "LG Display | 0x07C7 | LG Display 0x07C7"
+        );
+        assert_eq!(
+            output_id(
+                "Ancor Communications Inc",
+                "ASUS VS239",
+                "Ancor Communications Inc ASUS VS239 L3LMTF263862 (DP-6)",
+                "DP-6"
+            ),
+            "Ancor Communications Inc | ASUS VS239 | Ancor Communications Inc ASUS VS239 L3LMTF263862"
+        );
+        let mut all: Vec<Output> = ["NESTED-2", "NESTED-1"]
+            .iter()
+            .map(|n| Output {
+                name: (*n).into(),
+                enabled: true,
+                ..Output::default()
+            })
+            .collect();
+        number_ids(&mut all);
+        let ids: Vec<&str> = all.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(ids, ["Unknown | Unknown #2", "Unknown | Unknown"]);
+    }
+
+    /// (output-id-order, strand-issues 2026-11-08) Identical monitors
+    /// have the same ids whatever order they came in: three made one
+    /// after another (eDP-1, then DP-6, then DP-2, each snapshot taken in
+    /// between, as a running Strand sees them) are numbered as the three
+    /// read at once after a restart, by name; and turning any of them off
+    /// or on renames none.
+    #[test]
+    fn identical_monitors_have_the_same_ids_after_a_restart() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let conn = Connection::from_socket(a).unwrap();
+        let head = |name: &str| HeadEntry {
+            name: name.into(),
+            enabled: true,
+            ..HeadEntry::new(ZwlrOutputHeadV1::inert(conn.backend().downgrade()))
+        };
+        let ids = |all: &[Output]| -> Vec<(String, String)> {
+            all.iter().map(|o| (o.name.clone(), o.id.clone())).collect()
+        };
+        let mut running = Client::default();
+        for name in ["eDP-1", "DP-6", "DP-2"] {
+            running.heads.push(head(name));
+            let _ = running.snapshot();
+        }
+        let plugged = ids(&running.snapshot());
+        let mut restarted = Client {
+            heads: ["DP-2", "DP-6", "eDP-1"].map(head).into(),
+            ..Client::default()
+        };
+        let x = "Unknown | Unknown";
+        let want = [
+            ("DP-2".to_string(), x.to_string()),
+            ("DP-6".into(), format!("{x} #2")),
+            ("eDP-1".into(), format!("{x} #3")),
+        ];
+        assert_eq!(plugged, want);
+        assert_eq!(ids(&restarted.snapshot()), want);
+        for i in 0..3 {
+            for on in [false, true] {
+                running.heads[i].enabled = on;
+                assert_eq!(ids(&running.snapshot()), want, "{i} on: {on}");
+            }
+        }
+    }
+
+    /// (output-id-order) One of two identical monitors unplugged and
+    /// plugged in again: while it is away the other is numbered alone
+    /// (plain), and back on any port they are numbered by name again,
+    /// as a restart would number them.
+    #[test]
+    fn an_identical_monitor_unplugged_and_replugged_is_numbered_by_name() {
         let head = |name: &str, enabled: bool| Output {
             name: name.into(),
             make: "Dell Inc.".into(),
@@ -2741,44 +2766,28 @@ mod tests {
         let mut all = vec![head("DP-1", true), head("DP-2", true)];
         number_ids(&mut all);
         assert_eq!(ids(&all), [base.to_string(), second.clone()]);
-        // Every on and off of the two, from every other: neither is
-        // renumbered.
-        for (a, b) in [(false, true), (true, false), (false, false), (true, true)] {
-            for (c, d) in [(false, true), (true, false), (false, false), (true, true)] {
-                all[0].enabled = a;
-                all[1].enabled = b;
-                number_ids(&mut all);
-                all[0].enabled = c;
-                all[1].enabled = d;
-                number_ids(&mut all);
-                assert_eq!(ids(&all), [base.to_string(), second.clone()]);
-            }
-        }
-        // DP-1 unplugged: DP-2 keeps its `#2`.
-        let mut all = vec![all.remove(1)];
-        number_ids(&mut all);
-        assert_eq!(ids(&all), std::slice::from_ref(&second));
-        // Plugged in again (or into DP-5), on or off: the number free.
+        // DP-1 unplugged: DP-2 is the only one, plain.
+        let mut alone = vec![head("DP-2", true)];
+        number_ids(&mut alone);
+        assert_eq!(ids(&alone), [base.to_string()]);
+        // Back on DP-1, on or off: as before. On DP-5: after DP-2.
         for enabled in [true, false] {
-            let mut again = all.clone();
-            again.push(head("DP-5", enabled));
+            let mut again = vec![head("DP-1", enabled), head("DP-2", true)];
             number_ids(&mut again);
-            assert_eq!(ids(&again), [second.clone(), base.to_string()]);
+            assert_eq!(ids(&again), [base.to_string(), second.clone()]);
+            let mut moved = vec![head("DP-2", true), head("DP-5", enabled)];
+            number_ids(&mut moved);
+            assert_eq!(ids(&moved), [base.to_string(), second.clone()]);
         }
-        // A new one beside one that is off with `X`: `X #2`, not `X`.
-        let mut all = vec![head("DP-1", false), head("DP-2", true)];
-        all[0].id = base.to_string();
-        number_ids(&mut all);
-        assert_eq!(ids(&all), [base.to_string(), second.clone()]);
     }
 
     /// (output-id, review round 3) The profile loop: two identical
-    /// monitors with no serial, DP-1 off and DP-2 on at start, so DP-2 is
-    /// `X` and DP-1 `X #2`. A profile `X` off, `X #2` on is applied: DP-1
-    /// goes on and DP-2 off, at the heads, through the snapshots the
-    /// service publishes. Neither id changes, so the same profile is
-    /// chosen again and applying it changes nothing (it was applied every
-    /// 1.5 s while a monitor turned on took the lowest number).
+    /// monitors with no serial, DP-1 (`X`) on and DP-2 (`X #2`) off. A
+    /// profile `X` off, `X #2` on is applied: DP-1 goes off and DP-2 on,
+    /// at the heads, through the snapshots the service publishes. Neither
+    /// id changes, so the same profile is chosen again and applying it
+    /// changes nothing (it was applied every 1.5 s while a monitor turned
+    /// on took the lowest number).
     #[test]
     fn a_profile_that_swaps_identical_monitors_is_applied_once() {
         let (a, _b) = UnixStream::pair().unwrap();
@@ -2792,7 +2801,7 @@ mod tests {
             ..HeadEntry::new(ZwlrOutputHeadV1::inert(conn.backend().downgrade()))
         };
         let mut c = Client {
-            heads: vec![head("DP-1", false), head("DP-2", true)],
+            heads: vec![head("DP-1", true), head("DP-2", false)],
             ..Client::default()
         };
         let state = |all: &[Output]| -> Vec<(String, String, bool)> {
@@ -2806,8 +2815,8 @@ mod tests {
         assert_eq!(
             state(&first),
             [
-                ("DP-1".into(), x2.clone(), false),
-                ("DP-2".into(), x.clone(), true)
+                ("DP-1".into(), x.clone(), true),
+                ("DP-2".into(), x2.clone(), false)
             ]
         );
         // The profile, by id; applying it sets each head it names.
@@ -2831,8 +2840,8 @@ mod tests {
             assert_eq!(
                 state(&all),
                 [
-                    ("DP-1".into(), x2.clone(), true),
-                    ("DP-2".into(), x.clone(), false)
+                    ("DP-1".into(), x.clone(), false),
+                    ("DP-2".into(), x2.clone(), true)
                 ],
                 "round {round}"
             );
@@ -2845,14 +2854,13 @@ mod tests {
         let _ = c.snapshot();
         c.heads[0].enabled = true;
         let ids: Vec<String> = c.snapshot().into_iter().map(|o| o.id).collect();
-        assert_eq!(ids, [x2, x]);
+        assert_eq!(ids, [x, x2]);
     }
 
     /// (output-id, review round 4) The ids are given to strand-surface
     /// only while a run is up: one stopped sees no monitor moved to
-    /// another port, and its list would number that monitor ` #2` (a
-    /// connector it left still holding its id). A run's new heads take
-    /// the ids of the monitors shown first, then the last run's.
+    /// another port, and its list would number that monitor by a
+    /// connector it left.
     #[test]
     fn ids_are_given_only_while_a_run_is_up() {
         let dell = "Dell Inc. | DELL U2720Q | Dell Inc. DELL U2720Q 6Y1ZW13";
@@ -2869,21 +2877,6 @@ mod tests {
         // The run stops (nobody reads `outputs`), or its manager goes.
         unshare();
         assert_eq!(ids(), Vec::<(String, String)>::new());
-        // Meanwhile the Dell is moved to DP-2, where strand-surface shows
-        // it (numbered by plug order, so plain): the next run's DP-2 takes
-        // that, and the last run's DP-1 is only a fallback.
-        shown("DP-2", Some(dell));
-        shown("eDP-1", Some("BOE"));
-        assert_eq!(
-            remembered_ids(),
-            [
-                ("DP-2".into(), dell.into()),
-                ("eDP-1".into(), "BOE".into()),
-                ("DP-1".into(), dell.into())
-            ]
-        );
-        shown("DP-2", None);
-        shown("eDP-1", None);
         share(&[out("DP-2", dell)]);
         assert_eq!(ids(), [("DP-2".into(), dell.into())]);
         unshare();
@@ -2912,17 +2905,13 @@ mod tests {
             heads: vec![head("HEADLESS-3"), head("HEADLESS-2"), head("HEADLESS-10")],
             ..Client::default()
         };
-        let all: Vec<String> = c.snapshot().into_iter().map(|o| o.name).collect();
-        assert_eq!(all, ["HEADLESS-2", "HEADLESS-3", "HEADLESS-10"]);
-        // Each head keeps its own id, not its place's.
-        let ids: Vec<(String, String)> = c
-            .heads
-            .iter()
-            .map(|h| (h.name.clone(), h.id.clone()))
-            .collect();
+        let all = c.snapshot();
+        let names: Vec<&str> = all.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(names, ["HEADLESS-2", "HEADLESS-3", "HEADLESS-10"]);
+        // Each head has its own id, not its place's.
         assert!(
-            ids.iter().all(|(n, id)| id.ends_with(n.as_str())),
-            "{ids:?}"
+            all.iter().all(|o| o.id.ends_with(o.name.as_str())),
+            "{all:?}"
         );
     }
 
@@ -3575,8 +3564,8 @@ mod tests {
     }
 
     /// (outputs-apply) A read on a connection of its own is taken into
-    /// the heads of the same name: each keeps its proxy, modes and id,
-    /// its current mode is its listed one of that size and rate, else the
+    /// the heads of the same name: each keeps its proxy and modes, its id
+    /// is its monitor's, its current mode is its listed one of that size and rate, else the
     /// one shown, and it is published.
     #[test]
     fn a_read_again_is_taken_into_the_heads() {
@@ -3585,7 +3574,6 @@ mod tests {
         let listed = ZwlrOutputModeV1::inert(conn.backend().downgrade());
         let head = HeadEntry {
             name: "DP-1".into(),
-            id: "Dell | U2720Q | Dell U2720Q".into(),
             enabled: true,
             position: (0, 0),
             modes: vec![listed.id()],

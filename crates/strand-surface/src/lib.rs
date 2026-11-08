@@ -45,7 +45,7 @@ pub use manager::{
     LockError, LockSettleEnd, LockSettled, LockState, RepaintHandle, Request, State, Stats,
     SurfaceError, SurfaceHost, SurfaceInfo, SurfaceManager, ToplevelState,
 };
-pub use monitor::{MONITOR_RETENTION, Monitor, MonitorId, identity_description};
+pub use monitor::{MONITOR_RETENTION, Monitor, MonitorId, connector_order, identity_description};
 pub use placement::{
     Anchors, LayerConfig, PlacementError, WindowConfig, layer_config, window_config,
 };

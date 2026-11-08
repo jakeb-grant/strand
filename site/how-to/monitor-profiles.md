@@ -61,7 +61,9 @@ export let guess = outputs.all.map(o => OutputChange(
 
 - **`sort_by`** keeps the order it finds among equals, and `false`
   comes before `true`, so every monitor but the laptop's panel
-  (`eDP-1`) keeps its place and the panel goes last.
+  (`eDP-1`) keeps its place and the panel goes last. Some machines
+  name the built-in panel `LVDS-…` or `DSI-…`, so a config for such a
+  machine checks those names in `inside` too.
 - **`x`** is the sum of the widths of the monitors before this one:
   `take` keeps those, `index_of` says how many there are, and `sum`
   adds up what `wide` gives for each. A 4K monitor at scale 1.5 turned
@@ -353,11 +355,12 @@ panel off (`on = false`) for the dock instead.
   whenever that set is connected.
 - **Two monitors of one model** have different `id`s when their
   descriptions differ (most carry the serial number). Two that are
-  described alike get ` #2` on the second, the monitors that are on
-  numbered first. A monitor keeps its number while it is connected,
-  turned off or on, so a profile that turns one of the two off names
-  the same one afterwards and is applied once; one plugged in takes the
-  lowest number free, and which one is ` #2` can change when Strand
-  restarts, as for `Screen.id`.
+  described alike are numbered by their ports' names, on or off: the
+  one on `DP-2` is plain and the one on `DP-10` gets ` #2`. The numbers
+  depend only on which monitors are connected, so they are the same
+  after Strand restarts, and a profile that turns one of the two off
+  names the same one afterwards and is applied once. Plugging in
+  another of them, or unplugging one, can renumber the others, as it
+  does for `Screen.id`.
 - **Only a profile, never a guess.** Apply only when `mons != null`,
   and a set nobody saved stays as the compositor arranged it.

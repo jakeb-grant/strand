@@ -1518,8 +1518,8 @@ impl SurfaceHost for Host {
         let Ok(()) = host_loop::detached(self, surface);
     }
 
-    /// (output-id, review round 3) `Screen.id` numbers identical
-    /// monitors as the `outputs` service does.
+    /// (output-id, review round 3; output-id-order) `Screen.id` numbers
+    /// identical monitors as the `outputs` service does.
     fn output_ids(&mut self) -> Vec<(String, String)> {
         strand_services::outputs::ids()
     }
@@ -1532,11 +1532,6 @@ impl SurfaceHost for Host {
         record_output(&mut self.recorder, monitor);
         if let Some(feeds) = &mut self.feeds {
             feeds.screen(monitor.id.as_str(), monitor.connector.as_deref());
-        }
-        // (output-id, review round 4) A run of `outputs` started later
-        // gives this monitor's head its `Screen.id`.
-        if let Some(c) = &monitor.connector {
-            strand_services::outputs::shown(c, Some(monitor.id.as_str()));
         }
         if let Some(f) = &mut self.logic {
             f.monitor_added(monitor);
@@ -1575,9 +1570,6 @@ impl SurfaceHost for Host {
             .output_gone(strand_core::flight::now_ns(), monitor.id.as_str());
         if let Some(feeds) = &mut self.feeds {
             feeds.screen(monitor.id.as_str(), None);
-        }
-        if let Some(c) = &monitor.connector {
-            strand_services::outputs::shown(c, None);
         }
         if let Some(f) = &mut self.logic {
             f.monitor_removed(monitor);

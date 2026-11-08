@@ -375,8 +375,12 @@ provisional record Day key date {
 /// pinned by, kept across a replug to another port. `name` is the
 /// connector (`DP-1`).
 provisional record Screen key id {
-  /// Its identity: make, model and description, with ` #2` for a second
-  /// identical one. Kept across a replug to another port.
+  /// Its identity: make, model and description, with ` #2`, ` #3` for
+  /// identical ones by their connectors' names (`outputs`' `Output.id`).
+  /// Kept across a replug to another port. A monitor turned off counts
+  /// only while `outputs` runs (nothing else says it is still
+  /// connected): without it, identical monitors shown are numbered among
+  /// themselves.
   id: text
   /// Its connector name, such as `DP-1`.
   name: text

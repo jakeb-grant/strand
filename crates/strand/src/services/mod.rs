@@ -5215,6 +5215,25 @@ mod output_id {
             // model empty, as the head does (nested Hyprland 0.57).
             ("", "", "", "NESTED-1", "", ""),
             ("Acme", "X", "Acme X ()", "", "Acme", "X"),
+            // (output-id-order) A description `make model serial` with no
+            // serial ends in a space, before the connector or without it.
+            (
+                "LG Display",
+                "0x07C7",
+                "LG Display 0x07C7  (eDP-1)",
+                "eDP-1",
+                "LG Display",
+                "0x07C7",
+            ),
+            (
+                "LG Display",
+                "0x07C7",
+                "LG Display 0x07C7 ",
+                "eDP-1",
+                "LG Display",
+                "0x07C7",
+            ),
+            (" ", "", " ", "DP-9", " ", ""),
             // (review round 4) wlroots' DP connector driving an HDMI sink:
             // the same id on every port.
             (
@@ -5269,5 +5288,18 @@ mod output_id {
                 "{a} and {b}"
             );
         }
+    }
+
+    /// (output-id-order) Both number identical monitors in the same order
+    /// of their connectors' names (strand-surface has a copy of it).
+    #[test]
+    fn both_order_connectors_alike() {
+        let mut names = [
+            "eDP-1", "DP-10", "HDMI-A-1", "DP-2", "DP-1", "DP-02", "", "DP-", "NESTED-9",
+        ];
+        let mut theirs = names;
+        names.sort_by(|a, b| strand_services::outputs::by_name(a, b));
+        theirs.sort_by(|a, b| strand_surface::connector_order(a, b));
+        assert_eq!(names, theirs);
     }
 }
