@@ -205,6 +205,48 @@ fn a_pending_wallpaper_writes_nothing() {
     assert_eq!(written(&c[0]), "wallpaper");
 }
 
+/// (build-ready) A `text:` that reads the scope and, through it, a
+/// token (inside `join` or `hex`, or a `let` another reader has already
+/// worked out) waits for the palette as a template does, so a generated
+/// theme file is never written with the fallback's colours first; a text
+/// that reads no token is written at once.
+#[test]
+fn a_scope_text_reading_a_token_waits_for_the_palette() {
+    let dir = temp_dir("text-pending");
+    let img = image::RgbImage::from_fn(64, 64, |x, _| {
+        image::Rgb(if x < 48 {
+            [30, 90, 200]
+        } else {
+            [240, 200, 40]
+        })
+    });
+    img.save(dir.join("wall.png")).unwrap();
+    let src = "use palette material(image: \"wall.png\", dark: true) ?? material(seed: #ff0000)\n\
+               export let fg = hex($fg)\n\
+               export state key = \"fg=\"\n\
+               bar Top { text fg }\n\
+               file \"out/join.txt\" { text: join(\"\", key, hex($fg)) }\n\
+               file \"out/let.txt\" { text: join(\"\", key, fg) }\n\
+               file \"out/plain.txt\" { text: join(\"\", key, 1) }\n";
+    let shell = boot(&[("a.strand", src)], &dir);
+    let first = shell.take();
+    assert_eq!(first.len(), 1, "written while pending: {first:?}");
+    assert_eq!(first[0].path, Some(dir.join("out/plain.txt")), "{first:?}");
+    assert_eq!(written(&first[0]), "fg=1");
+    let fallback = shell.inst.get("a.fg").unwrap();
+    let theme = shell.inst.theme().unwrap();
+    assert!(theme.wait_images(&shell.rt, Duration::from_secs(30)));
+    shell.flush();
+    let real = shell.inst.get("a.fg").unwrap();
+    assert_ne!(fallback, real, "the wallpaper's palette is another");
+    let c = shell.take();
+    assert_eq!(c.len(), 2, "{c:?}");
+    let want = format!("fg={}", real.as_text().unwrap());
+    for o in &c {
+        assert_eq!(written(o), want, "{o:?}");
+    }
+}
+
 /// An output reading `.light()` holds the other mode while it is
 /// mounted; unmounted, the hold goes.
 #[test]

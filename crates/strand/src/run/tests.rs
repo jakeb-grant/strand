@@ -1708,11 +1708,7 @@ fn lock_edits_wait_for_the_unlock_and_then_land() {
         std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
     let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
     assert_eq!(ok["ok"], true);
-    let mut next_event = || {
-        let mut line = String::new();
-        std::io::BufRead::read_line(&mut events, &mut line).unwrap();
-        serde_json::from_str::<Json>(&line).unwrap()
-    };
+    let mut next_event = || heard(&mut events);
     // An edit that leaves the lock alone commits at once, lock shown.
     std::fs::write(&file, src("lock a", "bar a2")).unwrap();
     let ev = next_event();
@@ -1870,16 +1866,39 @@ fn a_password_value_is_redacted_from_fault_messages() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A watcher on `socket`: the next event it hears.
+/// A watcher on `socket`: the next event it hears, past the `auth`
+/// service's warning that no helper is installed ([`heard`]).
 fn watch(socket: &Path) -> impl FnMut() -> Json {
     let mut events =
         std::io::BufReader::new(std::os::unix::net::UnixStream::connect(socket).unwrap());
     let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
     assert_eq!(ok["ok"], true);
-    move || {
+    move || heard(&mut events)
+}
+
+/// The next event on `events`. (build-ready) A watcher hears the service
+/// diagnostics still open as it subscribes: the `auth` service's warning
+/// that no `strand-auth` helper is installed is one on a target that has
+/// none built, whatever [`spawn_live_on`] tells the logic thread, so an
+/// event of that warning alone is passed over, as the lock tests' events
+/// are the same on any target.
+fn heard(events: &mut std::io::BufReader<std::os::unix::net::UnixStream>) -> Json {
+    loop {
         let mut line = String::new();
-        std::io::BufRead::read_line(&mut events, &mut line).unwrap();
-        serde_json::from_str::<Json>(&line).unwrap()
+        std::io::BufRead::read_line(events, &mut line).unwrap();
+        let ev = serde_json::from_str::<Json>(&line).unwrap();
+        let only_auth = ev["event"] == "notices"
+            && ev["notices"].as_array().is_some_and(|n| {
+                !n.is_empty()
+                    && n.iter().all(|n| {
+                        n.as_str()
+                            .is_some_and(|n| n.starts_with("service `auth`: no `strand-auth`"))
+                    })
+            })
+            && ev["diagnostics"].as_array().is_none_or(Vec::is_empty);
+        if !only_auth {
+            return ev;
+        }
     }
 }
 
@@ -4218,4 +4237,76 @@ fn an_empty_config_has_nothing_to_run() {
     assert!(!nothing_to_run(&broken));
     let _ = std::fs::remove_dir_all(dir);
     assert!(not_a_config_dir(&std::env::temp_dir()).is_none());
+}
+
+/// (build-ready) A service diagnostic (here a `from poll` command that
+/// fails) names the service, reaches the watcher already there, and is
+/// heard at once by a `strand watch` that subscribes after it was said,
+/// as the `file` outputs' standing notices are.
+#[test]
+fn open_service_diagnostics_reach_watchers_that_come_later() {
+    let dir = temp_dir("service-notices");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "permit exec \"false\"\n\
+         service gone from poll [\"false\"] every 1h { n: int = n }\n\
+         bar Top { text join(\" \", \"n\", gone.n) }\n",
+    )
+    .unwrap();
+    let socket = dir.join("ipc.sock");
+    let (wtx, wrx) = calloop::channel::channel();
+    let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+    assert!(boot.build.is_some(), "{:?}", boot.diagnostics);
+    let live = Live {
+        worker: Some(wrx),
+        jobs: Some(compiler.jobs()),
+        socket: Some(socket.clone()),
+        buses: None,
+        icon_theme_switched: None,
+        requests_to: None,
+        events_to: None,
+        own_writes: None,
+        to_main: None,
+        tokens: None,
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(boot, Storage::none(), from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| s.texts() == ["n 0"]);
+    let watch = || {
+        let mut events =
+            std::io::BufReader::new(std::os::unix::net::UnixStream::connect(&socket).unwrap());
+        let ok = ipc::request(&mut events, &ipc::Request::Watch, Duration::from_secs(10)).unwrap();
+        assert_eq!(ok["ok"], true);
+        // Nothing said: an error, not a hang.
+        events
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        events
+    };
+    let next = |events: &mut std::io::BufReader<std::os::unix::net::UnixStream>| {
+        let mut line = String::new();
+        std::io::BufRead::read_line(events, &mut line).unwrap();
+        serde_json::from_str::<Json>(&line).unwrap()
+    };
+    let said = json!("service `gone`: `false` failed (exit status: 1)");
+    let mut first = watch();
+    loop {
+        let ev = next(&mut first);
+        if ev["event"] == "notices" && ev["notices"].as_array().is_some_and(|n| n.contains(&said)) {
+            break;
+        }
+    }
+    let mut late = watch();
+    let ev = next(&mut late);
+    assert_eq!(ev["event"], "notices", "{ev}");
+    assert_eq!(ev["notices"], json!([said]), "at once: {ev}");
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(&dir);
 }

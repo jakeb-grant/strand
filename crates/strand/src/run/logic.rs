@@ -291,6 +291,7 @@ pub fn logic(
         host_notices,
         blur_reports: Default::default(),
         blur_notices: Vec::new(),
+        service_open: Vec::new(),
         settings_reread: Vec::new(),
         layout_seen: None,
         press: Default::default(),
@@ -430,6 +431,9 @@ pub fn logic(
         // (M5) An `export` waiting for its other mode is answered at its
         // deadline even when nothing else wakes the loop.
         also(shell.exports_wait(now));
+        // (build-ready) A `file` waiting on a service that has not
+        // answered is told at its deadline.
+        also(shell.files.wait(now));
         // (screens-focus) A follow nobody reads ends at its grace's end;
         // screens it changed show at once.
         also(shell.focus.deadline(now));

@@ -111,6 +111,11 @@ pub(super) struct Shell {
     /// The notices made from [`Shell::blur_reports`]: each logged once,
     /// kept for later watchers, replaced on a reload.
     pub(super) blur_notices: Vec<String>,
+    /// (build-ready) The service diagnostics not resolved yet (a field
+    /// that does not convert, a failing poll, a run that failed), as
+    /// `strand watch` words them: a watcher that subscribes later hears
+    /// them at once, as it does the `file` outputs' standing notices.
+    pub(super) service_open: Vec<(String, String)>,
     /// Settings files (and their runtime overlays) read again since the
     /// last step, as notices name them.
     pub(super) settings_reread: Vec<String>,
@@ -478,6 +483,9 @@ impl Shell {
         diagnostics: Vec<strand_services::ServiceDiagnostic>,
     ) {
         let texts: Vec<String> = diagnostics.iter().map(ToString::to_string).collect();
+        for d in &diagnostics {
+            keep_open(&mut self.service_open, d);
+        }
         // The overlay shows what the user must act on; a failure the
         // service retries (no session bus) is a log line and a `strand
         // watch` notice.
@@ -978,5 +986,67 @@ impl Shell {
         if let Some(sink) = &self.event_sink {
             sink.send(event);
         }
+    }
+}
+
+/// (build-ready) The most open service diagnostics kept for a later
+/// watcher; past it the oldest goes (the log has every one).
+const SERVICE_OPEN_MAX: usize = 64;
+
+/// (build-ready) `d` kept in `open`, keyed by its service and message,
+/// or (resolved) taken out.
+fn keep_open(open: &mut Vec<(String, String)>, d: &strand_services::ServiceDiagnostic) {
+    let key = format!("{}\0{}", d.service, d.message);
+    open.retain(|(k, _)| *k != key);
+    if !d.resolved {
+        if open.len() >= SERVICE_OPEN_MAX {
+            open.remove(0);
+        }
+        open.push((key, d.to_string()));
+    }
+}
+
+#[cfg(test)]
+mod open_tests {
+    use super::*;
+
+    fn diag(service: &str, message: &str, resolved: bool) -> strand_services::ServiceDiagnostic {
+        strand_services::ServiceDiagnostic {
+            service: service.into(),
+            message: message.into(),
+            notice: false,
+            resolved,
+        }
+    }
+
+    /// (build-ready) An open service diagnostic is kept until it is
+    /// resolved, once however often it is said, so a `strand watch`
+    /// started after the shell read a broken field still hears of it.
+    #[test]
+    fn open_service_diagnostics_are_kept_until_resolved() {
+        let mut open = Vec::new();
+        keep_open(&mut open, &diag("news", "`news.posts`: bad", false));
+        keep_open(
+            &mut open,
+            &diag("rate", "`curl` failed (exit status: 22)", false),
+        );
+        keep_open(&mut open, &diag("news", "`news.posts`: bad", false));
+        let texts: Vec<&str> = open.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "service `rate`: `curl` failed (exit status: 22)",
+                "service `news`: `news.posts`: bad",
+            ]
+        );
+        keep_open(&mut open, &diag("news", "`news.posts`: bad", true));
+        keep_open(&mut open, &diag("rate", "another", true));
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].1, "service `rate`: `curl` failed (exit status: 22)");
+        for i in 0..SERVICE_OPEN_MAX + 5 {
+            keep_open(&mut open, &diag("many", &i.to_string(), false));
+        }
+        assert_eq!(open.len(), SERVICE_OPEN_MAX);
+        assert_eq!(open[0].1, "service `many`: 5");
     }
 }

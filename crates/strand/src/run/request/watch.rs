@@ -1,7 +1,7 @@
 //! `strand watch`: answered by the socket's server itself; the running
-//! config's warnings, the main thread's notices and the `file` outputs'
-//! standing notices follow here (the boot's were made before anyone
-//! watched).
+//! config's warnings, the main thread's notices, the `file` outputs'
+//! standing notices and (build-ready) the open service diagnostics
+//! follow here (the boot's were made before anyone watched).
 
 use serde_json::json;
 
@@ -19,6 +19,7 @@ impl Shell {
             .iter()
             .chain(&self.blur_notices)
             .chain(self.files.notices())
+            .chain(self.service_open.iter().map(|(_, t)| t))
             .collect();
         if !(self.warnings.is_empty() && notices.is_empty())
             && let Some(s) = &mut self.server

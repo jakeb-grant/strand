@@ -263,7 +263,8 @@ Keyed by `id`.
 A date and time of day, such as `clock.today`. Filled from a document it
 also reads RFC 3339 / ISO 8601, RFC 2822, `YYYYMMDD` and Unix time
 (seconds to nanoseconds, by its count of digits), from text or a number alike;
-prefer `Date?` where a source may leave it out.
+prefer `Date?` where a source may leave it out. Until a source fills it,
+a `Date` field is 1970-01-01 with no time of day.
 
 | Field | Type | |
 | --- | --- | --- |
@@ -278,7 +279,7 @@ prefer `Date?` where a source may leave it out.
 | --- | --- |
 | `fn month_start() -> Date` | The first day of its month: `clock.today.month_start()`. |
 | `fn add(days: int = 0, months: int = 0, years: int = 0) -> Date` | Moves by days, months and years, keeping its time of day: `month.add(months: -1)`. |
-| `fn format(pattern: text) -> text` | Formats with a strftime pattern: `month.format("%B %Y")`. |
+| `fn format(pattern: text) -> text` | Formats with a strftime pattern: `month.format("%B %Y")`. A date without a time of day formats as its midnight (`%H:%M` is `00:00`). |
 
 ### `Day`
 

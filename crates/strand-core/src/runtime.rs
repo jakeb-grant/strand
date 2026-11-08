@@ -762,6 +762,17 @@ impl Runtime {
             .ok_or(Error::Disposed(id))
     }
 
+    /// The nodes the running computation has read so far on this run, in
+    /// read order; empty outside one (or under [`Runtime::untrack`]). With
+    /// [`Runtime::sources`] a computation can ask, mid-run, whether what
+    /// it read reaches a node (a `file`'s text, the token table).
+    pub fn reads_so_far(&self) -> Vec<NodeId> {
+        match self.inner.tracking.borrow().last() {
+            Some(frame) if frame.observer.is_some() => frame.sources.clone(),
+            _ => Vec::new(),
+        }
+    }
+
     /// The nodes that read `id` on their last run (no particular order).
     pub fn observers(&self, id: NodeId) -> Result<Vec<NodeId>, Error> {
         self.inner

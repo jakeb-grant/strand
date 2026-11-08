@@ -9,12 +9,12 @@
 //! values, and hands the changed ones to the binary's writer.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use strand_core::{Error, Memo, Runtime};
+use strand_core::{Error, Memo, NodeId, Runtime};
 
 use super::theme::{is_pending, other_differs};
 use super::{Ctx, Instance};
@@ -396,7 +396,7 @@ impl Ctx {
         let written = match &v {
             Value::Null => return Content::Leave { path },
             Value::Token(expr) => {
-                if let Err(e) = self.palette_ok(rt) {
+                if let Err(e) = self.palette_settled(rt) {
                     return match is_pending(&e) {
                         true => Content::Pending,
                         false => fail(path, format!("no palette: {e}")),
@@ -412,7 +412,24 @@ impl Ctx {
                     None => Err("its token has no value".to_string()),
                 }
             }
-            v => value_text(&self.vm.prog.types, v),
+            v => {
+                // (build-ready) A text that read a token on its way (`join`,
+                // `hex`, a `let` of one) waits for the palette as a template
+                // does: the table over the fallback palette would write the
+                // file once with the fallback's colours, and run its `run:`.
+                if let Err(e) = rt.untrack(|rt| self.palette_settled(rt))
+                    && self.read_the_palette(rt)
+                {
+                    // Read again tracked, so the content is worked out once
+                    // the palette is (even when its table is the same).
+                    let _ = self.palette_settled(rt);
+                    return match is_pending(&e) {
+                        true => Content::Pending,
+                        false => fail(path, format!("no palette: {e}")),
+                    };
+                }
+                value_text(&self.vm.prog.types, v)
+            }
         };
         match written {
             Ok(text) => Content::Ready {
@@ -471,6 +488,48 @@ fn value_text(types: &crate::ty::TypeTable, v: &Value) -> Result<String, String>
 }
 
 impl Ctx {
+    /// (build-ready) Whether what the running `file` content has read so
+    /// far reaches the token table or the palette, through any memo
+    /// between (a `let` another reader already worked out is read from
+    /// its memo, never through the token hook, so counting hook calls
+    /// would miss it).
+    fn read_the_palette(&self, rt: &Runtime) -> bool {
+        let targets: Vec<NodeId> = [
+            self.tokens_memo.get().map(|m| m.id()),
+            self.palette_memo.get().map(|m| m.id()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if targets.is_empty() {
+            return false;
+        }
+        let mut seen = HashSet::new();
+        let mut todo = rt.reads_so_far();
+        while let Some(id) = todo.pop() {
+            if targets.contains(&id) {
+                return true;
+            }
+            if seen.insert(id)
+                && let Ok(sources) = rt.sources(id)
+            {
+                todo.extend(sources);
+            }
+        }
+        false
+    }
+
+    /// (build-ready) [`Ctx::palette_ok`], and no wallpaper still being
+    /// quantised (while one is, `??` gives the screen a fallback and the
+    /// table is made over it): what a template waits for, as one result.
+    fn palette_settled(self: &Rc<Self>, rt: &Runtime) -> Result<(), Error> {
+        self.palette_ok(rt)?;
+        match self.vm.theme().is_some_and(|t| t.images_pending(rt)) {
+            true => Err(Error::failed(super::theme::PALETTE_PENDING)),
+            false => Ok(()),
+        }
+    }
+
     /// Whether the current palette can be had with no fallback (else its
     /// error, or [`super::theme::PALETTE_PENDING`]): one memo every
     /// output reads, so an inline `material(seed: …)` is solved once per

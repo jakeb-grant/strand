@@ -47,6 +47,12 @@ proof  = "crates/strand/src/entry.rs::tests::the_version_names_the_commit_and_th
 
 [[claim]]
 page   = "site/start/install.md"
+text   = "This site follows the newest build of `main`, and a release can be older than its pages"
+source = ['''.github/workflows/ci.yml "deploy: if: github.event_name == 'push' && github.ref == 'refs/heads/main'"''', 'docs/development.md "On `main`, `deploy` and `release` wait for all of them"']
+proof  = "build-ready sweep, 2026-11-08: the release v0.1.0 (920049b0) failed `strand check` on the `strand file=` examples of 11 of the site's 22 pages that have them, edge a2187b83 on none"
+
+[[claim]]
+page   = "site/start/install.md"
 text   = "Every release on GitHub carries the same script."
 source = ['scripts/release/publish.sh "gh release upload edge "$DIST/install.sh" --clobber"', 'scripts/release/publish.sh ""$archive.sha256" "$archive" "$DIST/install.sh""']
 proof  = "scripts/release/test-publish.sh: edge's and a tag's releases hold install.sh"
@@ -3931,6 +3937,18 @@ source = ['crates/strand-compiler/src/check/tree.rs "cannot hold a dictionary ye
 proof  = "crates/strand-compiler/tests/negative/dict_in_service_field.strand (a command's output)"
 
 # --- doc-formats ---
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "A poll whose command fails keeps its last values, and `strand watch` names the service it failed for."
+source = ['crates/strand-services/src/custom.rs "A failed poll keeps the last values."', 'crates/strand-services/src/custom.rs "if !cx.warn(why.clone())"']
+proof  = "crates/strand-services/tests/custom.rs::a_failing_poll_is_reported_under_its_name_and_is_not_ready; crates/strand/src/run/tests.rs::open_service_diagnostics_reach_watchers_that_come_later"
+
+[[claim]]
+page   = "site/how-to/data-from-the-web.md"
+text   = "Until one of its polls succeeds, the service is not `ready`."
+source = ['docs/spec.md "one after its first poll that answers"']
+proof  = "crates/strand-services/tests/custom.rs::a_failing_poll_is_reported_under_its_name_and_is_not_ready"
+
 [[claim]]
 page   = "site/how-to/data-from-the-web.md"
 text   = "Strand has no HTTP client"

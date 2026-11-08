@@ -524,6 +524,7 @@ impl Services {
             stops: Cell::new(0),
             reports: Cell::new(0),
             last_error: RefCell::new(None),
+            open_failure: RefCell::new(None),
             last_notice: RefCell::new(None),
             live,
             ready_at: Cell::new(None),
@@ -793,6 +794,10 @@ struct ClientInner<S: Service> {
     reports: Cell<u64>,
     /// The failure last logged.
     last_error: RefCell<Option<String>>,
+    /// (build-ready) The failure reported and not resolved yet, and
+    /// whether the live run raised it ([`Cx::warn`]) rather than a run's
+    /// end: a later run's readiness resolves only the second kind.
+    open_failure: RefCell<Option<(String, bool)>>,
     /// The notice last reported ([`ServiceDiagnostic`]).
     last_notice: RefCell<Option<String>>,
     /// (service-ready) The language's `svc.ready`: a run is up and has
@@ -927,6 +932,12 @@ impl<S: Service> ClientInner<S> {
     }
 
     fn diagnose(&self, rt: &Runtime, message: &str, notice: bool) {
+        self.diagnose_as(rt, message, notice, false);
+    }
+
+    /// [`ClientInner::diagnose`]; `live`: the live run raised it
+    /// ([`Cx::warn`]).
+    fn diagnose_as(&self, rt: &Runtime, message: &str, notice: bool, live: bool) {
         let stable = self
             .run
             .borrow()
@@ -949,9 +960,21 @@ impl<S: Service> ClientInner<S> {
             return;
         }
         *last = Some(message.to_string());
+        drop(last);
         if notice {
             log::error!("service `{}`: {message}", self.name);
         } else {
+            // (build-ready) Another failure replaces the open one: it no
+            // longer holds as said.
+            if self
+                .open_failure
+                .borrow()
+                .as_ref()
+                .is_some_and(|(m, _)| m != message)
+            {
+                self.resolve_failure(false);
+            }
+            *self.open_failure.borrow_mut() = Some((message.to_string(), live));
             log::warn!("service `{}` failed: {message}", self.name);
         }
         if let Some(reg) = self.reg.upgrade() {
@@ -960,6 +983,35 @@ impl<S: Service> ClientInner<S> {
                 message: message.to_string(),
                 notice,
                 resolved: false,
+            });
+        }
+    }
+
+    /// (build-ready) The open failure no longer holds (a later run is
+    /// ready, the live run said so with [`Cx::resolve`], or a run ended
+    /// cleanly): a resolved [`ServiceDiagnostic`] for it, and the same
+    /// failure later is news again. `only_ended`: only one a run's end
+    /// raised (a later run's readiness says nothing of the live run's
+    /// own warning).
+    fn resolve_failure(&self, only_ended: bool) {
+        let open = self.open_failure.borrow().clone();
+        let Some((message, live)) = open else {
+            return;
+        };
+        if only_ended && live {
+            return;
+        }
+        *self.open_failure.borrow_mut() = None;
+        if self.last_error.borrow().as_deref() == Some(message.as_str()) {
+            *self.last_error.borrow_mut() = None;
+        }
+        log::info!("service `{}`: resolved: {message}", self.name);
+        if let Some(reg) = self.reg.upgrade() {
+            reg.diagnostics.borrow_mut().push(ServiceDiagnostic {
+                service: self.name.to_string(),
+                message,
+                notice: false,
+                resolved: true,
             });
         }
     }
@@ -1632,8 +1684,9 @@ impl<S: Service> ClientInner<S> {
                         run.noticed = false;
                     }
                     self.resolve();
+                    self.resolve_failure(false);
                 }
-                Envelope::Warning(m) => self.diagnose(rt, &m, false),
+                Envelope::Warning(m) => self.diagnose_as(rt, &m, false, true),
                 Envelope::Ready => {
                     // Ready without a notice (raised before readiness):
                     // the last notice no longer holds.
@@ -1646,6 +1699,11 @@ impl<S: Service> ClientInner<S> {
                     };
                     if resolves {
                         self.resolve();
+                    }
+                    // (build-ready) A run that is up and ready: an earlier
+                    // run's failure no longer holds.
+                    if self.run.borrow().is_some() {
+                        self.resolve_failure(true);
                     }
                     // `ready` turns true after the next flush, which
                     // takes the boot values as baselines; the loop is
@@ -1662,6 +1720,7 @@ impl<S: Service> ClientInner<S> {
                     match &r {
                         Err(e) => self.diagnose(rt, e, false),
                         Ok(()) => {
+                            self.resolve_failure(false);
                             *self.last_error.borrow_mut() = None;
                             self.resolve();
                         }

@@ -124,15 +124,6 @@ impl FormatItems for NaiveDateTime {
     }
 }
 
-impl FormatItems for NaiveDate {
-    fn with_items<'a>(
-        &self,
-        items: std::vec::IntoIter<Item<'a>>,
-    ) -> chrono::format::DelayedFormat<std::vec::IntoIter<Item<'a>>> {
-        self.format_with_items(items)
-    }
-}
-
 impl Clock {
     pub fn new(rt: &Runtime, types: &TypeTable, zone: Zone, now: SystemTime) -> Clock {
         let s = unix(now);
@@ -550,12 +541,12 @@ pub(crate) fn date_method(
         }
         "format" => {
             let p = args.first().and_then(Value::as_text).unwrap_or("");
-            // A time of day formats `%H:%M`; without one, a pattern
-            // asking for it is an error, as before.
-            match time.and_then(|(h, m)| d.and_hms_opt(h, m, 0)) {
-                Some(dt) => Ok(Value::text(format_with(&dt, p)?)),
-                None => Ok(Value::text(format_with(&d, p)?)),
-            }
+            // (build-ready) A date without a time of day formats as its
+            // midnight, as it orders before every time that day: `%H:%M`
+            // over a document's `YYYY-MM-DD` is `00:00`, not an error.
+            let (h, m) = time.unwrap_or((0, 0));
+            let dt = d.and_hms_opt(h, m, 0).ok_or_else(out_of_range)?;
+            Ok(Value::text(format_with(&dt, p)?))
         }
         _ => Err(fail(format!("`Date` has no method `{name}`"))),
     }
@@ -680,7 +671,11 @@ mod tests {
         let today = clock.read(&rt, "today").unwrap();
         assert_eq!(today.field(&t, "hour"), Some(&Value::Null));
         assert_eq!(today.field(&t, "minute"), Some(&Value::Null));
-        assert!(date_method(&t, &today, "format", &[Value::text("%H:%M")]).is_err());
+        // (build-ready) It formats as its midnight.
+        assert_eq!(
+            date_method(&t, &today, "format", &[Value::text("%H:%M")]).unwrap(),
+            Value::text("00:00")
+        );
         let days = clock.days(&rt, &t, &today).unwrap();
         let days = days.as_list().unwrap();
         assert!(

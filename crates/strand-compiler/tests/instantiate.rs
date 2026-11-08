@@ -7970,3 +7970,33 @@ fn the_monitor_profiles_page_works_together() {
     drop(shell);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// (build-ready) A `Date` no source has filled yet is 1970-01-01 with no
+/// time of day, so `format` on it is a date, not a fault that freezes the
+/// component until a reload; and a date without a time of day formats
+/// its hour and minute as midnight, so `%H:%M` over a document's
+/// `YYYY-MM-DD` is `00:00`, not an error.
+#[test]
+fn an_unfilled_date_formats_and_a_date_only_one_formats_midnight() {
+    let src = "service feed from file \"/tmp/feed.json\" { at: Date }\nbar B { col {\n  text feed.at.format(\"%Y-%m-%d %H:%M\")\n  text feed.at.add(days: 3).format(\"%a %d %b %H:%M\")\n  text clock.today.format(\"%H:%M\")\n} }\n";
+    let mut shell = boot(&[("t.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert!(shell.inst.outlined().is_empty());
+    let texts = shell.scene.texts();
+    assert_eq!(texts[0], "1970-01-01 00:00");
+    assert_eq!(texts[1], "Sun 04 Jan 00:00");
+    assert_eq!(texts[2], "00:00");
+    // The data arriving is an ordinary change.
+    let date = shell.inst.vm().types().find_schema_record("Date").unwrap();
+    let at = strand_compiler::vm::clock::date_record(
+        date,
+        chrono::NaiveDate::from_ymd_opt(2026, 11, 8).unwrap(),
+    );
+    shell.host.set(&shell.rt, "feed.at", at).unwrap();
+    let u = shell.flush();
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(shell.scene.texts()[0], "2026-11-08 00:00");
+}

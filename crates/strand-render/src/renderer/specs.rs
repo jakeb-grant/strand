@@ -945,7 +945,7 @@ impl Renderer {
                         self.held.remove(&id);
                     }
                     if content_sized {
-                        let r = natural_texts(&self.tree, id, scale, &b.rects);
+                        let r = natural_texts(&self.tree, id, scale, &b.rects, layouts);
                         self.spec_wanted
                             .insert(id, r.iter().map(|(n, t)| TextSlot::of(*n, t)).collect());
                         requests.extend(r);
