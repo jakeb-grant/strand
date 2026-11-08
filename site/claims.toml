@@ -4109,6 +4109,18 @@ proof  = "crates/strand-scene/src/markup/tests.rs::basic_is_unchanged"
 # --- monitor-profiles (blocks-more, blocks integration) ---
 [[claim]]
 page   = "site/how-to/monitor-profiles.md"
+text   = "for each monitor, the first program still running that arranged it."
+source = ['docs/decisions.md "that saved a state for it; and a manager leaves that list only when its resource is destroyed"', 'crates/strand-services/src/outputs.rs "//! follows, for each monitor, the configuration of the oldest manager"']
+proof  = "seen on nested Hyprland 0.57 (decisions.md outputs-apply: `hl.monitor` moves of a monitor Strand applied were overridden); Hyprland 0.57 src/config/shared/monitor/MonitorRuleManager.cpp (`getOutputStateFor` over every connected manager)"
+
+[[claim]]
+page   = "site/how-to/monitor-profiles.md"
+text   = "its `error` saying how the monitors differ, never `outputs.succeeded`."
+source = ['crates/strand-services-schema/src/outputs.schema "it said it applied it but the monitors did"', 'crates/strand-services/src/outputs.rs "the compositor said it applied the configuration, but {why}"']
+proof  = "crates/strand-services/tests/outputs.rs::an_apply_the_compositor_did_not_take_fails"
+
+[[claim]]
+page   = "site/how-to/monitor-profiles.md"
 text   = "lists every connected monitor, on or off"
 source = ['crates/strand-compiler/src/schema/builtin.schema "/// Every output, on or off, keyed by `name`, in the order of their"', 'crates/strand-compiler/src/schema/builtin.schema "/// Applies `changes` together, as one configuration."']
 proof  = "crates/strand-compiler/tests/instantiate.rs::a_best_guess_layout_is_written_with_the_list_operations_there_are"

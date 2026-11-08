@@ -3205,15 +3205,25 @@ itself.
   (≤ 4), the `wl_output`s (v4) and `zxdg_output_manager_v1` (≤ 3).
   `all` and `available` are published at each manager `done`, and
   again at a `wl_output`'s `done` that changed its name or mode (a head
-  naming no current mode takes the `wl_output`'s). The manager is bound
-  again (`Client::resync`, decisions.md outputs-resync) when a change
-  has no `done` for 250 ms, or when its heads disagree with the
-  `wl_output`s and xdg-outputs 250 ms after they last changed.
+  naming no current mode takes the `wl_output`'s). The outputs are read
+  again (`Client::resync`, decisions.md outputs-resync, outputs-apply)
+  when a change has no `done` for 250 ms, or when its heads disagree
+  with the `wl_output`s and xdg-outputs 250 ms after they last changed:
+  on a short connection of its own that binds the manager alone, reads
+  to its first `done` and closes (`outputs::read_again`), its values
+  taken into the heads of the same name. The manager bound at start is
+  never stopped and every configuration is made on it (Hyprland 0.57
+  keeps a stopped manager while its client is connected and follows
+  the oldest manager that configured a monitor).
   `OutputsAction::{Apply, Test}` queue in order, one configuration in
   flight against the last `done`'s serial, every head included (the
-  protocol's rule); changes are validated before sending, since the
+  protocol's rule), made after a read when the heads may be behind;
+  changes are validated before sending, since the
   protocol ends the connection on those errors, and a mode is the
   listed one nearest within 0.5 Hz (`outputs::pick`), else custom.
+  An apply answered `succeeded` is `succeeded` once the `wl_output`s
+  and xdg-outputs show what it asked, `failed` naming how they differ
+  once they are quiet for 1 s without it (`Client::unlike`).
   `cancelled` is retried from the new state up to `MAX_TRIES` (3). A
   lost connection empties `all`, fails what is in flight and ends the
   run. `outputs::configure` points later runs at a socket (tests:

@@ -617,3 +617,209 @@ fn a_mode_not_in_the_list_is_the_wl_outputs() {
     h.s.shutdown();
     outputs::configure(None);
 }
+
+/// (outputs-apply) Hyprland 0.57 saves a configuration in the manager it
+/// was made on and follows, for each monitor, the oldest manager still
+/// connected that saved one (`COutputManagementProtocol::getOutputStateFor`),
+/// answering `succeeded` either way. A resync that bound the manager again
+/// on the same connection made every configuration after the first go to
+/// a newer manager, which Hyprland did not follow (seen on nested Hyprland
+/// 0.57: NESTED-2 stayed at 3000 after a `succeeded` apply to 2560). The
+/// service now reads again on a connection of its own and makes every
+/// configuration on the one manager it bound: each apply is followed.
+#[test]
+fn every_apply_is_followed_after_a_resync() {
+    use strand_fake_wayland::{Cmd, Fake, OutputManagement};
+    let _serial = serial();
+    for shape in [
+        OutputManagement::Lagging,
+        OutputManagement::Silent,
+        OutputManagement::Wlroots,
+    ] {
+        let fake = Fake::builder()
+            .toplevel_list(false)
+            .outputs(&["FAKE-1", "FAKE-2"])
+            .output_management(shape)
+            .start();
+        let h = Harness::start_on(fake.socket.clone());
+        h.until("ready", |h| h.b.outputs.ready(&h.rt));
+        let place = |n: &str, x: i64, y: i64| OutputChange {
+            x: Some(x),
+            y: Some(y),
+            ..OutputChange::of(n)
+        };
+        let at = |h: &Harness, n: &str| {
+            let o = h.output(n);
+            (o.x, o.y)
+        };
+        // The first apply, a change from outside, then more applies.
+        h.act("apply", &[place("FAKE-2", 3000, 0)]);
+        assert_eq!(h.next_event("the first").0, "succeeded", "{shape:?}");
+        h.until(&format!("{shape:?}: FAKE-2 at 3000"), |h| {
+            at(h, "FAKE-2") == (3000, 0)
+        });
+        fake.cmd(Cmd::MoveOutput(0, 0, 200));
+        h.until(&format!("{shape:?}: FAKE-1 moved"), |h| {
+            at(h, "FAKE-1") == (0, 200)
+        });
+        for (one, two) in [((1920, 0), (0, 0)), ((0, 0), (5000, 100))] {
+            h.act(
+                "apply",
+                &[place("FAKE-1", one.0, one.1), place("FAKE-2", two.0, two.1)],
+            );
+            let (event, args) = h.next_event("the answer");
+            assert_eq!(event, "succeeded", "{shape:?}: {args:?}");
+            h.until(&format!("{shape:?}: FAKE-1 {one:?}, FAKE-2 {two:?}"), |h| {
+                at(h, "FAKE-1") == one && at(h, "FAKE-2") == two
+            });
+        }
+        assert!(h.b.outputs.ready(&h.rt), "{shape:?}: still ready");
+        h.s.shutdown();
+    }
+    outputs::configure(None);
+}
+
+/// (outputs-apply) Hyprland 0.57 never answers `stop` with `finished` and
+/// keeps a stopped manager until its client goes. Reading again on a
+/// connection of its own leaves none: after many changes the service's
+/// connection holds its one manager, none stopped, and each read's
+/// manager went with its connection. wlroots' shape, which sends its
+/// change and a `done`, is never read again.
+#[test]
+fn stopped_managers_do_not_pile_up() {
+    use strand_fake_wayland::{Cmd, Fake, OutputManagement};
+    let _serial = serial();
+    for shape in [
+        OutputManagement::Lagging,
+        OutputManagement::Silent,
+        OutputManagement::Wlroots,
+    ] {
+        let fake = Fake::builder()
+            .toplevel_list(false)
+            .outputs(&["FAKE-1", "FAKE-2"])
+            .output_management(shape)
+            .start();
+        let h = Harness::start_on(fake.socket.clone());
+        h.until("ready", |h| h.b.outputs.ready(&h.rt));
+        for i in 1..=8 {
+            let x = 1920 + 100 * i;
+            fake.cmd(Cmd::MoveOutput(1, x, 0));
+            h.until(&format!("{shape:?}: FAKE-2 at {x}"), |h| {
+                h.output("FAKE-2").x == i64::from(x)
+            });
+        }
+        // Each read's connection is closed before its outputs are
+        // published; the fake sees it go soon after.
+        h.until(&format!("{shape:?}: one manager, none stopped"), |_| {
+            let count = fake.output_managers();
+            (count.live, count.stopped) == (1, 0)
+        });
+        let count = fake.output_managers();
+        match shape {
+            OutputManagement::Wlroots => assert_eq!(count.bound, 1, "never read again"),
+            _ => assert!(
+                count.bound >= 9,
+                "{shape:?}: read again each time: {count:?}"
+            ),
+        }
+        assert!(h.b.outputs.ready(&h.rt), "{shape:?}: still ready");
+        h.s.shutdown();
+    }
+    outputs::configure(None);
+}
+
+/// (outputs-apply) A configuration includes every head as the service
+/// has it. Asked for right after a change Hyprland's manager has not
+/// sent (its xdg-output already moved), it is made after reading the
+/// outputs again, so it does not move back what the change moved.
+#[test]
+fn an_apply_right_after_a_change_keeps_it() {
+    use strand_fake_wayland::{Cmd, Fake, OutputManagement};
+    let _serial = serial();
+    for shape in [OutputManagement::Lagging, OutputManagement::Silent] {
+        let fake = Fake::builder()
+            .toplevel_list(false)
+            .outputs(&["FAKE-1", "FAKE-2"])
+            .output_management(shape)
+            .start();
+        let h = Harness::start_on(fake.socket.clone());
+        h.until("ready", |h| h.b.outputs.ready(&h.rt));
+        fake.cmd(Cmd::MoveOutput(0, 0, 500));
+        fake.sync();
+        h.act(
+            "apply",
+            &[OutputChange {
+                x: Some(4000),
+                ..OutputChange::of("FAKE-2")
+            }],
+        );
+        let (event, args) = h.next_event("the answer");
+        assert_eq!(event, "succeeded", "{shape:?}: {args:?}");
+        h.until(&format!("{shape:?}: FAKE-2 at 4000"), |h| {
+            h.output("FAKE-2").x == 4000
+        });
+        let one = h.output("FAKE-1");
+        assert_eq!((one.x, one.y), (0, 500), "{shape:?}: FAKE-1 kept its move");
+        h.s.shutdown();
+    }
+    outputs::configure(None);
+}
+
+/// (outputs-apply) `succeeded` is the compositor's word that it applied
+/// the configuration, so the service checks it against the outputs: when
+/// they do not show what was asked once they are quiet, the apply is
+/// `failed`, naming how they differ. Here another client's earlier
+/// manager placed FAKE-2, which Hyprland follows before the service's.
+#[test]
+fn an_apply_the_compositor_did_not_take_fails() {
+    use strand_fake_wayland::{Cmd, Fake, OutputManagement};
+    let _serial = serial();
+    for shape in [
+        OutputManagement::Lagging,
+        OutputManagement::Silent,
+        OutputManagement::Wlroots,
+    ] {
+        let fake = Fake::builder()
+            .toplevel_list(false)
+            .outputs(&["FAKE-1", "FAKE-2"])
+            .output_management(shape)
+            .start();
+        let h = Harness::start_on(fake.socket.clone());
+        h.until("ready", |h| h.b.outputs.ready(&h.rt));
+        fake.cmd(Cmd::ShadowOutput(1, 3000, 0));
+        h.until(&format!("{shape:?}: FAKE-2 at 3000"), |h| {
+            h.output("FAKE-2").x == 3000
+        });
+        h.act(
+            "apply",
+            &[OutputChange {
+                x: Some(5000),
+                ..OutputChange::of("FAKE-2")
+            }],
+        );
+        let (event, args) = h.next_event("the answer");
+        match shape {
+            // wlroots follows the last configuration.
+            OutputManagement::Wlroots => {
+                assert_eq!(event, "succeeded", "{args:?}");
+                h.until("FAKE-2 at 5000", |h| h.output("FAKE-2").x == 5000);
+            }
+            _ => {
+                assert_eq!(event, "failed", "{shape:?}: {args:?}");
+                assert_eq!(args[0], "apply");
+                assert!(
+                    args[1].contains("said it applied")
+                        && args[1].contains("FAKE-2 is at 3000, 0, not 5000, 0"),
+                    "{shape:?}: {}",
+                    args[1]
+                );
+                assert_eq!(h.output("FAKE-2").x, 3000, "{shape:?}: as it is");
+            }
+        }
+        // The next apply that matches what Hyprland follows succeeds.
+        h.act("apply", &[OutputChange::of("FAKE-1")]);
+        assert_eq!(h.next_event("a no-op").0, "succeeded", "{shape:?}");
+        h.s.shutdown();
+    }
+    outputs::configure(None);
+}

@@ -37,7 +37,10 @@
 //!   `zwlr_output_manager_v1` in wlroots' shape or Hyprland 0.57's
 //!   ([`FakeBuilder::output_management`]; `output_management.rs`), its
 //!   outputs moved by [`Cmd::MoveOutput`] and plugged in by
-//!   [`Cmd::AddOutput`].
+//!   [`Cmd::AddOutput`]; (outputs-apply) configurations placing them as
+//!   each compositor does, another client's earlier configuration
+//!   ([`Cmd::ShadowOutput`]), and the managers counted
+//!   ([`Fake::output_managers`]).
 //!
 //! It runs on its own thread and is driven by [`Cmd`]s.
 
@@ -54,7 +57,7 @@ pub use capture::DEFAULT_SIZE as CAPTURE_SIZE;
 
 pub use data_control::{DataControl, Selection};
 
-pub use output_management::OutputManagement;
+pub use output_management::{ManagerCount, OutputManagement};
 
 pub use surfaces::{BufferKind, CommitRecord, Region, RegionOp, SurfaceGlobals, SurfaceRecord};
 
@@ -117,6 +120,15 @@ pub enum Cmd {
     /// with a `done`, before a client can bind the `wl_output`), showing
     /// a mode not in its list of this width and height.
     AddOutput(&'static str, i32, i32),
+    /// (outputs-apply) Another client's output manager, bound before any
+    /// test client's, applies output `n` at `x, y`: the output moves
+    /// there, and in Hyprland's shapes a later configuration placing it
+    /// is answered `succeeded` and not followed.
+    ShadowOutput(usize, i32, i32),
+    /// (outputs-apply) Answered with the output managers bound and still
+    /// connected, and the stopped ones among them
+    /// ([`Fake::output_managers`]).
+    OutputManagers(mpsc::Sender<ManagerCount>),
     /// Removes seat `n`'s global (by the order they were offered), as a
     /// seat going away would.
     RemoveSeat(usize),
@@ -509,6 +521,10 @@ impl Server {
                 self.om.add_output(dh, name, w, h);
             }
             Cmd::CustomMode(n, w, h) => self.om.custom_mode(n, w, h),
+            Cmd::ShadowOutput(n, x, y) => self.om.shadow_output(n, x, y, &self.outputs),
+            Cmd::OutputManagers(answer) => {
+                let _ = answer.send(self.om.managers());
+            }
             Cmd::SetEffectCapabilities(flags) => self.surf.set_effect_caps(flags),
             Cmd::Paint(ident, colour) => self.capture_paint(ident, colour),
             Cmd::ResizeToplevel(ident, w, h) => self.capture_resize(ident, w, h),
@@ -1394,6 +1410,16 @@ impl Fake {
         let (tx, rx) = mpsc::channel();
         self.cmd(Cmd::Sync(tx));
         let _ = rx.recv_timeout(std::time::Duration::from_secs(10));
+    }
+
+    /// (outputs-apply) The output managers bound so far, still connected
+    /// and stopped ([`ManagerCount`]); all 0 if the fake does not answer
+    /// in 10 s.
+    pub fn output_managers(&self) -> ManagerCount {
+        let (tx, rx) = mpsc::channel();
+        self.cmd(Cmd::OutputManagers(tx));
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap_or_default()
     }
 
     /// (eval-surface-leg) Every surface commit so far, in order
