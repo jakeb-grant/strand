@@ -416,3 +416,40 @@ fn an_unlock_with_no_exit_writes_open_false() {
     assert!(!s.scene.texts().contains(&"lock 0".to_string()));
     assert!(!s.inst.lock_shown());
 }
+
+/// (lock-fault-epoch) The lock's own logic (an `on change` here) is
+/// mounted once and only suspended between locks, so its handler's
+/// `Site::reported` lives on from one lock to the next. A failure it
+/// reported in one lock is reported again in the next: it is how
+/// `lock_faults` hears of it and puts up the built-in password field.
+/// Within one lock it is still reported once.
+#[test]
+fn a_lock_logic_failure_is_reported_again_in_the_next_lock() {
+    let src = "export state locked = true\n\
+         lock {\n  open: <-> locked\n  state asked = 0\n  state zero = 0\n  state n = 0\n  \
+         on change asked { n = 10 / zero }\n  \
+         on click { asked += 1 }\n  \
+         on key(k) { auth.submit(k.name) }\n  text \"lock\"\n}\n\
+         bar Top {\n  on click { locked = true }\n  text \"bar\"\n}\n";
+    let mut s = boot(src);
+    s.report(SessionLock::Locked);
+    let lock = s.lock();
+    let u = s.click(lock);
+    assert_eq!(u.errors.len(), 1, "lock 1: {:?}", u.errors);
+    assert!(s.inst.lock_shown());
+    let u = s.click(lock);
+    assert!(u.errors.is_empty(), "once in one lock: {:?}", u.errors);
+
+    s.report(SessionLock::Unlocked);
+    assert!(!s.inst.lock_shown());
+    let bar = s.scene.of_kind(NodeKind::Bar)[0];
+    s.click(bar);
+    assert!(s.inst.lock_shown(), "locked again");
+    s.report(SessionLock::Locked);
+    let lock = s.lock();
+    let u = s.click(lock);
+    assert_eq!(u.errors.len(), 1, "lock 2 hears it again: {:?}", u.errors);
+    assert!(s.inst.lock_shown());
+    let u = s.click(lock);
+    assert!(u.errors.is_empty(), "then once: {:?}", u.errors);
+}

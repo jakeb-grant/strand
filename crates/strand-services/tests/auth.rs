@@ -139,6 +139,12 @@ impl Harness {
 
     /// Starts `auth` with `helper` and the binary's lock signal.
     fn start_with(helper: PathBuf, lock: Option<LockSignal>) -> Harness {
+        Harness::start_found(Some(helper), lock)
+    }
+
+    /// Starts `auth` with `helper`, or (`None`) on a target with no
+    /// helper installed.
+    fn start_found(helper: Option<PathBuf>, lock: Option<LockSignal>) -> Harness {
         let unlocks = Arc::new(AtomicUsize::new(0));
         let tags = Arc::new(Mutex::new(Vec::new()));
         let u = unlocks.clone();
@@ -157,7 +163,8 @@ impl Harness {
         // The binary's lock session generation, as it reads at a submit.
         let session = SESSION.clone();
         auth::configure(Some(AuthConfig {
-            helper: Some(helper),
+            helper,
+            find_helper: || None,
             timeout: Duration::from_secs(5),
             sink: Some(sink),
             failed: Some(failed),
@@ -314,6 +321,32 @@ fn auth_checks_through_the_helper_and_only_success_unlocks() {
     assert_eq!(h.unlocks.load(Ordering::SeqCst), 0);
     assert!(!h.warnings().is_empty());
     assert!(!h.failures.lock().unwrap().is_empty());
+    h.stop();
+
+    // (build-ready-standing) None installed: the warning holds for the
+    // run, so it is standing (a `strand watch` started later hears it)
+    // and not resolved while the store runs.
+    let h = Harness::start_found(None, None);
+    h.until("the warning", |h| {
+        h.diagnostics
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|d| d.message.contains("no `strand-auth` helper is installed"))
+    });
+    let missing: Vec<ServiceDiagnostic> = h
+        .diagnostics
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|d| d.message.contains("no `strand-auth` helper is installed"))
+        .cloned()
+        .collect();
+    assert_eq!(missing.len(), 1, "{missing:?}");
+    assert!(
+        missing[0].standing && !missing[0].resolved && !missing[0].notice,
+        "{missing:?}"
+    );
     h.stop();
 
     // The `login` fallback: a success, and the warning once.

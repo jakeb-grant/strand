@@ -156,7 +156,9 @@ write in an overlay in Strand's state directory instead, with a notice.
   a header at the top of the file, stays where it is. A
   dictionary of records works the same way: `profiles: [text: Profile]`
   reads `[profiles.desk]`, with a list inside it as
-  `[[profiles.desk.mons]]`.
+  `[[profiles.desk.mons]]`. A record of records that Strand writes
+  first, with no others in the file to follow, is written that way too,
+  so the first profile you save is one you can edit by hand.
 - **A bad value is not written over.** While a field's value in the
   file is bad (a typo, or a key a record no longer has after you edit
   its `type`), a write of that field from the shell is kept live but

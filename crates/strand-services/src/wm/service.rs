@@ -483,7 +483,8 @@ async fn follow<S: crate::Service>(
 ) -> Result<(), ServiceError> {
     let mut sub = subscribe()?;
     let mut calls = tokio::task::JoinSet::new();
-    // The adapter's degradation last seen (`Sources::degraded`).
+    // The adapter's degradation this store has open
+    // (`Sources::degraded`).
     let mut degraded: Option<String> = None;
     loop {
         tokio::select! {
@@ -516,14 +517,18 @@ async fn follow<S: crate::Service>(
 
 /// A batch whose `Sources` say the adapter does not understand the
 /// compositor (a new reason) becomes a [`crate::ServiceDiagnostic`]
-/// (`Cx::warn`: logged and sent to `strand watch`; not an overlay notice,
-/// as the service retries it itself), raised by one store only
-/// ([`WmSubscription::reports`]). Its end is logged by the service.
+/// (`Cx::failing`: logged and sent to `strand watch`; not an overlay
+/// notice, as the service retries it itself), raised by one store only
+/// ([`WmSubscription::reports`]). (build-ready-standing) It holds until
+/// the adapter understands the compositor again, so it stays open (a
+/// `strand watch` started later hears it) and is resolved then
+/// (`Cx::resolve`). `raised`: what this store has open. A store that
+/// becomes the reporter (the older one left) raises what still holds.
 fn report_degraded<S: crate::Service>(
     cx: &mut Cx<S>,
     sub: &WmSubscription,
     batch: &[WmChange],
-    last: &mut Option<String>,
+    raised: &mut Option<String>,
 ) {
     let Some(sources) = batch.iter().rev().find_map(|c| match c {
         WmChange::Sources(s) => Some(s),
@@ -531,15 +536,15 @@ fn report_degraded<S: crate::Service>(
     }) else {
         return;
     };
-    if sources.degraded == *last {
+    let now = sources.degraded.as_ref().filter(|_| sub.reports());
+    if now == raised.as_ref() {
         return;
     }
-    last.clone_from(&sources.degraded);
-    if let Some(why) = &sources.degraded
-        && sub.reports()
-    {
-        cx.warn(why.clone());
-    }
+    match now {
+        Some(why) => cx.failing(why.clone()),
+        None => cx.resolve(),
+    };
+    *raised = now.cloned();
 }
 
 impl Windows {

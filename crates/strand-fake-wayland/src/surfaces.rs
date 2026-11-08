@@ -944,7 +944,19 @@ impl Dispatch<wl_surface::WlSurface, ()> for Server {
                     l.pending.damage.push((x, y, width, height));
                 }
             }
-            wl_surface::Request::Commit => state.surf.commit(&id),
+            wl_surface::Request::Commit => {
+                // (outputs-frame) A commit that draws is a frame.
+                let draws = state.surf.live.get(&id).is_some_and(|l| {
+                    matches!(l.pending.buffer, Some(Some(_)))
+                        || !l.pending.damage.is_empty()
+                        || !l.pending.surface_damage.is_empty()
+                });
+                state.surf.commit(&id);
+                if draws {
+                    let outputs = state.outputs.clone();
+                    state.om.frame(&outputs);
+                }
+            }
             wl_surface::Request::Destroy => {
                 state.surf.drop_toplevel(&id);
                 state.surf.record(&id, |r| r.destroyed = true);

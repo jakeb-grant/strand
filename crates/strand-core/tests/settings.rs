@@ -1930,3 +1930,59 @@ lid = \"b\"
         "{out}"
     );
 }
+
+/// (settings-shape) A record that holds records, written where the file
+/// has nothing to follow (no file yet, or the dictionary's first entry),
+/// is written as the settings-file and monitor-profiles pages show it: a
+/// `[section]` with a `[[…]]` table for each record of its list, not one
+/// long inline line. The next entry takes the same shape, a record of
+/// plain values stays inline, and an entry next to ones written inline
+/// is inline too.
+#[test]
+fn a_new_record_of_records_is_written_as_sections() {
+    let save = "[x]\n\"A + B\" = { mons = [{ id = \"A\", x = 0 }, { id = \"B\", x = 1920 }] }\n";
+    let out = write_toml("first-save", "compact = true\n", "profiles", save);
+    assert_eq!(
+        out,
+        "compact = true\n\
+         \n\
+         [profiles.\"A + B\"]\n\
+         [[profiles.\"A + B\".mons]]\n\
+         id = \"A\"\n\
+         x = 0\n\
+         \n\
+         [[profiles.\"A + B\".mons]]\n\
+         id = \"B\"\n\
+         x = 1920\n",
+        "{out}"
+    );
+    // The next set saved: a section like the first, which stays as it was.
+    let out = write_toml(
+        "second-save",
+        &out,
+        "profiles",
+        "[x]\n\"A + B\" = { mons = [{ id = \"A\", x = 0 }, { id = \"B\", x = 1920 }] }\n\
+         \"A\" = { mons = [{ id = \"A\", x = 0 }] }\n",
+    );
+    assert!(
+        out.contains("[profiles.A]\n[[profiles.A.mons]]\nid = \"A\"\nx = 0\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("[[profiles.\"A + B\".mons]]\nid = \"B\""),
+        "{out}"
+    );
+    assert!(!out.contains("= {"), "no inline line: {out}");
+    // A record of plain values, and a record written into a file whose
+    // entries are inline, stay inline.
+    let out = write_toml("plain", "compact = true\n", "size", "x = { w = 5, h = 4 }");
+    assert_eq!(out, "compact = true\nsize = { w = 5, h = 4 }\n", "{out}");
+    let inline = "[profiles]\n\"A\" = { mons = [{ id = \"A\", x = 0 }] }\n";
+    let out = write_toml(
+        "beside-inline",
+        inline,
+        "profiles",
+        "[x]\n\"A\" = { mons = [{ id = \"A\", x = 0 }] }\n\"B\" = { mons = [{ id = \"B\", x = 0 }] }\n",
+    );
+    assert!(out.contains("\nB = { mons = [{ id = \"B\""), "{out}");
+}

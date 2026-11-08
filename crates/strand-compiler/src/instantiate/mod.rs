@@ -254,7 +254,8 @@ pub(crate) struct Ctx {
     /// Persisted cells kept over a changed default since the last tick.
     pub kept: RefCell<Vec<crate::reconcile::KeptCell>>,
     play_seq: Cell<u32>,
-    /// (build-ready review) Bumped by [`Instance::report_faults_again`]:
+    /// (build-ready review) Bumped by [`Instance::report_faults_again`]
+    /// and (lock-fault-epoch) when a lock session begins:
     /// a handler's repeated error is reported again once in each epoch.
     pub fault_epoch: Cell<u64>,
     /// Reload identities and handler hashes of the program (`None`: made
@@ -1796,6 +1797,9 @@ impl Instance {
         let Some(track) = self.ctx.lock.borrow().clone() else {
             return;
         };
+        if state == SessionLock::Locked && track.phase() == lock::Phase::Ended {
+            self.ctx.new_lock_session();
+        }
         if !track.report(&self.rt, state) {
             return;
         }

@@ -129,6 +129,9 @@ pub enum Cmd {
     /// connected, and the stopped ones among them
     /// ([`Fake::output_managers`]).
     OutputManagers(mpsc::Sender<ManagerCount>),
+    /// (outputs-frame) Answered with the configurations waiting for a
+    /// frame ([`Fake::held_configurations`]).
+    HeldConfigurations(mpsc::Sender<usize>),
     /// Removes seat `n`'s global (by the order they were offered), as a
     /// seat going away would.
     RemoveSeat(usize),
@@ -527,6 +530,9 @@ impl Server {
             Cmd::ShadowOutput(n, x, y) => self.om.shadow_output(n, x, y, &self.outputs),
             Cmd::OutputManagers(answer) => {
                 let _ = answer.send(self.om.managers());
+            }
+            Cmd::HeldConfigurations(answer) => {
+                let _ = answer.send(self.om.held());
             }
             Cmd::SetEffectCapabilities(flags) => self.surf.set_effect_caps(flags),
             Cmd::Paint(ident, colour) => self.capture_paint(ident, colour),
@@ -1104,6 +1110,7 @@ pub struct FakeBuilder {
     data_control: DataControl,
     output_management: OutputManagement,
     mirrors: &'static [&'static str],
+    applies_at_frame: bool,
 }
 
 impl FakeBuilder {
@@ -1174,6 +1181,15 @@ impl FakeBuilder {
         self
     }
 
+    /// (outputs-frame) Hyprland's shapes apply a configuration, and answer
+    /// it, only at the next frame: a commit by any client of a surface
+    /// with a buffer or damage ([`FakeBuilder::surfaces`] offers them).
+    /// [`Fake::held_configurations`] counts those waiting.
+    pub fn applies_at_frame(mut self, on: bool) -> Self {
+        self.applies_at_frame = on;
+        self
+    }
+
     pub fn start(self) -> Fake {
         Fake::start_built(self).expect("the fake compositor starts")
     }
@@ -1201,6 +1217,7 @@ impl Fake {
             data_control: DataControl::None,
             output_management: OutputManagement::None,
             mirrors: &[],
+            applies_at_frame: false,
         }
     }
 
@@ -1280,6 +1297,7 @@ impl Fake {
             data_control,
             output_management,
             mirrors,
+            applies_at_frame,
         } = b;
         let thread = std::thread::spawn(move || {
             let mut display = Display::<Server>::new().expect("a wayland-server display");
@@ -1326,6 +1344,7 @@ impl Fake {
                 activation_log: thread_activation_log,
                 ..Default::default()
             };
+            state.om.at_frame = applies_at_frame;
             state.surf.effect_caps = surface_globals
                 .as_ref()
                 .and_then(|g| g.background_effect)
@@ -1446,6 +1465,15 @@ impl Fake {
     pub fn output_managers(&self) -> ManagerCount {
         let (tx, rx) = mpsc::channel();
         self.cmd(Cmd::OutputManagers(tx));
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap_or_default()
+    }
+
+    /// (outputs-frame) The configurations waiting for a frame
+    /// ([`FakeBuilder::applies_at_frame`]).
+    pub fn held_configurations(&self) -> usize {
+        let (tx, rx) = mpsc::channel();
+        self.cmd(Cmd::HeldConfigurations(tx));
         rx.recv_timeout(std::time::Duration::from_secs(10))
             .unwrap_or_default()
     }

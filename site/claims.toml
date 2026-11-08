@@ -4320,3 +4320,21 @@ page   = "site/how-to/dbus-and-actions.md"
 text   = "`battery.on_battery` says the same, without declaring anything)."
 source = ['crates/strand-services-schema/src/battery.schema "on_battery: bool"']
 proof  = "crates/strand-services/tests/battery.rs::on_battery_follows_upowers_root_object"
+
+[[claim]]
+page   = "site/how-to/monitor-profiles.md"
+text   = "answer Strand shows a transparent one-pixel surface"
+source = ['crates/strand-services/src/outputs.rs "/// (outputs-frame) A 1x1 fully transparent layer surface (the overlay"', 'crates/strand-services/src/outputs.rs ""strand-outputs".into(),"']
+proof  = "crates/strand-services/tests/outputs.rs::an_apply_waiting_for_a_frame_is_given_one (an apply held for a frame is never answered without it); seen on nested Hyprland 0.57 (decisions.md outputs-frame: live edits applied within 2 s with no pointer motion); Hyprland src/config/shared/monitor/MonitorRuleManager.cpp (`scheduleReload` run in the render's pre-checks)"
+
+[[claim]]
+page   = "site/how-to/monitor-profiles.md"
+text   = "this profile** writes the file in this form, ready to edit."
+source = ['crates/strand-core/src/settings.rs "fn natural(new: &Item) -> Item {"', 'docs/spec.md "(settings-shape) one among inline records is inline, and with neither"']
+proof  = "crates/strand-core/tests/settings.rs::a_new_record_of_records_is_written_as_sections"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "so the first profile you save is one you can edit by hand."
+source = ['crates/strand-core/src/settings.rs "fn natural(new: &Item) -> Item {"', 'docs/spec.md "(settings-shape) one among inline records is inline, and with neither"']
+proof  = "crates/strand-core/tests/settings.rs::a_new_record_of_records_is_written_as_sections"

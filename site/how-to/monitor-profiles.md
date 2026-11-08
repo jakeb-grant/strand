@@ -160,7 +160,10 @@ bar Displays {
   `error` saying how the monitors differ, never `outputs.succeeded`.
   A monitor Hyprland mirrors stays a mirror where it is, so a layout
   that moves it fails that way too; one that leaves it out keeps its
-  mode.
+  mode. Hyprland applies a layout at its next frame, and draws none
+  while nothing on screen changes, so while a layout waits for its
+  answer Strand shows a transparent one-pixel surface
+  (`strand-outputs` in `hyprctl layers`) to give it one.
 
 ## The file
 
@@ -169,7 +172,8 @@ a `[[…]]` table under it. It is yours to edit and keep with your
 dotfiles: an edit applies live, and Strand writes a saved profile back
 into the sections the file has, keeping every comment: the other
 profiles stay as you wrote them, and a monitor whose place changed
-keeps its own comments, only its numbers rewritten.
+keeps its own comments, only its numbers rewritten. The first **Save
+this profile** writes the file in this form, ready to edit.
 
 ```toml
 # Monitor profiles, one per set of monitors.

@@ -3040,9 +3040,12 @@ itself.
 - **Failures are diagnostics.** A run that errs or panics is a
   `ServiceDiagnostic { service, message, notice: false, .. }`;
   `Cx::notice` raises one the user must act on (`notice: true`),
-  `Cx::failing` one that holds while the run goes on (a failing poll),
-  `Cx::warn` a one-off event the run survives (a copied image not
-  kept; `standing: false`, every other diagnostic is `standing: true`).
+  `Cx::failing` one that holds while the run goes on (a failing poll;
+  build-ready-standing: the compositor adapter not understanding the
+  compositor, resolved when it does again, and no `strand-auth`
+  helper), `Cx::warn` a one-off event the run survives (a copied image
+  not kept, a password that could not be checked; `standing: false`,
+  every other diagnostic is `standing: true`).
   `take_diagnostics()` yields each distinct message once (until a run
   stays up `RETRY_MAX` or ends cleanly); a notice that no longer holds
   comes back once with `resolved: true`, and (build-ready) so does a

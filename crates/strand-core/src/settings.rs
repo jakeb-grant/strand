@@ -533,11 +533,11 @@ fn apply_edits(doc: &mut DocumentMut, edits: &[Edit]) {
                         if let Some(gone) = doc.remove(name) {
                             orphans.lift(&gone);
                         }
-                        doc.insert(name, new.clone());
+                        doc.insert(name, natural(new));
                     }
                 }
                 None => {
-                    doc.insert(name, new.clone());
+                    doc.insert(name, natural(new));
                 }
             },
         }
@@ -1222,12 +1222,109 @@ fn merge_array(old: &mut toml_edit::Array, new: &toml_edit::Array) {
 }
 
 /// (settings-tables) A value written fresh into `table`: a record where
-/// the user wrote records as sections takes their shape ([`shaped`]),
-/// anything else is written as it is.
+/// the user wrote records as sections takes their shape ([`shaped`]);
+/// where the user wrote them inline it is written inline too;
+/// (settings-shape) with neither to follow, it takes the shape a new
+/// file has ([`natural`]).
 fn fresh_in(table: &toml_edit::Table, new: &Item) -> Item {
     match (new, table.iter().find_map(|(_, i)| i.as_table())) {
         (Item::Value(toml_edit::Value::InlineTable(n)), Some(like)) => Item::Table(shaped(n, like)),
+        _ if table.iter().any(|(_, i)| i.as_inline_table().is_some()) => new.clone(),
+        _ => natural(new),
+    }
+}
+
+/// (settings-shape) `new` as it is written where the file has nothing
+/// of its kind to follow (a new file, a new field, the first entry of a
+/// dictionary): a record that holds records (a record, or a list of
+/// records) is a `[section]`, its lists of records `[[…]]` tables and
+/// its records that hold records sections under it, as the settings-file
+/// and monitor-profiles pages show a profile, so a saved profile is
+/// something to edit by hand; a record of plain values stays one inline
+/// line. A dictionary's entries are taken so, and its own `[name]`
+/// header is left out when every entry is a section.
+fn natural(new: &Item) -> Item {
+    match new {
+        Item::Value(toml_edit::Value::InlineTable(t)) if holds_records(t) => {
+            Item::Table(sectioned(t))
+        }
+        Item::Table(t) => {
+            let mut out = t.clone();
+            let mut sections = !out.is_empty();
+            for (mut k, v) in out.iter_mut() {
+                let n = natural(v);
+                if n.is_table() && !v.is_table() {
+                    // Its key is a header now: no spacing from `k = `.
+                    k.leaf_decor_mut().clear();
+                }
+                *v = n;
+                sections &= v.is_table() || v.is_array_of_tables();
+            }
+            if sections {
+                out.set_implicit(true);
+            }
+            Item::Table(out)
+        }
         _ => new.clone(),
+    }
+}
+
+/// (settings-shape) A list of records, written as `[[…]]` tables.
+fn records(v: &toml_edit::Value) -> Option<Vec<&toml_edit::InlineTable>> {
+    let a = v.as_array().filter(|a| !a.is_empty())?;
+    a.iter().map(toml_edit::Value::as_inline_table).collect()
+}
+
+/// (settings-shape) Whether a record holds a record or a list of them.
+fn holds_records(t: &toml_edit::InlineTable) -> bool {
+    t.iter()
+        .any(|(_, v)| v.is_inline_table() || records(v).is_some())
+}
+
+/// (settings-shape) A record that holds records as a section ([`natural`]).
+fn sectioned(t: &toml_edit::InlineTable) -> toml_edit::Table {
+    let mut out = toml_edit::Table::new();
+    for (k, v) in t.iter() {
+        let item = match (v, records(v)) {
+            (toml_edit::Value::InlineTable(x), _) if holds_records(x) => Item::Table(sectioned(x)),
+            (_, Some(list)) => {
+                let mut tables = toml_edit::ArrayOfTables::new();
+                for x in list {
+                    tables.push(sectioned(x));
+                }
+                Item::ArrayOfTables(tables)
+            }
+            _ => {
+                let mut v = v.clone();
+                v.decor_mut().clear();
+                Item::Value(v)
+            }
+        };
+        out.insert(k, item);
+    }
+    snug(&mut out);
+    out
+}
+
+/// (settings-shape) The first table under a section of nothing but
+/// tables, as it is written: `None` when the section has values.
+fn first_under(t: &mut toml_edit::Table) -> Option<&mut toml_edit::Table> {
+    if t.iter().any(|(_, i)| i.is_value()) {
+        return None;
+    }
+    match t.iter_mut().next()?.1 {
+        Item::ArrayOfTables(a) => a.get_mut(0),
+        Item::Table(t) => Some(t),
+        _ => None,
+    }
+}
+
+/// (settings-shape) A section of nothing but tables: its first sits
+/// right under its header, as the pages show `[profiles."…"]` over
+/// `[[….mons]]`.
+fn snug(t: &mut toml_edit::Table) {
+    if let Some(first) = first_under(t) {
+        first.decor_mut().set_prefix("");
     }
 }
 
@@ -1265,6 +1362,14 @@ fn shaped(new: &toml_edit::InlineTable, like: &toml_edit::Table) -> toml_edit::T
             }
         };
         out.insert(k, item);
+    }
+    // (settings-shape) Its first table right under its header when the
+    // one it is shaped like has it so.
+    let mut like = like.clone();
+    if first_under(&mut like)
+        .is_some_and(|f| f.decor().prefix().and_then(toml_edit::RawString::as_str) == Some(""))
+    {
+        snug(&mut out);
     }
     out
 }

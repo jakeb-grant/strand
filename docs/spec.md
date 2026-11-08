@@ -2174,7 +2174,9 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   (an `every` timer on each tick) is not reported again until a run of
   it completes (decisions.md handler-fault-repeat); a `strand watch`
   started since hears it at its next failing run (decisions.md
-  handler-fault-repeat-watch).
+  handler-fault-repeat-watch), and so does each lock session that
+  begins, since the lock's built-in password field is shown for a fault
+  reported while it is up (decisions.md lock-fault-epoch).
 - When a handler's node unmounts, the handler is cancelled at its next
   `await`. A reload that changes a handler's code, or anything it calls,
   restarts it and cancels and reports an in-flight `await`
@@ -2825,7 +2827,11 @@ people can edit by hand.
   inline table keeps the spacing of each field the same way.
   (settings-tables) A record goes back into the form the file has it
   in: a `[section]` stays a section, merged key by key, and a new record
-  among records written as sections is a section shaped like them. A
+  among records written as sections is a section shaped like them;
+  (settings-shape) one among inline records is inline, and with neither
+  to follow (no file yet, a new field, a dictionary's first entry) a
+  record that holds records is a `[section]`, its lists of records
+  `[[…]]` tables, while a record of plain values stays one inline line. A
   list, inline or `[[name]]`, is merged by value: an element that reads
   the same as one the file has keeps that one's text and the comments on
   it, in the new order; (settings-tables follow-up) so does one changed

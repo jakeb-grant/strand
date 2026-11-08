@@ -77,13 +77,20 @@ use std::time::{Duration, Instant};
 
 use rustix::event::{EventfdFlags, PollFd, PollFlags};
 use wayland_client::backend::ObjectId;
-use wayland_client::protocol::{wl_callback, wl_output, wl_registry};
+use wayland_client::protocol::{
+    wl_buffer, wl_callback, wl_compositor, wl_output, wl_region, wl_registry, wl_shm, wl_shm_pool,
+    wl_surface,
+};
 use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, event_created_child,
 };
 use wayland_protocols::xdg::xdg_output::zv1::client::{
     zxdg_output_manager_v1::{self, ZxdgOutputManagerV1},
     zxdg_output_v1::{self, ZxdgOutputV1},
+};
+use wayland_protocols_wlr::layer_shell::v1::client::{
+    zwlr_layer_shell_v1::{self, ZwlrLayerShellV1},
+    zwlr_layer_surface_v1::{self, ZwlrLayerSurfaceV1},
 };
 use wayland_protocols_wlr::output_management::v1::client::{
     zwlr_output_configuration_head_v1::{self, ZwlrOutputConfigurationHeadV1},
@@ -125,6 +132,17 @@ const CHECK_QUIET: Duration = Duration::from_secs(1);
 /// (outputs-apply) The longest an applied configuration is checked for
 /// when the outputs keep changing ([`Check`]).
 const CHECK_FOR: Duration = Duration::from_secs(5);
+
+/// (outputs-frame) How long an apply may go unanswered before the
+/// service gives the compositor a frame ([`Nudge`]), and how often it
+/// gives it another while the answer still does not come. Hyprland 0.57
+/// applies a configuration at its next frame (`CMonitorRuleManager`'s
+/// `scheduleReload`, run in its render's pre-checks), and draws none
+/// while nothing changes on screen: an idle desktop answered an apply
+/// only once the pointer moved. sway, niri and labwc answer at once, so
+/// they never get one.
+const NUDGE_AFTER: Duration = Duration::from_millis(100);
+const NUDGE_EVERY: Duration = Duration::from_millis(500);
 
 /// (outputs-resync) How far, in logical pixels, xdg-output's size may be
 /// from a head's mode over its scale before they disagree (compositors
@@ -701,6 +719,48 @@ struct Client {
     /// batch of changes: an applied configuration is checked against them
     /// once they are quiet ([`Check`]).
     outputs_at: Option<Instant>,
+    /// (outputs-frame) What a [`Nudge`] is made with: `wl_compositor`,
+    /// `wl_shm` and the layer shell (not bound by a probe).
+    compositor: Option<wl_compositor::WlCompositor>,
+    shm: Option<wl_shm::WlShm>,
+    layer_shell: Option<ZwlrLayerShellV1>,
+    /// (outputs-frame) The surface shown while an apply waits for its
+    /// answer.
+    nudge: Option<Nudge>,
+}
+
+/// (outputs-frame) A 1x1 fully transparent layer surface (the overlay
+/// layer, no input, no keyboard, no exclusive zone), shown while an apply
+/// goes unanswered for [`NUDGE_AFTER`] and committed again every
+/// [`NUDGE_EVERY`]: each commit damages the screen, so a compositor that
+/// draws only on damage draws a frame, and Hyprland 0.57 applies the
+/// configuration at it. It goes once the answer comes.
+#[derive(Debug)]
+struct Nudge {
+    surface: wl_surface::WlSurface,
+    layer: ZwlrLayerSurfaceV1,
+    pool: wl_shm_pool::WlShmPool,
+    buffer: wl_buffer::WlBuffer,
+    /// Its first configure came (it can show a buffer).
+    configured: bool,
+    /// When it last asked for a frame.
+    at: Instant,
+}
+
+impl Nudge {
+    /// A commit of its buffer, damaged: a frame.
+    fn show(&self) {
+        self.surface.attach(Some(&self.buffer), 0, 0);
+        self.surface.damage(0, 0, 1, 1);
+        self.surface.commit();
+    }
+
+    fn destroy(self) {
+        self.layer.destroy();
+        self.surface.destroy();
+        self.buffer.destroy();
+        self.pool.destroy();
+    }
 }
 
 /// (outputs-mode) A `wl_output` as the outputs service binds it: its
@@ -738,6 +798,69 @@ impl WlOut {
 }
 
 impl Client {
+    /// (outputs-frame) Asks the compositor for a frame: the [`Nudge`]
+    /// made and shown, or committed again. Nothing without the globals
+    /// it needs, or when its buffer cannot be made.
+    fn nudge(&mut self, qh: &QueueHandle<Client>) {
+        let now = Instant::now();
+        if let Some(n) = &mut self.nudge {
+            n.at = now;
+            if n.configured {
+                n.show();
+            }
+            return;
+        }
+        let (Some(compositor), Some(shm), Some(shell)) =
+            (&self.compositor, &self.shm, &self.layer_shell)
+        else {
+            return;
+        };
+        let fd = match rustix::fs::memfd_create("strand-outputs", rustix::fs::MemfdFlags::CLOEXEC)
+            .and_then(|fd| rustix::fs::ftruncate(&fd, 4).map(|()| fd))
+        {
+            Ok(fd) => fd,
+            Err(e) => {
+                log::debug!("outputs: no frame surface: {e}");
+                return;
+            }
+        };
+        log::debug!("outputs: an apply unanswered; showing a frame surface");
+        // A zeroed ARGB8888 pixel: fully transparent.
+        let pool = shm.create_pool(std::os::fd::AsFd::as_fd(&fd), 4, qh, ());
+        let buffer = pool.create_buffer(0, 1, 1, 4, wl_shm::Format::Argb8888, qh, ());
+        let surface = compositor.create_surface(qh, ());
+        let region = compositor.create_region(qh, ());
+        surface.set_input_region(Some(&region));
+        region.destroy();
+        let layer = shell.get_layer_surface(
+            &surface,
+            None,
+            zwlr_layer_shell_v1::Layer::Overlay,
+            "strand-outputs".into(),
+            qh,
+            (),
+        );
+        layer.set_size(1, 1);
+        layer.set_anchor(zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left);
+        layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
+        surface.commit();
+        self.nudge = Some(Nudge {
+            surface,
+            layer,
+            pool,
+            buffer,
+            configured: false,
+            at: now,
+        });
+    }
+
+    /// (outputs-frame) The [`Nudge`] is no longer needed.
+    fn unnudge(&mut self) {
+        if let Some(n) = self.nudge.take() {
+            n.destroy();
+        }
+    }
+
     fn head_mut(&mut self, id: &ObjectId) -> Option<&mut HeadEntry> {
         self.heads.iter_mut().find(|h| h.proxy.id() == *id)
     }
@@ -1552,6 +1675,8 @@ struct InFlight {
     request: Request,
     /// What it asked of each head.
     asked: Vec<Expect>,
+    /// (outputs-frame) When it was sent.
+    sent: Instant,
 }
 
 /// Sends `request` as a configuration (number `id`), with what it asks of
@@ -1660,6 +1785,16 @@ fn socket(target: WaylandTarget) -> io::Result<std::path::PathBuf> {
             std::env::var_os("XDG_RUNTIME_DIR"),
         ),
     }
+}
+
+/// (outputs-frame) When the compositor is next given a frame for the
+/// apply in flight ([`Nudge`]); `None`: no apply waits for its answer.
+fn nudge_due(in_flight: Option<&InFlight>, nudge: Option<&Nudge>) -> Option<Instant> {
+    let f = in_flight.filter(|f| matches!(f.request.action, OutputsAction::Apply { .. }))?;
+    Some(match nudge {
+        Some(n) => n.at + NUDGE_EVERY,
+        None => f.sent + NUDGE_AFTER,
+    })
 }
 
 fn timespec(d: Duration) -> rustix::event::Timespec {
@@ -1914,6 +2049,7 @@ impl Outputs {
                             config,
                             request,
                             asked,
+                            sent: Instant::now(),
                         })
                     }
                     Err(e) => {
@@ -1923,6 +2059,15 @@ impl Outputs {
                     }
                 }
             }
+            // (outputs-frame) An apply unanswered: a frame for the
+            // compositor; answered, the surface goes.
+            let nudge_at = nudge_due(in_flight.as_ref(), client.nudge.as_ref());
+            match nudge_at {
+                Some(at) if Instant::now() >= at => client.nudge(&qh),
+                Some(_) => {}
+                None => client.unnudge(),
+            }
+            let nudge_at = nudge_due(in_flight.as_ref(), client.nudge.as_ref());
             // A full socket buffer is not an error: wait until it drains.
             let unflushed = match queue.flush() {
                 Ok(()) => false,
@@ -1948,7 +2093,10 @@ impl Outputs {
                     .resync_at()
                     .filter(|_| in_flight.is_none() && checking.is_none());
                 let check = checking.as_ref().map(|c| c.deadline(client.outputs_at));
-                let deadline = [stopping, resync, check].into_iter().flatten().min();
+                let deadline = [stopping, resync, check, nudge_at]
+                    .into_iter()
+                    .flatten()
+                    .min();
                 let timeout =
                     deadline.map(|d| timespec(d.saturating_duration_since(Instant::now())));
                 match rustix::event::poll(&mut fds, timeout.as_ref()) {
@@ -2028,6 +2176,33 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
                 for g in globals {
                     state.get_xdg_output(g, qh);
                 }
+            }
+            // (outputs-frame) What a frame surface is made with.
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } if interface == wl_compositor::WlCompositor::interface().name
+                && state.compositor.is_none()
+                && !state.probe =>
+            {
+                state.compositor = Some(registry.bind(name, version.min(4), qh, ()));
+            }
+            wl_registry::Event::Global {
+                name, interface, ..
+            } if interface == wl_shm::WlShm::interface().name
+                && state.shm.is_none()
+                && !state.probe =>
+            {
+                state.shm = Some(registry.bind(name, 1, qh, ()));
+            }
+            wl_registry::Event::Global {
+                name, interface, ..
+            } if interface == ZwlrLayerShellV1::interface().name
+                && state.layer_shell.is_none()
+                && !state.probe =>
+            {
+                state.layer_shell = Some(registry.bind(name, 1, qh, ()));
             }
             wl_registry::Event::GlobalRemove { name } if state.manager_global == Some(name) => {
                 if let Some(m) = &state.manager {
@@ -2343,6 +2518,59 @@ impl Dispatch<ZwlrOutputConfigurationHeadV1, ()> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+    }
+}
+
+/// (outputs-frame) The frame surface's objects, whose events say nothing
+/// it needs but the layer surface's.
+macro_rules! no_events {
+    ($($t:ty),*) => {$(
+        impl Dispatch<$t, ()> for Client {
+            fn event(
+                _: &mut Self,
+                _: &$t,
+                _: <$t as Proxy>::Event,
+                _: &(),
+                _: &Connection,
+                _: &QueueHandle<Self>,
+            ) {
+            }
+        }
+    )*};
+}
+no_events!(
+    wl_compositor::WlCompositor,
+    wl_shm::WlShm,
+    wl_shm_pool::WlShmPool,
+    wl_buffer::WlBuffer,
+    wl_surface::WlSurface,
+    wl_region::WlRegion,
+    ZwlrLayerShellV1
+);
+
+/// (outputs-frame) The frame surface's configure (acked, and its pixel
+/// shown: the first frame) and its close (it goes).
+impl Dispatch<ZwlrLayerSurfaceV1, ()> for Client {
+    fn event(
+        state: &mut Self,
+        layer: &ZwlrLayerSurfaceV1,
+        event: zwlr_layer_surface_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(n) = state.nudge.as_mut().filter(|n| n.layer == *layer) else {
+            return;
+        };
+        match event {
+            zwlr_layer_surface_v1::Event::Configure { serial, .. } => {
+                layer.ack_configure(serial);
+                n.configured = true;
+                n.show();
+            }
+            zwlr_layer_surface_v1::Event::Closed => state.unnudge(),
+            _ => {}
+        }
     }
 }
 

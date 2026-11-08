@@ -969,3 +969,82 @@ fn succeeded_comes_after_outputs_all_shows_the_apply() {
     }
     outputs::configure(None);
 }
+
+/// (outputs-frame) Hyprland 0.57 applies a configuration, and answers it,
+/// at its next frame, and an idle desktop draws none: seen on nested
+/// Hyprland, an apply sent while nothing moved waited 13 s for the
+/// pointer, and the applies after it ran one change late. An apply left
+/// unanswered gets a frame from the service: a 1x1 transparent layer
+/// surface, with no input, committed until the answer comes and gone
+/// after it. wlroots' shape answers at once and is shown none.
+#[test]
+fn an_apply_waiting_for_a_frame_is_given_one() {
+    use strand_fake_wayland::{Fake, OutputManagement, SurfaceGlobals};
+    let _serial = serial();
+    for shape in [
+        OutputManagement::Lagging,
+        OutputManagement::Silent,
+        OutputManagement::Wlroots,
+    ] {
+        let fake = Fake::builder()
+            .toplevel_list(false)
+            .outputs(&["FAKE-1", "FAKE-2"])
+            .output_management(shape)
+            .surfaces(SurfaceGlobals::default())
+            .applies_at_frame(true)
+            .start();
+        let h = Harness::start_on(fake.socket.clone());
+        h.until("ready", |h| h.b.outputs.ready(&h.rt));
+        let frame_surfaces = || {
+            fake.surfaces()
+                .into_iter()
+                .filter(|s| s.namespace.as_deref() == Some("strand-outputs"))
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            frame_surfaces().is_empty(),
+            "{shape:?}: none before an apply"
+        );
+        for (n, x) in [(1, 3000), (2, 5000)] {
+            let place = OutputChange {
+                x: Some(x),
+                y: Some(0),
+                ..OutputChange::of("FAKE-2")
+            };
+            let sent = Instant::now();
+            h.act("apply", &[place]);
+            let (event, args) = h.next_event("the answer");
+            assert_eq!(event, "succeeded", "{shape:?}: {args:?}");
+            assert!(
+                sent.elapsed() < Duration::from_secs(3),
+                "{shape:?}: answered in {:?}",
+                sent.elapsed()
+            );
+            assert_eq!(h.output("FAKE-2").x, x, "{shape:?}");
+            assert_eq!(fake.held_configurations(), 0, "{shape:?}");
+            let made = frame_surfaces();
+            if shape == OutputManagement::Wlroots {
+                assert!(made.is_empty(), "answered at once: {made:?}");
+                continue;
+            }
+            assert_eq!(made.len(), n, "{shape:?}: one a wait: {made:?}");
+            let s = &made[n - 1];
+            assert_eq!(s.layer, Some(3), "the overlay layer: {s:?}");
+            assert_eq!(s.configured, Some((1, 1)), "{s:?}");
+            assert_eq!(
+                s.buffer,
+                Some(strand_fake_wayland::BufferKind::Shm {
+                    width: 1,
+                    height: 1
+                }),
+                "{s:?}"
+            );
+            assert_eq!(s.input, Some(Default::default()), "no input: {s:?}");
+            h.until(&format!("{shape:?}: the frame surface gone"), |_| {
+                frame_surfaces().iter().all(|s| s.destroyed)
+            });
+        }
+        h.s.shutdown();
+    }
+    outputs::configure(None);
+}

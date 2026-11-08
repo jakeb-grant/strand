@@ -175,9 +175,25 @@ impl super::Ctx {
 
     /// A mounted `lock`'s `open` turned from false to true.
     pub(crate) fn lock_opened(&self) {
-        if let Some(track) = self.lock.borrow().as_ref() {
-            track.opened();
+        let Some(track) = self.lock.borrow().clone() else {
+            return;
+        };
+        if track.phase() == Phase::Ended {
+            self.new_lock_session();
         }
+        track.opened();
+    }
+
+    /// (lock-fault-epoch) A new lock session begins (a request after the
+    /// last one ended, or `Locked` after it): a handler's repeated error
+    /// is news again. The lock's own logic is mounted once and only
+    /// suspended between locks, so without this a failure it reported in
+    /// the last lock would be deduped (`Site::reported`) in this one and
+    /// never reach `lock_faults`, which shows the built-in password field
+    /// (decisions.md lock-fault-epoch).
+    pub(crate) fn new_lock_session(&self) {
+        let epoch = &self.fault_epoch;
+        epoch.set(epoch.get().wrapping_add(1));
     }
 }
 

@@ -32,6 +32,12 @@
 //! `wl_output`, as Hyprland does a mirrored monitor: its head names no
 //! current mode, and Hyprland's shapes save a place a configuration
 //! gives it and leave it where it is (the monitor stays a mirror).
+//! (outputs-frame) [`crate::FakeBuilder::applies_at_frame`]: Hyprland's
+//! shapes run the rule reload, and answer `succeeded`, only at the next
+//! frame, a commit by any client of a surface with a buffer or damage
+//! (Hyprland 0.57's `CMonitorRuleManager::scheduleReload`, run in its
+//! render's pre-checks, so an idle desktop answers only once something
+//! draws).
 
 use std::sync::{Arc, Mutex};
 
@@ -132,6 +138,11 @@ pub(crate) struct State {
     shadow: Vec<(usize, (i32, i32))>,
     /// Managers bound so far.
     bound: usize,
+    /// (outputs-frame) Hyprland's shapes reload at the next frame.
+    pub(crate) at_frame: bool,
+    /// (outputs-frame) Configurations saved, their reload and `succeeded`
+    /// waiting for the next frame.
+    held: Vec<ZwlrOutputConfigurationV1>,
 }
 
 /// (outputs-apply) The output managers bound ([`crate::Fake::output_managers`]).
@@ -282,8 +293,36 @@ impl State {
         {
             m.resource.done(serial);
         }
-        // The rule reload: the first saved place wins, but for a mirror,
-        // which stays where it is.
+        if self.at_frame {
+            self.held.push(config.clone());
+            return;
+        }
+        self.reload(outputs);
+        config.succeeded();
+    }
+
+    /// (outputs-frame) A frame: the reload a configuration waits for, and
+    /// its `succeeded` (every configuration saved since the last one).
+    pub(crate) fn frame(&mut self, outputs: &[(usize, wl_output::WlOutput)]) {
+        if self.held.is_empty() {
+            return;
+        }
+        self.reload(outputs);
+        for c in std::mem::take(&mut self.held) {
+            if c.is_alive() {
+                c.succeeded();
+            }
+        }
+    }
+
+    /// (outputs-frame) Configurations waiting for a frame.
+    pub(crate) fn held(&self) -> usize {
+        self.held.len()
+    }
+
+    /// Hyprland's rule reload: the first saved place wins, but for a
+    /// mirror, which stays where it is.
+    fn reload(&mut self, outputs: &[(usize, wl_output::WlOutput)]) {
         for i in 0..self.heads.len() {
             if self.heads[i].mirror {
                 continue;
@@ -300,7 +339,6 @@ impl State {
                 self.move_output(i, x, y, outputs);
             }
         }
-        config.succeeded();
     }
 
     /// The managers counted ([`ManagerCount`]).

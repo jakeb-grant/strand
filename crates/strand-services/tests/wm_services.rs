@@ -774,14 +774,17 @@ fn a_hyprland_the_adapter_cannot_read_falls_back_to_the_protocols_with_a_diagnos
         "Hyprland",
         "wm.name stays the adapter's, as when it cannot connect"
     );
-    let diagnostics = diagnostics.borrow().clone();
-    let degraded: Vec<_> = diagnostics
+    let seen = diagnostics.borrow().clone();
+    let degraded: Vec<_> = seen
         .iter()
         .filter(|d| d.message.contains("does not understand"))
         .collect();
-    assert_eq!(degraded.len(), 1, "one store reports it: {diagnostics:?}");
-    let d = degraded[0];
+    assert_eq!(degraded.len(), 1, "one store reports it: {seen:?}");
+    let d = degraded[0].clone();
     assert!(!d.notice && !d.resolved, "{d:?}");
+    // (build-ready-standing) It holds until Hyprland is understood
+    // again: standing, so a `strand watch` started later hears it.
+    assert!(d.standing, "{d:?}");
     assert!(
         ["windows", "workspaces", "wm"].contains(&d.service.as_str()),
         "{d:?}"
@@ -800,6 +803,22 @@ fn a_hyprland_the_adapter_cannot_read_falls_back_to_the_protocols_with_a_diagnos
         w.iter().any(|(id, _)| id == "0x55d0c0a1b2c0")
             && !w.iter().any(|(id, _)| id.starts_with("wlr-"))
     });
+    // (build-ready-standing) Understood again: the store that raised it
+    // resolves it, once.
+    until("the degradation resolved", &|| {
+        diagnostics
+            .borrow()
+            .iter()
+            .any(|r| r.resolved && r.message == d.message)
+    });
+    let resolved: Vec<_> = diagnostics
+        .borrow()
+        .iter()
+        .filter(|r| r.resolved && r.message == d.message)
+        .cloned()
+        .collect();
+    assert_eq!(resolved.len(), 1, "{resolved:?}");
+    assert_eq!(resolved[0].service, d.service, "{resolved:?}");
     s.shutdown();
     wm::configure(None);
 }

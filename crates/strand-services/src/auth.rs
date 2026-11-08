@@ -153,8 +153,11 @@ pub type ClientHook = Arc<dyn Fn(Client) -> Client + Send + Sync>;
 /// What the `auth` store uses from its next start on.
 #[derive(Clone)]
 pub struct AuthConfig {
-    /// The helper; `None` looks it up ([`strand_auth::default_helper`]).
+    /// The helper; `None` looks it up (`find_helper`).
     pub helper: Option<PathBuf>,
+    /// How a `None` helper is looked up ([`strand_auth::default_helper`];
+    /// tests: a target with none installed).
+    pub find_helper: fn() -> Option<PathBuf>,
     /// How long PAM may stay quiet with a password
     /// ([`strand_auth::DEFAULT_TIMEOUT`]; a password is answered within
     /// [`strand_auth::LIMIT_FACTOR`] times it).
@@ -177,6 +180,7 @@ impl Default for AuthConfig {
     fn default() -> Self {
         Self {
             helper: None,
+            find_helper: strand_auth::default_helper,
             timeout: strand_auth::DEFAULT_TIMEOUT,
             sink: None,
             failed: None,
@@ -349,7 +353,7 @@ struct Running {
 impl Auth {
     async fn run(mut cx: Cx<Self>) -> Result<(), ServiceError> {
         let config = Arc::new(config());
-        let helper = config.helper.clone().or_else(strand_auth::default_helper);
+        let helper = config.helper.clone().or_else(config.find_helper);
         let start = |path: &PathBuf| {
             let c = Client::new(path.clone(), crate::child::restore_in_child)
                 .with_timeout(config.timeout);
@@ -361,7 +365,12 @@ impl Auth {
         let session = || config.session.as_ref().map_or(0, |s| s());
         let mut client = helper.as_ref().map(start);
         if helper.is_none() {
-            cx.warn("no `strand-auth` helper is installed: the lock screen cannot check passwords");
+            // (build-ready-standing) It holds for the whole run (the
+            // helper is looked up once), so it stays open: a `strand
+            // watch` started later hears it.
+            cx.failing(
+                "no `strand-auth` helper is installed: the lock screen cannot check passwords",
+            );
         }
         if !cx.update(|s| *s = Auth::default()) {
             return Ok(());
