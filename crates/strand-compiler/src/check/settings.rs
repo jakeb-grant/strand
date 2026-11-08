@@ -14,7 +14,8 @@
 //! a key a record does not have, a dictionary key that does not read)
 //! is a warning, as the shell keeps that field's last good value and
 //! loads the rest; so is a key no declaration of the file has, which the
-//! shell ignores. Each problem is labelled in the TOML file (the value,
+//! shell ignores. Every problem in a field is reported, not only the
+//! first the decoder stops at, so one check finds them all. Each problem is labelled in the TOML file (the value,
 //! key or header at fault), with the declaration as a second label.
 //!
 //! This touches the disk, so it is not part of [`crate::compile`]:
@@ -52,6 +53,30 @@ pub fn check(
     config_dir: Option<&Path>,
     map: &mut SourceMap,
 ) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for (path, decls) in &declared(program, config_dir) {
+        check_file(&program.types, path, decls, map, &mut out);
+    }
+    out
+}
+
+/// The path of every settings file `program` declares, as [`check`]
+/// resolves it, whether or not it is there: the language server watches
+/// them, so a file made after it was analysed (the shell's first write)
+/// is read when it appears.
+pub fn paths(program: &hir::Program, config_dir: Option<&Path>) -> Vec<PathBuf> {
+    declared(program, config_dir)
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect()
+}
+
+/// Each settings file `program` declares, resolved, with its declarations
+/// (one read per file, whichever declarations share it).
+fn declared<'a>(
+    program: &'a hir::Program,
+    config_dir: Option<&Path>,
+) -> Vec<(PathBuf, Vec<Decl<'a>>)> {
     let mut decls = Vec::new();
     for file in &program.files {
         for item in &file.items {
@@ -63,7 +88,6 @@ pub fn check(
             }
         }
     }
-    // One read per file, whichever declarations share it.
     let mut files: Vec<(PathBuf, Vec<Decl<'_>>)> = Vec::new();
     for d in decls {
         let Some(path) = resolve(d.path, config_dir) else {
@@ -74,11 +98,7 @@ pub fn check(
             None => files.push((path, vec![d])),
         }
     }
-    let mut out = Vec::new();
-    for (path, decls) in &files {
-        check_file(&program.types, path, decls, map, &mut out);
-    }
-    out
+    files
 }
 
 /// A settings file's path as the shell resolves it.
@@ -189,33 +209,32 @@ fn check_file(
             let Some((key, item)) = root.get_key_value(&f.name) else {
                 continue;
             };
-            let Err(why) = decode_item(types, &f.ty, item) else {
-                continue;
-            };
-            // Two declarations of one file, one report.
-            if said.iter().any(|s| s.0 == f.name && s.1 == why) {
-                continue;
-            }
-            said.push((f.name.clone(), why.clone()));
-            let at = blame(types, &f.ty, item)
-                .or_else(|| key.span())
-                .or_else(|| item.span());
-            out.push(
-                Diagnostic::warning(
-                    "check::settings_value",
-                    format!(
-                        "`{shown}`: `{}`: {why}; the shell keeps its last good value \
-                         (its default until one has loaded)",
-                        f.name
+            let mut found = Vec::new();
+            faults(types, &f.ty, item, "", &mut found);
+            for (at, why) in found {
+                // Two declarations of one file, one report.
+                if said.iter().any(|s| s.0 == f.name && s.1 == why) {
+                    continue;
+                }
+                said.push((f.name.clone(), why.clone()));
+                let at = at.or_else(|| key.span()).or_else(|| item.span());
+                out.push(
+                    Diagnostic::warning(
+                        "check::settings_value",
+                        format!(
+                            "`{shown}`: `{}`: {why}; the shell keeps its last good value \
+                             (its default until one has loaded)",
+                            f.name
+                        ),
+                    )
+                    .with_label_in(toml, span(at), "does not load")
+                    .with_secondary_in(
+                        d.file,
+                        f.span,
+                        format!("`{}.{}` is a `{}`", d.name, f.name, types.show(&f.ty)),
                     ),
-                )
-                .with_label_in(toml, span(at), "does not load")
-                .with_secondary_in(
-                    d.file,
-                    f.span,
-                    format!("`{}.{}` is a `{}`", d.name, f.name, types.show(&f.ty)),
-                ),
-            );
+                );
+            }
         }
     }
     // A key no declaration of the file has: the shell never reads it.
@@ -267,47 +286,74 @@ fn span(r: Option<Range<usize>>) -> Span {
     }
 }
 
-/// Where in `item`, which does not read as a `ty`, the reason is: the
-/// innermost value, key or table header the shell's decoder stops at,
-/// walking the item as `decode_item` does. `None` when toml_edit kept no
+/// Every place in `item`, which does not read as a `ty`, the shell's
+/// decoder would stop at, walking the item as `decode_item` does: each
+/// failing value, key a record does not have, and dictionary key that
+/// does not read, with its reason worded as the shell's notice words it
+/// (`"a + b": [1]: scale: expected float`). `decode_item` stops at the
+/// first, so a field with several problems would otherwise be fixed one
+/// `strand check` at a time. A range is `None` when toml_edit kept no
 /// span for it.
-fn blame(types: &TypeTable, ty: &Ty, item: &toml_edit::Item) -> Option<Range<usize>> {
-    let fails = |ty: &Ty, i: &toml_edit::Item| decode_item(types, ty, i).is_err();
-    let inner = match ty.non_null() {
-        Ty::Record(r) => item.as_table_like().and_then(|t| {
-            let def = types.record(*r);
-            // A key the record does not have.
-            if let Some((k, _)) = t.iter().find(|(k, _)| def.field(k).is_none()) {
-                return t.get_key_value(k).and_then(|(key, _)| key.span());
+fn faults(
+    types: &TypeTable,
+    ty: &Ty,
+    item: &toml_edit::Item,
+    at: &str,
+    out: &mut Vec<(Option<Range<usize>>, String)>,
+) {
+    let Err(why) = decode_item(types, ty, item) else {
+        return;
+    };
+    let before = out.len();
+    match ty.non_null() {
+        Ty::Record(r) => {
+            if let Some(t) = item.as_table_like() {
+                let def = types.record(*r);
+                for (k, child) in t.iter() {
+                    let key = t.get_key_value(k).and_then(|(key, _)| key.span());
+                    match def.field(k) {
+                        // A key the record does not have.
+                        None => out.push((
+                            key.or_else(|| child.span()),
+                            joined(at, &format!("unknown field {k:?}")),
+                        )),
+                        Some(f) => {
+                            let n = out.len();
+                            faults(types, &f.ty, child, &joined(at, &f.name), out);
+                            if out.len() > n && out[n].0.is_none() {
+                                out[n].0 = key;
+                            }
+                        }
+                    }
+                }
             }
-            def.fields.iter().find_map(|f| {
-                let (key, child) = t.get_key_value(&f.name)?;
-                if !fails(&f.ty, child) {
-                    return None;
+        }
+        Ty::Dict(k, v) => {
+            if let Some(t) = item.as_table_like() {
+                for (text, child) in t.iter() {
+                    let key = t.get_key_value(text).and_then(|(key, _)| key.span());
+                    let reads = matches!(
+                        key_text(types, k, text, &mut Default::default()),
+                        Some(Some(_))
+                    );
+                    if reads {
+                        let n = out.len();
+                        faults(types, v, child, &joined(at, &format!("{text:?}: ")), out);
+                        if out.len() > n && out[n].0.is_none() {
+                            out[n].0 = key;
+                        }
+                        continue;
+                    }
+                    // The shell's own words for this key: the entry alone,
+                    // read as the dictionary.
+                    let mut one = toml_edit::Table::new();
+                    one.insert(text, child.clone());
+                    if let Err(m) = decode_item(types, ty, &toml_edit::Item::Table(one)) {
+                        out.push((key.or_else(|| child.span()), joined(at, &m)));
+                    }
                 }
-                blame(types, &f.ty, child)
-                    .or_else(|| key.span())
-                    .or_else(|| child.span())
-            })
-        }),
-        Ty::Dict(k, v) => item.as_table_like().and_then(|t| {
-            t.iter().find_map(|(text, child)| {
-                let key = t.get_key_value(text).map(|(key, _)| key);
-                let reads = matches!(
-                    key_text(types, k, text, &mut Default::default()),
-                    Some(Some(_))
-                );
-                if !reads {
-                    return key.and_then(toml_edit::Key::span);
-                }
-                if !fails(v, child) {
-                    return None;
-                }
-                blame(types, v, child)
-                    .or_else(|| key.and_then(toml_edit::Key::span))
-                    .or_else(|| child.span())
-            })
-        }),
+            }
+        }
         Ty::List(e, _) => {
             let elems: Vec<toml_edit::Item> = match item {
                 toml_edit::Item::ArrayOfTables(a) => a
@@ -322,14 +368,32 @@ fn blame(types: &TypeTable, ty: &Ty, item: &toml_edit::Item) -> Option<Range<usi
                     None => Vec::new(),
                 },
             };
-            elems
-                .iter()
-                .find(|el| fails(e, el))
-                .and_then(|el| blame(types, e, el).or_else(|| el.span()))
+            for (i, el) in elems.iter().enumerate() {
+                let n = out.len();
+                faults(types, e, el, &joined(at, &format!("[{i}]")), out);
+                if out.len() > n && out[n].0.is_none() {
+                    out[n].0 = el.span();
+                }
+            }
         }
-        _ => None,
-    };
-    inner.or_else(|| item.span())
+        _ => {}
+    }
+    // A plain value of the wrong type, or what fails only as a whole
+    // (two dictionary keys that read as one): the decoder's reason here.
+    if out.len() == before {
+        out.push((item.span(), joined(at, &why)));
+    }
+}
+
+/// `at`'s place and `m` as the decoder chains them: `mons[1]: scale`, a
+/// record's field and a list's index joined by `: ` unless the rest is an
+/// index, a dictionary's key always (its place ends in `: `).
+fn joined(at: &str, m: &str) -> String {
+    if at.is_empty() || at.ends_with(": ") || m.starts_with('[') {
+        format!("{at}{m}")
+    } else {
+        format!("{at}: {m}")
+    }
 }
 
 #[cfg(test)]
@@ -455,6 +519,50 @@ mod tests {
         assert_eq!(
             (got[0].0, got[0].1),
             ("check::settings_value", 1),
+            "{got:?}"
+        );
+    }
+
+    /// Several problems in one field, two in one record and one in
+    /// another entry of the dictionary, are each reported on its own
+    /// line, not only the first the decoder stops at; two keys that read
+    /// as one fail only as a whole and are reported at the dictionary.
+    #[test]
+    fn every_problem_in_a_field_is_reported() {
+        let src = "type Mon { name: text; scale: float; on: bool }\n\
+            type Profile { gaps: int; mons: [Mon] }\n\
+            state mons from \"s.toml\" { profiles: [text: Profile] = [] }\n";
+        let toml = "[profiles.\"a + b\"]\ngaps = 4\n\n\
+            [[profiles.\"a + b\".mons]]\nname = \"a\"\non = \"yes\"\nwidht = 3\n\n\
+            [profiles.c]\ngaps = \"wide\"\n";
+        let got = checked(src, Some(toml));
+        let lines: Vec<_> = got.iter().map(|g| (g.0, g.1)).collect();
+        assert_eq!(
+            lines,
+            [
+                ("check::settings_value", 6),
+                ("check::settings_value", 7),
+                ("check::settings_value", 10),
+            ],
+            "{got:?}"
+        );
+        assert!(
+            got[0].2.contains(r#""a + b": mons[0]: on: expected bool"#),
+            "{got:?}"
+        );
+        assert!(
+            got[1]
+                .2
+                .contains(r#""a + b": mons[0]: unknown field "widht""#),
+            "{got:?}"
+        );
+        assert!(got[2].2.contains(r#""c": gaps: expected int"#), "{got:?}");
+        // `3` and `03` are one `int` key: the dictionary fails as a whole.
+        let src = "state s from \"s.toml\" { sizes: [int: int] = [] }\n";
+        let got = checked(src, Some("[sizes]\n3 = 1\n03 = 2\n"));
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(
+            got[0].2.contains(r#"key "03": the same key as "3""#),
             "{got:?}"
         );
     }

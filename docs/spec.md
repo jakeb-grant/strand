@@ -2896,10 +2896,12 @@ people can edit by hand.
   shell's notice gives, as the shell keeps that field's last good value
   and loads the rest; so is a key no declaration of the file has
   (`check::settings_unknown_key`, with a did-you-mean), which the shell
-  never reads. The overlay and the last-good snapshot are the running
-  shell's and are not read. The language server reports the same, each
-  at the declaration that reads the file, its message naming the TOML
-  file and line.
+  never reads. Every problem is reported, several in one field too, not
+  only the first the decoder stops at. The overlay and the last-good
+  snapshot are the running shell's and are not read. The language
+  server reports the same, each at the declaration that reads the file,
+  its message naming the TOML file and line, and reads a declared file
+  again when it changes or appears.
 
 ## 12. Errors and faults
 

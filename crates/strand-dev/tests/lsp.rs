@@ -1659,6 +1659,38 @@ fn a_settings_files_problems_are_shown_at_its_declaration() {
     assert_eq!(c.diagnostics("mon.strand"), Vec::<Value>::new());
 }
 
+/// (check-settings) A settings file that is not there yet (the shell
+/// makes it on its first write) is watched all the same: when it appears,
+/// with a problem, the next request sees it and what is shown catches up,
+/// though the editor changed nothing. The file is outside the config
+/// directory (`~/.local/state/…`, say), so no change to the directories
+/// the config is read from gives it away.
+#[test]
+fn a_settings_file_made_later_is_read_when_it_appears() {
+    let elsewhere = TempDir::new();
+    let toml = elsewhere.0.join("monitors.toml");
+    let src = format!(
+        "state mons from {:?} {{ compact: bool = false }}\nbar B {{ text \"x\" }}\n",
+        toml.display().to_string()
+    );
+    let mut c = Client::start(&[("mon.strand", src.clone())]);
+    c.open("mon.strand");
+    assert_eq!(c.diagnostics("mon.strand"), Vec::<Value>::new());
+    std::fs::write(&toml, "compact = \"yes\"\n").unwrap();
+    let at = Client::pos(&src, "compact", 0, 1);
+    c.hover("mon.strand", at);
+    let diags = c.diagnostics("mon.strand");
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(diags[0]["code"], "check::settings_value", "{diags:?}");
+    assert!(
+        diags[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("expected bool"),
+        "{diags:?}"
+    );
+}
+
 #[test]
 fn a_file_outside_the_workspace_is_checked_alone() {
     let c = Client::start(&[]);

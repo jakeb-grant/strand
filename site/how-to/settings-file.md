@@ -81,7 +81,8 @@ accent = "#e06c75"
   TOML is an error, since the shell takes nothing from it. A value of
   the wrong type, or a key that no field (or no field of a record) has,
   is a warning: the shell keeps that field's last good value, or never
-  reads the key. A missing file is fine.
+  reads the key. A missing file is fine. Every problem in the file is
+  shown at once, several in one field too.
 
 ## Where the file lives
 

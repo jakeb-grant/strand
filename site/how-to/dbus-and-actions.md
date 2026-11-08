@@ -73,8 +73,10 @@ Strand's built-in `power` service already reads and sets the profile
 - **Its name reads as its run**, as a declared action's does.
   `ppd.hold.running` is true while a call waits for its answer, and
   when the daemon refuses one, `ppd.hold.error` is its error name and
-  message (`org.freedesktop.bolt.Error.Exists: device already stored`
-  from bolt's `EnrollDevice`), so the shell can say why: `text
+  message, as a daemon gives them (bolt, for one, refuses an
+  `EnrollDevice` of a device it has with
+  `org.freedesktop.bolt.Error.Exists: device already stored`), so the
+  shell can say why: `text
   ppd.hold.error ?? ""`. A new call clears it, as does an answer
   without an error. When the call could not be made at all (the
   daemon is not on the bus, or the service could not reach the bus),

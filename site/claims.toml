@@ -654,6 +654,12 @@ proof  = "read: the same checks as `check_config`, all but `lock_helper`, which 
 
 [[claim]]
 page   = "site/tools/editor.md"
+text   = "A settings file changed or made outside the editor is read again at the next request."
+source = ['crates/strand-dev/src/workspace.rs "strand_compiler::check::settings::paths(&compiled.program, Some(d))"', 'crates/strand-dev/src/workspace.rs "/// The file as it is, or that it is not there: a stamp of a missing"']
+proof  = "crates/strand-dev/tests/lsp.rs::a_settings_file_made_later_is_read_when_it_appears, ::a_settings_files_problems_are_shown_at_its_declaration"
+
+[[claim]]
+page   = "site/tools/editor.md"
 text   = "typing. What is wrong inside a settings file is shown at the `state`"
 source = ['crates/strand-dev/src/workspace.rs "let diags = strand_compiler::check::settings::check(program, Some(dir), &mut read);"', 'crates/strand-dev/src/workspace.rs ".replacen(&format!("`{name}`"), &format!("`{name}:{line}`"), 1);"']
 proof  = "crates/strand-dev/tests/lsp.rs::a_settings_files_problems_are_shown_at_its_declaration"
@@ -2761,6 +2767,12 @@ page   = "site/how-to/settings-file.md"
 text   = "is a warning: the shell keeps that field's last good value, or never reads the key. A missing file is fine."
 source = ['crates/strand-compiler/src/check/settings.rs ""check::settings_value","', 'crates/strand-compiler/src/check/settings.rs ""check::settings_unknown_key","', 'crates/strand-compiler/src/check/settings.rs "Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,"']
 proof  = "crates/strand-compiler/src/check/settings.rs::tests::a_typod_key_is_a_warning_on_its_line, ::a_wrong_type_is_a_warning_on_its_line, ::a_good_or_missing_file_is_quiet"
+
+[[claim]]
+page   = "site/how-to/settings-file.md"
+text   = "Every problem in the file is shown at once, several in one field too."
+source = ['crates/strand-compiler/src/check/settings.rs "fn faults("', 'crates/strand-compiler/src/check/settings.rs "let mut found = Vec::new();"']
+proof  = "crates/strand-compiler/src/check/settings.rs::tests::every_problem_in_a_field_is_reported"
 
 [[claim]]
 page   = "site/how-to/settings-file.md"

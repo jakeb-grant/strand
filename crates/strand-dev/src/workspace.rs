@@ -42,26 +42,36 @@ pub enum ConfigKey {
     Single(String),
 }
 
-/// What a file or directory on disk looked like when it was read.
+/// What a file or directory on disk looked like when it was read, or
+/// that it was not there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Stamp {
     path: PathBuf,
     len: u64,
     modified: Option<SystemTime>,
+    there: bool,
 }
 
 impl Stamp {
+    /// The file as it is, `None` when it is not there.
     fn of(path: &Path) -> Option<Stamp> {
-        let m = std::fs::metadata(path).ok()?;
-        Some(Stamp {
+        Some(Stamp::now(path)).filter(|s| s.there)
+    }
+
+    /// The file as it is, or that it is not there: a stamp of a missing
+    /// file goes stale when the file appears.
+    fn now(path: &Path) -> Stamp {
+        let m = std::fs::metadata(path).ok();
+        Stamp {
             path: path.to_path_buf(),
-            len: m.len(),
-            modified: m.modified().ok(),
-        })
+            len: m.as_ref().map_or(0, std::fs::Metadata::len),
+            modified: m.as_ref().and_then(|m| m.modified().ok()),
+            there: m.is_some(),
+        }
     }
 
     fn fresh(&self) -> bool {
-        Stamp::of(&self.path).as_ref() == Some(self)
+        Stamp::now(&self.path) == *self
     }
 }
 
@@ -197,12 +207,18 @@ impl Analysis {
             ));
         // (check-settings) The settings files the config declares, read
         // as `strand check` reads them, each problem shown at the
-        // declaration that reads the file (a stamp per file read, so an
-        // edit to it outside the editor is seen).
+        // declaration that reads the file (a stamp per declared file,
+        // there or not, so an edit to it outside the editor is seen, and
+        // so is one the shell makes on its first write).
         if let Some(d) = dir {
-            let (diags, read) = settings_at_declarations(&compiled.program, d, &map);
-            compiled.diagnostics.extend(diags);
-            stamps.extend(read.iter().filter_map(|p| Stamp::of(p)));
+            compiled
+                .diagnostics
+                .extend(settings_at_declarations(&compiled.program, d, &map));
+            stamps.extend(
+                strand_compiler::check::settings::paths(&compiled.program, Some(d))
+                    .iter()
+                    .map(|p| Stamp::now(p)),
+            );
         }
         // `shader "x.wgsl"` files, checked with naga (relative paths only
         // in a config directory).
@@ -657,7 +673,7 @@ impl Introspector {
 }
 
 /// (check-settings) What `strand check` says of the settings files
-/// `program` declares (`check::settings::check`), with the files it read.
+/// `program` declares (`check::settings::check`).
 /// The editor shows only the config's `.strand` documents, so a problem
 /// found in a TOML file is shown at the declaration that reads it (its
 /// second label made the first), its message naming the file and line
@@ -667,12 +683,12 @@ fn settings_at_declarations(
     program: &strand_compiler::hir::Program,
     dir: &Path,
     map: &SourceMap,
-) -> (Vec<strand_compiler::Diagnostic>, Vec<PathBuf>) {
+) -> Vec<strand_compiler::Diagnostic> {
     let n = map.len();
     let mut read = map.clone();
     let diags = strand_compiler::check::settings::check(program, Some(dir), &mut read);
     let ours = |f: FileId| (f.0 as usize) < n;
-    let diags = diags
+    diags
         .into_iter()
         .filter_map(|mut d| {
             let at = d.labels.iter().find(|l| !ours(l.file)).and_then(|l| {
@@ -694,13 +710,7 @@ fn settings_at_declarations(
             }
             (!d.labels.is_empty()).then_some(d)
         })
-        .collect();
-    let files = read
-        .iter()
-        .skip(n)
-        .map(|(_, f)| PathBuf::from(&f.name))
-        .collect();
-    (diags, files)
+        .collect()
 }
 
 impl strand_compiler::check::dbus::Introspect for Introspector {
