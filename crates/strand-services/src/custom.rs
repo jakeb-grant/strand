@@ -2368,7 +2368,8 @@ pub const BACKLOG_TICK: Duration = Duration::from_millis(5);
 async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result<(), ServiceError> {
     use tokio::io::AsyncReadExt;
     let (mut proc, mut stdout, mut stderr) = Proc::spawn(argv)?;
-    let program = argv.first().map_or("", String::as_str);
+    // (proc-reason) Named past `stdbuf`/`env`, as `permit exec` checks it.
+    let program = strand_core::command::program(argv);
     let id = cx.state().spec;
     clear_backlog(id);
     cx.ready();
@@ -2503,7 +2504,8 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
 async fn poll_command(argv: &[String], ok: &[i32]) -> Result<Got, String> {
     use tokio::io::AsyncReadExt;
     let (mut proc, mut stdout, mut stderr) = Proc::spawn(argv).map_err(|e| e.0)?;
-    let cmd = argv.first().map_or("", String::as_str);
+    // (proc-reason) Named past `stdbuf`/`env`, as `permit exec` checks it.
+    let cmd = strand_core::command::program(argv);
     let mut tail = Tail::new();
     let mut err = ErrLines::new(cmd);
     let run = async {

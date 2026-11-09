@@ -805,7 +805,8 @@ monitor, the keyboard always).
   type's fields, so an API's error object read whole as `[T]` (an
   action's `-> [T]`, or a key that finds the object) is reported
   rather than one item of defaults; a missing key `[]`, with no report; blank text (an
-  empty element) read as a list of anything but `text` is `[]`, and
+  empty element, a command that printed nothing) read as a list is
+  `[]`, a list of `text` too, and
   read as a record type other than `Date` its fields' defaults; a single type over a list reads its first item; an
   XML element read as text, a number, a bool, an enum, a path or a
   `Date` is its text (its own and its descendants' in document order;
@@ -870,7 +871,10 @@ monitor, the keyboard always).
   the handler is mounted, and lines printed before it was are not
   heard. (proc-lines) A command's `line` events are external input
   (section 8.7), so a handler that appends every line is never
-  throttled. None is lost and their queue is bounded: while more than
+  throttled; they are still a service's events, not gestures, so a
+  line that comes while the handler's surface is closed is delivered
+  when it opens, as any service event is (the latest 256 per handler).
+  None is lost and their queue is bounded: while more than
   4096 lines (or 4 MiB) wait for handlers, strand stops reading the
   command's stdout until they are heard, so a fast command waits as it
   would on a slow terminal; its stderr has a pipe of its own and is
@@ -1260,17 +1264,28 @@ action's, and a `file`'s `run` (section 9.7), is read the same way.
   So `permit exec` sees through `stdbuf` and `env`: when a command's
   first item is `stdbuf` followed only by `-i`, `-o` or `-e` options
   (`-oL`, `-o L`, `--output=L`), or `env` followed only by `NAME=value`
-  items, each a text literal, the program checked against `permit
-  exec`, and by `check::shell_script`, is the one after them, so
-  `permit exec "pacman"` allows `["stdbuf", "-oL", "pacman", …]` and
-  `["env", "LC_ALL=C", "pacman", …]`, the two forms in either order.
-  Any other item (`env -i pacman`, `stdbuf --help`, a parameter) stops
-  the seeing through, and the program checked is `stdbuf` or `env`.
+  items setting the locale, the time zone, the terminal or Python's
+  buffering (`LANG`, `LANGUAGE`, `LC_…`, `TZ`, `TERM`, `NO_COLOR`,
+  `COLUMNS`, `PYTHONUNBUFFERED`), each a text literal, the program
+  checked against `permit exec`, and by `check::shell_script`, is the
+  one after them, so `permit exec "pacman"` allows `["stdbuf", "-oL",
+  "pacman", …]` and `["env", "LC_ALL=C", "pacman", …]`, the two forms
+  in either order. `stdbuf` and `env` are seen through as those bare
+  words or as `/usr/bin/…` or `/bin/…`; at any other path the program
+  is one that shares the name, and it is checked itself. Any other item
+  (`env -i pacman`, `stdbuf --help`, a parameter) stops the seeing
+  through, as does a variable that could change which program runs or
+  what it loads (`env PATH=… pacman`, `env LD_PRELOAD=… pacman`), and
+  the program checked is `stdbuf` or `env`.
 - **Why a run failed.** A command that could not start, ended with a
   status its `ok` does not list (section 5.7) or by a signal, timed out
   or printed too much fails with a headline (``"`pacman` failed (exit
   status: 1)"``, ``"could not start `x`: …"``, ``"`x` timed out after
-  10 s"``), and the reason follows it after `": "`: its stderr, framed
+  10 s"``), which names the program past a leading `stdbuf` or `env`
+  as `permit exec` sees through them (`["stdbuf", "-oL", "rsync", …]`
+  fails as `` `rsync` ``; what could not start is the program strand
+  started, `` `stdbuf` `` itself), and the reason follows it after
+  `": "`: its stderr, framed
   and its blank lines dropped, whole up to 4 KiB, past that its first
   1 KiB and its last 3 KiB, each cut at a line, joined by a line `…`;
   when it printed nothing on stderr, the last 1 KiB of its stdout (a
@@ -1283,8 +1298,12 @@ action's, and a `file`'s `run` (section 9.7), is read the same way.
   diagnostic (`strand watch`), an action's notice and a `file`'s `run`
   notice: ``"`pacman` failed (exit status: 1): error: failed to commit
   transaction (conflicting files)"``, the conflicting files on the
-  lines after it. Its first line is `rec.error?.split("\n")?.first`; the
-  lines themselves are `rec.lines.filter(l => l.stderr)`.
+  lines after it. Its first line is `rec.error?.split("\n")?.first`,
+  which suits a program that says why first (pacman, rsync); one that
+  prints progress on stderr before it fails (git, curl) leads with its
+  progress, so read its own marker instead, the last line starting
+  `fatal:` or `curl:`, or the error's last line. The lines themselves
+  are `rec.lines.filter(l => l.stderr)`.
 - **Logging.** A successful run's stderr goes to strand's log at debug
   level (at info for a non-zero status its `ok` lists); a failing
   `-> T` call is logged at info, an action's failing run at warning.

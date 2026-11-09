@@ -654,6 +654,9 @@ pub(super) fn run(
         Ok(c) => c,
         Err(e) => return (Some(format!("could not start `{prog}`: {e}")), -1, false),
     };
+    // (proc-reason) From here it is named past `stdbuf`/`env`, as `permit
+    // exec` checks it: `rsync` failed, not `stdbuf`.
+    let prog = strand_core::command::program(argv);
     let mut reader = Reader::new(
         child.stdout.take().map(OwnedFd::from),
         child.stderr.take().map(OwnedFd::from),
@@ -903,6 +906,9 @@ pub(super) fn capture(
         Ok(c) => c,
         Err(e) => return failed(format!("could not start `{prog}`: {e}")),
     };
+    // (proc-reason) From here it is named past `stdbuf`/`env`, as `permit
+    // exec` checks it: `rsync` failed, not `stdbuf`.
+    let prog = strand_core::command::program(argv);
     let group = i32::try_from(child.id()).unwrap_or(0);
     let deadline = Instant::now() + timeout;
     let mut reader = Reader::new(
@@ -2351,6 +2357,43 @@ mod tests {
             run_(&sh("exit 3")).0.as_deref(),
             Some("`sh` failed (exit status: 3)")
         );
+        // Named past `stdbuf` and `env`, the program `permit exec`
+        // checks: the forms buffered-output.md teaches.
+        let wrapped = |pre: &[&str]| {
+            let mut argv: Vec<String> = pre.iter().map(|a| (*a).to_string()).collect();
+            argv.extend(sh("echo 'rsync: [sender] gone' >&2; exit 3"));
+            argv
+        };
+        for pre in [
+            &["stdbuf", "-oL"][..],
+            &["env", "LC_ALL=C"],
+            &["stdbuf", "-oL", "-eL", "env", "LC_ALL=C"],
+        ] {
+            assert_eq!(
+                run_(&wrapped(pre)).0.as_deref(),
+                Some("`sh` failed (exit status: 3): rsync: [sender] gone"),
+                "{pre:?}"
+            );
+            let got = capture(
+                &wrapped(pre),
+                &[0],
+                &Halt::new(false),
+                POLL_TIMEOUT,
+                STOP_GRACE,
+            );
+            assert_eq!(
+                got.out,
+                Err("`sh` failed (exit status: 3): rsync: [sender] gone".into()),
+                "{pre:?}"
+            );
+        }
+        // What could not start is the program spawned.
+        let (why, ..) = run_(&["/nonexistent/stdbuf".to_string(), "-oL".into(), "sh".into()]);
+        assert!(
+            why.as_deref()
+                .is_some_and(|w| w.starts_with("could not start `/nonexistent/stdbuf`")),
+            "{why:?}"
+        );
         let (why, ..) = run_(&sh(
             "{ echo 'error: the first'; i=0; while [ $i -lt 3000 ]; do echo \"noise $i\"; \
              i=$((i+1)); done; echo 'the last'; } >&2; exit 1",
@@ -2407,6 +2450,29 @@ mod tests {
             STOP_GRACE,
         );
         assert_eq!(got.out, Err("`sh` failed (exit status: 2)".into()));
+        // checkupdates' 2, "none", printing nothing: `[]` for a list of
+        // any type, `[text]` included, and null for an optional.
+        let none = capture(
+            &sh("exit 2"),
+            &[0, 2],
+            &Halt::new(false),
+            POLL_TIMEOUT,
+            STOP_GRACE,
+        );
+        let printed = none.out.unwrap();
+        for ty in ["[text]", "[int]", "[path]", "[Probe]"] {
+            let (p, t) = program(ty);
+            assert_eq!(
+                crate::services::custom::read_output(&p.types, &t, &printed),
+                Ok(strand_compiler::vm::Value::list(Vec::new())),
+                "{ty}"
+            );
+        }
+        let (p, t) = program("text?");
+        assert_eq!(
+            crate::services::custom::read_output(&p.types, &t, &printed),
+            Ok(strand_compiler::vm::Value::Null)
+        );
     }
 
     /// (proc-reason) A call with a result failing: its `.error` says why,

@@ -1084,6 +1084,9 @@ fn run_once(argv: &[String], timeout: Duration) -> Option<String> {
         Ok(c) => c,
         Err(e) => return Some(format!("`run:` could not start `{prog}`: {e}")),
     };
+    // (proc-reason) From here it is named past `stdbuf`/`env`, as `permit
+    // exec` checks it: `rsync` failed, not `stdbuf`.
+    let prog = strand_core::command::program(argv);
     let mut reader = Reader::new(
         child.stdout.take().map(std::os::fd::OwnedFd::from),
         child.stderr.take().map(std::os::fd::OwnedFd::from),
@@ -1337,6 +1340,16 @@ mod tests {
         let sh = |c: &str| vec!["sh".to_string(), "-c".into(), c.into()];
         let why = run_once(&sh("echo boom >&2; exit 3"), RUN_TIMEOUT).unwrap();
         assert!(why.contains("boom") && why.contains("failed"), "{why}");
+        // (proc-reason) Named past `stdbuf`/`env`, as `permit exec`
+        // checks it.
+        let mut wrapped: Vec<String> = ["env", "LC_ALL=C", "stdbuf", "-oL"]
+            .map(String::from)
+            .to_vec();
+        wrapped.extend(sh("echo boom >&2; exit 3"));
+        assert_eq!(
+            run_once(&wrapped, RUN_TIMEOUT).as_deref(),
+            Some("`run:` `sh` failed (exit status: 3): boom")
+        );
         assert_eq!(run_once(&["true".into()], RUN_TIMEOUT), None);
         let why = run_once(&["/nonexistent/x".into()], RUN_TIMEOUT).unwrap();
         assert!(why.contains("could not start"), "{why}");

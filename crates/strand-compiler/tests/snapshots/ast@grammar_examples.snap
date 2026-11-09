@@ -40,7 +40,7 @@ file
     field title :text? (= title)
   permit exec "sensors" "playerctl" "qalc" "restic" "checkupdates" "pacman"
   action calc (params (q :text)) (-> :text) (array "qalc" "-t" q)
-  action updates params (-> :[text]) (array "checkupdates" "--nocolor")
+  action updates params (-> :text) (array "checkupdates" "--nocolor")
     ok 0 2
   action backup (params (dirs :[path])) (array "restic" "backup" "--json" "--" dirs)
     ok 0 3
@@ -49,7 +49,7 @@ file
       field percent_done :float?
   service orphans (from poll (array "pacman" "-Qdtq") (every 1h))
     ok 0 1
-    field names :[text]
+    field names :text
   let progress (= (?? (. backup percent_done) (?? (. (call numbers (?. (. (. backup lines) last) text)) first) 0)))
   let answer (= (?? (call calc "2+2") ""))
   keyframes shake

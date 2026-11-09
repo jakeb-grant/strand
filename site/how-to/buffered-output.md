@@ -78,6 +78,11 @@ anyway.
 after them. It does so only when `stdbuf` is followed by nothing but
 `-i`, `-o` and `-e` options (`-oL`, `-o L`, `--output=L`), and `env`
 by nothing but `NAME=value` items, each written out, in either order.
+The variables `env` may set there are the ones that cannot change
+which program runs or what it loads: `LANG`, `LANGUAGE`, `LC_…`, `TZ`,
+`TERM`, `NO_COLOR`, `COLUMNS` and `PYTHONUNBUFFERED`. `stdbuf` and
+`env` are written as those bare words (or `/usr/bin/…`): a program at
+another path that shares the name is checked as itself.
 Anything else (`env -i pacman`, a parameter where the program would
 be) stops it, and the program checked is `stdbuf` or `env` itself, so
 `permit exec "env"` would allow any program after it.

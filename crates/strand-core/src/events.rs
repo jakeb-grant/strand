@@ -27,7 +27,8 @@
 //!
 //! A listener inside a suspended (frozen) component does not run. Events of
 //! an input queue ([`Runtime::input_events`]) are dropped for it (a frozen
-//! component ignores clicks); events of any other queue are kept for it, in
+//! component ignores clicks); events of any other queue (an external one,
+//! [`Runtime::external_events`], included) are kept for it, in
 //! order, and delivered once it is released ([`Runtime::resume`], or moved
 //! out of the frozen scope), so a service event is not lost. The backlog is
 //! bounded: past [`crate::MAX_FROZEN_EVENTS`] per listener the oldest are
@@ -73,17 +74,22 @@ struct EventsData<T> {
     /// event goes to every listener without `T: Clone`.
     queue: RefCell<VecDeque<Rc<T>>>,
     listeners: RefCell<Vec<NodeId>>,
-    /// External input (`on click`, `on scroll`): listeners are input
-    /// handlers, not counted by the write-rate guard.
+    /// External input (`on click`, `on scroll`, a program's lines):
+    /// listeners are input handlers, not counted by the write-rate guard.
     input: bool,
+    /// Events are dropped for a frozen listener (a click is), not kept.
+    drop_frozen: bool,
 }
 
 struct ListenerData<T> {
     f: RefCell<ListenerFn<T>>,
     /// Its queue (for diagnostics).
     queue: NodeId,
-    /// Its queue is an input queue: events are dropped while it is frozen.
+    /// Its queue is an input queue: it runs as input (the write-rate
+    /// guard does not count it).
     input: bool,
+    /// Its queue drops events while it is frozen.
+    drop_frozen: bool,
     /// Events handed to it, not yet delivered: those of this flush, or
     /// those it missed while frozen (at most [`MAX_FROZEN_EVENTS`]).
     inbox: RefCell<VecDeque<Rc<T>>>,
@@ -128,7 +134,7 @@ impl<T: 'static> NodeData for EventsData<T> {
             };
             if rt.is_suspended(l) {
                 // A frozen component ignores input; other events wait.
-                if !self.input {
+                if !self.drop_frozen {
                     for ev in &events {
                         listener.keep(ev.clone());
                     }
@@ -236,7 +242,7 @@ impl<T: 'static> ListenerData<T> {
     /// dropped, the rest bounded.
     fn freeze(&self) {
         let mut inbox = self.inbox.borrow_mut();
-        if self.input {
+        if self.drop_frozen {
             inbox.clear();
             return;
         }
@@ -251,7 +257,7 @@ impl Runtime {
     /// Create an event queue owned by the current owner (service events,
     /// component events: listeners are counted by the write-rate guard).
     pub fn events<T: 'static>(&self) -> EventQueue<T> {
-        self.event_queue(false)
+        self.event_queue(false, false)
     }
 
     /// Create a queue of external input events (`on click`, `on scroll(dy)`,
@@ -259,10 +265,22 @@ impl Runtime {
     /// handlers: like CLI or service writes, their writes are not counted by
     /// the 30 writes/s guard, so 60 Hz smooth scrolling is never throttled.
     pub fn input_events<T: 'static>(&self) -> EventQueue<T> {
-        self.event_queue(true)
+        self.event_queue(true, true)
     }
 
-    fn event_queue<T: 'static>(&self, input: bool) -> EventQueue<T> {
+    /// (proc-lines) Create a queue of events from outside the graph that
+    /// are data, not gestures: a program's lines (`on journal.line(e)`).
+    /// Its listeners run as input, as [`Runtime::input_events`]' do, so a
+    /// handler keeping every line of a chatty program is never throttled;
+    /// but like a service's events, and unlike a click, they are kept for
+    /// a frozen listener (at most [`MAX_FROZEN_EVENTS`]) and delivered
+    /// when it is released, so a closed panel catches up on what it
+    /// missed.
+    pub fn external_events<T: 'static>(&self) -> EventQueue<T> {
+        self.event_queue(true, false)
+    }
+
+    fn event_queue<T: 'static>(&self, input: bool, drop_frozen: bool) -> EventQueue<T> {
         let id = self.create_node(
             NodeKind::Events,
             Color::Clean,
@@ -270,6 +288,7 @@ impl Runtime {
                 queue: RefCell::new(VecDeque::new()),
                 listeners: RefCell::new(Vec::new()),
                 input,
+                drop_frozen,
             })),
         );
         EventQueue {
@@ -353,7 +372,8 @@ impl<T: 'static> EventQueue<T> {
         if !rt.exists(self.id) {
             return Err(Error::Disposed(self.id));
         }
-        let input = rt.with_data::<EventsData<T>, _>(self.id, |d| d.input)?;
+        let (input, drop_frozen) =
+            rt.with_data::<EventsData<T>, _>(self.id, |d| (d.input, d.drop_frozen))?;
         let l = rt.create_node(
             NodeKind::Listener,
             Color::Clean,
@@ -361,6 +381,7 @@ impl<T: 'static> EventQueue<T> {
                 f: RefCell::new(Box::new(f)),
                 queue: self.id,
                 input,
+                drop_frozen,
                 inbox: RefCell::new(VecDeque::new()),
                 dropped: Cell::new(0),
             })),
@@ -371,7 +392,8 @@ impl<T: 'static> EventQueue<T> {
     }
 
     /// (proc-lines) It is a queue of external input
-    /// ([`Runtime::input_events`]): a handler it starts runs as input
+    /// ([`Runtime::input_events`], [`Runtime::external_events`]): a
+    /// handler it starts runs as input
     /// ([`Runtime::spawn_input`]), its writes not counted by the 30
     /// writes/s guard. False for a disposed queue.
     pub fn is_input(self, rt: &Runtime) -> bool {

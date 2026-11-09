@@ -63,94 +63,10 @@ fn renamed(member: &str) -> &'static str {
     }
 }
 
-/// (proc-permit) Where the program a command runs is: past a leading
-/// `stdbuf` with only `-i`/`-o`/`-e` options and an `env` with only
-/// `NAME=value` items, in either order (spec.md 5.8). `items` are the
-/// command's items, `None` for one that is not a text literal (a
-/// parameter), which stops the seeing through. The index is always of a
-/// written-out item: 0 when nothing is seen through.
-pub(crate) fn program_at(items: &[Option<&str>]) -> usize {
-    let mut at = 0;
-    loop {
-        let Some(Some(word)) = items.get(at) else {
-            return at;
-        };
-        let name = word.rsplit('/').next().unwrap_or(word);
-        let mut next = at + 1;
-        match name {
-            "stdbuf" => {
-                let mut options = 0;
-                loop {
-                    match items.get(next) {
-                        Some(Some(o)) if buffer_option(o).is_some() => {
-                            if buffer_option(o) == Some(true) {
-                                next += 1;
-                            } else {
-                                // `-o L`: the mode is the next item.
-                                match items.get(next + 1) {
-                                    Some(Some(m)) if buffer_mode(m) => next += 2,
-                                    _ => return at,
-                                }
-                            }
-                            options += 1;
-                        }
-                        _ => break,
-                    }
-                }
-                // stdbuf runs nothing without an option.
-                if options == 0 {
-                    return at;
-                }
-            }
-            "env" => {
-                while matches!(items.get(next), Some(Some(a)) if env_assignment(a)) {
-                    next += 1;
-                }
-            }
-            _ => return at,
-        }
-        match items.get(next) {
-            Some(Some(p)) if !p.is_empty() && !p.starts_with('-') => at = next,
-            _ => return at,
-        }
-    }
-}
-
-/// A `stdbuf` option: `Some(true)` with its mode (`-oL`, `--output=L`),
-/// `Some(false)` when the mode is the next item (`-o`), `None` for
-/// anything else.
-fn buffer_option(o: &str) -> Option<bool> {
-    for (short, long) in [("-i", "--input="), ("-o", "--output="), ("-e", "--error=")] {
-        if o == short {
-            return Some(false);
-        }
-        if let Some(m) = o.strip_prefix(short).or_else(|| o.strip_prefix(long))
-            && buffer_mode(m)
-        {
-            return Some(true);
-        }
-    }
-    None
-}
-
-/// A `stdbuf` mode: `L` (lines) or a size (`0`, `4096`, `1K`, `1MiB`).
-fn buffer_mode(m: &str) -> bool {
-    m == "L"
-        || m.starts_with(|c: char| c.is_ascii_digit())
-            && m.chars().all(|c| c.is_ascii_alphanumeric())
-}
-
-/// An `env` item that sets a variable: `NAME=value`, `NAME` a letter or
-/// `_` then letters, digits or `_`.
-fn env_assignment(a: &str) -> bool {
-    let Some((name, _)) = a.split_once('=') else {
-        return false;
-    };
-    let mut cs = name.chars();
-    cs.next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && cs.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
+/// (proc-permit) Where the program a command runs is, past a leading
+/// `stdbuf` or `env` (spec.md 5.8): one rule, strand-core's, which the
+/// runtime also names a failing program by.
+pub(crate) use strand_core::command::program_at;
 
 /// Whether `program` (a name or a path) is a shell that runs its `-c`
 /// argument as a script.
@@ -311,7 +227,7 @@ impl<'a> Checker<'a> {
             why,
         )
         .help = Some(
-            "`ok` follows an action's command (`action updates() -> [text] \
+            "`ok` follows an action's command (`action updates() -> text \
              [\"checkupdates\"] ok 0, 2`) or a polled command's interval"
                 .into(),
         );

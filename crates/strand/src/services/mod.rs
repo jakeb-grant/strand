@@ -4538,6 +4538,39 @@ service early {
             assert_eq!(live.inst.get("svc.got").unwrap(), Value::list(want));
         }
 
+        /// (proc-lines) A program's lines are input to the rate guard but
+        /// not to a closed panel: a `line` handler inside one that is
+        /// closed (frozen) hears what it missed when it opens again,
+        /// every line, in order, as a service's events are kept.
+        #[test]
+        fn a_closed_panels_line_handler_catches_up_when_it_opens() {
+            let src = "permit exec \"sh\"\nexport state o = true\nexport state n = 0\nexport state got: [int] = []\n\
+                service l from listen [\"sh\", \"-c\", \"i=0; while [ $i -lt 80 ]; do i=$((i+1)); echo a=$i; sleep .03; done; sleep 30\"] { a: int }\n\
+                bar B { text \"{l.a}\" }\n\
+                panel P {\n  open: <-> o\n  on l.line(doc) {\n    n += 1\n    got = got + [doc.a]\n  }\n  text \"{n}\"\n}\n";
+            let mut live = Live::boot(src, Buses::none());
+            let n = |l: &Live| match l.inst.get("svc.n").unwrap() {
+                Value::Num(n, _) => n as i64,
+                v => panic!("{v:?}"),
+            };
+            let a = |l: &Live| match l.value("l", "a") {
+                Value::Num(a, _) => a as i64,
+                _ => 0,
+            };
+            live.until("heard", |l| n(l) >= 1);
+            live.inst.set("svc.o", Value::Bool(false)).unwrap();
+            live.tick(Duration::ZERO);
+            let closed_at = a(&live);
+            live.until("lines while closed", |l| a(l) >= closed_at + 15);
+            let missed = n(&live);
+            assert!(missed <= closed_at + 1, "heard while closed: {missed}");
+            live.inst.set("svc.o", Value::Bool(true)).unwrap();
+            live.tick(Duration::ZERO);
+            live.until("every line heard", |l| n(l) == 80);
+            let want: Vec<Value> = (1..=80).map(Value::int).collect();
+            assert_eq!(live.inst.get("svc.got").unwrap(), Value::list(want));
+        }
+
         #[test]
         fn reloads_keep_one_line_observer_and_drop_unheard_lines() {
             let src = |fields: &str, handler: bool| {

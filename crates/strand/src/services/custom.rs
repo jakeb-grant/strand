@@ -607,12 +607,10 @@ fn go(
             Some(list_of(types, item, items.iter(), path, nested))
         }
         // (doc-formats) Blank text (an empty element, `<trkseg>
-        // </trkseg>`) is an empty list of anything but text.
-        (Ty::List(item, _), Data::Text(t))
-            if t.trim().is_empty() && !matches!(**item, Ty::Prim(Prim::Text)) =>
-        {
-            Some(Value::list(Vec::new()))
-        }
+        // </trkseg>`) is an empty list. (proc-ok) A list of text too: a
+        // command that printed nothing (checkupdates' "none", an empty
+        // `pacman -Qdtq`) answers `[]`, never one blank item.
+        (Ty::List(_, _), Data::Text(t)) if t.trim().is_empty() => Some(Value::list(Vec::new())),
         // (doc-formats) A list from one value: a list of it, if it
         // converts; a record (a JSON object, an element) only when it
         // holds one of the item record's fields, so an API's error
@@ -1072,7 +1070,7 @@ impl CustomHost {
                 values,
                 runs,
                 refusals,
-                rt.input_events::<Vec<Value>>(),
+                rt.external_events::<Vec<Value>>(),
             )
         });
         // (services-round) Each `line` the service sends, as the
@@ -2154,11 +2152,24 @@ type Ports { port: [Pt] }
         assert_eq!(nested, None, "nothing to report");
         let ports = coerce(types, &user(types, "Ports"), &Data::text("")).unwrap();
         assert_eq!(ports.field(types, "port"), Some(&Value::list(Vec::new())));
-        // A list of text keeps the blank text; a `Date` is no blank.
+        // A list of text is empty too (proc-ok: nothing printed is
+        // `[]`); a `Date` is no blank.
         let texts = Ty::List(Box::new(Ty::Prim(Prim::Text)), false);
+        for blank in ["", " \n "] {
+            assert_eq!(
+                coerce(types, &texts, &Data::text(blank)),
+                Some(Value::list(Vec::new()))
+            );
+        }
+        let paths = Ty::List(Box::new(Ty::Prim(Prim::Path)), false);
         assert_eq!(
-            coerce(types, &texts, &Data::text("")),
-            Some(Value::list(vec![Value::text("")]))
+            coerce(types, &paths, &Data::text("")),
+            Some(Value::list(Vec::new()))
+        );
+        assert_eq!(
+            read_output(types, &texts, ""),
+            Ok(Value::list(Vec::new())),
+            "a command that printed nothing"
         );
         let date = Ty::Record(types.find_schema_record("Date").unwrap());
         assert_eq!(coerce(types, &date, &Data::text(" ")), None);

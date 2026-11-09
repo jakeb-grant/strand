@@ -253,7 +253,9 @@ No Strand dependency:
   strand-scene            shared vocabulary: ids, geometry, colour, scene protocol, Painter,
                           key patterns and text markup (shared by checker, VM and render)
   strand-core             the reactive graph; its `ipc` (serde_json) is shared by
-                          strand, strand-services and strand-dev
+                          strand, strand-services and strand-dev; its `command`
+                          (which program a command runs past `stdbuf`/`env`) by
+                          strand-compiler's `permit exec` and the runtimes' headlines
   strand-watch            EventSink, CompositorEvent; portal follow
   strand-fuzzy            nucleo's matcher wrapped
   strand-icons            the icon theme lookup
@@ -492,6 +494,16 @@ files; each `mod.rs` re-exports what the crate uses.
 The interfaces of IPC, the inspector, the handler input context and
 plugins (decisions.md m5-owner, m5-core, m5-ipc, m5-inspect,
 m5-platform, m5-plugins).
+
+**Which program a command runs, in `strand-core`**
+(`strand_core::command::program_at`, `program`; decisions.md
+proc-permit): the item past a leading `stdbuf` with buffering options
+alone or an `env` with harmless `NAME=value` items alone, both as bare
+words or `/usr/bin/…`/`/bin/…`. strand-compiler checks that program
+against `permit exec`; strand and strand-services name it in a failing
+command's headline (``"`rsync` failed (exit status: 23)"`` for
+`["stdbuf", "-oL", "rsync", …]`). One rule, pure and wasm-clean, in the
+one crate both sides already depend on.
 
 **IPC protocol in `strand-core`** (`strand_core::ipc`): request, answer
 and event types and their JSON-line codec; no I/O, no threads. The
@@ -1639,8 +1651,11 @@ by `strand-compiler`, not here. See `crates/strand-core/src/lib.rs`.
   guard); `rt.spawn_input(Some(site), fut)` runs external input, not
   counted up to its first suspending `await` and counted per run after.
   A service event's handler runs as input when its host made the queue
-  with `rt.input_events` (`EventQueue::is_input`): a command's `line`
-  events are (decisions.md proc-lines, proc-output).
+  with `rt.input_events` or `rt.external_events`
+  (`EventQueue::is_input`): a command's `line` events are on an
+  external queue, whose events, unlike a click's, are kept for a frozen
+  listener (at most `MAX_FROZEN_EVENTS`) as a service's are
+  (decisions.md proc-lines, proc-output).
   `<->` writes are not counted, nor those `f` makes in
   `rt.as_input(f)` (a sink mirroring what the host takes as input: the
   compiler's `read_start`, decisions.md list-start). Timers are

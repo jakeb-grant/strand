@@ -406,9 +406,9 @@ none (the parser reads one there, and the checker refuses it).
 permit exec "hyprctl", "qalc", "checkupdates", "restic", "pacman"
 action dispatch(ws: int) ["hyprctl", "dispatch", "workspace", ws]
 action calc(q: text) -> text ["qalc", "-t", q]
-action updates() -> [text] ["checkupdates", "--nocolor"] ok 0, 2
+action updates() -> text ["checkupdates", "--nocolor"] ok 0, 2
 action backup(dirs: [path]) ["restic", "backup", "--json", "--", dirs] ok 0, 3 { percent_done: float? }
-service orphans from poll ["pacman", "-Qdtq"] every 1h ok 0, 1 { names: [text] }
+service orphans from poll ["pacman", "-Qdtq"] every 1h ok 0, 1 { names: text }
 service ppd from dbus system "net.hadess.PowerProfiles" {
   profile: text rw = ActiveProfile
   action hold(profile: text, reason: text, app: text) = HoldProfile

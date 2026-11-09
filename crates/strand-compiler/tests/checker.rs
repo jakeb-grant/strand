@@ -4695,8 +4695,13 @@ fn the_see_through_permits_only_name_value_and_buffer_options() {
         r#"["stdbuf", "--output=L", "--error=0", "pacman"]"#,
         r#"["stdbuf", "-i0", "-o4096", "-e1K", "pacman"]"#,
         r#"["/usr/bin/stdbuf", "-oL", "pacman"]"#,
+        r#"["/bin/stdbuf", "-oL", "pacman"]"#,
+        r#"["/usr/bin/env", "LANG=C", "pacman"]"#,
+        r#"["/bin/env", "TZ=UTC", "pacman"]"#,
         r#"["env", "LC_ALL=C", "pacman", "-Qi"]"#,
-        r#"["env", "LC_ALL=C", "_X1=a=b", "pacman"]"#,
+        r#"["env", "LC_ALL=C", "LC_MESSAGES=a=b", "LANGUAGE=en", "pacman"]"#,
+        r#"["env", "TERM=dumb", "NO_COLOR=1", "COLUMNS=200", "pacman"]"#,
+        r#"["env", "PYTHONUNBUFFERED=1", "pacman"]"#,
         r#"["env", "pacman"]"#,
         r#"["stdbuf", "-oL", "env", "LC_ALL=C", "pacman"]"#,
         r#"["env", "LC_ALL=C", "stdbuf", "-oL", "pacman"]"#,
@@ -4716,9 +4721,35 @@ fn the_see_through_permits_only_name_value_and_buffer_options() {
         r#"["env", "LC_ALL=C", p, "pacman"]"#,
         r#"["env", "LC_ALL=C"]"#,
         r#"["env", "LC_ALL=C", "-pacman"]"#,
+        // Another program that happens to be named `env` or `stdbuf`
+        // runs as itself: its path must be permitted.
+        r#"["/tmp/evil/env", "pacman"]"#,
+        r#"["./stdbuf", "-oL", "pacman"]"#,
+        r#"["/home/u/.local/bin/env", "LC_ALL=C", "pacman"]"#,
+        r#"["/usr/local/bin/stdbuf", "-oL", "pacman"]"#,
+        // A variable that changes which program runs or what it loads.
+        r#"["env", "PATH=/tmp/evil", "pacman"]"#,
+        r#"["env", "LD_PRELOAD=/tmp/evil.so", "pacman"]"#,
+        r#"["env", "LD_LIBRARY_PATH=/tmp/evil", "pacman"]"#,
+        r#"["env", "LC_ALL=C", "PYTHONPATH=/tmp/evil", "pacman"]"#,
+        r#"["env", "BASH_ENV=/tmp/evil", "pacman"]"#,
+        r#"["env", "_X1=a", "pacman"]"#,
+        r#"["env", "LC_=a", "pacman"]"#,
+        r#"["stdbuf", "-oL", "env", "PATH=/tmp/evil", "pacman"]"#,
     ] {
         assert!(!permitted(r#""pacman""#, cmd), "not seen through: {cmd}");
     }
+    // A command line is split into words and seen through the same way.
+    let listen = |cmd: &str| {
+        proc_codes(&format!(
+            "permit exec \"pacman\"\nservice s from listen \"{cmd}\" {{ v: text }}\n"
+        ))
+        .iter()
+        .any(|(c, _)| *c == "check::no_permit")
+    };
+    assert!(!listen("env LC_ALL=C pacman"));
+    assert!(listen("/tmp/evil/env pacman"));
+    assert!(listen("env PATH=/tmp/evil pacman"));
     // A permit of the prefix allows anything after it, as before.
     assert!(permitted(r#""env""#, r#"["env", "-i", "pacman"]"#));
     assert!(permitted(r#""stdbuf""#, r#"["stdbuf", "-oL", "anything"]"#));
@@ -4730,5 +4761,15 @@ fn the_see_through_permits_only_name_value_and_buffer_options() {
     assert_eq!(
         out.diagnostics[0].message,
         "running `pacman` needs `permit exec`"
+    );
+    // A variable not seen through leaves `env` the program checked.
+    let (out, _) = compile_files(&[(
+        "a.strand",
+        "permit exec \"pacman\"\naction a() [\"env\", \"LC_ALL=C\", \"PATH=/tmp/evil\", \"pacman\"]\n"
+            .to_string(),
+    )]);
+    assert_eq!(
+        out.diagnostics[0].message,
+        "running `env` needs `permit exec`"
     );
 }

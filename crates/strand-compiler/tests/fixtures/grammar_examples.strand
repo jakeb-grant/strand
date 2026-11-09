@@ -35,12 +35,12 @@ permit exec "sensors", "playerctl", "qalc", "restic", "checkupdates", "pacman"
 action calc(q: text) -> text ["qalc", "-t", q]
 // (proc-ok, proc-run, proc-list) `ok` statuses, a list parameter and a
 // block of fields its stdout lines fill.
-action updates() -> [text] ["checkupdates", "--nocolor"] ok 0, 2
+action updates() -> text ["checkupdates", "--nocolor"] ok 0, 2
 action backup(dirs: [path]) ["restic", "backup", "--json", "--", dirs] ok 0, 3 {
   message_type: text
   percent_done: float?
 }
-service orphans from poll ["pacman", "-Qdtq"] every 1h ok 0, 1 { names: [text] }
+service orphans from poll ["pacman", "-Qdtq"] every 1h ok 0, 1 { names: text }
 let progress = backup.percent_done ?? numbers(backup.lines.last?.text).first ?? 0
 let answer = calc("2+2") ?? ""
 

@@ -25,14 +25,15 @@ action backup(dirs: [path]) ["restic", "-r", "/mnt/usb/restic", "backup", "--jso
   percent_done: float?
   snapshot: text? = snapshot_id
 }
-
-// Every line restic prints, counted by kind.
-state errors = 0
-on backup.line(l) { if l.message_type == "error" { errors += 1 } }
-on change backup.running { if backup.running { errors = 0 } }
 ```
 
 ```strand file=bar.strand
+// restic writes each file it could not read to stderr, as a JSON line
+// of its own (`{"message_type":"error",…}`). The block and
+// `on backup.line` read stdout alone, so these are found in
+// `backup.lines`, tagged `stderr`.
+let unreadable = backup.lines.filter(l => l.stderr && l.text.contains("\"message_type\":\"error\"")).len
+
 bar Top {
   edge: top; height: 32
   bg: $surface; font: $font.ui; color: $fg
@@ -47,7 +48,7 @@ bar Top {
     }
     end { gap: $space.2
       if backup.running { meter backup.percent_done ?? 0 { width: 120 } }
-      text backup.error ?? (backup.code == 3 ? "Saved; some files unreadable" : backup.snapshot ?? "") {
+      text backup.error ?? (backup.code == 3 ? "Saved; {unreadable} files unreadable" : backup.snapshot ?? "") {
         color: $fg.muted
       }
       Log
@@ -90,7 +91,12 @@ is its run:
 - **`sync.error`** says why it failed: the headline, then the end of
   what it printed on stderr, such as
   ``"`rsync` failed (exit status: 23): rsync: [sender] … Permission
-  denied"``. Its first line is `sync.error?.split("\n")?.first`.
+  denied"``. Its first line is `sync.error?.split("\n")?.first`,
+  which suits rsync, pacman and other programs that say why first; a
+  program that prints progress on stderr before it fails (git, curl)
+  leads with its progress, so read its own marker from `lines`
+  instead (see [A download with a progress
+  bar](download-progress.md#how-it-reads)).
 
 `lines`, `code` and `error` are emptied when a run starts, not when it
 ends, so after a failure what it printed is still there to read. A
@@ -123,9 +129,11 @@ restic prints on stdout is read as a document, and its fields fill
 beside `backup.running`, at most once a frame. stderr never reaches
 them. The fields are emptied when a run starts.
 
-`on backup.line(l)` hears every line, `l` holding that line's fields
-alone, while some handler is there to hear it. Hearing lines never
-starts the command: only a call does.
+`on backup.line(l)` hears every line restic prints on stdout, `l`
+holding that line's fields alone, while some handler is there to hear
+it. Lines on stderr (restic's errors among them) are no event; they
+are in `backup.lines`, tagged `stderr`, and in `backup.error` when the
+run fails. Hearing lines never starts the command: only a call does.
 
 A block on an action with `-> T` is an error: that action reads its
 whole output as its `T`. Its fields cannot be named `running`,

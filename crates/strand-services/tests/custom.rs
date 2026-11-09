@@ -1264,24 +1264,34 @@ fn sh(script: &str) -> Vec<String> {
 /// alone (a_failing_poll_is_reported_under_its_name_and_is_not_ready).
 #[test]
 fn a_failing_poll_says_why() {
-    for (script, want) in [
+    for (pre, script, want) in [
         (
+            &[][..],
             "printf '\\033[31merror:\\033[0m No sensors found!\\n' >&2; echo 'partial'; exit 1",
             "`sh` failed (exit status: 1): error: No sensors found!",
         ),
         (
+            &[],
             "echo 'set -e: cannot reach the server'; exit 2",
             "`sh` failed (exit status: 2): set -e: cannot reach the server",
+        ),
+        // Named past `stdbuf` and `env`, as `permit exec` checks it.
+        (
+            &["stdbuf", "-oL", "env", "LC_ALL=C"],
+            "echo 'No sensors found!' >&2; exit 1",
+            "`sh` failed (exit status: 1): No sensors found!",
         ),
     ] {
         let rt = Runtime::new();
         let services = Services::new(&rt, Buses::none(), || {});
+        let mut argv: Vec<String> = pre.iter().map(|a| (*a).to_string()).collect();
+        argv.extend(sh(script));
         let (_client, id) = started(
             &rt,
             &services,
             "sensors",
             Source::Poll {
-                target: custom::PollTarget::Command(sh(script)),
+                target: custom::PollTarget::Command(argv),
                 every: Duration::from_secs(60),
                 ok: vec![0],
             },
@@ -1347,8 +1357,15 @@ fn a_listen_command_that_ends_says_why() {
         &rt,
         &services,
         "jerr",
+        // Named past `stdbuf`, as `permit exec` checks it.
         Source::Listen {
-            command: sh("echo a=1; echo 'Failed to open journal: permission denied' >&2; exit 3"),
+            command: ["stdbuf", "-oL"]
+                .map(String::from)
+                .into_iter()
+                .chain(sh(
+                    "echo a=1; echo 'Failed to open journal: permission denied' >&2; exit 3",
+                ))
+                .collect(),
         },
         vec![field("a", Default::default())],
     );

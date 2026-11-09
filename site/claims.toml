@@ -4487,13 +4487,13 @@ proof  = "the plan's probes (world.md section 2, 2026-11-08): C stdio, Python, g
 [[claim]]
 page   = "site/how-to/buffered-output.md"
 text   = "`strand check` checks the program after them."
-source = ['crates/strand-compiler/src/check/actions.rs "pub(crate) fn program_at(items: &[Option<&str>]) -> usize"', 'docs/spec.md "the program checked against `permit exec`, and by `check::shell_script`, is the one after them"']
+source = ['crates/strand-core/src/command.rs "pub fn program_at(items: &[Option<&str>]) -> usize"', 'docs/spec.md "the program checked against `permit exec`, and by `check::shell_script`, is the one after them"']
 proof  = "crates/strand-compiler/tests/checker.rs::the_see_through_permits_only_name_value_and_buffer_options"
 
 [[claim]]
 page   = "site/how-to/buffered-output.md"
 text   = "Anything else (`env -i pacman`, a parameter where the program would be) stops it, and the program checked is `stdbuf` or `env` itself"
-source = ['docs/spec.md "Any other item (`env -i pacman`, `stdbuf --help`, a parameter) stops the seeing through"', 'crates/strand-compiler/src/check/actions.rs "fn env_assignment(a: &str) -> bool"']
+source = ['docs/spec.md "Any other item (`env -i pacman`, `stdbuf --help`, a parameter) stops the seeing through"', 'crates/strand-core/src/command.rs "fn env_assignment(a: &str) -> bool"']
 proof  = "crates/strand-compiler/tests/checker.rs::the_see_through_permits_only_name_value_and_buffer_options"
 
 [[claim]]

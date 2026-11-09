@@ -389,10 +389,11 @@ Intel's CPU sensor only, whose `temp1_input` is the whole package. On
 an AMD processor write `"k10temp-*"` instead (its `temp1_input` is
 `Tctl`). Run `sensors` in a terminal to see the chip names your
 machine has. With no chip of that name, `sensors` fails every 5 s and
-`temps.cpu` stays `0`. Nothing marks the service failed and `strand
-watch` shows nothing; the only trace is a line in the terminal running
-`strand run` each time, ``strand: WARN strand_services::custom: `sensors`
-failed (exit status: 1)``.
+`temps.cpu` keeps its last value, `0` until a read has ever answered.
+`strand watch` names the service and says why, once until a read
+answers again: the headline, then what `sensors` printed on stderr,
+``service `temps`: `sensors` failed (exit status: 1): Specified
+sensor(s) not found!`` (spec.md 5.8).
 
 **`permit exec` lists the programs your config may run.** A service
 that runs a command (`from poll` of a command, or `from listen`) is an

@@ -148,6 +148,22 @@ impl Framer {
     }
 
     fn byte(&mut self, b: u8, f: &mut dyn FnMut(Framed)) {
+        if self.esc != Esc::No {
+            match b {
+                // A line's end ends any escape, then ends the line: an
+                // escape never runs past a line, so one cut short (a
+                // title `ESC ]` with no `BEL`, a stray `ESC P`) cannot
+                // swallow the rest of the output.
+                b'\n' => self.esc = Esc::No,
+                // CAN and SUB abort an escape, as a terminal's parser
+                // does, and are themselves dropped.
+                0x18 | 0x1a => {
+                    self.esc = Esc::No;
+                    return;
+                }
+                _ => {}
+            }
+        }
         match self.esc {
             Esc::No => {}
             Esc::Start => {
@@ -168,15 +184,9 @@ impl Framer {
                 return;
             }
             Esc::Csi => {
-                match b {
-                    // Its final byte.
-                    0x40..=0x7e => self.esc = Esc::No,
-                    // A line's end inside one ends it too.
-                    b'\n' => {
-                        self.esc = Esc::No;
-                        self.byte(b, f);
-                    }
-                    _ => {}
+                // Its final byte.
+                if (0x40..=0x7e).contains(&b) {
+                    self.esc = Esc::No;
                 }
                 return;
             }
@@ -838,6 +848,36 @@ mod tests {
             lines(&[b"(1/2) a  50%\r\x1b[K(1/2) a 100%\n"]),
             ["(1/2) a 100%"]
         );
+    }
+
+    /// An escape cut short never runs past its line: `\n` ends every
+    /// escape (a string's, `ESC P`'s, an `ESC` alone) and then the line,
+    /// and CAN or SUB abort one.
+    #[test]
+    fn an_escape_never_runs_past_its_line() {
+        assert_eq!(
+            lines(&[b"start\n\x1b]0;title never ended\nline two\nline three\n"]),
+            ["start", "", "line two", "line three"]
+        );
+        assert_eq!(lines(&[b"a\n\x1bPq#0\nb\nc\n"]), ["a", "", "b", "c"]);
+        for intro in [b"]", b"P", b"X", b"^", b"_"] {
+            let mut bytes = b"a\x1b".to_vec();
+            bytes.extend_from_slice(intro);
+            bytes.extend_from_slice(b"junk\nb\n");
+            assert_eq!(lines(&[&bytes]), ["a", "b"], "{intro:?}");
+        }
+        // An `ESC` inside a string, then the line's end.
+        assert_eq!(lines(&[b"\x1b]0;t\x1b", b"\nb\n"]), ["", "b"]);
+        // An `ESC` and an intermediate byte, then the line's end.
+        assert_eq!(lines(&[b"x\x1b(\ny\n"]), ["x", "y"]);
+        // An `ESC` right before `\n` keeps the line break.
+        assert_eq!(lines(&[b"a\x1b\nb\n"]), ["a", "b"]);
+        assert_eq!(lines(&[b"a\x1b", b"\nb\n"]), ["a", "b"]);
+        // CAN and SUB abort an escape and are dropped.
+        assert_eq!(lines(&[b"\x1b]0;t\x18shown\n"]), ["shown"]);
+        assert_eq!(lines(&[b"\x1b[12\x1ashown\n"]), ["shown"]);
+        // A whole output (a poll's) keeps its lines after one.
+        assert_eq!(Framer::whole(b"\x1b]0;t\nv=1\n"), b"\nv=1");
     }
 
     /// wget prints a line in two parts seconds apart: one open line,

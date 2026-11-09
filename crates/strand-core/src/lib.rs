@@ -38,6 +38,7 @@
 
 pub mod action;
 mod async_value;
+pub mod command;
 mod echo;
 mod error;
 mod events;

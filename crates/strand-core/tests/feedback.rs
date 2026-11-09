@@ -1,6 +1,8 @@
 //! Feedback loops: echo suppression with generation tags, and the >30
 //! writes/s per cell per handler monitor.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
 use strand_core::rate::{MAX_WRITES_PER_SEC, THROTTLED_INTERVAL};
@@ -420,6 +422,54 @@ fn rate_warnings(diags: &[Diagnostic]) -> usize {
         .iter()
         .filter(|d| matches!(d, Diagnostic::WriteRate { .. }))
         .count()
+}
+
+/// (proc-lines) A program's lines (`Runtime::external_events`): a handler
+/// keeping each at 60 Hz runs as input, never warned or held, and unlike
+/// a click its events wait for a frozen listener and arrive, in order,
+/// when it is released (a closed panel catches up).
+#[test]
+fn external_events_run_as_input_and_wait_for_a_frozen_listener() {
+    let rt = Runtime::new();
+    let n = rt.signal(0i32);
+    let lines = rt.external_events::<i32>();
+    assert!(lines.is_input(&rt));
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let s = seen.clone();
+    let (panel, ()) = rt.scope(|rt| {
+        lines
+            .on(rt, move |rt, &l| {
+                s.borrow_mut().push(l);
+                n.update(rt, |v| *v += 1)
+            })
+            .unwrap();
+    });
+    let mut diags = Vec::new();
+    let mut t = Duration::ZERO;
+    let mut sent = 0;
+    for _ in 0..120 {
+        sent += 1;
+        lines.emit(&rt, sent).unwrap();
+        t += Duration::from_nanos(16_666_667);
+        let tick = rt.tick(t);
+        assert!(tick.written.contains(&n.id()), "line {sent} held");
+        diags.extend(tick.diagnostics);
+    }
+    assert_eq!(rate_warnings(&diags), 0, "{diags:?}");
+    // Closed: the lines wait.
+    rt.suspend(panel.id()).unwrap();
+    for _ in 0..40 {
+        sent += 1;
+        lines.emit(&rt, sent).unwrap();
+        t += Duration::from_nanos(16_666_667);
+        rt.tick(t);
+    }
+    assert_eq!(n.get(&rt), Ok(120));
+    rt.resume(panel.id());
+    t += Duration::from_nanos(16_666_667);
+    rt.tick(t);
+    assert_eq!(n.get(&rt), Ok(160), "every line read while closed");
+    assert_eq!(*seen.borrow(), (1..=160).collect::<Vec<_>>());
 }
 
 /// `on scroll(dy) { volume += dy }` at 60 Hz for 2 s, three ways the VM can

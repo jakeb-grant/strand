@@ -23,6 +23,10 @@ fn percent(l: Line?) -> float { (numbers(l?.text).last ?? 0) / 100 }
 ```
 
 ```strand file=bar.strand
+// git prints its progress on stderr before its reason, so why a pull
+// failed is its last `fatal:` line, not the first line of `pull.error`.
+let pull_why = pull.lines.filter(l => l.text.starts_with("fatal:")).last?.text
+
 bar Top {
   edge: top; height: 32
   bg: $surface; font: $font.ui; color: $fg
@@ -40,8 +44,11 @@ bar Top {
       button pull.running ? "Pulling" : "Pull" {
         on click { if !pull.running { pull("~/.local/share/chezmoi") } }
       }
-      // git's own words: `Receiving objects:  45% (1740/3867)`.
-      text pull.error?.split("\n")?.first ?? (pull.lines.last?.text ?? "") { color: $fg.muted }
+      // While it runs, git's progress (`Receiving objects:  45% (1740/3867)`);
+      // when it fails, git's own reason.
+      text pull.error != null ? pull_why ?? pull.error ?? "" : pull.lines.last?.text ?? "" {
+        color: $fg.muted
+      }
     }
   }
 }
@@ -64,7 +71,12 @@ bar Top {
 - **Why it failed.** With `-f`, a 404 is curl's status 22, and
   `fetch.error` is the headline and what curl said: ``"`curl` failed
   (exit status: 22): curl: (22) The requested URL returned error:
-  404"``.
+  404"``. git is the other kind: its progress comes first on stderr
+  and its reason last, so a failed pull's `pull.error` is ``"`git`
+  failed (exit status: 128): remote: Enumerating objects: …"``, the
+  `fatal: Not possible to fast-forward, aborting.` that says why on
+  its last line. The bar reads that line from `pull.lines` instead
+  (`pull_why`).
 - **Cancel** is `fetch.stop()`: curl gets Ctrl-C's signal and ends,
   `fetch.code` is 130, and `fetch.error` stays null, since a stop is no
   failure.
