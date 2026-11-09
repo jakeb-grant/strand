@@ -1921,6 +1921,43 @@ Public interfaces:
     `rec.started`, `rec.error` and `rec.stop()` read and stop an action's
     run (`ActionRun`; `Instance::set_action_run`, `set_action_error`;
     decisions.md lockmon, action-error).
+  - (proc-run, proc-ok, proc-list; decisions.md proc-run) What the
+    compiler gives the host for a command action, `lower::ExecAction`:
+    `argv` (`hir::ArgvPart::Text`, `Param(i)` one argument, `Spread(i)`
+    a list parameter's items, one argument each, which the VM expands
+    into `ExecRequest::argv`, so the host never sees a list), `paths`
+    (the `path` and `[path]` parameters whose `~/` the VM expands, per
+    item for a list), `ret`, `ok: Vec<i32>` (the exit statuses that are
+    no failure, `[0]` unless `ok` is written; the host applies them to
+    a command action's run and a `-> T` call; a polled command's are
+    `hir::SourceSpec::Poll`'s `ok`, which the strand crate hands to
+    strand-services' `custom::Source::Poll`), and `fields: Option<lower::ActionFields>` (the
+    action's block: `record`, the block's record in the program's type
+    table, and `fields`, each a `lower::CustomField` with its key path,
+    as a `from listen` service's). The host serves a block exactly as
+    it serves a `from listen` service named after the action: reads of
+    `backup.percent_done` reach its service host under the name
+    `backup` (`read`, `sources`, `acquire`/`release`), and `on
+    backup.line(doc)` is `event(rt, "backup", "line")`, which says a
+    handler hears the lines (`hear_lines`); global names are unique, so
+    the name never collides with a service's. The strand crate feeds
+    that entry from the run's stdout lines, through `LineSink` as a
+    listen service's lines go (services/custom.rs), and a read never
+    starts a command.
+  - (proc-run) A run's output reaches the program through
+    `Instance::update_action_run(action, RunUpdate)`, applied in one
+    flush: `reset` (a run started: `lines` emptied, `code` and `error`
+    null), then `keep_from` (lines numbered below it left the front)
+    and `lines` (each a `RunLine { n, text, stderr, open }`, replacing
+    the kept line of its `n`, the open line redrawn or ended, or added
+    after the last), then `code: Option<i64>`, then `error:
+    Option<Option<String>>`, then `running: Option<(bool,
+    Option<NaiveDateTime>)>`, each `None` leaving it as it is. The
+    strand crate sends a run's end as one `RunEnded` after its last
+    line, so the end order (spec.md 5.7) holds within that flush, after
+    the block's last field merge and `line` events. `ActionRun` reads
+    `running`, `started`, `error`, `code`, `lines` (in that order, the
+    schema's), a `from dbus` action's run `code` null and `lines` `[]`.
   - `acquire`/`release(rt, service)`: a reader count. Mounted components
     and the top level hold what their body reads; a surface holds its
     body's services only while shown; a parked bar lets go of
@@ -2976,8 +3013,30 @@ that moves by a time (`media.seek(by: -15s)`), and `Duration` reads it
 as zero, as every duration below zero read before the sign crossed
 (decisions.md player-raise-seek).
 
+(proc-lines, proc-streams, proc-reason; decisions.md) `strand_services::proc`
+reads every program Strand reads (a `from listen` or polled command,
+an action's command, a `file`'s `run:`): `Framer` (bytes in, ended
+lines and the one open line out, as a terminal shows them: `\r`
+rewrites, `\b`, escape codes removed; spec.md 5.8), `Tail` (why a run
+failed: stderr whole up to 4 KiB, else its first 1 KiB and last 3 KiB
+at line boundaries, else stdout's last 1 KiB), `Ring` (an action's
+last 1000 lines, at most 256 KiB) and `Reader` (`poll(2)` over a
+command's stdout and stderr, each line tagged with its stream, with
+backpressure: stdout is not read while more than 4096 lines or 4 MiB
+wait for `line` handlers, stderr always is). It replaces custom.rs's
+`Proc`/`Lines`, exec.rs's capture threads and outputs.rs's
+`run_once`. (proc-keeper) The keeper is the strand binary's own
+hidden subcommand, `/proc/self/exe __keep`, dispatched first in
+`main`, started on the first command action's run and joined to strand
+by a socketpair: strand sends it a duplicate of each run's pipe read
+ends (`Hold { run, fds }`, `SCM_RIGHTS` through `rustix`) and tells it
+when it has read them to their end (`Release { run }`); when the
+socket reaches its end (strand exited, crashed or was restarted) the
+keeper reads every pipe it still holds to its end, drops the bytes and
+exits when none is left. Its argv never matches `^strand run`.
+
 `strand_services::child` is the spawn contract: every program Strand
-starts, in any crate, must run `child::restore_in_child()` as its
+starts, in any crate, the keeper included, must run `child::restore_in_child()` as its
 `CommandExt::pre_exec`, since the kernel keeps `MMF_DISABLE_THP` (set
 once by `child::thp_off()` from `strand`'s ELF constructor) across
 `fork` and `execve`. `child::INSTANCE_VARS` are kept from every child

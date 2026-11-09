@@ -346,12 +346,15 @@ The comma in `use` separates clauses, so the ternary ends before it.
 
 ```
 service = kw:service IDENT kw:from source service_block
-source  = IDENT source_arg* ( SAME_LINE kw:every expr )?
-source_arg = SAME_LINE expr           // up to `{` or `every`
+source  = IDENT source_arg* ( SAME_LINE kw:every expr )? ok_clause?
+source_arg = SAME_LINE expr           // up to `{`, `every` or `ok`
 service_block = '{' SEP? ( service_item ( SEP service_item )* )? SEP? '}'
 service_item  = field | permit | method_action
 permit  = kw:permit IDENT ( SAME_LINE expr ( ',' expr )* )?
-action  = kw:action IDENT params ( '->' type )? SAME_LINE expr  // the command: a list
+action  = kw:action IDENT params ( '->' type )? SAME_LINE expr ok_clause? action_block?
+                                      // the command: a list
+ok_clause = SAME_LINE kw:ok INT ( ',' INT )*
+action_block = '{' SEP? ( field ( SEP field )* )? SEP? '}'   // fields only
 method_action = kw:action IDENT params '=' IDENT    // `from dbus` only
 ```
 
@@ -399,9 +402,12 @@ walks the document segment by segment; a string (`= "dc:creator"`, `=
 none (the parser reads one there, and the checker refuses it).
 
 ```
-permit exec "hyprctl", "qalc"
+permit exec "hyprctl", "qalc", "checkupdates", "restic", "pacman"
 action dispatch(ws: int) ["hyprctl", "dispatch", "workspace", ws]
 action calc(q: text) -> text ["qalc", "-t", q]
+action updates() -> [text] ["checkupdates", "--nocolor"] ok 0, 2
+action backup(dirs: [path]) ["restic", "backup", "--json", "--", dirs] ok 0, 3 { percent_done: float? }
+service orphans from poll ["pacman", "-Qdtq"] every 1h ok 0, 1 { names: [text] }
 service ppd from dbus system "net.hadess.PowerProfiles" {
   profile: text rw = ActiveProfile
   action hold(profile: text, reason: text, app: text) = HoldProfile
@@ -415,6 +421,18 @@ follows the parameters on the same line; a missing command is one
 `=`. Every parameter has a type and no default. What the command may
 hold, and the checks, are in spec.md 5.7 (decisions.md
 m6-w2-language).
+
+(proc-ok, proc-run) `ok` is a keyword only right after a command (an
+action's, or a source's after its `every`) on the same line, followed
+by a number, so a name `ok` elsewhere is still a name. Its statuses
+are integer literals. The parser reads an `ok_clause` after any source
+and an `action_block` after any action, and the checker refuses those
+the spec does not allow (`check::ok_not_here` on a `listen` source, a
+polled file or a `from dbus` action; `check::block_with_result` on an
+action with `-> T`). An action's block holds fields only, written as a
+service block's fields are; a `permit` or an `action` in it is
+`syntax::expected`. A parameter's type may be a list (`pkgs: [text]`),
+as anywhere a type is written (spec.md 5.7, proc-list).
 
 ### Keyframes and play
 

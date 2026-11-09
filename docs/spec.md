@@ -839,6 +839,26 @@ monitor, the keyboard always).
   a DOCTYPE, a comment) is data and never read as written. `text?`
   reads null for a key the document lacks, as with JSON; other types
   read the element tree; an action's `-> text` is what it printed.
+- (proc-format; decisions.md proc-format) The same holds for every
+  structured document: a field typed `text` (not `text?`) reads a JSON
+  object, `key=value` (or `key: value`) lines or an XML fragment as
+  written when it holds nothing at the key of any of the source's
+  fields, every other field absent there as above. The source's fields
+  are a service's, an action block's (section 5.7) or a `-> T`
+  record's; for a `from listen` line or an action's line the document
+  is the line. So `{ line: text }` reads pacman.log's
+  `[2026-11-08T16:04:17-0700] [ALPM] transaction completed`, `error:
+  failed to commit transaction` or `http://example.com/x` as printed,
+  where the first `:` or `=` would make it a pair whose key no field
+  names; a document holding some field's key is data (`error: x` read
+  by `{ error: text?; line: text }` fills `error`, and `line` is absent
+  there), so a line is read as pairs only when the config names its
+  key. A field typed `text` or `text?` reads a JSON number, bool or
+  array as written (`1.10` stays `1.10`, `[1, 2]` is `[1, 2]`), a JSON
+  string as its value, and JSON `null` as nothing (`""` for `text`).
+  A command's output (a polled command's, a `from listen` line, an
+  action's) is framed as a terminal shows it before it is read
+  (section 5.8).
 - A `from listen` service has one event, `line(doc)`: each line the
   command prints, `doc` holding that line's fields alone (the service's
   own record: a field the line leaves out is null when its type is
@@ -848,10 +868,21 @@ monitor, the keyboard always).
   queued as `notifications.received` is, so `on player.line(doc)` sees
   every line. A line handler reads the service: the command runs while
   the handler is mounted, and lines printed before it was are not
-  heard.
+  heard. (proc-lines) A command's `line` events are external input
+  (section 8.7), so a handler that appends every line is never
+  throttled. None is lost and their queue is bounded: while more than
+  4096 lines (or 4 MiB) wait for handlers, strand stops reading the
+  command's stdout until they are heard, so a fast command waits as it
+  would on a slow terminal; its stderr has a pipe of its own and is
+  still read. The fields and `line` read stdout alone (section 5.8).
+  The command's stderr is kept: why it failed (section 5.8) is in the
+  service's diagnostic when it fails or ends.
 - A polled command runs at most every 100 ms: an `every` shorter than
   that is a warning, and the command runs every 100 ms instead. A
-  polled file has no floor and is read every `T`.
+  polled file has no floor and is read every `T`. (proc-ok) A polled
+  command may list after its interval the exit statuses that are no
+  failure, `ok 0, N…`, as an action's command may (section 5.7): `from
+  poll ["pacman", "-Qdtq"] every 1h ok 0, 1 { names: [text] }`.
 - Running a command (`listen`, or `poll` of a command) needs
   `permit exec`, at the top level or in the service's block, optionally
   listing the programs allowed; without it the service is a load error.
@@ -910,7 +941,10 @@ monitor, the keyboard always).
 
 - `action name(params) [command]` at the top level declares an action
   that runs a command. Every parameter has a type and no default; the
-  type is one of `text`, `path`, `int`, `float`, `bool` or an enum.
+  type is one of `text`, `path`, `int`, `float`, `bool` or an enum, or
+  (proc-list) a list of one of these (`[text]`, `[path]` …); a list of
+  lists or of records is a load error (`check::type_mismatch`, whose
+  help passes `json(v)` instead).
   The command is a list literal whose items are text literals and the
   action's parameters, nothing else; its first item, the program, is a
   text literal. The program must be allowed by `permit exec` (section
@@ -920,8 +954,10 @@ monitor, the keyboard always).
   call is checked as a function's (arity, argument types) and, as every
   action call is, allowed only in a handler (section 8.3). Each
   parameter becomes exactly one argument of the program, its value as
-  `text` shows it, never split on spaces: the program is run directly,
-  with no shell between strand and it. A `path` parameter whose value
+  `text` shows it, never split on spaces, and (proc-list) a list
+  parameter one argument per item, each as `text` shows it (none for
+  an empty list, each `[path]` item's `~/` expanded as below): the
+  program is run directly, with no shell between strand and it. A `path` parameter whose value
   starts with `~/` reaches the program with the home folder (`$HOME`,
   when it is absolute) in place of that `~`, as every other path strand
   takes does (a settings file, a `from file`, an image); a bare `~`,
@@ -933,7 +969,11 @@ monitor, the keyboard always).
   value after a written-out script instead, where it is `$1`), and an
   argument starting with `-` may be read as an option (`--` before it,
   where the program takes one). A parameter right after a shell's `-c`
-  is a warning (`check::shell_script`).
+  is a warning (`check::shell_script`), a list parameter too; pass a
+  list after a written-out script, where it is `"$@"`: `["sh", "-c",
+  "pacman -Qi -- \"$@\"", "sh", pkgs]`. `--` before a list of names
+  is the author's to write, where the program takes it (`["pacman",
+  "-S", "--", pkgs]`).
 - An action without a result (no `-> T`) runs at most once at a time:
   a call while its command still
   runs queues one re-run, the latest call's, started when the command
@@ -942,13 +982,19 @@ monitor, the keyboard always).
   call in a `for` body of a handler, or one after a call of the same
   action that runs first on every path of the handler, is a warning
   (`check::action_coalesced`), whose help offers one call for all
-  items or a `-> text` action awaited each time. A service's own
+  items (a list parameter: `remove(checked.map(p => p.name))`) or a
+  `-> text` action awaited each time. A service's own
   actions are each their own request and are not warned about.
-- Its command runs detached, in its own process group, with stdin and
-  stdout on `/dev/null`; the handler does not wait for it, and logic is
-  never blocked by it. A program that cannot start or exits non-zero is
-  logged and becomes a `strand watch` notice naming the action, as a
-  `file`'s `run` failing does (section 9.7). The handler's next
+- Its command runs detached, in its own process group, with stdin on
+  `/dev/null`; (proc-run) strand reads its stdout and stderr (section
+  5.8) and holds them open past its own exit (proc-keeper), so the
+  command never dies of a closed pipe, nor waits on a full one, when
+  strand exits or restarts; the handler does not wait for it, and logic is
+  never blocked by it. A program that cannot start or exits with a
+  status its `ok` does not list (below) is
+  logged and becomes a `strand watch` notice naming the action, saying
+  why it failed (section 5.8), as a `file`'s `run` failing does
+  (section 9.7). The handler's next
   statement has already run: the call's value is `()`. An action with
   a result (below) differs in each of these.
 - (flex; decisions.md flex) `action name(params) -> T [command]`
@@ -982,17 +1028,39 @@ monitor, the keyboard always).
     no one keeps (neither awaited nor stored) is ended at the end of
     that step.
   - Every call runs at once on a thread of its own, never queued behind
-    another. Its stdout is read, at most 4 MiB (more ends it, an error);
-    stderr is strand's own log. It has 10 s, as a `from poll` command
+    another. Its stdout is read, at most 4 MiB (more ends it, an error),
+    and its stderr is kept for why it failed (section 5.8). It has 10 s, as a `from poll` command
     has: one still running then (or still holding its output open, a
     child it left in the background) has its process group ended as a
     superseded one's is, and the value's `.error` is
     ``"`qalc` timed out after 10 s"``. A program that cannot start,
-    exits non-zero, prints too much or prints what does not read as
-    `T` is the value's `.error` (``"`qalc` failed (exit status: 1)"``)
-    and a log line, not a `strand watch` notice: the config reads
-    `.error`, which names the exit status; what the program printed on
-    stderr is only in strand's log.
+    exits with a status its `ok` does not list, prints too much or
+    prints what does not read as `T` is the value's `.error`
+    (``"`qalc` failed (exit status: 1): error: …"``, the headline, then
+    why, section 5.8) and an info log line, not a `strand watch`
+    notice: the config reads `.error`.
+- (proc-ok; decisions.md proc-ok) `ok 0, N…` after an action's command
+  (and after a polled command's interval, section 5.6), before any
+  block, lists the exit statuses that mean the program did its job:
+  `action updates() -> [text] ["checkupdates", "--nocolor"] ok 0, 2`,
+  checkupdates' 2 meaning "no updates". Each is 0 to 255
+  (`check::ok_status` otherwise), and 0 must be among them (`ok 2` is a
+  load error, `check::ok_without_zero`, whose help writes `ok 0, 2`),
+  so the clause reads rightly on its own. A listed status is no
+  failure: a `-> T` reads its output as `T` (nothing printed is `[]`
+  or null), a poll's fields update, `error` stays null and no notice is
+  shown; the run's `code` (below) still holds it, so `backup.code == 3`
+  can say "saved; some files unreadable". What a listed non-zero run
+  printed on stderr is logged at info. A signal is never ok. Without
+  `ok` only 0 is. `ok` is allowed on a command action, with or without
+  a result, and on a polled command; on a `from listen` service (its
+  command ending always means a restart), on a `from dbus` action and
+  on a polled file it is a load error (`check::ok_not_here`). It is
+  for a status the program documents as "none" or "partly" (grep's 1,
+  diff's 1, rsync's 24, restic's 3, borg's 1), never for one that
+  means two things: pacman exits 1 both for `-Qdtq` finding no orphans
+  and for `-Qi nosuch` failing, so `ok 0, 1` would hide the failure;
+  there a written-out `sh -c` script tells them apart.
 - (lockmon; decisions.md lockmon) An action declared with a command
   has a run, read through its name as an `ActionRun`: `rec.running`
   (`bool`) is true while a command of it runs (for an action with a
@@ -1003,7 +1071,8 @@ monitor, the keyboard always).
   tracked (`on change rec.running` fires as commands start and end);
   they are the runtime's to say and never written (`check::read_only`).
   (action-error; decisions.md action-error) `rec.error` (`text?`) says why
-  its last command failed: it could not start, or exited non-zero. It is
+  its last command failed: it could not start, or exited with a status
+  its `ok` does not list (section 5.8 says what the text holds). It is
   null to begin with, from the moment the action is called again, and once
   a command ends well or is stopped; so `on change rec.error` hears a failure
   a shell can show. It is never set on an action with a result, whose call
@@ -1026,10 +1095,71 @@ monitor, the keyboard always).
   `ppd.hold.running`, with no `stop()` (below). A reload
   keeps every run: it never stops a command. A glitch report's replay
   (section 13) runs no command: a command counts as running from its
-  call to where the recording says it ended, or to its `stop()`.
+  call to where the recording says it ended, or to its `stop()`, and
+  (proc-run) a run's lines, status, reason, block fields and `line`
+  events are replayed from the recording.
+- (proc-run; decisions.md proc-run) An action with a command and no
+  result also has its last run's output, read through its run:
+  - `rec.code` (`int?`) is the status its last command ended with,
+    `128 + n` for signal n, as a shell's `$?` says it (130 after a
+    `stop()`'s SIGINT); null before any ended and from the moment it
+    is called again.
+  - `rec.lines` (`[Line]`) is what its last command printed, as a
+    terminal shows it (section 5.8): the last 1000 lines, at most
+    256 KiB, of stdout and stderr in the order strand read them, the
+    last possibly the open line. A `Line` is `n`, its number in the
+    run from 1 and its key, so `for l in rec.lines` keeps each line's
+    node as old lines leave; `text`; `stderr`, it came on stderr, where
+    programs write diagnostics and progress alike, never a severity;
+    and `open`, no line break yet (a bar being redrawn, a prompt): it
+    may still change.
+
+  `lines`, `code`, `error` and the block's fields (below) are reset
+  when a run starts, a queued re-run included, never when one ends, so
+  after a failure what it printed is still there; strand keeps them
+  where it runs the command, so a reload keeps them as it keeps the
+  run. When a command ends, one flush carries, in this order: its last
+  `line` events and field merge, the last of `lines`, `code`, `error`,
+  then `running` turning false, so `on change rec.running` already
+  sees every line and why it failed. A stopped run keeps what it
+  printed; `code` says how it ended and `error` stays null. An action
+  with a result has neither (several of its calls may run at once, so
+  one `lines` would mix them): its `lines` is `[]` and its `code` null,
+  and reading either is a warning, `check::no_run_output`, whose help
+  says "drop the `-> T`, or read the call's `.error`". A `from dbus`
+  action's run has neither: reading one is a load error.
+- (proc-run) An action without a result may end with a block of
+  fields, filled from its stdout lines as a `from listen` service's
+  fields are (section 5.6: types, `= key` paths, the conversions, lines
+  faster than a frame merged):
+
+  ```strand
+  action backup(dirs: [path]) ["restic", "-r", "/mnt/usb/restic", "backup", "--json", "--", dirs] ok 0, 3 {
+    message_type: text
+    percent_done: float?
+  }
+  ```
+
+  `backup.percent_done` reads beside `backup.running`. The fields read
+  stdout's ended lines alone; stderr never reaches them. `on
+  backup.line(doc)` hears every ended, non-blank stdout line, `doc`
+  that line's fields alone, while some handler hears them (lines are
+  queued only then, bounded as section 5.6 says); a handler never
+  starts the command, only a call does. Without a block an action has
+  no `line` event (`on rec.line` is `check::unknown_event`, whose help
+  declares `{ line: text }`). The block holds fields only. A block on
+  an action with a result is a load error, `check::block_with_result`
+  (its output is read whole, as `T`). A field named `running`,
+  `started`, `error`, `code`, `lines` or `stop` is a load error,
+  `check::reserved_field`, whose help gives it a key path (`err: text?
+  = error`).
 - `strand check` lists every action's command, each parameter shown as
-  `{name}` where it is one argument; the language server shows it on an
-  action's hover. Both check its program against `permit exec`.
+  `{name}` where it is one argument and (proc-list) a list parameter as
+  `{name…}` where its items go (`tx_run: upkeep-tx run {op} {helper}
+  -- {pkgs…}`), then its `ok` statuses; the language server shows it,
+  and the block's fields, on an action's hover. Both check its program
+  against `permit exec`, seeing through `stdbuf` and `env` (section
+  5.8).
 - In a `from dbus` service's block, `action name(params) = Method`
   declares an action that calls a method of the service's object.
   Parameters are as above, plus `[text]`. The method is checked against
@@ -1071,6 +1201,98 @@ monitor, the keyboard always).
   restarted by a reload starts its actions' runs afresh. A field and an
   action of the same name are a load error already, so the name is never
   both.
+
+### 5.8 A command's output
+
+(proc-lines, proc-streams, proc-reason, proc-keeper; decisions.md)
+Every program strand reads, a `from listen` or polled command, an
+action's, and a `file`'s `run` (section 9.7), is read the same way.
+
+- **stdin** is `/dev/null`: a program that asks (pacman's `[Y/n]`,
+  Python's `input()`) reads the end of its input at once, and its
+  question stays visible as the open line. Give it its own flag
+  instead (`--noconfirm`).
+- **Two streams.** stdout and stderr are two pipes, both read, and each
+  line keeps which it came on (`Line.stderr`), never made a severity:
+  curl, git, wget, ffmpeg and `tail -F` write progress and notices to
+  stderr, and `pacman -Qkk` writes warnings to stdout and exits 0. Lines
+  of the two streams are in the order strand read them, which can
+  differ a little from the order they were written (nothing orders two
+  pipes); where it matters, a helper script writes `2>&1` and its lines
+  all come on stdout. Fields and `line` events read stdout alone;
+  stderr is why a run failed.
+- **Framing.** Output is read as a terminal shows it:
+
+  | Bytes | Read as |
+  | --- | --- |
+  | `\n`, `\r\n` | the end of a line |
+  | `\r` not before `\n` | the line starts again and what follows replaces it, so a bar redrawn a hundred times is one line, its last drawing (a `\r` at the end of what was read waits for the next byte) |
+  | `\b` | removes the character before it (a spinner) |
+  | `ESC [ … final`, `ESC ] … BEL` or `ESC \`, `ESC` and one byte, any other control character but `\t` | removed (colour and cursor codes), in lines, in why a run failed and in a document alike; a `from file` is read as it is |
+  | bytes that are not UTF-8 | U+FFFD, decided per line |
+
+  A line no `\n` has ended yet is the **open line**: the last of an
+  action's `lines`, `open` true, updated at most once a frame, and
+  ended only by `\n` or the end of the output, never by a pause (wget
+  prints `Connecting to … ` and `connected.` seconds apart, one line).
+  Fields and `line` events read ended lines alone, so half a JSON line
+  is never parsed. A line over 4 MiB is skipped for fields and events,
+  with a warning, and kept in `lines` cut to 2000 characters and `…`.
+  A blank line is kept in `lines` and is neither an event nor a merge.
+  A line keeps its leading spaces in `lines` (pacman's `  -> `); a
+  document and a field's text are trimmed, as before. A polled
+  command's and a `-> T` call's output are framed the same way before
+  they are read as one document, so a `-> text` from a program that
+  redraws a bar answers with its last drawing.
+- **Buffering.** Most programs hold back their output when it goes to
+  a pipe, until a buffer fills or they exit: C programs, Python, grep,
+  sed, awk, jq. Strand gives no terminal (a pty would make the output a
+  screen, merge the two streams, hang up on the command when strand
+  exits and turn prompts on), so the remedy is the program's own:
+  `stdbuf -oL -eL` for a C program, `grep --line-buffered`, `sed -u`,
+  `jq --unbuffered`, `python3 -u` (or `PYTHONUNBUFFERED=1`), awk's
+  `fflush()`, or a tool's own `--json` or `--progress`. (proc-permit)
+  So `permit exec` sees through `stdbuf` and `env`: when a command's
+  first item is `stdbuf` followed only by `-i`, `-o` or `-e` options
+  (`-oL`, `-o L`, `--output=L`), or `env` followed only by `NAME=value`
+  items, each a text literal, the program checked against `permit
+  exec`, and by `check::shell_script`, is the one after them, so
+  `permit exec "pacman"` allows `["stdbuf", "-oL", "pacman", …]` and
+  `["env", "LC_ALL=C", "pacman", …]`, the two forms in either order.
+  Any other item (`env -i pacman`, `stdbuf --help`, a parameter) stops
+  the seeing through, and the program checked is `stdbuf` or `env`.
+- **Why a run failed.** A command that could not start, ended with a
+  status its `ok` does not list (section 5.7) or by a signal, timed out
+  or printed too much fails with a headline (``"`pacman` failed (exit
+  status: 1)"``, ``"could not start `x`: …"``, ``"`x` timed out after
+  10 s"``), and the reason follows it after `": "`: its stderr, framed
+  and its blank lines dropped, whole up to 4 KiB, past that its first
+  1 KiB and its last 3 KiB, each cut at a line, joined by a line `…`;
+  when it printed nothing on stderr, the last 1 KiB of its stdout (a
+  script that echoed why). With neither, the headline is all. stderr is
+  read for up to 100 ms after the program exits, so a child left
+  holding the pipe never delays the answer. This one rule makes an
+  action's `error`, a call's `.error`, a polled or listen command's
+  diagnostic (`strand watch`), an action's notice and a `file`'s `run`
+  notice: ``"`pacman` failed (exit status: 1): error: failed to commit
+  transaction (conflicting files)"``, the conflicting files on the
+  lines after it. Its first line is `rec.error?.split("\n").first`; the
+  lines themselves are `rec.lines.filter(l => l.stderr)`.
+- **Logging.** A successful run's stderr goes to strand's log at debug
+  level (at info for a non-zero status its `ok` lists); a failing
+  `-> T` call is logged at info, an action's failing run at warning.
+- **Rate and memory.** Reading never waits on the logic thread: lines
+  are framed where they are read, kept (an action's last 1000 lines, at
+  most 256 KiB) and published at most once a frame. Only `line` events
+  wait for their handlers (section 5.6).
+- **Outliving strand.** An action's command outlives strand (section
+  5.7), and so do its pipes: a small keeper process, which strand starts
+  the first time it runs a command action (`strand __keep`), holds them
+  too. When strand exits, crashes or is restarted, the keeper reads what
+  the command still prints, to its end, and drops it, so a command
+  never dies of a closed pipe nor waits on a full one. After a restart
+  the run is no longer this strand's: `running` reads false. A polled,
+  listen or `-> T` command still ends with strand.
 
 ## 6. Trees
 
@@ -2340,7 +2562,10 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   writing more than 30 times a second is. An `on change` whose every
   target is a node's input state (`hover`, `pressed`, `focused`,
   `selected`, `pointer`, of `self` or a named node) is an input handler
-  too: a drag following `self.pointer` at 60 Hz is the user. Several runs each below the
+  too: a drag following `self.pointer` at 60 Hz is the user. (proc-lines)
+  A handler of a command's `line` event (a `from listen` service's or an
+  action's) is an input handler too: a command's lines are external
+  input, bounded by the command itself (section 5.6). Several runs each below the
   limit are not added up. A handler started by a service event or a timer is
   one writer however many runs it has.
 - **Keyed collections.** A throttled writer to a keyed collection
@@ -2603,7 +2828,7 @@ from a service, a compositor fragment from `outputs.all`.
   second): the hold goes at once, and its writes are no rounds until
   the file is quiet for 2 s. While held, the notice stands: a held
   write does not take it away. A failure is a notice and a `strand watch` event,
-  and the last good file stays. A file's standing notice (an unowned
+  saying why as section 5.8 does, and the last good file stays. A file's standing notice (an unowned
   target, a failing `run`) lasts until its next write lands, and a
   `strand watch` started later hears it.
 - **Ownership.** Strand never overwrites a file it did not write: an
