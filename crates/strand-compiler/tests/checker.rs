@@ -517,6 +517,60 @@ fn index_of_is_an_optional_int_of_a_predicate() {
     );
 }
 
+/// (empty-list-infer) An empty `[]` branch of a `?:` or a `match` takes
+/// the type of the branches that have one, in either order and nested;
+/// with no branch giving one it still needs a written type.
+#[test]
+fn an_empty_branch_takes_the_other_branchs_type() {
+    let pre = "type Pkg { name: text }\n\
+               fn pkgs_of(r: text) -> [Pkg] { [Pkg(name: r)] }\n\
+               state ok = true\n\
+               state more = false\n";
+    let out = one(&format!(
+        "{pre}let a = ok ? [] : pkgs_of(\"r\")\n\
+         let b = ok ? pkgs_of(\"r\") : []\n\
+         let c = ok ? [] : more ? [] : pkgs_of(\"r\")\n\
+         let d = ok ? (more ? [] : []) : pkgs_of(\"r\")\n\
+         let e = ok ? [] : [Pkg(name: \"x\")]\n\
+         let f = match ok {{ true => [], false => pkgs_of(\"r\") }}\n\
+         let g = ok ? [] : [1: \"one\"]\n\
+         let n = a.len + c.len + d.len + e.len + f.len\n"
+    ));
+    for name in ["a", "b", "c", "d", "e", "f"] {
+        assert_eq!(def_ty(&out.program, name), "[Pkg]", "{name}");
+    }
+    assert_eq!(def_ty(&out.program, "g"), "[int: text]");
+    // The `[]` is checked as if written against that type: the empty
+    // dictionary where the other branch is one.
+    let g = find_let(&out.program, "g");
+    let hir::ExprKind::Ternary { then, .. } = &g.value.kind else {
+        panic!("g is a `?:`");
+    };
+    assert!(
+        matches!(then.kind, hir::ExprKind::Dict(_)),
+        "{:?}",
+        then.kind
+    );
+    // Nothing gives a type: every branch empty.
+    assert_eq!(
+        codes("state ok = true\nlet x = ok ? [] : []\n"),
+        ["check::needs_type"]
+    );
+    assert_eq!(
+        codes("state ok = true\nlet x = ok ? [] : ok ? [] : []\n"),
+        ["check::needs_type"]
+    );
+    assert_eq!(
+        codes("state ok = true\nlet x = match ok { true => [], false => [] }\n"),
+        ["check::needs_type"]
+    );
+    // A branch of another kind is still a mismatch.
+    assert_eq!(
+        codes("state ok = true\nlet x = ok ? [] : 3\n"),
+        ["check::type_mismatch"]
+    );
+}
+
 /// (dictionary) `[K: V]`: a literal takes its type from where it is
 /// written or from its entries, `[]` is the empty dictionary where one is
 /// expected, `m[k]` reads a `V?`, the members are typed by K and V

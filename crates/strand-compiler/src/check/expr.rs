@@ -219,9 +219,14 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> hir::Expr {
         let c = self.expect(cond, &Ty::BOOL, "the condition");
-        let t = self.expr(then, expected);
-        let hint = expected.cloned().unwrap_or_else(|| t.ty.clone());
-        let f = self.expr(else_, Some(&hint));
+        let mut t = self.expr(then, expected);
+        // An empty `[]` branch gives no hint; it takes the other's type.
+        let hint = expected
+            .cloned()
+            .or_else(|| (!is_untyped_empty(&t)).then(|| t.ty.clone()));
+        let mut f = self.expr(else_, hint.as_ref());
+        fill_empty_branch(&mut t, &f);
+        fill_empty_branch(&mut f, &t);
         let ty = self.join_branches(&t, &f, "`?:`");
         hir::Expr {
             kind: ExprKind::Ternary {
@@ -3803,28 +3808,28 @@ impl<'a> Checker<'a> {
         let mut arms = Vec::new();
         let mut ty: Option<Ty> = None;
         let mut patterns = Vec::new();
+        // Arms that are an empty `[]` take the type the other arms give,
+        // so they join last.
+        let mut empty = Vec::new();
         for arm in &m.arms {
             let p = self.pattern(&arm.pattern, &s.ty);
             patterns.push((p.clone(), arm.pattern.span));
             let hint = expected.cloned().or_else(|| ty.clone());
             let b = self.expr(&arm.body, hint.as_ref());
-            ty = Some(match ty {
-                None => b.ty.clone(),
-                Some(prev) => match self.types.join(&prev, &b.ty) {
-                    Some(t) => t,
-                    None => {
-                        let (a, c) = (self.show(&prev), self.show(&b.ty));
-                        self.error(
-                            "check::type_mismatch",
-                            format!("the arms of `match` differ: `{a}` and `{c}`"),
-                            b.span,
-                            format!("this is `{c}`"),
-                        );
-                        Ty::Error
-                    }
-                },
-            });
+            if is_untyped_empty(&b) {
+                empty.push(arms.len());
+                arms.push((p, b));
+                continue;
+            }
+            ty = Some(self.join_arm(ty, &b));
             arms.push((p, b));
+        }
+        for i in empty {
+            let b = &mut arms[i].1;
+            if let Some(t) = &ty {
+                fill_empty(b, t);
+            }
+            ty = Some(self.join_arm(ty, b));
         }
         self.exhaustive(&s.ty, &patterns, m.arms_span);
         hir::Expr {
@@ -3834,6 +3839,26 @@ impl<'a> Checker<'a> {
             },
             ty: ty.unwrap_or(Ty::Error),
             span,
+        }
+    }
+
+    /// The arms' type so far joined with arm `b`'s.
+    fn join_arm(&mut self, ty: Option<Ty>, b: &hir::Expr) -> Ty {
+        match ty {
+            None => b.ty.clone(),
+            Some(prev) => match self.types.join(&prev, &b.ty) {
+                Some(t) => t,
+                None => {
+                    let (a, c) = (self.show(&prev), self.show(&b.ty));
+                    self.error(
+                        "check::type_mismatch",
+                        format!("the arms of `match` differ: `{a}` and `{c}`"),
+                        b.span,
+                        format!("this is `{c}`"),
+                    );
+                    Ty::Error
+                }
+            },
         }
     }
 
@@ -4444,6 +4469,62 @@ fn given_args(sig: &FnSig, args: &[ast::Arg]) -> Vec<String> {
         }
     }
     given
+}
+
+/// An empty `[]` whose type nothing gave yet (`[Error]`), alone or as
+/// every branch of a `?:` or `match`: it takes its type from a sibling
+/// branch (`ok ? [] : pkgs_of(r)`).
+fn is_untyped_empty(h: &hir::Expr) -> bool {
+    let unknown = matches!(&h.ty, Ty::List(e, _) if e.is_error());
+    unknown
+        && match &h.kind {
+            ExprKind::List(items) => items.is_empty(),
+            ExprKind::Ternary { then, else_, .. } => {
+                is_untyped_empty(then) && is_untyped_empty(else_)
+            }
+            ExprKind::Match { arms, .. } => arms.iter().all(|(_, b)| is_untyped_empty(b)),
+            _ => false,
+        }
+}
+
+/// Gives the untyped empty branch `h` the type of its sibling `other`, as
+/// if `[]` had been checked expecting it.
+fn fill_empty_branch(h: &mut hir::Expr, other: &hir::Expr) {
+    if is_untyped_empty(h) && !is_untyped_empty(other) {
+        fill_empty(h, &other.ty);
+    }
+}
+
+/// `[]` checked against `ty` after the fact: a list of `ty`'s items, or
+/// the empty dictionary. Any other type leaves it as is, so the branches'
+/// mismatch is still reported.
+fn fill_empty(h: &mut hir::Expr, ty: &Ty) {
+    if !is_untyped_empty(h) {
+        return;
+    }
+    let filled = match ty.non_null() {
+        Ty::List(e, _) if !e.is_error() => Ty::list((**e).clone()),
+        Ty::Dict(..) => ty.non_null().clone(),
+        _ => return,
+    };
+    match &mut h.kind {
+        ExprKind::List(_) => {
+            if matches!(filled, Ty::Dict(..)) {
+                h.kind = ExprKind::Dict(Vec::new());
+            }
+        }
+        ExprKind::Ternary { then, else_, .. } => {
+            fill_empty(then, &filled);
+            fill_empty(else_, &filled);
+        }
+        ExprKind::Match { arms, .. } => {
+            for (_, b) in arms {
+                fill_empty(b, &filled);
+            }
+        }
+        _ => return,
+    }
+    h.ty = filled;
 }
 
 /// `a, b or c` of labels already formatted.

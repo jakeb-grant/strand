@@ -2239,7 +2239,8 @@ action's, and a `file`'s `run` (section 9.7), is read the same way.
     number list does (section 5.3), so writing `0.5` into `state m =
     ["a": 1]` is a type mismatch whose help declares `state m: [text:
     float] = ["a": 1]`. `[]`
-    is the empty dictionary wherever one is expected; an untyped `state
+    is the empty dictionary wherever one is expected, and as a branch of
+    `?:` or `match` beside one; an untyped `state
     m = []` is a list, and indexing one with a `text` key is
     `check::dict_untyped`, whose help declares it: `state m: [text: V]
     = []`. The same constant key twice in a literal is
@@ -2356,7 +2357,12 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   handler); `+` between a `text` and anything else is a load error.
 - `+` on two lists of one item type joins them, the left's items first
   (`xs + [x]`, and `xs += [x]` in a handler); `[]` beside a list takes
-  its item type. Lists of different item types, or a list beside a
+  its item type. So does a `[]` branch of `?:` or arm of `match`: it takes
+  the type the other branches give, in either order and nested (`ok ? [] :
+  pkgs_of(r)` and `ok ? [] : more ? [] : pkgs_of(r)` are `[Pkg]`, and
+  `ok ? [] : [1: "a"]` is an `[int: text]`); when every branch is `[]`,
+  nothing gives one and an untyped `let` or `state` holding it is
+  `check::needs_type` (decisions.md empty-list-infer). Lists of different item types, or a list beside a
   non-list, are a load error (decisions.md flex).
 - The maths functions `sin`, `cos` and `tan` take an `angle` (a bare
   number is degrees), and `atan2(y, x)` returns one. Angles follow the
