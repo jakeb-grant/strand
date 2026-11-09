@@ -12,8 +12,9 @@ that are no failure.
 // updates.strand: answers whose "none" is a status
 permit exec "checkupdates", "grep", "rsync"
 
-// 2: no updates. Nothing printed, so the call's value is `""`, not an error.
-action updates() -> text ["checkupdates", "--nocolor"] ok 0, 2
+// 2: no updates. Nothing printed, so the call's value is `[]`, not an error;
+// otherwise an update a line, a line an item.
+action updates() -> [text] ["checkupdates", "--nocolor"] ok 0, 2
 
 // 1: no line matched. `grep -c` still prints the count, 0.
 action todos(file: path) -> int ["grep", "-c", "TODO", "--", file] ok 0, 1
@@ -22,7 +23,7 @@ action todos(file: path) -> int ["grep", "-c", "TODO", "--", file] ok 0, 1
 action mirror(src: path, dst: path) ["rsync", "-a", "--", src, dst] ok 0, 24
 
 // A polled command takes `ok` after its interval.
-service pending from poll ["checkupdates", "--nocolor"] every 1h ok 0, 2 { list: text }
+service pending from poll ["checkupdates", "--nocolor"] every 1h ok 0, 2 { list: [text] }
 ```
 
 ```strand file=bar.strand
@@ -35,20 +36,20 @@ bar Top {
   bg: $surface; font: $font.ui; color: $fg
   split { pad: 0, $space.3
     start { gap: $space.2
-      text news.error != null ? "Update check failed" : news.pending ? "" : (news ?? "") == "" ? "Up to date" : "Updates ready"
+      text news.error != null ? "Update check failed" : news.pending ? "" : (news ?? []).len == 0 ? "Up to date" : join(" ", (news ?? []).len, "updates")
       text notes.error != null ? "Notes unreadable" : join(" ", notes ?? 0, "to do")
     }
     end { gap: $space.2
       button "Mirror" { on click { mirror("~/Music/", "/mnt/usb/music/") } }
       text mirror.code == 24 ? "Mirrored; some files vanished" : mirror.error ?? "" { color: $fg.muted }
-      text pending.list == "" ? "" : "Updates pending" { color: $fg.muted }
+      text pending.list.len == 0 ? "" : "Updates pending" { color: $fg.muted }
     }
   }
 }
 ```
 
-`?? ""` alone would hide what `ok` tells apart. A failed call's value
-is null too, so `(updates() ?? "") == ""` reads "Up to date" when
+`?? []` alone would hide what `ok` tells apart. A failed call's value
+is null too, so `(updates() ?? []).len == 0` reads "Up to date" when
 checkupdates exits 2, when it fails (exit 1, `==> ERROR: Cannot fetch
 updates`) and before it answers. The bar reads `news.error` first, then
 the value; `news.error` holds why in the program's words (``"`checkupdates`
@@ -65,7 +66,7 @@ its own (`ok 2` is an error whose fix is `ok 0, 2`), and each is 0 to
 
 - an action with a result reads what the program printed as its value
   (nothing printed is `""` for `text`, `[]` for a list, or null for an
-  optional);
+  optional; read as a list, the lines it printed are an item each);
 - a polled service's fields update;
 - an action's `error` stays null and no notice is shown;
 - its `code` still holds the status, so `mirror.code == 24` can say
@@ -87,12 +88,15 @@ empty answer. There, leave the status a failure: the call's `.error`
 then says why in pacman's words (``"`pacman` failed (exit status: 1):
 error: package 'nosuch' was not found"``), and a shell can show it.
 
-A program's lines are one text, not a list: `-> [text]` over
-`checkupdates`' two lines is one item holding both. Where a list is
-wanted, split the text in the config, which keeps `ok` and `.error`:
-`let pkgs = (news ?? "").split("\n").filter(l => l != "")` over the `->
-text … ok 0, 2` action above. A helper script piping it into `jq`
-loses the status: a pipeline exits with its last program's status, so
+A program's lines read as a list are its items, one a line: `->
+[text]` over `checkupdates`' two lines is two updates, and its
+blank lines are none. A line `[int]` cannot read (`pidof`'s `1234
+5678` is two numbers on one line) is left out and logged, and output
+with no line it can read is the call's `.error`, so print one value
+per line. JSON keeps its reading: a program printing a JSON
+array, pretty or not, gives its items. Read straight from the
+program, the list keeps `ok` and `.error`. A helper script piping it
+into `jq` loses the status: a pipeline exits with its last program's status, so
 checkupdates' 1 and its 2 would both reach Strand as jq's 0. A helper
 that keeps a pipeline needs `set -o pipefail`, and then owns the
 status: its `ok` lists its own exit statuses, not checkupdates'.

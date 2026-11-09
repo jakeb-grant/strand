@@ -3210,8 +3210,13 @@ itself.
   alone, or, for `text`, a document holding none of the fields' keys,
   the root's own text through a field named `text` not counting; an
   `Xml` whose written text is `None`, a prolog before its root, is
-  always data), and
-  whole through `Document::into_data` (an action's `-> T`). An XML element is a
+  always data; (lines-list) a `FieldSpec` whose `lines: custom::Lines`
+  the binary sets from a list type reads a whole document that is text,
+  or pairs holding none of the fields' keys (`Document::by_line`), as
+  its lines through `custom::lines_data`, `Lines::Records` reading each
+  line as `read_line` reads a listen line), and
+  whole through `Document::into_data` (an action's `-> T`, whose
+  `-> [T]` over text the binary reads by `lines_data` too). An XML element is a
   `Data::Record` whose `ty` is `custom::ELEMENT` (`"<element>"`, which
   no identifier can be), holding `@attribute`s, then child elements
   and `#text` runs in document order; `custom::lookup(record, name)`

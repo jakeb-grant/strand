@@ -3631,6 +3631,101 @@ service early {
             let _ = std::fs::remove_dir_all(&dir);
         }
 
+        /// (lines-list) A polled command's or a file's text read by a
+        /// list field is its lines: `\r\n` and a bare `\r` framed as a
+        /// listen line is, blank lines dropped; a `text` field still
+        /// reads the whole; JSON lines are a record each; a line that
+        /// does not convert is reported once with its index and left
+        /// out; a line of several values is no item of `[int]`, and its
+        /// report says how to print one per line. A JSON array keeps
+        /// its reading.
+        #[test]
+        fn a_polled_commands_lines_fill_a_list_field() {
+            let dir = temp("lines");
+            let at = |name: &str, text: &str| {
+                let f = dir.join(name);
+                save(&f, text);
+                f.display().to_string()
+            };
+            let orphans = at("orphans", "a\r\nb\n\n  \nfifty%\rc\n");
+            let ports = at("ports", "22\n80\nx\n443\n");
+            let pkgs = at(
+                "pkgs",
+                "{\"name\":\"a\",\"size\":1}\n\n{\"name\":\"b\",\"size\":2}\n",
+            );
+            let pids = at("pids", "1234 5678\n");
+            let array = at("array", "[\n  \"x y\",\n  \"z\"\n]\n");
+            let shells = at("shells", "/bin/sh\n/bin/bash\n");
+            let src = format!(
+                "permit exec \"cat\"\n\
+                 type Pkg {{ name: text; size: int }}\n\
+                 service orphans from poll [\"cat\", \"{orphans}\"] every 30s {{ names: [text]; all: text }}\n\
+                 service ports from poll [\"cat\", \"{ports}\"] every 30s {{ open: [int] }}\n\
+                 service pkgs from poll [\"cat\", \"{pkgs}\"] every 30s {{ list: [Pkg] }}\n\
+                 service pids from poll [\"cat\", \"{pids}\"] every 30s {{ all: [int] }}\n\
+                 service array from poll [\"cat\", \"{array}\"] every 30s {{ items: [text] }}\n\
+                 service shells from file \"{shells}\" {{ shells: [text] }}\n\
+                 bar B {{ text join(\" \", orphans.all, ports.open.len, pkgs.list.len, pids.all.len, array.items.len, shells.shells.len) }}\n"
+            );
+            let mut live = Live::boot(&src, Buses::none());
+            let texts = |v: &[&str]| Value::list(v.iter().map(|t| Value::text(*t)).collect());
+            live.until("every service read", |l| {
+                l.value("orphans", "names") == texts(&["a", "b", "c"])
+                    && items(&l.value("ports", "open")).len() == 3
+                    && items(&l.value("pkgs", "list")).len() == 2
+                    && items(&l.value("array", "items")).len() == 2
+                    && items(&l.value("shells", "shells")).len() == 2
+            });
+            // A `text` field reads the output whole, framed.
+            assert_eq!(live.value("orphans", "all"), Value::text("a\nb\n\n  \nc"));
+            assert_eq!(
+                live.value("ports", "open"),
+                Value::list(vec![Value::int(22), Value::int(80), Value::int(443)])
+            );
+            let types = live.build.program.types.clone();
+            let list = items(&live.value("pkgs", "list"));
+            assert_eq!(list[1].field(&types, "name"), Some(&Value::text("b")));
+            assert_eq!(list[1].field(&types, "size"), Some(&Value::int(2)));
+            assert_eq!(live.value("array", "items"), texts(&["x y", "z"]));
+            assert_eq!(
+                live.value("shells", "shells"),
+                texts(&["/bin/sh", "/bin/bash"])
+            );
+            assert_eq!(live.value("pids", "all"), Value::list(Vec::new()));
+            let said: Vec<String> = live
+                .real
+                .services
+                .take_diagnostics()
+                .into_iter()
+                .map(|d| d.message)
+                .collect();
+            let port = said
+                .iter()
+                .filter(|m| m.contains("`ports.open`"))
+                .collect::<Vec<_>>();
+            assert_eq!(port.len(), 1, "{said:?}");
+            assert!(
+                port[0].contains("`open[2]` holds \"x\"") && port[0].contains("left out"),
+                "{}",
+                port[0]
+            );
+            let pid = said
+                .iter()
+                .find(|m| m.contains("`pids.all`"))
+                .unwrap_or_else(|| panic!("{said:?}"));
+            assert!(
+                pid.contains("\"1234 5678\"") && pid.contains("`[int]` reads one value per line"),
+                "{pid}"
+            );
+            assert!(
+                !said
+                    .iter()
+                    .any(|m| m.contains("`orphans.") || m.contains("`pkgs."))
+            );
+            drop(live);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
         /// A value that does not convert to its field's type reads as the
         /// type's default and is reported once (naming the field, its key
         /// and the value) until a value converts again; a colour reads

@@ -236,7 +236,7 @@ impl<'a> Checker<'a> {
             why,
         )
         .help = Some(
-            "`ok` follows an action's command (`action updates() -> text \
+            "`ok` follows an action's command (`action updates() -> [text] \
              [\"checkupdates\"] ok 0, 2`) or a polled command's interval"
                 .into(),
         );

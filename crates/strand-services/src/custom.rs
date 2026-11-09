@@ -227,6 +227,25 @@ pub struct FieldSpec {
     /// crate otherwise never sees: such a field reads XML as written
     /// ([`Document::fields`]).
     pub text: TextField,
+    /// (lines-list) Whether its declared type is a list, and of what: a
+    /// whole document of text (or `key=value` pairs holding none of the
+    /// fields) read by it is a list of its lines ([`lines_data`]).
+    pub lines: Lines,
+}
+
+/// (lines-list) A field's declared type as far as reading a document of
+/// text by line needs it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Lines {
+    /// Not a list.
+    #[default]
+    No,
+    /// A list of values read from text (numbers, enums, `text`, a
+    /// `Date`): each line is an item's text.
+    Values,
+    /// A list of records with these fields: each line is read as a
+    /// `from listen` line is ([`read_line`]).
+    Records(Vec<FieldSpec>),
 }
 
 /// (doc-formats) A field's declared type as far as [`Document::fields`]
@@ -497,6 +516,71 @@ pub fn read_line(fields: &[FieldSpec], line: &str) -> Vec<Option<Data>> {
     let doc = Document::parse(line);
     let written = line.strip_prefix('\u{feff}').unwrap_or(line).trim();
     doc.fields(written, fields)
+}
+
+/// (lines-list) A document of text read as a list: its lines (as
+/// [`proc::Framer`] frames them: `\n` or `\r\n` ends one, a bare `\r`
+/// redraws it), each trimmed, blank ones dropped, so a trailing newline
+/// makes no item. For [`Lines::Records`] a line is read as a `from listen`
+/// line is ([`read_line`]): JSON lines are a record each, a `key=value`
+/// line a record of its pairs; a line holding none of the record's fields
+/// is its text, for the binary's conversion to read or refuse. Otherwise
+/// a line is an item's text. Whitespace, `\0` and commas separate
+/// nothing: one item per line.
+pub fn lines_data(text: &str, lines: &Lines) -> Data {
+    let mut items = Vec::new();
+    let mut take = |l: proc::Framed| {
+        if l.over {
+            return;
+        }
+        let text = l.text();
+        let line = text.trim();
+        if line.is_empty() {
+            return;
+        }
+        items.push(match lines {
+            Lines::Records(fs) => {
+                let got = read_line(fs, line);
+                if got.iter().all(Option::is_none) {
+                    Data::text(line)
+                } else {
+                    Data::Record {
+                        ty: "".into(),
+                        fields: fs
+                            .iter()
+                            .zip(got)
+                            .filter_map(|(f, g)| Some((f.name.clone().into(), g?)))
+                            .collect(),
+                    }
+                }
+            }
+            Lines::No | Lines::Values => Data::text(line),
+        });
+    };
+    let mut framer = Framer::new();
+    framer.push(text.as_bytes(), &mut take);
+    framer.finish(&mut take);
+    Data::List(items)
+}
+
+impl Document {
+    /// (lines-list) Whether a list (`lines`) read from it whole is a list
+    /// of its lines: it is text, or `key=value` pairs holding none of
+    /// `fs`' keys (as a `text` field reads such pairs as written), and not
+    /// blank (nothing printed reads as before: `[]`, or null for an
+    /// optional list). JSON and XML keep their reading, and so does text
+    /// starting with `<` that is not XML read as a list of records: an
+    /// HTML page served in place of a feed is reported, never read as a
+    /// record a line.
+    pub fn by_line(&self, fs: &[FieldSpec], lines: &Lines) -> bool {
+        match (self, lines) {
+            (_, Lines::No) => false,
+            (Document::NotXml { .. }, Lines::Records(_)) => false,
+            (Document::Text(t) | Document::NotXml { text: t, .. }, _) => !t.trim().is_empty(),
+            (Document::Pairs(_), _) => fs.iter().all(|f| self.get(&f.key).is_none()),
+            (Document::Json(_) | Document::Xml(..), _) => false,
+        }
+    }
 }
 
 impl Custom {
@@ -847,8 +931,17 @@ pub fn json_data(v: &serde_json::Value) -> Data {
 /// Replace `state` with `doc`: a whole document (a `file`, a `poll`
 /// result) is the source's state, so a field it no longer holds reads
 /// null (its type's default), not its last value.
+///
+/// (lines-list) A list field reads a document of text by line
+/// ([`Document::by_line`], [`lines_data`]).
 fn replace_doc(spec: &Spec, doc: &Document, written: &str, state: &mut Custom) {
-    for (i, v) in doc.fields(written, &spec.fields).into_iter().enumerate() {
+    let got = doc.fields(written, &spec.fields);
+    for (i, (f, v)) in spec.fields.iter().zip(got).enumerate() {
+        let v = if doc.by_line(&spec.fields, &f.lines) {
+            Some(lines_data(written, &f.lines))
+        } else {
+            v
+        };
         state.set(i, v.unwrap_or(Data::Null));
     }
 }
@@ -2770,6 +2863,7 @@ mod tests {
             key: key(name),
             rw: false,
             text,
+            lines: Lines::No,
         }
     }
 
@@ -2837,6 +2931,72 @@ mod tests {
         let out = [field("out", Required)];
         let doc = Document::parse("error: x\n");
         assert_eq!(doc.fields("error: x", &out), vec![t("error: x")]);
+    }
+
+    /// (lines-list) A whole document of text (or pairs naming no field)
+    /// read by a list field is its lines, framed as a listen line is,
+    /// blank ones dropped; a record list reads each line as a listen
+    /// line; JSON, XML and a blank document keep their reading, and so
+    /// do the other fields.
+    #[test]
+    fn a_text_document_read_as_a_list_is_its_lines() {
+        let t = |s: &str| Data::text(s);
+        assert_eq!(
+            lines_data("a\r\nb\n\n \t\n10%\r100%\n", &Lines::Values),
+            Data::List(vec![t("a"), t("b"), t("100%")])
+        );
+        let rec = Lines::Records(vec![
+            field("name", TextField::No),
+            field("size", TextField::No),
+        ]);
+        assert_eq!(
+            lines_data("{\"name\":\"a\",\"size\":1}\nname=b\n{\"error\":1}\n", &rec),
+            Data::List(vec![
+                Data::Record {
+                    ty: "".into(),
+                    fields: vec![("name".into(), t("a")), ("size".into(), Data::Int(1))],
+                },
+                Data::Record {
+                    ty: "".into(),
+                    fields: vec![("name".into(), t("b"))],
+                },
+                t("{\"error\":1}"),
+            ])
+        );
+        let list = |name: &str| FieldSpec {
+            lines: Lines::Values,
+            ..field(name, TextField::No)
+        };
+        let fs = [list("names"), field("all", TextField::Required)];
+        let by = |d: &str, l: &Lines| Document::parse(d).by_line(&fs, l);
+        let v = &Lines::Values;
+        assert!(by("a\nb", v));
+        assert!(!by("a\nb", &Lines::No), "not a list");
+        assert!(by("a=1\nb=2", v));
+        assert!(!by("names=1\nb=2", v), "a key named");
+        assert!(!by("[1, 2]", v));
+        assert!(!by("<a>1</a>", v));
+        assert!(!by("  \n", v), "blank");
+        assert!(by("<6>a\n<6>b", v), "kernel lines are text");
+        assert!(!by("<!doctype html>\n<p>x", &rec), "a page is no records");
+        let spec = Spec {
+            name: "s".into(),
+            source: Source::Fed,
+            fields: fs.to_vec(),
+            actions: Vec::new(),
+        };
+        let mut state = Custom::seeded(1, 2);
+        let doc = Document::parse("a\nb\n");
+        replace_doc(&spec, &doc, "a\nb", &mut state);
+        assert_eq!(state.values[0].value, Data::List(vec![t("a"), t("b")]));
+        assert_eq!(
+            state.values[1].value,
+            t("a\nb"),
+            "a text field reads it whole"
+        );
+        let doc = Document::parse("[\"x y\", \"z\"]");
+        replace_doc(&spec, &doc, "[\"x y\", \"z\"]", &mut state);
+        assert_eq!(state.values[0].value, Data::List(vec![t("x y"), t("z")]));
     }
 
     /// os-release(5) and hostname(5): `#` comment lines are not lines of

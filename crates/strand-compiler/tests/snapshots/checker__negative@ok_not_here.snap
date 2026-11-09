@@ -11,5 +11,5 @@ check::ok_not_here
    ·                                                             ───┬───
    ·                                                                ╰── a `from listen` command that ends is restarted, whatever its status
    ╰────
-  help: `ok` follows an action's command (`action updates() -> text ["checkupdates"] ok 0, 2`) or
-        a polled command's interval
+  help: `ok` follows an action's command (`action updates() -> [text] ["checkupdates"] ok 0, 2`)
+        or a polled command's interval

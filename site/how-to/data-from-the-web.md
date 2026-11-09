@@ -155,10 +155,13 @@ a `type Seg { trkpt: [Point] }` reads both.
 
 The type you declare decides the shape. A field typed as a list takes
 every element of its name, one or many; a single type takes the first.
-Text of several values is not one item of a list of numbers: a command
-printing a port per line, or `pidof` printing PIDs separated by spaces,
-read as `[int]`, does not convert and is reported. Print a JSON array,
-such as `[22, 80, 443]`, instead.
+A command's output or a file that is text, read as a list, is its
+lines, an item each: a port per line read as `[int]` is `[22, 80,
+443]`, blank lines are none, and JSON lines (`jq -c`) read as a list of
+your `type` are a record each. A line is one value: `pidof` printing
+PIDs separated by spaces, read as `[int]`, is reported and left out,
+so print one per line (`pgrep`). Inside a JSON or XML document, text
+of several values is not one item of a list of numbers either.
 An element read as `text`, a number or a `Date` is its text, so
 `<title>` is a `text` and `<size units="bytes">42</size>` an `int`;
 read as a record, the same element gives its attributes and children.

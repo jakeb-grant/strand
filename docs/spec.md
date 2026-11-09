@@ -796,11 +796,12 @@ monitor, the keyboard always).
   "dc:creator"`, `= "@state"`, `= "#text"`) is one exact segment.
 - The declared type decides, for every document: a list type over one
   value is a list of it if it converts (else it does not convert),
-  text of several values (several lines, or a further word that is
-  itself a number) only as a list of `text` or `path` or of a record
-  that reads text (a command's `22\n80\n443`, or `pidof`'s
-  `1234 5678`, read as `[int]` does not convert, where a number with a
-  unit would read the first alone; `45 °C` is still one item), a
+  text of several values inside a document (several lines, or a
+  further word that is itself a number, in a JSON string, an
+  element's text or a `from listen` line) only as a list of `text` or
+  `path` or of a record that reads text (`<ports>22 80 443</ports>`
+  read as `[int]` does not convert, where a number with a unit would
+  read the first alone; `45 °C` is still one item), a
   record (a JSON object, an element) only when it holds one of the item
   type's fields, so an API's error object read whole as `[T]` (an
   action's `-> [T]`, or a key that finds the object) is reported
@@ -826,6 +827,37 @@ monitor, the keyboard always).
   once with its path (`` `news.posts`: `item[0].pubDate` holds … ``),
   the item left out or the field its default; the whole field failing
   later replaces that report.
+- (lines-list; decisions.md lines-list) **A list of lines.** A whole
+  document that is text (a polled command's output or file, a `from
+  file`, an action's output), or `key=value` lines holding none of the
+  service's fields' keys, read as a list (a field typed `[T]` or
+  `[T]?` with no key path, an action's `-> [T]`) is its lines, an item
+  each (text starting with `<` that is not XML, an HTML page, is never
+  a list of records a line, and is reported as before): a line is
+  what section 5.8 frames (`\n` or `\r\n` ends it, a bare `\r`
+  redraws it; a file's lines too), trimmed, and a blank line is no
+  item, so a trailing newline adds none and nothing printed is still
+  `[]` (null for `[T]?`). Each line converts as one value: `text` and
+  `path` are the line; a number, length, angle, duration, `bool`,
+  colour, enum or `Date` is the line read by the rules here (`45 °C`
+  on each line is 45 each); a record is the line read as a `from
+  listen` line is (JSON lines from `jq -c` or `journalctl -o json` a
+  record each, a `key=value` line a record of its pairs, and a line
+  naming none of its fields read as written by its `text` fields, as a
+  listen line's are), and a line that fills none of its fields is no
+  item. A line that does not convert is left out and
+  reported once with its index (`` `pkgs.names`: `names[2]` holds … ``),
+  as an item inside a document is; an action's output of lines none of
+  which converts is no list, the call's `.error`. Spaces, tabs and
+  commas separate nothing (`\0`, a control character, is dropped): a
+  line of several values, `pidof`'s `1234 5678`, is no item of a list
+  of numbers, and its report says to print one per line (`pgrep`) or
+  read the text whole (`-> text`, a `text` field) and `.split(" ")`.
+  JSON and XML keep their reading, so a pretty-printed array spanning
+  lines is one array and XML's root one item, and so does a single
+  type over several lines: `text` is the whole, a number the first
+  (`/proc/loadavg` read as a `float`). A `from listen` line is one
+  document, read as a list one item.
 - A field typed `text` reads an XML fragment as written, markup and
   all, when the document is one element of text alone (`<b>CPU</b>`)
   or, for `text` but not `text?`, when it holds nothing at the key of
@@ -887,7 +919,7 @@ monitor, the keyboard always).
   polled file has no floor and is read every `T`. (proc-ok) A polled
   command may list after its interval the exit statuses that are no
   failure, `ok 0, N…`, as an action's command may (section 5.7): `from
-  poll ["pacman", "-Qdtq"] every 1h ok 0, 1 { names: text }`.
+  poll ["pacman", "-Qdtq"] every 1h ok 0, 1 { names: [text] }`.
 - Running a command (`listen`, or `poll` of a command) needs
   `permit exec`, at the top level or in the service's block, optionally
   listing the programs allowed; without it the service is a load error.
@@ -1012,8 +1044,8 @@ monitor, the keyboard always).
   of these, or any of these optional; any other (a live handle such as
   `Window` or `Canvas`, a font) is a load error. A record or list is read from
   JSON or XML (the root element as `T`), a record also from `key=value`
-  lines, as section 5.6 reads a document; nothing printed is `null` for
-  an optional `T`. An action has no key path, so `-> [T]` over XML
+  lines, a list also from text, a line an item (lines-list), as section
+  5.6 reads a document; nothing printed is `null` for an optional `T`. An action has no key path, so `-> [T]` over XML
   reads the root as one item, and a feed's entries need a type holding
   them (`type Feed { entry: [Entry] }` and `-> Feed`). The
   parameters, the command and `permit exec` are as above.
@@ -1047,9 +1079,9 @@ monitor, the keyboard always).
 - (proc-ok; decisions.md proc-ok) `ok 0, N…` after an action's command
   (and after a polled command's interval, section 5.6), before any
   block, lists the exit statuses that mean the program did its job:
-  `action updates() -> text ["checkupdates", "--nocolor"] ok 0, 2`,
-  checkupdates' 2 meaning "no updates" (it prints nothing, so `""`;
-  its lines are one text, as section 5.6 reads a document, not a list).
+  `action updates() -> [text] ["checkupdates", "--nocolor"] ok 0, 2`,
+  checkupdates' 2 meaning "no updates" (it prints nothing, so `[]`;
+  otherwise an update a line, a line an item, section 5.6).
   Each is 0 to 255
   (`check::ok_status` otherwise), and 0 must be among them (`ok 2` is a
   load error, `check::ok_without_zero`, whose help writes `ok 0, 2`),
@@ -1254,7 +1286,9 @@ action's, and a `file`'s `run` (section 9.7), is read the same way.
   document and a field's text are trimmed, as before. A polled
   command's and a `-> T` call's output are framed the same way before
   they are read as one document, so a `-> text` from a program that
-  redraws a bar answers with its last drawing.
+  redraws a bar answers with its last drawing; (lines-list) read as a
+  list, such output (text, not JSON or XML) is these lines, an item
+  each (section 5.6).
 - **Buffering.** Most programs hold back their output when it goes to
   a pipe, until a buffer fills or they exit: C programs, Python, grep,
   sed, awk, jq. Strand gives no terminal (a pty would make the output a

@@ -536,10 +536,11 @@ impl Execs {
 
     /// (flex) The commands of actions with a result that ended since the
     /// last call, each one's output read as its type and answering its
-    /// call (`read` converts); the ones whose call was dropped are ended.
+    /// call (`read` converts, given the action's name); the ones whose
+    /// call was dropped are ended.
     pub(super) fn answered(
         &mut self,
-        read: &dyn Fn(&ExecReply, &str) -> Result<strand_compiler::vm::Value, String>,
+        read: &dyn Fn(&str, &ExecReply, &str) -> Result<strand_compiler::vm::Value, String>,
     ) -> Vec<Answered> {
         let outputs = std::mem::take(&mut *lock(&self.outputs));
         let mut out = Vec::new();
@@ -552,7 +553,7 @@ impl Execs {
             if f.reply.abandoned() {
                 continue;
             }
-            let r = output.out.and_then(|text| read(&f.reply, &text));
+            let r = output.out.and_then(|text| read(&f.action, &f.reply, &text));
             let failed = r.as_ref().err().cloned();
             f.reply.answer(r.clone());
             out.push(Answered {
@@ -1265,8 +1266,31 @@ impl Shell {
         }
         // (flex) Results: the call's `.error` says why one failed; the
         // log keeps it too, with no notice.
-        let read = |reply: &ExecReply, out: &str| {
-            crate::services::custom::read_output(reply.types(), reply.ty(), out)
+        // (lines-list) A line left out of a list is logged with the call.
+        let read = |action: &str, reply: &ExecReply, out: &str| {
+            let mut nested = None;
+            let r = crate::services::custom::read_output_noting(
+                reply.types(),
+                reply.ty(),
+                out,
+                &mut nested,
+            );
+            if r.is_ok()
+                && let Some(n) = nested
+            {
+                log::info!(
+                    "action {action}: `{}` holds {}, which is not a `{}`; {}",
+                    n.path.trim_start_matches('.'),
+                    n.held,
+                    n.ty,
+                    if n.path.ends_with(']') {
+                        "the item is left out"
+                    } else {
+                        "it reads as the type's default"
+                    },
+                );
+            }
+            r
         };
         for a in self.execs.answered(&read) {
             let t = strand_core::flight::now_ns();
@@ -1593,7 +1617,7 @@ mod tests {
         let (ping, source) = calloop::ping::make_ping().unwrap();
         loop_.handle().insert_source(source, |_, _, _| {}).unwrap();
         let mut execs = Execs::new(ping);
-        let read = |reply: &ExecReply, out: &str| {
+        let read = |_: &str, reply: &ExecReply, out: &str| {
             crate::services::custom::read_output(reply.types(), reply.ty(), out)
         };
         let (p, probe) = program("Probe");
@@ -1687,7 +1711,7 @@ mod tests {
         loop_.handle().insert_source(source, |_, _, _| {}).unwrap();
         let mut execs = Execs::new(ping);
         execs.timeout = Duration::from_millis(300);
-        let read = |reply: &ExecReply, out: &str| {
+        let read = |_: &str, reply: &ExecReply, out: &str| {
             crate::services::custom::read_output(reply.types(), reply.ty(), out)
         };
         let (p, text) = program("text");
@@ -2014,7 +2038,7 @@ mod tests {
     #[test]
     fn a_stopped_call_answers_that_it_was_stopped() {
         let (mut loop_, mut execs) = looped(Duration::from_millis(300));
-        let read = |reply: &ExecReply, out: &str| {
+        let read = |_: &str, reply: &ExecReply, out: &str| {
             crate::services::custom::read_output(reply.types(), reply.ty(), out)
         };
         let (p, text) = program("text");
@@ -2526,6 +2550,52 @@ mod tests {
         );
     }
 
+    /// (lines-list) `-> [text]` over a checkupdates-like program: its
+    /// "none" status with nothing printed is `[]`; updates are a line
+    /// each, framed as printed (`\r\n`, a bar redrawn with `\r`), blank
+    /// lines no item; `[int]` reads a value per line and refuses a line
+    /// of several (`pidof`), saying how to print one per line.
+    #[test]
+    fn a_list_result_reads_a_programs_lines() {
+        use strand_compiler::vm::Value;
+        let call = |script: &str, ty: &str| {
+            let got = capture(
+                &sh(script),
+                &[0, 2],
+                &Halt::new(false),
+                POLL_TIMEOUT,
+                STOP_GRACE,
+            );
+            let (p, t) = program(ty);
+            got.out
+                .and_then(|out| crate::services::custom::read_output(&p.types, &t, &out))
+        };
+        let texts = |w: &[&str]| Ok(Value::list(w.iter().map(|t| Value::text(*t)).collect()));
+        assert_eq!(call("exit 2", "[text]"), texts(&[]));
+        assert_eq!(
+            call(
+                "printf 'linux 6.1-1 -> 6.2-1\\r\\n\\nchecking 10%%\\rmesa 24.0-1 -> 24.1-1\\n'; exit 0",
+                "[text]"
+            ),
+            texts(&["linux 6.1-1 -> 6.2-1", "mesa 24.0-1 -> 24.1-1"])
+        );
+        assert_eq!(
+            call("printf '22\\n80\\n443\\n'", "[int]"),
+            Ok(Value::list(vec![
+                Value::int(22),
+                Value::int(80),
+                Value::int(443)
+            ]))
+        );
+        let why = call("echo 1234 5678", "[int]").unwrap_err();
+        assert!(why.contains("reads one value per line"), "{why}");
+        assert!(
+            call("printf 'a\\nb\\n'; exit 3", "[text]")
+                .is_err_and(|e| e.starts_with("`sh` failed (exit status: 3)")),
+            "a status `ok` does not list is still a failure"
+        );
+    }
+
     /// (proc-reason) A call with a result failing: its `.error` says why,
     /// from its stderr, else the end of its stdout; its output is framed
     /// as a terminal shows it when it succeeds.
@@ -2678,6 +2748,7 @@ mod tests {
             key: vec![name.into()],
             rw: false,
             text,
+            lines: strand_services::custom::Lines::No,
         };
         let (mut loop_, mut execs) = looped(STOP_GRACE);
         let spec = |fields| BlockSpec {
@@ -2751,6 +2822,7 @@ mod tests {
                     key: vec!["a".into()],
                     rw: false,
                     text: TextField::No,
+                    lines: strand_services::custom::Lines::No,
                 }]),
             },
         );
@@ -2973,6 +3045,7 @@ mod tests {
             key: vec![name.into()],
             rw: false,
             text: TextField::No,
+            lines: strand_services::custom::Lines::No,
         };
         let (mut loop_, mut execs) = looped(STOP_GRACE);
         let block = |spec, f: &str| BlockSpec {

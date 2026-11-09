@@ -58,6 +58,7 @@ fn a_dbus_declarations_actions_call_its_methods() {
             key: vec!["ActiveProfile".into()],
             rw: false,
             text: Default::default(),
+            lines: custom::Lines::No,
         }],
         actions: vec![
             ActionSpec {
@@ -179,6 +180,7 @@ fn a_dbus_actions_run_says_why_its_call_failed() {
             key: vec!["ActiveProfile".into()],
             rw: false,
             text: Default::default(),
+            lines: custom::Lines::No,
         }],
         actions: vec![
             ActionSpec {
@@ -427,6 +429,7 @@ fn the_lid_recipe_follows_upower() {
         key: vec![key.into()],
         rw: false,
         text: Default::default(),
+        lines: custom::Lines::No,
     };
     let id = custom::register(Spec {
         name: "upower".into(),
@@ -514,6 +517,7 @@ fn a_fast_listen_command_wakes_the_logic_thread_once_a_frame() {
             key: vec!["t".into()],
             rw: false,
             text: Default::default(),
+            lines: custom::Lines::No,
         }],
         actions: Vec::new(),
     });
@@ -583,12 +587,14 @@ fn a_heard_listen_command_sends_every_line() {
                 key: vec!["t".into()],
                 rw: false,
                 text: Default::default(),
+                lines: custom::Lines::No,
             },
             FieldSpec {
                 name: "odd".into(),
                 key: vec!["odd".into()],
                 rw: false,
                 text: Default::default(),
+                lines: custom::Lines::No,
             },
         ],
         actions: Vec::new(),
@@ -700,6 +706,7 @@ fn a_dir_is_listed_and_followed() {
             key: vec!["files".into()],
             rw: false,
             text: Default::default(),
+            lines: custom::Lines::No,
         }],
         actions: Vec::new(),
     });
@@ -814,6 +821,7 @@ fn a_file_rewritten_in_place_never_shows_it_empty() {
             key: vec!["level".into()],
             rw: false,
             text: Default::default(),
+            lines: custom::Lines::No,
         }],
         actions: Vec::new(),
     });
@@ -913,6 +921,7 @@ fn a_busy_dir_is_listed_at_most_every_relist() {
             key: vec!["files".into()],
             rw: false,
             text: Default::default(),
+            lines: custom::Lines::No,
         }],
         actions: Vec::new(),
     });
@@ -969,6 +978,7 @@ fn a_dbus_declaration_is_ready_while_its_daemon_answers() {
             key: vec!["ActiveProfile".into()],
             rw: false,
             text: Default::default(),
+            lines: custom::Lines::No,
         }],
         actions: Vec::new(),
     });
@@ -1038,6 +1048,7 @@ fn file_and_poll_declarations_are_ready_after_their_first_read() {
                 key: vec!["level".into()],
                 rw: false,
                 text: Default::default(),
+                lines: custom::Lines::No,
             }],
             actions: Vec::new(),
         });
@@ -1089,6 +1100,7 @@ fn a_failing_poll_is_reported_under_its_name_and_is_not_ready() {
             key: vec!["level".into()],
             rw: false,
             text: Default::default(),
+            lines: custom::Lines::No,
         }],
         actions: Vec::new(),
     });
@@ -1183,6 +1195,7 @@ fn a_failed_first_poll_hidden_meanwhile_is_still_not_ready() {
             key: vec!["level".into()],
             rw: false,
             text: Default::default(),
+            lines: custom::Lines::No,
         }],
         actions: Vec::new(),
     });
@@ -1221,6 +1234,7 @@ fn field(name: &str, text: custom::TextField) -> FieldSpec {
         key: vec![name.into()],
         rw: false,
         text,
+        lines: custom::Lines::No,
     }
 }
 

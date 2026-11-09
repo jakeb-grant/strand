@@ -935,6 +935,7 @@ mod tests {
             key: key(name),
             rw: false,
             text,
+            lines: crate::custom::Lines::No,
         };
         let one = |d: &Document, f: FieldSpec| d.fields("", &[f]).remove(0);
         let html = "<div><h2>Hi</h2><p>Today <b>3</b> updates</p></div>";
@@ -999,6 +1000,7 @@ mod tests {
             key: key(name),
             rw: false,
             text,
+            lines: crate::custom::Lines::No,
         };
         let fs = [
             field("title", TextField::Required),

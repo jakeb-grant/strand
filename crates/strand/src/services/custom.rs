@@ -7,7 +7,7 @@
 //! source kind).
 //!
 //! The service reads untyped [`Data`]; each field's value here is a memo
-//! converting it to the field's declared type ([`coerce`]): numbers from
+//! converting it to the field's declared type ([`coerce_noting`]): numbers from
 //! text, enums by variant name, records by field name, and (doc-formats)
 //! the type deciding a list or one value, an XML element's text or its
 //! fields, and a `Date` from date text or Unix time. A value that does
@@ -40,7 +40,7 @@ use strand_compiler::vm::schema_host::default_value;
 use strand_compiler::vm::{Num, Value, clock};
 use strand_core::{Error, Memo, NodeId, Runtime, Scope, Signal};
 use strand_services::custom::{
-    self, ActionSpec, Custom, CustomAction, CustomValue, FieldSpec, Source, Spec, TextField,
+    self, ActionSpec, Custom, CustomAction, CustomValue, FieldSpec, Lines, Source, Spec, TextField,
 };
 use strand_services::{Client, Data, ServiceDiagnostic, Services, Step, Store, ToData};
 
@@ -313,9 +313,47 @@ fn resolve(path: &str, dir: Option<&Path>) -> PathBuf {
     }
 }
 
+/// (lines-list) How a field of type `ty` reads a document of text by
+/// line, as the service side needs it: not at all unless it is a list; a
+/// list of records (not `Date`, which reads text) each line read as a
+/// `from listen` line is, by the record's fields; any other list a line
+/// per item's text.
+fn lines_of(types: &TypeTable, ty: Option<&Ty>) -> Lines {
+    let Some(Ty::List(item, _)) = ty.map(strip_optional) else {
+        return Lines::No;
+    };
+    match strip_optional(item) {
+        Ty::Record(r) if !clock::is_date(types, *r) => Lines::Records(record_fields(types, *r)),
+        _ => Lines::Values,
+    }
+}
+
+/// The fields of record `r` as the service side reads a document into
+/// them: each by its name, a `text` one reading it as written where it
+/// names none ([`custom::Document::fields`]).
+fn record_fields(types: &TypeTable, r: strand_compiler::ty::RecordId) -> Vec<FieldSpec> {
+    types
+        .record(r)
+        .fields
+        .iter()
+        .map(|f| FieldSpec {
+            name: f.name.clone(),
+            key: vec![f.name.clone()],
+            rw: false,
+            text: text_field(Some(&f.ty)),
+            lines: Lines::No,
+        })
+        .collect()
+}
+
 /// The service-side spec of `decl`, its fields' declared types `types`
-/// (in its fields' order; a missing one is not text).
-pub fn spec_of(decl: &CustomService, config_dir: Option<&Path>, types: &[Ty]) -> Spec {
+/// (in its fields' order; a missing one is not text), of `table`.
+pub fn spec_of(
+    decl: &CustomService,
+    config_dir: Option<&Path>,
+    table: &TypeTable,
+    types: &[Ty],
+) -> Spec {
     let source = match &decl.source {
         SourceSpec::Dbus { system, name, path } => Source::Dbus {
             system: *system,
@@ -352,6 +390,13 @@ pub fn spec_of(decl: &CustomService, config_dir: Option<&Path>, types: &[Ty]) ->
                 key: f.key.clone(),
                 rw: f.rw,
                 text: text_field(types.get(i)),
+                // (lines-list) A field with a key path reads a value in a
+                // document, never its lines.
+                lines: if f.key == [f.name.as_str()] {
+                    lines_of(table, types.get(i))
+                } else {
+                    Lines::No
+                },
             })
             .collect(),
         actions: decl
@@ -374,10 +419,27 @@ pub struct Nested {
     pub path: String,
     pub held: String,
     pub ty: String,
+    /// (lines-list) It held several values (`1234 5678`) where a list
+    /// of numbers, bools or the like reads one per item: its report
+    /// says how to print one per line ([`one_per_line`]).
+    pub several: bool,
 }
 
-/// `d` as a value of type `ty`: see the module docs. `None`: it does not
-/// convert.
+/// (lines-list) How a field reads text of several values whole.
+const FIELD_WHOLE: &str = "declare the field `text`";
+
+/// (lines-list) The help for text of several values read where a list
+/// of `item` (shown) reads one value per item, a line each: `how` is
+/// how to read the text whole instead (`` read `-> text` ``).
+fn one_per_line(item: &str, how: &str) -> String {
+    format!(
+        "`[{item}]` reads one value per line: print one per line (`pgrep`), \
+         or {how} and `.split(\" \")`"
+    )
+}
+
+/// [`coerce_noting`], noting nothing (tests).
+#[cfg(test)]
 pub fn coerce(types: &TypeTable, ty: &Ty, d: &Data) -> Option<Value> {
     coerce_noting(types, ty, d, &mut None)
 }
@@ -394,7 +456,27 @@ fn several_values(t: &str) -> bool {
             .any(|w| w.parse::<f64>().is_ok())
 }
 
-/// [`coerce`], noting in `nested` the first value inside `d` that held
+/// Whether `d` holds several values ([`several_values`], an element by
+/// its text) where a value of `item` is one: a number, a bool, an enum
+/// or the like, not text or a path, which keep it whole.
+fn holds_several(item: &Ty, d: &Data) -> bool {
+    matches!(strip_optional(item), Ty::Prim(p) if !matches!(p, Prim::Text | Prim::Path))
+        && match d {
+            Data::Text(t) => several_values(t),
+            d if custom::is_element(d) => several_values(&custom::element_text(d)),
+            _ => false,
+        }
+}
+
+/// (lines-list) Whether `d` read as `ty`, a list of numbers or the like,
+/// holds several values where an item is one: its report adds
+/// [`one_per_line`].
+fn reads_several(ty: &Ty, d: &Data) -> bool {
+    matches!(strip_optional(ty), Ty::List(item, _) if holds_several(item, d))
+}
+
+/// `d` as a value of type `ty` (see the module docs; `None`: it does
+/// not convert), noting in `nested` the first value inside `d` that held
 /// something and did not convert (a list's item, a record's field).
 ///
 /// (doc-formats) The declared type decides, for every document:
@@ -453,18 +535,30 @@ fn noted(
     nested: &mut Option<Nested>,
 ) -> Option<Value> {
     let v = go(types, ty, d, path, nested);
-    if v.is_none() && !matches!(d, Data::Null) && nested.is_none() {
-        *nested = Some(Nested {
-            path: path.clone(),
-            held: shown(d),
-            ty: types.show(ty).to_string(),
-        });
+    if v.is_none() {
+        note(types, ty, d, path, nested);
     }
     v
 }
 
+/// Note in `nested` that `d` at `path` held something and did not
+/// convert to `ty`, unless a value was noted already.
+fn note(types: &TypeTable, ty: &Ty, d: &Data, path: &str, nested: &mut Option<Nested>) {
+    if !matches!(d, Data::Null) && nested.is_none() {
+        *nested = Some(Nested {
+            path: path.to_string(),
+            held: shown(d),
+            ty: types.show(ty).to_string(),
+            // A list's item, not a record's field.
+            several: path.ends_with(']') && holds_several(ty, d),
+        });
+    }
+}
+
 /// The items of `items` as a list of `item`s: one that does not convert
-/// is left out (and noted).
+/// is left out (and noted). (lines-list) An item holding several values
+/// where `item` is one (a line `1234 5678` read as an `int`) does not
+/// convert, where a single value over it would read the first.
 fn list_of<'d>(
     types: &TypeTable,
     item: &Ty,
@@ -477,7 +571,12 @@ fn list_of<'d>(
         .enumerate()
         .filter_map(|(i, d)| {
             path.push_str(&format!("[{i}]"));
-            let v = noted(types, item, d, path, nested);
+            let v = if holds_several(item, d) {
+                note(types, item, d, path, nested);
+                None
+            } else {
+                noted(types, item, d, path, nested)
+            };
             path.truncate(at);
             v
         })
@@ -622,16 +721,11 @@ fn go(
         // rest lost without a report. Several lines, or a further word
         // that is itself a number, is several values; a unit is not.
         // An element's text (`<ports>22 80</ports>`) the same.
-        (Ty::List(item, _), d)
-            if matches!(strip_optional(item), Ty::Prim(p) if !matches!(p, Prim::Text | Prim::Path))
-                && match d {
-                    Data::Text(t) => several_values(t),
-                    d if custom::is_element(d) => several_values(&custom::element_text(d)),
-                    _ => false,
-                } =>
-        {
-            None
-        }
+        // (lines-list) A whole document of text read as a list is its
+        // lines before it gets here ([`custom::lines_data`]); this is
+        // text inside a document (a JSON string, an element's text, a
+        // `from listen` line).
+        (Ty::List(item, _), d) if holds_several(item, d) => None,
         (Ty::List(item, _), d) => {
             if let Ty::Record(r) = strip_optional(item)
                 && matches!(d, Data::Record { .. })
@@ -725,15 +819,34 @@ fn go(
     }
 }
 
+/// [`read_output_noting`], noting nothing (tests).
+#[cfg(test)]
+pub fn read_output(types: &TypeTable, ty: &Ty, out: &str) -> Result<Value, String> {
+    read_output_noting(types, ty, out, &mut None)
+}
+
 /// (flex) What the command of an action with a result printed (`out`),
 /// read as its declared type `ty`, as a `from poll` service reads a
 /// command's output into a field: a `text` (or `path`) is the output
 /// itself, trimmed; any other type reads the output as a document (JSON,
-/// XML, `key=value` lines, else text) and converts it ([`coerce`]: numbers
+/// XML, `key=value` lines, else text) and converts it ([`coerce_noting`]: numbers
 /// from text, enums by variant name, records by field name, the declared
 /// type deciding a list or one value). Nothing
 /// printed is `null` for an optional type. `Err`: it does not convert.
-pub fn read_output(types: &TypeTable, ty: &Ty, out: &str) -> Result<Value, String> {
+///
+/// (lines-list) A list type over output that is text (or `key=value`
+/// lines) reads its lines, an item each ([`custom::lines_data`]); JSON
+/// and XML keep their reading. A line that does not convert is left out,
+/// and output none of whose lines converts is no list of the type.
+///
+/// Notes in `nested` the first value inside the output that held
+/// something and did not convert (a line left out of a list).
+pub fn read_output_noting(
+    types: &TypeTable,
+    ty: &Ty,
+    out: &str,
+    nested: &mut Option<Nested>,
+) -> Result<Value, String> {
     let t = out.trim();
     let inner = match ty {
         Ty::Optional(inner) => {
@@ -748,6 +861,37 @@ pub fn read_output(types: &TypeTable, ty: &Ty, out: &str) -> Result<Value, Strin
         return Ok(Value::text(t));
     }
     let doc = custom::Document::parse(t);
+    let not = |nested: &Option<Nested>, d: Option<&Data>| {
+        let mut why = format!("what it printed is not a `{}`", types.show(inner));
+        let several = match nested {
+            Some(n) if n.several => {
+                why.push_str(&format!(" (a line holds {}, not one `{}`)", n.held, n.ty));
+                true
+            }
+            _ => d.is_some_and(|d| reads_several(inner, d)),
+        };
+        if several && let Ty::List(item, _) = strip_optional(inner) {
+            why.push_str("; ");
+            why.push_str(&one_per_line(
+                &types.show(item).to_string(),
+                "read `-> text`",
+            ));
+        }
+        why
+    };
+    // (lines-list) A list read from text is a list of its lines.
+    let by = lines_of(types, Some(inner));
+    if doc.by_line(&[], &by) {
+        let lines = custom::lines_data(t.strip_prefix('\u{feff}').unwrap_or(t), &by);
+        let some = matches!(&lines, Data::List(items) if !items.is_empty());
+        return match coerce_noting(types, inner, &lines, nested) {
+            // Lines, none of which converts: no list of the type, as
+            // one value that does not convert is not.
+            Some(Value::List(l)) if l.is_empty() && some => Err(not(nested, None)),
+            Some(v) => Ok(v),
+            None => Err(not(nested, None)),
+        };
+    }
     // (proc-format) A record read from a structured document naming
     // none of its fields: its `text` fields read the output as written,
     // the others absent, as a service's fields read a document.
@@ -757,17 +901,7 @@ pub fn read_output(types: &TypeTable, ty: &Ty, out: &str) -> Result<Value, Strin
             custom::Document::Text(_) | custom::Document::NotXml { .. }
         )
     {
-        let fields: Vec<FieldSpec> = types
-            .record(*r)
-            .fields
-            .iter()
-            .map(|f| FieldSpec {
-                name: f.name.clone(),
-                key: vec![f.name.clone()],
-                rw: false,
-                text: text_field(Some(&f.ty)),
-            })
-            .collect();
+        let fields = record_fields(types, *r);
         let got = doc.fields(t.strip_prefix('\u{feff}').unwrap_or(t).trim(), &fields);
         if fields
             .iter()
@@ -784,13 +918,11 @@ pub fn read_output(types: &TypeTable, ty: &Ty, out: &str) -> Result<Value, Strin
                     .filter_map(|(f, g)| Some((f.name.clone().into(), g?)))
                     .collect(),
             };
-            return coerce(types, inner, &data)
-                .ok_or_else(|| format!("what it printed is not a `{}`", types.show(inner)));
+            return coerce_noting(types, inner, &data, nested).ok_or_else(|| not(nested, None));
         }
     }
     let data = doc.into_data();
-    coerce(types, inner, &data)
-        .ok_or_else(|| format!("what it printed is not a `{}`", types.show(inner)))
+    coerce_noting(types, inner, &data, nested).ok_or_else(|| not(nested, Some(&data)))
 }
 
 /// A field's value that does not convert to its declared type, reported
@@ -822,7 +954,7 @@ impl Mismatch {
             (true, Some(n)) => (
                 true,
                 format!(
-                    "`{}`: `{}{}` holds {}, which is not a `{}`; {}",
+                    "`{}`: `{}{}` holds {}, which is not a `{}`; {}{}",
                     self.field,
                     self.key,
                     n.path,
@@ -834,17 +966,29 @@ impl Mismatch {
                     } else {
                         "it reads as the type's default"
                     },
+                    if n.several {
+                        format!("; {}", one_per_line(&n.ty, FIELD_WHOLE))
+                    } else {
+                        String::new()
+                    },
                 ),
             ),
             (false, _) if matches!(d, Data::Null) => return,
             (false, _) => (
                 false,
                 format!(
-                    "`{}`: `{}` holds {}, which is not a `{}`; it reads as the type's default",
+                    "`{}`: `{}` holds {}, which is not a `{}`; it reads as the type's default{}",
                     self.field,
                     self.key,
                     shown(d),
                     types.show(ty),
+                    match strip_optional(ty) {
+                        Ty::List(item, _) if reads_several(ty, d) => format!(
+                            "; {}",
+                            one_per_line(&types.show(item).to_string(), FIELD_WHOLE)
+                        ),
+                        _ => String::new(),
+                    },
                 ),
             ),
         };
@@ -982,7 +1126,12 @@ impl CustomHost {
         types: &TypeTable,
     ) -> Entry {
         let typing = Typing::of(decl, types);
-        let mut service_spec = spec_of(decl, self.config_dir.borrow().as_deref(), &typing.fields);
+        let mut service_spec = spec_of(
+            decl,
+            self.config_dir.borrow().as_deref(),
+            types,
+            &typing.fields,
+        );
         let block = self.blocks.borrow().contains(&decl.name);
         if block {
             // (proc-run) Fed by the action's runs, never a command of its
@@ -1277,14 +1426,20 @@ impl ServiceHost for CustomHost {
                 return self.declare(rt, decl, types);
             };
             // (doc-formats) A field becoming text, or no longer, reads
-            // XML differently on the service side: a restart.
-            let text = |fields: &[Ty]| -> Vec<TextField> {
-                fields.iter().map(|t| text_field(Some(t))).collect()
+            // XML differently on the service side: a restart; (lines-list)
+            // one becoming a list, or its item record's fields changing,
+            // reads text by line differently.
+            let read = |table: &TypeTable, fields: &[Ty]| -> Vec<(TextField, Lines)> {
+                fields
+                    .iter()
+                    .map(|t| (text_field(Some(t)), lines_of(table, Some(t))))
+                    .collect()
             };
+            let old = e.typing.borrow();
             e.decl.source == decl.source
                 && e.decl.fields == decl.fields
                 && e.decl.actions == decl.actions
-                && text(&e.typing.borrow().fields) == text(&Typing::of(decl, types).fields)
+                && read(&old.table, &old.fields) == read(types, &Typing::of(decl, types).fields)
         };
         if !same {
             // Not just renumbered: the declaration changed after all.
@@ -2007,7 +2162,10 @@ mod tests {
 
     /// (doc-formats) The declared type decides: a list type over one
     /// value is a list of it (if it converts, else nothing, reported); a
-    /// single type over a list reads its first item.
+    /// single type over a list reads its first item. (lines-list) A
+    /// command's text read as a list is its lines, one value each; text
+    /// inside a document (a JSON string, an element) is one value, and
+    /// several values there are no item of a list of numbers.
     #[test]
     fn a_list_type_wraps_one_value_and_a_single_type_takes_the_first() {
         let types = &Schema::builtin().types;
@@ -2024,16 +2182,37 @@ mod tests {
         );
         assert_eq!(c(&ints, Data::text("x")), None, "a report, not a silent []");
         assert_eq!(c(&ints, Data::Null), None);
-        // A value per line is not one item: `22` with the rest lost.
+        // Text inside a document holding a value per line is not one
+        // item: `22` with the rest lost.
         assert_eq!(c(&ints, Data::text("22\n80\n443")), None);
         let floats = Ty::List(Box::new(Ty::Prim(Prim::Float)), false);
         assert_eq!(c(&floats, Data::text("0.5\n0.25")), None);
-        assert!(read_output(types, &ints, "22\n80\n443\n").is_err());
-        // Nor are values on one line, by spaces or tabs (`pidof`).
+        // A command's output is its lines, an item each.
+        assert_eq!(
+            read_output(types, &ints, "22\n80\n443\n"),
+            Ok(Value::list(vec![
+                Value::int(22),
+                Value::int(80),
+                Value::int(443)
+            ]))
+        );
+        assert_eq!(
+            read_output(types, &texts, "a\nb"),
+            Ok(Value::list(vec![Value::text("a"), Value::text("b")]))
+        );
+        // Values on one line, by spaces or tabs (`pidof`), are no item
+        // of a list of numbers: a line is one value.
         assert_eq!(c(&ints, Data::text("1234 5678")), None);
         assert_eq!(c(&ints, Data::text("22\t80\t443")), None);
         assert_eq!(c(&floats, Data::text("0.5 0.25")), None);
-        assert!(read_output(types, &ints, "1234 5678\n").is_err());
+        let pidof = read_output(types, &ints, "1234 5678\n").unwrap_err();
+        assert!(
+            pidof.contains("`[int]` reads one value per line")
+                && pidof.contains("(`pgrep`)")
+                && pidof.contains("read `-> text` and `.split(\" \")`"),
+            "{pidof}"
+        );
+        assert!(read_output(types, &floats, "0.5 0.25\n").is_err());
         let durations = Ty::List(Box::new(Ty::Prim(Prim::Duration)), false);
         assert_eq!(c(&durations, Data::text("5 10")), None);
         let element = xml_at("<r><ports>22 80 443</ports><d>1</d></r>", "ports");
@@ -2125,6 +2304,151 @@ type Port { portid: int; state: text? }
         assert_eq!(l[0].field(types, "portid"), Some(&Value::int(22)));
         let other = xml_at("<r><port><x>1</x></port></r>", "port");
         assert_eq!(coerce(types, &ports, &other), None);
+    }
+
+    /// (lines-list) Output that is text, read as a list, is its lines as
+    /// a `from listen` command's are framed (`\r\n`, a bare `\r`
+    /// redrawing), trimmed, blank ones and a trailing newline making no
+    /// item; each line converts by the single-value rule (`45 °C` is 45)
+    /// or, for a record, as a listen line is read (JSON lines a record
+    /// each, a `key=value` line a record of its pairs, a record with a
+    /// `text` field the line as written). A line that does not convert
+    /// is noted and left out; none converting is no list. JSON and XML
+    /// keep their reading; a single type over lines is unchanged.
+    #[test]
+    fn a_list_reads_a_text_outputs_lines() {
+        let types = &typed(
+            "type Pkg { name: text; size: int }
+type Note { text: text }
+type Svc { port: int; proto: text? }
+enum Level { low, high }
+",
+        );
+        let list = |item: Ty| Ty::List(Box::new(item), false);
+        let texts = list(Ty::Prim(Prim::Text));
+        let ints = list(Ty::INT);
+        let read = |ty: &Ty, out: &str| read_output(types, ty, out);
+        let words = |w: &[&str]| Ok(Value::list(w.iter().map(|t| Value::text(*t)).collect()));
+        let nums = |n: &[i64]| Ok(Value::list(n.iter().map(|n| Value::int(*n)).collect()));
+        // Framing: a trailing newline, blank and whitespace lines, CRLF,
+        // a bare `\r` redrawing its line, ends trimmed.
+        assert_eq!(read(&texts, "a\nb\n"), words(&["a", "b"]));
+        assert_eq!(read(&texts, "a\n\n   \n\tb\n\n"), words(&["a", "b"]));
+        assert_eq!(read(&texts, "a\r\nb\r\n"), words(&["a", "b"]));
+        assert_eq!(
+            read(&texts, "10%\r50%\r100%\ndone"),
+            words(&["100%", "done"])
+        );
+        assert_eq!(
+            read(&texts, "  x y  \n"),
+            words(&["x y"]),
+            "spaces are no separator"
+        );
+        assert_eq!(read(&texts, "a,b\n"), words(&["a,b"]), "nor are commas");
+        // Nothing printed is still `[]`, or null for an optional list.
+        assert_eq!(read(&texts, "\n\n"), words(&[]));
+        assert_eq!(
+            read(&Ty::Optional(Box::new(texts.clone())), ""),
+            Ok(Value::Null)
+        );
+        // Each line by the single-value rule.
+        assert_eq!(read(&ints, "45 °C\n50 °C\n"), nums(&[45, 50]));
+        let bools = list(Ty::Prim(Prim::Bool));
+        assert_eq!(
+            read(&bools, "yes\nno\n"),
+            Ok(Value::list(vec![Value::Bool(true), Value::Bool(false)]))
+        );
+        let levels = list(Ty::Enum(types.find_enum("Level").unwrap()));
+        let Ok(Value::List(l)) = read(&levels, "low\nHIGH\n") else {
+            panic!("two levels")
+        };
+        assert_eq!(l.len(), 2);
+        // A bad line is left out and noted by its index; none
+        // converting is no list.
+        let mut nested = None;
+        assert_eq!(
+            read_output_noting(types, &ints, "1\nx\n\n3\n", &mut nested),
+            nums(&[1, 3])
+        );
+        let n = nested.unwrap();
+        assert_eq!((n.path.as_str(), n.held.as_str()), ("[1]", "\"x\""));
+        assert!(!n.several);
+        assert!(read(&ints, "x\ny\n").is_err());
+        let mut nested = None;
+        assert_eq!(
+            read_output_noting(types, &ints, "7\n1234 5678\n", &mut nested),
+            nums(&[7])
+        );
+        assert!(nested.unwrap().several, "a line of two numbers is no int");
+        // Records: JSON lines (an empty line between them), a pairs line,
+        // a line read as written by a `text` field.
+        let pkgs = list(user(types, "Pkg"));
+        let Ok(Value::List(l)) = read(
+            &pkgs,
+            "{\"name\":\"a\",\"size\":1}\n\n{\"name\":\"b\",\"size\":2}\n",
+        ) else {
+            panic!("two records")
+        };
+        assert_eq!(l.len(), 2);
+        assert_eq!(l[1].field(types, "name"), Some(&Value::text("b")));
+        assert_eq!(l[1].field(types, "size"), Some(&Value::int(2)));
+        let Ok(Value::List(l)) = read(&pkgs, "name=a\nsize=3\n") else {
+            panic!("a record per pairs line")
+        };
+        assert_eq!(l.len(), 2);
+        assert_eq!(l[0].field(types, "name"), Some(&Value::text("a")));
+        assert_eq!(l[1].field(types, "size"), Some(&Value::int(3)));
+        let notes = list(user(types, "Note"));
+        let Ok(Value::List(l)) = read(&notes, "error: x\n{\"other\": 1}\nplain\n") else {
+            panic!("notes")
+        };
+        let said: Vec<_> = l.iter().map(|n| n.field(types, "text").cloned()).collect();
+        assert_eq!(
+            said,
+            ["error: x", "{\"other\": 1}", "plain"].map(|t| Some(Value::text(t)))
+        );
+        // A JSON line naming none of the item's fields is no item, when
+        // no `text` field reads it as written (as a listen line's would).
+        let svcs = list(user(types, "Svc"));
+        let mut nested = None;
+        assert_eq!(
+            read_output_noting(types, &svcs, "{\"port\":22}\n{\"error\":1}\n", &mut nested)
+                .map(|v| matches!(v, Value::List(l) if l.len() == 1)),
+            Ok(true)
+        );
+        assert_eq!(nested.map(|n| n.path), Some("[1]".to_string()));
+        let Ok(Value::List(l)) = read(&pkgs, "{\"error\":1}\n{\"error\":2}\n") else {
+            panic!("a text field reads it")
+        };
+        assert_eq!(l.len(), 2);
+        // One such line is a JSON document, read whole: no item.
+        assert!(read(&pkgs, "{\"error\":1}\n").is_err());
+        assert_eq!(
+            l[0].field(types, "name"),
+            Some(&Value::text("{\"error\":1}"))
+        );
+        // `key=value` text read as `[text]` is its lines, as written.
+        assert_eq!(read(&texts, "a=1\nb: 2\n"), words(&["a=1", "b: 2"]));
+        // Text that is not XML (kernel lines) is lines too.
+        assert_eq!(read(&texts, "<6>a\n<6>b\n"), words(&["<6>a", "<6>b"]));
+        // JSON and XML keep their reading: a pretty array spanning lines,
+        // a root element as one item.
+        assert_eq!(
+            read(&texts, "[\n  \"x y\",\n  \"z\"\n]\n"),
+            words(&["x y", "z"])
+        );
+        assert_eq!(read(&ints, "[\n  1,\n  2\n]"), nums(&[1, 2]));
+        assert_eq!(read(&ints, "7"), nums(&[7]));
+        assert_eq!(read(&texts, "<a>1\n2</a>"), words(&["1\n2"]));
+        // A single type over lines: text the whole, a number the first.
+        assert_eq!(
+            read(&Ty::Prim(Prim::Text), "a\nb\n"),
+            Ok(Value::text("a\nb"))
+        );
+        assert_eq!(
+            read(&Ty::Prim(Prim::Float), "0.52 0.58 0.59 1/389 12345\n"),
+            Ok(Value::float(0.52))
+        );
     }
 
     /// (doc-formats) An empty element read as a record or a list of
@@ -2451,6 +2775,7 @@ type Named { name: text }
                 path: "[0].pubDate".into(),
                 held: "\"Sat Nov  7 20:45:15 2026\"".into(),
                 ty: "Date?".into(),
+                several: false,
             })
         );
         // A list item that does not convert is left out, and noted.
