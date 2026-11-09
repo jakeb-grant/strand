@@ -35,6 +35,17 @@ fn until(rt: &Runtime, s: &Services, what: &str, mut cond: impl FnMut() -> bool)
     );
 }
 
+/// The launch count once it reaches `n` (or 10 s pass): the service
+/// counts a launch when it collects the finished spawn, which can be after
+/// the launched program has already written its marker.
+fn launches_reaching(n: u64) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while apps::launches() < n && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    apps::launches()
+}
+
 fn ids(rt: &Runtime, d: &dyn DynService) -> Vec<String> {
     let field = d.fields().iter().position(|f| f.name == "all").unwrap();
     d.keyed_items(rt, field)
@@ -213,7 +224,7 @@ fn apps_lists_searches_launches_and_follows_entries() {
         "Viewer",
         "%c is the name, %U nothing"
     );
-    assert_eq!(apps::launches(), before + 1);
+    assert_eq!(launches_reaching(before + 1), before + 1);
     // The used app now comes first for an empty query, and the count is
     // on disk.
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -639,13 +650,17 @@ fn desktop_actions_are_listed_and_launched() {
         )
         .unwrap();
     assert_eq!(launched(), "--private Browser", "its own Exec, %c expanded");
-    assert_eq!(apps::launches(), before + 1, "a launch of its app");
+    assert_eq!(
+        launches_reaching(before + 1),
+        before + 1,
+        "a launch of its app"
+    );
     // As the language calls it: `a.launch()` on the action's record.
     let item = strand_services::ToData::to_data(&browser.actions[0]);
     d.action(&rt, "launch", Some(&item), &[], Default::default())
         .unwrap();
     assert_eq!(launched(), "--new-window", "%U nothing");
-    assert_eq!(apps::launches(), before + 2);
+    assert_eq!(launches_reaching(before + 2), before + 2);
     // The app itself still starts its own line.
     b.apps
         .act(
