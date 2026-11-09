@@ -575,6 +575,15 @@ module.exports = grammar({
       $.null,
       $.token,
       $.identifier,
+      // `from` is a name wherever an expression goes: the keyword only
+      // where a call's argument starts with it and a value follows (the
+      // relative-colour source, `oklch(from $surface, …)`), where it is a
+      // `from_argument`. Elsewhere the keyword is not valid and `word`
+      // already makes it an identifier; at an argument's start both are,
+      // so this keeps `g(from)` and `g(from + 1)` names as the parser
+      // reads them (`relative_source_follows`), and `g(from - 1)` a
+      // subtraction, not a source of `-1`.
+      prec(1, alias('from', $.identifier)),
       $.parenthesized_expression,
       $.array,
       $.dictionary,

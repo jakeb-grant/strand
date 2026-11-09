@@ -3763,6 +3763,19 @@
           "name": "identifier"
         },
         {
+          "type": "PREC",
+          "value": 1,
+          "content": {
+            "type": "ALIAS",
+            "content": {
+              "type": "STRING",
+              "value": "from"
+            },
+            "named": true,
+            "value": "identifier"
+          }
+        },
+        {
           "type": "SYMBOL",
           "name": "parenthesized_expression"
         },

@@ -486,6 +486,37 @@ component C(key: text) {
 }
 
 #[test]
+fn from_is_a_name_unless_a_value_follows() {
+    // grammar.md: `from` at an argument's start is the relative-colour
+    // source only when a value follows it (the parser's
+    // `relative_source_follows`); `g(from)`, `g(from + 1)` and
+    // `g(from - 1)` read a name, as a parameter called `from` needs.
+    let names = "\
+fn word_in(hay: text, from: int) -> int {
+  let i = hay.slice(from).index_of(hay)
+  let j = g(from + 1, from - 1, from(2), from.len)
+  i == null ? 0 : g(hay, from + (i ?? 0))
+}
+";
+    assert_eq!(syntax_errors(names), Vec::<&str>::new());
+    let tree = ts_parse(names);
+    assert_eq!(first_error(&tree), None, "{}", tree.root_node().to_sexp());
+    let sexp = tree.root_node().to_sexp();
+    assert!(!sexp.contains("from_argument"), "{sexp}");
+
+    let sources = "\
+component C {
+  box { border: oklch(from $surface, l: l + 0.12); fill: g(from (x)); bg: g(from [1]) }
+}
+";
+    assert_eq!(syntax_errors(sources), Vec::<&str>::new());
+    let tree = ts_parse(sources);
+    assert_eq!(first_error(&tree), None, "{}", tree.root_node().to_sexp());
+    let sexp = tree.root_node().to_sexp();
+    assert_eq!(sexp.matches("(from_argument").count(), 3, "{sexp}");
+}
+
+#[test]
 fn line_breaks_end_items_unless_the_next_line_continues() {
     // grammar.md, "Lines and termination", rules 2, 3 and 4.
     let src = "\
