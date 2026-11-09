@@ -699,7 +699,8 @@ Notes:
   item, and then every item is `key: value`; an item without a value, or a
   list's item with one, is `syntax::dict_item`, and so is `[:]` (an empty
   dictionary is `[]`, whose type the checker takes from the type expected:
-  `state m: [text: int] = []`). A ternary key has taken its own `:` before
+  `state m: [text: int] = []`, or from the other branches of a `?:` or
+  `match` it is a branch of). A ternary key has taken its own `:` before
   the entry's: `[c ? a : b: v]` keys by the ternary. Braces hold a block,
   not a value, so `{1: "web"}`, `{"a": 1}` and `{}` where a value was meant
   are `syntax::dict_braces` ("dictionaries use brackets: `[k: v]`"), with a
