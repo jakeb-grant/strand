@@ -85,4 +85,6 @@ which program runs or what it loads: `LANG`, `LANGUAGE`, `LC_…`, `TZ`,
 another path that shares the name is checked as itself.
 Anything else (`env -i pacman`, a parameter where the program would
 be) stops it, and the program checked is `stdbuf` or `env` itself, so
-`permit exec "env"` would allow any program after it.
+`permit exec "env"` would allow any program after it. `strand check`
+names the item that stopped it, so you can drop that item (or move it
+into a helper) instead of permitting the wrapper.

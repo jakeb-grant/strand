@@ -873,11 +873,12 @@ monitor, the keyboard always).
   (section 8.7), so a handler that appends every line is never
   throttled; they are still a service's events, not gestures, so a
   line that comes while the handler's surface is closed is delivered
-  when it opens, as any service event is (the latest 256 per handler).
-  None is lost and their queue is bounded: while more than
-  4096 lines (or 4 MiB) wait for handlers, strand stops reading the
-  command's stdout until they are heard, so a fast command waits as it
-  would on a slow terminal; its stderr has a pipe of its own and is
+  when it opens, as any service event is: a closed surface catches up
+  on the latest 256 per handler, the older ones dropped. While a
+  handler hears them none is lost, and their queue is bounded: while
+  more than 4096 lines (or 4 MiB) wait for handlers, strand stops
+  reading the command's stdout until they are heard, so a fast command
+  waits as it would on a slow terminal; its stderr has a pipe of its own and is
   still read. The fields and `line` read stdout alone (section 5.8).
   The command's stderr is kept: why it failed (section 5.8) is in the
   service's diagnostic when it fails or ends.
@@ -1107,9 +1108,10 @@ monitor, the keyboard always).
 - (proc-run; decisions.md proc-run) An action with a command and no
   result also has its last run's output, read through its run:
   - `rec.code` (`int?`) is the status its last command ended with,
-    `128 + n` for signal n, as a shell's `$?` says it (130 after a
-    `stop()`'s SIGINT); null before any ended and from the moment it
-    is called again.
+    `128 + n` for signal n, as a shell's `$?` says it (130 when a
+    `stop()`'s SIGINT ends it; a program that catches SIGINT ends with
+    a status of its own, `rsync` with 20); null before any ended and
+    from the moment it is called again.
   - `rec.lines` (`[Line]`) is what its last command printed, as a
     terminal shows it (section 5.8): the last 1000 lines, at most
     256 KiB, of stdout and stderr in the order strand read them, the
@@ -1297,8 +1299,9 @@ action's, and a `file`'s `run` (section 9.7), is read the same way.
   action's `error`, a call's `.error`, a polled or listen command's
   diagnostic (`strand watch`), an action's notice and a `file`'s `run`
   notice: ``"`pacman` failed (exit status: 1): error: failed to commit
-  transaction (conflicting files)"``, the conflicting files on the
-  lines after it. Its first line is `rec.error?.split("\n")?.first`,
+  transaction (conflicting files)"``; the conflicting files themselves
+  are in the run's `lines`, since pacman prints them on stdout. Its
+  first line is `rec.error?.split("\n")?.first`,
   which suits a program that says why first (pacman, rsync); one that
   prints progress on stderr before it fails (git, curl) leads with its
   progress, so read its own marker instead, the last line starting

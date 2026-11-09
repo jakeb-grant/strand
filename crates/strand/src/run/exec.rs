@@ -360,6 +360,11 @@ impl Execs {
 
     /// (proc-ok) The actions `prog` declares and the statuses each takes
     /// for success (`[0]` unless its `ok` says otherwise).
+    /// (proc-keeper) The keeper, shared with `file` `run:`s.
+    pub(super) fn keeper(&self) -> Arc<Keeper> {
+        self.keeper.clone()
+    }
+
     pub(super) fn set_ok(&mut self, prog: &strand_compiler::lower::Program) {
         self.ok = prog
             .execs
@@ -424,8 +429,7 @@ impl Execs {
         let halt = Arc::new(Halt::new(true));
         let (h, grace) = (halt.clone(), self.grace);
         let out = Arc::new(Mutex::new(Taking::default()));
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = self.keeper.next_run();
         let cx = JobCx {
             action: action.clone(),
             ok: self.ok_of(&action),
@@ -671,7 +675,29 @@ pub(super) fn run(
     };
     let stopped = follow(&child, halt, &mut reader, &mut job);
     if stopped {
-        stop_group(i32::try_from(child.id()).unwrap_or(0), grace);
+        // Read on while it stops: a program that prints as it cleans up
+        // (or was printing when asked) must not block on a full pipe and
+        // miss its SIGINT exit, and a stopped run keeps what it printed.
+        let mut sent = Instant::now();
+        let mut unsent = false;
+        stop_group(i32::try_from(child.id()).unwrap_or(0), grace, &mut |wait| {
+            job.block = job.cx.block();
+            let read_out = job.block.as_ref().is_none_or(|b| !svc::backlogged(b.spec));
+            let mut got = false;
+            let stepped = reader.step(&[], Some(wait), read_out, &mut |s, b| {
+                got = true;
+                job.read(s, b);
+            });
+            if stepped.is_err() && !got {
+                std::thread::sleep(wait);
+            }
+            unsent |= got;
+            if unsent && sent.elapsed() >= LISTEN_FLUSH {
+                job.cx.ping();
+                sent = Instant::now();
+                unsent = false;
+            }
+        });
     }
     // What it wrote before it ended, up to its pipes' end or the grace:
     // a process it left in the background may hold them for good (the
@@ -939,9 +965,16 @@ pub(super) fn capture(
             exit: -1,
         }
     };
-    // (lockmon) `rec.stop()`: SIGINT first; the call's error says so.
-    let stopped = |child: &mut std::process::Child| {
-        stop_group(group, grace);
+    // (lockmon) `rec.stop()`: SIGINT first, its output read on meanwhile
+    // and dropped (a stopped call has no value), so one that prints as it
+    // stops is not held on a full pipe and ended a step later; the call's
+    // error says so.
+    let stopped = |child: &mut std::process::Child, reader: &mut Reader| {
+        stop_group(group, grace, &mut |wait| {
+            if reader.step(&[], Some(wait), true, &mut |_, _| {}).is_err() {
+                std::thread::sleep(wait);
+            }
+        });
         let exit = child.wait().map_or(-1, exit_code);
         Captured {
             out: Err(format!("`{prog}` was stopped")),
@@ -956,7 +989,9 @@ pub(super) fn capture(
                 format!("`{prog}` printed more than {MAX_DOCUMENT} bytes; ended"),
             );
         }
-        Reading::Halted if halt.why() == STOPPED => return stopped(&mut child),
+        Reading::Halted if halt.why() == STOPPED => {
+            return stopped(&mut child, &mut reader);
+        }
         Reading::Halted => {
             return ended(&mut child, format!("`{prog}` was no longer needed"));
         }
@@ -972,7 +1007,9 @@ pub(super) fn capture(
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => break s,
-            Ok(None) if halt.why() == STOPPED => return stopped(&mut child),
+            Ok(None) if halt.why() == STOPPED => {
+                return stopped(&mut child, &mut reader);
+            }
             Ok(None) if halt.why() != GO => {
                 return ended(&mut child, format!("`{prog}` was no longer needed"));
             }
@@ -1108,8 +1145,11 @@ fn end_group(child: &mut std::process::Child, pgid: i32) {
 /// then SIGTERM once `grace` has passed and the leader has not ended,
 /// then SIGKILL after another `grace`. A leader that ends at a step ends
 /// the escalation; the group's other members had each signal sent so
-/// far, as a terminal's Ctrl-C would send it.
-fn stop_group(pgid: i32, grace: Duration) {
+/// far, as a terminal's Ctrl-C would send it. Between looks at the
+/// leader it calls `wait` with at most [`TICK`] to spend, which reads the
+/// command's pipes: one that prints while it stops would otherwise block
+/// on a full pipe and never finish its SIGINT cleanup.
+fn stop_group(pgid: i32, grace: Duration, wait: &mut dyn FnMut(Duration)) {
     if pgid <= 1 {
         return;
     }
@@ -1118,8 +1158,12 @@ fn stop_group(pgid: i32, grace: Duration) {
         // we have not reaped; no memory is involved.
         unsafe { libc::kill(-pgid, sig) };
         let until = Instant::now() + grace;
-        while Instant::now() < until && !exited(pgid) {
-            std::thread::sleep(TICK);
+        while !exited(pgid) {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            wait(left.min(TICK));
         }
         if exited(pgid) {
             return;
@@ -2568,6 +2612,52 @@ mod tests {
         assert_eq!(ended[0].exit, 130);
         assert!(ended[0].stopped && ended[0].failed.is_none());
         assert_eq!(shown.texts(), [("working".into(), false, false)]);
+    }
+
+    /// (proc-run) A run is read on while it stops: a program printing
+    /// without pause when asked fills no pipe, so its SIGINT cleanup runs
+    /// (and prints) and it ends with its own status, not SIGTERM's.
+    #[test]
+    fn a_chatty_run_is_read_while_it_stops() {
+        let (mut loop_, mut execs) = looped(Duration::from_millis(1500));
+        let script = "import sys\n\
+            try:\n    while True:\n        print('spam ' * 20)\n\
+            except KeyboardInterrupt:\n    print('cleanup done')\n    sys.exit(130)\n";
+        execs.start(job(
+            "chat",
+            vec!["python3".into(), "-c".into(), script.into()],
+        ));
+        let mut shown = Shown::default();
+        let start = Instant::now();
+        while shown.lines.len() < 50 {
+            assert!(start.elapsed() < Duration::from_secs(20));
+            loop_
+                .dispatch(Some(Duration::from_millis(10)), &mut ())
+                .unwrap();
+            let _ = execs.runs();
+            for (_, t) in execs.lines() {
+                shown.apply(&t);
+            }
+        }
+        // Let it fill the pipe if nothing reads it.
+        std::thread::sleep(Duration::from_millis(100));
+        let asked = Instant::now();
+        execs.start(ExecRequest {
+            action: "chat".into(),
+            argv: Vec::new(),
+            reply: None,
+            stop: true,
+        });
+        let ended = follow_runs(&mut loop_, &mut execs, &mut shown, 1);
+        assert_eq!(ended[0].exit, 130, "took {:?}", asked.elapsed());
+        assert!(ended[0].stopped && ended[0].failed.is_none());
+        assert!(asked.elapsed() < Duration::from_millis(1500));
+        // (It may follow a line SIGINT cut short.)
+        let last = shown.lines.last().map(|l| l.text.clone());
+        assert!(
+            last.as_deref().is_some_and(|l| l.ends_with("cleanup done")),
+            "{last:?}"
+        );
     }
 
     /// (proc-run) An action's block reads its stdout lines into its

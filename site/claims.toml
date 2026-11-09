@@ -4030,7 +4030,7 @@ proof  = "crates/strand-compiler/tests/negative/dict_in_service_field.strand (a 
 [[claim]]
 page   = "site/how-to/data-from-the-web.md"
 text   = "A poll whose command fails keeps its last values, and `strand watch` names the service it failed for."
-source = ['crates/strand-services/src/custom.rs "A failed poll keeps the last values."', 'crates/strand-services/src/custom.rs "if !cx.failing(why.clone())"']
+source = ['crates/strand-services/src/custom.rs "A failed poll keeps the last values."', 'crates/strand-services/src/custom.rs "if !cx.failing(why)"']
 proof  = "crates/strand-services/tests/custom.rs::a_failing_poll_is_reported_under_its_name_and_is_not_ready; crates/strand/src/run/tests.rs::open_service_diagnostics_reach_watchers_that_come_later"
 
 [[claim]]
@@ -4475,7 +4475,7 @@ proof  = "crates/strand-services/src/proc.rs::a_bare_carriage_return_redraws_the
 [[claim]]
 page   = "site/how-to/download-progress.md"
 text   = "`fetch.code` is 130, and `fetch.error` stays null, since a stop is no failure."
-source = ['''docs/spec.md "130 after a `stop()`'s SIGINT"''', 'docs/spec.md "A stopped run keeps what it printed; `code` says how it ended and `error` stays null"']
+source = ['''docs/spec.md "130 when a `stop()`'s SIGINT ends it"''', 'docs/spec.md "A stopped run keeps what it printed; `code` says how it ended and `error` stays null"']
 proof  = "crates/strand/src/run/exec.rs::a_stopped_run_keeps_its_lines_and_code_130"
 
 [[claim]]

@@ -28,12 +28,6 @@ action backup(dirs: [path]) ["restic", "-r", "/mnt/usb/restic", "backup", "--jso
 ```
 
 ```strand file=bar.strand
-// restic writes each file it could not read to stderr, as a JSON line
-// of its own (`{"message_type":"error",…}`). The block and
-// `on backup.line` read stdout alone, so these are found in
-// `backup.lines`, tagged `stderr`.
-let unreadable = backup.lines.filter(l => l.stderr && l.text.contains("\"message_type\":\"error\"")).len
-
 bar Top {
   edge: top; height: 32
   bg: $surface; font: $font.ui; color: $fg
@@ -48,7 +42,7 @@ bar Top {
     }
     end { gap: $space.2
       if backup.running { meter backup.percent_done ?? 0 { width: 120 } }
-      text backup.error ?? (backup.code == 3 ? "Saved; {unreadable} files unreadable" : backup.snapshot ?? "") {
+      text backup.error ?? (backup.code == 3 ? "Saved; some files unreadable" : backup.snapshot ?? "") {
         color: $fg.muted
       }
       Log
@@ -87,7 +81,8 @@ is its run:
   Strand read them. Each `Line` has its number `n`, its `text`,
   `stderr` (which of the two streams it came on) and `open`.
 - **`sync.code`** is the status it ended with, as a shell's `$?` says
-  it: 130 after a `stop()`.
+  it: 130 when a `stop()`'s SIGINT ends it. A program that catches
+  SIGINT ends with a status of its own: `rsync` exits 20 when stopped.
 - **`sync.error`** says why it failed: the headline, then the end of
   what it printed on stderr, such as
   ``"`rsync` failed (exit status: 23): rsync: [sender] … Permission
@@ -131,9 +126,15 @@ them. The fields are emptied when a run starts.
 
 `on backup.line(l)` hears every line restic prints on stdout, `l`
 holding that line's fields alone, while some handler is there to hear
-it. Lines on stderr (restic's errors among them) are no event; they
-are in `backup.lines`, tagged `stderr`, and in `backup.error` when the
-run fails. Hearing lines never starts the command: only a call does.
+it. Lines on stderr are no event. restic writes each file it could not
+read there, as a JSON line of its own (`{"message_type":"error",…}`):
+they are in `backup.lines`, tagged `stderr`, while they are among its
+last 1000 lines, and in `backup.error` when the run fails. `lines` is
+not a count of them: restic prints up to 60 status lines a second with
+`--json`, so in a backup of more than a few seconds the errors printed
+early have left `lines` by its end. That is why the bar says "some
+files unreadable" for status 3 and no number. Hearing lines never
+starts the command: only a call does.
 
 A block on an action with `-> T` is an error: that action reads its
 whole output as its `T`. Its fields cannot be named `running`,

@@ -68,6 +68,15 @@ fn renamed(member: &str) -> &'static str {
 /// runtime also names a failing program by.
 pub(crate) use strand_core::command::program_at;
 
+/// (proc-permit) `check::no_permit`'s help for a command whose items are
+/// `words` and whose program checked is `program`: what stopped the
+/// seeing through when that is `stdbuf` or `env` (never a permit of the
+/// wrapper, which would allow any program after it), else the permit.
+pub(super) fn permit_help(words: &[Option<&str>], program: &str) -> String {
+    strand_core::command::not_seen_through(words)
+        .unwrap_or_else(|| format!("add `permit exec \"{program}\"` at the top level"))
+}
+
 /// Whether `program` (a name or a path) is a shell that runs its `-c`
 /// argument as a script.
 fn is_shell(program: &str) -> bool {
@@ -539,7 +548,7 @@ impl<'a> Checker<'a> {
                     span,
                     "not permitted",
                 )
-                .help = Some(format!("add `permit exec \"{program}\"` at the top level"));
+                .help = Some(permit_help(&words, &program));
                 // Never run, as any other refused command.
                 ok = false;
             }

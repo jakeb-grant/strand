@@ -275,6 +275,7 @@ pub fn logic(
         r.services.wait_ready(&rt, BOOT_SERVICES_HOLD);
         keep_system(&rt, r, &mut last, &saved);
     }
+    let execs = super::exec::Execs::new(exec_ping);
     let mut shell = Shell {
         inst,
         host,
@@ -303,8 +304,8 @@ pub fn logic(
         gpu: strand_scene::GpuStatus::default(),
         secrets: Default::default(),
         exports: Vec::new(),
-        files: super::outputs::Files::new(files_ping, manifest, own_writes),
-        execs: super::exec::Execs::new(exec_ping),
+        files: super::outputs::Files::new(files_ping, manifest, own_writes, execs.keeper()),
+        execs,
         to_main: live.to_main,
         reports: Vec::new(),
         next_snapshot: 0,

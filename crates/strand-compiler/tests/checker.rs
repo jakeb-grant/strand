@@ -4772,4 +4772,40 @@ fn the_see_through_permits_only_name_value_and_buffer_options() {
         out.diagnostics[0].message,
         "running `env` needs `permit exec`"
     );
+    // Its help names what stopped the seeing through, for an action, a
+    // polled and a listen command and `run:` alike, and never suggests
+    // permitting the wrapper, which would allow any program after it.
+    let help = |src: &str| {
+        let (out, _) = compile_files(&[("a.strand", format!("permit exec \"pacman\"\n{src}\n"))]);
+        out.diagnostics
+            .iter()
+            .find(|d| d.code == "check::no_permit")
+            .and_then(|d| d.help.clone())
+            .unwrap_or_default()
+    };
+    for src in [
+        r#"action a() ["env", "PATH=/x", "pacman"]"#,
+        r#"service s from poll ["env", "PATH=/x", "pacman"] every 5s { v: text }"#,
+        r#"service s from listen "env PATH=/x pacman" { v: text }"#,
+        r#"file "~/.cache/x" { text: "x"; run: ["env", "PATH=/x", "pacman"] }"#,
+    ] {
+        let h = help(src);
+        assert!(
+            h.starts_with("`env` is seen through only when it sets LANG, ")
+                && h.contains("; `PATH=/x` stops it. Without that, the program after `env`")
+                && !h.contains("add `permit exec"),
+            "{src}: {h}"
+        );
+    }
+    let h = help(r#"action a() ["stdbuf", "-oL", "--help", "pacman"]"#);
+    assert!(
+        h.contains("`stdbuf` is seen through only with `-i`, `-o` and `-e` options")
+            && h.contains("`--help` stops it"),
+        "{h}"
+    );
+    // A program of its own keeps the plain help.
+    assert_eq!(
+        help(r#"action a() ["/tmp/env", "pacman"]"#),
+        "add `permit exec \"/tmp/env\"` at the top level"
+    );
 }

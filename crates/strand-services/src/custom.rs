@@ -2501,9 +2501,31 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
 /// command printing more is ended at once, its output ignored); its
 /// stderr is read beside it, kept for the reason; (proc-ok) a status
 /// `ok` lists is no failure; the command's group ends with it.
-async fn poll_command(argv: &[String], ok: &[i32]) -> Result<Got, String> {
+/// (build-ready, proc-reason) Why a poll got no document: `headline`,
+/// the kind of failure (`` `cmd` failed (exit status: 1) ``, a timeout),
+/// and `why`, the headline with the reason from what the command
+/// printed. A failing poll is reported again only when its headline
+/// changes: a reason that differs each run (curl's "timed out after N
+/// milliseconds", a timestamp) is the same failure.
+#[derive(Debug)]
+struct PollFailed {
+    headline: String,
+    why: String,
+}
+
+impl From<String> for PollFailed {
+    fn from(headline: String) -> PollFailed {
+        PollFailed {
+            why: headline.clone(),
+            headline,
+        }
+    }
+}
+
+async fn poll_command(argv: &[String], ok: &[i32]) -> Result<Got, PollFailed> {
     use tokio::io::AsyncReadExt;
-    let (mut proc, mut stdout, mut stderr) = Proc::spawn(argv).map_err(|e| e.0)?;
+    let (mut proc, mut stdout, mut stderr) =
+        Proc::spawn(argv).map_err(|e| PollFailed::from(e.0))?;
     // (proc-reason) Named past `stdbuf`/`env`, as `permit exec` checks it.
     let cmd = strand_core::command::program(argv);
     let mut tail = Tail::new();
@@ -2525,10 +2547,11 @@ async fn poll_command(argv: &[String], ok: &[i32]) -> Result<Got, String> {
                         if out.len() > MAX_DOCUMENT {
                             return Err(format!(
                                 "`{cmd}` printed more than {MAX_DOCUMENT} bytes; ignored and ended"
-                            ));
+                            )
+                            .into());
                         }
                     }
-                    Err(e) => return Err(format!("reading `{cmd}`: {e}")),
+                    Err(e) => return Err(format!("reading `{cmd}`: {e}").into()),
                 },
                 r = stderr.read(&mut ebuf), if err_open => match r {
                     Ok(n) if n > 0 => err.push(&ebuf[..n], &mut tail),
@@ -2560,7 +2583,11 @@ async fn poll_command(argv: &[String], ok: &[i32]) -> Result<Got, String> {
             for l in String::from_utf8_lossy(&framed).lines() {
                 tail.push(Stream::Out, l);
             }
-            return Err(tail.explain(&format!("`{cmd}` failed ({status})")));
+            let headline = format!("`{cmd}` failed ({status})");
+            return Err(PollFailed {
+                why: tail.explain(&headline),
+                headline,
+            });
         }
         if !status.success()
             && let Some(why) = tail.reason()
@@ -2571,7 +2598,9 @@ async fn poll_command(argv: &[String], ok: &[i32]) -> Result<Got, String> {
     };
     match tokio::time::timeout(POLL_TIMEOUT, run).await {
         Ok(d) => d,
-        Err(_) => Err(format!("`{cmd}` took more than {POLL_TIMEOUT:?}; killed")),
+        Err(_) => Err(PollFailed::from(format!(
+            "`{cmd}` took more than {POLL_TIMEOUT:?}; killed"
+        ))),
     }
 }
 
@@ -2595,7 +2624,9 @@ async fn run_poll(
     let mut not_xml = false;
     let mut over = None;
     // (build-ready) The failure last reported, until a poll answers: a
-    // command failing the same way every poll is reported once.
+    // command failing the same way every poll is reported once. (proc-
+    // reason) The same way is the same headline: what it printed may
+    // differ each run (a timeout's milliseconds, a timestamp).
     let mut failing: Option<String> = None;
     // Whether the first frame's hold was ended by a failed first poll.
     let mut hold_ended = false;
@@ -2666,12 +2697,12 @@ async fn run_poll(
             // a warning under the service's name (the log, `strand
             // watch`), once until a poll answers; a service whose polls
             // have never answered is not `ready` (spec.md 5.6).
-            Err(why) => {
-                if failing.as_deref() != Some(why.as_str()) {
-                    if !cx.failing(why.clone()) {
+            Err(PollFailed { headline, why }) => {
+                if failing.as_deref() != Some(headline.as_str()) {
+                    if !cx.failing(why) {
                         return Ok(());
                     }
-                    failing = Some(why);
+                    failing = Some(headline);
                 }
                 if first && !hold_ended {
                     // The first frame need not wait for it.
@@ -3344,7 +3375,9 @@ mod tests {
     #[test]
     fn an_oversized_poll_ends_at_once() {
         let started = std::time::Instant::now();
-        let why = block_on(poll_command(&["yes".to_string()], &[0])).unwrap_err();
+        let why = block_on(poll_command(&["yes".to_string()], &[0]))
+            .unwrap_err()
+            .why;
         assert!(why.starts_with("`yes` printed more than"), "{why}");
         assert!(
             started.elapsed() < Duration::from_secs(5),

@@ -1493,7 +1493,25 @@ pub(super) fn permit_programs(args: &[ast::Expr]) -> Option<Vec<String>> {
 /// leading `stdbuf` or `env` runs, the last the one checked; any of them
 /// a permit names allows it.
 pub(super) fn first_program(e: &ast::Expr) -> Option<Vec<String>> {
-    let words: Vec<Option<String>> = match &e.kind {
+    let words = command_words(e)?;
+    words.first()?.as_ref()?;
+    let refs: Vec<Option<&str>> = words.iter().map(|w| w.as_deref()).collect();
+    let at = super::actions::program_at(&refs);
+    Some(words.into_iter().take(at + 1).flatten().collect())
+}
+
+/// (proc-permit) `check::no_permit`'s help for the command `e` whose
+/// program checked is `program` ([`super::actions::permit_help`]).
+pub(super) fn permit_help(e: &ast::Expr, program: &str) -> String {
+    let words = command_words(e).unwrap_or_default();
+    let refs: Vec<Option<&str>> = words.iter().map(|w| w.as_deref()).collect();
+    super::actions::permit_help(&refs, program)
+}
+
+/// A command's items as `permit exec` reads them: a command line's
+/// words, a list's items (`None` for one not written out).
+fn command_words(e: &ast::Expr) -> Option<Vec<Option<String>>> {
+    Some(match &e.kind {
         ast::ExprKind::String(s) => super::tree::split_words(&s.value)
             .into_iter()
             .map(Some)
@@ -1508,9 +1526,5 @@ pub(super) fn first_program(e: &ast::Expr) -> Option<Vec<String>> {
             })
             .collect(),
         _ => return None,
-    };
-    words.first()?.as_ref()?;
-    let refs: Vec<Option<&str>> = words.iter().map(|w| w.as_deref()).collect();
-    let at = super::actions::program_at(&refs);
-    Some(words.into_iter().take(at + 1).flatten().collect())
+    })
 }

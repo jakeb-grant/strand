@@ -50,6 +50,8 @@ const RELEASE: u8 = 2;
 #[derive(Default)]
 pub struct Keeper {
     inner: Mutex<Option<Running>>,
+    /// The next run's id ([`Keeper::next_run`]).
+    ids: std::sync::atomic::AtomicU64,
 }
 
 struct Running {
@@ -71,6 +73,12 @@ fn message(tag: u8, run: u64) -> [u8; 9] {
 }
 
 impl Keeper {
+    /// An id for a run's pipes, unique among the runs that share this
+    /// keeper (a job's, a `file`'s `run:`).
+    pub fn next_run(&self) -> u64 {
+        self.ids.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Hands run `run`'s pipe read ends `fds` to the keeper (duplicates:
     /// strand keeps its own), starting it first if it does not run.
     /// Failing is logged: the job runs on without it.

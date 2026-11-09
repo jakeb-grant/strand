@@ -1308,6 +1308,73 @@ fn a_failing_poll_says_why() {
     }
 }
 
+/// (proc-reason) A poll failing the same way is reported once, though
+/// what it prints differs each run (curl's "timed out after N
+/// milliseconds"): the same way is the same headline. The first report
+/// carries the reason; a failure with another headline is news again.
+#[test]
+fn a_poll_failing_with_a_changing_reason_is_reported_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let runs = tmp.path().join("runs");
+    let code = tmp.path().join("code");
+    let script = format!(
+        "echo x >> '{}'; echo \"curl: (28) Connection timed out after $(date +%N) milliseconds\" >&2; \
+         exit $(cat '{}' 2>/dev/null || echo 28)",
+        runs.display(),
+        code.display()
+    );
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let (_client, id) = started(
+        &rt,
+        &services,
+        "web",
+        Source::Poll {
+            target: custom::PollTarget::Command(sh(&script)),
+            every: Duration::from_millis(100),
+            ok: vec![0],
+        },
+        vec![field("level", Default::default())],
+    );
+    let count = || std::fs::read_to_string(&runs).map_or(0, |r| r.lines().count());
+    let mut seen = Vec::new();
+    until(&rt, &services, "four polls", || {
+        seen.extend(services.take_diagnostics());
+        count() >= 4
+    });
+    services.pump(&rt);
+    rt.flush();
+    seen.extend(services.take_diagnostics());
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert!(
+        seen[0]
+            .message
+            .starts_with("`sh` failed (exit status: 28): curl: (28) Connection timed out after "),
+        "{}",
+        seen[0].message
+    );
+    std::fs::write(&code, "7").unwrap();
+    let mut seen = Vec::new();
+    // (The one before is resolved as it is replaced.)
+    until(&rt, &services, "another failure reported", || {
+        seen.extend(
+            services
+                .take_diagnostics()
+                .into_iter()
+                .filter(|d| !d.resolved),
+        );
+        !seen.is_empty()
+    });
+    assert!(
+        seen[0]
+            .message
+            .starts_with("`sh` failed (exit status: 7): curl: (28)"),
+        "{seen:?}"
+    );
+    services.shutdown();
+    custom::forget(id);
+}
+
 /// (proc-ok) A status `ok` lists is no failure: the poll's fields update
 /// and nothing is reported; a status it does not list fails as before.
 #[test]

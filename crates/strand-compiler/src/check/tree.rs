@@ -3235,7 +3235,11 @@ impl<'a> Checker<'a> {
                             s.source.span,
                             "not permitted",
                         )
-                        .help = Some(format!("add `permit exec \"{prog}\"` at the top level"));
+                        .help = s
+                            .source
+                            .args
+                            .first()
+                            .map(|e| super::collect::permit_help(e, prog));
                     }
                 }
             }

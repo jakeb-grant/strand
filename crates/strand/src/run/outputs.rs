@@ -33,6 +33,7 @@ use strand_compiler::diagnostic::{Style, render, render_short};
 use strand_compiler::instantiate::{OutputChange, OutputContent};
 use strand_compiler::source::SourceMap;
 
+use super::keeper::Keeper;
 use super::logic::OwnWrites;
 use super::shell::Shell;
 use crate::overlay;
@@ -176,6 +177,8 @@ pub(super) struct Files {
     /// (build-ready) The outputs waiting for services, since when, and
     /// whether the slow-wait notice was given ([`SLOW_WAIT`]).
     slow: Vec<Slow>,
+    /// (proc-keeper) Holds `run:`'s pipes past strand's reading of them.
+    keeper: Arc<Keeper>,
 }
 
 /// (build-ready) One output's wait for its services.
@@ -202,6 +205,7 @@ impl Files {
         ping: calloop::ping::Ping,
         manifest: Option<PathBuf>,
         own_writes: Option<OwnWrites>,
+        keeper: Arc<Keeper>,
     ) -> Files {
         Files {
             ping,
@@ -212,6 +216,7 @@ impl Files {
             notices: Vec::new(),
             waiting: Vec::new(),
             slow: Vec::new(),
+            keeper,
         }
     }
 
@@ -349,6 +354,7 @@ impl Files {
                 let shared = Arc::new(Shared::default());
                 let mut w = Writer::new(self.manifest.clone(), shared.clone(), self.ping.clone());
                 w.own_writes = self.own_writes.take();
+                w.keeper = self.keeper.clone();
                 let spawned = std::thread::Builder::new()
                     .name("strand-files".into())
                     .spawn(move || w.run());
@@ -593,6 +599,8 @@ struct Writer {
     timeout: Duration,
     /// Registers a write with the config watcher before it lands.
     own_writes: Option<OwnWrites>,
+    /// (proc-keeper) Holds `run:`'s pipes ([`run_once`]).
+    keeper: Arc<Keeper>,
 }
 
 impl Writer {
@@ -616,6 +624,7 @@ impl Writer {
             paced: Vec::new(),
             timeout: RUN_TIMEOUT,
             own_writes: None,
+            keeper: Arc::default(),
         }
     }
 
@@ -995,11 +1004,12 @@ impl Writer {
             let argv = r.argv.clone();
             let back = self.shared.clone();
             let timeout = self.timeout;
+            let keeper = self.keeper.clone();
             let ran = path.clone();
             let spawned = std::thread::Builder::new()
                 .name("strand-files-run".into())
                 .spawn(move || {
-                    let failed = run_once(&argv, timeout);
+                    let failed = run_once(&argv, timeout, &keeper);
                     back.push(Job::Ran { path: ran, failed });
                 });
             if let Err(e) = spawned {
@@ -1060,8 +1070,11 @@ fn real(path: &Path) -> Result<PathBuf, String> {
 /// that address this shell (`child::child_env`), and it gets back the
 /// transparent huge page setting strand inherited
 /// (`child::restore_in_child`): a daemon a `run:` restarts would
-/// otherwise run with THP off for life.
-fn run_once(argv: &[String], timeout: Duration) -> Option<String> {
+/// otherwise run with THP off for life. (proc-keeper) Its pipes are
+/// handed to `keeper` while it runs and released after, so a process it
+/// leaves holding them (`mako &`) has them read on, never dying of
+/// SIGPIPE at its first line once strand stops reading them.
+fn run_once(argv: &[String], timeout: Duration, keeper: &Keeper) -> Option<String> {
     use strand_services::proc::{self, Framer, Reader, Stream, Tail};
     let (prog, args) = argv.split_first()?;
     let mut cmd = Command::new(prog);
@@ -1091,6 +1104,8 @@ fn run_once(argv: &[String], timeout: Duration) -> Option<String> {
         child.stdout.take().map(std::os::fd::OwnedFd::from),
         child.stderr.take().map(std::os::fd::OwnedFd::from),
     );
+    let run = keeper.next_run();
+    keeper.hold(run, &reader.fds());
     let mut tail = Tail::new();
     let mut framers = [Framer::new(), Framer::new()];
     let mut read = |s: Stream, bytes: Option<&[u8]>| {
@@ -1127,6 +1142,7 @@ fn run_once(argv: &[String], timeout: Duration) -> Option<String> {
         let s = if i == 1 { Stream::Err } else { Stream::Out };
         f.finish(&mut |l| tail.push(s, &l.text()));
     }
+    keeper.release(run);
     drop(reader);
     let Some(status) = status else {
         return Some(tail.explain(&format!(
@@ -1222,6 +1238,39 @@ fn parse_manifest(text: &str) -> BTreeMap<PathBuf, u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`super::run_once`] with one keeper for the test.
+    fn run_once(argv: &[String], timeout: Duration) -> Option<String> {
+        static KEEPER: std::sync::LazyLock<Keeper> = std::sync::LazyLock::new(Keeper::default);
+        super::run_once(argv, timeout, &KEEPER)
+    }
+
+    /// (proc-keeper) A daemon a `run:` starts in the background
+    /// (`pkill mako; mako &`) inherits its pipes: once the run has ended
+    /// and strand stopped reading them, the keeper reads on, so its
+    /// first lines on stdout and stderr do not kill it with SIGPIPE.
+    #[test]
+    fn a_daemon_a_run_starts_outlives_its_reading() {
+        let dir = temp("daemon");
+        let marker = dir.join("lived");
+        let sh = |c: &str| vec!["sh".to_string(), "-c".into(), c.into()];
+        let started = Instant::now();
+        let daemon = format!(
+            "(sleep 2; echo 'daemon: started'; echo 'daemon: note' >&2; touch {}) &",
+            marker.display()
+        );
+        assert_eq!(run_once(&sh(&daemon), RUN_TIMEOUT), None);
+        // Ended (and strand stopped reading) before the daemon printed.
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !marker.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "the daemon died at its first line"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 
     /// A test's ends of the queue: send as logic does, receive the
     /// outcomes in order.
@@ -1810,7 +1859,7 @@ mod tests {
         let mine = dir.join("mine.css");
         std::fs::write(&mine, "the user's").unwrap();
         let (ping, _source) = calloop::ping::make_ping().unwrap();
-        let mut files = Files::new(ping, Some(dir.join("state/files")), None);
+        let mut files = Files::new(ping, Some(dir.join("state/files")), None, Arc::default());
         assert!(files.send(Job::Write {
             path: mine.clone(),
             bytes: b"strand's".to_vec(),
@@ -2167,7 +2216,7 @@ mod tests {
     #[test]
     fn a_write_landing_while_waiting_keeps_the_notice() {
         let (ping, _source) = calloop::ping::make_ping().unwrap();
-        let mut files = Files::new(ping, None, None);
+        let mut files = Files::new(ping, None, None, Arc::default());
         let (a, b) = (Path::new("/x/a.lua"), Path::new("/x/b.json"));
         files.set_waiting(a, Some("waits for `outputs`".into()));
         files.set_waiting(b, None);
@@ -2185,7 +2234,7 @@ mod tests {
     #[test]
     fn a_long_wait_on_a_service_that_is_up_is_a_notice() {
         let (ping, _source) = calloop::ping::make_ping().unwrap();
-        let mut files = Files::new(ping, None, None);
+        let mut files = Files::new(ping, None, None, Arc::default());
         let t0 = Instant::now();
         let (a, b, c) = (Path::new("/x/a"), Path::new("/x/b"), Path::new("/x/c"));
         files.set_slow(a, Some(vec!["news".into(), "rate".into()]), t0);
@@ -2221,7 +2270,7 @@ mod tests {
     #[test]
     fn a_wait_whose_file_is_gone_is_let_go() {
         let (ping, _source) = calloop::ping::make_ping().unwrap();
-        let mut files = Files::new(ping, None, None);
+        let mut files = Files::new(ping, None, None, Arc::default());
         let t0 = Instant::now();
         let (a, b) = (Path::new("/x/news.conf"), Path::new("/x/kept.conf"));
         files.set_slow(a, Some(vec!["news".into()]), t0);
@@ -2256,7 +2305,7 @@ mod tests {
         let _ = inst.flush();
         let _ = inst.take_outputs();
         let (ping, _source) = calloop::ping::make_ping().unwrap();
-        let mut files = Files::new(ping, None, None);
+        let mut files = Files::new(ping, None, None, Arc::default());
         let t0 = Instant::now();
         let (gone, kept) = (Path::new("/x/gone.conf"), Path::new("/x/kept.conf"));
         files.set_slow(gone, Some(vec!["news".into()]), t0);
