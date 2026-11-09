@@ -173,8 +173,28 @@ pub(super) fn measure_leaf(
         let v: Option<f32> = d.maybe_resolve(inputs.parent_size.width, |_: *const (), _| 0.0);
         v.filter(|v| v.is_finite())
     };
-    let max_w = || width_of(style.max_size.width);
-    let min_w = || width_of(style.min_size.width);
+    // (text-pad) A text's lines fill its content box: taffy hands the
+    // measure its border box when that is known (`known` in a sizing
+    // pass) and its `min_width`/`max_width` are border-box too, while
+    // the space it offers is the content box already. The height is
+    // measured at the width drawing wraps at (`flatten::text`: the box
+    // inside its `pad`), so those three lose the insets first.
+    let inset = {
+        use taffy::util::ResolveOrZero;
+        let p = style
+            .padding
+            .resolve_or_zero(inputs.parent_size.width, |_: *const (), _| 0.0);
+        let b = style
+            .border
+            .resolve_or_zero(inputs.parent_size.width, |_: *const (), _| 0.0);
+        taffy::Size {
+            width: p.left + p.right + b.left + b.right,
+            height: p.top + p.bottom + b.top + b.bottom,
+        }
+    };
+    let content = |v: Option<f32>, i: f32| v.map(|v| (v - i).max(0.0));
+    let max_w = || content(width_of(style.max_size.width), inset.width);
+    let min_w = || content(width_of(style.min_size.width), inset.width);
     compute_leaf_layout(
         inputs,
         style,
@@ -210,6 +230,10 @@ pub(super) fn measure_leaf(
                     min_w: min_w(),
                     max_w: max_w(),
                     hold: *hold,
+                };
+                let known = taffy::Size {
+                    width: content(known.width, inset.width),
+                    height: content(known.height, inset.height),
                 };
                 measure_text(texts, &leaf, known, avail)
             }

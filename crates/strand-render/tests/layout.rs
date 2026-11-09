@@ -190,6 +190,89 @@ fn col_stretches_and_inherits() {
     assert_matches_ref("layout_col", &buf, TOLERANCE);
 }
 
+/// (text-pad) A wrapping `text` with its own `pad` is as tall as the
+/// lines it draws inside that pad, the same as the text wrapped in a
+/// `col` with the pad: its height is measured at its content width, not
+/// its border box's. With `max_lines` and `ellipsis` too.
+#[test]
+fn a_padded_text_is_as_tall_as_its_drawn_lines() {
+    const WHY: &str = "cannot fetch the mirror list from the server, so retry in a minute";
+    const LONG: &str = "the repo is locked by another process on this host, try again later";
+    let pad = || (Prop::Pad, list(&[8.0, 20.0]));
+    let bg = || (Prop::Bg, color("#313244"));
+    let mut cases = Vec::new();
+    let (d, root) = panel(520, 200, |b, root| {
+        let row = b.node(
+            NodeKind::Row,
+            Some(root),
+            vec![
+                (Prop::Gap, num(10.0)),
+                (Prop::Align, kw("start")),
+                (Prop::Color, color("#f9e2af")),
+            ],
+        );
+        for (words, lines) in [(WHY, 6.0), (LONG, 2.0)] {
+            let wrap = |b: &mut Builder, own: bool| {
+                let col = b.node(NodeKind::Col, Some(row), vec![(Prop::Width, num(120.0))]);
+                let mut props = vec![
+                    (Prop::Text, text(words)),
+                    (Prop::MaxLines, num(lines)),
+                    (Prop::Ellipsis, kw("end")),
+                ];
+                let boxed = if own {
+                    props.extend([pad(), bg()]);
+                    b.node(NodeKind::Text, Some(col), props)
+                } else {
+                    let w = b.node(NodeKind::Col, Some(col), vec![pad(), bg()]);
+                    b.node(NodeKind::Text, Some(w), props);
+                    w
+                };
+                let below = swatch(b, col, "#89b4fa", vec![(Prop::Height, num(6.0))]);
+                (boxed, below)
+            };
+            let own = wrap(b, true);
+            let wrapped = wrap(b, false);
+            cases.push((own, wrapped));
+        }
+    });
+    let (r, buf) = show(d, root, 520, 200, Scale::ONE);
+    // Text-coloured ink between rows `y0..y1` of `r`.
+    let ink = |r: LogicalRect, y0: f32, y1: f32| {
+        (r.x as u32..(r.x + r.w) as u32)
+            .flat_map(|x| (y0.max(0.0) as u32..y1 as u32).map(move |y| (x, y)))
+            .filter(|&(x, y)| {
+                let p = buf.px(x, y);
+                p[2] > 200 && p[1] > 180 && p[0] < 190
+            })
+            .count()
+    };
+    for (i, ((own, own_below), (wrapped, wrapped_below))) in cases.into_iter().enumerate() {
+        let (a, b) = (rect(&r, own), rect(&r, wrapped));
+        assert!(
+            (a.h - b.h).abs() < 0.51,
+            "case {i}: a padded text {a:?} is as tall as the padded col {b:?}"
+        );
+        assert!(
+            (rect(&r, own_below).y - rect(&r, wrapped_below).y).abs() < 0.51,
+            "case {i}: what follows starts at the same place"
+        );
+        assert!(a.h - 16.0 > 1.5 * 13.0, "case {i}: wraps: {a:?}");
+        // Its last line is drawn in the room left for it, and nothing
+        // spills into its bottom pad.
+        let bottom = a.y + a.h - 8.0;
+        assert!(
+            ink(a, bottom - 10.0, bottom) > 0,
+            "case {i}: room for a line not drawn"
+        );
+        assert_eq!(
+            ink(a, bottom + 1.0, a.y + a.h),
+            0,
+            "case {i}: a line spills past the box"
+        );
+    }
+    assert_matches_ref("layout_text_pad", &buf, TOLERANCE);
+}
+
 /// `stack` and `box` put every child in one cell, stretched where its size
 /// is auto; `place: absolute` takes a child out of the flow at `x`, `y`.
 #[test]
