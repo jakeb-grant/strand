@@ -1023,6 +1023,7 @@ fn file_and_poll_declarations_are_ready_after_their_first_read() {
                     r#"sleep 0.2; echo '{"level": 1}'"#.into(),
                 ]),
                 every: Duration::from_secs(60),
+                ok: vec![0],
             },
         ),
     ] {
@@ -1081,6 +1082,7 @@ fn a_failing_poll_is_reported_under_its_name_and_is_not_ready() {
         source: Source::Poll {
             target: custom::PollTarget::Command(vec!["sh".into(), "-c".into(), script]),
             every: Duration::from_millis(100),
+            ok: vec![0],
         },
         fields: vec![FieldSpec {
             name: "level".into(),
@@ -1174,6 +1176,7 @@ fn a_failed_first_poll_hidden_meanwhile_is_still_not_ready() {
         source: Source::Poll {
             target: custom::PollTarget::Command(vec!["sh".into(), "-c".into(), script]),
             every: Duration::from_millis(100),
+            ok: vec![0],
         },
         fields: vec![FieldSpec {
             name: "level".into(),
@@ -1207,6 +1210,247 @@ fn a_failed_first_poll_hidden_meanwhile_is_still_not_ready() {
     until(&rt, &services, "ready once a poll answers", || {
         client.ready(&rt)
     });
+    services.shutdown();
+    custom::forget(id);
+}
+
+/// One field `name`, read at its own key, `text` as given.
+fn field(name: &str, text: custom::TextField) -> FieldSpec {
+    FieldSpec {
+        name: name.into(),
+        key: vec![name.into()],
+        rw: false,
+        text,
+    }
+}
+
+/// `source` registered as `name` with `fields`, seeded and read.
+fn started(
+    rt: &Runtime,
+    services: &Services,
+    name: &str,
+    source: Source,
+    fields: Vec<FieldSpec>,
+) -> (strand_services::Client<Custom>, i64) {
+    let client = services.register_as::<Custom>(rt, name);
+    let n = fields.len();
+    let id = custom::register(Spec {
+        name: name.into(),
+        source,
+        fields,
+        actions: Vec::new(),
+    });
+    client.seed(rt, |s| *s = Custom::seeded(id, n)).unwrap();
+    client.acquire(rt);
+    (client, id)
+}
+
+fn value(rt: &Runtime, client: &strand_services::Client<Custom>, i: i64) -> Option<Data> {
+    client
+        .cells()
+        .values
+        .with_untracked(rt, |v| v.get(&i).map(|v| v.value.clone()))
+        .ok()
+        .flatten()
+}
+
+fn sh(script: &str) -> Vec<String> {
+    vec!["sh".into(), "-c".into(), script.into()]
+}
+
+/// (proc-reason) A polled command that fails says why after its
+/// headline: its stderr, framed (colour gone), whole when short; with
+/// nothing on stderr, the end of its stdout; with neither, the headline
+/// alone (a_failing_poll_is_reported_under_its_name_and_is_not_ready).
+#[test]
+fn a_failing_poll_says_why() {
+    for (script, want) in [
+        (
+            "printf '\\033[31merror:\\033[0m No sensors found!\\n' >&2; echo 'partial'; exit 1",
+            "`sh` failed (exit status: 1): error: No sensors found!",
+        ),
+        (
+            "echo 'set -e: cannot reach the server'; exit 2",
+            "`sh` failed (exit status: 2): set -e: cannot reach the server",
+        ),
+    ] {
+        let rt = Runtime::new();
+        let services = Services::new(&rt, Buses::none(), || {});
+        let (_client, id) = started(
+            &rt,
+            &services,
+            "sensors",
+            Source::Poll {
+                target: custom::PollTarget::Command(sh(script)),
+                every: Duration::from_secs(60),
+                ok: vec![0],
+            },
+            vec![field("level", Default::default())],
+        );
+        let mut seen = Vec::new();
+        until(&rt, &services, "the failure reported", || {
+            seen.extend(services.take_diagnostics());
+            !seen.is_empty()
+        });
+        assert_eq!(seen[0].message, want);
+        services.shutdown();
+        custom::forget(id);
+    }
+}
+
+/// (proc-ok) A status `ok` lists is no failure: the poll's fields update
+/// and nothing is reported; a status it does not list fails as before.
+#[test]
+fn ok_statuses_update_a_poll() {
+    for (ok, answers) in [(vec![0, 1], true), (vec![0], false)] {
+        let rt = Runtime::new();
+        let services = Services::new(&rt, Buses::none(), || {});
+        let (client, id) = started(
+            &rt,
+            &services,
+            "orphans",
+            Source::Poll {
+                target: custom::PollTarget::Command(sh(
+                    "echo '{\"level\": 3}'; echo 'none found' >&2; exit 1",
+                )),
+                every: Duration::from_secs(60),
+                ok,
+            },
+            vec![field("level", Default::default())],
+        );
+        if answers {
+            until(&rt, &services, "read", || {
+                value(&rt, &client, 0) == Some(Data::Int(3))
+            });
+            assert!(services.take_diagnostics().is_empty());
+        } else {
+            let mut seen = Vec::new();
+            until(&rt, &services, "the failure reported", || {
+                seen.extend(services.take_diagnostics());
+                !seen.is_empty()
+            });
+            assert_eq!(seen[0].message, "`sh` failed (exit status: 1): none found");
+            assert_eq!(value(&rt, &client, 0), Some(Data::Null));
+        }
+        services.shutdown();
+        custom::forget(id);
+    }
+}
+
+/// (proc-reason) A `from listen` command that ends says why in the
+/// service's diagnostic: its status and the end of its stderr.
+#[test]
+fn a_listen_command_that_ends_says_why() {
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let (_client, id) = started(
+        &rt,
+        &services,
+        "jerr",
+        Source::Listen {
+            command: sh("echo a=1; echo 'Failed to open journal: permission denied' >&2; exit 3"),
+        },
+        vec![field("a", Default::default())],
+    );
+    let mut seen = Vec::new();
+    until(&rt, &services, "the end reported", || {
+        seen.extend(services.take_diagnostics());
+        seen.iter().any(|d| d.message.contains("ended"))
+    });
+    let d = seen.iter().find(|d| d.message.contains("ended")).unwrap();
+    assert!(
+        d.message
+            .ends_with("`sh` ended (exit status: 3): Failed to open journal: permission denied"),
+        "{}",
+        d.message
+    );
+    services.shutdown();
+    custom::forget(id);
+}
+
+/// (proc-streams) A command writing far more to stderr than a pipe holds,
+/// between its stdout lines, never blocks: stderr is drained as it comes.
+#[test]
+fn stderr_never_blocks_a_listen_command() {
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let (client, id) = started(
+        &rt,
+        &services,
+        "noisy",
+        Source::Listen {
+            command: sh(
+                "i=0; while [ $i -lt 300 ]; do head -c 2000 /dev/zero | tr '\\0' e >&2; \
+                 echo a=$i; i=$((i+1)); done; sleep 30",
+            ),
+        },
+        vec![field("a", Default::default())],
+    );
+    until(&rt, &services, "every line read", || {
+        value(&rt, &client, 0) == Some(Data::text("299"))
+    });
+    services.shutdown();
+    custom::forget(id);
+}
+
+/// (proc-lines) `line` events are lossless and bounded: while more than
+/// 4096 lines wait for the host, the command's stdout is not read, so a
+/// command printing 100 000 lines waits (it has not finished) until they
+/// are heard, then every one arrives, in order.
+#[test]
+fn a_flood_of_lines_waits_for_its_handler_and_loses_none() {
+    const LINES: usize = 100_000;
+    let tmp = tempfile::tempdir().unwrap();
+    let done = tmp.path().join("done");
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let client = services.register_as::<Custom>(&rt, "flood");
+    let id = custom::register(Spec {
+        name: "flood".into(),
+        source: Source::Listen {
+            command: sh(&format!(
+                "seq 1 {LINES}; touch '{}'; sleep 30",
+                done.display()
+            )),
+        },
+        fields: vec![field("n", Default::default())],
+        actions: Vec::new(),
+    });
+    custom::hear_lines(id);
+    client.seed(&rt, |s| *s = Custom::seeded(id, 1)).unwrap();
+    let got: Arc<Mutex<Vec<Data>>> = Arc::default();
+    let log = got.clone();
+    client.dynamic().observe(Box::new(move |_, a| {
+        if let Applied::Event { args, .. } = a
+            && let Some(Data::List(v)) = args.first()
+        {
+            // The host takes the line: one less waiting.
+            custom::took_line(id);
+            log.lock().unwrap().push(v[0].clone());
+        }
+    }));
+    client.acquire(&rt);
+    // Nothing heard for a while: the command waits on its full pipe.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!done.exists(), "the command was not held back");
+    assert_eq!(
+        custom::backlog(id).0,
+        strand_services::proc::BACKLOG_LINES + 1,
+        "the lines waiting are bounded"
+    );
+    until(&rt, &services, "every line heard", || {
+        got.lock().unwrap().len() == LINES
+    });
+    let got = got.lock().unwrap();
+    for (i, n) in got.iter().enumerate() {
+        assert_eq!(*n, Data::Int(i as i64 + 1), "line {i}");
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !done.exists() {
+        assert!(Instant::now() < deadline, "the command never finished");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    custom::unhear_lines(id);
     services.shutdown();
     custom::forget(id);
 }

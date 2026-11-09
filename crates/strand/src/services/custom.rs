@@ -46,6 +46,10 @@ use strand_services::{Client, Data, ServiceDiagnostic, Services, Step, Store, To
 
 use super::convert::{to_service_data, to_value};
 
+fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// One declared service.
 struct Entry {
     client: Client<Custom>,
@@ -104,6 +108,8 @@ struct LineSink(RefCell<Option<LineTarget>>);
 
 struct LineTarget {
     queue: strand_core::EventQueue<Vec<Value>>,
+    /// The spec it runs ([`custom::took_line`]).
+    spec: i64,
     names: Vec<String>,
     typing: Rc<RefCell<Typing>>,
     service: String,
@@ -111,6 +117,46 @@ struct LineTarget {
     nested: RefCell<Option<String>>,
     /// (dbus-action-run) [`Entry::refusals`].
     refusals: Vec<Signal<Option<String>>>,
+}
+
+impl LineTarget {
+    /// A line's values (by field index) as the declaration's record, for
+    /// its queue: its fields converted as the memos convert them, a value
+    /// that does not convert its type's default.
+    fn line(&self, values: &[Data]) -> (strand_core::EventQueue<Vec<Value>>, String, Value) {
+        let typing = self.typing.borrow();
+        let doc = Data::Record {
+            ty: "".into(),
+            fields: self
+                .names
+                .iter()
+                .zip(values.iter())
+                .map(|(n, v)| (n.clone().into(), v.clone()))
+                .collect(),
+        };
+        let ty = Ty::Record(typing.record);
+        let mut nested = None;
+        let v = coerce_noting(&typing.table, &ty, &doc, &mut nested)
+            .unwrap_or_else(|| default_value(&typing.table, &ty));
+        // (doc-formats) A value inside a line that did not convert,
+        // logged once until another does not.
+        let note = nested.map(|n| {
+            let at = n.path.trim_start_matches('.');
+            let then = if at.ends_with(']') {
+                "the item is left out"
+            } else {
+                "it reads as the type's default"
+            };
+            format!("`{at}` holds {}, which is not a `{}`; {then}", n.held, n.ty)
+        });
+        if let Some(note) = &note
+            && self.nested.borrow().as_ref() != Some(note)
+        {
+            log::warn!("`{}.line`: {note}", self.service);
+        }
+        *self.nested.borrow_mut() = note;
+        (self.queue, self.service.clone(), v)
+    }
 }
 
 impl LineSink {
@@ -145,40 +191,13 @@ impl LineSink {
                 return;
             };
             let target = s.0.borrow();
-            let Some(t) = target.as_ref() else { return };
-            let typing = t.typing.borrow();
-            let doc = Data::Record {
-                ty: "".into(),
-                fields: t
-                    .names
-                    .iter()
-                    .zip(values.iter())
-                    .map(|(n, v)| (n.clone().into(), v.clone()))
-                    .collect(),
-            };
-            let ty = Ty::Record(typing.record);
-            let mut nested = None;
-            let v = coerce_noting(&typing.table, &ty, &doc, &mut nested)
-                .unwrap_or_else(|| default_value(&typing.table, &ty));
-            // (doc-formats) A value inside a line that did not convert,
-            // logged once until another does not.
-            let note = nested.map(|n| {
-                let at = n.path.trim_start_matches('.');
-                let then = if at.ends_with(']') {
-                    "the item is left out"
-                } else {
-                    "it reads as the type's default"
-                };
-                format!("`{at}` holds {}, which is not a `{}`; {then}", n.held, n.ty)
-            });
-            if let Some(note) = &note
-                && t.nested.borrow().as_ref() != Some(note)
-            {
-                log::warn!("`{}.line`: {note}", t.service);
+            // (proc-lines) Taken: one line less waiting for the handlers,
+            // whether a mount hears it or not.
+            if let Some(t) = target.as_ref() {
+                custom::took_line(t.spec);
             }
-            *t.nested.borrow_mut() = note;
-            let (queue, service) = (t.queue, t.service.clone());
-            drop(typing);
+            let Some(t) = target.as_ref() else { return };
+            let (queue, service, v) = t.line(values);
             drop(target);
             if let Err(e) = queue.emit(rt, vec![v]) {
                 log::warn!("{service}.line: {e}");
@@ -224,6 +243,40 @@ pub struct CustomHost {
     /// Where a relative `from file` path is (the config directory).
     config_dir: RefCell<Option<PathBuf>>,
     entries: RefCell<HashMap<String, Entry>>,
+    /// (proc-run) The entries that are actions' blocks, not services.
+    blocks: RefCell<std::collections::HashSet<String>>,
+    /// (proc-run) Each block's spec as the threads running its action's
+    /// command read it (shared with [`crate::run::exec`]).
+    feeds: Blocks,
+}
+
+/// (proc-run) An action block's service-side spec, as a command's thread
+/// reads its stdout lines into it ([`custom::read_line`]): the spec id
+/// whose `line` handlers it asks after ([`custom::hears_lines`],
+/// [`custom::backlogged`]) and its fields.
+#[derive(Clone, Debug)]
+pub struct BlockSpec {
+    pub spec: i64,
+    pub fields: Arc<Vec<FieldSpec>>,
+}
+
+/// (proc-run) The blocks by action name, shared with the threads that run
+/// the actions' commands.
+pub type Blocks = Arc<std::sync::Mutex<HashMap<String, BlockSpec>>>;
+
+/// (proc-run) An action's block as the declaration it is served as: a
+/// `from listen` service named after the action, whose command the host
+/// runs as the action ([`CustomHost::declare_blocks`]).
+fn block_decl(name: &str, f: &strand_compiler::lower::ActionFields) -> CustomService {
+    CustomService {
+        name: name.to_string(),
+        record: f.record,
+        source: SourceSpec::Listen {
+            command: Vec::new(),
+        },
+        fields: f.fields.clone(),
+        actions: Vec::new(),
+    }
 }
 
 impl std::fmt::Debug for CustomHost {
@@ -278,12 +331,13 @@ pub fn spec_of(decl: &CustomService, config_dir: Option<&Path>, types: &[Ty]) ->
         SourceSpec::Listen { command } => Source::Listen {
             command: command.clone(),
         },
-        SourceSpec::Poll { target, every, .. } => Source::Poll {
+        SourceSpec::Poll { target, every, ok } => Source::Poll {
             target: match target {
                 PollTarget::Command(c) => custom::PollTarget::Command(c.clone()),
                 PollTarget::File(f) => custom::PollTarget::File(resolve(f, config_dir)),
             },
             every: *every,
+            ok: ok.clone(),
         },
     };
     Spec {
@@ -695,7 +749,48 @@ pub fn read_output(types: &TypeTable, ty: &Ty, out: &str) -> Result<Value, Strin
     if matches!(inner, Ty::Prim(Prim::Text | Prim::Path)) {
         return Ok(Value::text(t));
     }
-    let data = custom::Document::parse(t).into_data();
+    let doc = custom::Document::parse(t);
+    // (proc-format) A record read from a structured document naming
+    // none of its fields: its `text` fields read the output as written,
+    // the others absent, as a service's fields read a document.
+    if let Ty::Record(r) = inner
+        && !matches!(
+            doc,
+            custom::Document::Text(_) | custom::Document::NotXml { .. }
+        )
+    {
+        let fields: Vec<FieldSpec> = types
+            .record(*r)
+            .fields
+            .iter()
+            .map(|f| FieldSpec {
+                name: f.name.clone(),
+                key: vec![f.name.clone()],
+                rw: false,
+                text: text_field(Some(&f.ty)),
+            })
+            .collect();
+        let got = doc.fields(t.strip_prefix('\u{feff}').unwrap_or(t).trim(), &fields);
+        if fields
+            .iter()
+            .zip(&got)
+            .all(|(f, g)| g.is_none() || f.text == TextField::Required)
+            && got.iter().any(Option::is_some)
+            && fields.iter().all(|f| doc.get(&f.key).is_none())
+        {
+            let data = Data::Record {
+                ty: "".into(),
+                fields: fields
+                    .iter()
+                    .zip(got)
+                    .filter_map(|(f, g)| Some((f.name.clone().into(), g?)))
+                    .collect(),
+            };
+            return coerce(types, inner, &data)
+                .ok_or_else(|| format!("what it printed is not a `{}`", types.show(inner)));
+        }
+    }
+    let data = doc.into_data();
     coerce(types, inner, &data)
         .ok_or_else(|| format!("what it printed is not a `{}`", types.show(inner)))
 }
@@ -851,6 +946,8 @@ impl CustomHost {
             services,
             config_dir: RefCell::new(config_dir),
             entries: RefCell::new(HashMap::new()),
+            blocks: RefCell::default(),
+            feeds: Blocks::default(),
         }
     }
 
@@ -887,11 +984,18 @@ impl CustomHost {
         types: &TypeTable,
     ) -> Entry {
         let typing = Typing::of(decl, types);
-        let spec = custom::register(spec_of(
-            decl,
-            self.config_dir.borrow().as_deref(),
-            &typing.fields,
-        ));
+        let mut service_spec = spec_of(decl, self.config_dir.borrow().as_deref(), &typing.fields);
+        let block = self.blocks.borrow().contains(&decl.name);
+        if block {
+            // (proc-run) Fed by the action's runs, never a command of its
+            // own.
+            service_spec.source = Source::Fed;
+        }
+        let fields = Arc::new(service_spec.fields.clone());
+        let spec = custom::register(service_spec);
+        if block {
+            lock(&self.feeds).insert(decl.name.clone(), BlockSpec { spec, fields });
+        }
         // (history) A `from poll` samples on a clock: a value it takes
         // while hidden and kept is a poll.
         client.polls(match &decl.source {
@@ -963,13 +1067,20 @@ impl CustomHost {
                     m
                 })
                 .collect::<Vec<Memo<Value>>>();
-            (epoch, values, runs, refusals, rt.events::<Vec<Value>>())
+            (
+                epoch,
+                values,
+                runs,
+                refusals,
+                rt.input_events::<Vec<Value>>(),
+            )
         });
         // (services-round) Each `line` the service sends, as the
         // declaration's record: its fields converted as the memos convert
         // them, a value that does not convert its type's default.
         *sink.0.borrow_mut() = Some(LineTarget {
             queue: line,
+            spec,
             names: decl.fields.iter().map(|f| f.name.clone()).collect(),
             typing: typing.clone(),
             service: decl.name.clone(),
@@ -1020,6 +1131,103 @@ impl CustomHost {
                 )
             })
             .collect()
+    }
+
+    /// (proc-run) The blocks of the actions declared, shared with the
+    /// threads that run their commands.
+    pub fn blocks(&self) -> Blocks {
+        self.feeds.clone()
+    }
+
+    /// (proc-run) Serve each block `prog`'s actions declare as a `from
+    /// listen` service of the action's name (fed by its runs: no command
+    /// of its own), before an instance of `prog` mounts: a block kept
+    /// keeps its values, one changed starts afresh. [`Self::prune_blocks`]
+    /// stops those `prog` no longer declares, once it has mounted.
+    pub fn declare_blocks(&self, rt: &Runtime, prog: &strand_compiler::lower::Program) {
+        for a in prog.execs.values() {
+            let Some(f) = &a.fields else { continue };
+            let decl = block_decl(&a.name, f);
+            self.blocks.borrow_mut().insert(a.name.clone());
+            let same = self.entries.borrow().get(&a.name).map(|e| e.decl == decl);
+            match same {
+                Some(true) => self.retype(rt, &decl, &prog.types),
+                Some(false) => self.restart(rt, &decl, &prog.types),
+                None => self.declare(rt, &decl, &prog.types),
+            }
+        }
+    }
+
+    /// (proc-run) Stop the blocks `prog` no longer declares.
+    pub fn prune_blocks(&self, rt: &Runtime, prog: &strand_compiler::lower::Program) {
+        let keep: std::collections::HashSet<&str> = prog
+            .execs
+            .values()
+            .filter(|a| a.fields.is_some())
+            .map(|a| a.name.as_str())
+            .collect();
+        let gone: Vec<String> = self
+            .blocks
+            .borrow()
+            .iter()
+            .filter(|n| !keep.contains(n.as_str()))
+            .cloned()
+            .collect();
+        for name in gone {
+            self.blocks.borrow_mut().remove(&name);
+            lock(&self.feeds).remove(&name);
+            self.stop(rt, &name);
+        }
+    }
+
+    /// (proc-run) What action `action`'s run read into its block: `reset`
+    /// (a run started: every field null), then each field a line set
+    /// (the latest, by index), then each line heard, by index (`line`
+    /// events, in order). The lines were counted as sent to `spec`'s
+    /// handlers ([`custom::sent_line`]), which this takes.
+    pub fn feed_block(
+        &self,
+        rt: &Runtime,
+        action: &str,
+        reset: bool,
+        fields: &[Option<Data>],
+        lines: Vec<(i64, Vec<Data>)>,
+    ) {
+        let entry = self
+            .entries
+            .borrow()
+            .get(action)
+            .map(|e| (e.client.clone(), e.sink.clone(), e.decl.fields.len()));
+        let Some((client, sink, n)) = entry else {
+            for (spec, _) in &lines {
+                custom::took_line(*spec);
+            }
+            return;
+        };
+        if reset || fields.iter().any(Option::is_some) {
+            let seeded = client.seed(rt, |s| {
+                for (i, slot) in s.values.iter_mut().enumerate().take(n) {
+                    match fields.get(i) {
+                        Some(Some(v)) => slot.value = v.clone(),
+                        _ if reset => slot.value = Data::Null,
+                        _ => {}
+                    }
+                }
+            });
+            if let Err(e) = seeded {
+                log::warn!("{action}: {e}");
+            }
+        }
+        for (spec, values) in lines {
+            custom::took_line(spec);
+            let target = sink.0.borrow();
+            let Some(t) = target.as_ref() else { continue };
+            let (queue, service, v) = t.line(&values);
+            drop(target);
+            if let Err(e) = queue.emit(rt, vec![v]) {
+                log::warn!("{service}.line: {e}");
+            }
+        }
     }
 
     /// Stop every service and dispose the cells (shutdown).
@@ -1277,6 +1485,8 @@ impl ServiceHost for CustomHost {
     ) -> Option<strand_core::EventQueue<Vec<Value>>> {
         let entries = self.entries.borrow();
         let e = entries.get(service)?;
+        // A `from listen` service's, or (proc-run) an action block's,
+        // whose lines its runs send while a handler hears them.
         if event != "line" || !matches!(e.decl.source, SourceSpec::Listen { .. }) {
             return None;
         }

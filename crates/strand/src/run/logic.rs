@@ -258,6 +258,10 @@ pub fn logic(
     let manifest = storage.palette_dir().map(|d| d.with_file_name("files"));
     let config_dir = storage.config_dir.clone();
     crate::services::follow_program(&build.program);
+    // (proc-run) The actions' blocks, served before the program mounts.
+    if let Some(r) = &real {
+        r.custom.declare_blocks(&rt, &build.program);
+    }
     let inst = Instance::from_build(&rt, &build, live_host(&host, &real), storage);
     // (report) The changes ring, its taps installed: the services', the
     // cells', and the composite's calls and writes.
@@ -316,6 +320,10 @@ pub fn logic(
         has_lock: false,
         focus,
     };
+    if let Some(r) = &shell.real {
+        shell.execs.blocks = r.custom.blocks();
+    }
+    shell.execs.set_ok(&shell.build.program);
     shell.overlay.set_running(boot.build.is_some());
     // The boot's diagnostics: a config broken at boot runs its last good
     // version (or nothing) with the overlay up.

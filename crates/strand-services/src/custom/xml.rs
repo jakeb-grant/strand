@@ -936,7 +936,7 @@ mod tests {
             rw: false,
             text,
         };
-        let one = |d: &Document, f: FieldSpec| d.fields(&[f]).remove(0);
+        let one = |d: &Document, f: FieldSpec| d.fields("", &[f]).remove(0);
         let html = "<div><h2>Hi</h2><p>Today <b>3</b> updates</p></div>";
         let span = "<span foreground=\"#e06c75\">CPU 92%</span>";
         for doc in [html, span] {
@@ -956,10 +956,13 @@ mod tests {
             one(&d, field("text", TextField::Required)),
             Some(text(span))
         );
-        let both = d.fields(&[
-            field("text", TextField::Required),
-            field("foreground", TextField::Optional),
-        ]);
+        let both = d.fields(
+            "",
+            &[
+                field("text", TextField::Required),
+                field("foreground", TextField::Optional),
+            ],
+        );
         assert_eq!(both, [Some(text("CPU 92%")), Some(text("#e06c75"))]);
         // A key the document holds reads the element, as before.
         let span = Document::parse(span);
@@ -1002,18 +1005,21 @@ mod tests {
             field("state", TextField::Required),
         ];
         let status = Document::parse("<status state=\"play\"/>");
-        assert_eq!(status.fields(&fs), vec![None, Some(text("play"))]);
+        assert_eq!(status.fields("", &fs), vec![None, Some(text("play"))]);
         let feed = Document::parse(fixture!("rss.xml"));
-        let got = feed.fields(&[
-            field("title", TextField::Required),
-            field("subtitle", TextField::Required),
-        ]);
+        let got = feed.fields(
+            "",
+            &[
+                field("title", TextField::Required),
+                field("subtitle", TextField::Required),
+            ],
+        );
         assert_eq!(got[0], Some(text("Example Linux: Recent news")));
         assert_eq!(got[1], None);
         // Nothing found: the fragment, as written.
         let span = "<span foreground=\"red\">92%</span>";
         assert_eq!(
-            Document::parse(span).fields(&fs),
+            Document::parse(span).fields("", &fs),
             vec![Some(text(span)), Some(text(span))]
         );
         // A prolog makes it data: the element's text, and a missing key
@@ -1025,13 +1031,16 @@ mod tests {
         ] {
             let d = Document::parse(doc);
             assert_eq!(
-                d.fields(&[field("rate", TextField::Required)]),
+                d.fields("", &[field("rate", TextField::Required)]),
                 vec![Some(text("EUR 1.0842"))],
                 "{doc}"
             );
         }
         let d = Document::parse("<?xml version=\"1.0\"?><div><p>Hi</p></div>");
-        assert_eq!(d.fields(&[field("body", TextField::Required)]), vec![None]);
+        assert_eq!(
+            d.fields("", &[field("body", TextField::Required)]),
+            vec![None]
+        );
     }
 
     #[test]

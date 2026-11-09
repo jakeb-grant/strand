@@ -53,15 +53,15 @@
 //! element of text alone) is every field's value. A string key (`=
 //! "dc:creator"`, `= "@state"`) is one exact segment.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use tokio::io::AsyncBufReadExt;
 use zbus::zvariant::{OwnedValue, Value as ZValue};
 
 use crate::dbus::{self, Daemon, DaemonEvent};
+use crate::proc::{self, Framer, Stream, Tail};
 
 pub mod xml;
 use crate::{
@@ -199,7 +199,15 @@ pub enum Source {
     Poll {
         target: PollTarget,
         every: Duration,
+        /// (proc-ok) The exit statuses of a polled command that are no
+        /// failure (`ok 0, 1`): `[0]` unless written.
+        ok: Vec<i32>,
     },
+    /// (proc-run) An action's block (`action backup(…) […] { … }`): no
+    /// command of its own; the host sets its fields from the action's
+    /// runs ([`crate::Client::seed`]) and sends its lines itself
+    /// ([`read_line`]).
+    Fed,
 }
 
 /// What a `poll` service reads.
@@ -416,6 +424,81 @@ pub fn hears_lines(id: i64) -> bool {
         .is_some_and(|l| l.contains_key(&id))
 }
 
+/// (proc-lines) The `line` events sent for each spec and not yet taken
+/// by the host: their sizes, oldest first, and their total.
+/// Each spec's waiting lines' sizes, and their total.
+type Backlogs = HashMap<i64, (VecDeque<usize>, usize)>;
+static BACKLOG: Mutex<Option<Backlogs>> = Mutex::new(None);
+
+/// (proc-lines) A `line` event of `bytes` bytes was sent for spec `id`.
+pub fn sent_line(id: i64, bytes: usize) {
+    let mut b = BACKLOG.lock().unwrap_or_else(PoisonError::into_inner);
+    let (sizes, total) = b.get_or_insert_with(HashMap::new).entry(id).or_default();
+    sizes.push_back(bytes);
+    *total += bytes;
+}
+
+/// (proc-lines) The host took spec `id`'s oldest `line` event (queued
+/// for its handlers, or dropped with none to hear it).
+pub fn took_line(id: i64) {
+    let mut b = BACKLOG.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(m) = b.as_mut() else { return };
+    if let Some((sizes, total)) = m.get_mut(&id) {
+        if let Some(n) = sizes.pop_front() {
+            *total = total.saturating_sub(n);
+        }
+        if sizes.is_empty() {
+            m.remove(&id);
+        }
+    }
+}
+
+/// (proc-lines) Spec `id`'s run starts afresh: what an earlier run sent
+/// is not waited for.
+fn clear_backlog(id: i64) {
+    if let Some(m) = BACKLOG
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_mut()
+    {
+        m.remove(&id);
+    }
+}
+
+/// (proc-lines) How many of spec `id`'s `line` events wait for the host,
+/// and their bytes.
+pub fn backlog(id: i64) -> (usize, usize) {
+    BACKLOG
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .and_then(|m| m.get(&id))
+        .map_or((0, 0), |(sizes, total)| (sizes.len(), *total))
+}
+
+/// (proc-lines) Whether more than [`proc::BACKLOG_LINES`] lines or
+/// [`proc::BACKLOG_BYTES`] bytes of spec `id` wait for its handlers: its
+/// command's stdout is then not read until they are heard.
+pub fn backlogged(id: i64) -> bool {
+    BACKLOG
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .and_then(|m| m.get(&id))
+        .is_some_and(|(sizes, total)| {
+            sizes.len() > proc::BACKLOG_LINES || *total > proc::BACKLOG_BYTES
+        })
+}
+
+/// (proc-lines) The values of `fields` a command's ended line holds
+/// (`None` where it holds none), its text as framed: what a `from
+/// listen` line and an action block's line both merge and send.
+pub fn read_line(fields: &[FieldSpec], line: &str) -> Vec<Option<Data>> {
+    let doc = Document::parse(line);
+    let written = line.strip_prefix('\u{feff}').unwrap_or(line).trim();
+    doc.fields(written, fields)
+}
+
 impl Custom {
     /// The state a host seeds for spec `id` with `fields` fields, all
     /// null.
@@ -576,41 +659,101 @@ impl Document {
     }
 
     /// (doc-formats) The values of the fields `fs` ([`Document::get`] at
-    /// each key), except that a `text` field reads an XML fragment as
-    /// written, markup and all, where the element tree has nothing better
-    /// for it: when the document is one element of text alone
-    /// (`<b>CPU</b>`), and, for `text` but not `text?`, when the
-    /// document holds nothing at the key of any of `fs` (an HTML
-    /// fragment in a file, `<span foreground="red">92%</span>` from a
-    /// script; the root's own text read by a field named `text` holds
-    /// nothing, [`xml::by_text_alias`]). Markup a source prints so stays markup for `markup:`,
-    /// as any text document does; `text?` keeps null for a key the
-    /// document lacks, as with JSON. A document that holds some field is
-    /// data, so a key it lacks is absent there: a feed without a
-    /// `subtitle` does not show its own source, and a `from listen` line
-    /// that updates some fields leaves a `text` one alone. A document
-    /// with an XML declaration or a DOCTYPE is data, never a fragment
-    /// ([`Document::Xml`]).
-    pub fn fields(&self, fs: &[FieldSpec]) -> Vec<Option<Data>> {
+    /// each key), except that a `text` field reads a document as
+    /// `written` (trimmed), markup and all, where its structure has
+    /// nothing better for it:
+    ///
+    /// - an XML document of one element of text alone (`<b>CPU</b>`),
+    ///   for `text` and `text?`;
+    /// - (proc-format) a structured document (a JSON object, `key=value`
+    ///   lines, an XML fragment) holding nothing at the key of any of
+    ///   `fs`, for `text` but not `text?`: pacman.log's `[2026-11-08T16:04]
+    ///   [ALPM] …`, an `error: …` line, `<span foreground="red">92%</span>`
+    ///   from a script (the root's own text read by a field named `text`
+    ///   holds nothing, [`xml::by_text_alias`]);
+    /// - a JSON number, bool or array, for `text` and `text?`: the whole
+    ///   document as written (`1.10`), a value at a key as serde writes
+    ///   it.
+    ///
+    /// Markup a source prints so stays markup for `markup:`, as any text
+    /// document does; `text?` keeps null for a key the document lacks.
+    /// A document that holds some field is data, so a key it lacks is
+    /// absent there: a `from listen` line that updates some fields leaves
+    /// a `text` one alone. An XML document with a declaration or a
+    /// DOCTYPE is data, never read as written ([`Document::Xml`]).
+    pub fn fields(&self, written: &str, fs: &[FieldSpec]) -> Vec<Option<Data>> {
         let got: Vec<Option<Data>> = fs.iter().map(|f| self.get(&f.key)).collect();
-        let Document::Xml(root, Some(written)) = self else {
-            return got;
+        let written: Arc<str> = match self {
+            Document::Xml(_, Some(w)) => w.clone(),
+            Document::Xml(_, None) => return got,
+            _ => written.into(),
         };
-        let alone = matches!(root, Data::Text(_));
-        let none = fs
-            .iter()
-            .zip(&got)
-            .all(|(f, g)| g.is_none() || xml::by_text_alias(root, &f.key));
-        fs.iter()
-            .zip(got)
-            .map(|(f, got)| match f.text {
-                TextField::Optional | TextField::Required if alone => {
-                    Some(Data::Text(written.clone()))
-                }
-                TextField::Required if none => Some(Data::Text(written.clone())),
-                _ => got,
-            })
-            .collect()
+        let as_written = || Some(Data::Text(written.clone()));
+        match self {
+            Document::Xml(root, _) => {
+                let alone = matches!(root, Data::Text(_));
+                let none = fs
+                    .iter()
+                    .zip(&got)
+                    .all(|(f, g)| g.is_none() || xml::by_text_alias(root, &f.key));
+                fs.iter()
+                    .zip(got)
+                    .map(|(f, got)| match f.text {
+                        TextField::Optional | TextField::Required if alone => as_written(),
+                        TextField::Required if none => as_written(),
+                        _ => got,
+                    })
+                    .collect()
+            }
+            Document::Json(serde_json::Value::Object(_)) => {
+                let none = got.iter().all(Option::is_none);
+                fs.iter()
+                    .zip(got)
+                    .map(|(f, got)| match f.text {
+                        TextField::Required if none => as_written(),
+                        TextField::Optional | TextField::Required => self.json_text(&f.key).or(got),
+                        TextField::No => got,
+                    })
+                    .collect()
+            }
+            Document::Json(
+                serde_json::Value::Number(_)
+                | serde_json::Value::Bool(_)
+                | serde_json::Value::Array(_),
+            ) => fs
+                .iter()
+                .zip(got)
+                .map(|(f, got)| match f.text {
+                    TextField::Optional | TextField::Required => as_written(),
+                    TextField::No => got,
+                })
+                .collect(),
+            Document::Pairs(_) => {
+                let none = got.iter().all(Option::is_none);
+                fs.iter()
+                    .zip(got)
+                    .map(|(f, got)| match f.text {
+                        TextField::Required if none => as_written(),
+                        _ => got,
+                    })
+                    .collect()
+            }
+            _ => got,
+        }
+    }
+
+    /// (proc-format) A JSON number, bool or array at `key` as text, as
+    /// serde writes it (`[1,2]`), which a `text` field reads.
+    fn json_text(&self, key: &[String]) -> Option<Data> {
+        let Document::Json(v) = self else {
+            return None;
+        };
+        match json_path(v, key)? {
+            n @ (serde_json::Value::Number(_)
+            | serde_json::Value::Bool(_)
+            | serde_json::Value::Array(_)) => Some(Data::text(n.to_string())),
+            _ => None,
+        }
     }
 }
 
@@ -701,21 +844,11 @@ pub fn json_data(v: &serde_json::Value) -> Data {
     }
 }
 
-/// Merge `doc` into `state`: every field the document holds; the others
-/// keep their values (a `listen` line may be a partial update).
-fn merge_doc(spec: &Spec, doc: &Document, state: &mut Custom) {
-    for (i, v) in doc.fields(&spec.fields).into_iter().enumerate() {
-        if let Some(v) = v {
-            state.set(i, v);
-        }
-    }
-}
-
 /// Replace `state` with `doc`: a whole document (a `file`, a `poll`
 /// result) is the source's state, so a field it no longer holds reads
 /// null (its type's default), not its last value.
-fn replace_doc(spec: &Spec, doc: &Document, state: &mut Custom) {
-    for (i, v) in doc.fields(&spec.fields).into_iter().enumerate() {
+fn replace_doc(spec: &Spec, doc: &Document, written: &str, state: &mut Custom) {
+    for (i, v) in doc.fields(written, &spec.fields).into_iter().enumerate() {
         state.set(i, v.unwrap_or(Data::Null));
     }
 }
@@ -844,7 +977,24 @@ impl Custom {
             Source::File { path } => run_file(&mut cx, &spec, path).await,
             Source::Dir { path } => run_dir(&mut cx, &spec, path).await,
             Source::Listen { command } => run_listen(&mut cx, &spec, command).await,
-            Source::Poll { target, every } => run_poll(&mut cx, &spec, target, *every).await,
+            Source::Poll { target, every, ok } => {
+                run_poll(&mut cx, &spec, target, *every, ok).await
+            }
+            // (proc-run) Fed by the host: it answers, and refuses writes.
+            Source::Fed => {
+                cx.ready();
+                loop {
+                    match cx.recv().await {
+                        None => break Ok(()),
+                        Some(Msg::Write(w)) => {
+                            if !refuse(&mut cx, &w) {
+                                break Ok(());
+                            }
+                        }
+                        Some(_) => {}
+                    }
+                }
+            }
         };
         r.map_err(|e| ServiceError(format!("`{}`: {}", spec.name, e.0)))
     }
@@ -1403,7 +1553,9 @@ const READ_WAIT: Duration = Duration::from_secs(5);
 enum Got {
     /// It is not there.
     Gone,
-    Doc(Document),
+    /// The document, and its text as written (trimmed), which a `text`
+    /// field may read (proc-format, [`Document::fields`]).
+    Doc(Document, Arc<str>),
     /// (doc-formats) More than [`MAX_DOCUMENT`] bytes (its size, as far
     /// as it is known): refused whole, never cut.
     Over(u64),
@@ -1449,7 +1601,13 @@ fn read_doc(path: &Path) -> Result<Got, String> {
             path.display()
         ));
     }
-    Ok(Got::Doc(Document::parse(&decode_document(&buf))))
+    Ok(parsed(&decode_document(&buf)))
+}
+
+/// `text` as a document, with its text as written.
+fn parsed(text: &str) -> Got {
+    let written = text.strip_prefix('\u{feff}').unwrap_or(text).trim();
+    Got::Doc(Document::parse(text), written.into())
 }
 
 /// (doc-formats) Log once that the service `name`'s file is too large,
@@ -1801,14 +1959,14 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
     // Watch first, then read: no change is lost in between.
     let mut watch = watch_file(path)
         .map_err(|e| ServiceError(format!("cannot watch {}: {e}", path.display())))?;
-    let mut last: Option<Document> = None;
+    let mut last: Option<(Document, Arc<str>)> = None;
     let mut not_xml = false;
     let mut over = None;
     let mut first = true;
     loop {
         // Read (first, or after a change to the file itself).
         let mut got = read_doc_bounded(path).await?;
-        if !first && matches!(&got, Got::Doc(d) if d.is_blank()) {
+        if !first && matches!(&got, Got::Doc(d, _) if d.is_blank()) {
             // A file emptied by a change is most often a write in
             // progress (`echo 5 > f`, a plain rewrite: truncated, then
             // written), which `MODIFY` shows between the two: read it
@@ -1822,7 +1980,7 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
         // Too large: the last value stays (none yet: the defaults).
         let doc = match got {
             Got::Gone => Some(None),
-            Got::Doc(d) => Some(Some(d)),
+            Got::Doc(d, w) => Some(Some((d, w))),
             Got::Over(_) => None,
         };
         if let Some(doc) = doc
@@ -1830,9 +1988,9 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
         {
             let mut state = cx.state().clone();
             match &doc {
-                Some(d) => {
+                Some((d, w)) => {
                     note_not_xml(&spec.name, d, &mut not_xml);
-                    replace_doc(spec, d, &mut state);
+                    replace_doc(spec, d, w, &mut state);
                 }
                 // Gone: every field null until it is back.
                 None => state.values.iter_mut().for_each(|v| v.value = Data::Null),
@@ -2061,14 +2219,24 @@ struct Proc {
 }
 
 impl Proc {
-    fn spawn(argv: &[String]) -> Result<(Proc, tokio::process::ChildStdout), ServiceError> {
+    /// Starts `argv`, its stdout and (proc-streams) its stderr piped.
+    fn spawn(
+        argv: &[String],
+    ) -> Result<
+        (
+            Proc,
+            tokio::process::ChildStdout,
+            tokio::process::ChildStderr,
+        ),
+        ServiceError,
+    > {
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| ServiceError("no command".into()))?;
         let mut cmd = tokio::process::Command::new(program);
         cmd.args(args)
             .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .process_group(0)
             .kill_on_drop(false);
@@ -2097,21 +2265,23 @@ impl Proc {
         }
         let mut child = cmd
             .spawn()
-            .map_err(|e| ServiceError(format!("cannot run `{program}`: {e}")))?;
+            .map_err(|e| ServiceError(format!("could not start `{program}`: {e}")))?;
         let pgid = child.id().and_then(|p| i32::try_from(p).ok());
         let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
         let proc = Proc { child, pgid };
         // Without its output, dropping `proc` ends the group.
         let stdout = stdout.ok_or_else(|| ServiceError("no output".into()))?;
-        Ok((proc, stdout))
+        let stderr = stderr.ok_or_else(|| ServiceError("no output".into()))?;
+        Ok((proc, stdout, stderr))
     }
 
     /// How it ended, waiting a moment for it (it closed its output).
-    async fn status(&mut self) -> String {
+    async fn status(&mut self) -> Result<std::process::ExitStatus, String> {
         match tokio::time::timeout(Duration::from_millis(200), self.child.wait()).await {
-            Ok(Ok(s)) => s.to_string(),
-            Ok(Err(e)) => e.to_string(),
-            Err(_) => "its output closed; killed".into(),
+            Ok(Ok(s)) => Ok(s),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err("its output closed; killed".into()),
         }
     }
 }
@@ -2143,64 +2313,45 @@ impl Drop for Proc {
     }
 }
 
-/// A command's output as lines of at most [`MAX_DOCUMENT`] bytes (a
-/// longer one is skipped whole, up to its newline), decoded leniently
-/// (bytes that are not UTF-8 become U+FFFD). Cancel safe: everything
-/// read is kept in `self`.
-struct Lines<R> {
-    reader: tokio::io::BufReader<R>,
-    buf: Vec<u8>,
-    skipping: bool,
-}
-
-impl<R: tokio::io::AsyncRead + Unpin> Lines<R> {
-    fn new(r: R) -> Lines<R> {
-        Lines {
-            reader: tokio::io::BufReader::new(r),
-            buf: Vec::new(),
-            skipping: false,
-        }
-    }
-
-    /// The next line (`None`: the output ended).
-    async fn next(&mut self) -> std::io::Result<Option<String>> {
-        loop {
-            let available = self.reader.fill_buf().await?;
-            if available.is_empty() {
-                let last = std::mem::take(&mut self.buf);
-                let skipped = std::mem::replace(&mut self.skipping, false);
-                return Ok((!last.is_empty() && !skipped).then(|| decode(last)));
-            }
-            let newline = available.iter().position(|b| *b == b'\n');
-            let chunk = &available[..newline.unwrap_or(available.len())];
-            if !self.skipping {
-                if self.buf.len() + chunk.len() > MAX_DOCUMENT {
-                    self.skipping = true;
-                    self.buf = Vec::new();
-                } else {
-                    self.buf.extend_from_slice(chunk);
-                }
-            }
-            let used = newline.map_or(available.len(), |i| i + 1);
-            self.reader.consume(used);
-            if newline.is_some() {
-                if std::mem::replace(&mut self.skipping, false) {
-                    log::warn!("a line longer than {MAX_DOCUMENT} bytes was skipped");
-                    continue;
-                }
-                return Ok(Some(decode(std::mem::take(&mut self.buf))));
-            }
-        }
+/// (proc-ok) Whether `status` is a success: an exit with a status `ok`
+/// lists (`[0]` unless written); a signal never is.
+pub fn status_ok(status: std::process::ExitStatus, ok: &[i32]) -> bool {
+    match status.code() {
+        Some(c) if ok.is_empty() => c == 0,
+        Some(c) => ok.contains(&c),
+        None => false,
     }
 }
 
-fn decode(mut line: Vec<u8>) -> String {
-    if line.last() == Some(&b'\r') {
-        line.pop();
+/// (proc-streams) A command's stderr, read as it comes: framed, each
+/// line logged at debug and kept for why it failed ([`Tail`]).
+struct ErrLines {
+    framer: Framer,
+    program: String,
+}
+
+impl ErrLines {
+    fn new(program: &str) -> ErrLines {
+        ErrLines {
+            framer: Framer::new(),
+            program: program.to_string(),
+        }
     }
-    match String::from_utf8(line) {
-        Ok(s) => s,
-        Err(e) => decode_document(e.as_bytes()).into_owned(),
+
+    fn push(&mut self, bytes: &[u8], tail: &mut Tail) {
+        let program = &self.program;
+        self.framer.push(bytes, &mut |l| {
+            let text = l.text();
+            if !l.is_blank() {
+                log::debug!("`{program}`: {}", text.trim_end());
+            }
+            tail.push(Stream::Err, &text);
+        });
+    }
+
+    fn finish(&mut self, tail: &mut Tail) {
+        self.framer
+            .finish(&mut |l| tail.push(Stream::Err, &l.text()));
     }
 }
 
@@ -2210,64 +2361,120 @@ fn decode(mut line: Vec<u8>) -> String {
 /// the logic thread wakes at most once a frame for it.
 pub const LISTEN_FLUSH: Duration = Duration::from_micros(16_667);
 
+/// (proc-lines) How often a command whose stdout is held back (its
+/// `line` handlers' backlog) is looked at again.
+pub const BACKLOG_TICK: Duration = Duration::from_millis(5);
+
 async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result<(), ServiceError> {
-    let (mut proc, stdout) = Proc::spawn(argv)?;
-    let mut lines = Lines::new(stdout);
+    use tokio::io::AsyncReadExt;
+    let (mut proc, mut stdout, mut stderr) = Proc::spawn(argv)?;
+    let program = argv.first().map_or("", String::as_str);
+    let id = cx.state().spec;
+    clear_backlog(id);
     cx.ready();
     // Lines read since the last send, merged; and when the next send may
     // go. A line after a quiet frame is sent at once.
     let mut pending: Option<Custom> = None;
     let mut next_send = tokio::time::Instant::now();
     let mut not_xml = false;
+    let mut out = Framer::new();
+    let mut err = ErrLines::new(program);
+    let mut tail = Tail::new();
+    let (mut out_open, mut err_open) = (true, true);
+    let mut obuf = vec![0u8; 16 * 1024];
+    let mut ebuf = vec![0u8; 4 * 1024];
+    // Ended lines read and not yet sent: sent while the handlers'
+    // backlog allows, stdout read again only once they all are.
+    let mut waiting: VecDeque<proc::Framed> = VecDeque::new();
     loop {
+        while !waiting.is_empty() && !backlogged(id) {
+            let Some(l) = waiting.pop_front() else { break };
+            if l.over {
+                log::warn!(
+                    "`{}`: a line longer than {MAX_DOCUMENT} bytes was skipped",
+                    spec.name
+                );
+                continue;
+            }
+            let text = l.text();
+            tail.push(Stream::Out, &text);
+            if text.trim().is_empty() {
+                continue;
+            }
+            let doc = Document::parse(&text);
+            note_not_xml(&spec.name, &doc, &mut not_xml);
+            let written = text.strip_prefix('\u{feff}').unwrap_or(&text).trim();
+            let values = doc.fields(written, &spec.fields);
+            // (services-round) The line itself, before any merge.
+            if hears_lines(id) {
+                let line = values
+                    .iter()
+                    .map(|v| v.clone().unwrap_or(Data::Null))
+                    .collect();
+                sent_line(id, text.len());
+                if !cx.emit(CustomEvent::Line(Data::List(line))) {
+                    return Ok(());
+                }
+            }
+            let mut state = pending.take().unwrap_or_else(|| cx.state().clone());
+            for (i, v) in values.into_iter().enumerate() {
+                if let Some(v) = v {
+                    state.set(i, v);
+                }
+            }
+            pending = Some(state);
+        }
+        let now = tokio::time::Instant::now();
+        if pending.is_some() && now >= next_send {
+            next_send = now + LISTEN_FLUSH;
+            if let Some(state) = pending.take()
+                && !cx.update(|s| *s = state)
+            {
+                return Ok(());
+            }
+        }
+        if !out_open && waiting.is_empty() {
+            // Ended: what it printed last is sent first, its last words
+            // on stderr read, and the failure retried with backoff (its
+            // group ends with `proc`).
+            if let Some(state) = pending.take()
+                && !cx.update(|s| *s = state)
+            {
+                return Ok(());
+            }
+            let grace = tokio::time::Instant::now() + proc::STDERR_GRACE;
+            while err_open {
+                match tokio::time::timeout_at(grace, stderr.read(&mut ebuf)).await {
+                    Ok(Ok(n)) if n > 0 => err.push(&ebuf[..n], &mut tail),
+                    _ => err_open = false,
+                }
+            }
+            err.finish(&mut tail);
+            let headline = match proc.status().await {
+                Ok(s) => format!("`{program}` ended ({s})"),
+                Err(e) => format!("`{program}` ended ({e})"),
+            };
+            return Err(ServiceError(tail.explain(&headline)));
+        }
+        let held = !waiting.is_empty();
         tokio::select! {
-            line = lines.next() => match line {
-                Ok(Some(l)) => {
-                    if l.trim().is_empty() {
-                        continue;
-                    }
-                    let doc = Document::parse(&l);
-                    note_not_xml(&spec.name, &doc, &mut not_xml);
-                    // (services-round) The line itself, before any merge.
-                    let id = cx.state().spec;
-                    if hears_lines(id) {
-                        let values = doc
-                            .fields(&spec.fields)
-                            .into_iter()
-                            .map(|v| v.unwrap_or(Data::Null))
-                            .collect();
-                        if !cx.emit(CustomEvent::Line(Data::List(values))) {
-                            return Ok(());
-                        }
-                    }
-                    let mut state = pending.take().unwrap_or_else(|| cx.state().clone());
-                    merge_doc(spec, &doc, &mut state);
-                    let now = tokio::time::Instant::now();
-                    if now < next_send {
-                        pending = Some(state);
-                        continue;
-                    }
-                    next_send = now + LISTEN_FLUSH;
-                    if !cx.update(|s| *s = state) {
-                        return Ok(());
-                    }
-                }
-                // Ended (or unreadable): its group is ended with `proc`,
-                // and the failure retried with backoff. What it printed
-                // last is sent first.
-                Ok(None) => {
-                    if let Some(state) = pending.take()
-                        && !cx.update(|s| *s = state)
-                    {
-                        return Ok(());
-                    }
-                    let status = proc.status().await;
-                    return Err(ServiceError(format!("`{}` ended ({status})", argv[0])));
-                }
-                Err(e) => {
-                    return Err(ServiceError(format!("reading `{}`: {e}", argv[0])));
+            r = stdout.read(&mut obuf), if out_open && !held => {
+                let n = r.map_err(|e| ServiceError(format!("reading `{program}`: {e}")))?;
+                if n == 0 {
+                    out_open = false;
+                    out.finish(&mut |l| waiting.push_back(l));
+                } else {
+                    out.push(&obuf[..n], &mut |l| waiting.push_back(l));
                 }
             },
+            r = stderr.read(&mut ebuf), if err_open => match r {
+                Ok(n) if n > 0 => err.push(&ebuf[..n], &mut tail),
+                _ => {
+                    err_open = false;
+                    err.finish(&mut tail);
+                }
+            },
+            () = tokio::time::sleep(BACKLOG_TICK), if held => {}
             () = tokio::time::sleep_until(next_send), if pending.is_some() => {
                 next_send = tokio::time::Instant::now() + LISTEN_FLUSH;
                 if let Some(state) = pending.take()
@@ -2285,37 +2492,78 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
     }
 }
 
-/// Run `argv` once and parse what it printed (`Err`: why it failed, for
-/// the caller to report under the service's name). At most
-/// [`MAX_DOCUMENT`] bytes are read (a command printing more is ended at
-/// once, its output ignored); the command's group ends with it.
-async fn poll_command(argv: &[String]) -> Result<Document, String> {
+/// Run `argv` once and parse what it printed, framed (`Err`: why it
+/// failed, its headline and why after it, for the caller to report
+/// under the service's name). At most [`MAX_DOCUMENT`] bytes are read (a
+/// command printing more is ended at once, its output ignored); its
+/// stderr is read beside it, kept for the reason; (proc-ok) a status
+/// `ok` lists is no failure; the command's group ends with it.
+async fn poll_command(argv: &[String], ok: &[i32]) -> Result<Got, String> {
     use tokio::io::AsyncReadExt;
-    let (mut proc, stdout) = Proc::spawn(argv).map_err(|e| e.0)?;
+    let (mut proc, mut stdout, mut stderr) = Proc::spawn(argv).map_err(|e| e.0)?;
     let cmd = argv.first().map_or("", String::as_str);
+    let mut tail = Tail::new();
+    let mut err = ErrLines::new(cmd);
     let run = async {
         let mut out = Vec::new();
-        stdout
-            .take(MAX_DOCUMENT as u64 + 1)
-            .read_to_end(&mut out)
-            .await
-            .map_err(|e| format!("reading `{cmd}`: {e}"))?;
-        // More than a document: no wait for it to end (it would block on
-        // its full pipe until the timeout); its group ends with `proc`.
-        if out.len() > MAX_DOCUMENT {
-            return Err(format!(
-                "`{cmd}` printed more than {MAX_DOCUMENT} bytes; ignored and ended"
-            ));
+        let mut obuf = vec![0u8; 16 * 1024];
+        let mut ebuf = vec![0u8; 4 * 1024];
+        let (mut out_open, mut err_open) = (true, true);
+        while out_open {
+            tokio::select! {
+                r = stdout.read(&mut obuf) => match r {
+                    Ok(0) => out_open = false,
+                    Ok(n) => {
+                        out.extend_from_slice(&obuf[..n]);
+                        // More than a document: no wait for it to end (it
+                        // would block on its full pipe until the
+                        // timeout); its group ends with `proc`.
+                        if out.len() > MAX_DOCUMENT {
+                            return Err(format!(
+                                "`{cmd}` printed more than {MAX_DOCUMENT} bytes; ignored and ended"
+                            ));
+                        }
+                    }
+                    Err(e) => return Err(format!("reading `{cmd}`: {e}")),
+                },
+                r = stderr.read(&mut ebuf), if err_open => match r {
+                    Ok(n) if n > 0 => err.push(&ebuf[..n], &mut tail),
+                    _ => err_open = false,
+                },
+            }
         }
-        let status = proc
-            .child
-            .wait()
-            .await
-            .map_err(|e| format!("waiting for `{cmd}`: {e}"))?;
-        if !status.success() {
-            return Err(format!("`{cmd}` failed ({status})"));
+        let status = loop {
+            tokio::select! {
+                s = proc.child.wait() => break s.map_err(|e| format!("waiting for `{cmd}`: {e}"))?,
+                r = stderr.read(&mut ebuf), if err_open => match r {
+                    Ok(n) if n > 0 => err.push(&ebuf[..n], &mut tail),
+                    _ => err_open = false,
+                },
+            }
+        };
+        // Its last words, for at most the grace: a child it left behind
+        // may hold the pipe.
+        let grace = tokio::time::Instant::now() + proc::STDERR_GRACE;
+        while err_open {
+            match tokio::time::timeout_at(grace, stderr.read(&mut ebuf)).await {
+                Ok(Ok(n)) if n > 0 => err.push(&ebuf[..n], &mut tail),
+                _ => err_open = false,
+            }
         }
-        Ok(Document::parse(&decode_document(&out)))
+        err.finish(&mut tail);
+        let framed = Framer::whole(&out);
+        if !status_ok(status, ok) {
+            for l in String::from_utf8_lossy(&framed).lines() {
+                tail.push(Stream::Out, l);
+            }
+            return Err(tail.explain(&format!("`{cmd}` failed ({status})")));
+        }
+        if !status.success()
+            && let Some(why) = tail.reason()
+        {
+            log::info!("`{cmd}` ({status}, which it may end with): {why}");
+        }
+        Ok(parsed(&decode_document(&framed)))
     };
     match tokio::time::timeout(POLL_TIMEOUT, run).await {
         Ok(d) => d,
@@ -2328,6 +2576,7 @@ async fn run_poll(
     spec: &Spec,
     target: &PollTarget,
     every: Duration,
+    ok: &[i32],
 ) -> Result<(), ServiceError> {
     let every = match target {
         PollTarget::Command(_) => every.max(MIN_COMMAND_POLL),
@@ -2381,7 +2630,7 @@ async fn run_poll(
         // command's group) at once, writes are refused meanwhile.
         let fetch = async {
             match target {
-                PollTarget::Command(argv) => Ok(poll_command(argv).await.map(Got::Doc)),
+                PollTarget::Command(argv) => Ok(poll_command(argv, ok).await),
                 PollTarget::File(path) => read_doc_bounded(path).await.map(Ok),
             }
         };
@@ -2429,10 +2678,10 @@ async fn run_poll(
                 continue;
             }
         };
-        if let Got::Doc(doc) = doc {
+        if let Got::Doc(doc, written) = doc {
             let mut state = cx.state().clone();
             note_not_xml(&spec.name, &doc, &mut not_xml);
-            replace_doc(spec, &doc, &mut state);
+            replace_doc(spec, &doc, &written, &mut state);
             if !cx.update(|s| *s = state) {
                 return Ok(());
             }
@@ -2478,6 +2727,81 @@ mod tests {
         for t in ["2026-11-07T21:05:09+01:00", "12:30", "20261107T195510Z"] {
             assert_eq!(Document::parse(t), Document::Text(t.into()), "{t}");
         }
+    }
+
+    fn field(name: &str, text: TextField) -> FieldSpec {
+        FieldSpec {
+            name: name.into(),
+            key: key(name),
+            rw: false,
+            text,
+        }
+    }
+
+    /// (proc-format) A structured document holding none of the source's
+    /// fields is read as written by a required `text` field, every other
+    /// field absent; one holding some field's key is data; a `text`
+    /// field reads a JSON number, bool or array as written; `null` holds
+    /// nothing (spec.md 5.6; the plan's table).
+    #[test]
+    fn structured_documents_naming_no_field_are_text_as_written() {
+        use TextField::{No, Optional, Required};
+        let line = [field("line", Required)];
+        let read = |text: &str, fs: &[FieldSpec]| read_line(fs, text);
+        let t = |s: &str| Some(Data::text(s));
+        for l in [
+            "[2026-11-08T16:04:17-0700] [ALPM] transaction completed",
+            "error: failed to commit transaction (conflicting files)",
+            "warning: foo: local (1.0-1) is newer than core (0.9-1)",
+            "fatal: not a git repository",
+            "curl: (7) Failed to connect to example.com port 443",
+            "make: *** [Makefile:3: all] Error 1",
+            "remote: Enumerating objects: 5, done.",
+            "tail: '/x' has been replaced; following new file",
+            "key=value here",
+            "http://example.com/x",
+            r#"{"other": 1}"#,
+            "<span foreground=\"red\">92%</span>",
+        ] {
+            assert_eq!(read(l, &line), vec![t(l)], "{l}");
+        }
+        // Scalars and arrays as written, `null` nothing.
+        assert_eq!(read("1.10", &line), vec![t("1.10")]);
+        assert_eq!(read("true", &line), vec![t("true")]);
+        assert_eq!(read("[1, 2]", &line), vec![t("[1, 2]")]);
+        assert_eq!(read("null", &line), vec![Some(Data::Null)]);
+        assert_eq!(read("1.10", &[field("v", Optional)]), vec![t("1.10")]);
+        assert_eq!(
+            read("1.10", &[field("v", No)]),
+            vec![Some(Data::Float(1.1))],
+            "a number field reads the number"
+        );
+        // `text?` stays null; other fields are absent.
+        let opt = [field("line", Optional), field("n", No)];
+        assert_eq!(read("error: x", &opt), vec![None, None]);
+        let both = [field("line", Required), field("n", No)];
+        assert_eq!(read("error: x", &both), vec![t("error: x"), None]);
+        // A key the config names makes the line data.
+        let named = [field("error", Optional), field("line", Required)];
+        assert_eq!(read("error: x", &named), vec![t("x"), None]);
+        let ff = [field("frame", No), field("progress", Required)];
+        assert_eq!(read("progress=end", &ff), vec![None, t("end")]);
+        let jsonl = [field("kind", Required), field("line", Optional)];
+        assert_eq!(
+            read(r#"{"kind":"out","line":"hi"}"#, &jsonl),
+            vec![t("out"), t("hi")]
+        );
+        // A JSON number, bool or array at a key, read by text, as serde
+        // writes it.
+        let v = [field("version", Required), field("tags", Optional)];
+        assert_eq!(
+            read(r#"{"version": 3, "tags": [1, 2]}"#, &v),
+            vec![t("3"), t("[1,2]")]
+        );
+        // A whole poll output: one document.
+        let out = [field("out", Required)];
+        let doc = Document::parse("error: x\n");
+        assert_eq!(doc.fields("error: x", &out), vec![t("error: x")]);
     }
 
     /// os-release(5) and hostname(5): `#` comment lines are not lines of
@@ -2562,15 +2886,19 @@ mod tests {
         let mut input = b"a=1\na=\xff\r\n".to_vec();
         input.extend(std::iter::repeat_n(b'x', MAX_DOCUMENT + 10));
         input.extend(b"\na=3\nlast");
-        let got = block_on(async {
-            let mut lines = Lines::new(&input[..]);
-            let mut got = Vec::new();
-            while let Some(l) = lines.next().await.unwrap() {
-                got.push(l);
-            }
-            got
-        });
-        assert_eq!(got, ["a=1", "a=\u{fffd}", "a=3", "last"]);
+        let mut framer = Framer::new();
+        let mut got = Vec::new();
+        for chunk in input.chunks(8192) {
+            framer.push(chunk, &mut |l| got.push(l));
+        }
+        framer.finish(&mut |l| got.push(l));
+        let kept: Vec<String> = got.iter().filter(|l| !l.over).map(|l| l.text()).collect();
+        assert_eq!(kept, ["a=1", "a=\u{fffd}", "a=3", "last"]);
+        assert_eq!(
+            got.iter().filter(|l| l.over).count(),
+            1,
+            "the long line, over"
+        );
     }
 
     /// Two quick writes A then B: A's late echo is not shown (B was
@@ -2655,10 +2983,10 @@ mod tests {
             let data = dir.join("data");
             std::fs::write(&data, "temp=40\n").unwrap();
             std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o755)).unwrap();
-            assert!(matches!(read_doc(&data), Ok(Got::Doc(_))));
+            assert!(matches!(read_doc(&data), Ok(Got::Doc(..))));
         }
         std::fs::write(dir.join("doc"), "{\"a\": 1}").unwrap();
-        assert!(matches!(read_doc(&dir.join("doc")), Ok(Got::Doc(_))));
+        assert!(matches!(read_doc(&dir.join("doc")), Ok(Got::Doc(..))));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2695,7 +3023,7 @@ mod tests {
         json.resize(MAX_DOCUMENT - 1, b' ');
         json.push(b'}');
         std::fs::write(dir.join("json"), &json).unwrap();
-        let Ok(Got::Doc(d)) = read_doc(&dir.join("json")) else {
+        let Ok(Got::Doc(d, _)) = read_doc(&dir.join("json")) else {
             panic!("not read")
         };
         assert_eq!(d.get(&key("a")), Some(Data::Int(1)));
@@ -2704,7 +3032,7 @@ mod tests {
         let xml = format!("<rss>{}</rss>", item.repeat(n));
         assert!(xml.len() <= MAX_DOCUMENT && xml.len() > MAX_DOCUMENT - 100);
         std::fs::write(dir.join("xml"), &xml).unwrap();
-        let Ok(Got::Doc(d)) = read_doc(&dir.join("xml")) else {
+        let Ok(Got::Doc(d, _)) = read_doc(&dir.join("xml")) else {
             panic!("not read")
         };
         let Some(Data::List(items)) = d.get(&key("item")) else {
@@ -2757,7 +3085,7 @@ mod tests {
         assert_eq!(windows_1252(0x9F), 'Ÿ');
         // A listen line decodes the same way.
         assert_eq!(
-            decode(feed.to_vec()),
+            proc::decode(feed),
             String::from_utf8(decode_document(feed).as_bytes().to_vec()).unwrap()
         );
     }
@@ -3012,7 +3340,7 @@ mod tests {
     #[test]
     fn an_oversized_poll_ends_at_once() {
         let started = std::time::Instant::now();
-        let why = block_on(poll_command(&["yes".to_string()])).unwrap_err();
+        let why = block_on(poll_command(&["yes".to_string()], &[0])).unwrap_err();
         assert!(why.starts_with("`yes` printed more than"), "{why}");
         assert!(
             started.elapsed() < Duration::from_secs(5),
@@ -3042,7 +3370,7 @@ mod tests {
                     libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
                 }
                 let argv = ["sleep".to_string(), "30".to_string()];
-                let (proc, _out) = Proc::spawn(&argv).unwrap();
+                let (proc, _out, _err) = Proc::spawn(&argv).unwrap();
                 println!("PID {}", proc.child.id().unwrap());
                 let _ = std::io::stdout().flush();
                 std::thread::sleep(Duration::from_secs(60));
@@ -3088,9 +3416,12 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         let grandchild = block_on(async {
-            let (proc, stdout) = Proc::spawn(&argv).unwrap();
-            let mut lines = Lines::new(stdout);
-            let pid = lines.next().await.unwrap().unwrap();
+            use tokio::io::AsyncBufReadExt;
+            let (proc, stdout, _err) = Proc::spawn(&argv).unwrap();
+            let mut lines = tokio::io::BufReader::new(stdout);
+            let mut pid = String::new();
+            lines.read_line(&mut pid).await.unwrap();
+            let pid = pid.trim().to_string();
             assert!(!gone(&pid));
             drop(proc);
             pid
@@ -3106,7 +3437,7 @@ mod tests {
             "-c".into(),
             format!("sleep 30 >/dev/null & echo $! > {}; echo 1", file.display()),
         ];
-        let doc = block_on(poll_command(&argv));
+        let doc = block_on(poll_command(&argv, &[0]));
         assert!(doc.is_ok());
         let pid = std::fs::read_to_string(&file).unwrap();
         assert!(wait_gone(pid.trim()), "the poll's leftover {pid} ended");

@@ -22,8 +22,6 @@
 //! `strand watch` notice; the last good file stays.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::io::Read as _;
-use std::os::fd::AsRawFd as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -43,11 +41,6 @@ use crate::overlay;
 const RUN_DEBOUNCE: Duration = Duration::from_millis(200);
 /// A `run:` still going after this is killed with its process group.
 const RUN_TIMEOUT: Duration = Duration::from_secs(10);
-/// How much of a failing run's stderr is kept.
-const STDERR_TAIL: usize = 4096;
-/// After a run ends, how long its stderr is still read: a process it
-/// left in the background keeps the pipe open, and is not waited for.
-const STDERR_GRACE: Duration = Duration::from_millis(100);
 /// A refused or failed write is tried again after this, doubling.
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 /// The longest wait between two tries of a write.
@@ -1056,22 +1049,25 @@ fn real(path: &Path) -> Result<PathBuf, String> {
 }
 
 /// Runs `argv` in a process group of its own, at most `timeout`: why it
-/// failed, with the last [`STDERR_TAIL`] bytes of its stderr. Stderr is
-/// read without blocking while the command runs and for
-/// [`STDERR_GRACE`] after it ends, never to its end of file: a process
-/// the command backgrounds (`dunst &`), or one that left the group with
-/// `setsid`, inherits the pipe and may hold it open for good. (M5) Like
-/// every program strand starts, it does not inherit the xdg-activation
-/// token strand was started with, nor the variables that address this
-/// shell (`child::child_env`), and it gets back the transparent huge
-/// page setting strand inherited (`child::restore_in_child`): a daemon a
-/// `run:` restarts would otherwise run with THP off for life.
+/// failed, its headline and (proc-reason) why after it, from what it
+/// printed (`strand_services::proc::Tail`: its stderr's head and tail,
+/// else the end of its stdout; spec.md 5.8). Its output is read while it
+/// runs and for `proc::STDERR_GRACE` after it ends, never to its end of
+/// file: a process the command backgrounds (`dunst &`), or one that left
+/// the group with `setsid`, inherits the pipes and may hold them open
+/// for good. (M5) Like every program strand starts, it does not inherit
+/// the xdg-activation token strand was started with, nor the variables
+/// that address this shell (`child::child_env`), and it gets back the
+/// transparent huge page setting strand inherited
+/// (`child::restore_in_child`): a daemon a `run:` restarts would
+/// otherwise run with THP off for life.
 fn run_once(argv: &[String], timeout: Duration) -> Option<String> {
+    use strand_services::proc::{self, Framer, Reader, Stream, Tail};
     let (prog, args) = argv.split_first()?;
     let mut cmd = Command::new(prog);
     cmd.args(args)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
     strand_services::child::child_env(&mut cmd, None);
@@ -1088,15 +1084,27 @@ fn run_once(argv: &[String], timeout: Duration) -> Option<String> {
         Ok(c) => c,
         Err(e) => return Some(format!("`run:` could not start `{prog}`: {e}")),
     };
-    let mut err = child.stderr.take().filter(|e| nonblocking(e.as_raw_fd()));
-    let mut keep: Vec<u8> = Vec::new();
+    let mut reader = Reader::new(
+        child.stdout.take().map(std::os::fd::OwnedFd::from),
+        child.stderr.take().map(std::os::fd::OwnedFd::from),
+    );
+    let mut tail = Tail::new();
+    let mut framers = [Framer::new(), Framer::new()];
+    let mut read = |s: Stream, bytes: Option<&[u8]>| {
+        let f = &mut framers[usize::from(s.is_err())];
+        let mut keep = |l: proc::Framed| tail.push(s, &l.text());
+        match bytes {
+            Some(b) => f.push(b, &mut keep),
+            None => f.finish(&mut keep),
+        }
+    };
     let deadline = Instant::now() + timeout;
     let status = loop {
-        drain(&mut err, &mut keep);
+        let _ = reader.step(&[], Some(Duration::from_millis(20)), true, &mut read);
         match child.try_wait() {
             Ok(Some(s)) => break Some(s),
             Ok(None) if Instant::now() >= deadline => break None,
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => {}
             Err(_) => break None,
         }
     };
@@ -1111,60 +1119,22 @@ fn run_once(argv: &[String], timeout: Duration) -> Option<String> {
         let _ = child.wait();
     }
     // What it wrote before it ended, up to its end of file or the grace.
-    let grace = Instant::now() + STDERR_GRACE;
-    while !drain(&mut err, &mut keep) && Instant::now() < grace {
-        std::thread::sleep(Duration::from_millis(5));
+    reader.drain_until(Instant::now() + proc::STDERR_GRACE, &mut read);
+    for (i, f) in framers.iter_mut().enumerate() {
+        let s = if i == 1 { Stream::Err } else { Stream::Out };
+        f.finish(&mut |l| tail.push(s, &l.text()));
     }
-    drop(err);
+    drop(reader);
     let Some(status) = status else {
-        return Some(format!(
+        return Some(tail.explain(&format!(
             "`run:` `{prog}` took more than {} s and was killed",
             timeout.as_secs_f32()
-        ));
+        )));
     };
     if status.success() {
         return None;
     }
-    let mut why = format!("`run:` `{prog}` failed ({status})");
-    let stderr = String::from_utf8_lossy(&keep);
-    let stderr = stderr.trim();
-    if !stderr.is_empty() {
-        why.push_str(": ");
-        why.push_str(stderr);
-    }
-    Some(why)
-}
-
-/// Sets `fd` non-blocking: whether it is (else stderr is not read).
-fn nonblocking(fd: std::os::fd::RawFd) -> bool {
-    // SAFETY: `fcntl` with F_GETFL/F_SETFL on a descriptor this process
-    // owns (the child's stderr pipe) reads and sets its flags only.
-    unsafe {
-        let flags = libc::fcntl(fd, libc::F_GETFL);
-        flags >= 0 && libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) >= 0
-    }
-}
-
-/// Reads what `err` holds now into `keep` (its last [`STDERR_TAIL`]
-/// bytes): whether it is at its end (or gone).
-fn drain(err: &mut Option<std::process::ChildStderr>, keep: &mut Vec<u8>) -> bool {
-    let Some(e) = err.as_mut() else {
-        return true;
-    };
-    let mut buf = [0u8; 1024];
-    loop {
-        match e.read(&mut buf) {
-            Ok(0) => return true,
-            Ok(n) => {
-                keep.extend_from_slice(&buf[..n]);
-                if keep.len() > STDERR_TAIL {
-                    keep.drain(..keep.len() - STDERR_TAIL);
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => return e.kind() != std::io::ErrorKind::WouldBlock,
-        }
-    }
+    Some(tail.explain(&format!("`run:` `{prog}` failed ({status})")))
 }
 
 /// Writes `bytes` to `path` through a temporary file beside it and a
@@ -1370,13 +1340,25 @@ mod tests {
         assert_eq!(run_once(&["true".into()], RUN_TIMEOUT), None);
         let why = run_once(&["/nonexistent/x".into()], RUN_TIMEOUT).unwrap();
         assert!(why.contains("could not start"), "{why}");
-        // Only the last 4 KiB of a long stderr is kept.
+        // (proc-reason) A long stderr: its head and its tail, at lines.
         let why = run_once(
-            &sh("head -c 20000 /dev/zero | tr '\\0' x >&2; exit 1"),
+            &sh(
+                "{ echo 'error: the first'; i=0; while [ $i -lt 2000 ]; do echo \"noise $i\"; \
+                 i=$((i+1)); done; echo 'the last'; } >&2; exit 1",
+            ),
             RUN_TIMEOUT,
         )
         .unwrap();
-        assert!(why.len() < STDERR_TAIL + 200, "{}", why.len());
+        use strand_services::proc::{TAIL_END, TAIL_HEAD};
+        assert!(why.len() < TAIL_HEAD + TAIL_END + 200, "{}", why.len());
+        assert!(why.contains(": error: the first\n"), "{why}");
+        assert!(why.contains("\n…\n") && why.ends_with("the last"), "{why}");
+        // With nothing on stderr, the end of its stdout.
+        let why = run_once(&sh("echo 'reload: no such unit'; exit 5"), RUN_TIMEOUT).unwrap();
+        assert!(
+            why.ends_with("failed (exit status: 5): reload: no such unit"),
+            "{why}"
+        );
     }
 
     /// A `run:` command gets back the THP setting strand inherited, like

@@ -83,6 +83,7 @@ pub mod outputs;
 pub mod pixmap;
 pub mod polkit;
 pub mod power;
+pub mod proc;
 mod procfs;
 mod service;
 pub mod session;

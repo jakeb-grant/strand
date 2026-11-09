@@ -550,6 +550,16 @@ impl Shell {
     pub(super) fn apply(&mut self, mut l: Box<Loaded>, overlay: bool) {
         let began = Instant::now();
         let build = l.outcome.build.clone();
+        // (proc-run) The actions' blocks are served before the program
+        // mounts, as the services it declares are.
+        let next = match (&build, l.hard) {
+            (Some(b), _) => Some(b.clone()),
+            (None, true) => Some(self.build.clone()),
+            (None, false) => None,
+        };
+        if let (Some(b), Some(r)) = (&next, &self.real) {
+            r.custom.declare_blocks(self.inst.runtime(), &b.program);
+        }
         let report = match (&build, l.hard) {
             (Some(b), false) => Some(self.inst.reload(b)),
             (b, true) => {
@@ -617,6 +627,10 @@ impl Shell {
             }
             if let Some(b) = build.or_else(|| l.hard.then(|| self.build.clone())) {
                 crate::services::follow_program(&b.program);
+                if let Some(r) = &self.real {
+                    r.custom.prune_blocks(self.inst.runtime(), &b.program);
+                }
+                self.execs.set_ok(&b.program);
                 self.build = b;
                 self.committed_config = self.config_dir.as_deref().map(super::kept::config_hash);
                 self.overlay.set_running(true);
