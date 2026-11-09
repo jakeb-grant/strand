@@ -205,8 +205,13 @@ advance the clock.
   error "<text>"` answer the next call of the config's action `<name>`,
   one with a result (`-> T`), read as its `T`; with none queued the call
   is answered with an error, since the sandbox runs no command.
-- `end action <name> [failed "<why>"]` (lockmon; action-error: what
-  `rec.error` then reads): the command of the config's action
+- `line action <name> [stderr] [open] "<text>"` (proc-run): the
+  command of the config's action `<name>` that the sandbox counts as
+  running printed a line, which `rec.lines` then reads: numbered from 1 in
+  its run, on stderr with `stderr`, and with `open` not ended yet, so the
+  next line of that stream redraws it (a run starting numbers afresh).
+- `end action <name> [code N] [failed "<why>"]` (lockmon; action-error: what
+  `rec.error` then reads; proc-run: `code`, what `rec.code` reads): the command of the config's action
   `<name>` that the sandbox counts as running ends. The sandbox runs no
   command, so a call of an action without a result counts as running
   (`rec.running`, `rec.started` at the virtual wall time) from the call
@@ -2722,7 +2727,10 @@ capability, used by any scenario):
   review). (lockmon) A command's recorded end is `end action <name>` at
   its time, so `rec.running` reads as it did live; a failure recorded with
   it (`flight::kind::ACTION_FAILED`) adds `failed "<why>"`, so `rec.error`
-  does too.
+  does too, and (proc-run) its status `code N`. A job's recorded lines
+  (`EVENT` records named `action <name>`) are `line action` steps at
+  their time; lines the recorder skipped in a flood are said in the
+  events, not replayed.
 
 **The verdict** (replay-owner; `replay::drawn`, `fidelity.json`'s
 first key `verdict`, the first line of `replay.txt`, of what

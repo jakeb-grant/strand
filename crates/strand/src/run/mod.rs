@@ -82,6 +82,7 @@ mod exec;
 pub(crate) mod feeds;
 mod focus;
 mod gpu;
+mod keeper;
 pub(crate) mod kept;
 mod lists;
 pub(crate) mod lock;
@@ -92,6 +93,15 @@ mod request;
 mod shell;
 mod sleep;
 mod trim;
+
+/// (proc-keeper) The argument that starts strand as the keeper of its
+/// actions' output.
+pub(crate) const KEEP_ARG: &str = keeper::ARG;
+
+/// (proc-keeper) `strand __keep`: see `keeper`.
+pub(crate) fn keep() -> std::process::ExitCode {
+    keeper::main()
+}
 
 pub use logic::{Live, OwnWrites, Switched, Tokens, logic};
 /// The `file` element's write (a link followed, the target's mode kept),

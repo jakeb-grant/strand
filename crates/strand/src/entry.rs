@@ -234,6 +234,14 @@ fn one_shot(cmd: &str) -> Option<OneShot> {
 
 /// `main`'s body: the idle hooks, then the command line.
 pub fn main() -> ExitCode {
+    // (proc-keeper) The keeper strand starts for its actions' output, before
+    // anything else.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|a| a == crate::run::KEEP_ARG)
+    {
+        return crate::run::keep();
+    }
     // A text worker that goes quiet after shaping keeps the allocator's
     // freed pages, which only its own thread can return: it trims as its
     // queue drains (decisions.md, wave4-exitMemory); so does the image

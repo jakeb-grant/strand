@@ -9,16 +9,26 @@
 //! latest call's arguments), started when it ends, as a `file`'s `run:`
 //! does, so a command that hangs holds one thread however often it is
 //! clicked. Each is detached in its own process
-//! group (a signal to strand's group does not reach it), stdin and stdout
-//! on `/dev/null`, stderr strand's own (its log). Like every program
+//! group (a signal to strand's group does not reach it), stdin on
+//! `/dev/null`; (proc-run) its stdout and stderr are piped to its thread,
+//! which frames them (`strand_services::proc`) into the run's `lines`
+//! (the last 1000, at most 256 KiB), published to logic at most once a
+//! frame, and, for an action with a block, reads its stdout lines into
+//! the block's fields and its `line` handlers (lossless: past
+//! `proc::BACKLOG_LINES` lines waiting, stdout is not read until they are
+//! taken). The keeper (`super::keeper`) holds a duplicate of the pipes,
+//! so the command never gets SIGPIPE when strand goes. Like every program
 //! strand starts it does not inherit strand's xdg-activation token or the
 //! variables that address this shell (`child::child_env`), and it gets
 //! back the transparent huge page setting strand inherited. Its
 //! thread waits for it (asleep on its pidfd) and nothing else: it is
-//! never killed unasked, since an app it opens may run for hours. A failure to start or a non-zero exit
-//! comes back (the loop is pinged awake) as a log line and a `strand
-//! watch` notice naming the action, as a `file`'s `run:` failing does.
-//! The shell itself is fine, so it is not an overlay notice.
+//! never killed unasked, since an app it opens may run for hours. A failure to start or a status
+//! its `ok` does not list comes back (the loop is pinged awake) as a log
+//! line and a `strand watch` notice naming the action, with why from what
+//! it printed (`proc::Tail`), as a `file`'s `run:` failing does. The
+//! shell itself is fine, so it is not an overlay notice. When it ends,
+//! logic gets its last lines, its `code`, its `error` and its end in one
+//! update, in that order (spec.md 5.7's end order).
 //!
 //! (flex) An action with a result (`action calc(q: text) -> text
 //! ["qalc", "-t", q]`) runs each call at once on a thread of its own (a
@@ -26,7 +36,8 @@
 //! it), its stdout piped and read up to `strand_services::custom::
 //! MAX_DOCUMENT` bytes. When it ends, its output is read as the declared
 //! type on the logic thread (`services::custom::read_output`) and
-//! answers the call's `Async`; a failure to start, a non-zero exit, too
+//! answers the call's `Async`; a failure to start, a status its `ok`
+//! does not list (with why, from its stderr), too
 //! much output or output that does not convert is the `Async`'s error,
 //! logged but no notice (the config reads `.error`). A call whose value
 //! was dropped first (superseded, or a handler let it go) has its
@@ -44,7 +55,7 @@
 //! `rec.started`: [`Execs::runs`], `Instance::set_action_run`).
 
 use std::collections::{BTreeSet, HashMap};
-use std::io::Read as _;
+use std::os::fd::OwnedFd;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -52,10 +63,15 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::json;
+use strand_compiler::vm::runs::{RunLine, RunUpdate};
 use strand_compiler::vm::{ExecReply, ExecRequest};
-use strand_services::custom::{KILL_GRACE, MAX_DOCUMENT, POLL_TIMEOUT};
+use strand_services::Data;
+use strand_services::custom::{self as svc, KILL_GRACE, LISTEN_FLUSH, MAX_DOCUMENT, POLL_TIMEOUT};
+use strand_services::proc::{self, Framed, Framer, Reader, Ring, RingLine, Stream, Tail};
 
+use super::keeper::Keeper;
 use super::shell::Shell;
+use crate::services::custom::{BlockSpec, Blocks};
 
 /// A command's thread only starts it and waits.
 const STACK: usize = 64 * 1024;
@@ -65,19 +81,103 @@ const STACK: usize = 64 * 1024;
 pub(super) const STOP_GRACE: Duration = Duration::from_secs(2);
 
 /// A command that ended, as its thread reports it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct Ended {
     /// The action's name.
     pub action: String,
-    /// Why it failed; `None`: it exited with success, or was stopped.
+    /// Why it failed; `None`: it exited with a status its `ok` lists, or
+    /// was stopped.
     pub failed: Option<String>,
     /// Its exit code ([`Captured::exit`]).
     pub exit: i32,
     /// (lockmon) `rec.stop()` ended it (no notice: it was asked to).
     pub stopped: bool,
+    /// (proc-run) What it printed that logic has not taken yet: its last
+    /// lines, taken after it ended, so they go before its end.
+    pub taken: Taken,
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+/// (proc-run) What a job's thread read since logic last took it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(super) struct Taken {
+    /// Its `lines`' change ([`Ring::take`]): the number below which lines
+    /// left, and the lines new or changed.
+    pub lines: Option<(u64, Vec<RingLine>)>,
+    /// For a block: each field the stdout lines set, the latest (by the
+    /// field's index).
+    pub fields: Vec<Option<Data>>,
+    /// For a block: each stdout line its `line` handlers hear, in order,
+    /// with the spec it was counted for ([`svc::sent_line`]).
+    pub heard: Vec<(i64, Vec<Data>)>,
+}
+
+impl Taken {
+    fn is_empty(&self) -> bool {
+        self.lines.is_none() && self.fields.iter().all(Option::is_none) && self.heard.is_empty()
+    }
+
+    /// Its lines as a run update's.
+    pub(super) fn update(&self) -> (u64, Vec<RunLine>) {
+        let Some((front, lines)) = &self.lines else {
+            return (0, Vec::new());
+        };
+        let lines = lines
+            .iter()
+            .map(|l| RunLine {
+                n: l.n,
+                text: l.text.clone(),
+                stderr: l.stderr,
+                open: l.open,
+            })
+            .collect();
+        (*front, lines)
+    }
+}
+
+/// (proc-run) A job's output as its thread fills it and logic takes it.
+#[derive(Debug, Default)]
+pub(super) struct Taking {
+    ring: Ring,
+    fields: Vec<Option<Data>>,
+    heard: Vec<(i64, Vec<Data>)>,
+}
+
+impl Taking {
+    fn take(&mut self) -> Taken {
+        Taken {
+            lines: self.ring.take(),
+            fields: std::mem::take(&mut self.fields),
+            heard: std::mem::take(&mut self.heard),
+        }
+    }
+}
+
+/// (proc-run) What a job's thread shares: its action, its `ok`, where its
+/// output goes, the action's block, the keeper, and the loop to wake.
+pub(super) struct JobCx {
+    pub action: String,
+    pub ok: Vec<i32>,
+    /// Its run's id, for the keeper.
+    pub id: u64,
+    pub out: Arc<Mutex<Taking>>,
+    pub blocks: Blocks,
+    pub keeper: Arc<Keeper>,
+    pub ping: Option<calloop::ping::Ping>,
+}
+
+impl JobCx {
+    fn block(&self) -> Option<BlockSpec> {
+        lock(&self.blocks).get(&self.action).cloned()
+    }
+
+    fn ping(&self) {
+        if let Some(p) = &self.ping {
+            p.ping();
+        }
+    }
+}
+
+pub(super) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -159,6 +259,10 @@ impl Halt {
 struct Detached {
     started: SystemTime,
     halt: Arc<Halt>,
+    /// (proc-run) What it printed, as its thread fills it.
+    out: Arc<Mutex<Taking>>,
+    /// (proc-run) Logic was told it started (its run reset).
+    announced: bool,
 }
 
 /// The commands started and the ones that ended since logic last looked.
@@ -182,6 +286,13 @@ pub(super) struct Execs {
     /// How long a stopped command has at each step ([`STOP_GRACE`];
     /// shorter in tests).
     grace: Duration,
+    /// (proc-run) The actions' blocks ([`crate::services::custom::CustomHost::blocks`]).
+    pub(super) blocks: Blocks,
+    /// (proc-keeper) Started on the first job.
+    keeper: Arc<Keeper>,
+    /// (proc-run) Each action's `ok` statuses, for a request with none
+    /// ([`Execs::set_ok`]).
+    ok: HashMap<String, Vec<i32>>,
 }
 
 /// (flex) A running command whose output answers its call.
@@ -222,6 +333,9 @@ pub(super) struct RunState {
     pub action: String,
     pub running: bool,
     pub started: Option<SystemTime>,
+    /// (proc-run) A job started since: its `lines`, `code`, `error` and
+    /// block reset.
+    pub reset: bool,
 }
 
 impl Execs {
@@ -238,7 +352,24 @@ impl Execs {
             timeout: POLL_TIMEOUT,
             changed: BTreeSet::new(),
             grace: STOP_GRACE,
+            blocks: Blocks::default(),
+            keeper: Arc::default(),
+            ok: HashMap::new(),
         }
+    }
+
+    /// (proc-ok) The actions `prog` declares and the statuses each takes
+    /// for success (`[0]` unless its `ok` says otherwise).
+    pub(super) fn set_ok(&mut self, prog: &strand_compiler::lower::Program) {
+        self.ok = prog
+            .execs
+            .values()
+            .map(|a| (a.name.clone(), a.ok.clone()))
+            .collect();
+    }
+
+    fn ok_of(&self, action: &str) -> Vec<i32> {
+        self.ok.get(action).cloned().unwrap_or_else(|| vec![0])
     }
 
     /// Starts `req`'s command on a thread of its own, or (its action's
@@ -275,6 +406,11 @@ impl Execs {
         }
     }
 
+    /// (proc-run) Whether a job of `action` runs.
+    pub(super) fn is_running(&self, action: &str) -> bool {
+        self.running.contains_key(action)
+    }
+
     /// The commands whose action is running or queued (tests).
     #[cfg(test)]
     fn busy(&self) -> (usize, usize) {
@@ -287,16 +423,31 @@ impl Execs {
         let action = req.action.clone();
         let halt = Arc::new(Halt::new(true));
         let (h, grace) = (halt.clone(), self.grace);
+        let out = Arc::new(Mutex::new(Taking::default()));
+        let id = self.next_id;
+        self.next_id += 1;
+        let cx = JobCx {
+            action: action.clone(),
+            ok: self.ok_of(&action),
+            id,
+            out: out.clone(),
+            blocks: self.blocks.clone(),
+            keeper: self.keeper.clone(),
+            ping: Some(ping.clone()),
+        };
         let spawned = std::thread::Builder::new()
             .name("strand-exec".into())
             .stack_size(STACK)
             .spawn(move || {
-                let (failed, exit, stopped) = run(&req.argv, &h, grace);
+                let (failed, exit, stopped) = run(&req.argv, &h, grace, &cx);
+                // After its last line: logic takes them with its end.
+                let taken = lock(&cx.out).take();
                 lock(&ended).push(Ended {
                     action: req.action,
                     failed,
                     exit,
                     stopped,
+                    taken,
                 });
                 ping.ping();
             });
@@ -308,6 +459,8 @@ impl Execs {
                     Detached {
                         started: SystemTime::now(),
                         halt,
+                        out,
+                        announced: false,
                     },
                 );
             }
@@ -316,8 +469,26 @@ impl Execs {
                 failed: Some(format!("no thread to start it on: {e}")),
                 exit: -1,
                 stopped: false,
+                taken: Taken::default(),
             }),
         }
+    }
+
+    /// (proc-run) What each job running printed since the last call (its
+    /// start announced first, by [`Execs::runs`]).
+    pub(super) fn lines(&mut self) -> Vec<(String, Taken)> {
+        let mut out = Vec::new();
+        for (action, d) in &self.running {
+            if !d.announced {
+                continue;
+            }
+            let taken = lock(&d.out).take();
+            if !taken.is_empty() {
+                out.push((action.clone(), taken));
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
     }
 
     /// (flex) Runs `req`'s command, its output kept for `reply`.
@@ -328,11 +499,12 @@ impl Execs {
         let (outputs, ping) = (self.outputs.clone(), self.ping.clone());
         let (h, timeout, grace) = (halt.clone(), self.timeout, self.grace);
         let argv = req.argv.clone();
+        let ok = self.ok_of(&req.action);
         let spawned = std::thread::Builder::new()
             .name("strand-exec".into())
             .stack_size(STACK)
             .spawn(move || {
-                let out = capture(&argv, &h, timeout, grace);
+                let out = capture(&argv, &ok, &h, timeout, grace);
                 lock(&outputs).push((id, out));
                 ping.ping();
             });
@@ -421,6 +593,10 @@ impl Execs {
         std::mem::take(&mut self.changed)
             .into_iter()
             .map(|action| {
+                let reset = self
+                    .running
+                    .get_mut(&action)
+                    .is_some_and(|d| !std::mem::replace(&mut d.announced, true));
                 let started = self
                     .running
                     .get(&action)
@@ -437,6 +613,7 @@ impl Execs {
                     running: started.is_some(),
                     started,
                     action,
+                    reset,
                 }
             })
             .collect()
@@ -445,16 +622,24 @@ impl Execs {
 
 /// Runs `argv` (the program, then each argument as it is) to its end, or
 /// (lockmon) until `halt` stops it ([`stop_group`], `grace` at each
-/// step): `None` when it exited with success or was stopped, else why
-/// not; its exit code ([`Captured::exit`]); and whether it was stopped.
-pub(super) fn run(argv: &[String], halt: &Halt, grace: Duration) -> (Option<String>, i32, bool) {
+/// step): `None` when it exited with a status `cx.ok` lists or was
+/// stopped, else why not (with why, from what it printed); its exit code
+/// ([`Captured::exit`]); and whether it was stopped. (proc-run) What it
+/// prints goes to `cx.out`, logic woken at most once a frame.
+pub(super) fn run(
+    argv: &[String],
+    halt: &Halt,
+    grace: Duration,
+    cx: &JobCx,
+) -> (Option<String>, i32, bool) {
     let Some((prog, args)) = argv.split_first() else {
         return (Some("it has no command".into()), -1, false);
     };
     let mut cmd = Command::new(prog);
     cmd.args(args)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .process_group(0);
     strand_services::child::child_env(&mut cmd, None);
     // SAFETY: `restore_in_child` makes only async-signal-safe calls, as
@@ -469,14 +654,46 @@ pub(super) fn run(argv: &[String], halt: &Halt, grace: Duration) -> (Option<Stri
         Ok(c) => c,
         Err(e) => return (Some(format!("could not start `{prog}`: {e}")), -1, false),
     };
-    let stopped = wait_or_stop(&child, halt);
+    let mut reader = Reader::new(
+        child.stdout.take().map(OwnedFd::from),
+        child.stderr.take().map(OwnedFd::from),
+    );
+    // (proc-keeper) Its pipes outlive strand.
+    cx.keeper.hold(cx.id, &reader.fds());
+    let mut job = Job {
+        cx,
+        framers: [Framer::new(), Framer::new()],
+        tail: Tail::new(),
+        block: None,
+    };
+    let stopped = follow(&child, halt, &mut reader, &mut job);
     if stopped {
         stop_group(i32::try_from(child.id()).unwrap_or(0), grace);
     }
+    // What it wrote before it ended, up to its pipes' end or the grace:
+    // a process it left in the background may hold them for good (the
+    // keeper reads them on).
+    reader.drain_until(Instant::now() + proc::STDERR_GRACE, &mut |s, b| {
+        job.read(s, b)
+    });
+    job.finish();
+    cx.keeper.release(cx.id);
+    drop(reader);
     match child.wait() {
         Ok(s) if stopped => (None, exit_code(s), true),
-        Ok(s) if s.success() => (None, 0, false),
-        Ok(s) => (Some(format!("`{prog}` failed ({s})")), exit_code(s), false),
+        Ok(s) if svc::status_ok(s, &cx.ok) => {
+            if !s.success()
+                && let Some(why) = job.tail.reason()
+            {
+                log::info!("action {}: `{prog}` ended ({s}): {why}", cx.action);
+            }
+            (None, exit_code(s), false)
+        }
+        Ok(s) => (
+            Some(job.tail.explain(&format!("`{prog}` failed ({s})"))),
+            exit_code(s),
+            false,
+        ),
         Err(e) => (
             Some(format!("`{prog}` could not be waited for: {e}")),
             -1,
@@ -485,26 +702,95 @@ pub(super) fn run(argv: &[String], halt: &Halt, grace: Duration) -> (Option<Stri
     }
 }
 
-/// How often a detached command's thread looks at it when the kernel
-/// gives no pidfd or eventfd to sleep on.
-const SLOW_TICK: Duration = Duration::from_millis(250);
+/// (proc-run) A job's output as its thread frames it.
+struct Job<'a> {
+    cx: &'a JobCx,
+    framers: [Framer; 2],
+    tail: Tail,
+    /// The action's block, as last looked up.
+    block: Option<BlockSpec>,
+}
 
-/// (lockmon) Waits, without reaping it, until `child` ends (false) or
-/// `halt` asks it to stop while it still runs (true). It sleeps on the
-/// child's pidfd and `halt`'s wake, so an app that runs for hours costs
-/// no wake-ups.
-fn wait_or_stop(child: &std::process::Child, halt: &Halt) -> bool {
-    use rustix::event::{PollFd, PollFlags, poll};
+impl Job<'_> {
+    /// What `stream` gave (`None`: its end): its lines framed into the
+    /// ring and the reason's tail, stdout's into the block.
+    fn read(&mut self, stream: Stream, bytes: Option<&[u8]>) {
+        // As it stands now: a reload may have declared it afresh while
+        // this thread slept.
+        if !stream.is_err() {
+            self.block = self.cx.block();
+        }
+        let mut t = lock(&self.cx.out);
+        let (cx, tail, block) = (self.cx, &mut self.tail, self.block.as_ref());
+        let f = &mut self.framers[usize::from(stream.is_err())];
+        let mut commit = |l: Framed| {
+            let text = l.text();
+            tail.push(stream, &text);
+            if stream.is_err() {
+                log::debug!("action {}: {text}", cx.action);
+            }
+            t.ring.end(stream, &text);
+            if stream.is_err() || l.over || l.is_blank() {
+                return;
+            }
+            let Some(b) = block else { return };
+            let values = svc::read_line(&b.fields, &text);
+            if t.fields.len() < values.len() {
+                t.fields.resize(values.len(), None);
+            }
+            for (slot, v) in t.fields.iter_mut().zip(&values) {
+                if v.is_some() {
+                    slot.clone_from(v);
+                }
+            }
+            if svc::hears_lines(b.spec) {
+                svc::sent_line(b.spec, text.len());
+                let line = values
+                    .into_iter()
+                    .map(|v| v.unwrap_or(Data::Null))
+                    .collect();
+                t.heard.push((b.spec, line));
+            }
+        };
+        match bytes {
+            Some(b) => f.push(b, &mut commit),
+            None => f.finish(&mut commit),
+        }
+        if f.take_changed() {
+            let open = f.open().map(proc::decode);
+            t.ring.open(stream, open.as_deref());
+        }
+    }
+
+    /// Its output ended: each open line ends as it reads.
+    fn finish(&mut self) {
+        for s in [Stream::Out, Stream::Err] {
+            self.read(s, None);
+        }
+        lock(&self.cx.out).ring.close();
+    }
+}
+
+/// (proc-run) Reads `child`'s output until it ends (false) or `halt`
+/// asks it to stop (true), asleep on its pipes, its pidfd and `halt`'s
+/// wake; logic is woken at most once a [`LISTEN_FLUSH`] while lines
+/// come. stdout is not read while its block's `line` handlers have
+/// [`proc::BACKLOG_LINES`] waiting ([`svc::backlogged`]).
+fn follow(
+    child: &std::process::Child,
+    halt: &Halt,
+    reader: &mut Reader,
+    job: &mut Job<'_>,
+) -> bool {
+    use rustix::fd::AsFd as _;
     let pid = i32::try_from(child.id()).unwrap_or(0);
     let pidfd = rustix::process::pidfd_open(
         rustix::process::Pid::from_child(child),
         rustix::process::PidfdFlags::empty(),
     )
     .ok();
-    let slow = rustix::time::Timespec {
-        tv_sec: 0,
-        tv_nsec: i64::from(SLOW_TICK.subsec_nanos()),
-    };
+    let mut sent = Instant::now();
+    let mut unsent = false;
     loop {
         if exited(pid) {
             return false;
@@ -512,22 +798,46 @@ fn wait_or_stop(child: &std::process::Child, halt: &Halt) -> bool {
         if halt.why() == STOPPED {
             return true;
         }
-        let mut fds = Vec::with_capacity(2);
+        job.block = job.cx.block();
+        let read_out = job.block.as_ref().is_none_or(|b| !svc::backlogged(b.spec));
+        let mut wakes = Vec::with_capacity(2);
         if let Some(p) = &pidfd {
-            fds.push(PollFd::new(p, PollFlags::IN));
+            wakes.push(p.as_fd());
         }
         if let Some(w) = &halt.wake {
-            fds.push(PollFd::new(w, PollFlags::IN));
+            wakes.push(w.as_fd());
         }
-        let timeout = (fds.len() < 2).then_some(&slow);
-        match poll(&mut fds, timeout) {
-            Ok(_) | Err(rustix::io::Errno::INTR) => {}
-            Err(_) => std::thread::sleep(SLOW_TICK),
+        let flush = LISTEN_FLUSH.saturating_sub(sent.elapsed());
+        let timeout = if !read_out {
+            Some(svc::BACKLOG_TICK)
+        } else if unsent {
+            Some(flush)
+        } else if wakes.len() < 2 {
+            Some(SLOW_TICK)
+        } else {
+            None
+        };
+        let mut got = false;
+        let stepped = reader.step(&wakes, timeout, read_out, &mut |s, b| {
+            got = true;
+            job.read(s, b);
+        });
+        if stepped.is_err() && !got {
+            std::thread::sleep(TICK);
         }
-        drop(fds);
         halt.drain();
+        unsent |= got;
+        if unsent && sent.elapsed() >= LISTEN_FLUSH {
+            job.cx.ping();
+            sent = Instant::now();
+            unsent = false;
+        }
     }
 }
+
+/// How often a detached command's thread looks at it when the kernel
+/// gives no pidfd or eventfd to sleep on.
+const SLOW_TICK: Duration = Duration::from_millis(250);
 
 /// (flex) What a command with a result left: what it printed or why it
 /// has no value, and its exit code (`-1` when it did not start or did
@@ -548,7 +858,9 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 }
 
 /// (flex) Runs `argv` and returns what it printed on stdout (at most
-/// [`MAX_DOCUMENT`] bytes), or why not. It is given `timeout` to print
+/// [`MAX_DOCUMENT`] bytes, framed as a terminal shows it), or why not:
+/// (proc-reason) a status `ok` does not list is a failure with why, from
+/// its stderr (`proc::Tail`). It is given `timeout` to print
 /// its output and end, as a `from poll` command is (a command that
 /// hangs, or leaves a child holding its stdout, would otherwise hold its
 /// call pending for ever); `halt` asked (its call was dropped, or
@@ -557,6 +869,7 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 /// command, so the group's id cannot have been reused by then.
 pub(super) fn capture(
     argv: &[String],
+    ok: &[i32],
     halt: &Halt,
     timeout: Duration,
     grace: Duration,
@@ -572,6 +885,7 @@ pub(super) fn capture(
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .process_group(0);
     strand_services::child::child_env(&mut cmd, None);
     // SAFETY: only async-signal-safe calls, as `pre_exec` requires. The death signal ends it with this thread,
@@ -591,11 +905,27 @@ pub(super) fn capture(
     };
     let group = i32::try_from(child.id()).unwrap_or(0);
     let deadline = Instant::now() + timeout;
+    let mut reader = Reader::new(
+        child.stdout.take().map(OwnedFd::from),
+        child.stderr.take().map(OwnedFd::from),
+    );
     let mut out = Vec::new();
-    let read = match child.stdout.take() {
-        Some(stdout) => read_until(stdout, &mut out, deadline, halt),
-        None => Ok(Reading::Done),
+    let mut err = Framer::new();
+    let mut tail = Tail::new();
+    let mut read = |s: Stream, bytes: Option<&[u8]>| {
+        if !s.is_err() {
+            if let Some(b) = bytes {
+                out.extend_from_slice(b);
+            }
+            return;
+        }
+        let mut keep = |l: Framed| tail.push(s, &l.text());
+        match bytes {
+            Some(b) => err.push(b, &mut keep),
+            None => err.finish(&mut keep),
+        }
     };
+    let reading = read_until(&mut reader, &mut read, deadline, halt);
     let ended = |child: &mut std::process::Child, why: String| {
         end_group(child, group);
         Captured {
@@ -612,32 +942,27 @@ pub(super) fn capture(
             exit,
         }
     };
-    match read {
-        Ok(Reading::Done) => {}
-        Ok(Reading::TooMuch) => {
+    match reading {
+        Reading::Done => {}
+        Reading::TooMuch => {
             return ended(
                 &mut child,
                 format!("`{prog}` printed more than {MAX_DOCUMENT} bytes; ended"),
             );
         }
-        Ok(Reading::Halted) if halt.why() == STOPPED => return stopped(&mut child),
-        Ok(Reading::Halted) => {
+        Reading::Halted if halt.why() == STOPPED => return stopped(&mut child),
+        Reading::Halted => {
             return ended(&mut child, format!("`{prog}` was no longer needed"));
         }
-        Ok(Reading::TimedOut) => {
+        Reading::TimedOut => {
             return ended(
                 &mut child,
                 format!("`{prog}` timed out after {}", span(timeout)),
             );
         }
-        Err(e) => {
-            return ended(
-                &mut child,
-                format!("`{prog}`'s output could not be read: {e}"),
-            );
-        }
     }
-    // Its stdout closed: it ends now, or within what is left.
+    // Its stdout closed: it ends now, or within what is left (its stderr
+    // read meanwhile).
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => break s,
@@ -651,19 +976,42 @@ pub(super) fn capture(
                     format!("`{prog}` timed out after {}", span(timeout)),
                 );
             }
-            Ok(None) => std::thread::sleep(TICK),
+            Ok(None) if reader.done() => std::thread::sleep(TICK),
+            Ok(None) => {
+                let _ = reader.step(&[], Some(TICK), true, &mut read);
+            }
             Err(e) => return failed(format!("`{prog}` could not be waited for: {e}")),
         }
     };
+    // What it wrote on stderr before it ended, up to the pipe's end or the
+    // grace: a process it left in the background may hold it.
+    reader.drain_until(Instant::now() + proc::STDERR_GRACE, &mut read);
+    err.finish(&mut |l| tail.push(Stream::Err, &l.text()));
+    drop(reader);
     let exit = exit_code(status);
-    if !status.success() {
+    if out.len() > MAX_DOCUMENT {
         return Captured {
-            out: Err(format!("`{prog}` failed ({status})")),
+            out: Err(format!("`{prog}` printed more than {MAX_DOCUMENT} bytes")),
             exit,
         };
     }
+    if !svc::status_ok(status, ok) {
+        // With nothing on stderr, the end of what it printed.
+        for line in proc::decode(&Framer::whole(&out)).lines() {
+            tail.push(Stream::Out, line);
+        }
+        return Captured {
+            out: Err(tail.explain(&format!("`{prog}` failed ({status})"))),
+            exit,
+        };
+    }
+    if !status.success()
+        && let Some(why) = tail.reason()
+    {
+        log::info!("`{prog}` ended ({status}): {why}");
+    }
     Captured {
-        out: Ok(strand_services::custom::decode_document(&out).into_owned()),
+        out: Ok(proc::decode(&Framer::whole(&out))),
         exit,
     }
 }
@@ -680,9 +1028,9 @@ fn span(d: Duration) -> String {
 /// How often a command's thread looks at its call and its deadline.
 const TICK: Duration = Duration::from_millis(20);
 
-/// How reading a command's stdout ended.
+/// How reading a command's output ended.
 enum Reading {
-    /// At its end.
+    /// At its stdout's end.
     Done,
     /// Past [`MAX_DOCUMENT`] bytes.
     TooMuch,
@@ -692,50 +1040,39 @@ enum Reading {
     TimedOut,
 }
 
-/// Reads `stdout` into `out` until its end, [`MAX_DOCUMENT`] bytes,
-/// `deadline` or `halt`, waiting at most [`TICK`] at a time.
+/// Reads `reader` into `read` (stderr too) until stdout's end,
+/// [`MAX_DOCUMENT`] bytes of stdout, `deadline` or `halt`, waiting at
+/// most [`TICK`] at a time.
 fn read_until(
-    mut stdout: std::process::ChildStdout,
-    out: &mut Vec<u8>,
+    reader: &mut Reader,
+    read: &mut dyn FnMut(Stream, Option<&[u8]>),
     deadline: Instant,
     halt: &Halt,
-) -> std::io::Result<Reading> {
-    use rustix::event::{PollFd, PollFlags, poll};
-    let mut buf = [0u8; 8192];
+) -> Reading {
+    let mut printed = 0usize;
     loop {
         if halt.why() != GO {
-            return Ok(Reading::Halted);
+            return Reading::Halted;
+        }
+        if printed > MAX_DOCUMENT {
+            return Reading::TooMuch;
+        }
+        if !reader.is_open(Stream::Out) {
+            return Reading::Done;
         }
         let now = Instant::now();
         if now >= deadline {
-            return Ok(Reading::TimedOut);
+            return Reading::TimedOut;
         }
         let wait = (deadline - now).min(TICK);
-        let ready = {
-            let mut fds = [PollFd::new(&stdout, PollFlags::IN)];
-            let ts = rustix::time::Timespec {
-                tv_sec: 0,
-                tv_nsec: i64::from(wait.subsec_nanos()),
-            };
-            match poll(&mut fds, Some(&ts)) {
-                Ok(n) => n > 0,
-                Err(rustix::io::Errno::INTR) => false,
-                Err(e) => return Err(e.into()),
+        let stepped = reader.step(&[], Some(wait), true, &mut |s, b| {
+            if !s.is_err() {
+                printed += b.map_or(0, <[u8]>::len);
             }
-        };
-        if !ready {
-            continue;
-        }
-        match stdout.read(&mut buf) {
-            Ok(0) => return Ok(Reading::Done),
-            Ok(n) => {
-                out.extend_from_slice(&buf[..n]);
-                if out.len() > MAX_DOCUMENT {
-                    return Ok(Reading::TooMuch);
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
+            read(s, b);
+        });
+        if stepped.is_err() {
+            std::thread::sleep(TICK.min(deadline.saturating_duration_since(Instant::now())));
         }
     }
 }
@@ -822,20 +1159,46 @@ impl Shell {
             self.recorder
                 .borrow_mut()
                 .action(t, &req.action, argc, true, 0);
+            // (proc-run) What its job prints is held back unless every
+            // argument is a text of the config.
+            if req.reply.is_none() {
+                let queued = self.execs.is_running(&req.action);
+                self.recorder
+                    .borrow_mut()
+                    .run_started(&req.action, &req.argv, queued);
+            }
             // (action-error) A new try: its last failure no longer stands.
             self.inst.set_action_error(&req.action, None);
             self.execs.start(req);
         }
+        // (proc-run) A job's end: its block's last lines, then its last
+        // `lines`, `code`, `error` and `running` in one update (spec.md
+        // 5.7's end order).
         for e in self.execs.ended() {
             let t = strand_core::flight::now_ns();
+            self.feed_block(&e.action, false, &e.taken);
+            let (keep_from, lines) = e.taken.update();
             {
+                // (report) In the end order: its last lines, why it
+                // failed, its end with its code.
                 let mut rec = self.recorder.borrow_mut();
+                rec.run_lines(t, &e.action, &lines);
                 if let Some(why) = &e.failed {
                     rec.action_failed(t, &e.action, why);
                 }
                 rec.action(t, &e.action, 0, false, e.exit);
             }
-            self.inst.set_action_error(&e.action, e.failed.as_deref());
+            self.inst.update_action_run(
+                &e.action,
+                RunUpdate {
+                    keep_from,
+                    lines,
+                    code: (e.exit >= 0).then_some(i64::from(e.exit)),
+                    error: Some(e.failed.clone()),
+                    running: Some((false, None)),
+                    ..RunUpdate::default()
+                },
+            );
             if e.stopped {
                 log::info!("action {}: stopped (exit {})", e.action, e.exit);
             }
@@ -860,17 +1223,79 @@ impl Shell {
             }
         }
         // (lockmon) `rec.running` and `rec.started` as the commands now
-        // stand; the loop steps once more to show them.
+        // stand, (proc-run) a job started since resetting its run; the
+        // loop steps once more to show them.
         let runs = self.execs.runs();
         for r in &runs {
             let started = r
                 .started
                 .map(|t| chrono::DateTime::<chrono::Local>::from(t).naive_local());
-            self.inst.set_action_run(&r.action, r.running, started);
+            if r.reset {
+                self.feed_block(&r.action, true, &Taken::default());
+            }
+            self.inst.update_action_run(
+                &r.action,
+                RunUpdate {
+                    reset: r.reset,
+                    running: Some((r.running, started)),
+                    ..RunUpdate::default()
+                },
+            );
         }
-        if !runs.is_empty() {
+        // (proc-run) What the jobs running printed since.
+        let printed = self.execs.lines();
+        for (action, taken) in &printed {
+            self.feed_block(action, false, taken);
+            let (keep_from, lines) = taken.update();
+            self.recorder
+                .borrow_mut()
+                .run_lines(strand_core::flight::now_ns(), action, &lines);
+            if keep_from > 0 || !lines.is_empty() {
+                self.inst.update_action_run(
+                    action,
+                    RunUpdate {
+                        keep_from,
+                        lines,
+                        ..RunUpdate::default()
+                    },
+                );
+            }
+        }
+        if !runs.is_empty() || !printed.is_empty() {
             self.execs.wake();
         }
+    }
+
+    /// (proc-run) What a job of `action` read into its block: its fields
+    /// and the lines its `line` handlers hear (`reset`: a run started).
+    fn feed_block(&self, action: &str, reset: bool, taken: &Taken) {
+        if reset || !taken.heard.is_empty() || taken.fields.iter().any(Option::is_some) {
+            let heard: Vec<Vec<Data>> = taken.heard.iter().map(|(_, l)| l.clone()).collect();
+            self.recorder.borrow_mut().block_fed(
+                strand_core::flight::now_ns(),
+                action,
+                reset,
+                &taken.fields,
+                &heard,
+            );
+        }
+        let Some(real) = &self.real else {
+            // No host to take them: they are not waited for.
+            for (spec, _) in &taken.heard {
+                svc::took_line(*spec);
+            }
+            return;
+        };
+        if !reset && taken.fields.iter().all(Option::is_none) && taken.heard.is_empty() {
+            return;
+        }
+        real.custom.feed_block(
+            self.inst.runtime(),
+            action,
+            reset,
+            &taken.fields,
+            taken.heard.clone(),
+        );
     }
 
     /// Action `action`'s command failed: a log line and a `strand
@@ -983,6 +1408,37 @@ mod tests {
                 Value::int(3)
             ]))
         );
+    }
+
+    /// (proc-format) A record read from output naming none of its
+    /// fields (a pacman.log line, `error: x`, `key=value here`): its
+    /// `text` fields read the output as written; one naming a field is
+    /// data as before.
+    #[test]
+    fn a_record_reads_output_naming_no_field_as_written() {
+        use strand_compiler::vm::Value;
+        let (p, t) = program_with("type Msg { line: text; level: text? }\n", "Msg");
+        let read = |out: &str| crate::services::custom::read_output(&p.types, &t, out).unwrap();
+        for out in [
+            "[2026-11-08T16:04:17-0700] [ALPM] transaction completed",
+            "error: failed to commit transaction (conflicting files)",
+            "key=value here",
+            "{\"kind\": \"out\"}",
+        ] {
+            let rec = read(out);
+            assert_eq!(
+                rec.field(&p.types, "line"),
+                Some(&Value::text(out)),
+                "{out}"
+            );
+            assert_eq!(rec.field(&p.types, "level"), Some(&Value::Null), "{out}");
+        }
+        let rec = read("level=warn\nline=disk almost full\n");
+        assert_eq!(
+            rec.field(&p.types, "line"),
+            Some(&Value::text("disk almost full"))
+        );
+        assert_eq!(rec.field(&p.types, "level"), Some(&Value::text("warn")));
     }
 
     /// (doc-formats) `nmap -oX -` through `-> Scan`: XML read as the
@@ -1123,13 +1579,15 @@ mod tests {
         let rec = ok.peek().unwrap().unwrap();
         assert_eq!(rec.field(&p.types, "load"), Some(&Value::float(0.75)));
         assert_eq!(rec.field(&p.types, "name"), Some(&Value::text("cpu")));
+        // (proc-reason) With nothing on stderr, why is the end of its
+        // stdout.
         assert_eq!(
             bad.peek(),
-            Some(Err("`sh` failed (exit status: 3)".to_string()))
+            Some(Err("`sh` failed (exit status: 3): nope".to_string()))
         );
         assert!(
             answered.iter().any(|a| a.action == "probe"
-                && a.failed.as_deref() == Some("`sh` failed (exit status: 3)")
+                && a.failed.as_deref() == Some("`sh` failed (exit status: 3): nope")
                 && a.exit == 3),
             "{answered:?}"
         );
@@ -1238,7 +1696,20 @@ mod tests {
 
     /// [`run`] to its end.
     fn run_(argv: &[String]) -> (Option<String>, i32, bool) {
-        run(argv, &Halt::new(true), STOP_GRACE)
+        run(argv, &Halt::new(true), STOP_GRACE, &job_cx("run", &[0]))
+    }
+
+    /// A job's context with no loop to wake and no block.
+    fn job_cx(action: &str, ok: &[i32]) -> JobCx {
+        JobCx {
+            action: action.into(),
+            ok: ok.to_vec(),
+            id: 0,
+            out: Arc::default(),
+            blocks: Blocks::default(),
+            keeper: Arc::default(),
+            ping: None,
+        }
     }
 
     /// Whether `pid` has ended and waits to be reaped.
@@ -1343,14 +1814,15 @@ mod tests {
         }
         let took = asked.elapsed();
         assert!(took >= Duration::from_millis(800), "two graces: {took:?}");
+        assert_eq!(ended.len(), 1);
         assert_eq!(
-            ended,
-            [Ended {
-                action: "rec".into(),
-                failed: None,
-                exit: 128 + libc::SIGKILL,
-                stopped: true,
-            }]
+            (
+                &*ended[0].action,
+                &ended[0].failed,
+                ended[0].exit,
+                ended[0].stopped
+            ),
+            ("rec", &None, 128 + libc::SIGKILL, true)
         );
         let said = std::fs::read_to_string(&log).unwrap();
         assert_eq!(said, "int\nterm\n", "SIGINT, then SIGTERM, then SIGKILL");
@@ -1364,6 +1836,7 @@ mod tests {
                 action: "rec".into(),
                 running: false,
                 started: None,
+                reset: false,
             }]
         );
         // One that ends on SIGINT ends at once.
@@ -1537,6 +2010,7 @@ mod tests {
                 action: "probe".into(),
                 running: false,
                 started: None,
+                reset: false,
             }]
         );
         drop(waits);
@@ -1726,6 +2200,611 @@ mod tests {
                 .as_deref()
                 .is_some_and(|f| f.starts_with("could not start `/nonexistent/")),
             "{missing:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (proc-run) The lines a run's updates leave, applied as
+    /// `ActionRuns` applies them.
+    #[derive(Default, Debug)]
+    struct Shown {
+        lines: Vec<RingLine>,
+        /// Every open line seen on the way.
+        opened: Vec<String>,
+        resets: usize,
+        /// The block's fields each take set.
+        fields: Vec<Vec<Option<Data>>>,
+    }
+
+    impl Shown {
+        fn apply(&mut self, t: &Taken) {
+            if t.fields.iter().any(Option::is_some) {
+                self.fields.push(t.fields.clone());
+            }
+            let Some((front, lines)) = &t.lines else {
+                return;
+            };
+            self.lines.retain(|l| l.n >= *front);
+            for l in lines {
+                if l.open {
+                    self.opened.push(l.text.clone());
+                }
+                match self.lines.iter_mut().find(|k| k.n == l.n) {
+                    Some(k) => *k = l.clone(),
+                    None => self.lines.push(l.clone()),
+                }
+            }
+        }
+
+        fn texts(&self) -> Vec<(String, bool, bool)> {
+            self.lines
+                .iter()
+                .map(|l| (l.text.clone(), l.stderr, l.open))
+                .collect()
+        }
+    }
+
+    /// Steps `execs` as the shell does until `n` commands ended, giving
+    /// what it printed to `shown`, each start's reset counted.
+    fn follow_runs(
+        loop_: &mut calloop::EventLoop<'static, ()>,
+        execs: &mut Execs,
+        shown: &mut Shown,
+        n: usize,
+    ) -> Vec<Ended> {
+        let mut ended = Vec::new();
+        let start = Instant::now();
+        while ended.len() < n {
+            assert!(start.elapsed() < Duration::from_secs(30), "{ended:?}");
+            loop_
+                .dispatch(Some(Duration::from_millis(10)), &mut ())
+                .unwrap();
+            for e in execs.ended() {
+                shown.apply(&e.taken);
+                ended.push(e);
+            }
+            for r in execs.runs() {
+                if r.reset {
+                    shown.resets += 1;
+                    *shown = Shown {
+                        resets: shown.resets,
+                        ..Shown::default()
+                    };
+                }
+            }
+            for (_, t) in execs.lines() {
+                shown.apply(&t);
+            }
+        }
+        ended
+    }
+
+    fn job(action: &str, argv: Vec<String>) -> ExecRequest {
+        ExecRequest {
+            action: action.into(),
+            argv,
+            reply: None,
+            stop: false,
+        }
+    }
+
+    /// (proc-run) A run's `lines`: stdout and stderr, each line tagged,
+    /// as a terminal shows them: a `\r` progress line redrawn in place
+    /// (seen open on the way), escapes removed, the open line at the end
+    /// ended when the run ends; then its code.
+    #[test]
+    fn a_run_has_its_lines_both_streams_tagged() {
+        let (mut loop_, mut execs) = looped(STOP_GRACE);
+        let script = "printf 'one\\n'; sleep 0.05; printf 'oops\\n' >&2; sleep 0.05; \
+                      printf 'two\\n'; printf 'pro 10%%\\r'; sleep 0.4; \
+                      printf 'pro 50%%\\rpro 100%%\\n'; \
+                      printf '\\033[31mred\\033[0m \\033]0;title\\007ok\\n'; printf 'last'";
+        execs.start(job("upd", sh(script)));
+        let mut shown = Shown::default();
+        let ended = follow_runs(&mut loop_, &mut execs, &mut shown, 1);
+        assert_eq!((ended[0].failed.as_deref(), ended[0].exit), (None, 0));
+        let s = |t: &str, err: bool| (t.to_string(), err, false);
+        assert_eq!(
+            shown.texts(),
+            [
+                s("one", false),
+                s("oops", true),
+                s("two", false),
+                s("pro 100%", false),
+                s("red ok", false),
+                s("last", false),
+            ]
+        );
+        assert!(
+            shown.opened.iter().any(|t| t == "pro 10%"),
+            "the progress line was seen open: {:?}",
+            shown.opened
+        );
+        assert_eq!(shown.resets, 1);
+        let n: Vec<u64> = shown.lines.iter().map(|l| l.n).collect();
+        assert_eq!(n, [1, 2, 3, 4, 5, 6], "numbered from 1");
+    }
+
+    /// (proc-reason) A failing job's error is its headline and why, from
+    /// its stderr after framing (a long one: its head and its tail at
+    /// lines; none: the end of its stdout; nothing printed: the headline
+    /// alone, as before).
+    #[test]
+    fn a_run_failing_says_why() {
+        let (why, exit, _) = run_(&sh("echo 'resolving dependencies...'; \
+             echo 'error: failed to commit transaction (conflicting files)' >&2; \
+             printf 'foo: /usr/bin/foo exists in filesystem\\r\\n\\n' >&2; exit 1"));
+        assert_eq!(exit, 1);
+        assert_eq!(
+            why.as_deref(),
+            Some(
+                "`sh` failed (exit status: 1): error: failed to commit transaction \
+                 (conflicting files)\nfoo: /usr/bin/foo exists in filesystem"
+            )
+        );
+        let (why, ..) = run_(&sh("echo 'set -e said this'; exit 2"));
+        assert_eq!(
+            why.as_deref(),
+            Some("`sh` failed (exit status: 2): set -e said this")
+        );
+        assert_eq!(
+            run_(&sh("exit 3")).0.as_deref(),
+            Some("`sh` failed (exit status: 3)")
+        );
+        let (why, ..) = run_(&sh(
+            "{ echo 'error: the first'; i=0; while [ $i -lt 3000 ]; do echo \"noise $i\"; \
+             i=$((i+1)); done; echo 'the last'; } >&2; exit 1",
+        ));
+        let why = why.unwrap();
+        assert!(why.starts_with("`sh` failed (exit status: 1): error: the first\n"));
+        assert!(
+            why.contains("\n…\n") && why.ends_with("\nthe last"),
+            "{why}"
+        );
+        assert!(
+            why.len() < proc::TAIL_HEAD + proc::TAIL_END + 100,
+            "{}",
+            why.len()
+        );
+    }
+
+    /// (proc-ok) A status `ok` lists is no failure (its code kept), one
+    /// it does not is; a signal never is; a result's output is read at
+    /// a listed status.
+    #[test]
+    fn an_ok_status_is_not_a_failure() {
+        let run_ok = |script: &str, ok: &[i32]| {
+            run(&sh(script), &Halt::new(true), STOP_GRACE, &job_cx("b", ok))
+        };
+        assert_eq!(run_ok("exit 3", &[0, 3]), (None, 3, false));
+        assert_eq!(run_ok("exit 0", &[0, 3]), (None, 0, false));
+        assert!(run_ok("exit 2", &[0, 3]).0.is_some());
+        let (why, exit, _) = run_ok("kill -TERM $$", &[0, 143]);
+        assert_eq!(exit, 143);
+        assert!(
+            why.is_some_and(|w| w.contains("signal")),
+            "a signal is never ok"
+        );
+        let got = capture(
+            &sh("echo none; exit 2"),
+            &[0, 2],
+            &Halt::new(false),
+            POLL_TIMEOUT,
+            STOP_GRACE,
+        );
+        assert_eq!(
+            got,
+            Captured {
+                out: Ok("none".into()),
+                exit: 2
+            }
+        );
+        let got = capture(
+            &sh("exit 2"),
+            &[0],
+            &Halt::new(false),
+            POLL_TIMEOUT,
+            STOP_GRACE,
+        );
+        assert_eq!(got.out, Err("`sh` failed (exit status: 2)".into()));
+    }
+
+    /// (proc-reason) A call with a result failing: its `.error` says why,
+    /// from its stderr, else the end of its stdout; its output is framed
+    /// as a terminal shows it when it succeeds.
+    #[test]
+    fn a_result_call_failing_says_why() {
+        let call = |script: &str| {
+            capture(
+                &sh(script),
+                &[0],
+                &Halt::new(false),
+                POLL_TIMEOUT,
+                STOP_GRACE,
+            )
+        };
+        assert_eq!(
+            call("echo partial; echo 'qalc: no network' >&2; exit 4").out,
+            Err("`sh` failed (exit status: 4): qalc: no network".into())
+        );
+        assert_eq!(
+            call("echo 'nothing to say'; exit 4").out,
+            Err("`sh` failed (exit status: 4): nothing to say".into())
+        );
+        assert_eq!(
+            call("printf '\\033[1m42\\033[0m\\r43\\n'").out,
+            Ok("43".into())
+        );
+    }
+
+    /// (proc-run) A run's `lines`, `code` and `error` reset when one
+    /// starts, a queued re-run included, never when one ends.
+    #[test]
+    fn lines_reset_when_a_run_starts() {
+        let dir = scratch("reset");
+        let gate = dir.join("gate");
+        let (mut loop_, mut execs) = looped(STOP_GRACE);
+        let first = format!(
+            "echo first; while [ ! -e '{}' ]; do sleep 0.01; done; exit 1",
+            gate.display()
+        );
+        execs.start(job("u", sh(&first)));
+        execs.start(job("u", sh("echo second")));
+        let mut shown = Shown::default();
+        // The first's line, before it ends.
+        let start = Instant::now();
+        while shown.lines.is_empty() {
+            assert!(start.elapsed() < Duration::from_secs(20));
+            loop_
+                .dispatch(Some(Duration::from_millis(10)), &mut ())
+                .unwrap();
+            for r in execs.runs() {
+                shown.resets += usize::from(r.reset);
+            }
+            for (_, t) in execs.lines() {
+                shown.apply(&t);
+            }
+        }
+        assert_eq!(shown.texts(), [("first".into(), false, false)]);
+        std::fs::write(&gate, "").unwrap();
+        let ended = follow_runs(&mut loop_, &mut execs, &mut shown, 2);
+        assert!(ended[0].failed.is_some() && ended[1].failed.is_none());
+        assert_eq!(shown.resets, 2, "the re-run reset its run");
+        assert_eq!(shown.texts(), [("second".into(), false, false)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (proc-run) A stopped run keeps what it printed; its code is how it
+    /// ended (130 for SIGINT), and it is no failure.
+    #[test]
+    fn a_stopped_run_keeps_its_lines_and_code_130() {
+        let (mut loop_, mut execs) = looped(Duration::from_millis(400));
+        execs.start(job("rec", sh("echo working; exec sleep 30")));
+        let mut shown = Shown::default();
+        let start = Instant::now();
+        while shown.lines.is_empty() {
+            assert!(start.elapsed() < Duration::from_secs(20));
+            loop_
+                .dispatch(Some(Duration::from_millis(10)), &mut ())
+                .unwrap();
+            let _ = execs.runs();
+            for (_, t) in execs.lines() {
+                shown.apply(&t);
+            }
+        }
+        execs.start(ExecRequest {
+            action: "rec".into(),
+            argv: Vec::new(),
+            reply: None,
+            stop: true,
+        });
+        let ended = follow_runs(&mut loop_, &mut execs, &mut shown, 1);
+        assert_eq!(ended[0].exit, 130);
+        assert!(ended[0].stopped && ended[0].failed.is_none());
+        assert_eq!(shown.texts(), [("working".into(), false, false)]);
+    }
+
+    /// (proc-run) An action's block reads its stdout lines into its
+    /// fields, the latest of each; stderr never reaches them; a block
+    /// changed while the run reads (a reload) is read from then on.
+    #[test]
+    fn a_block_reads_stdout_lines_into_fields() {
+        use strand_services::custom::{FieldSpec, TextField};
+        let field = |name: &str, text| FieldSpec {
+            name: name.into(),
+            key: vec![name.into()],
+            rw: false,
+            text,
+        };
+        let (mut loop_, mut execs) = looped(STOP_GRACE);
+        let spec = |fields| BlockSpec {
+            spec: -77,
+            fields: Arc::new(fields),
+        };
+        lock(&execs.blocks).insert(
+            "backup".into(),
+            spec(vec![
+                field("message_type", TextField::Required),
+                field("percent_done", TextField::No),
+            ]),
+        );
+        let script = "echo '{\"message_type\":\"status\",\"percent_done\":0.25}'; \
+                      echo '{\"percent_done\":0.5,\"message_type\":\"bogus\"}' >&2; \
+                      echo 'scanning...'; \
+                      echo '{\"message_type\":\"status\",\"percent_done\":0.75}'";
+        execs.start(job("backup", sh(script)));
+        let mut fields: Vec<Option<Data>> = Vec::new();
+        let mut take = |t: &Taken| {
+            for (i, v) in t.fields.iter().enumerate() {
+                if fields.len() <= i {
+                    fields.resize(i + 1, None);
+                }
+                if v.is_some() {
+                    fields[i].clone_from(v);
+                }
+            }
+        };
+        let start = Instant::now();
+        let mut ended = Vec::new();
+        while ended.is_empty() {
+            assert!(start.elapsed() < Duration::from_secs(20));
+            loop_
+                .dispatch(Some(Duration::from_millis(10)), &mut ())
+                .unwrap();
+            let _ = execs.runs();
+            for (_, t) in execs.lines() {
+                take(&t);
+            }
+            for e in execs.ended() {
+                take(&e.taken);
+                ended.push(e);
+            }
+        }
+        assert_eq!(
+            fields,
+            [
+                // `scanning...` names no field: the required text field
+                // reads it as written, then the last JSON line's value.
+                Some(Data::text("status")),
+                Some(Data::Float(0.75)),
+            ]
+        );
+    }
+
+    /// (proc-run) The end order: everything a run printed comes with or
+    /// before its end (one report, taken after its last line), none after.
+    #[test]
+    fn the_end_order_is_lines_then_error_then_running() {
+        let (mut loop_, mut execs) = looped(STOP_GRACE);
+        for i in 0..5 {
+            // (Order across the two pipes is the order they were read:
+            // the pause makes it this one.)
+            let script = format!("seq 1 2000; sleep 0.2; echo 'boom {i}' >&2; exit 1");
+            execs.start(job(&format!("a{i}"), sh(&script)));
+        }
+        let mut shown: HashMap<String, Shown> = HashMap::new();
+        let start = Instant::now();
+        let mut ended = 0;
+        while ended < 5 {
+            assert!(start.elapsed() < Duration::from_secs(30));
+            loop_
+                .dispatch(Some(Duration::from_millis(5)), &mut ())
+                .unwrap();
+            let _ = execs.runs();
+            for (a, t) in execs.lines() {
+                shown.entry(a).or_default().apply(&t);
+            }
+            for e in execs.ended() {
+                let s = shown.entry(e.action.clone()).or_default();
+                s.apply(&e.taken);
+                let last = s.lines.last().map(|l| l.text.clone());
+                assert_eq!(last, Some(e.action.replace('a', "boom ")), "{}", e.action);
+                assert!(
+                    e.failed
+                        .as_deref()
+                        .is_some_and(|f| f.ends_with(&e.action.replace('a', "boom "))),
+                    "{:?}",
+                    e.failed
+                );
+                ended += 1;
+            }
+        }
+        // Nothing after an end.
+        loop_
+            .dispatch(Some(Duration::from_millis(50)), &mut ())
+            .unwrap();
+        assert!(execs.lines().is_empty());
+        for s in shown.values() {
+            assert_eq!(s.lines.len(), 1000, "the ring keeps the last 1000");
+            assert!(s.lines.iter().all(|l| !l.open));
+        }
+    }
+
+    /// (proc-run) A flood of output (200 000 lines) costs its ring, not
+    /// its size: the ring stays at 1000 lines, and logic is woken at
+    /// most once a frame while it reads.
+    #[test]
+    fn a_chatty_action_costs_its_ring() {
+        let mut loop_ = calloop::EventLoop::<()>::try_new().unwrap();
+        let (ping, source) = calloop::ping::make_ping().unwrap();
+        let wakes = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let w = wakes.clone();
+        loop_
+            .handle()
+            .insert_source(source, move |_, _, _| w.set(w.get() + 1))
+            .unwrap();
+        let mut execs = Execs::new(ping);
+        let start = Instant::now();
+        execs.start(job("chatty", sh("seq 1 200000")));
+        let mut shown = Shown::default();
+        let mut most = 0;
+        let ended = loop {
+            loop_
+                .dispatch(Some(Duration::from_millis(50)), &mut ())
+                .unwrap();
+            let _ = execs.runs();
+            for (_, t) in execs.lines() {
+                shown.apply(&t);
+            }
+            for d in execs.running.values() {
+                most = most.max(lock(&d.out).ring.lines().count());
+            }
+            let e = execs.ended();
+            if !e.is_empty() {
+                break e;
+            }
+            assert!(start.elapsed() < Duration::from_secs(60));
+        };
+        let took = start.elapsed();
+        shown.apply(&ended[0].taken);
+        assert!(most <= proc::RING_LINES, "{most}");
+        assert_eq!(shown.lines.len(), proc::RING_LINES);
+        assert_eq!(shown.lines.last().map(|l| l.text.as_str()), Some("200000"));
+        // At most one wake a frame, and one at its end.
+        let frames = (took.as_secs_f64() / LISTEN_FLUSH.as_secs_f64()).ceil() as u32;
+        assert!(
+            wakes.get() <= frames + 2,
+            "{} wakes in {took:?}",
+            wakes.get()
+        );
+    }
+
+    /// (proc-keeper) A job outlives strand without SIGPIPE: a copy of
+    /// this test binary runs two jobs writing for a second (on stdout,
+    /// on stderr), then is killed; both jobs end with success (their
+    /// writes never failed), and the keeper exits once their pipes end.
+    #[test]
+    fn a_run_outlives_strand_without_sigpipe() {
+        const CHILD: &str = "STRAND_TEST_KEEPER_RUN";
+        let writer = |to: &str| {
+            format!(
+                "i=0; while [ $i -lt 50 ]; do seq 1 3000 {to} || {{ echo \"seq $?\" > \"$0\"; \
+                 exit 1; }}; sleep 0.02; i=$((i+1)); done; echo ok > \"$0\""
+            )
+        };
+        if let Some(dir) = std::env::var_os(CHILD) {
+            let dir = std::path::PathBuf::from(dir);
+            let (mut loop_, mut execs) = looped(STOP_GRACE);
+            for (name, to) in [("out", ""), ("err", ">&2")] {
+                let mut argv = sh(&writer(to));
+                argv.push(dir.join(name).to_str().unwrap().into());
+                execs.start(job(name, argv));
+            }
+            let mut seen = 0;
+            let start = Instant::now();
+            while seen < 100 || start.elapsed() < Duration::from_millis(200) {
+                assert!(start.elapsed() < Duration::from_secs(20));
+                loop_
+                    .dispatch(Some(Duration::from_millis(10)), &mut ())
+                    .unwrap();
+                let _ = execs.runs();
+                for (_, t) in execs.lines() {
+                    seen += t.lines.map_or(0, |l| l.1.len());
+                }
+            }
+            let pid = execs.keeper.pid().expect("the keeper runs");
+            std::fs::write(dir.join("keeper.part"), pid.to_string()).unwrap();
+            std::fs::rename(dir.join("keeper.part"), dir.join("keeper")).unwrap();
+            // Killed here, mid-run.
+            std::thread::sleep(Duration::from_secs(60));
+            return;
+        }
+        let dir = scratch("keeper");
+        let mut helper = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "run::exec::tests::a_run_outlives_strand_without_sigpipe",
+                "--test-threads=1",
+            ])
+            .env(CHILD, &dir)
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        wait_for("the helper never started its jobs", 30, || {
+            dir.join("keeper").exists()
+        });
+        let keeper: i32 = std::fs::read_to_string(dir.join("keeper"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        helper.kill().unwrap();
+        let _ = helper.wait();
+        for name in ["out", "err"] {
+            wait_for(&format!("{name} never ended"), 30, || {
+                dir.join(name).exists()
+            });
+            wait_for(&format!("{name} said nothing"), 5, || {
+                std::fs::read_to_string(dir.join(name)).is_ok_and(|s| s.ends_with('\n'))
+            });
+            assert_eq!(
+                std::fs::read_to_string(dir.join(name)).unwrap(),
+                "ok\n",
+                "{name}'s writes failed after strand went"
+            );
+        }
+        // SAFETY: kill(2) with signal 0 only asks whether it is there.
+        wait_for("the keeper runs on", 20, || {
+            (unsafe { libc::kill(keeper, 0) }) != 0 || zombie(keeper)
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (proc-run) A reload never stops a run or resets what it printed:
+    /// its lines go on numbering, and a block the reload declared afresh
+    /// (a new spec, other fields) is read from then on.
+    #[test]
+    fn a_reload_keeps_reading() {
+        use strand_services::custom::{FieldSpec, TextField};
+        let dir = scratch("reload");
+        let gate = dir.join("gate");
+        let field = |name: &str| FieldSpec {
+            name: name.into(),
+            key: vec![name.into()],
+            rw: false,
+            text: TextField::No,
+        };
+        let (mut loop_, mut execs) = looped(STOP_GRACE);
+        let block = |spec, f: &str| BlockSpec {
+            spec,
+            fields: Arc::new(vec![field(f)]),
+        };
+        lock(&execs.blocks).insert("u".into(), block(-80, "a"));
+        let script = format!(
+            "echo a=1; while [ ! -e '{}' ]; do sleep 0.01; done; echo b=2",
+            gate.display()
+        );
+        execs.start(job("u", sh(&script)));
+        let mut shown = Shown::default();
+        let mut fields = Vec::new();
+        let start = Instant::now();
+        while shown.lines.is_empty() {
+            assert!(start.elapsed() < Duration::from_secs(20));
+            loop_
+                .dispatch(Some(Duration::from_millis(10)), &mut ())
+                .unwrap();
+            for r in execs.runs() {
+                shown.resets += usize::from(r.reset);
+            }
+            for (_, t) in execs.lines() {
+                shown.apply(&t);
+                fields.push(t.fields.clone());
+            }
+        }
+        // (Pairs hold text: the host converts it to the field's type.)
+        assert_eq!(fields.concat(), [Some(Data::text("1"))]);
+        // The reload: the block is now `{ b: int }`, another spec.
+        lock(&execs.blocks).insert("u".into(), block(-81, "b"));
+        std::fs::write(&gate, "").unwrap();
+        let ended = follow_runs(&mut loop_, &mut execs, &mut shown, 1);
+        assert_eq!(shown.resets, 1, "never reset");
+        assert_eq!(
+            shown.texts(),
+            [("a=1".into(), false, false), ("b=2".into(), false, false)]
+        );
+        assert!(ended[0].failed.is_none());
+        assert_eq!(
+            shown.fields.concat(),
+            [Some(Data::text("1")), Some(Data::text("2"))]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

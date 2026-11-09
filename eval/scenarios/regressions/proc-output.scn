@@ -1,0 +1,53 @@
+id     = "proc-output"
+about  = """Following programs' output (docs/decisions.md proc-run): an updater view
+of `upd.lines`, `upd.code` and `upd.error`, replayed as a recording replays a
+job (`line action`, `end action … code N failed "…"`). Its progress line shows
+open while it is redrawn and ends whole; the failure's reason, from stderr,
+is in `upd.error`; `code` is the status it ended with. The sandbox runs no
+command: the steps are the job's output, as a glitch report records it."""
+screen = { width = 400, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+permit exec "pacman"
+action upd() ["pacman", "-Syu"]
+export state go = 0
+on change go { upd() }
+
+bar Top {
+  height: 30
+  row {
+    gap: 4
+    for l in upd.lines {
+      if l.open { box { id: open_line; width: 6; height: 6; bg: #ffaa00 } }
+      if l.stderr && l.text == "error: failed to commit transaction (conflicting files)" {
+        box { id: err_line; width: 6; height: 6; bg: #ff0000 }
+      }
+      if !l.stderr && !l.open && l.text == "( 1/2) upgrading foo  100%" {
+        box { id: done_line; width: 6; height: 6; bg: #00ff00 }
+      }
+    }
+    if upd.code == 1 { box { id: code_one; width: 6; height: 6; bg: #ff00ff } }
+    if upd.error == "`pacman` failed (exit status: 1): error: failed to commit transaction (conflicting files)" {
+      box { id: why; width: 6; height: 6; bg: #0000ff }
+    }
+  }
+}
+
+=== steps
+rest
+set go 1
+rest
+line action upd ":: Starting full system upgrade..."
+line action upd open "( 1/2) upgrading foo   45%"
+rest
+expect visible #open_line
+line action upd "( 1/2) upgrading foo  100%"
+line action upd stderr "error: failed to commit transaction (conflicting files)"
+end action upd code 1 failed "`pacman` failed (exit status: 1): error: failed to commit transaction (conflicting files)"
+rest
+expect hidden #open_line
+expect visible #done_line
+expect visible #err_line
+expect visible #code_one
+expect visible #why

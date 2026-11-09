@@ -3963,44 +3963,55 @@ fn an_actions_error_clears_at_a_new_call() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// (action-error) A failed command followed by a queued re-run: the failure
-/// shows while the re-run runs, and the re-run's good end clears it, with
-/// no call in between to do so.
+/// (action-error, proc-run) A failed command followed by a queued re-run:
+/// the re-run starting resets the run (spec.md 5.7: a queued re-run
+/// included), so its `error` and `code` are null while it runs, and its
+/// good end leaves them so, its code 0.
 #[test]
-fn a_queued_re_runs_good_end_clears_the_error() {
+fn a_queued_re_run_starting_resets_the_run() {
     let dir = temp_dir("exec-error-end");
-    let gate = dir.join("gate");
+    let (first, second) = (dir.join("first"), dir.join("second"));
     let src = format!(
-        "{QUEUED_ACTION}bar Top {{\n  on click {{\n    rec(\"3\", \"\")\n    \
-         rec(\"0\", \"{}\")\n  }}\n  text rec.error ?? \"none\"\n}}\n",
-        gate.display()
+        "{QUEUED_ACTION}bar Top {{\n  on click {{\n    rec(\"3\", \"{}\")\n    \
+         rec(\"0\", \"{}\")\n  }}\n  text rec.error ?? \"none\"\n  \
+         text join(\"\", rec.code ?? -1)\n  text rec.running ? \"running\" : \"ended\"\n}}\n",
+        first.display(),
+        second.display()
     );
     with_action_shell(&dir, &src, |m, click| {
         click();
-        m.until("its failure", |s| s.texts() == [SH_FAILED]);
-        std::fs::write(&gate, "").unwrap();
-        m.until("the good end clears it", |s| s.texts() == ["none"]);
+        m.until("the first runs", |s| s.texts() == ["none", "-1", "running"]);
+        std::fs::write(&first, "").unwrap();
+        // The first fails and the re-run starts in one step: its failure
+        // was reset with the run.
+        m.settle("the re-run runs", Duration::from_millis(500));
+        assert_eq!(m.scene.texts(), ["none", "-1", "running"]);
+        std::fs::write(&second, "").unwrap();
+        m.until("the good end", |s| s.texts() == ["none", "0", "ended"]);
     });
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// (action-error) A failed command followed by a queued re-run that is
-/// stopped: a stop is no failure, and it clears the last one.
+/// (action-error) A stopped command: a stop is no failure, so `error`
+/// stays null; (proc-run) its code is how it ended, 130 for SIGINT.
 #[test]
 fn a_stop_clears_the_error() {
     let dir = temp_dir("exec-error-stop");
     let gate = dir.join("never");
     let src = format!(
         "{QUEUED_ACTION}state n = 0\nbar Top {{\n  on click {{\n    n += 1\n    \
-         if n == 1 {{\n      rec(\"3\", \"\")\n      rec(\"0\", \"{}\")\n    }}\n    \
-         if n == 2 {{ rec.stop() }}\n  }}\n  text rec.error ?? \"none\"\n}}\n",
+         if n == 1 {{ rec(\"3\", \"\") }}\n    if n == 2 {{ rec(\"0\", \"{}\") }}\n    \
+         if n == 3 {{ rec.stop() }}\n  }}\n  text rec.error ?? \"none\"\n  \
+         text join(\"\", rec.code ?? -1)\n}}\n",
         gate.display()
     );
     with_action_shell(&dir, &src, |m, click| {
         click();
-        m.until("its failure", |s| s.texts() == [SH_FAILED]);
+        m.until("its failure", |s| s.texts() == [SH_FAILED, "3"]);
         click();
-        m.until("the stop clears it", |s| s.texts() == ["none"]);
+        m.until("the call clears it", |s| s.texts() == ["none", "-1"]);
+        click();
+        m.until("the stop", |s| s.texts() == ["none", "130"]);
     });
     let _ = std::fs::remove_dir_all(dir);
 }

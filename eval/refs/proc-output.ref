@@ -1,0 +1,29 @@
+# strand-eval reference recordings (docs/eval.md, "Reference recordings"). Written by `strand-eval approve` and `verdict`; a block edited by hand fails its seal.
+ref "proc-output"
+verdict good
+note "proc-output: an updater view of upd.lines, upd.code and upd.error as a job's replayed steps say; its open line shows while redrawn, then its ended lines, its stderr reason and code 1 (2026-11-08)"
+date 2026-11-09
+rev "82e89f4f+changes"
+approver "claude"
+scenario b7702c40ec71719f
+seal d480dba7fda73c35
+S1 0 - "bar Top"
+N0 "|shell.strand:6:1|[Mock | DP-1]#0" "bar@shell.strand:6"
+N1 "|shell.strand:8:3|[Mock | DP-1]#0" "row@shell.strand:8"
+N2 "open_line|shell.strand:11:19|[Mock | DP-1][2]#0" "box#open_line"
+N3 "code_one|shell.strand:19:24|[Mock | DP-1]#2" "box#code_one"
+N4 "done_line|shell.strand:16:9|[Mock | DP-1][2]#0" "box#done_line"
+N5 "err_line|shell.strand:13:9|[Mock | DP-1][3]#1" "box#err_line"
+N6 "why|shell.strand:21:7|[Mock | DP-1]#3" "box#why"
+k0 p1
+s1 z=400,30
+n0 x=0 y=0 w=400 h=30 bg=faf9ffff
+n1 x=0 y=0 w=400 h=30 ord=1
+k2
+n2 x=0 y=12 w=6 h=6 ord=2 bg=ffaa00ff
+k3
+n2 -
+n3 x=20 y=12 w=6 h=6 ord=4 bg=ff00ffff
+n4 x=0 y=12 w=6 h=6 ord=2 bg=00ff00ff
+n5 x=10 y=12 w=6 h=6 ord=3 bg=ff0000ff
+n6 x=30 y=12 w=6 h=6 ord=5 bg=0000ffff

@@ -57,6 +57,7 @@ use strand_compiler::reconcile::Build;
 use strand_compiler::schema::Schema;
 use strand_compiler::ty::Ty;
 use strand_compiler::vm::Value;
+use strand_compiler::vm::runs::{RunLine, RunUpdate};
 use strand_compiler::vm::schema_host::{MOCK_TIME, SchemaHost};
 use strand_core::Runtime;
 use strand_render::host_loop::{self, Cause, LoopHost, LoopSync};
@@ -1163,6 +1164,10 @@ struct Harness {
 struct SandboxRun {
     started: Option<SystemTime>,
     queued: bool,
+    /// (proc-run) The last line's number in the run, and each stream's
+    /// open line's.
+    last_n: u64,
+    open: [Option<u64>; 2],
 }
 
 /// (eval-live) A time step under way: its line, the tick it began at,
@@ -1540,6 +1545,27 @@ impl Harness {
 
     /// (lockmon) Tells the instance action `action`'s run: running since
     /// `oldest`, or not running.
+    /// (proc-run) A run of `action` starts in the sandbox: its `lines`,
+    /// `code` and `error` reset, its lines numbered afresh.
+    fn reset_run(&self, action: &str) {
+        if let Some(run) = self.sandbox_runs.borrow_mut().get_mut(action) {
+            run.last_n = 0;
+            run.open = [None; 2];
+        }
+        self.inst.update_action_run(
+            action,
+            RunUpdate {
+                reset: true,
+                ..RunUpdate::default()
+            },
+        );
+    }
+
+    /// Whether the program declares action `name` with a command.
+    fn declares_exec(&self, name: &str) -> bool {
+        self.inst.vm().prog.execs.values().any(|a| a.name == name)
+    }
+
     fn set_run(&self, action: &str, oldest: Option<SystemTime>) {
         let started = oldest.map(|t| chrono::DateTime::<chrono::Local>::from(t).naive_local());
         self.inst.set_action_run(action, oldest.is_some(), started);
@@ -3048,7 +3074,47 @@ impl Harness {
                 self.answer_step(method, answer)
                     .map_err(|m| refused(self, m))?;
             }
-            StepKind::EndAction { action, failed } => {
+            StepKind::LineAction {
+                action,
+                stderr,
+                open,
+                text,
+            } => {
+                self.event(step);
+                if !self.declares_exec(action) {
+                    return Err(refused(self, format!("no action `{action}`")));
+                }
+                let mut runs = self.sandbox_runs.borrow_mut();
+                let run = runs.entry(action.clone()).or_default();
+                let slot = &mut run.open[usize::from(*stderr)];
+                let n = match *slot {
+                    Some(n) => n,
+                    None => {
+                        run.last_n += 1;
+                        run.last_n
+                    }
+                };
+                *slot = open.then_some(n);
+                drop(runs);
+                self.inst.update_action_run(
+                    action,
+                    RunUpdate {
+                        lines: vec![RunLine {
+                            n,
+                            text: text.clone(),
+                            stderr: *stderr,
+                            open: *open,
+                        }],
+                        ..RunUpdate::default()
+                    },
+                );
+                self.logic_owed = true;
+            }
+            StepKind::EndAction {
+                action,
+                failed,
+                code,
+            } => {
                 self.event(step);
                 if !self
                     .inst
@@ -3065,15 +3131,27 @@ impl Harness {
                 let wall = self.wall(t);
                 let mut runs = self.sandbox_runs.borrow_mut();
                 let run = runs.entry(action.clone()).or_default();
+                let mut rerun = false;
                 if run.started.is_some() {
+                    rerun = run.queued;
                     run.started = run.queued.then_some(wall);
                     run.queued = false;
                 }
                 let started = run.started;
                 drop(runs);
+                // (proc-run) As the live shell says of a command's end, in
+                // its order: its code, its error (action-error), then
+                // whether one runs.
+                let ended = RunUpdate {
+                    code: *code,
+                    error: Some(failed.clone()),
+                    ..RunUpdate::default()
+                };
+                self.inst.update_action_run(action, ended);
                 self.set_run(action, started);
-                // (action-error) As the live shell says of a command's end.
-                self.inst.set_action_error(action, failed.as_deref());
+                if rerun {
+                    self.reset_run(action);
+                }
                 self.logic_owed = true;
             }
             StepKind::Leave => {
@@ -4029,6 +4107,7 @@ impl Harness {
                 let wall = self.wall(t);
                 let mut runs = self.sandbox_runs.borrow_mut();
                 let run = runs.entry(x.action.clone()).or_default();
+                let fresh = run.started.is_none();
                 match run.started {
                     Some(_) => run.queued = true,
                     None => run.started = Some(wall),
@@ -4036,6 +4115,10 @@ impl Harness {
                 let started = run.started;
                 drop(runs);
                 self.set_run(&x.action, started);
+                // (proc-run) A run starting resets what the last printed.
+                if fresh {
+                    self.reset_run(&x.action);
+                }
                 self.logic_owed = true;
             }
             // (flex review) The sandbox runs no command: a result

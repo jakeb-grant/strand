@@ -4433,6 +4433,113 @@ service early {
             assert!(!live.real.secret_shown(&live.rt));
         }
 
+        /// (proc-run) An action's block is served as a `from listen`
+        /// service of the action's name, fed by its runs: what a run's
+        /// lines set reads as its fields, a run starting resets them, a
+        /// reload keeps it, and a program without it stops it.
+        #[test]
+        fn an_action_block_is_served_under_the_actions_name() {
+            use strand_compiler::lower::{ActionFields, CustomField};
+            use strand_compiler::vm::host::ServiceHost as _;
+            use strand_services::Data;
+            let src = "type Progress { pct: int?; step: text? }\npermit exec \"sh\"\n\
+                       action upd() [\"sh\"]\nbar B { text \"x\" }\n";
+            let live = Live::boot(src, Buses::none());
+            let mut prog = (*live.build.program).clone();
+            let record = prog.types.find_record("Progress").unwrap();
+            let field = |n: &str| CustomField {
+                name: n.into(),
+                key: vec![n.into()],
+                rw: false,
+            };
+            for a in prog.execs.values_mut() {
+                a.fields = Some(ActionFields {
+                    record,
+                    fields: vec![field("pct"), field("step")],
+                });
+            }
+            let custom = live.real.custom.clone();
+            custom.declare_blocks(&live.rt, &prog);
+            assert!(custom.serves("upd"));
+            let spec = custom.spec("upd").unwrap();
+            let blocks = custom.blocks();
+            assert_eq!(strand_services::custom::backlog(spec).0, 0);
+            let fed = || blocks.lock().unwrap().get("upd").map(|b| b.spec);
+            assert_eq!(fed(), Some(spec), "the runs read into it");
+            let read = |f: &str| custom.read(&live.rt, "upd", f).unwrap();
+            assert_eq!(read("pct"), Value::Null);
+            custom.feed_block(
+                &live.rt,
+                "upd",
+                false,
+                &[Some(Data::Int(40)), None],
+                Vec::new(),
+            );
+            assert_eq!(read("pct"), Value::int(40));
+            custom.feed_block(
+                &live.rt,
+                "upd",
+                false,
+                &[None, Some(Data::text("verify"))],
+                Vec::new(),
+            );
+            assert_eq!(
+                (read("pct"), read("step")),
+                (Value::int(40), Value::text("verify"))
+            );
+            // A run starting: every field null.
+            custom.feed_block(&live.rt, "upd", true, &[], Vec::new());
+            assert_eq!((read("pct"), read("step")), (Value::Null, Value::Null));
+            custom.feed_block(&live.rt, "upd", false, &[Some(Data::Int(7))], Vec::new());
+            // The same block again (a reload): it carries on.
+            custom.declare_blocks(&live.rt, &prog);
+            assert_eq!(custom.spec("upd"), Some(spec));
+            assert_eq!(read("pct"), Value::int(7));
+            // Gone from the program: stopped.
+            custom.prune_blocks(&live.rt, &live.build.program);
+            assert!(!custom.serves("upd"));
+            assert_eq!(fed(), None);
+        }
+
+        /// (proc-lines) A command's `line` events are external input: a
+        /// handler appending every line, a line a frame for two seconds,
+        /// is never throttled by the 30 writes/s guard (spec.md 8.7), so
+        /// what it keeps follows the command line by line.
+        #[test]
+        #[ignore = "proc-lines: needs stream L's mount.rs to spawn a service `line` \
+                    handler with `rt.spawn_input` (the queue is `input_events` already)"]
+        fn a_line_handler_appending_every_frame_is_not_throttled() {
+            let src = "permit exec \"sh\"\nexport state n = 0\nexport state got: [int] = []\n\
+                service l from listen [\"sh\", \"-c\", \"i=0; while [ $i -lt 120 ]; do i=$((i+1)); echo a=$i; sleep .016; done; sleep 30\"] { a: int }\n\
+                on l.line(doc) {\n  n += 1\n  got = got + [doc.a]\n}\n\
+                bar B { text \"{n}\" }\n";
+            let mut live = Live::boot(src, Buses::none());
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut throttled = Vec::new();
+            let start = Instant::now();
+            loop {
+                live.real.services.pump(&live.rt);
+                // Logic's clock follows the wall's, as the shell's does.
+                live.now = start.elapsed();
+                let u = live.inst.tick(live.now);
+                throttled.extend(
+                    u.diagnostics
+                        .iter()
+                        .filter(|d| matches!(d, strand_core::Diagnostic::WriteRate { .. }))
+                        .map(|d| format!("{d:?}")),
+                );
+                live.scene.apply(&u.diff).unwrap();
+                if live.inst.get("svc.n").unwrap() == Value::int(120) {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "{:?}", live.inst.get("svc.n"));
+                std::thread::sleep(Duration::from_millis(8));
+            }
+            assert!(throttled.is_empty(), "throttled: {throttled:?}");
+            let want: Vec<Value> = (1..=120).map(Value::int).collect();
+            assert_eq!(live.inst.get("svc.got").unwrap(), Value::list(want));
+        }
+
         #[test]
         fn reloads_keep_one_line_observer_and_drop_unheard_lines() {
             let src = |fields: &str, handler: bool| {
