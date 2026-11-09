@@ -2722,12 +2722,22 @@ async fn poll_command(argv: &[String], ok: &[i32]) -> Result<Got, PollFailed> {
                 headline,
             });
         }
+        let doc = decode_document(&framed);
+        // (call-code) A listed status other than 0 that printed nothing
+        // but stderr is no answer, as a call's is not.
+        if !status.success() && doc.trim().is_empty() && tail.reason().is_some() {
+            let headline = format!("`{cmd}` failed ({status})");
+            return Err(PollFailed {
+                why: tail.explain(&headline),
+                headline,
+            });
+        }
         if !status.success()
             && let Some(why) = tail.reason()
         {
             log::info!("`{cmd}` ({status}, which it may end with): {why}");
         }
-        Ok(parsed(&decode_document(&framed)))
+        Ok(parsed(&doc))
     };
     match tokio::time::timeout(POLL_TIMEOUT, run).await {
         Ok(d) => d,

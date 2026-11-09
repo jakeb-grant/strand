@@ -1060,13 +1060,24 @@ pub(super) fn capture(
             exit,
         };
     }
+    let text = proc::decode(&Framer::whole(&out));
+    // (call-code) A listed status other than 0 that printed nothing but
+    // stderr is no answer: pacman's and yay's 1 is "none" said in silence
+    // and an error said only there, and a call keeps no lines to tell
+    // them apart by.
+    if !status.success() && text.trim().is_empty() && tail.reason().is_some() {
+        return Captured {
+            out: Err(tail.explain(&format!("`{prog}` failed ({status})"))),
+            exit,
+        };
+    }
     if !status.success()
         && let Some(why) = tail.reason()
     {
         log::info!("`{prog}` ended ({status}): {why}");
     }
     Captured {
-        out: Ok(proc::decode(&Framer::whole(&out))),
+        out: Ok(text),
         exit,
     }
 }
@@ -2570,6 +2581,57 @@ mod tests {
             crate::services::custom::read_output(&p.types, &t, &printed),
             Ok(strand_compiler::vm::Value::Null)
         );
+    }
+
+    /// (call-code) A listed status other than 0 is no call's answer when
+    /// the program printed nothing but stderr: a stand-in for `pacman
+    /// -Qdt` exits 1 printing nothing, "none", read as `[]`; for `pacman
+    /// -Qi nosuch` it exits 1 with an error on stderr, the call's error
+    /// in its words. A job's listed status stays no failure either way.
+    #[test]
+    fn an_ok_status_said_on_stderr_is_a_calls_failure() {
+        let cap = |script: &str| {
+            capture(
+                &sh(script),
+                &[0, 1],
+                &Halt::new(false),
+                POLL_TIMEOUT,
+                STOP_GRACE,
+            )
+        };
+        let none = cap("exit 1");
+        assert_eq!(none.exit, 1);
+        let printed = none.out.unwrap();
+        let (p, t) = program("[text]");
+        assert_eq!(
+            crate::services::custom::read_output(&p.types, &t, &printed),
+            Ok(strand_compiler::vm::Value::list(Vec::new()))
+        );
+        let failed = cap("echo \"error: package 'nosuch' was not found\" >&2; exit 1");
+        assert_eq!(
+            failed,
+            Captured {
+                out: Err(
+                    "`sh` failed (exit status: 1): error: package 'nosuch' was not found".into()
+                ),
+                exit: 1
+            }
+        );
+        // What it printed with a listed status is the answer, as before,
+        // whatever it said on stderr beside it.
+        assert_eq!(cap("echo one; exit 1").out, Ok("one".into()));
+        assert_eq!(
+            cap("echo one; echo 'warning: two' >&2; exit 1").out,
+            Ok("one".into())
+        );
+        // A job keeps its lines, so its listed status is no failure.
+        let job = run(
+            &sh("echo 'warning: skipped' >&2; exit 1"),
+            &Halt::new(true),
+            STOP_GRACE,
+            &job_cx("b", &[0, 1]),
+        );
+        assert_eq!(job, (None, 1, false));
     }
 
     /// (lines-list) `-> [text]` over a checkupdates-like program: its

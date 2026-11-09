@@ -1322,6 +1322,39 @@ fn a_failing_poll_says_why() {
     }
 }
 
+/// (call-code) A polled command's listed status other than 0 is an
+/// answer only when it said nothing on stderr: pacman's 1 said in
+/// silence is "none", said on stderr an error, reported with its words.
+#[test]
+fn an_ok_status_said_on_stderr_is_a_failure() {
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let (_client, id) = started(
+        &rt,
+        &services,
+        "orphans",
+        Source::Poll {
+            target: custom::PollTarget::Command(sh(
+                "echo \"error: could not open database\" >&2; exit 1",
+            )),
+            every: Duration::from_secs(60),
+            ok: vec![0, 1],
+        },
+        vec![field("names", Default::default())],
+    );
+    let mut seen = Vec::new();
+    until(&rt, &services, "the failure reported", || {
+        seen.extend(services.take_diagnostics());
+        !seen.is_empty()
+    });
+    assert_eq!(
+        seen[0].message,
+        "`sh` failed (exit status: 1): error: could not open database"
+    );
+    services.shutdown();
+    custom::forget(id);
+}
+
 /// (proc-reason) A poll failing the same way is reported once, though
 /// what it prints differs each run (curl's "timed out after N
 /// milliseconds"): the same way is the same headline. The first report

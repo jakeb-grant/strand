@@ -10,7 +10,7 @@ that are no failure.
 
 ```strand file=updates.strand
 // updates.strand: answers whose "none" is a status
-permit exec "checkupdates", "grep", "rsync"
+permit exec "checkupdates", "grep", "rsync", "pacman"
 
 // 2: no updates. Nothing printed, so the call's value is `[]`, not an error;
 // otherwise an update a line, a line an item.
@@ -18,6 +18,9 @@ action updates() -> [text] ["checkupdates", "--nocolor"] ok 0, 2
 
 // 1: no line matched. `grep -c` still prints the count, 0.
 action todos(file: path) -> int ["grep", "-c", "TODO", "--", file] ok 0, 1
+
+// 1: no orphans, said in silence; pacman's errors are said on stderr, and fail.
+action orphans() -> [text] ["env", "LC_ALL=C", "pacman", "-Qdtq"] ok 0, 1
 
 // 24: some source files vanished while it copied.
 action mirror(src: path, dst: path) ["rsync", "-a", "--", src, dst] ok 0, 24
@@ -30,6 +33,7 @@ service pending from poll ["checkupdates", "--nocolor"] every 1h ok 0, 2 { list:
 // Each call's value and its `.error`, read apart.
 let news = updates()
 let notes = todos("~/notes/today.md")
+let lost = orphans()
 
 bar Top {
   edge: top; height: 32
@@ -38,6 +42,7 @@ bar Top {
     start { gap: $space.2
       text news.error != null ? "Update check failed" : news.pending ? "" : (news ?? []).len == 0 ? "Up to date" : join(" ", (news ?? []).len, "updates")
       text notes.error != null ? "Notes unreadable" : join(" ", notes ?? 0, "to do")
+      text lost.error ?? join(" ", (lost ?? []).len, "orphans")
     }
     end { gap: $space.2
       button "Mirror" { on click { mirror("~/Music/", "/mnt/usb/music/") } }
@@ -77,16 +82,22 @@ status alone: on a `from listen` service (its command ending always
 means it is started again), on a D-Bus method and on a polled file it
 is an error.
 
-## When not to use it
+## When a status means two things
 
-Use `ok` only for a status the program documents as "none" or
-"partly": grep's 1, diff's 1, rsync's 24, restic's 3, borg's 1. When
-one status means two things, `ok` hides one of them. pacman exits 1
-both when `-Qdtq` finds no orphans and when `-Qi nosuch` fails, so `ok
-0, 1` on a `pacman -Qi` would make a missing package look like an
-empty answer. There, leave the status a failure: the call's `.error`
-then says why in pacman's words (``"`pacman` failed (exit status: 1):
-error: package 'nosuch' was not found"``), and a shell can show it.
+Use `ok` for a status the program documents as "none" or "partly":
+grep's 1, diff's 1, rsync's 24, restic's 3, borg's 1. pacman and yay
+exit 1 both when there is nothing to list (`pacman -Qdt` with no
+orphans, `yay -Qua` with no AUR updates) and when they fail (`pacman
+-Qi nosuch`). The two are told apart by what the program prints:
+"none" is silence, a failure only words on stderr. A call or a polled
+command whose program ends with a listed status having printed nothing
+but stderr fails, so `ok 0, 1` reads both rightly with no `sh -c`
+around it, as `orphans` above does. No orphans is `[]`; a pacman that
+cannot read its database fails, and the call's `.error` says why in
+pacman's words (``"`pacman` failed (exit status: 1): error: …"``). An action without a result (a job) keeps
+what it printed in its `lines`, so its listed status is no failure
+whatever it printed: rsync's 24 warns about each vanished file on
+stderr.
 
 A program's lines read as a list are its items, one a line: `->
 [text]` over `checkupdates`' two lines is two updates, and its
