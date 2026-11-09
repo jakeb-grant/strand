@@ -2660,6 +2660,42 @@ fn a_recorded_jobs_lines_are_replayed() {
     );
 }
 
+/// (proc-run) An action's block is served in the sandbox as the service
+/// of the action's name: its recorded fields replay as `set` steps and
+/// its `line` events as `emit` steps, never unmocked, and the replay
+/// shows what the run's lines set.
+#[test]
+fn a_recorded_blocks_fields_and_lines_are_replayed() {
+    let mut f = Fx::session();
+    // Declared below the bar, so the fixture's origins stay where they
+    // are. A `//` in the command is no comment, one after the `{` is.
+    f.config.push_str(
+        "permit exec \"sh\"\naction upd() [\"sh\", \"-c\", \"echo http://x\"] { // the job\n  pct: int?\n}\n\
+         action calc() -> int [\"sh\", \"-c\", \"echo 1\"]\n\
+         export let pct = upd.pct ?? -1\n",
+    );
+    let started = [0u8, 0, 0, 0, 0, 1];
+    let ended = [1u8, 0, 0, 0, 0, 0];
+    f.change(10 * S, kind::ACTION, "upd", &started, "");
+    f.field(11 * S, "upd.pct", "[null,40]");
+    f.change(11 * S, kind::EVENT, "upd.line", &[], r#"[{"pct":40}]"#);
+    f.change(12 * S, kind::ACTION, "upd", &ended, "");
+    let dir = f.write("action-block");
+    let (_, _, text) = plan_of(&dir, &defaults());
+    let st = steps(&text);
+    let ours: Vec<&&str> = st.iter().filter(|s| s.contains("upd.")).collect();
+    assert_eq!(
+        ours,
+        [&"set upd.pct 40", &"emit upd.line \"{\\\"pct\\\":40}\""],
+        "{st:?}"
+    );
+    assert!(
+        text.lines()
+            .all(|l| !l.contains("unmocked") || !l.contains("upd")),
+        "{text}"
+    );
+}
+
 /// (lockmon review) Three calls while a command runs are two commands
 /// live (one runs, one re-run queued), so two ends are recorded; the plan
 /// replays each end as an `end action` step at its time, and the sandbox

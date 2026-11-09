@@ -676,7 +676,9 @@ fn value(e: &Entry) -> Option<Json> {
     serde_json::from_slice(e.value.as_deref()?).ok()
 }
 
-/// The services a config declares (`service NAME from …`).
+/// The services a config declares (`service NAME from …`), and
+/// (proc-run) each action with a block of fields (`action NAME(…) […]
+/// {`), which the sandbox serves as a service of the action's name.
 pub fn declared_services(config: &Path) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let mut stack = vec![config.to_path_buf()];
@@ -693,16 +695,41 @@ pub fn declared_services(config: &Path) -> BTreeSet<String> {
             {
                 for line in text.lines() {
                     let mut w = line.split_whitespace();
-                    if let (Some("service"), Some(name), Some("from")) =
-                        (w.next(), w.next(), w.next())
-                    {
-                        out.insert(name.to_string());
+                    match (w.next(), w.next(), w.next()) {
+                        (Some("service"), Some(name), Some("from")) => {
+                            out.insert(name.to_string());
+                        }
+                        (Some("action"), Some(head), _) => {
+                            if let Some(name) = action_block(head, line) {
+                                out.insert(name.to_string());
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
         }
     }
     out
+}
+
+/// (proc-run) The name of an action declared on `line` (its first word
+/// after `action` is `head`, `backup(dirs:`) when the line ends opening
+/// its block of fields: `None` for one without (`… ok 0, 2`), for a
+/// `-> T` (which has none) and for a block of a `from dbus` service.
+fn action_block<'a>(head: &'a str, line: &str) -> Option<&'a str> {
+    // A comment after the `{` (a URL's `//` in the command stays).
+    let opens = |t: &str| t.trim_end().ends_with('{');
+    let code = match line.rsplit_once("//") {
+        Some((before, _)) if !opens(line) && opens(before) => before,
+        _ => line,
+    };
+    if !opens(code) || !code.contains('[') || code.contains("->") {
+        return None;
+    }
+    let name = head.split('(').next().unwrap_or(head);
+    let ok = !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+    ok.then_some(name)
 }
 
 /// (history) `history.json`'s series as `[seed]` entries

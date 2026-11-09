@@ -370,6 +370,15 @@ impl<T: 'static> EventQueue<T> {
         Ok(l)
     }
 
+    /// (proc-lines) It is a queue of external input
+    /// ([`Runtime::input_events`]): a handler it starts runs as input
+    /// ([`Runtime::spawn_input`]), its writes not counted by the 30
+    /// writes/s guard. False for a disposed queue.
+    pub fn is_input(self, rt: &Runtime) -> bool {
+        rt.with_data::<EventsData<T>, _>(self.id, |d| d.input)
+            .unwrap_or(false)
+    }
+
     /// Events emitted but not yet handed to the listeners (those of this
     /// tick, or of a queue parked as a cycle).
     pub fn queued(self, rt: &Runtime) -> Result<usize, Error> {

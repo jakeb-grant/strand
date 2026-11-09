@@ -1651,28 +1651,29 @@ impl Harness {
     /// (report) `name` is a service: the schema's or one the config
     /// declares.
     fn is_service(&self, name: &str) -> bool {
-        self.schema.service(name).is_some()
-            || self
-                .inst
-                .vm()
-                .prog
-                .services
-                .values()
-                .any(|s| s.name == name)
+        self.service_record(name).is_some()
     }
 
     /// The record of service `svc`: the schema's, else (report) the one a
-    /// service the config declares has.
+    /// service the config declares has, else (proc-run) the block of the
+    /// action of that name, which the sandbox serves as a service.
     fn service_record(&self, svc: &str) -> Option<strand_compiler::ty::RecordId> {
-        self.schema.service(svc).or_else(|| {
-            self.inst
-                .vm()
-                .prog
-                .services
-                .values()
-                .find(|s| s.name == svc)
-                .map(|s| s.record)
-        })
+        let prog = &self.inst.vm().prog;
+        self.schema
+            .service(svc)
+            .or_else(|| {
+                prog.services
+                    .values()
+                    .find(|s| s.name == svc)
+                    .map(|s| s.record)
+            })
+            .or_else(|| {
+                prog.execs
+                    .values()
+                    .find(|a| a.name == svc)
+                    .and_then(|a| a.fields.as_ref())
+                    .map(|f| f.record)
+            })
     }
 
     /// The type of the service field at `path` (`service.field[.more]`).

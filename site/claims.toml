@@ -4417,13 +4417,12 @@ text   = "so the first profile you save is one you can edit by hand."
 source = ['crates/strand-core/src/settings.rs "fn natural(new: &Item) -> Item {"', 'docs/spec.md "(settings-shape) one among inline records is inline, and with neither"']
 proof  = "crates/strand-core/tests/settings.rs::a_new_record_of_records_is_written_as_sections"
 
-# --- proc-output (the language stream; runtime proofs are the runtime
-# stream's tests, named in docs/features.md's "Programs' output") ---
+# --- proc-output (the language and runtime streams) ---
 [[claim]]
 page   = "site/how-to/long-job.md"
 text   = "its last 1000 lines, stdout and stderr together in the order Strand read them."
 source = ['docs/spec.md "the last 1000 lines, at most 256 KiB, of stdout and stderr in the order strand read them"', 'crates/strand-compiler/src/schema/builtin.schema "record Line key n"']
-proof  = "docs/features.md, Programs' output: the runtime's run tests (exec.rs, a_run_has_its_lines_both_streams_tagged)"
+proof  = "crates/strand/src/run/exec.rs::a_run_has_its_lines_both_streams_tagged"
 
 [[claim]]
 page   = "site/how-to/long-job.md"
@@ -4471,13 +4470,13 @@ proof  = "crates/strand-compiler/tests/vm.rs::numbers_reads_progress_text"
 page   = "site/how-to/download-progress.md"
 text   = "Strand treats a `\\r` as a terminal does: the line starts again and what follows replaces it."
 source = ['docs/spec.md "the line starts again and what follows replaces it"']
-proof  = "docs/features.md, Programs' output: the runtime's framer tests (strand-services proc.rs)"
+proof  = "crates/strand-services/src/proc.rs::a_bare_carriage_return_redraws_the_line"
 
 [[claim]]
 page   = "site/how-to/download-progress.md"
 text   = "`fetch.code` is 130, and `fetch.error` stays null, since a stop is no failure."
 source = ['''docs/spec.md "130 after a `stop()`'s SIGINT"''', 'docs/spec.md "A stopped run keeps what it printed; `code` says how it ended and `error` stays null"']
-proof  = "docs/features.md, Programs' output: the runtime's a_stopped_run_keeps_its_lines_and_code_130"
+proof  = "crates/strand/src/run/exec.rs::a_stopped_run_keeps_its_lines_and_code_130"
 
 [[claim]]
 page   = "site/how-to/buffered-output.md"
@@ -4513,4 +4512,4 @@ proof  = "crates/strand-compiler/tests/checker.rs::each_proc_output_check_has_it
 page   = "site/how-to/exit-statuses.md"
 text   = "A program ended by a signal is never ok."
 source = ['docs/spec.md "A signal is never ok"']
-proof  = "docs/features.md, Programs' output: the runtime's an_ok_status_is_not_a_failure"
+proof  = "crates/strand/src/run/exec.rs::an_ok_status_is_not_a_failure"

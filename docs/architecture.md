@@ -1638,6 +1638,9 @@ by `strand-compiler`, not here. See `crates/strand-core/src/lib.rs`.
   graph-triggered events, rate-counted per site (the 30 writes/s
   guard); `rt.spawn_input(Some(site), fut)` runs external input, not
   counted up to its first suspending `await` and counted per run after.
+  A service event's handler runs as input when its host made the queue
+  with `rt.input_events` (`EventQueue::is_input`): a command's `line`
+  events are (decisions.md proc-lines, proc-output).
   `<->` writes are not counted, nor those `f` makes in
   `rt.as_input(f)` (a sink mirroring what the host takes as input: the
   compiler's `read_start`, decisions.md list-start). Timers are

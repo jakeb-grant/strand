@@ -4484,11 +4484,20 @@ impl Ctx {
                 );
                 let (e, me) = (env.clone(), self.clone());
                 let el = el.cloned();
+                // (proc-lines) A queue of external input (a command's
+                // `line` events) runs its handlers as input: a handler
+                // keeping every line is never throttled (spec.md 8.7).
+                let input = q.is_input(rt);
                 let r = q.on(rt, move |rt, args: &Vec<Value>| {
                     let frame: Frame = params.iter().copied().zip(args.iter().cloned()).collect();
                     let ctx = Ctx::event_ctx(el.as_ref(), &ev, args.clone());
                     let fut = vm.handler(rt, body, e.clone(), frame, ctx);
-                    rt.spawn_for(site, me.reporting(loc.clone(), fut));
+                    let fut = me.reporting(loc.clone(), fut);
+                    if input {
+                        rt.spawn_input(Some(site), fut);
+                    } else {
+                        rt.spawn_for(site, fut);
+                    }
                     Ok(())
                 });
                 self.declare_writes(rt, site, body, env);

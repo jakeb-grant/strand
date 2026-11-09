@@ -4016,6 +4016,47 @@ fn a_stop_clears_the_error() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (proc-run) An action's block, end to end: `on act.line(doc)` hears
+/// every stdout line its run printed, in order, none lost however fast
+/// they came (2000 lines at once); stderr reaches neither the handler
+/// nor the fields, the block's field holds the last line's value, and a
+/// run's end comes after its last line (`on change rec.running` sees it
+/// all). A second run starting resets the field.
+#[test]
+fn an_action_line_handler_hears_every_line() {
+    let dir = temp_dir("exec-block-lines");
+    let gate = dir.join("gate");
+    let src = format!(
+        "permit exec \"sh\"\n\
+         action job(gate: text) [\"sh\", \"-c\", \"[ -z \\\"$0\\\" ] || while [ ! -e \\\"$0\\\" ]; \
+         do sleep 0.01; done; i=0; while [ $i -lt 2000 ]; do i=$((i+1)); echo n=$i; done; \
+         echo n=-5 >&2\", gate] {{\n  n: int?\n}}\n\
+         state heard = 0\nstate bad = 0\nstate at_end = -1\nstate runs = 0\n\
+         on job.line(d) {{\n  if d.n != heard + 1 {{ bad += 1 }}\n  heard += 1\n}}\n\
+         on change job.running {{ if !job.running {{ at_end = heard }} }}\n\
+         bar Top {{\n  on click {{\n    runs += 1\n    if runs == 1 {{ job(\"\") }} else {{ heard = 0; at_end = -1; job(\"{}\") }}\n  }}\n  \
+         text join(\" \", heard, bad, at_end, job.n ?? -1, job.code ?? -1)\n}}\n",
+        gate.display()
+    );
+    with_action_shell(&dir, &src, |m, click| {
+        click();
+        m.until("every line heard, in order", |s| {
+            s.texts() == ["2000 0 2000 2000 0"]
+        });
+        click();
+        // Its command waits for the gate before printing: the field and
+        // the code were reset when it started.
+        m.until("the next run resets the field", |s| {
+            s.texts() == ["0 0 -1 -1 -1"]
+        });
+        std::fs::write(&gate, "").unwrap();
+        m.until("the second run heard whole", |s| {
+            s.texts() == ["2000 0 2000 2000 0"]
+        });
+    });
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// (action-error) A failing action with a result says so on its call's
 /// `.error`; its own `.error` stays null, also on the tick after.
 #[test]

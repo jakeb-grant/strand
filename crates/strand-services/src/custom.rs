@@ -2396,8 +2396,10 @@ async fn run_listen(cx: &mut Cx<Custom>, spec: &Spec, argv: &[String]) -> Result
                 );
                 continue;
             }
+            // (proc-output) Its stdout is its data, read for hours: no
+            // part of why it ended (only stderr is), so a restart's
+            // diagnostic is never the last lines of a journal.
             let text = l.text();
-            tail.push(Stream::Out, &text);
             if text.trim().is_empty() {
                 continue;
             }

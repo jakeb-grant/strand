@@ -4506,8 +4506,6 @@ service early {
         /// is never throttled by the 30 writes/s guard (spec.md 8.7), so
         /// what it keeps follows the command line by line.
         #[test]
-        #[ignore = "proc-lines: needs stream L's mount.rs to spawn a service `line` \
-                    handler with `rt.spawn_input` (the queue is `input_events` already)"]
         fn a_line_handler_appending_every_frame_is_not_throttled() {
             let src = "permit exec \"sh\"\nexport state n = 0\nexport state got: [int] = []\n\
                 service l from listen [\"sh\", \"-c\", \"i=0; while [ $i -lt 120 ]; do i=$((i+1)); echo a=$i; sleep .016; done; sleep 30\"] { a: int }\n\

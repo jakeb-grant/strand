@@ -317,7 +317,7 @@ fn actions(
         return String::new();
     }
     format!(
-        "actions (each parameter is one argument, never split):\n{}\n\n",
+        "actions (each parameter is one argument, never split, a list one per item):\n{}\n\n",
         lines.join("\n")
     )
 }

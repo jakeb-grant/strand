@@ -1366,6 +1366,32 @@ fn a_listen_command_that_ends_says_why() {
     );
     services.shutdown();
     custom::forget(id);
+    // (proc-output) Ended with nothing on stderr: the headline alone, its
+    // stdout (the data it fed) no part of why.
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let (_client, id) = started(
+        &rt,
+        &services,
+        "quiet",
+        Source::Listen {
+            command: sh("echo a=1; echo a=2; exit 4"),
+        },
+        vec![field("a", Default::default())],
+    );
+    let mut seen = Vec::new();
+    until(&rt, &services, "the end reported", || {
+        seen.extend(services.take_diagnostics());
+        seen.iter().any(|d| d.message.contains("ended"))
+    });
+    let d = seen.iter().find(|d| d.message.contains("ended")).unwrap();
+    assert!(
+        d.message.ends_with("`sh` ended (exit status: 4)"),
+        "{}",
+        d.message
+    );
+    services.shutdown();
+    custom::forget(id);
 }
 
 /// (proc-streams) A command writing far more to stderr than a pipe holds,

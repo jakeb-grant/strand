@@ -882,7 +882,7 @@ monitor, the keyboard always).
   polled file has no floor and is read every `T`. (proc-ok) A polled
   command may list after its interval the exit statuses that are no
   failure, `ok 0, N…`, as an action's command may (section 5.7): `from
-  poll ["pacman", "-Qdtq"] every 1h ok 0, 1 { names: [text] }`.
+  poll ["pacman", "-Qdtq"] every 1h ok 0, 1 { names: text }`.
 - Running a command (`listen`, or `poll` of a command) needs
   `permit exec`, at the top level or in the service's block, optionally
   listing the programs allowed; without it the service is a load error.
@@ -1042,8 +1042,10 @@ monitor, the keyboard always).
 - (proc-ok; decisions.md proc-ok) `ok 0, N…` after an action's command
   (and after a polled command's interval, section 5.6), before any
   block, lists the exit statuses that mean the program did its job:
-  `action updates() -> [text] ["checkupdates", "--nocolor"] ok 0, 2`,
-  checkupdates' 2 meaning "no updates". Each is 0 to 255
+  `action updates() -> text ["checkupdates", "--nocolor"] ok 0, 2`,
+  checkupdates' 2 meaning "no updates" (it prints nothing, so `""`;
+  its lines are one text, as section 5.6 reads a document, not a list).
+  Each is 0 to 255
   (`check::ok_status` otherwise), and 0 must be among them (`ok 2` is a
   load error, `check::ok_without_zero`, whose help writes `ok 0, 2`),
   so the clause reads rightly on its own. A listed status is no
@@ -1272,7 +1274,9 @@ action's, and a `file`'s `run` (section 9.7), is read the same way.
   and its blank lines dropped, whole up to 4 KiB, past that its first
   1 KiB and its last 3 KiB, each cut at a line, joined by a line `…`;
   when it printed nothing on stderr, the last 1 KiB of its stdout (a
-  script that echoed why). With neither, the headline is all. stderr is
+  script that echoed why), but for a `from listen` command, whose
+  stdout is the data it fed for as long as it ran (decisions.md
+  proc-output). With neither, the headline is all. stderr is
   read for up to 100 ms after the program exits, so a child left
   holding the pipe never delays the answer. This one rule makes an
   action's `error`, a call's `.error`, a polled or listen command's

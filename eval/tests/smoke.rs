@@ -1905,3 +1905,42 @@ fn a_jobs_lines_and_code_are_what_its_steps_say() {
         assert!(!drawn_last(&t, id), "{id} after the reset");
     }
 }
+
+/// (proc-run) An action's block in the sandbox: served as the service
+/// named after the action, so a recording's `set` of a field and `emit`
+/// of a `line` event replay into `upd.pct` and `on upd.line(doc)` as the
+/// run's stdout lines did live.
+#[test]
+fn a_blocks_fields_and_lines_are_what_its_steps_say() {
+    let text = r#"id     = "proc-block"
+screen = { width = 400, scale = 1.0 }
+hz     = 60
+
+=== shell.strand
+permit exec "restic"
+action upd() ["restic", "backup", "--json"] {
+  pct: int?
+}
+state heard = 0
+on upd.line(d) { heard += d.pct ?? 0 }
+
+bar Top {
+  height: 30
+  row {
+    if upd.pct == 40 { box { id: pct_set; width: 6; height: 6; bg: #00ff00 } }
+    if heard == 40 { box { id: line_heard; width: 6; height: 6; bg: #0000ff } }
+  }
+}
+
+=== steps
+rest
+set upd.pct 40
+emit upd.line "{\"pct\":40}"
+rest
+expect visible #pct_set
+expect visible #line_heard
+"#;
+    let t = go(text);
+    assert!(drawn_last(&t, "pct_set"));
+    assert!(drawn_last(&t, "line_heard"));
+}
