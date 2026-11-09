@@ -91,9 +91,9 @@ error: package 'nosuch' was not found"``), and a shell can show it.
 A program's lines read as a list are its items, one a line: `->
 [text]` over `checkupdates`' two lines is two updates, and its
 blank lines are none. A line `[int]` cannot read (`pidof`'s `1234
-5678` is two numbers on one line) is left out and logged, and output
-with no line it can read is the call's `.error`, so print one value
-per line. JSON keeps its reading: a program printing a JSON
+5678` is two numbers on one line) is left out with a warning in the
+log, and output with no line it can read is the call's `.error`, so
+print one value per line. JSON keeps its reading: a program printing a JSON
 array, pretty or not, gives its items. Read straight from the
 program, the list keeps `ok` and `.error`. A helper script piping it
 into `jq` loses the status: a pipeline exits with its last program's status, so

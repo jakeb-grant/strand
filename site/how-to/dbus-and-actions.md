@@ -160,8 +160,9 @@ an `Async<text>`, as `apps.search(query)` is:
 
 A `text` result is what the program printed, trimmed. A number, a
 `bool`, a colour, an enum or a `Date` is read from the printed text; a
-record `type` of your own or a list is read from JSON or XML, and a
-record also from `key=value` lines. A result cannot be a dictionary yet
+record `type` of your own or a list is read from JSON or XML, a list
+also from plain text, a line an item (`-> [text]` over `pacman -Qdtq`
+is one package each), and a record also from `key=value` lines. A result cannot be a dictionary yet
 (`check::dict_service`). In a handler, `let r = await calc(q)` waits
 for it. An XML document's root is one element, so `-> [Entry]` over an
 Atom feed reads the `<feed>` itself as one entry; declare `type Feed {

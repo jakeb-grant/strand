@@ -832,32 +832,38 @@ monitor, the keyboard always).
   file`, an action's output), or `key=value` lines holding none of the
   service's fields' keys, read as a list (a field typed `[T]` or
   `[T]?` with no key path, an action's `-> [T]`) is its lines, an item
-  each (text starting with `<` that is not XML, an HTML page, is never
-  a list of records a line, and is reported as before): a line is
-  what section 5.8 frames (`\n` or `\r\n` ends it, a bare `\r`
-  redraws it; a file's lines too), trimmed, and a blank line is no
-  item, so a trailing newline adds none and nothing printed is still
-  `[]` (null for `[T]?`). Each line converts as one value: `text` and
-  `path` are the line; a number, length, angle, duration, `bool`,
+  each: a line is what section 5.8 frames (`\n` or `\r\n` ends it, a
+  bare `\r` redraws it; a file's lines too), trimmed, and a blank line
+  is no item, so a trailing newline adds none and nothing printed is
+  still `[]` (null for `[T]?`). Each line converts as one value: `text`
+  and `path` are the line, a JSON string's quotes removed (`jq
+  '.[].name'` prints `"a"`); a number, length, angle, duration, `bool`,
   colour, enum or `Date` is the line read by the rules here (`45 °C`
-  on each line is 45 each); a record is the line read as a `from
+  on each line is 45 each). A record is the line read as a `from
   listen` line is (JSON lines from `jq -c` or `journalctl -o json` a
-  record each, a `key=value` line a record of its pairs, and a line
-  naming none of its fields read as written by its `text` fields, as a
-  listen line's are), and a line that fills none of its fields is no
-  item. A line that does not convert is left out and
-  reported once with its index (`` `pkgs.names`: `names[2]` holds … ``),
-  as an item inside a document is; an action's output of lines none of
-  which converts is no list, the call's `.error`. Spaces, tabs and
-  commas separate nothing (`\0`, a control character, is dropped): a
-  line of several values, `pidof`'s `1234 5678`, is no item of a list
-  of numbers, and its report says to print one per line (`pgrep`) or
-  read the text whole (`-> text`, a `text` field) and `.split(" ")`.
-  JSON and XML keep their reading, so a pretty-printed array spanning
-  lines is one array and XML's root one item, and so does a single
-  type over several lines: `text` is the whole, a number the first
-  (`/proc/loadavg` read as a `float`). A `from listen` line is one
-  document, read as a list one item.
+  record each, a line naming none of its fields read as written by its
+  `text` fields), and a line that fills none of its fields is no item;
+  but a list of records splits only where some line names one of its
+  fields (a JSON object, `key=value` pairs or XML holding it) or the
+  record has a field named `text`. Otherwise the document is read whole
+  as before, so plain text (a 429 page's `Too Many Requests`, `pacman
+  -Q`'s `name version`) read as `[Post]` is reported, `key=value` lines
+  naming the record's fields are one record, and text starting with `<`
+  that is not XML (an HTML page) is never a record a line. A line that
+  does not convert is left out and reported once with its index (``
+  `pkgs.names`: `names[2]` holds … ``), as an item inside a document
+  is, and for an action as a warning in the log, once until a call's
+  result reads whole; an action's output of lines none of which
+  converts is no list, the call's `.error`. Spaces, tabs and commas
+  separate nothing (`\0`, a control character, is dropped): a line of
+  several values, `pidof`'s `1234 5678`, is no item of a list of
+  numbers, and its report says to print them one per line or read the
+  text whole (`-> text`, a `text` field) and its values with
+  `numbers(…)`. JSON and XML keep their reading, so a pretty-printed
+  array spanning lines is one array and XML's root one item, and so
+  does a single type over several lines: `text` is the whole, a number
+  the first (`/proc/loadavg` read as a `float`). A `from listen` line
+  is one document, read as a list one item.
 - A field typed `text` reads an XML fragment as written, markup and
   all, when the document is one element of text alone (`<b>CPU</b>`)
   or, for `text` but not `text?`, when it holds nothing at the key of

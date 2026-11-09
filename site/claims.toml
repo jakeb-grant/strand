@@ -4524,11 +4524,11 @@ proof  = "crates/strand/src/run/exec.rs::a_list_result_reads_a_programs_lines"
 [[claim]]
 page   = "site/how-to/data-from-the-web.md"
 text   = "a port per line read as `[int]` is `[22, 80, 443]`, blank lines are none, and JSON lines (`jq -c`) read as a list of your `type` are a record each."
-source = ['docs/spec.md "a record is the line read as a `from listen` line is"', 'crates/strand-services/src/custom.rs "Lines::Records(fs) => {"']
+source = ['docs/spec.md "A record is the line read as a `from listen` line is"', 'crates/strand-services/src/custom.rs "Lines::Records(fs) => {"']
 proof  = "crates/strand/src/services/mod.rs::tests::custom_services::a_polled_commands_lines_fill_a_list_field; crates/strand/src/services/custom.rs::tests::a_list_reads_a_text_outputs_lines"
 
 [[claim]]
 page   = "site/how-to/data-from-the-web.md"
 text   = "`pidof` printing PIDs separated by spaces, read as `[int]`, is reported and left out, so print one per line (`pgrep`)."
-source = ['docs/spec.md "is no item of a list of numbers, and its report says to print one per line"', 'crates/strand/src/services/custom.rs "reads one value per line: print one per line (`pgrep`)"']
+source = ['docs/spec.md "is no item of a list of numbers, and its report says to print them one per line"', 'crates/strand/src/services/custom.rs "reads one value per line, and a line holds several: print"']
 proof  = "crates/strand/src/services/mod.rs::tests::custom_services::a_polled_commands_lines_fill_a_list_field"

@@ -300,6 +300,9 @@ pub(super) struct Execs {
     /// (proc-run) Each action's `ok` statuses, for a request with none
     /// ([`Execs::set_ok`]).
     ok: HashMap<String, Vec<i32>>,
+    /// (lines-list) The actions whose last result left a value out, and
+    /// the warning said: said once until a call's result reads whole.
+    pub(super) left_out: HashMap<String, String>,
 }
 
 /// (flex) A running command whose output answers its call.
@@ -362,6 +365,7 @@ impl Execs {
             blocks: Blocks::default(),
             keeper: Arc::default(),
             ok: HashMap::new(),
+            left_out: HashMap::new(),
         }
     }
 
@@ -1266,7 +1270,10 @@ impl Shell {
         }
         // (flex) Results: the call's `.error` says why one failed; the
         // log keeps it too, with no notice.
-        // (lines-list) A line left out of a list is logged with the call.
+        // (lines-list) A value left out of a result (a line that does
+        // not convert) is a warning, once per action until a call's
+        // result reads whole.
+        let notes = std::cell::RefCell::new(HashMap::<String, String>::new());
         let read = |action: &str, reply: &ExecReply, out: &str| {
             let mut nested = None;
             let r = crate::services::custom::read_output_noting(
@@ -1278,21 +1285,36 @@ impl Shell {
             if r.is_ok()
                 && let Some(n) = nested
             {
-                log::info!(
-                    "action {action}: `{}` holds {}, which is not a `{}`; {}",
-                    n.path.trim_start_matches('.'),
-                    n.held,
-                    n.ty,
-                    if n.path.ends_with(']') {
-                        "the item is left out"
-                    } else {
-                        "it reads as the type's default"
-                    },
+                notes.borrow_mut().insert(
+                    action.to_string(),
+                    format!(
+                        "`{}` holds {}, which is not a `{}`; {}",
+                        n.path.trim_start_matches('.'),
+                        n.held,
+                        n.ty,
+                        if n.path.ends_with(']') {
+                            "the item is left out"
+                        } else {
+                            "it reads as the type's default"
+                        },
+                    ),
                 );
             }
             r
         };
         for a in self.execs.answered(&read) {
+            match (notes.borrow_mut().remove(&a.action), &a.answer) {
+                (Some(note), _) => {
+                    if !self.execs.left_out.contains_key(&a.action) {
+                        log::warn!("action {}: {note}", a.action);
+                        self.execs.left_out.insert(a.action.clone(), note);
+                    }
+                }
+                (None, Ok(_)) => {
+                    self.execs.left_out.remove(&a.action);
+                }
+                (None, Err(_)) => {}
+            }
             let t = strand_core::flight::now_ns();
             let mut rec = self.recorder.borrow_mut();
             rec.action(t, &a.action, 0, false, a.exit);

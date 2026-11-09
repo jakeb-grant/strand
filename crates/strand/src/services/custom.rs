@@ -430,11 +430,13 @@ const FIELD_WHOLE: &str = "declare the field `text`";
 
 /// (lines-list) The help for text of several values read where a list
 /// of `item` (shown) reads one value per item, a line each: `how` is
-/// how to read the text whole instead (`` read `-> text` ``).
+/// how to read the text whole instead (`` read `-> text` ``). The values
+/// are numbers (a further word that is one makes them several), which
+/// `numbers(…)` reads from text.
 fn one_per_line(item: &str, how: &str) -> String {
     format!(
-        "`[{item}]` reads one value per line: print one per line (`pgrep`), \
-         or {how} and `.split(\" \")`"
+        "`[{item}]` reads one value per line, and a line holds several: print \
+         them one per line, or {how} and read its values with `numbers(…)`"
     )
 }
 
@@ -881,8 +883,9 @@ pub fn read_output_noting(
     };
     // (lines-list) A list read from text is a list of its lines.
     let by = lines_of(types, Some(inner));
-    if doc.by_line(&[], &by) {
-        let lines = custom::lines_data(t.strip_prefix('\u{feff}').unwrap_or(t), &by);
+    let written = t.strip_prefix('\u{feff}').unwrap_or(t);
+    if doc.by_line(written, &[], &by) {
+        let lines = custom::lines_data(written, &by);
         let some = matches!(&lines, Data::List(items) if !items.is_empty());
         return match coerce_noting(types, inner, &lines, nested) {
             // Lines, none of which converts: no list of the type, as
@@ -2208,8 +2211,8 @@ mod tests {
         let pidof = read_output(types, &ints, "1234 5678\n").unwrap_err();
         assert!(
             pidof.contains("`[int]` reads one value per line")
-                && pidof.contains("(`pgrep`)")
-                && pidof.contains("read `-> text` and `.split(\" \")`"),
+                && pidof.contains("print them one per line")
+                && pidof.contains("read `-> text` and read its values with `numbers(…)`"),
             "{pidof}"
         );
         assert!(read_output(types, &floats, "0.5 0.25\n").is_err());
@@ -2311,16 +2314,21 @@ type Port { portid: int; state: text? }
     /// redrawing), trimmed, blank ones and a trailing newline making no
     /// item; each line converts by the single-value rule (`45 °C` is 45)
     /// or, for a record, as a listen line is read (JSON lines a record
-    /// each, a `key=value` line a record of its pairs, a record with a
-    /// `text` field the line as written). A line that does not convert
-    /// is noted and left out; none converting is no list. JSON and XML
-    /// keep their reading; a single type over lines is unchanged.
+    /// each, a record with a `text` field the line as written), but only
+    /// where some line names a field or the record has a `text` field:
+    /// plain text and pairs naming the record's fields keep the
+    /// whole-document reading. A JSON string's line is unquoted. A line
+    /// that does not convert is noted and left out; none converting is
+    /// no list. JSON and XML keep their reading; a single type over lines
+    /// is unchanged.
     #[test]
     fn a_list_reads_a_text_outputs_lines() {
         let types = &typed(
             "type Pkg { name: text; size: int }
 type Note { text: text }
 type Svc { port: int; proto: text? }
+type Rec { a: int; b: text }
+type Post { title: text; link: text? }
 enum Level { low, high }
 ",
         );
@@ -2392,12 +2400,20 @@ enum Level { low, high }
         assert_eq!(l.len(), 2);
         assert_eq!(l[1].field(types, "name"), Some(&Value::text("b")));
         assert_eq!(l[1].field(types, "size"), Some(&Value::int(2)));
-        let Ok(Value::List(l)) = read(&pkgs, "name=a\nsize=3\n") else {
-            panic!("a record per pairs line")
+        // Pairs naming the record's fields are one record, as on main.
+        let recs = list(user(types, "Rec"));
+        let Ok(Value::List(l)) = read(&recs, "a=1\nb=x\n") else {
+            panic!("one record of pairs")
         };
-        assert_eq!(l.len(), 2);
-        assert_eq!(l[0].field(types, "name"), Some(&Value::text("a")));
-        assert_eq!(l[1].field(types, "size"), Some(&Value::int(3)));
+        assert_eq!(l.len(), 1);
+        assert_eq!(l[0].field(types, "a"), Some(&Value::int(1)));
+        assert_eq!(l[0].field(types, "b"), Some(&Value::text("x")));
+        // Plain text naming no field (an error body, `pacman -Q`'s
+        // `name version`) is no list of records: reported, as on main.
+        let posts = list(user(types, "Post"));
+        assert!(read(&posts, "Too Many Requests\n").is_err());
+        assert!(read(&posts, "Too Many Requests\nRetry later\n").is_err());
+        assert!(read(&pkgs, "linux 6.1-1\nmesa 24.0-1\n").is_err());
         let notes = list(user(types, "Note"));
         let Ok(Value::List(l)) = read(&notes, "error: x\n{\"other\": 1}\nplain\n") else {
             panic!("notes")
@@ -2417,16 +2433,21 @@ enum Level { low, high }
             Ok(true)
         );
         assert_eq!(nested.map(|n| n.path), Some("[1]".to_string()));
-        let Ok(Value::List(l)) = read(&pkgs, "{\"error\":1}\n{\"error\":2}\n") else {
+        // JSON lines naming none of the fields are no list, one line or
+        // two, where a line among records is read as written by `name`.
+        assert!(read(&pkgs, "{\"error\":1}\n").is_err());
+        assert!(read(&pkgs, "{\"error\":1}\n{\"error\":2}\n").is_err());
+        let Ok(Value::List(l)) = read(&pkgs, "{\"name\":\"a\"}\n{\"error\":2}\n") else {
             panic!("a text field reads it")
         };
         assert_eq!(l.len(), 2);
-        // One such line is a JSON document, read whole: no item.
-        assert!(read(&pkgs, "{\"error\":1}\n").is_err());
         assert_eq!(
-            l[0].field(types, "name"),
-            Some(&Value::text("{\"error\":1}"))
+            l[1].field(types, "name"),
+            Some(&Value::text("{\"error\":2}"))
         );
+        // `jq '.[].name'`: a JSON string a line, unquoted, one or two.
+        assert_eq!(read(&texts, "\"a\"\n"), words(&["a"]));
+        assert_eq!(read(&texts, "\"a\"\n\"b c\"\n"), words(&["a", "b c"]));
         // `key=value` text read as `[text]` is its lines, as written.
         assert_eq!(read(&texts, "a=1\nb: 2\n"), words(&["a=1", "b: 2"]));
         // Text that is not XML (kernel lines) is lines too.

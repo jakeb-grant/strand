@@ -442,7 +442,8 @@ has not finished. While it runs, `.pending` is true and the last answer
 stays shown; if the program fails, `.error` says how. A `text` result is
 what the program printed; a number, an enum, a record or a list is read
 from it as a `from poll` service reads a command's output (JSON, XML or
-`key=value` lines into the type's fields). In a handler, `let r = await
+`key=value` lines into the type's fields, and a list from plain text a
+line an item). In a handler, `let r = await
 calc(q)` waits for it.
 
 **An action's name tells whether it runs, and stops it.** A screen

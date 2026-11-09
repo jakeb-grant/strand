@@ -525,22 +525,15 @@ pub fn read_line(fields: &[FieldSpec], line: &str) -> Vec<Option<Data>> {
 /// line is ([`read_line`]): JSON lines are a record each, a `key=value`
 /// line a record of its pairs; a line holding none of the record's fields
 /// is its text, for the binary's conversion to read or refuse. Otherwise
-/// a line is an item's text. Whitespace, `\0` and commas separate
-/// nothing: one item per line.
+/// a line is an item's text, a JSON string's quotes removed (`jq
+/// '.[].name'` prints `"a"`), as a listen line holding one is read.
+/// Whitespace, `\0` and commas separate nothing: one item per line.
 pub fn lines_data(text: &str, lines: &Lines) -> Data {
-    let mut items = Vec::new();
-    let mut take = |l: proc::Framed| {
-        if l.over {
-            return;
-        }
-        let text = l.text();
-        let line = text.trim();
-        if line.is_empty() {
-            return;
-        }
-        items.push(match lines {
+    let items = framed_lines(text)
+        .into_iter()
+        .map(|line| match lines {
             Lines::Records(fs) => {
-                let got = read_line(fs, line);
+                let got = read_line(fs, &line);
                 if got.iter().all(Option::is_none) {
                     Data::text(line)
                 } else {
@@ -554,31 +547,78 @@ pub fn lines_data(text: &str, lines: &Lines) -> Data {
                     }
                 }
             }
-            Lines::No | Lines::Values => Data::text(line),
-        });
+            Lines::No | Lines::Values => match line
+                .starts_with('"')
+                .then(|| serde_json::from_str::<String>(&line).ok())
+                .flatten()
+            {
+                Some(unquoted) => Data::text(unquoted),
+                None => Data::text(line),
+            },
+        })
+        .collect();
+    Data::List(items)
+}
+
+/// (lines-list) The lines of `text` as [`proc::Framer`] frames them,
+/// each trimmed, blank ones and ones over [`MAX_DOCUMENT`] left out.
+fn framed_lines(text: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut take = |l: proc::Framed| {
+        if l.over {
+            return;
+        }
+        let text = l.text();
+        let line = text.trim();
+        if !line.is_empty() {
+            lines.push(line.to_string());
+        }
     };
     let mut framer = Framer::new();
     framer.push(text.as_bytes(), &mut take);
     framer.finish(&mut take);
-    Data::List(items)
+    lines
 }
 
 impl Document {
-    /// (lines-list) Whether a list (`lines`) read from it whole is a list
-    /// of its lines: it is text, or `key=value` pairs holding none of
-    /// `fs`' keys (as a `text` field reads such pairs as written), and not
-    /// blank (nothing printed reads as before: `[]`, or null for an
-    /// optional list). JSON and XML keep their reading, and so does text
-    /// starting with `<` that is not XML read as a list of records: an
-    /// HTML page served in place of a feed is reported, never read as a
-    /// record a line.
-    pub fn by_line(&self, fs: &[FieldSpec], lines: &Lines) -> bool {
-        match (self, lines) {
-            (_, Lines::No) => false,
-            (Document::NotXml { .. }, Lines::Records(_)) => false,
+    /// (lines-list) Whether a list (`lines`) read from it whole, `written`,
+    /// is a list of its lines: it is text, or `key=value` pairs holding
+    /// none of `fs`' keys (as a `text` field reads such pairs as written)
+    /// nor, for records, of the item record's (pairs naming the record's
+    /// fields are one record), and not blank (nothing printed reads as
+    /// before: `[]`, or null for an optional list). JSON and XML keep
+    /// their reading. A list of records splits only where its lines are
+    /// records: some line structurally names one of the record's fields
+    /// (a JSON object, `key=value` pairs or XML holding it), or the record
+    /// has a `text` field, which reads any line; otherwise plain text (an
+    /// error page, `pacman -Q`'s `name version`) keeps the whole-document
+    /// reading and its report, and so does text starting with `<` that is
+    /// not XML (an HTML page served in place of a feed).
+    pub fn by_line(&self, written: &str, fs: &[FieldSpec], lines: &Lines) -> bool {
+        let holds = |fs: &[FieldSpec]| fs.iter().any(|f| self.get(&f.key).is_some());
+        let text = match (self, lines) {
+            (_, Lines::No) => return false,
+            (Document::NotXml { .. }, Lines::Records(_)) => return false,
             (Document::Text(t) | Document::NotXml { text: t, .. }, _) => !t.trim().is_empty(),
-            (Document::Pairs(_), _) => fs.iter().all(|f| self.get(&f.key).is_none()),
+            (Document::Pairs(_), Lines::Records(item)) => !holds(fs) && !holds(item),
+            (Document::Pairs(_), _) => !holds(fs),
             (Document::Json(_) | Document::Xml(..), _) => false,
+        };
+        match lines {
+            Lines::Records(item) if text => {
+                item.iter()
+                    .any(|f| f.name == "text" && f.text != TextField::No)
+                    || framed_lines(written).iter().any(|l| {
+                        let line = Document::parse(l);
+                        matches!(
+                            line,
+                            Document::Json(serde_json::Value::Object(_))
+                                | Document::Pairs(_)
+                                | Document::Xml(..)
+                        ) && item.iter().any(|f| line.get(&f.key).is_some())
+                    })
+            }
+            _ => text,
         }
     }
 }
@@ -937,7 +977,7 @@ pub fn json_data(v: &serde_json::Value) -> Data {
 fn replace_doc(spec: &Spec, doc: &Document, written: &str, state: &mut Custom) {
     let got = doc.fields(written, &spec.fields);
     for (i, (f, v)) in spec.fields.iter().zip(got).enumerate() {
-        let v = if doc.by_line(&spec.fields, &f.lines) {
+        let v = if doc.by_line(written, &spec.fields, &f.lines) {
             Some(lines_data(written, &f.lines))
         } else {
             v
@@ -2968,7 +3008,7 @@ mod tests {
             ..field(name, TextField::No)
         };
         let fs = [list("names"), field("all", TextField::Required)];
-        let by = |d: &str, l: &Lines| Document::parse(d).by_line(&fs, l);
+        let by = |d: &str, l: &Lines| Document::parse(d).by_line(d, &fs, l);
         let v = &Lines::Values;
         assert!(by("a\nb", v));
         assert!(!by("a\nb", &Lines::No), "not a list");
@@ -2979,6 +3019,22 @@ mod tests {
         assert!(!by("  \n", v), "blank");
         assert!(by("<6>a\n<6>b", v), "kernel lines are text");
         assert!(!by("<!doctype html>\n<p>x", &rec), "a page is no records");
+        // Records: only lines that name a field, or a record with a
+        // `text` field; pairs naming the record's fields are one record.
+        assert!(by("{\"name\":\"a\"}\n{\"name\":\"b\"}", &rec));
+        assert!(by("{\"error\":1}\n{\"name\":\"b\"}", &rec));
+        assert!(!by("{\"error\":1}\n{\"error\":2}", &rec));
+        assert!(!by("Too Many Requests", &rec), "an error body");
+        assert!(!by("linux 6.1-1\nmesa 24.0-1", &rec), "`pacman -Q`");
+        assert!(!by("name=a\nsize=3", &rec), "one record of pairs");
+        let note = Lines::Records(vec![field("text", TextField::Required)]);
+        assert!(by("Too Many Requests\nplain", &note));
+        // A JSON string's line is its text, unquoted; other lines as
+        // printed.
+        assert_eq!(
+            lines_data("\"a b\"\n\"c\\\"d\"\n1.10\n\"x\" y\n", &Lines::Values),
+            Data::List(vec![t("a b"), t("c\"d"), t("1.10"), t("\"x\" y")])
+        );
         let spec = Spec {
             name: "s".into(),
             source: Source::Fed,
