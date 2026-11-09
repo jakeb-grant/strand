@@ -210,6 +210,10 @@ advance the clock.
   running printed a line, which `rec.lines` then reads: numbered from 1 in
   its run, on stderr with `stderr`, and with `open` not ended yet, so the
   next line of that stream redraws it (a run starting numbers afresh).
+  (proc-review-3) `rec.lines` keeps what the live one keeps, its last
+  1000 lines and at most 256 KiB of their text
+  (`strand_services_schema::RING_LINES`, `RING_BYTES`), the oldest
+  leaving the front as the shell's ring drops them.
 - `end action <name> [code N] [failed "<why>"]` (lockmon; action-error: what
   `rec.error` then reads; proc-run: `code`, what `rec.code` reads): the command of the config's action
   `<name>` that the sandbox counts as running ends. The sandbox runs no

@@ -1160,7 +1160,7 @@ struct Harness {
 /// (lockmon review) A detached action's run in the sandbox, as the
 /// shell's runner keeps it: the command running (when it started) and
 /// whether a re-run is queued behind it.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 struct SandboxRun {
     started: Option<SystemTime>,
     queued: bool,
@@ -1168,6 +1168,46 @@ struct SandboxRun {
     /// open line's.
     last_n: u64,
     open: [Option<u64>; 2],
+    /// (proc-review-3) The lines its `lines` keeps, by number with
+    /// their text's length, and those lengths' sum: the live ring's bound
+    /// ([`strand_services_schema::RING_LINES`], `RING_BYTES`), kept the
+    /// same way so a replay's `lines` holds what the shell's did.
+    kept: std::collections::VecDeque<(u64, usize)>,
+    bytes: usize,
+}
+
+impl SandboxRun {
+    /// Line `n` of `stream` reads `text` (`open`: no line break yet), as
+    /// the live ring takes it: a new number is added and the front
+    /// dropped past the bound (an open line dropped is open no longer),
+    /// a kept one redrawn. Gives the number below which lines left.
+    fn line(&mut self, stream: usize, n: u64, text: &str, open: bool) -> u64 {
+        self.open[stream] = open.then_some(n);
+        match self.kept.iter_mut().rev().find(|(k, _)| *k == n) {
+            Some((_, len)) => {
+                self.bytes = self.bytes - *len + text.len();
+                *len = text.len();
+            }
+            None => {
+                self.kept.push_back((n, text.len()));
+                self.bytes += text.len();
+                while self.kept.len() > strand_services_schema::RING_LINES
+                    || self.bytes > strand_services_schema::RING_BYTES
+                {
+                    let Some((gone, len)) = self.kept.pop_front() else {
+                        break;
+                    };
+                    self.bytes -= len;
+                    for o in &mut self.open {
+                        if *o == Some(gone) {
+                            *o = None;
+                        }
+                    }
+                }
+            }
+        }
+        self.kept.front().map_or(self.last_n + 1, |(k, _)| *k)
+    }
 }
 
 /// (eval-live) A time step under way: its line, the tick it began at,
@@ -1551,6 +1591,8 @@ impl Harness {
         if let Some(run) = self.sandbox_runs.borrow_mut().get_mut(action) {
             run.last_n = 0;
             run.open = [None; 2];
+            run.kept.clear();
+            run.bytes = 0;
         }
         self.inst.update_action_run(
             action,
@@ -3087,19 +3129,20 @@ impl Harness {
                 }
                 let mut runs = self.sandbox_runs.borrow_mut();
                 let run = runs.entry(action.clone()).or_default();
-                let slot = &mut run.open[usize::from(*stderr)];
-                let n = match *slot {
+                let stream = usize::from(*stderr);
+                let n = match run.open[stream] {
                     Some(n) => n,
                     None => {
                         run.last_n += 1;
                         run.last_n
                     }
                 };
-                *slot = open.then_some(n);
+                let keep_from = run.line(stream, n, text, *open);
                 drop(runs);
                 self.inst.update_action_run(
                     action,
                     RunUpdate {
+                        keep_from,
                         lines: vec![RunLine {
                             n,
                             text: text.clone(),

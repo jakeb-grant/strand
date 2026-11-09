@@ -1906,6 +1906,56 @@ fn a_jobs_lines_and_code_are_what_its_steps_say() {
     }
 }
 
+/// (proc-review-3) A replayed job's `lines` keeps what the live ring
+/// keeps: its last 1000 lines, and at most 256 KiB of their text, the
+/// older ones leaving the front.
+#[test]
+fn a_replayed_jobs_lines_keep_the_live_bound() {
+    let text = |lines: &str, first: &str, len: usize| {
+        format!(
+            r#"id     = "proc-ring"
+screen = {{ width = 400, scale = 1.0 }}
+hz     = 60
+
+=== shell.strand
+permit exec "pacman"
+action upd() ["pacman", "-Syu"]
+export state go = 0
+on change go {{ upd() }}
+
+bar Top {{
+  height: 30
+  row {{
+    if upd.lines.len == {len} {{ box {{ id: capped; width: 6; height: 6; bg: #00ff00 }} }}
+    if (upd.lines.first?.text ?? "") == "{first}" {{ box {{ id: front; width: 6; height: 6; bg: #0000ff }} }}
+  }}
+}}
+
+=== steps
+rest
+set go 1
+rest
+{lines}rest
+"#
+        )
+    };
+    // By count: 1200 short lines keep the last 1000, from `l201`.
+    let many: String = (1..=1200)
+        .map(|i| format!("line action upd \"l{i}\"\n"))
+        .collect();
+    let t = go(&text(&many, "l201", 1000));
+    assert!(drawn_last(&t, "capped"), "1000 lines kept");
+    assert!(drawn_last(&t, "front"), "the oldest kept is l201");
+    // By bytes: 300 lines of 2000 bytes keep 131 (262000 bytes), from
+    // the 170th.
+    let wide: String = (1..=300)
+        .map(|i| format!("line action upd \"{:0>2000}\"\n", i))
+        .collect();
+    let t = go(&text(&wide, &format!("{:0>2000}", 170), 131));
+    assert!(drawn_last(&t, "capped"), "256 KiB kept");
+    assert!(drawn_last(&t, "front"));
+}
+
 /// (proc-run) An action's block in the sandbox: served as the service
 /// named after the action, so a recording's `set` of a field and `emit`
 /// of a `line` event replay into `upd.pct` and `on upd.line(doc)` as the

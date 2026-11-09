@@ -26,13 +26,17 @@ service pending from poll ["checkupdates", "--nocolor"] every 1h ok 0, 2 { list:
 ```
 
 ```strand file=bar.strand
+// Each call's value and its `.error`, read apart.
+let news = updates()
+let notes = todos("~/notes/today.md")
+
 bar Top {
   edge: top; height: 32
   bg: $surface; font: $font.ui; color: $fg
   split { pad: 0, $space.3
     start { gap: $space.2
-      text (updates() ?? "") == "" ? "Up to date" : "Updates ready"
-      text join(" ", todos("~/notes/today.md") ?? 0, "to do")
+      text news.error != null ? "Update check failed" : news.pending ? "" : (news ?? "") == "" ? "Up to date" : "Updates ready"
+      text notes.error != null ? "Notes unreadable" : join(" ", notes ?? 0, "to do")
     }
     end { gap: $space.2
       button "Mirror" { on click { mirror("~/Music/", "/mnt/usb/music/") } }
@@ -42,6 +46,15 @@ bar Top {
   }
 }
 ```
+
+`?? ""` alone would hide what `ok` tells apart. A failed call's value
+is null too, so `(updates() ?? "") == ""` reads "Up to date" when
+checkupdates exits 2, when it fails (exit 1, `==> ERROR: Cannot fetch
+updates`) and before it answers. The bar reads `news.error` first, then
+the value; `news.error` holds why in the program's words (``"`checkupdates`
+failed (exit status: 1): ==> ERROR: Cannot fetch updates"``) for a
+shell that would rather show them. In the same way grep's 2 (the notes
+file is not there) is `notes.error`, not "0 to do".
 
 ## What `ok` does
 
@@ -76,5 +89,10 @@ error: package 'nosuch' was not found"``), and a shell can show it.
 
 A program's lines are one text, not a list: `-> [text]` over
 `checkupdates`' two lines is one item holding both. Where a list is
-wanted, a helper script prints it as a JSON array
-(`checkupdates --nocolor | jq -Rn '[inputs]'`).
+wanted, split the text in the config, which keeps `ok` and `.error`:
+`let pkgs = (news ?? "").split("\n").filter(l => l != "")` over the `->
+text … ok 0, 2` action above. A helper script piping it into `jq`
+loses the status: a pipeline exits with its last program's status, so
+checkupdates' 1 and its 2 would both reach Strand as jq's 0. A helper
+that keeps a pipeline needs `set -o pipefail`, and then owns the
+status: its `ok` lists its own exit statuses, not checkupdates'.

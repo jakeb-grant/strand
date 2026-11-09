@@ -76,6 +76,13 @@ use crate::services::custom::{BlockSpec, Blocks};
 /// A command's thread only starts it and waits.
 const STACK: usize = 64 * 1024;
 
+/// (proc-review-3) A job's thread also parses each stdout line of an
+/// action with a block ([`svc::read_line`]): JSON or XML nested as deep
+/// as the parsers take (128 levels) needs more than [`STACK`], and an
+/// overflow aborts the whole shell. Reserved, not used: only the pages a
+/// parse touches are ever mapped.
+const JOB_STACK: usize = 1024 * 1024;
+
 /// (lockmon) How long a stopped command has after SIGINT before SIGTERM,
 /// and after SIGTERM before SIGKILL (spec.md 5.7).
 pub(super) const STOP_GRACE: Duration = Duration::from_secs(2);
@@ -441,7 +448,7 @@ impl Execs {
         };
         let spawned = std::thread::Builder::new()
             .name("strand-exec".into())
-            .stack_size(STACK)
+            .stack_size(JOB_STACK)
             .spawn(move || {
                 let (failed, exit, stopped) = run(&req.argv, &h, grace, &cx);
                 // After its last line: logic takes them with its end.
@@ -2725,6 +2732,54 @@ mod tests {
                 Some(Data::Float(0.75)),
             ]
         );
+    }
+
+    /// (proc-review-3) A job's thread parses each stdout line of an
+    /// action with a block: one nested as deep as the parsers take (127
+    /// JSON objects, 127 XML elements, 127 JSON arrays) reads on it, never overflowing its
+    /// stack (which would abort the whole shell).
+    #[test]
+    fn a_block_reads_lines_nested_as_deep_as_the_parsers_take() {
+        use strand_services::custom::{FieldSpec, TextField};
+        let (mut loop_, mut execs) = looped(STOP_GRACE);
+        lock(&execs.blocks).insert(
+            "deep".into(),
+            BlockSpec {
+                spec: -79,
+                fields: Arc::new(vec![FieldSpec {
+                    name: "a".into(),
+                    key: vec!["a".into()],
+                    rw: false,
+                    text: TextField::No,
+                }]),
+            },
+        );
+        let json = format!("{}1{}", "{\"a\":".repeat(127), "}".repeat(127));
+        let xml = format!("{}x{}", "<a>".repeat(127), "</a>".repeat(127));
+        let list = format!("{}1{}", "[".repeat(127), "]".repeat(127));
+        let script = format!(
+            "printf '%s\\n' '{json}'; printf '%s\\n' '{xml}'; printf '%s\\n' '{list}'; echo done"
+        );
+        execs.start(job("deep", sh(&script)));
+        let mut seen = 0;
+        let start = Instant::now();
+        let mut ended = Vec::new();
+        while ended.is_empty() {
+            assert!(start.elapsed() < Duration::from_secs(20));
+            loop_
+                .dispatch(Some(Duration::from_millis(10)), &mut ())
+                .unwrap();
+            let _ = execs.runs();
+            for (_, t) in execs.lines() {
+                seen += t.fields.iter().filter(|f| f.is_some()).count();
+            }
+            for e in execs.ended() {
+                seen += e.taken.fields.iter().filter(|f| f.is_some()).count();
+                ended.push(e);
+            }
+        }
+        assert_eq!((ended[0].failed.as_deref(), ended[0].exit), (None, 0));
+        assert!(seen > 0, "the deep lines set the field");
     }
 
     /// (proc-run) The end order: everything a run printed comes with or

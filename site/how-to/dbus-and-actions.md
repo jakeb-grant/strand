@@ -127,8 +127,9 @@ handler runs it.
 
 - **The command is a list.** Its first item is the program, written
   out; the others are texts and the action's parameters. Each
-  parameter is exactly one argument, never split on spaces, and no
-  shell stands between Strand and the program. A `path` parameter's
+  parameter is exactly one argument, never split on spaces (a list
+  parameter one argument per item), and no shell stands between Strand
+  and the program. A `path` parameter's
   `~/…` is your home folder, as everywhere Strand takes a path, so
   `rec("~/Videos/a.mp4")` with `action rec(file: path)` records there;
   a `text` parameter is passed as written.
@@ -139,7 +140,10 @@ handler runs it.
 - **It runs detached.** The handler does not wait for it. If the
   program cannot start, or exits with an error, Strand logs it,
   `strand watch` shows a notice, and `rec.error` says why, so the shell
-  can show it too.
+  can show it too. `rec.code` is the status it ended with, `ok 0, N`
+  lists the statuses that are no failure ([Exit statuses that mean
+  none](exit-statuses.md)), and `rec.lines` is what it printed, as a
+  terminal shows it ([Running a long job and following it](long-job.md)).
 
 ## An action that gives back a value
 

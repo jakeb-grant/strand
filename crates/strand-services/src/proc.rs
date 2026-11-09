@@ -38,10 +38,10 @@ use crate::custom::MAX_DOCUMENT;
 
 /// A line shown in a [`Ring`] is cut to this many characters, then `…`.
 pub const SHOWN_CHARS: usize = 2000;
-/// A [`Ring`] keeps at most this many lines…
-pub const RING_LINES: usize = 1000;
-/// …and at most this many bytes of their text.
-pub const RING_BYTES: usize = 256 * 1024;
+/// A [`Ring`] keeps at most [`RING_LINES`] lines and [`RING_BYTES`]
+/// bytes of their text: the schema crate's, which the eval sandbox's
+/// stand-in keeps too.
+pub use strand_services_schema::{RING_BYTES, RING_LINES};
 /// A run's stderr is its reason whole up to this many bytes…
 pub const TAIL_WHOLE: usize = 4096;
 /// …past that its first this many…

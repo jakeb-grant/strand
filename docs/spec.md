@@ -1054,8 +1054,8 @@ monitor, the keyboard always).
   (`check::ok_status` otherwise), and 0 must be among them (`ok 2` is a
   load error, `check::ok_without_zero`, whose help writes `ok 0, 2`),
   so the clause reads rightly on its own. A listed status is no
-  failure: a `-> T` reads its output as `T` (nothing printed is `[]`
-  or null), a poll's fields update, `error` stays null and no notice is
+  failure: a `-> T` reads its output as `T` (nothing printed is `""`,
+  `[]` or null, by `T`), a poll's fields update, `error` stays null and no notice is
   shown; the run's `code` (below) still holds it, so `backup.code == 3`
   can say "saved; some files unreadable". What a listed non-zero run
   printed on stderr is logged at info. A signal is never ok. Without

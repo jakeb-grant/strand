@@ -261,7 +261,10 @@ No Strand dependency:
   strand-icons            the icon theme lookup
   strand-introspect       D-Bus introspection; zbus, tokio and log only
   strand-services-macros  #[service], #[derive(Store, Data, Call)]
-  strand-services-schema  the builtin services' schema texts
+  strand-services-schema  the builtin services' schema texts, and the
+                          runtime's bounds the eval sandbox mirrors
+                          (`POLLED`; `RING_LINES`, `RING_BYTES`: an
+                          action's `lines`)
   strand-auth             lib: wire protocol, Client, UnlockToken (libc, zeroize)
                           bin: the PAM helper, the only code that links libpam
   strand-fake-wayland     (tests only; publish = false) a fake compositor
@@ -1978,7 +1981,7 @@ Public interfaces:
     after the last), then `code: Option<i64>`, then `error:
     Option<Option<String>>`, then `running: Option<(bool,
     Option<NaiveDateTime>)>`, each `None` leaving it as it is. The
-    strand crate sends a run's end as one `RunEnded` after its last
+    strand crate sends a run's end as one update (`exec::Ended`) after its last
     line, so the end order (spec.md 5.7) holds within that flush, after
     the block's last field merge and `line` events. `ActionRun` reads
     `running`, `started`, `error`, `code`, `lines` (in that order, the

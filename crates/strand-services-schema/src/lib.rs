@@ -30,6 +30,13 @@ pub const POLLED: [(&str, std::time::Duration); 4] = [
     ("network", std::time::Duration::from_secs(1)),
 ];
 
+/// (proc-review-3) An action's `lines` keeps its run's last this many
+/// lines… (`strand_services::proc::Ring`; the eval sandbox's stand-in
+/// keeps the same, so a replayed `lines` holds what the live one did).
+pub const RING_LINES: usize = 1000;
+/// …and at most this many bytes of their text, as shown.
+pub const RING_BYTES: usize = 256 * 1024;
+
 /// `battery`: UPower's display device and power sources.
 pub const BATTERY: &str = include_str!("battery.schema");
 /// `brightness`: the screen's and the keyboard's backlights (sysfs,
