@@ -3323,9 +3323,11 @@ impl<'a> Checker<'a> {
                         _ => command_of(arg).map(hir::PollTarget::Command),
                     };
                     match (target, interval) {
-                        (Some(target), Some(every)) => {
-                            Some(hir::SourceSpec::Poll { target, every })
-                        }
+                        (Some(target), Some(every)) => Some(hir::SourceSpec::Poll {
+                            target,
+                            every,
+                            ok: vec![0],
+                        }),
                         _ => None,
                     }
                 }
@@ -3337,6 +3339,7 @@ impl<'a> Checker<'a> {
         if let Some(hir::SourceSpec::Poll {
             target: hir::PollTarget::Command(_),
             every,
+            ..
         }) = &spec
             && *every < hir::MIN_COMMAND_POLL
             && let Some(e) = &s.source.every

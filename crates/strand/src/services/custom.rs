@@ -278,7 +278,7 @@ pub fn spec_of(decl: &CustomService, config_dir: Option<&Path>, types: &[Ty]) ->
         SourceSpec::Listen { command } => Source::Listen {
             command: command.clone(),
         },
-        SourceSpec::Poll { target, every } => Source::Poll {
+        SourceSpec::Poll { target, every, .. } => Source::Poll {
             target: match target {
                 PollTarget::Command(c) => custom::PollTarget::Command(c.clone()),
                 PollTarget::File(f) => custom::PollTarget::File(resolve(f, config_dir)),
@@ -809,7 +809,18 @@ fn action_run(types: &TypeTable, run: &custom::CustomRun) -> Value {
         })
         .unwrap_or(Value::Null);
     let error = run.error.as_deref().map_or(Value::Null, Value::text);
-    Value::record(record, vec![Value::Bool(run.running > 0), started, error])
+    // (proc-run) A method call prints nothing and ends with no status:
+    // `code` null, `lines` empty (reading either is refused at load).
+    Value::record(
+        record,
+        vec![
+            Value::Bool(run.running > 0),
+            started,
+            error,
+            Value::Null,
+            Value::list(Vec::new()),
+        ],
+    )
 }
 
 /// `d` as a message shows it: short, quoted text, kinds for the rest.

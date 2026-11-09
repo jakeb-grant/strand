@@ -326,7 +326,7 @@ impl<'a> Checker<'a> {
         }
         if ok {
             for (i, p) in a.params.iter().enumerate() {
-                if !argv.contains(&ArgvPart::Param(i)) {
+                if !argv.contains(&ArgvPart::Param(i)) && !argv.contains(&ArgvPart::Spread(i)) {
                     self.warning(
                         "check::unknown_param",
                         format!("parameter `{}` is not in the command", p.name.name),
@@ -346,6 +346,8 @@ impl<'a> Checker<'a> {
             span: a.span,
             params,
             argv: if ok { argv } else { Vec::new() },
+            ok: vec![0],
+            fields: None,
         }
     }
 }

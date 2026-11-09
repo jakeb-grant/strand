@@ -1860,6 +1860,17 @@ impl Instance {
         self.ctx.vm.runs().set_error(&self.rt, action, error);
     }
 
+    /// (proc-run) What the host says of declared action `action`'s run:
+    /// a run starting, the lines its command printed, the status it ended
+    /// with, why it failed, whether one runs, applied together on the next
+    /// flush in [`RunUpdate`]'s order (the end order, spec.md 5.7). An
+    /// action the program does not declare is ignored.
+    ///
+    /// [`RunUpdate`]: crate::vm::runs::RunUpdate
+    pub fn update_action_run(&self, action: &str, update: crate::vm::runs::RunUpdate) {
+        self.ctx.vm.runs().update(&self.rt, action, update);
+    }
+
     /// (lockmon) Whether a command of `action` runs, as last set with
     /// [`Instance::set_action_run`]; `None` for an action the program
     /// does not declare.

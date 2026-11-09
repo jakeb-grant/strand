@@ -865,3 +865,113 @@ fn an_actions_run_follows_the_host_and_stop_is_asked_in_order() {
     assert!(!reqs[1].stop);
     assert_eq!(reqs[1].argv, ["wf-recorder", "-f", "/tmp/b.mp4"]);
 }
+
+/// (proc-run) What the host says of a run's output is what `rec.lines`
+/// and `rec.code` read: lines replaced by number (the open line redrawn,
+/// then ended), dropped from the front, emptied with `code` and `error`
+/// when a run starts; one update's parts land in one flush, so `on change
+/// rec.running` sees the last line, the status and why. An action with a
+/// result reads `[]` and null.
+#[test]
+fn a_runs_lines_and_code_follow_the_hosts_updates() {
+    use strand_compiler::vm::runs::{RunLine, RunUpdate};
+    let line = |n: u64, text: &str, stderr: bool, open: bool| RunLine {
+        n,
+        text: text.into(),
+        stderr,
+        open,
+    };
+    let src = "permit exec \"pacman\", \"qalc\"\n\
+        action tx() [\"pacman\", \"-Syu\"]\n\
+        action calc(q: text) -> text [\"qalc\", q]\n\
+        let shown = tx.lines.map(l => (l.stderr ? \"!\" : \"\") + l.text + (l.open ? \"…\" : \"\"))\n\
+        let count = tx.lines.len\n\
+        let first = tx.lines.first?.n ?? 0\n\
+        let code = tx.code ?? -1\n\
+        let other = calc.lines.len + (calc.code ?? -1)\n\
+        export state ended = \"\"\n\
+        on change tx.running { if !tx.running { ended = join(\"|\", tx.lines.last?.text, num(tx.code ?? -1), tx.error) } }\n";
+    let (_rt, _host, inst) = run(src);
+    let list = |inst: &Instance| -> Vec<String> {
+        match get(inst, "shown") {
+            Value::List(items) => items
+                .iter()
+                .map(|v| match v {
+                    Value::Text(t) => t.to_string(),
+                    v => format!("{v:?}"),
+                })
+                .collect(),
+            v => panic!("{v:?}"),
+        }
+    };
+    assert_eq!(get(&inst, "count").as_f64(), Some(0.0));
+    assert_eq!(get(&inst, "code").as_f64(), Some(-1.0));
+    let t = chrono::NaiveDate::from_ymd_opt(2026, 11, 8)
+        .unwrap()
+        .and_hms_opt(16, 4, 0)
+        .unwrap();
+    inst.update_action_run(
+        "tx",
+        RunUpdate {
+            reset: true,
+            lines: vec![
+                line(1, ":: Starting", false, false),
+                line(2, " 10%", true, true),
+            ],
+            running: Some((true, Some(t))),
+            ..RunUpdate::default()
+        },
+    );
+    inst.flush();
+    assert_eq!(list(&inst), [":: Starting", "! 10%…"]);
+    inst.update_action_run(
+        "tx",
+        RunUpdate {
+            keep_from: 2,
+            lines: vec![
+                line(2, "100%", true, false),
+                line(3, "error: failed", true, false),
+            ],
+            ..RunUpdate::default()
+        },
+    );
+    inst.flush();
+    assert_eq!(list(&inst), ["!100%", "!error: failed"]);
+    assert_eq!(get(&inst, "first").as_f64(), Some(2.0));
+    assert_eq!(text(&inst, "ended"), "", "still running");
+    // The end: the last line, the status, why, then `running`, one flush.
+    inst.update_action_run(
+        "tx",
+        RunUpdate {
+            lines: vec![line(4, "done", false, false)],
+            code: Some(1),
+            error: Some(Some(
+                "`pacman` failed (exit status: 1): error: failed".into(),
+            )),
+            running: Some((false, None)),
+            ..RunUpdate::default()
+        },
+    );
+    inst.flush();
+    assert_eq!(get(&inst, "code").as_f64(), Some(1.0));
+    assert_eq!(
+        text(&inst, "ended"),
+        "done|1|`pacman` failed (exit status: 1): error: failed"
+    );
+    // A run starting empties `lines`, `code` and `error`.
+    inst.update_action_run(
+        "tx",
+        RunUpdate {
+            reset: true,
+            running: Some((true, Some(t))),
+            ..RunUpdate::default()
+        },
+    );
+    inst.flush();
+    assert_eq!(get(&inst, "count").as_f64(), Some(0.0));
+    assert_eq!(get(&inst, "code").as_f64(), Some(-1.0));
+    // An undeclared action is ignored; one with a result has neither.
+    inst.update_action_run("nope", RunUpdate::default());
+    inst.flush();
+    assert_eq!(get(&inst, "other").as_f64(), Some(-1.0));
+}

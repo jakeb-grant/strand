@@ -32,7 +32,9 @@ Keyed by `ssid`.
 
 (lockmon) A declared action's commands as they run, read through the
 action's name: `rec.running`, `rec.started` and `rec.stop()` for
-`action rec(…) […]`. Only an action's name reads as one, and
+`action rec(…) […]`, and (proc-run) what its last command printed and
+how it ended, `rec.lines` and `rec.code`. Only an action's name reads
+as one, and
 (dbus-action-run) a `from dbus` service's action read without a call:
 `bolt.enroll.running`, `.started` and `.error` for its method calls.
 
@@ -40,7 +42,9 @@ action's name: `rec.running`, `rec.started` and `rec.stop()` for
 | --- | --- | --- |
 | `running` | `bool` | A command of it runs: true while any does (an action with a result may run several at once). For a D-Bus method, while a call of it waits for its answer. |
 | `started` | `Date?` | When the command running longest started, to the minute; null while none runs. For a D-Bus method, when the oldest call still waiting was made. |
-| `error` | `text?` | Why its last command failed: it could not start (`could not start \`wf-recorder\`: …`), or exited non-zero; null once one ends well or is stopped, and from the moment it is called again. Null on an action with a result, whose call has its own `.error`. For a D-Bus method, the daemon's error name and message (`org.freedesktop.bolt.Error.Exists: …`); null once a call is answered without one, and from the moment the service takes a new call. |
+| `error` | `text?` | Why its last command failed: it could not start (`could not start \`wf-recorder\`: …`), or exited with a status its `ok` does not list (`\`pacman\` failed (exit status: 1): error: …`, the headline, then the end of its stderr); null once one ends well or is stopped, and from the moment it is called again. Null on an action with a result, whose call has its own `.error`. For a D-Bus method, the daemon's error name and message (`org.freedesktop.bolt.Error.Exists: …`); null once a call is answered without one, and from the moment the service takes a new call. |
+| `code` | `int?` | (proc-run) The status its last command ended with, `128 + n` for signal n as a shell's `$?` says it (130 after `stop()`'s SIGINT); null before any ended and from the moment it is called again. Null on an action with a result and on a D-Bus method. |
+| `lines` | `[Line]` | (proc-run) What its last command printed, as a terminal shows it: its last 1000 lines (at most 256 KiB) of stdout and stderr, in the order read, the last possibly the open line. Emptied when a run starts, kept when it ends. Empty on an action with a result and on a D-Bus method. |
 
 | Method | |
 | --- | --- |
@@ -405,6 +409,20 @@ claim (`on key "ctrl+n" (k)`).
 | `alt` | `bool` | Alt is held. |
 | `logo` | `bool` | The logo (Super) key is held. |
 | `repeat` | `bool` | A repeat of a key held down. |
+
+### `Line`
+
+(proc-run) A line a command printed, one of an action's `lines`:
+`for l in rec.lines { text l.text }`.
+
+Keyed by `n`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `n` | `int` | Its number in the run, from 1: its key, so a list keeps each line's node as older lines leave. |
+| `text` | `text` | As a terminal shows it: escape codes removed, `\r` rewrites resolved, leading spaces kept. |
+| `stderr` | `bool` | It came on stderr, where programs write diagnostics and progress alike: which stream, never a severity. |
+| `open` | `bool` | No line break yet: a bar being redrawn, or a prompt. It may still change. |
 
 ### `Match`
 

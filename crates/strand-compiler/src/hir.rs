@@ -290,6 +290,21 @@ pub struct ActionDecl {
     pub params: Vec<String>,
     /// The command: the program first (always [`ArgvPart::Text`]).
     pub argv: Vec<ArgvPart>,
+    /// (proc-ok) The exit statuses that are no failure (`ok 0, 2`): `[0]`
+    /// when none are written.
+    pub ok: Vec<i32>,
+    /// (proc-run) Its block (`{ percent_done: float? }`): the fields its
+    /// stdout lines fill, as a `from listen` service's.
+    pub fields: Option<ActionBlock>,
+}
+
+/// (proc-run) An action's block of fields: its record (in the program's
+/// type table) and its fields with their key paths, as a `from listen`
+/// service declares them.
+#[derive(Clone, Debug)]
+pub struct ActionBlock {
+    pub record: crate::ty::RecordId,
+    pub fields: Vec<ServiceField>,
 }
 
 /// One argument of an action's command.
@@ -299,6 +314,9 @@ pub enum ArgvPart {
     Text(String),
     /// The parameter at this index, as one argument.
     Param(usize),
+    /// (proc-list) The list parameter at this index: one argument per
+    /// item, none for an empty list.
+    Spread(usize),
 }
 
 impl ActionDecl {
@@ -314,6 +332,9 @@ impl ActionDecl {
                 ArgvPart::Text(t) => t.clone(),
                 ArgvPart::Param(i) => {
                     format!("{{{}}}", self.params.get(*i).map_or("?", String::as_str))
+                }
+                ArgvPart::Spread(i) => {
+                    format!("{{{}…}}", self.params.get(*i).map_or("?", String::as_str))
                 }
             })
             .collect::<Vec<_>>()
@@ -461,6 +482,9 @@ pub enum SourceSpec {
     Poll {
         target: PollTarget,
         every: std::time::Duration,
+        /// (proc-ok) The exit statuses that are no failure: `[0]` unless
+        /// `ok` is written (a file's is always `[0]`).
+        ok: Vec<i32>,
     },
 }
 

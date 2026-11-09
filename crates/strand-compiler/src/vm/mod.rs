@@ -659,12 +659,50 @@ fn same_error(a: &Error, b: &Error) -> bool {
 /// else, a bare `~` and `~user/…` included, as written, as those other
 /// places leave them. Without an absolute `$HOME` (unset, relative, not
 /// UTF-8) it stays as written too.
-fn home_expanded(path: String) -> String {
-    let home = std::env::var_os("HOME").and_then(|h| h.into_string().ok());
-    with_home(path, home.as_deref())
+/// (M6) An action's command with `args` filling its parameters: each
+/// [`ArgvPart::Param`] one argument as its text, (proc-list) each
+/// [`ArgvPart::Spread`] one argument per item of its list (none for an
+/// empty list or a null), never split; a parameter in `paths` (a `path`,
+/// or each item of a `[path]`) with `home` for its `~/` (path-tilde).
+///
+/// [`ArgvPart::Param`]: crate::hir::ArgvPart::Param
+/// [`ArgvPart::Spread`]: crate::hir::ArgvPart::Spread
+fn argv_of(
+    argv: &[crate::hir::ArgvPart],
+    args: &[Value],
+    paths: &[usize],
+    types: &crate::ty::TypeTable,
+    home: Option<&str>,
+) -> Vec<String> {
+    let shown = |i: usize, v: &Value| {
+        let s = v.show(types);
+        if paths.contains(&i) {
+            with_home(s, home)
+        } else {
+            s
+        }
+    };
+    let mut out = Vec::with_capacity(argv.len());
+    for p in argv {
+        match p {
+            crate::hir::ArgvPart::Text(t) => out.push(t.clone()),
+            crate::hir::ArgvPart::Param(i) => {
+                out.push(args.get(*i).map(|v| shown(*i, v)).unwrap_or_default());
+            }
+            crate::hir::ArgvPart::Spread(i) => match args.get(*i) {
+                Some(Value::List(items)) => out.extend(items.iter().map(|v| shown(*i, v))),
+                Some(Value::Null) | None => {}
+                // Not a list (never, once checked): one argument.
+                Some(v) => out.push(shown(*i, v)),
+            },
+        }
+    }
+    out
 }
 
-/// [`home_expanded`] with `home` for `$HOME`.
+/// (path-tilde) `path` with `home` (`$HOME`) for its `~/`; a bare `~`,
+/// `~user/…`, a `~` further in and a home that is not absolute leave it
+/// as written.
 fn with_home(path: String, home: Option<&str>) -> String {
     // `rest` keeps its `/`: `~/x` is `$HOME/x`, and `/x` when `$HOME`
     // is `/`.
@@ -725,7 +763,8 @@ impl Vm {
             return Err(Error::failed("no such action"));
         };
         let date = types.find_schema_record("Date");
-        self.runs().read(rt, &action.name, record, date)
+        let line = types.find_schema_record("Line");
+        self.runs().read(rt, &action.name, record, date, line)
     }
 
     /// (lockmon) `rec.stop()`: asks the host to stop declared action
@@ -774,22 +813,14 @@ impl Vm {
         let Some(action) = self.prog.execs.get(&def) else {
             return Err(Error::failed("no such action"));
         };
-        let types = self.types();
-        let argv = action
-            .argv
-            .iter()
-            .map(|p| match p {
-                crate::hir::ArgvPart::Text(t) => t.clone(),
-                crate::hir::ArgvPart::Param(i) => {
-                    let shown = args.get(*i).map(|v| v.show(types)).unwrap_or_default();
-                    if action.paths.contains(i) {
-                        home_expanded(shown)
-                    } else {
-                        shown
-                    }
-                }
-            })
-            .collect();
+        let home = std::env::var_os("HOME").and_then(|h| h.into_string().ok());
+        let argv = argv_of(
+            &action.argv,
+            args,
+            &action.paths,
+            self.types(),
+            home.as_deref(),
+        );
         self.execs.borrow_mut().push(ExecRequest {
             action: action.name.clone(),
             argv,
@@ -1234,7 +1265,58 @@ impl Drop for InputHandler {
 
 #[cfg(test)]
 mod tests {
-    use super::with_home;
+    use super::{Value, argv_of, with_home};
+    use crate::hir::ArgvPart;
+    use crate::ty::TypeTable;
+
+    /// (proc-list) A list parameter is one argument per item, none when
+    /// empty, each item of a `[path]` with the home folder for its `~/`;
+    /// a single parameter stays one argument, spaces and all.
+    #[test]
+    fn a_list_parameter_is_one_argument_per_item() {
+        let types = TypeTable::default();
+        let argv = [
+            ArgvPart::Text("pacman".into()),
+            ArgvPart::Param(0),
+            ArgvPart::Text("--".into()),
+            ArgvPart::Spread(1),
+            ArgvPart::Spread(2),
+        ];
+        let pkgs = Value::list(vec![Value::text("a b"), Value::text("~/c"), Value::int(3)]);
+        let dirs = Value::list(vec![Value::text("~/Documents"), Value::text("~")]);
+        let got = argv_of(
+            &argv,
+            &[Value::text("-S x"), pkgs, dirs],
+            &[2],
+            &types,
+            Some("/home/ana"),
+        );
+        assert_eq!(
+            got,
+            [
+                "pacman",
+                "-S x",
+                "--",
+                "a b",
+                "~/c",
+                "3",
+                "/home/ana/Documents",
+                "~"
+            ]
+        );
+        let none = argv_of(
+            &argv,
+            &[
+                Value::text("-S"),
+                Value::list(Vec::new()),
+                Value::list(Vec::new()),
+            ],
+            &[2],
+            &types,
+            Some("/home/ana"),
+        );
+        assert_eq!(none, ["pacman", "-S", "--"]);
+    }
 
     /// (path-tilde) `~/…` takes the home folder; a bare `~` (as a
     /// settings file's or an image's), `~user/…`, a `~` further in and a

@@ -137,6 +137,25 @@ pub struct ExecAction {
     /// (flex) `-> T`: what its output is read as; the call is then an
     /// `Async<T>` the host answers ([`crate::vm::ExecReply`]).
     pub ret: Option<Ty>,
+    /// (proc-ok) The exit statuses that are no failure (`ok 0, 2`), for a
+    /// run and a `-> T` call alike: `[0]` when none are written. A signal
+    /// is never one.
+    pub ok: Vec<i32>,
+    /// (proc-run) Its block (an action without a result only): the fields
+    /// its stdout lines fill. The host serves them exactly as a `from
+    /// listen` service named after the action: `backup.percent_done`
+    /// reads, and `on backup.line(doc)` hears, the service host's entry
+    /// `backup` (docs/architecture.md, the exec interface).
+    pub fields: Option<ActionFields>,
+}
+
+/// (proc-run) An action's block: its record (in the program's type
+/// table, a line's `doc`) and its fields with their key paths, as a
+/// [`CustomService`]'s.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActionFields {
+    pub record: RecordId,
+    pub fields: Vec<CustomField>,
 }
 
 /// (M6) A `from dbus` service's `action name(params) = Method`.
@@ -989,16 +1008,33 @@ impl Lowerer<'_> {
                     ExecAction {
                         name: self.hir.def(a.def).name.clone(),
                         argv: a.argv.clone(),
+                        // (proc-list) A `[path]`'s items too, each.
                         paths: match &self.hir.def(a.def).ty {
                             Ty::Fn(sig) => sig
                                 .params
                                 .iter()
                                 .enumerate()
-                                .filter(|(_, p)| p.ty == Ty::PATH)
+                                .filter(|(_, p)| match &p.ty {
+                                    Ty::List(t, _) => **t == Ty::PATH,
+                                    t => *t == Ty::PATH,
+                                })
                                 .map(|(i, _)| i)
                                 .collect(),
                             _ => Vec::new(),
                         },
+                        ok: a.ok.clone(),
+                        fields: a.fields.as_ref().map(|b| ActionFields {
+                            record: b.record,
+                            fields: b
+                                .fields
+                                .iter()
+                                .map(|f| CustomField {
+                                    name: f.name.clone(),
+                                    key: f.key.clone(),
+                                    rw: f.rw,
+                                })
+                                .collect(),
+                        }),
                         ret: match &self.hir.def(a.def).ty {
                             Ty::Fn(sig) => match &sig.ret {
                                 Ty::Async(t) => Some((**t).clone()),

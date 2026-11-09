@@ -1243,21 +1243,24 @@ bar B { text join(" ", ppd.profile, ups.level, mood.level, music.title ?? "", te
         svc("temp").source,
         SourceSpec::Poll {
             target: PollTarget::Command(vec!["sensors".into(), "-j".into()]),
-            every: Duration::from_secs(5)
+            every: Duration::from_secs(5),
+            ok: vec![0],
         }
     );
     assert_eq!(
         svc("tool").source,
         SourceSpec::Poll {
             target: PollTarget::Command(vec!["my tool".into(), "--json".into(), "a b".into()]),
-            every: Duration::from_millis(500)
+            every: Duration::from_millis(500),
+            ok: vec![0],
         }
     );
     assert_eq!(
         svc("heat").source,
         SourceSpec::Poll {
             target: PollTarget::File("/sys/class/thermal/thermal_zone0/temp".into()),
-            every: Duration::from_secs(2)
+            every: Duration::from_secs(2),
+            ok: vec![0],
         }
     );
 
