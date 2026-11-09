@@ -276,9 +276,12 @@ fn item_kind(kind: &ItemKind, span: Span) -> TreeNode {
             if let Some(e) = &s.source.every {
                 src.push(TreeNode::sexpr("every", e.span, vec![expr(e)]));
             }
-            TreeNode::node(format!("service {}", s.name.name), span)
-                .with(TreeNode::sexpr("from", s.source.span, src))
-                .with_all(items(&s.body))
+            let mut n = TreeNode::node(format!("service {}", s.name.name), span)
+                .with(TreeNode::sexpr("from", s.source.span, src));
+            if let Some(ok) = &s.source.ok {
+                n = n.with(ok_clause(ok));
+            }
+            n.with_all(items(&s.body))
         }
         ItemKind::Permit(p) => TreeNode::node(format!("permit {}", p.capability.name), span)
             .with_all(p.args.iter().map(expr)),
@@ -288,11 +291,18 @@ fn item_kind(kind: &ItemKind, span: Span) -> TreeNode {
             if let Some(r) = &a.ret {
                 n = n.with(TreeNode::sexpr("->", r.span, vec![ty(r)]));
             }
-            match &a.body {
+            n = match &a.body {
                 ActionBody::Command(e) => n.with(expr(e)),
                 ActionBody::Method(m) => n.with(TreeNode::leaf(format!("= {}", m.name), m.span)),
                 ActionBody::Missing => n,
+            };
+            if let Some(ok) = &a.ok {
+                n = n.with(ok_clause(ok));
             }
+            if let Some(b) = &a.fields {
+                n = n.with(TreeNode::node("fields", b.span).with_all(b.items.iter().map(field)));
+            }
+            n
         }
         ItemKind::Keyframes(k) => {
             TreeNode::node(format!("keyframes {}", k.name.name), span).with_all(items(&k.body))
@@ -406,6 +416,16 @@ fn let_node(l: &Let, span: Span) -> TreeNode {
         n = n.with(ty(t));
     }
     n.with(TreeNode::sexpr("=", l.value.span, vec![expr(&l.value)]))
+}
+
+/// (proc-ok) `ok 0, 2`.
+fn ok_clause(ok: &OkClause) -> TreeNode {
+    TreeNode::node("ok", ok.span).with_all(ok.statuses.iter().map(|s| {
+        TreeNode::leaf(
+            s.value.map_or_else(|| "?".to_string(), |v| v.to_string()),
+            s.span,
+        )
+    }))
 }
 
 fn field(f: &Field) -> TreeNode {

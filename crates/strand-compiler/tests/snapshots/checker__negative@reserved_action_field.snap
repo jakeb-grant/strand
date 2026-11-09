@@ -1,0 +1,14 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::reserved_field
+
+  × `backup.error` is its run's already
+   ╭─[reserved_action_field.strand:4:74]
+ 3 │ permit exec "restic"
+ 4 │ action backup(dirs: [path]) ["restic", "backup", "--json", "--", dirs] { error: text? }
+   ·                                                                          ──┬──
+   ·                                                                            ╰── a member of every action's run
+   ╰────
+  help: name the field otherwise and read the key `error` with a path: `err: text? = error`

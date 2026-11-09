@@ -77,6 +77,25 @@ pub trait ServiceHost {
     ) {
     }
 
+    /// (proc-run) Action `name`'s block of fields (`action backup(…) […]
+    /// { percent_done: float? }`), served as a `from listen` service of
+    /// that name whose lines are the stdout of the action's runs
+    /// (decisions.md proc-interface): `backup.percent_done` is
+    /// [`ServiceHost::read`]`("backup", "percent_done")` and `on
+    /// backup.line(doc)` its `line` event. Called at instantiation and on
+    /// every reload for each action with a block, its record one of
+    /// `types` (the new program's table); a block a reload removed gets
+    /// [`ServiceHost::stop`]. Reading it never starts a command. The
+    /// default does nothing.
+    fn declare_block(
+        &self,
+        _rt: &Runtime,
+        _name: &str,
+        _block: &crate::lower::ActionFields,
+        _types: &crate::ty::TypeTable,
+    ) {
+    }
+
     /// A live reload removed custom service `name`'s declaration: dispose
     /// its fields and events. Built-ins never stop. The default does
     /// nothing.

@@ -197,6 +197,30 @@ pub struct ActionDecl {
     /// value (an `Async<T>`).
     pub ret: Option<Type>,
     pub body: ActionBody,
+    /// (proc-ok) `ok 0, 2` after the command: the exit statuses that are
+    /// no failure.
+    pub ok: Option<OkClause>,
+    /// (proc-run) `{ percent_done: float? }` after the command: the
+    /// fields its stdout lines fill, as a `from listen` block's.
+    pub fields: Option<Block<Field>>,
+    pub span: Span,
+}
+
+/// (proc-ok) `ok 0, 2`: exit statuses that mean the program did its job.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OkClause {
+    /// The `ok` keyword.
+    pub kw: Span,
+    pub statuses: Vec<OkStatus>,
+    /// The whole clause.
+    pub span: Span,
+}
+
+/// One status of an [`OkClause`]: an integer literal (`None` when the
+/// number was not a whole one, which the parser reported).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OkStatus {
+    pub value: Option<i64>,
     pub span: Span,
 }
 
@@ -273,6 +297,9 @@ pub struct ServiceSource {
     pub kind: Ident,
     pub args: Vec<Expr>,
     pub every: Option<Expr>,
+    /// (proc-ok) `ok 0, 1` after the command (and its `every`): the
+    /// exit statuses that are no failure. Outside `span`.
+    pub ok: Option<OkClause>,
     pub span: Span,
 }
 

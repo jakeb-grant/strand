@@ -1943,7 +1943,14 @@ Public interfaces:
     the name never collides with a service's. The strand crate feeds
     that entry from the run's stdout lines, through `LineSink` as a
     listen service's lines go (services/custom.rs), and a read never
-    starts a command.
+    starts a command. (proc-language) The instance tells the host of
+    each block through `ServiceHost::declare_block(rt, name,
+    &ActionFields, types)`, at instantiation and on every reload (the
+    record one of the new program's types), and calls `stop(rt, name)`
+    for a block a reload removed when no block or service of that name
+    remains; the default does nothing. `SchemaHost` mounts the block's
+    cells as a declared service's (fed by `set` and `emit`), remounting
+    them when the record or its fields' types moved.
   - (proc-run) A run's output reaches the program through
     `Instance::update_action_run(action, RunUpdate)`, applied in one
     flush: `reset` (a run started: `lines` emptied, `code` and `error`

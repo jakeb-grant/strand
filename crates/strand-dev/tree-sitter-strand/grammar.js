@@ -312,14 +312,24 @@ module.exports = grammar({
         field('name', $.string),
         optional(field('path', $.string)),
       ),
-      seq(field('kind', choice('dir', 'file', 'listen')), field('argument', $._expression)),
+      seq(
+        field('kind', choice('dir', 'file', 'listen')),
+        field('argument', $._expression),
+        optional(field('ok', $.ok_clause)),
+      ),
       seq(
         field('kind', 'poll'),
         field('argument', $._expression),
         'every',
         field('interval', $._expression),
+        optional(field('ok', $.ok_clause)),
       ),
     ),
+
+    // (proc-ok) `ok 0, 2`: the exit statuses that are no failure. The
+    // compiler's parser takes it after any source and any action; the
+    // checker refuses the places the spec does not allow.
+    ok_clause: $ => seq('ok', field('status', $.number), repeat(seq(',', field('status', $.number)))),
 
     service_block: $ => block($, choice($.field, $.permit, $.action)),
 
@@ -335,6 +345,9 @@ module.exports = grammar({
         seq('=', field('method', $.identifier)),
         field('command', $._expression),
       ),
+      optional(field('ok', $.ok_clause)),
+      // (proc-run) The fields its stdout lines fill.
+      optional(field('fields', $.field_block)),
     ),
 
     permit: $ => seq(

@@ -459,6 +459,11 @@ pub(crate) struct Checker<'a> {
     pub id_elements: HashMap<NodeIdx, &'a ast::Element>,
     /// Programs `permit exec` allows; `None` allows any.
     pub permits: Vec<Option<Vec<String>>>,
+    /// (proc-run) The record of each top-level action's block of fields
+    /// (`action backup(…) […] { percent_done: float? }`), served as a
+    /// `from listen` service named after the action (decisions.md
+    /// proc-interface).
+    pub action_blocks: HashMap<DefId, crate::ty::RecordId>,
     pub uses: Vec<(usize, Span, &'static str)>,
 
     pub module: usize,
@@ -619,6 +624,7 @@ impl<'a> Checker<'a> {
             ids: HashMap::new(),
             id_elements: HashMap::new(),
             permits: Vec::new(),
+            action_blocks: HashMap::new(),
             uses: Vec::new(),
             module: 0,
             scopes: Vec::new(),

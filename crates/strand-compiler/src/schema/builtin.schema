@@ -1746,6 +1746,12 @@ fn bytes(n: float) -> text lift
 /// trailing white space is ignored; `1e3` and `-0.5` are numbers.
 /// Null in, null out.
 fn number(t: text) -> float? lift
+/// (proc-reason) Every number written in a text, in order, for progress
+/// a program prints: `numbers("Receiving objects:  45% (1740/3867)")`
+/// is `[45, 1740, 3867]`. A number is a run of digits, with `.` and more
+/// digits after it if there are any; no sign, exponent or grouping, so
+/// `5-6` is `[5, 6]` and `1,234` is `[1, 234]`. Null in, `[]` out.
+fn numbers(t: text?) -> [float]
 /// `value` as compact JSON, for a file a tool reads or an action's
 /// argument: `json(prefs)` is `{"size":3,"dark":true}`. A record is an
 /// object of its fields, a list an array, a dictionary an object of its

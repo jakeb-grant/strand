@@ -334,6 +334,19 @@ impl<'a> Completer<'a> {
             Some(Target::Def(d)) => matches!(p.def(*d).kind, DefKind::Service(_)),
             _ => false,
         };
+        // (proc-run) An action's block: its fields beside its run's
+        // members (`backup.percent_done`, `backup.lines`).
+        let block = match &target {
+            Some(Target::Def(d)) if p.def(*d).kind == DefKind::Action => {
+                p.files.iter().flat_map(|f| &f.items).find_map(|i| match i {
+                    strand_compiler::hir::Item::Action(a) if a.def == *d => {
+                        a.fields.as_ref().map(|b| b.record)
+                    }
+                    _ => None,
+                })
+            }
+            _ => None,
+        };
         match (&base, target) {
             (_, Some(Target::File(f))) => {
                 for (path, d) in p.exports() {
@@ -369,6 +382,28 @@ impl<'a> Completer<'a> {
         }
         if let Some((ty, state)) = base {
             self.members_of(&ty, range, writable, state);
+        }
+        if let Some(r) = block
+            && !writable
+        {
+            let fields: Vec<(String, String)> = p
+                .types
+                .record(r)
+                .fields
+                .iter()
+                .map(|f| (f.name.clone(), describe::ty(&p.types, &f.ty)))
+                .collect();
+            for (name, shown) in fields {
+                let detail = format!("{name}: {shown}");
+                self.push(
+                    name.clone(),
+                    CompletionItemKind::FIELD,
+                    Some(detail),
+                    Some("A field of the action's block: read from its last run's stdout lines."),
+                    Some((range, name)),
+                    "0",
+                );
+            }
         }
         if service && !writable {
             let name = strand_compiler::schema::READY;

@@ -3203,8 +3203,8 @@ impl<'a> Checker<'a> {
                 let polls_file = kind == "poll"
                     && matches!(texts.first(), Some(Some(ConstArg::Text(t))) if is_file_target(t));
                 if kind != "file" && kind != "dir" && !polls_file {
-                    let program = s.source.args.first().and_then(first_program);
-                    let program = program.as_deref();
+                    let chain = s.source.args.first().and_then(first_program);
+                    let program = chain.as_ref().and_then(|c| c.last()).map(String::as_str);
                     // A block's own permit lists programs the same way a
                     // top-level one does: bare allows any, a list only those.
                     let in_block: Vec<Option<Vec<String>>> = s
@@ -3222,9 +3222,9 @@ impl<'a> Checker<'a> {
                         in_block
                             .iter()
                             .chain(self.permits.iter())
-                            .any(|p| match (p, program) {
+                            .any(|p| match (p, &chain) {
                                 (None, _) => true,
-                                (Some(list), Some(prog)) => list.iter().any(|x| x == prog),
+                                (Some(list), Some(chain)) => chain.iter().any(|w| list.contains(w)),
                                 (Some(_), None) => false,
                             });
                     if !allowed {
@@ -3274,6 +3274,24 @@ impl<'a> Checker<'a> {
             }
             // A poll without `every` is the parser's diagnostic.
             _ => None,
+        };
+        // (proc-ok) `ok` on a polled command alone.
+        let polls_file =
+            matches!(texts.first(), Some(Some(ConstArg::Text(t))) if is_file_target(t));
+        let ok = match &s.source.ok {
+            Some(c) if kind == "poll" && !polls_file => self.ok_statuses(c),
+            Some(c) => {
+                let why = match kind {
+                    "listen" => {
+                        "a `from listen` command that ends is restarted, whatever its status"
+                    }
+                    "poll" => "a polled file runs no program",
+                    _ => "only a command has an exit status",
+                };
+                self.ok_not_here(c, why);
+                vec![0]
+            }
+            None => vec![0],
         };
         let interval = every.as_ref().and_then(const_duration);
         if let (Some(e), None) = (&s.source.every, interval)
@@ -3326,7 +3344,7 @@ impl<'a> Checker<'a> {
                         (Some(target), Some(every)) => Some(hir::SourceSpec::Poll {
                             target,
                             every,
-                            ok: vec![0],
+                            ok: ok.clone(),
                         }),
                         _ => None,
                     }
@@ -3356,15 +3374,83 @@ impl<'a> Checker<'a> {
             .help =
                 Some("use `from listen` for a command that reports changes, or poll a file".into());
         }
-        let mut fields = Vec::new();
         let rid = match self.defs[id.0 as usize].kind {
             DefKind::Service(r) => Some(r),
             _ => None,
         };
+        let declared: Vec<&'a ast::Field> = s
+            .body
+            .items
+            .iter()
+            .filter_map(|i| match &i.kind {
+                ItemKind::Field(f) => Some(f),
+                _ => None,
+            })
+            .collect();
+        let fields = self.source_fields(kind, rid, &declared);
+        // (M6) `action hold(profile: text) = HoldProfile`: a method of a
+        // D-Bus object; other sources have none to call.
+        let mut actions = Vec::new();
         for item in &s.body.items {
-            let ItemKind::Field(f) = &item.kind else {
+            let ItemKind::Action(a) = &item.kind else {
                 continue;
             };
+            if kind != "dbus" {
+                self.error(
+                    "check::misplaced",
+                    format!("a `{kind}` service has no methods to call"),
+                    a.span,
+                    "not a `dbus` service",
+                )
+                .help = Some(
+                    "declare a command at the top level instead: `action name(p: text) \
+                     [\"program\", p]`"
+                        .into(),
+                );
+                continue;
+            }
+            self.method_action_extras(a);
+            let ast::ActionBody::Method(m) = &a.body else {
+                continue;
+            };
+            let params = rid
+                .and_then(|r| self.types.record(r).method(&a.name.name).cloned())
+                .and_then(|m| m.sigs.first().cloned())
+                .map(|sig| sig.params.iter().map(|p| p.ty.clone()).collect())
+                .unwrap_or_default();
+            actions.push(hir::ServiceAction {
+                name: a.name.name.clone(),
+                span: a.name.span,
+                params,
+                method: m.name.clone(),
+                method_span: m.span,
+            });
+        }
+        hir::ServiceDecl {
+            def: id,
+            file: self.file(),
+            name_span: s.name.span,
+            source_span: s.source.span,
+            source: kind.to_string(),
+            args,
+            every,
+            fields,
+            actions,
+            spec,
+        }
+    }
+
+    /// The fields a source of `kind` fills (a service's, or (proc-run) an
+    /// action's block, `kind` "action"), each with the key it reads; `rid`
+    /// is the record the signatures gave them.
+    pub(super) fn source_fields(
+        &mut self,
+        kind: &str,
+        rid: Option<crate::ty::RecordId>,
+        declared: &[&'a ast::Field],
+    ) -> Vec<hir::ServiceField> {
+        let mut fields = Vec::new();
+        for f in declared {
             let ty = rid
                 .and_then(|r| {
                     self.types
@@ -3433,7 +3519,11 @@ impl<'a> Checker<'a> {
             {
                 self.error(
                     "check::not_writable",
-                    format!("a `{kind}` service's fields cannot be written"),
+                    if kind == "action" {
+                        "an action's fields cannot be written".to_string()
+                    } else {
+                        format!("a `{kind}` service's fields cannot be written")
+                    },
                     rw,
                     "not writable",
                 )
@@ -3451,54 +3541,7 @@ impl<'a> Checker<'a> {
                 key_span: f.default.as_ref().map_or(f.name.span, |d| d.span),
             });
         }
-        // (M6) `action hold(profile: text) = HoldProfile`: a method of a
-        // D-Bus object; other sources have none to call.
-        let mut actions = Vec::new();
-        for item in &s.body.items {
-            let ItemKind::Action(a) = &item.kind else {
-                continue;
-            };
-            if kind != "dbus" {
-                self.error(
-                    "check::misplaced",
-                    format!("a `{kind}` service has no methods to call"),
-                    a.span,
-                    "not a `dbus` service",
-                )
-                .help = Some(
-                    "declare a command at the top level instead: `action name(p: text)                      [\"program\", p]`"
-                        .into(),
-                );
-                continue;
-            }
-            let ast::ActionBody::Method(m) = &a.body else {
-                continue;
-            };
-            let params = rid
-                .and_then(|r| self.types.record(r).method(&a.name.name).cloned())
-                .and_then(|m| m.sigs.first().cloned())
-                .map(|sig| sig.params.iter().map(|p| p.ty.clone()).collect())
-                .unwrap_or_default();
-            actions.push(hir::ServiceAction {
-                name: a.name.name.clone(),
-                span: a.name.span,
-                params,
-                method: m.name.clone(),
-                method_span: m.span,
-            });
-        }
-        hir::ServiceDecl {
-            def: id,
-            file: self.file(),
-            name_span: s.name.span,
-            source_span: s.source.span,
-            source: kind.to_string(),
-            args,
-            every,
-            fields,
-            actions,
-            spec,
-        }
+        fields
     }
 }
 

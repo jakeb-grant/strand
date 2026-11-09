@@ -1152,7 +1152,10 @@ monitor, the keyboard always).
   (its output is read whole, as `T`). A field named `running`,
   `started`, `error`, `code`, `lines` or `stop` is a load error,
   `check::reserved_field`, whose help gives it a key path (`err: text?
-  = error`).
+  = error`), as is one named `ready`, which the service serving the
+  block answers itself, and an action with a block cannot be named
+  after a builtin service (`check::redeclared`; decisions.md
+  proc-language).
 - `strand check` lists every action's command, each parameter shown as
   `{name}` where it is one argument and (proc-list) a list parameter as
   `{name…}` where its items go (`tx_run: upkeep-tx run {op} {helper}
@@ -1276,7 +1279,7 @@ action's, and a `file`'s `run` (section 9.7), is read the same way.
   diagnostic (`strand watch`), an action's notice and a `file`'s `run`
   notice: ``"`pacman` failed (exit status: 1): error: failed to commit
   transaction (conflicting files)"``, the conflicting files on the
-  lines after it. Its first line is `rec.error?.split("\n").first`; the
+  lines after it. Its first line is `rec.error?.split("\n")?.first`; the
   lines themselves are `rec.lines.filter(l => l.stderr)`.
 - **Logging.** A successful run's stderr goes to strand's log at debug
   level (at info for a non-zero status its `ok` lists); a failing

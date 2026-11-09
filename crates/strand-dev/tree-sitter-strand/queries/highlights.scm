@@ -102,6 +102,7 @@
   "after"
   "every"
   "while"
+  "ok"
   (slot)
 ] @keyword
 

@@ -37,6 +37,10 @@
 - [Remembering things by key](how-to/remembering-by-key.md)
 - [A D-Bus method or an action](how-to/dbus-and-actions.md)
 - [Data from the web and from tools](how-to/data-from-the-web.md)
+- [Running a long job and following it](how-to/long-job.md)
+- [A download with a progress bar](how-to/download-progress.md)
+- [Output that arrives all at once](how-to/buffered-output.md)
+- [Exit statuses that mean none](how-to/exit-statuses.md)
 - [Keyboard shortcuts](how-to/keys.md)
 - [Monitor profiles](how-to/monitor-profiles.md)
 

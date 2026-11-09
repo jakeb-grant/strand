@@ -304,14 +304,17 @@ impl<'a> Checker<'a> {
 
     /// `run:`'s program against `permit exec`, as a `from poll` source's.
     fn file_run(&mut self, e: &'a ast::Expr) {
-        let program = super::collect::first_program(e);
-        let allowed = self.permits.iter().any(|p| match (p, program.as_deref()) {
+        let chain = super::collect::first_program(e);
+        let allowed = self.permits.iter().any(|p| match (p, &chain) {
             (None, _) => true,
-            (Some(list), Some(prog)) => list.iter().any(|x| x == prog),
+            (Some(list), Some(chain)) => chain.iter().any(|w| list.contains(w)),
             (Some(_), None) => false,
         });
         if !allowed {
-            let prog = program.as_deref().unwrap_or("the command");
+            let prog = chain
+                .as_ref()
+                .and_then(|c| c.last())
+                .map_or("the command", String::as_str);
             self.error(
                 "check::no_permit",
                 format!("running `{prog}` needs `permit exec`"),

@@ -1277,6 +1277,7 @@ impl Instance {
         for svc in program.services.values() {
             host.declare(rt, svc, &program.types);
         }
+        declare_blocks(rt, host.as_ref(), &program, None);
         let warnings = program.warnings.clone();
         let vm = Vm::new(program, host);
         vm.runs().declare(rt, &vm.prog);
@@ -1468,6 +1469,12 @@ impl Instance {
         for name in &removed_services {
             host.stop(&rt, name);
         }
+        declare_blocks(
+            &rt,
+            host.as_ref(),
+            &build.program,
+            Some(old.vm.prog.as_ref()),
+        );
         let em = Emitter::continuing(&old.em.borrow());
         let vm = Vm::new(build.program.clone(), host);
         if let Some(t) = old.vm.theme() {
@@ -1743,6 +1750,12 @@ impl Instance {
                 host.stop(&self.rt, &name);
             }
         }
+        declare_blocks(
+            &self.rt,
+            host.as_ref(),
+            &build.program,
+            Some(self.ctx.vm.prog.as_ref()),
+        );
         let vm = Vm::new(build.program.clone(), host);
         if let Some(t) = self.ctx.vm.theme() {
             vm.set_theme(t);
@@ -3039,4 +3052,29 @@ fn module_gone(rec: &reload::CellRec, old: &Program, new: &Program) -> bool {
         return false;
     };
     old.files.iter().any(|f| f.module == module) && !new.files.iter().any(|f| f.module == module)
+}
+
+/// (proc-run) Declare each action block of `program` to `host`
+/// ([`ServiceHost::declare_block`]), and stop the blocks of `old` (the
+/// program a reload replaces) that `program` no longer has under that
+/// name, as a block or a service.
+fn declare_blocks(rt: &Runtime, host: &dyn ServiceHost, program: &Program, old: Option<&Program>) {
+    for exec in program.execs.values() {
+        if let Some(block) = &exec.fields {
+            host.declare_block(rt, &exec.name, block, &program.types);
+        }
+    }
+    let Some(old) = old else {
+        return;
+    };
+    for exec in old.execs.values().filter(|e| e.fields.is_some()) {
+        let kept = program
+            .execs
+            .values()
+            .any(|e| e.name == exec.name && e.fields.is_some())
+            || program.services.values().any(|s| s.name == exec.name);
+        if !kept {
+            host.stop(rt, &exec.name);
+        }
+    }
 }

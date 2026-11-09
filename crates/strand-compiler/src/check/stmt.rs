@@ -837,6 +837,12 @@ impl<'a> Checker<'a> {
                 }
             }
             [svc, ev] => {
+                // (proc-run) `on backup.line(doc)`: an action's block.
+                if let Some(&d) = self.globals.get(&svc.name)
+                    && self.defs[d.0 as usize].kind == hir::DefKind::Action
+                {
+                    return self.action_event(d, svc, ev);
+                }
                 // (M6) A config's `service` first: it shadows the builtin
                 // of its name (spec.md 4.2), events included.
                 let rec = self
@@ -894,6 +900,55 @@ impl<'a> Checker<'a> {
                 None
             }
         }
+    }
+
+    /// (proc-run) `on backup.line(doc)`: the `line` event of action `d`'s
+    /// block, heard as the service serving it (decisions.md
+    /// proc-interface). An action without a block has no events.
+    fn action_event(
+        &mut self,
+        d: hir::DefId,
+        svc: &ast::Ident,
+        ev: &ast::Ident,
+    ) -> Option<(Event, Vec<ParamSig>)> {
+        self.add_ref(svc.span, Target::Def(d));
+        let params = self
+            .action_blocks
+            .get(&d)
+            .and_then(|r| self.types.record(*r).event(&ev.name))
+            .map(|e| e.params.clone());
+        if let Some(params) = params {
+            return Some((
+                Event::Service {
+                    service: svc.name.clone(),
+                    event: ev.name.clone(),
+                },
+                params,
+            ));
+        }
+        let result =
+            matches!(&self.defs[d.0 as usize].ty, Ty::Fn(sig) if matches!(sig.ret, Ty::Async(_)));
+        let help = if self.action_blocks.contains_key(&d) {
+            format!("`{}` has `line`", svc.name)
+        } else if result {
+            "an action with a result reads its output whole, as its `-> T`; its call's value \
+             is what it printed"
+                .to_string()
+        } else {
+            format!(
+                "declare the fields its lines fill after its command: `action {}(…) [...] {{ \
+                 line: text }}`; `{}.lines` holds what it printed without one",
+                svc.name, svc.name
+            )
+        };
+        let d = self.error(
+            "check::unknown_event",
+            format!("`{}` has no event `{}`", svc.name, ev.name),
+            ev.span,
+            "unknown event",
+        );
+        d.help = Some(help);
+        None
     }
 
     pub(crate) fn timer(&mut self, t: &'a ast::Timer, span: Span) -> hir::Timer {

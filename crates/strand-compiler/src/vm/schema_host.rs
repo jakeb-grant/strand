@@ -713,6 +713,35 @@ impl ServiceHost for SchemaHost {
         }
     }
 
+    fn declare_block(
+        &self,
+        rt: &Runtime,
+        name: &str,
+        block: &crate::lower::ActionFields,
+        types: &TypeTable,
+    ) {
+        // (proc-run) Its cells, at their defaults, fed by `set` and
+        // `emit` as a declared service's are; a reload that moved its
+        // record or its fields' types mounts them again.
+        let types = Rc::new(types.clone());
+        let tys: Option<Vec<Ty>> = types
+            .records
+            .get(block.record.0 as usize)
+            .map(|d| d.fields.iter().map(|f| f.ty.clone()).collect());
+        let same = self
+            .custom_tys
+            .borrow()
+            .get(name)
+            .is_some_and(|(r, t)| *r == block.record && *t == tys);
+        if same {
+            return;
+        }
+        if self.services.borrow().contains_key(name) {
+            self.drop_service(rt, name);
+        }
+        self.add_service_in(rt, name, block.record, &types);
+    }
+
     fn restart(&self, rt: &Runtime, service: &crate::lower::CustomService, types: &TypeTable) {
         // Its old cells go (nobody reads them after the reload); the new
         // declaration's fields start at their defaults.

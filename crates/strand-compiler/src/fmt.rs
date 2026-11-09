@@ -242,6 +242,9 @@ impl Facts {
                 if let ActionBody::Command(e) = &a.body {
                     self.expr(e);
                 }
+                if let Some(b) = &a.fields {
+                    self.fields(&b.items);
+                }
             }
             ItemKind::Keyframes(k) => self.items(&k.body.items),
             ItemKind::Field(f) => self.field(f),

@@ -1070,6 +1070,22 @@ impl<'a> Checker<'a> {
         }
         // (lockmon) `rec.running`: an action's run.
         if let Some(hb) = self.action_run(base) {
+            if let ExprKind::Def(d) = hb.kind {
+                // (proc-run) `backup.percent_done`: its block's field, read
+                // from the service serving the block (decisions.md
+                // proc-interface).
+                if let Some(&rid) = self.action_blocks.get(&d)
+                    && self.types.record(rid).field(&name.name).is_some()
+                {
+                    let svc = hir::Expr {
+                        kind: ExprKind::Service(self.defs[d.0 as usize].name.clone()),
+                        ty: Ty::Record(rid),
+                        span: base.span,
+                    };
+                    return self.member(svc, base, name, optional, span);
+                }
+                self.run_output_read(d, name);
+            }
             return self.member(hb, base, name, optional, span);
         }
         // Only `name_expr` reads (and clears) it.
@@ -1103,6 +1119,36 @@ impl<'a> Checker<'a> {
             ty: Ty::Record(r),
             span: base.span,
         })
+    }
+
+    /// (proc-run) `calc.lines` or `calc.code` on an action with a result:
+    /// several of its calls run at once, so its run keeps neither.
+    fn run_output_read(&mut self, d: DefId, name: &ast::Ident) {
+        if !matches!(name.name.as_str(), "lines" | "code") {
+            return;
+        }
+        let Ty::Fn(sig) = &self.defs[d.0 as usize].ty else {
+            return;
+        };
+        if !matches!(sig.ret, Ty::Async(_)) {
+            return;
+        }
+        let action = self.defs[d.0 as usize].name.clone();
+        let (what, always) = if name.name == "lines" {
+            ("lines", "always `[]`")
+        } else {
+            ("status", "always null")
+        };
+        self.warning(
+            "check::no_run_output",
+            format!(
+                "`{action}` has a result, so its run keeps no {what}: several of its calls may \
+                 run at once"
+            ),
+            name.span,
+            always,
+        )
+        .help = Some("drop the `-> T`, or read the call's `.error`".into());
     }
 
     /// Whether the builtin service or value `base` has a field or method
@@ -1280,6 +1326,28 @@ impl<'a> Checker<'a> {
         optional: bool,
         span: Span,
     ) -> hir::Expr {
+        // (proc-run) A D-Bus method's run prints nothing and has no status.
+        if matches!(name.name.as_str(), "lines" | "code")
+            && let ExprKind::Field {
+                base: svc,
+                name: act,
+                ..
+            } = &base.kind
+            && self.dbus_action_run(svc, act).is_some()
+        {
+            self.error(
+                "check::unknown_field",
+                format!("`{}.{act}` has no `{}`", self.defs_name(svc), name.name),
+                name.span,
+                "a D-Bus method call prints nothing and ends with no status",
+            )
+            .help = Some(
+                "its run has `running`, `started` and `error`; a command action's run has \
+                 `lines` and `code`"
+                    .into(),
+            );
+            return hir::Expr::error(span);
+        }
         // (service-ready) Every service's own field, builtin or declared.
         if name.name == crate::schema::READY && self.is_service_expr(&base) {
             return hir::Expr {

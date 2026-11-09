@@ -321,9 +321,12 @@ pub enum ArgvPart {
 
 impl ActionDecl {
     /// The command as `strand check` lists it: texts as written (quoted
-    /// when they hold a space or nothing), a parameter as `{name}`.
+    /// when they hold a space or nothing), a parameter as `{name}`, a
+    /// list parameter as `{name…}` (proc-list), then (proc-ok) the `ok`
+    /// statuses when more than 0 is.
     pub fn shown(&self) -> String {
-        self.argv
+        let command = self
+            .argv
             .iter()
             .map(|p| match p {
                 ArgvPart::Text(t) if t.is_empty() || t.contains(char::is_whitespace) => {
@@ -338,7 +341,12 @@ impl ActionDecl {
                 }
             })
             .collect::<Vec<_>>()
-            .join(" ")
+            .join(" ");
+        if self.ok.iter().all(|s| *s == 0) {
+            return command;
+        }
+        let ok: Vec<String> = self.ok.iter().map(i32::to_string).collect();
+        format!("{command} ok {}", ok.join(", "))
     }
 }
 
