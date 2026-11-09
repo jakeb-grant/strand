@@ -1095,17 +1095,23 @@ monitor, the keyboard always).
   failure: a `-> T` reads its output as `T` (nothing printed is `""`,
   `[]` or null, by `T`), a poll's fields update, `error` stays null and no notice is
   shown; the run's `code` (below) still holds it, so `backup.code == 3`
-  can say "saved; some files unreadable". What a listed non-zero run
-  printed on stderr is logged at info. A signal is never ok. Without
+  can say "saved; some files unreadable". A value read (a `-> T` call,
+  a polled command) whose program ended with a listed status other
+  than 0 having printed nothing on stdout but something on stderr fails
+  as an unlisted status does, `.error` holding why (decisions.md
+  call-code); otherwise what it printed is the answer, and its stderr
+  is logged at info. A job keeps its lines, so its listed status is no
+  failure whatever it printed. A signal is never ok. Without
   `ok` only 0 is. `ok` is allowed on a command action, with or without
   a result, and on a polled command; on a `from listen` service (its
   command ending always means a restart), on a `from dbus` action and
   on a polled file it is a load error (`check::ok_not_here`). It is
   for a status the program documents as "none" or "partly" (grep's 1,
-  diff's 1, rsync's 24, restic's 3, borg's 1), never for one that
-  means two things: pacman exits 1 both for `-Qdtq` finding no orphans
-  and for `-Qi nosuch` failing, so `ok 0, 1` would hide the failure;
-  there a written-out `sh -c` script tells them apart.
+  diff's 1, rsync's 24, restic's 3, borg's 1). pacman and yay exit 1
+  both for `-Qdtq` or `-Qua` finding nothing, printing nothing, and for
+  `-Qi nosuch` failing, printing only why on stderr, so `ok 0, 1` on a
+  call or poll reads the first as `""` or `[]` and the second as
+  `.error`.
 - (lockmon; decisions.md lockmon) An action declared with a command
   has a run, read through its name as an `ActionRun`: `rec.running`
   (`bool`) is true while a command of it runs (for an action with a
@@ -1348,7 +1354,8 @@ action's, and a `file`'s `run` (section 9.7), is read the same way.
   `fatal:` or `curl:`, or the error's last line. The lines themselves
   are `rec.lines.filter(l => l.stderr)`.
 - **Logging.** A successful run's stderr goes to strand's log at debug
-  level (at info for a non-zero status its `ok` lists); a failing
+  level (at info for a non-zero status its `ok` lists, unless a value
+  read printed only stderr, its failure, section 5.7); a failing
   `-> T` call is logged at info, an action's failing run at warning.
 - **Rate and memory.** Reading never waits on the logic thread: lines
   are framed where they are read, kept (an action's last 1000 lines, at
