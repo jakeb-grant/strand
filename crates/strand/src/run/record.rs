@@ -35,6 +35,7 @@ use std::time::Duration;
 use strand_compiler::lower::Program;
 use strand_compiler::vm::Value;
 use strand_compiler::vm::host::PathSeg;
+use strand_compiler::vm::runs::RunLine;
 use strand_core::flight::{
     self, ARef, ArenaWriter, NAME_IN_ARENA, Rec, Ring, RingSpec, flags, gap, kind, modifiers,
 };
@@ -905,7 +906,16 @@ pub(crate) struct ChangeRecorder {
     /// (replayfix) The builtin services' fields the program reads: a
     /// field it never reads is not recorded.
     reads: ServiceReads,
+    /// (proc-run) Each job's run as last started: whether an argument
+    /// of it is no text of the program, so its lines, its block's values
+    /// and why it failed are held back.
+    run_tainted: HashMap<String, bool>,
 }
+
+/// (proc-run) At most this many ended lines of one job are recorded a
+/// frame; past them, how many were not (`{"~skipped": k}`), so a flood
+/// never pushes out the minutes before a glitch.
+pub(crate) const LINES_A_FRAME: usize = 32;
 
 /// (report review) How many pressed nodes' identities are kept.
 pub(crate) const HITS_KEPT: usize = 256;
@@ -921,6 +931,13 @@ pub(crate) struct HitIdentity {
 
 /// The fields' names of each service `program` declares.
 fn declared_of(program: &Program) -> HashMap<String, Vec<String>> {
+    let blocks = program.execs.values().filter_map(|a| {
+        let f = a.fields.as_ref()?;
+        Some((
+            a.name.clone(),
+            f.fields.iter().map(|f| f.name.clone()).collect(),
+        ))
+    });
     program
         .services
         .values()
@@ -928,6 +945,7 @@ fn declared_of(program: &Program) -> HashMap<String, Vec<String>> {
             let fields = s.fields.iter().map(|f| f.name.clone()).collect();
             (s.name.clone(), fields)
         })
+        .chain(blocks)
         .collect()
 }
 
@@ -994,6 +1012,7 @@ impl ChangeRecorder {
             roots: HashMap::new(),
             next_call: 0,
             hits: std::collections::VecDeque::new(),
+            run_tainted: HashMap::new(),
         }
     }
 
@@ -1162,7 +1181,8 @@ impl ChangeRecorder {
             return;
         }
         if let Some(fields) = self.declared.get(ev.service) {
-            return declared_change(r, &mut self.declared_last, t, ev, fields);
+            let held = self.run_tainted.get(ev.service).copied().unwrap_or(false);
+            return declared_change(r, &mut self.declared_last, t, ev, fields, held);
         }
         let mut name = String::with_capacity(ev.service.len() + 24);
         name.push_str(ev.service);
@@ -1457,16 +1477,127 @@ impl ChangeRecorder {
     /// `rec.error` reads, so a replay reads it too. It names the program,
     /// which a config writes out (spec.md 5.7), and no argument.
     pub(crate) fn action_failed(&mut self, t: u64, action: &str, why: &str) {
+        // (proc-run) Why, from what a run given a text not of the config
+        // printed, is held back.
+        let held = self.run_tainted.get(action).copied().unwrap_or(false);
         let Some(r) = &mut self.ring else {
             return;
         };
         push_value(r, t, kind::ACTION_FAILED, action, &[], 0, |w| {
+            if held {
+                let _ = flight::json_held(w, why);
+                return true;
+            }
             match serde_json::to_vec(why) {
                 Ok(j) => w.put(&j),
                 Err(_) => w.put(b"null"),
             }
             false
         });
+    }
+
+    /// (proc-run) A job of `action` started with `argv`: what it prints
+    /// is held back unless every argument is a text of the program.
+    /// `queued`: it waits behind one running, whose output it then
+    /// holds back too if it would.
+    pub(crate) fn run_started(&mut self, action: &str, argv: &[String], queued: bool) {
+        let home = std::env::var_os("HOME").and_then(|h| h.into_string().ok());
+        // The command's own words (`"-c"`, a script) are the config's.
+        let written: Vec<&str> = self
+            .program
+            .execs
+            .values()
+            .filter(|a| a.name == action)
+            .flat_map(|a| &a.argv)
+            .filter_map(|p| match p {
+                strand_compiler::hir::ArgvPart::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        let tainted = argv
+            .iter()
+            .skip(1)
+            .any(|a| !written.contains(&a.as_str()) && !self.argument_literal(a, home.as_deref()));
+        let was = queued && self.run_tainted.get(action).copied().unwrap_or(false);
+        self.run_tainted.insert(action.to_string(), tainted || was);
+    }
+
+    /// (proc-run) Lines a job of `action` printed this frame (new or
+    /// changed): each an `EVENT` record named `action <name>`,
+    /// `{"line": {n, text, stderr, open}}`; at most [`LINES_A_FRAME`]
+    /// ended ones (an open one always), then `{"~skipped": k}`.
+    pub(crate) fn run_lines(&mut self, t: u64, action: &str, lines: &[RunLine]) {
+        let held = self.run_tainted.get(action).copied().unwrap_or(false);
+        let Some(r) = &mut self.ring else {
+            return;
+        };
+        if r.paused() {
+            return;
+        }
+        let name = format!("action {action}");
+        let mut ended = 0;
+        let mut skipped = 0u64;
+        for l in lines {
+            if !l.open {
+                ended += 1;
+                if ended > LINES_A_FRAME {
+                    skipped += 1;
+                    continue;
+                }
+            }
+            push_value(r, t, kind::EVENT, &name, &[], 0, |w| {
+                let _ = write!(w, "{{\"line\":{{\"n\":{},\"text\":", l.n);
+                let _ = if held {
+                    flight::json_held(w, &l.text)
+                } else {
+                    flight::json_text(w, &l.text)
+                };
+                let _ = write!(w, ",\"stderr\":{},\"open\":{}}}}}", l.stderr, l.open);
+                held
+            });
+        }
+        if skipped > 0 {
+            push_value(r, t, kind::EVENT, &name, &[], 0, |w| {
+                let _ = write!(w, "{{\"~skipped\":{skipped}}}");
+                false
+            });
+        }
+    }
+
+    /// (proc-run) What a job of `action` read into its block: each field
+    /// set (by index), a `FIELD` record of its declared name, and each
+    /// line heard, an `EVENT` record `action.line`, as a declared
+    /// service's are; `reset`: every field null.
+    pub(crate) fn block_fed(
+        &mut self,
+        t: u64,
+        action: &str,
+        reset: bool,
+        fields: &[Option<Data>],
+        heard: &[Vec<Data>],
+    ) {
+        let held = self.run_tainted.get(action).copied().unwrap_or(false);
+        let Some(names) = self.declared.get(action) else {
+            return;
+        };
+        let Some(r) = &mut self.ring else {
+            return;
+        };
+        if r.paused() {
+            return;
+        }
+        for (i, field) in names.iter().enumerate() {
+            let v = match fields.get(i) {
+                Some(Some(v)) => v,
+                _ if reset => &Data::Null,
+                _ => continue,
+            };
+            let name = format!("{action}.{field}");
+            declared_field(r, &mut self.declared_last, t, &name, v, 0, false, held);
+        }
+        for doc in heard {
+            declared_event(r, t, &format!("{action}.line"), names, doc, held);
+        }
     }
 
     /// A reload committed: its counts (files, cells kept, cells reset)
@@ -1593,7 +1724,19 @@ fn declared_change(
     t: u64,
     ev: &TapEvent<'_>,
     fields: &[String],
+    held: bool,
 ) {
+    // (proc-run) A `line` event (a `from listen` line, a block's): an
+    // `EVENT` record of its doc by the declared fields' names, as `emit`
+    // replays it.
+    if let Change::Event { event, args } = &ev.change {
+        let doc = match args.first() {
+            Some(Data::List(values)) => values.as_slice(),
+            _ => &[],
+        };
+        declared_event(r, t, &format!("{}.{event}", ev.service), fields, doc, held);
+        return;
+    }
     let Change::Keyed {
         field: "values",
         diffs,
@@ -1623,19 +1766,59 @@ fn declared_change(
             continue;
         };
         let name = format!("{}.{field}", ev.service);
-        let mut new = String::new();
-        let _ = v.write_json(&mut new, &mut |_| true);
-        let old = last.get(&name).map_or("null", String::as_str);
-        if old == new && !*initial {
-            continue;
-        }
-        let both = format!("[{old},{new}]");
-        push_value(r, t, kind::FIELD, &name, &[], f, |w| {
-            let _ = w.write_str(&both);
-            false
-        });
-        last.insert(name, new);
+        declared_field(r, last, t, &name, v, f, *initial, held);
     }
+}
+
+/// A declared field's new value `v`, as a `FIELD` record `[old, new]`
+/// (the old the last recorded); its texts held back when `held`.
+#[allow(clippy::too_many_arguments)]
+fn declared_field(
+    r: &mut Ring,
+    last: &mut HashMap<String, String>,
+    t: u64,
+    name: &str,
+    v: &Data,
+    f: u8,
+    initial: bool,
+    held: bool,
+) {
+    let mut new = String::new();
+    let _ = v.write_json(&mut new, &mut |_| !held);
+    let old = last.get(name).map_or("null", String::as_str);
+    if old == new && !initial {
+        return;
+    }
+    let both = format!("[{old},{new}]");
+    let redacted = held && both.contains(flight::HELD_TEXT);
+    push_value(r, t, kind::FIELD, name, &[], f, |w| {
+        let _ = w.write_str(&both);
+        redacted
+    });
+    last.insert(name.to_string(), new);
+}
+
+/// (proc-run) A `line` event `name` of a declared service or a block:
+/// one argument, its doc, an object of the declared `fields` by name.
+fn declared_event(r: &mut Ring, t: u64, name: &str, fields: &[String], doc: &[Data], held: bool) {
+    push_value(r, t, kind::EVENT, name, &[], 0, |w| {
+        let mut any = false;
+        let mut keep = |_: &str| {
+            any |= held;
+            !held
+        };
+        let _ = w.write_str("[{");
+        for (i, (f, v)) in fields.iter().zip(doc).enumerate() {
+            if i > 0 {
+                let _ = w.write_char(',');
+            }
+            let _ = flight::json_text(w, f);
+            let _ = w.write_char(':');
+            let _ = v.write_json(w, &mut keep);
+        }
+        let _ = w.write_str("}]");
+        any
+    });
 }
 
 /// (replayfix) What a program reads of each builtin service, from its
@@ -3940,5 +4123,152 @@ mod tests {
             }
             assert_eq!(v, json(&new));
         }
+    }
+
+    /// (proc-run) A job's lines: each an `EVENT` record of `action
+    /// <name>`, at most [`LINES_A_FRAME`] ended ones a frame and how many
+    /// were not, the open one always; a run given a text that is not the
+    /// config's holds back its lines, why it failed and its block's
+    /// values.
+    #[test]
+    fn run_lines_are_recorded_bounded_and_held_back() {
+        let src = "type P { pct: int?; msg: text? }\npermit exec \"sh\"\n\
+                   action upd(q: text) [\"sh\", \"-c\", \"x\", q]\n\
+                   bar B { on click { upd(\"main\") } }";
+        let p = program(src);
+        let mut prog = (*p).clone();
+        let record = prog.types.find_record("P").unwrap();
+        for a in prog.execs.values_mut() {
+            a.fields = Some(strand_compiler::lower::ActionFields {
+                record,
+                fields: ["pct", "msg"]
+                    .map(|n| strand_compiler::lower::CustomField {
+                        name: n.into(),
+                        key: vec![n.into()],
+                        rw: false,
+                    })
+                    .to_vec(),
+            });
+        }
+        let mut c = ChangeRecorder::new(true, Arc::new(prog));
+        let line = |n: u64, open: bool| RunLine {
+            n,
+            text: format!("line {n}"),
+            stderr: n.is_multiple_of(2),
+            open,
+        };
+        c.run_started(
+            "upd",
+            &["sh".into(), "-c".into(), "x".into(), "main".into()],
+            false,
+        );
+        let mut lines: Vec<RunLine> = (1..=40).map(|n| line(n, false)).collect();
+        lines.push(line(41, true));
+        c.run_lines(5, "upd", &lines);
+        c.block_fed(
+            5,
+            "upd",
+            false,
+            &[Some(Data::Int(40)), Some(Data::text("ok"))],
+            &[],
+        );
+        c.action_failed(6, "upd", "`sh` failed (exit status: 1): line 40");
+        let e = entries(c.ring().unwrap());
+        let runs: Vec<&Entry> = e
+            .iter()
+            .filter(|e| e.name.as_deref() == Some("action upd"))
+            .collect();
+        assert!(runs.iter().all(|e| e.rec.kind == kind::EVENT));
+        assert_eq!(
+            runs.len(),
+            LINES_A_FRAME + 2,
+            "32 ended, the open one, skipped"
+        );
+        assert_eq!(
+            value_of(runs[0]),
+            serde_json::json!({"line": {"n": 1, "text": "line 1", "stderr": false, "open": false}})
+        );
+        assert_eq!(
+            value_of(runs[LINES_A_FRAME]),
+            serde_json::json!({"line": {"n": 41, "text": "line 41", "stderr": false, "open": true}})
+        );
+        assert_eq!(
+            value_of(runs[LINES_A_FRAME + 1]),
+            serde_json::json!({"~skipped": 8})
+        );
+        let field = e
+            .iter()
+            .find(|e| e.name.as_deref() == Some("upd.msg"))
+            .unwrap();
+        assert_eq!(value_of(field), serde_json::json!([null, "ok"]));
+        let failed = e
+            .iter()
+            .find(|e| e.rec.kind == kind::ACTION_FAILED)
+            .unwrap();
+        assert_eq!(
+            value_of(failed),
+            serde_json::json!("`sh` failed (exit status: 1): line 40")
+        );
+        // Given a text that is not the config's: held back.
+        c.run_started(
+            "upd",
+            &["sh".into(), "-c".into(), "x".into(), "s3cret-pkg".into()],
+            false,
+        );
+        c.run_lines(7, "upd", &[line(1, false)]);
+        c.block_fed(
+            7,
+            "upd",
+            false,
+            &[None, Some(Data::text("s3cret-pkg ok"))],
+            &[],
+        );
+        c.action_failed(8, "upd", "`sh` failed: s3cret-pkg");
+        let e = entries(c.ring().unwrap());
+        let n = e.len();
+        assert_eq!(
+            value_of(&e[n - 3]),
+            serde_json::json!({"line": {"n": 1, "text": {"~text": 6}, "stderr": false, "open": false}})
+        );
+        assert!(
+            e[n - 3..]
+                .iter()
+                .all(|e| e.rec.flags & flags::REDACTED != 0)
+        );
+        assert_eq!(
+            value_of(&e[n - 2]),
+            serde_json::json!(["ok", {"~text": 13}])
+        );
+        assert_eq!(value_of(&e[n - 1]), serde_json::json!({"~text": 23}));
+        assert!(!contains(&c.dump().unwrap(), b"s3cret"));
+    }
+
+    /// (proc-run) A declared service's `line` event is recorded, an
+    /// `EVENT` record of its doc by field name (decisions.md proc-run:
+    /// it was not before).
+    #[test]
+    fn listen_line_events_are_recorded() {
+        let src = "permit exec \"sh\"\nservice log from listen [\"sh\"] { line: text; level: int? }\n\
+                   on log.line(doc) { }\nlet x = 1";
+        let mut c = ChangeRecorder::new(true, program(src));
+        let args = [Data::List(vec![Data::text("pacman: done"), Data::Null])];
+        c.service(
+            3,
+            &TapEvent {
+                service: "log",
+                change: Change::Event {
+                    event: "line",
+                    args: &args,
+                },
+            },
+        );
+        let e = entries(c.ring().unwrap());
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].rec.kind, kind::EVENT);
+        assert_eq!(e[0].name.as_deref(), Some("log.line"));
+        assert_eq!(
+            value_of(&e[0]),
+            serde_json::json!([{"line": "pacman: done", "level": null}])
+        );
     }
 }

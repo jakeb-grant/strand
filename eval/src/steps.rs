@@ -210,9 +210,22 @@ pub enum StepKind {
     /// `name` the sandbox counts as running ends (the sandbox runs no
     /// command: one runs from its call until this step or `stop()`).
     /// (action-error) `failed "<why>"`: it failed, which `rec.error` reads.
+    /// (proc-run) `code N`: the status it ended with, which `rec.code`
+    /// reads (`end action <name> [code N] [failed "<why>"]`).
     EndAction {
         action: String,
         failed: Option<String>,
+        code: Option<i64>,
+    },
+    /// (proc-run) `line action <name> [stderr] [open] "<text>"`: the
+    /// command of action `name` the sandbox counts as running printed a
+    /// line (on stderr; with no line break yet, so the next line of that
+    /// stream redraws it), which `rec.lines` reads.
+    LineAction {
+        action: String,
+        stderr: bool,
+        open: bool,
+        text: String,
     },
     // Perturbations.
     TextHold {
@@ -800,20 +813,62 @@ fn parse_line(text: &str) -> Result<Option<StepKind>, String> {
             }
         }
         "end" => {
-            let usage = "`end action <name> [failed \"<why>\"]`";
+            let usage = "`end action <name> [code N] [failed \"<why>\"]`";
             if arg(1) != Some("action") || w[1].quoted {
                 return Err(format!("`end` takes {usage}"));
             }
             let action = need(2, usage)?.to_string();
-            let failed = if arg(3) == Some("failed") && !w[3].quoted {
-                let why = need(4, usage)?.to_string();
-                only(5)?;
-                Some(why)
+            let mut at = 3;
+            let code = if arg(at) == Some("code") && !w[at].quoted {
+                let n = need(at + 1, usage)?;
+                at += 2;
+                Some(
+                    n.parse::<i64>()
+                        .map_err(|_| format!("`{n}` is not a status: {usage}"))?,
+                )
             } else {
-                only(3)?;
                 None
             };
-            StepKind::EndAction { action, failed }
+            let failed = if arg(at) == Some("failed") && !w[at].quoted {
+                let why = need(at + 1, usage)?.to_string();
+                only(at + 2)?;
+                Some(why)
+            } else {
+                only(at)?;
+                None
+            };
+            StepKind::EndAction {
+                action,
+                failed,
+                code,
+            }
+        }
+        "line" => {
+            let usage = "`line action <name> [stderr] [open] \"<text>\"`";
+            if arg(1) != Some("action") || w.get(1).is_some_and(|x| x.quoted) {
+                return Err(format!("`line` takes {usage}"));
+            }
+            let action = need(2, usage)?.to_string();
+            let mut at = 3;
+            let mut flag = |name: &str| {
+                let is = w.get(at).is_some_and(|x| !x.quoted && x.text == name);
+                at += usize::from(is);
+                is
+            };
+            let stderr = flag("stderr");
+            let open = flag("open");
+            match w.get(at) {
+                Some(x) if x.quoted => {}
+                _ => return Err(format!("`line` takes {usage}")),
+            }
+            let text = w[at].text.clone();
+            only(at + 1)?;
+            StepKind::LineAction {
+                action,
+                stderr,
+                open,
+                text,
+            }
         }
         "answer" => {
             let usage = "`answer <service.method> <JSON>`, `answer <service.method> error \

@@ -1881,3 +1881,27 @@ rest
     let e = run(&sc, &RunOptions::default()).unwrap_err().to_string();
     assert!(e.contains("no action `nope`"), "{e}");
 }
+
+/// (proc-run) `line action` and `end action … code N` are what a job's
+/// `lines` and `code` read, as a recording's replay plays them: an open
+/// line redrawn then ended, a stderr line, the failure's reason; a call
+/// starting again resets them.
+#[test]
+fn a_jobs_lines_and_code_are_what_its_steps_say() {
+    let scn = eval_root().join("scenarios/regressions/proc-output.scn");
+    let text = std::fs::read_to_string(&scn).unwrap();
+    let t = go(&text);
+    for id in ["done_line", "err_line", "code_one", "why"] {
+        assert!(drawn_last(&t, id), "{id}");
+    }
+    assert!(!drawn_last(&t, "open_line"));
+    // Called again: a run starting resets them.
+    let again = text.replace(
+        "expect visible #why\n",
+        "expect visible #why\nset go 2\nrest\n",
+    );
+    let t = go(&again);
+    for id in ["done_line", "err_line", "code_one", "why", "open_line"] {
+        assert!(!drawn_last(&t, id), "{id} after the reset");
+    }
+}

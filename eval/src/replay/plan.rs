@@ -2387,6 +2387,8 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
             // (flex review) A result action's answer (`action calc`) is
             // the config's own, never a service's.
             kind::FETCH if name.starts_with("action ") => {}
+            // (proc-run) A job's line (`action upd`), the config's own.
+            kind::EVENT if name.starts_with("action ") => {}
             kind::FIELD | kind::KEYED | kind::EVENT | kind::FETCH if !known(&svc) => {
                 *unmocked.entry(svc).or_default() += 1;
                 continue;
@@ -2493,6 +2495,36 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                     });
                 }
             }
+            kind::EVENT if name.starts_with("action ") => {
+                // (proc-run) A line a job printed, replayed into its
+                // `lines` where it came; a flood's lines past the
+                // recorder's bound are said, not replayed.
+                let action = name.trim_start_matches("action ");
+                let Some(j) = &v else { continue };
+                if let Some(k) = j.get("~skipped").and_then(Json::as_u64) {
+                    events.push(Event {
+                        kind: "change",
+                        t: at,
+                        text: format!("action {action}: {k} lines not recorded"),
+                    });
+                    continue;
+                }
+                let Some(line) = j.get("line") else { continue };
+                let text = match &line["text"] {
+                    Json::String(s) => s.clone(),
+                    other => "x".repeat(other["~text"].as_u64().unwrap_or(1) as usize),
+                };
+                let mut step = format!("line action {action}");
+                if line["stderr"].as_bool() == Some(true) {
+                    step.push_str(" stderr");
+                }
+                if line["open"].as_bool() == Some(true) {
+                    step.push_str(" open");
+                }
+                step.push(' ');
+                step.push_str(&quoted(&text));
+                push(&mut timed, at, step, 0);
+            }
             kind::EVENT => {
                 if let Some(Json::Array(args)) = &v {
                     let words: Vec<String> = args.iter().map(arg_word).collect();
@@ -2579,9 +2611,18 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 });
             }
             kind::ACTION_FAILED => {
-                // (action-error) Said with the end that follows it.
-                if let Some(Json::String(why)) = &v {
-                    action_failures.insert(name.clone(), why.clone());
+                // (action-error) Said with the end that follows it; a
+                // held-back reason (proc-run: a run given a text not of
+                // the config) as `x`s as long as it was.
+                match &v {
+                    Some(Json::String(why)) => {
+                        action_failures.insert(name.clone(), why.clone());
+                    }
+                    Some(j) if j.get("~text").is_some() => {
+                        let n = j["~text"].as_u64().unwrap_or(1) as usize;
+                        action_failures.insert(name.clone(), "x".repeat(n));
+                    }
+                    _ => {}
                 }
             }
             kind::ACTION => {
@@ -2590,9 +2631,15 @@ pub fn plan(b: &Bundle, opts: &Options) -> Result<Plan, crate::Error> {
                 // `rec.running` (action-error: and `rec.error`) reads as
                 // it did.
                 if e.rec.u8(5) == 0 {
+                    // (proc-run) With the status it ended with (none when
+                    // it did not start), which `rec.code` reads.
+                    let code = match e.rec.i32(0) {
+                        c if c >= 0 => format!(" code {c}"),
+                        _ => String::new(),
+                    };
                     let step = match action_failures.remove(&name) {
-                        Some(why) => format!("end action {name} failed {}", quoted(&why)),
-                        None => format!("end action {name}"),
+                        Some(why) => format!("end action {name}{code} failed {}", quoted(&why)),
+                        None => format!("end action {name}{code}"),
                     };
                     push(&mut timed, at, step, 0);
                 }

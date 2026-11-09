@@ -406,6 +406,11 @@ impl Execs {
         }
     }
 
+    /// (proc-run) Whether a job of `action` runs.
+    pub(super) fn is_running(&self, action: &str) -> bool {
+        self.running.contains_key(action)
+    }
+
     /// The commands whose action is running or queued (tests).
     #[cfg(test)]
     fn busy(&self) -> (usize, usize) {
@@ -1154,6 +1159,14 @@ impl Shell {
             self.recorder
                 .borrow_mut()
                 .action(t, &req.action, argc, true, 0);
+            // (proc-run) What its job prints is held back unless every
+            // argument is a text of the config.
+            if req.reply.is_none() {
+                let queued = self.execs.is_running(&req.action);
+                self.recorder
+                    .borrow_mut()
+                    .run_started(&req.action, &req.argv, queued);
+            }
             // (action-error) A new try: its last failure no longer stands.
             self.inst.set_action_error(&req.action, None);
             self.execs.start(req);
@@ -1163,15 +1176,18 @@ impl Shell {
         // 5.7's end order).
         for e in self.execs.ended() {
             let t = strand_core::flight::now_ns();
+            self.feed_block(&e.action, false, &e.taken);
+            let (keep_from, lines) = e.taken.update();
             {
+                // (report) In the end order: its last lines, why it
+                // failed, its end with its code.
                 let mut rec = self.recorder.borrow_mut();
+                rec.run_lines(t, &e.action, &lines);
                 if let Some(why) = &e.failed {
                     rec.action_failed(t, &e.action, why);
                 }
                 rec.action(t, &e.action, 0, false, e.exit);
             }
-            self.feed_block(&e.action, false, &e.taken);
-            let (keep_from, lines) = e.taken.update();
             self.inst.update_action_run(
                 &e.action,
                 RunUpdate {
@@ -1231,6 +1247,9 @@ impl Shell {
         for (action, taken) in &printed {
             self.feed_block(action, false, taken);
             let (keep_from, lines) = taken.update();
+            self.recorder
+                .borrow_mut()
+                .run_lines(strand_core::flight::now_ns(), action, &lines);
             if keep_from > 0 || !lines.is_empty() {
                 self.inst.update_action_run(
                     action,
@@ -1250,6 +1269,16 @@ impl Shell {
     /// (proc-run) What a job of `action` read into its block: its fields
     /// and the lines its `line` handlers hear (`reset`: a run started).
     fn feed_block(&self, action: &str, reset: bool, taken: &Taken) {
+        if reset || !taken.heard.is_empty() || taken.fields.iter().any(Option::is_some) {
+            let heard: Vec<Vec<Data>> = taken.heard.iter().map(|(_, l)| l.clone()).collect();
+            self.recorder.borrow_mut().block_fed(
+                strand_core::flight::now_ns(),
+                action,
+                reset,
+                &taken.fields,
+                &heard,
+            );
+        }
         let Some(real) = &self.real else {
             // No host to take them: they are not waited for.
             for (spec, _) in &taken.heard {

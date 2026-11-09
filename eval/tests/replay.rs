@@ -2570,7 +2570,7 @@ fn a_recorded_commands_end_is_replayed() {
     let (_, p, text) = plan_of(&f.write("action-end"), &defaults());
     let st = steps(&text);
     assert_eq!(
-        st.iter().filter(|s| **s == "end action rec").count(),
+        st.iter().filter(|s| **s == "end action rec code 0").count(),
         1,
         "{st:?}"
     );
@@ -2601,10 +2601,62 @@ fn a_recorded_failure_is_replayed_with_its_end() {
     assert_eq!(
         ends,
         [
-            &"end action rec failed \"could not start `x`\"",
-            &"end action rec"
+            &"end action rec code 0 failed \"could not start `x`\"",
+            &"end action rec code 0"
         ],
         "{st:?}"
+    );
+}
+
+/// (proc-run) A job's recorded lines replay as `line action` steps at
+/// their time (stderr, open, a held-back text as `x`s), a flood's skipped
+/// lines are said, and its end carries its code.
+#[test]
+fn a_recorded_jobs_lines_are_replayed() {
+    let mut f = Fx::session();
+    let started = [0u8, 0, 0, 0, 0, 1];
+    let ended = [1u8, 0, 0, 0, 0, 0];
+    f.change(10 * S, kind::ACTION, "rec", &started, "");
+    f.change(
+        10 * S,
+        kind::EVENT,
+        "action rec",
+        &[],
+        r#"{"line":{"n":1,"text":"pro 45%","stderr":true,"open":true}}"#,
+    );
+    f.change(
+        11 * S,
+        kind::EVENT,
+        "action rec",
+        &[],
+        r#"{"line":{"n":2,"text":{"~text":4},"stderr":false,"open":false}}"#,
+    );
+    f.change(11 * S, kind::EVENT, "action rec", &[], r#"{"~skipped":9}"#);
+    f.change(12 * S, kind::ACTION_FAILED, "rec", &[], r#"{"~text":3}"#);
+    f.change(12 * S, kind::ACTION, "rec", &ended, "");
+    let (_, p, text) = plan_of(&f.write("action-lines"), &defaults());
+    let st = steps(&text);
+    let ours: Vec<&&str> = st
+        .iter()
+        .filter(|s| s.starts_with("line action") || s.starts_with("end action"))
+        .collect();
+    assert_eq!(
+        ours,
+        [
+            &"line action rec stderr open \"pro 45%\"",
+            &"line action rec \"xxxx\"",
+            &"end action rec code 1 failed \"xxx\"",
+        ],
+        "{st:?}"
+    );
+    assert!(
+        p.events
+            .iter()
+            .any(|e| e.text == "action rec: 9 lines not recorded")
+    );
+    assert!(
+        text.lines()
+            .all(|l| !l.contains("unmocked") || !l.contains("action rec"))
     );
 }
 
@@ -2627,7 +2679,7 @@ fn each_recorded_end_of_a_queued_run_is_replayed_in_order() {
     let ends: Vec<usize> = st
         .iter()
         .enumerate()
-        .filter(|(_, s)| **s == "end action rec")
+        .filter(|(_, s)| **s == "end action rec code 0")
         .map(|(i, _)| i)
         .collect();
     assert_eq!(ends.len(), 2, "{st:?}");

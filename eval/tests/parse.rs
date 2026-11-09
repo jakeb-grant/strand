@@ -1130,6 +1130,7 @@ fn the_end_action_step_parses() {
         vec![StepKind::EndAction {
             action: "rec".into(),
             failed: None,
+            code: None,
         }]
     );
     // (action-error) With why it failed, which `rec.error` reads.
@@ -1141,15 +1142,71 @@ fn the_end_action_step_parses() {
         StepKind::EndAction {
             action: "rec".into(),
             failed: Some("no such file".into()),
+            code: None,
+        }
+    );
+    // (proc-run) With the status it ended with, which `rec.code` reads.
+    let s = parse(
+        "id = \"t\"\n=== shell.strand\nbar Top { height: 30 }\n=== steps\nend action rec code 1 failed \"x\"\n",
+    );
+    assert_eq!(
+        s.steps[0].kind,
+        StepKind::EndAction {
+            action: "rec".into(),
+            failed: Some("x".into()),
+            code: Some(1),
         }
     );
     for (step, want) in [
+        ("end action rec code", "takes"),
+        ("end action rec code x", "not a status"),
+        ("end action rec failed \"a\" code 1", "unexpected"),
         ("end action rec failed", "takes"),
         ("end action rec failed \"a\" b", "unexpected"),
         ("end", "takes"),
         ("end rec", "takes"),
         ("end action", "takes"),
         ("end action rec now", "unexpected"),
+    ] {
+        let (line, msg) = fails(&format!(
+            "id = \"t\"\n=== shell.strand\nbar Top {{ height: 30 }}\n=== steps\nrest\n{step}\n"
+        ));
+        assert_eq!(line, 6, "{step}: {msg}");
+        assert!(msg.contains(want), "{step}: {msg}");
+    }
+}
+
+/// (proc-run) `line action <name> [stderr] [open] "<text>"` parses; its
+/// mistakes name their line.
+#[test]
+fn the_line_action_step_parses() {
+    let s = parse(
+        "id = \"t\"\n=== shell.strand\nbar Top { height: 30 }\n=== steps\n\
+         line action upd \"one\"\nline action upd stderr open \"45%\"\n",
+    );
+    let kinds: Vec<StepKind> = s.steps.iter().map(|s| s.kind.clone()).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            StepKind::LineAction {
+                action: "upd".into(),
+                stderr: false,
+                open: false,
+                text: "one".into(),
+            },
+            StepKind::LineAction {
+                action: "upd".into(),
+                stderr: true,
+                open: true,
+                text: "45%".into(),
+            },
+        ]
+    );
+    for (step, want) in [
+        ("line action upd", "takes"),
+        ("line action upd one", "takes"),
+        ("line upd \"x\"", "takes"),
+        ("line action upd \"x\" more", "unexpected"),
     ] {
         let (line, msg) = fails(&format!(
             "id = \"t\"\n=== shell.strand\nbar Top {{ height: 30 }}\n=== steps\nrest\n{step}\n"
