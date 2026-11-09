@@ -331,6 +331,19 @@ fn actions_format() {
     );
 }
 
+/// (proc-ok, proc-run, proc-list) `ok` after a command or a poll's
+/// interval, a list parameter and an action's block of fields format to
+/// the written style and keep their tree.
+#[test]
+fn ok_clauses_and_action_blocks_format() {
+    let src = "permit exec\naction  backup( dirs:[path] )  [\"restic\",\"backup\", \"--\",dirs]  ok 0 ,3 {\n      message_type:text\n  percent_done : float? = percent_done\n}\naction up()->[text] [\"checkupdates\"] ok  0,2\nservice o from poll [\"pacman\",\"-Qdtq\"] every 1h ok 0,  1 { names: [text] }\naction tiny() [\"x\"] { line: text }\n";
+    let out = assert_formats("ok_blocks", src);
+    assert_eq!(
+        out,
+        "permit exec\naction backup(dirs: [path]) [\"restic\", \"backup\", \"--\", dirs] ok 0, 3 {\n  message_type: text\n  percent_done: float? = percent_done\n}\naction up() -> [text] [\"checkupdates\"] ok 0, 2\nservice o from poll [\"pacman\", \"-Qdtq\"] every 1h ok 0, 1 { names: [text] }\naction tiny() [\"x\"] { line: text }\n"
+    );
+}
+
 /// (M6) `tray.Row e { … }`, a component named from its file, keeps its
 /// `.` touching both names; a spaced `tray .Row` is a different tree.
 #[test]

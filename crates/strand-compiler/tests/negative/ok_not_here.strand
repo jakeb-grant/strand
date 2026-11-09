@@ -1,0 +1,5 @@
+// expect: check::ok_not_here
+// `ok` lists a command's exit statuses: a `from listen` command that
+// ends is restarted whatever its status, so it has none to list.
+permit exec "journalctl"
+service jerr from listen ["journalctl", "-f", "-o", "json"] ok 0, 1 { message: text = MESSAGE }

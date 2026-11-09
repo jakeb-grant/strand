@@ -216,7 +216,36 @@ impl<'a> Checker<'a> {
                 self.declare_global(&f.name, DefKind::Fn, Ty::Error, pending);
             }
             ItemKind::Action(a) => {
-                self.declare_global(&a.name, DefKind::Action, Ty::Error, LazyState::Ready);
+                let id = self.declare_global(&a.name, DefKind::Action, Ty::Error, LazyState::Ready);
+                // (proc-run) A block on an action without a result: its
+                // record, filled at the signatures. One on `-> T` is
+                // `check::block_with_result` there, and no source.
+                // Its block is served as a service of its name, so never
+                // a builtin's (decisions.md proc-language).
+                let builtin = self.schema.services.contains_key(&a.name.name);
+                if builtin && a.fields.is_some() && a.ret.is_none() {
+                    self.error(
+                        "check::redeclared",
+                        format!(
+                            "an action with a block of fields cannot be named `{}`, a builtin \
+                             service",
+                            a.name.name
+                        ),
+                        a.name.span,
+                        "its block is read as a service of this name",
+                    )
+                    .help = Some("rename the action".into());
+                }
+                if a.fields.is_some()
+                    && !builtin
+                    && a.ret.is_none()
+                    && matches!(a.body, ast::ActionBody::Command(_))
+                {
+                    let rid = self
+                        .types
+                        .add_record(RecordDef::new(a.name.name.clone(), user(a.name.span)));
+                    self.action_blocks.insert(id, rid);
+                }
             }
             ItemKind::Tokens(t) => {
                 let id = self.declare_global(
@@ -597,7 +626,10 @@ impl<'a> Checker<'a> {
                 match &item.kind {
                     ItemKind::Component(c) => self.component_sig(c),
                     ItemKind::Fn(f) => self.fn_sig(f),
-                    ItemKind::Action(a) => self.action_sig(a),
+                    ItemKind::Action(a) => {
+                        self.action_sig(a);
+                        self.action_block_fields(a);
+                    }
                     _ => {}
                 }
             }
@@ -1455,17 +1487,30 @@ pub(super) fn permit_programs(args: &[ast::Expr]) -> Option<Vec<String>> {
     )
 }
 
-/// The program a command runs: a list's first item as is, or a command
-/// line's first word (quotes group, as the command is split when it runs).
-pub(super) fn first_program(e: &ast::Expr) -> Option<String> {
-    match &e.kind {
-        ast::ExprKind::String(s) => super::tree::split_words(&s.value).into_iter().next(),
+/// The programs a command runs, as `permit exec` checks them: a list's
+/// first item as is, or a command line's first word (quotes group, as the
+/// command is split when it runs), then (proc-permit) each program a
+/// leading `stdbuf` or `env` runs, the last the one checked; any of them
+/// a permit names allows it.
+pub(super) fn first_program(e: &ast::Expr) -> Option<Vec<String>> {
+    let words: Vec<Option<String>> = match &e.kind {
+        ast::ExprKind::String(s) => super::tree::split_words(&s.value)
+            .into_iter()
+            .map(Some)
+            .collect(),
         // A list's first item is the program as written: it runs whole,
         // never split, so `["sh -c", …]` names a program `sh -c`.
-        ast::ExprKind::Array(items) => items.first().and_then(|e| match &e.kind {
-            ast::ExprKind::String(s) => Some(s.value.clone()),
-            _ => None,
-        }),
-        _ => None,
-    }
+        ast::ExprKind::Array(items) => items
+            .iter()
+            .map(|e| match &e.kind {
+                ast::ExprKind::String(s) => Some(s.value.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => return None,
+    };
+    words.first()?.as_ref()?;
+    let refs: Vec<Option<&str>> = words.iter().map(|w| w.as_deref()).collect();
+    let at = super::actions::program_at(&refs);
+    Some(words.into_iter().take(at + 1).flatten().collect())
 }

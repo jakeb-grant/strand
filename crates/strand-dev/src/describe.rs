@@ -125,7 +125,9 @@ pub fn def(an: &Analysis, def: &Def) -> String {
             Ty::Fn(s) => sig(types, &def.name, s),
             t => format!("fn {}: {}", def.name, ty(types, t)),
         },
-        // (M6) The command it runs, a parameter shown as `{name}`.
+        // (M6) The command it runs, a parameter shown as `{name}`, a list
+        // as `{name…}`, then its `ok` statuses and (proc-run) its block's
+        // fields.
         DefKind::Action => {
             let params = match &def.ty {
                 Ty::Fn(s) => s
@@ -136,13 +138,30 @@ pub fn def(an: &Analysis, def: &Def) -> String {
                     .join(", "),
                 _ => String::new(),
             };
-            let command = p.files.iter().flat_map(|f| &f.items).find_map(|i| match i {
-                strand_compiler::hir::Item::Action(a) if p.def(a.def) == def => Some(a.shown()),
+            let decl = p.files.iter().flat_map(|f| &f.items).find_map(|i| match i {
+                strand_compiler::hir::Item::Action(a) if p.def(a.def) == def => Some(a),
                 _ => None,
             });
-            match command {
-                Some(c) => format!("action {}({params})\nruns: {c}", def.name),
-                None => format!("action {}({params})", def.name),
+            let ret = match &def.ty {
+                Ty::Fn(s) => match &s.ret {
+                    Ty::Async(t) => format!(" -> {}", ty(types, t)),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            };
+            let head = format!("action {}({params}){ret}", def.name);
+            match decl {
+                Some(a) => {
+                    let mut s = format!("{head}\nruns: {}", a.shown());
+                    if let Some(b) = &a.fields
+                        && let Some(body) = record_body(types, "fields".into(), b.record)
+                    {
+                        s.push('\n');
+                        s.push_str(&body);
+                    }
+                    s
+                }
+                None => head,
             }
         }
         DefKind::Enum(e) => {

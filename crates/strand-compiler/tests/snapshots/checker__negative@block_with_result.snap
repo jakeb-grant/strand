@@ -1,0 +1,15 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::block_with_result
+
+  × an action with a result reads its output whole, as its `-> T`
+   ╭─[block_with_result.strand:5:62]
+ 4 │ permit exec "restic"
+ 5 │ action snapshots() -> text ["restic", "snapshots", "--json"] { id: text }
+   ·                                                              ──────┬─────
+   ·                                                                    ╰── its lines are not fields
+   ╰────
+  help: drop the `-> T` to follow its lines as fields, or drop the block and read what it prints
+        as a `type` you declare

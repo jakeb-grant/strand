@@ -610,6 +610,7 @@ pub(crate) fn computes(name: &str) -> bool {
             | "num"
             | "bytes"
             | "number"
+            | "numbers"
             | "json"
             | "join"
             | "material"
@@ -749,6 +750,39 @@ pub fn number(t: &str) -> Option<f64> {
         return None;
     }
     t.parse::<f64>().ok().filter(|n| n.is_finite())
+}
+
+/// (proc-reason) `numbers(t)`: every run of ASCII digits in `t`, with a
+/// `.` and more digits after it read as its fraction, in order. No sign,
+/// exponent or grouping: `5-6` is `[5, 6]`, `1,234` is `[1, 234]`, and a
+/// `.` with no digit after it ends the number (`3.` is 3).
+pub fn numbers(t: &str) -> Vec<f64> {
+    let b = t.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if !b[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i + 1 < b.len() && b[i] == b'.' && b[i + 1].is_ascii_digit() {
+            i += 1;
+            while i < b.len() && b[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+        // Digits and one `.` are ASCII, so the slice is on char bounds.
+        if let Some(n) = t.get(start..i).and_then(|s| s.parse::<f64>().ok())
+            && n.is_finite()
+        {
+            out.push(n);
+        }
+    }
+    out
 }
 
 /// `dur(…, clock: true)`: `0:05`, `3:45`, `1:02:03` (decisions.md
@@ -1039,6 +1073,16 @@ pub(crate) fn call(
             Some(t) => self::number(t).map_or(Value::Null, Value::float),
             None => Value::Null,
         },
+        // (proc-reason) Null in, `[]` out.
+        "numbers" => Value::list(
+            args.get(0)
+                .and_then(Value::as_text)
+                .map(self::numbers)
+                .unwrap_or_default()
+                .into_iter()
+                .map(Value::float)
+                .collect(),
+        ),
         // (json-fn) Compact JSON of any plain-data value.
         "json" => {
             let mut out = String::new();

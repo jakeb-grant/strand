@@ -287,7 +287,8 @@ use tokens base, palette material(seed: #7aa2f7)
 service ppd from dbus system \"net.hadess.PowerProfiles\" { profile: text rw = ActiveProfile }
 service user from dbus session \"org.example.X\" { n: int = N }
 permit exec \"sensors\"
-action temps(chip: text) [\"sensors\", chip]
+action temps(chip: text) [\"sensors\", chip] ok 0, 1 { line: text }
+service t from poll [\"sensors\"] every 5s ok 0, 2 { n: int }
 service ups from dbus system \"org.example.Ups\" { action: text = Action; action hold(r: text) = Hold }
 keyframes shake { 0%, 100% { x: 0 }; duration: 300ms }
 on notifications.received(n) { open = true }
@@ -450,6 +451,8 @@ component C(key: text) {
   box { on change(x) { log(x) } }
   box { bg: conic(from: 90deg, $accent, $secondary) }
   text key.in
+  state ok = 1
+  text ok + 2
 }
 ";
     assert_eq!(syntax_errors(src), Vec::<&str>::new());
@@ -463,6 +466,7 @@ component C(key: text) {
         ("key", "identifier"),
         ("change", "identifier"),
         ("from", "identifier"),
+        ("ok", "identifier"),
     ] {
         let mut stack = vec![tree.root_node()];
         let mut kinds = BTreeSet::new();

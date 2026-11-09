@@ -1333,7 +1333,7 @@ impl Parser<'_> {
         }
         let mut args = Vec::new();
         let mut every_typo = false;
-        while self.same_line() && !self.at_kw("every") && self.starts_expr() {
+        while self.same_line() && !self.at_kw("every") && !self.at_ok() && self.starts_expr() {
             if kind.name == "poll" && !args.is_empty() && self.clause_typo(&["every"]).is_some() {
                 every_typo = true;
                 break;
@@ -1347,11 +1347,14 @@ impl Parser<'_> {
             self.expr()
         });
         let start = start.min(kind.span.start);
+        let span = self.finish(start);
+        let ok = self.ok_clause();
         let source = ServiceSource {
             kind,
             args,
             every,
-            span: self.finish(start),
+            ok,
+            span,
         };
         self.check_source(&source);
         ItemKind::Service(Service {
@@ -1462,12 +1465,73 @@ impl Parser<'_> {
             self.expected("the command, a list such as `[\"hyprctl\", \"dispatch\", ws]`");
             ActionBody::Missing
         };
+        // (proc-ok, proc-run) The parser takes both after any action; the
+        // checker refuses them where the spec does not allow them.
+        let ok = self.ok_clause();
+        let fields = (self.same_line() && self.at(K::LBrace))
+            .then(|| self.field_block("the action's fields"));
         ItemKind::Action(ActionDecl {
             name,
             params,
             ret,
             body,
+            ok,
+            fields,
             span: self.finish(start),
+        })
+    }
+
+    /// (proc-ok) `ok` is a keyword only right after a command on its line,
+    /// before a number (grammar.md, "Keywords are contextual").
+    fn at_ok(&self) -> bool {
+        self.same_line() && self.at_kw("ok") && matches!(self.nth_kind(1), K::Number | K::Minus)
+    }
+
+    /// (proc-ok) `ok 0, 2`: integer literals, one or more.
+    fn ok_clause(&mut self) -> Option<OkClause> {
+        if !self.at_ok() {
+            return None;
+        }
+        let kw = self.bump().span;
+        let mut statuses = Vec::new();
+        loop {
+            let t = self.cur();
+            let value = if t.kind == K::Number && self.same_line() {
+                self.bump();
+                let v = self.text(t).parse::<i64>().ok();
+                if v.is_none() {
+                    self.push_error(
+                        Diagnostic::error(
+                            "syntax::expected",
+                            format!("expected an exit status, found `{}`", self.text(t)),
+                        )
+                        .with_label(t.span, "an exit status is a whole number, such as `2`"),
+                    );
+                }
+                statuses.push(OkStatus {
+                    value: v,
+                    span: t.span,
+                });
+                true
+            } else {
+                self.expected_with(
+                    "an exit status, a whole number",
+                    Some("`ok 0, 2`: the statuses that mean the program did its job".into()),
+                );
+                // A `-1`: skip the number too, so one mistake is one error.
+                if self.eat(K::Minus).is_some() && self.same_line() {
+                    self.eat(K::Number);
+                }
+                false
+            };
+            if !value || self.eat(K::Comma).is_none() {
+                break;
+            }
+        }
+        Some(OkClause {
+            kw,
+            statuses,
+            span: self.finish(kw.start),
         })
     }
 

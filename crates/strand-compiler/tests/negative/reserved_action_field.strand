@@ -1,0 +1,4 @@
+// expect: check::reserved_field
+// A field of an action's block cannot take a member of its run's name.
+permit exec "restic"
+action backup(dirs: [path]) ["restic", "backup", "--json", "--", dirs] { error: text? }

@@ -29,8 +29,127 @@ fn passable(ty: &Ty, dbus: bool) -> bool {
         Ty::Error | Ty::Enum(_) => true,
         Ty::Prim(Prim::Text | Prim::Path | Prim::Int | Prim::Float | Prim::Bool) => true,
         Ty::List(item, _) if dbus => matches!(**item, Ty::Prim(Prim::Text)),
+        // (proc-list) One argument per item, so a list of what one
+        // argument carries; never a list of lists or of records.
+        Ty::List(item, _) => !matches!(**item, Ty::List(..)) && passable(item, false),
         _ => false,
     }
+}
+
+/// (proc-run) The members of an action's run: a field of its block may
+/// not take one's name, nor `ready`, which the service serving the block
+/// answers for itself (decisions.md proc-language).
+const RUN_MEMBERS: &[&str] = &[
+    "running",
+    "started",
+    "error",
+    "code",
+    "lines",
+    "stop",
+    crate::schema::READY,
+];
+
+/// (proc-run) A key name for a block field that would take a run member's
+/// name (`err: text? = error`).
+fn renamed(member: &str) -> &'static str {
+    match member {
+        "error" => "err",
+        "code" => "status",
+        "lines" => "rows",
+        "running" => "busy",
+        "started" => "began",
+        "stop" => "halt",
+        _ => "is_ready",
+    }
+}
+
+/// (proc-permit) Where the program a command runs is: past a leading
+/// `stdbuf` with only `-i`/`-o`/`-e` options and an `env` with only
+/// `NAME=value` items, in either order (spec.md 5.8). `items` are the
+/// command's items, `None` for one that is not a text literal (a
+/// parameter), which stops the seeing through. The index is always of a
+/// written-out item: 0 when nothing is seen through.
+pub(crate) fn program_at(items: &[Option<&str>]) -> usize {
+    let mut at = 0;
+    loop {
+        let Some(Some(word)) = items.get(at) else {
+            return at;
+        };
+        let name = word.rsplit('/').next().unwrap_or(word);
+        let mut next = at + 1;
+        match name {
+            "stdbuf" => {
+                let mut options = 0;
+                loop {
+                    match items.get(next) {
+                        Some(Some(o)) if buffer_option(o).is_some() => {
+                            if buffer_option(o) == Some(true) {
+                                next += 1;
+                            } else {
+                                // `-o L`: the mode is the next item.
+                                match items.get(next + 1) {
+                                    Some(Some(m)) if buffer_mode(m) => next += 2,
+                                    _ => return at,
+                                }
+                            }
+                            options += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                // stdbuf runs nothing without an option.
+                if options == 0 {
+                    return at;
+                }
+            }
+            "env" => {
+                while matches!(items.get(next), Some(Some(a)) if env_assignment(a)) {
+                    next += 1;
+                }
+            }
+            _ => return at,
+        }
+        match items.get(next) {
+            Some(Some(p)) if !p.is_empty() && !p.starts_with('-') => at = next,
+            _ => return at,
+        }
+    }
+}
+
+/// A `stdbuf` option: `Some(true)` with its mode (`-oL`, `--output=L`),
+/// `Some(false)` when the mode is the next item (`-o`), `None` for
+/// anything else.
+fn buffer_option(o: &str) -> Option<bool> {
+    for (short, long) in [("-i", "--input="), ("-o", "--output="), ("-e", "--error=")] {
+        if o == short {
+            return Some(false);
+        }
+        if let Some(m) = o.strip_prefix(short).or_else(|| o.strip_prefix(long))
+            && buffer_mode(m)
+        {
+            return Some(true);
+        }
+    }
+    None
+}
+
+/// A `stdbuf` mode: `L` (lines) or a size (`0`, `4096`, `1K`, `1MiB`).
+fn buffer_mode(m: &str) -> bool {
+    m == "L"
+        || m.starts_with(|c: char| c.is_ascii_digit())
+            && m.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// An `env` item that sets a variable: `NAME=value`, `NAME` a letter or
+/// `_` then letters, digits or `_`.
+fn env_assignment(a: &str) -> bool {
+    let Some((name, _)) = a.split_once('=') else {
+        return false;
+    };
+    let mut cs = name.chars();
+    cs.next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && cs.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Whether `program` (a name or a path) is a shell that runs its `-c`
@@ -77,8 +196,10 @@ impl<'a> Checker<'a> {
             label,
         )
         .help = Some(format!(
-            "pass everything in one call, or declare `action {name}(…) -> text [...]` and \
-             `await` each call; when only the latest call matters, this is what you want"
+            "pass everything in one call, a list parameter taking every item (`action \
+             {name}(items: [text]) [..., items]`, called as `{name}(xs.map(x => x.name))`), or \
+             declare `action {name}(…) -> text [...]` and `await` each call; when only the \
+             latest call matters, this is what you want"
         ));
     }
 
@@ -86,16 +207,18 @@ impl<'a> Checker<'a> {
     /// a shell reads as its script (`["sh", "-c", cmd]`): its value is
     /// run as shell code, which a text from a service or a user may not
     /// be meant to be.
-    fn shell_scripts(&mut self, a: &'a ast::ActionDecl, argv: &[ArgvPart]) {
+    fn shell_scripts(&mut self, a: &'a ast::ActionDecl, argv: &[ArgvPart], from: usize) {
         let ActionBody::Command(e) = &a.body else {
             return;
         };
         let ast::ExprKind::Array(items) = &e.kind else {
             return;
         };
-        for (i, w) in argv.windows(2).enumerate() {
-            let [ArgvPart::Text(flag), ArgvPart::Param(p)] = w else {
-                continue;
+        for (i, w) in argv.windows(2).enumerate().skip(from) {
+            let (flag, p, list) = match w {
+                [ArgvPart::Text(flag), ArgvPart::Param(p)] => (flag, p, false),
+                [ArgvPart::Text(flag), ArgvPart::Spread(p)] => (flag, p, true),
+                _ => continue,
             };
             if !is_dash_c(flag) {
                 continue;
@@ -104,17 +227,172 @@ impl<'a> Checker<'a> {
                 continue;
             };
             let name = a.params.get(*p).map_or("?", |p| p.name.name.as_str());
+            let help = if list {
+                // (proc-list) Its first item would be the script and the
+                // rest its `$0`, `$1`…
+                format!(
+                    "write the script out and pass `{name}` after it, where the script reads \
+                     its items as `\"$@\"`: `[\"sh\", \"-c\", \"pacman -Qi -- \\\"$@\\\"\", \"sh\", \
+                     {name}]`"
+                )
+            } else {
+                format!(
+                    "write the script out and pass `{name}` after it, where the script reads \
+                     it as `$1`: `[\"sh\", \"-c\", \"… \\\"$1\\\"\", \"sh\", {name}]`"
+                )
+            };
             self.warning(
                 "check::shell_script",
                 format!("`{name}` is run as a shell script"),
                 item.span,
                 "the shell's script",
             )
+            .help = Some(help);
+        }
+    }
+
+    /// (proc-ok) The statuses an `ok` clause lists, each 0 to 255
+    /// (`check::ok_status`), 0 among them (`check::ok_without_zero`).
+    pub(super) fn ok_statuses(&mut self, c: &ast::OkClause) -> Vec<i32> {
+        let mut out: Vec<i32> = Vec::new();
+        for st in &c.statuses {
+            // A number that was not whole: the parser reported it.
+            let Some(v) = st.value else {
+                continue;
+            };
+            match u8::try_from(v) {
+                Ok(b) => {
+                    if !out.contains(&i32::from(b)) {
+                        out.push(i32::from(b));
+                    }
+                }
+                Err(_) => {
+                    self.error(
+                        "check::ok_status",
+                        format!("no program ends with status {v}"),
+                        st.span,
+                        "not 0 to 255",
+                    )
+                    .help = Some(
+                        "an exit status is 0 to 255 (a shell's `$?`); a program killed by a \
+                         signal is never ok"
+                            .into(),
+                    );
+                }
+            }
+        }
+        let whole = c.statuses.iter().all(|s| s.value.is_some());
+        if whole && !out.is_empty() && !out.contains(&0) {
+            let listed: Vec<String> = out.iter().map(i32::to_string).collect();
+            self.error(
+                "check::ok_without_zero",
+                "`ok` lists 0 too",
+                c.span,
+                "0 is missing",
+            )
             .help = Some(format!(
-                "write the script out and pass `{name}` after it, where the script reads \
-                 it as `$1`: `[\"sh\", \"-c\", \"… \\\"$1\\\"\", \"sh\", {name}]`"
+                "`ok 0, {}`: the clause lists every status that is no failure",
+                listed.join(", ")
             ));
         }
+        if !out.contains(&0) {
+            out.push(0);
+        }
+        out.sort_unstable();
+        out
+    }
+
+    /// (proc-ok) `ok` where no command's status is read.
+    pub(super) fn ok_not_here(&mut self, c: &ast::OkClause, why: &str) {
+        self.error(
+            "check::ok_not_here",
+            "`ok` lists a command's exit statuses, and there is none to read here",
+            c.span,
+            why,
+        )
+        .help = Some(
+            "`ok` follows an action's command (`action updates() -> [text] \
+             [\"checkupdates\"] ok 0, 2`) or a polled command's interval"
+                .into(),
+        );
+    }
+
+    /// (proc-ok, proc-run) An `ok` or a block on a `from dbus` method's
+    /// action: neither has a meaning there.
+    pub(super) fn method_action_extras(&mut self, a: &ast::ActionDecl) {
+        if let Some(c) = &a.ok {
+            self.ok_not_here(c, "a D-Bus method answers or fails; it has no exit status");
+        }
+        if let Some(b) = &a.fields {
+            self.error(
+                "check::misplaced",
+                "a D-Bus method's action has no block of fields",
+                b.span,
+                "it prints no lines",
+            )
+            .help = Some("read what it changes as a field of the service".into());
+        }
+    }
+
+    /// (proc-run) The fields of action `a`'s block, its record's, and its
+    /// `line` event (`on backup.line(doc)`), as a `from listen` service's.
+    pub(super) fn action_block_fields(&mut self, a: &'a ast::ActionDecl) {
+        let Some(b) = &a.fields else {
+            return;
+        };
+        let Some(&id) = self.item_defs.get(&(self.module, a.name.span)) else {
+            return;
+        };
+        let Some(&rid) = self.action_blocks.get(&id) else {
+            return;
+        };
+        let mut fields: Vec<crate::ty::FieldDef> = Vec::new();
+        for f in &b.items {
+            let name = f.name.name.as_str();
+            if RUN_MEMBERS.contains(&name) {
+                let ty = self.resolve_type(&f.ty);
+                let shown = self.types.show(&ty);
+                self.error(
+                    "check::reserved_field",
+                    format!("`{}.{name}` is its run's already", a.name.name),
+                    f.name.span,
+                    "a member of every action's run",
+                )
+                .help = Some(format!(
+                    "name the field otherwise and read the key `{name}` with a path: \
+                     `{}: {shown} = {name}`",
+                    renamed(name)
+                ));
+                continue;
+            }
+            if fields.iter().any(|g| g.name == name) {
+                self.error(
+                    "check::redeclared",
+                    format!("field `{name}` is declared twice"),
+                    f.name.span,
+                    "declared again here",
+                );
+                continue;
+            }
+            let ty = self.resolve_type(&f.ty);
+            fields.push(crate::ty::FieldDef {
+                name: name.to_string(),
+                ty,
+                rw: false,
+            });
+        }
+        let rec = self.types.record_mut(rid);
+        rec.fields = fields;
+        rec.events = vec![crate::ty::EventDef {
+            name: "line".into(),
+            params: vec![ParamSig {
+                name: "doc".into(),
+                ty: Ty::Record(rid),
+                has_default: false,
+                default: None,
+                variadic: false,
+            }],
+        }];
     }
 
     /// An action's parameters, each typed as an argument can carry it.
@@ -146,8 +424,9 @@ impl<'a> Checker<'a> {
                         .help = Some(if dbus {
                             "use `text`, `path`, `int`, `float`, `bool`, an enum or `[text]`".into()
                         } else {
-                            "use `text`, `path`, `int`, `float`, `bool` or an enum: each is \
-                             one argument, as its text"
+                            "use `text`, `path`, `int`, `float`, `bool`, an enum or a list of \
+                             one of these: each is one argument, as its text (a list one per \
+                             item); pass anything else as `json(v)` in a `text`"
                                 .into()
                         });
                     }
@@ -236,6 +515,15 @@ impl<'a> Checker<'a> {
     /// program written out and allowed by `permit exec`.
     pub(super) fn action_decl(&mut self, id: DefId, a: &'a ast::ActionDecl) -> hir::ActionDecl {
         let params: Vec<String> = a.params.iter().map(|p| p.name.name.clone()).collect();
+        // (proc-list) Which parameters are lists: each spreads its items.
+        let lists: Vec<bool> = match &self.defs[id.0 as usize].ty {
+            Ty::Fn(sig) => sig
+                .params
+                .iter()
+                .map(|p| matches!(p.ty, Ty::List(..)))
+                .collect(),
+            _ => Vec::new(),
+        };
         let mut argv = Vec::new();
         let mut ok = true;
         match &a.body {
@@ -259,7 +547,11 @@ impl<'a> Checker<'a> {
                                     );
                                     ok = false;
                                 } else if let Some(p) = params.iter().position(|p| *p == n.name) {
-                                    argv.push(ArgvPart::Param(p));
+                                    argv.push(if lists.get(p) == Some(&true) {
+                                        ArgvPart::Spread(p)
+                                    } else {
+                                        ArgvPart::Param(p)
+                                    });
                                 }
                             }
                             _ => {
@@ -298,11 +590,26 @@ impl<'a> Checker<'a> {
             // `= Method` there alone.
             ActionBody::Method(_) | ActionBody::Missing => ok = false,
         }
-        if let Some(ArgvPart::Text(program)) = argv.first() {
+        // (proc-permit) The program past `stdbuf`/`env`; any of the chain
+        // a permit names allows it (`permit exec "env"` allows any).
+        let words: Vec<Option<&str>> = argv
+            .iter()
+            .map(|p| match p {
+                ArgvPart::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        let at = program_at(&words);
+        let chain: Vec<String> = words[..argv.len().min(at + 1)]
+            .iter()
+            .flatten()
+            .map(|w| (*w).to_string())
+            .collect();
+        if let Some(ArgvPart::Text(program)) = argv.get(at) {
             let program = program.clone();
             let allowed = self.permits.iter().any(|p| match p {
                 None => true,
-                Some(list) => list.contains(&program),
+                Some(list) => chain.iter().any(|w| list.contains(w)),
             });
             if !allowed {
                 let shown = if program.is_empty() { "\"\"" } else { &program };
@@ -321,9 +628,44 @@ impl<'a> Checker<'a> {
                 ok = false;
             }
             if ok && is_shell(&program) {
-                self.shell_scripts(a, &argv);
+                self.shell_scripts(a, &argv, at);
             }
         }
+        let statuses = match &a.ok {
+            Some(c) => self.ok_statuses(c),
+            None => vec![0],
+        };
+        // (proc-run) The block: fields its stdout lines fill, on an action
+        // without a result alone.
+        let fields = match (&a.fields, self.action_blocks.get(&id).copied()) {
+            (Some(b), Some(rid)) => {
+                let declared: Vec<&'a ast::Field> = b
+                    .items
+                    .iter()
+                    .filter(|f| !RUN_MEMBERS.contains(&f.name.name.as_str()))
+                    .collect();
+                let fields = self.source_fields("action", Some(rid), &declared);
+                Some(hir::ActionBlock {
+                    record: rid,
+                    fields,
+                })
+            }
+            (Some(b), None) if a.ret.is_some() => {
+                self.error(
+                    "check::block_with_result",
+                    "an action with a result reads its output whole, as its `-> T`",
+                    b.span,
+                    "its lines are not fields",
+                )
+                .help = Some(
+                    "drop the `-> T` to follow its lines as fields, or drop the block and read \
+                     what it prints as a `type` you declare"
+                        .into(),
+                );
+                None
+            }
+            _ => None,
+        };
         if ok {
             for (i, p) in a.params.iter().enumerate() {
                 if !argv.contains(&ArgvPart::Param(i)) && !argv.contains(&ArgvPart::Spread(i)) {
@@ -346,8 +688,8 @@ impl<'a> Checker<'a> {
             span: a.span,
             params,
             argv: if ok { argv } else { Vec::new() },
-            ok: vec![0],
-            fields: None,
+            ok: statuses,
+            fields,
         }
     }
 }

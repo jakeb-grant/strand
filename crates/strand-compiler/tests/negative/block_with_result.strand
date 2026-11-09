@@ -1,0 +1,5 @@
+// expect: check::block_with_result
+// An action with a result reads its output whole, as its `-> T`: its
+// lines are not fields.
+permit exec "restic"
+action snapshots() -> text ["restic", "snapshots", "--json"] { id: text }

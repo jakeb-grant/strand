@@ -2551,3 +2551,42 @@ fn an_ambiguous_name_offers_each_file() {
         "{edited:?}"
     );
 }
+
+/// (proc-run, proc-list, proc-ok) An action's hover shows its command, a
+/// list parameter as `{name…}`, its `ok` statuses and its block's fields;
+/// completion after `backup.` offers the run's `lines` and `code` beside
+/// the block's fields.
+#[test]
+fn an_actions_hover_and_completion_show_its_output() {
+    let src = "permit exec \"restic\"\n\
+        action backup(dirs: [path]) [\"restic\", \"backup\", \"--json\", \"--\", dirs] ok 0, 3 {\n  \
+        message_type: text\n  percent_done: float?\n}\n\
+        bar B { text backup.message_type }\n";
+    let mut c = Client::start(&[("a.strand", src.to_string())]);
+    c.open("a.strand");
+    let h = c.hover("a.strand", Client::pos(src, "backup.message_type", 0, 2));
+    for want in [
+        "action backup(dirs: [path])",
+        "runs: restic backup --json -- {dirs…} ok 0, 3",
+        "message_type: text",
+        "percent_done: float?",
+    ] {
+        assert!(h.contains(want), "{want} missing: {h}");
+    }
+    let text = src.replace("text backup.message_type", "text backup.");
+    c.change("a.strand", 2, &text);
+    let labels = c.completion("a.strand", Client::pos(&text, "backup.", 0, 7));
+    for want in [
+        "lines",
+        "code",
+        "running",
+        "error",
+        "message_type",
+        "percent_done",
+    ] {
+        assert!(
+            labels.iter().any(|l| l == want),
+            "{want} missing: {labels:?}"
+        );
+    }
+}

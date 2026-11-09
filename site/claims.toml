@@ -4416,3 +4416,101 @@ page   = "site/how-to/settings-file.md"
 text   = "so the first profile you save is one you can edit by hand."
 source = ['crates/strand-core/src/settings.rs "fn natural(new: &Item) -> Item {"', 'docs/spec.md "(settings-shape) one among inline records is inline, and with neither"']
 proof  = "crates/strand-core/tests/settings.rs::a_new_record_of_records_is_written_as_sections"
+
+# --- proc-output (the language stream; runtime proofs are the runtime
+# stream's tests, named in docs/features.md's "Programs' output") ---
+[[claim]]
+page   = "site/how-to/long-job.md"
+text   = "its last 1000 lines, stdout and stderr together in the order Strand read them."
+source = ['docs/spec.md "the last 1000 lines, at most 256 KiB, of stdout and stderr in the order strand read them"', 'crates/strand-compiler/src/schema/builtin.schema "record Line key n"']
+proof  = "docs/features.md, Programs' output: the runtime's run tests (exec.rs, a_run_has_its_lines_both_streams_tagged)"
+
+[[claim]]
+page   = "site/how-to/long-job.md"
+text   = "`lines`, `code` and `error` are emptied when a run starts, not when it ends"
+source = ['docs/spec.md "are reset when a run starts, a queued re-run included, never when one ends"', 'crates/strand-compiler/src/vm/runs.rs "pub struct RunUpdate"']
+proof  = "crates/strand-compiler/tests/flex.rs::a_runs_lines_and_code_follow_the_hosts_updates"
+
+[[claim]]
+page   = "site/how-to/long-job.md"
+text   = "Hearing lines never starts the command: only a call does."
+source = ['docs/spec.md "a handler never starts the command, only a call does"', 'crates/strand-compiler/src/vm/host.rs "Reading it never starts a command."']
+proof  = "crates/strand-compiler/tests/vm.rs::an_action_block_is_read_as_the_service_named_after_it"
+
+[[claim]]
+page   = "site/how-to/long-job.md"
+text   = "A block on an action with `-> T` is an error"
+source = ['crates/strand-compiler/src/check/actions.rs ""check::block_with_result","', 'docs/spec.md "A block on an action with a result is a load error, `check::block_with_result`"']
+proof  = "crates/strand-compiler/tests/checker.rs::each_proc_output_check_has_its_code"
+
+[[claim]]
+page   = "site/how-to/long-job.md"
+text   = "a key path keeps the key: `err: text? = error`."
+source = ['crates/strand-compiler/src/check/actions.rs ""check::reserved_field","', 'docs/spec.md "`check::reserved_field`, whose help gives it a key path"']
+proof  = "crates/strand-compiler/tests/checker.rs::proc_output_checks_help_with_the_fix"
+
+[[claim]]
+page   = "site/how-to/long-job.md"
+text   = "each `~/` expanded because the items are `path`s."
+source = ['crates/strand-compiler/src/vm/mod.rs "fn argv_of("', '''docs/spec.md "each `[path]` item's `~/` expanded as below"''']
+proof  = "crates/strand-compiler/tests/vm.rs::a_list_parameter_is_one_argument_per_item"
+
+[[claim]]
+page   = "site/how-to/download-progress.md"
+text   = "`numbers(\"######  37.5%\")` is `[37.5]`"
+source = ['crates/strand-compiler/src/vm/builtins.rs "pub fn numbers(t: &str) -> Vec<f64>"', 'crates/strand-compiler/src/schema/builtin.schema "fn numbers(t: text?) -> [float]"']
+proof  = "crates/strand-compiler/tests/vm.rs::numbers_reads_progress_text"
+
+[[claim]]
+page   = "site/how-to/download-progress.md"
+text   = "with no sign, so `5-6` reads as `[5, 6]`. It gives `[]` for null"
+source = ['crates/strand-compiler/src/schema/builtin.schema "`5-6` is `[5, 6]` and `1,234` is `[1, 234]`. Null in, `[]` out."']
+proof  = "crates/strand-compiler/tests/vm.rs::numbers_reads_progress_text"
+
+[[claim]]
+page   = "site/how-to/download-progress.md"
+text   = "Strand treats a `\\r` as a terminal does: the line starts again and what follows replaces it."
+source = ['docs/spec.md "the line starts again and what follows replaces it"']
+proof  = "docs/features.md, Programs' output: the runtime's framer tests (strand-services proc.rs)"
+
+[[claim]]
+page   = "site/how-to/download-progress.md"
+text   = "`fetch.code` is 130, and `fetch.error` stays null, since a stop is no failure."
+source = ['''docs/spec.md "130 after a `stop()`'s SIGINT"''', 'docs/spec.md "A stopped run keeps what it printed; `code` says how it ended and `error` stays null"']
+proof  = "docs/features.md, Programs' output: the runtime's a_stopped_run_keeps_its_lines_and_code_130"
+
+[[claim]]
+page   = "site/how-to/buffered-output.md"
+text   = "most programs hold their own output when it goes to a pipe instead of a terminal"
+source = ['docs/spec.md "Most programs hold back their output when it goes to a pipe"', '''docs/decisions.md "buffering when piped is the program's to fix"''']
+proof  = "the plan's probes (world.md section 2, 2026-11-08): C stdio, Python, grep, sed, gawk and jq held their output until exit when piped"
+
+[[claim]]
+page   = "site/how-to/buffered-output.md"
+text   = "`strand check` checks the program after them."
+source = ['crates/strand-compiler/src/check/actions.rs "pub(crate) fn program_at(items: &[Option<&str>]) -> usize"', 'docs/spec.md "the program checked against `permit exec`, and by `check::shell_script`, is the one after them"']
+proof  = "crates/strand-compiler/tests/checker.rs::the_see_through_permits_only_name_value_and_buffer_options"
+
+[[claim]]
+page   = "site/how-to/buffered-output.md"
+text   = "Anything else (`env -i pacman`, a parameter where the program would be) stops it, and the program checked is `stdbuf` or `env` itself"
+source = ['docs/spec.md "Any other item (`env -i pacman`, `stdbuf --help`, a parameter) stops the seeing through"', 'crates/strand-compiler/src/check/actions.rs "fn env_assignment(a: &str) -> bool"']
+proof  = "crates/strand-compiler/tests/checker.rs::the_see_through_permits_only_name_value_and_buffer_options"
+
+[[claim]]
+page   = "site/how-to/exit-statuses.md"
+text   = "(`ok 2` is an error whose fix is `ok 0, 2`), and each is 0 to 255."
+source = ['docs/spec.md "0 must be among them (`ok 2` is a load error, `check::ok_without_zero`, whose help writes `ok 0, 2`)"', 'crates/strand-compiler/src/check/actions.rs ""check::ok_status","']
+proof  = "crates/strand-compiler/tests/checker.rs::proc_output_checks_help_with_the_fix"
+
+[[claim]]
+page   = "site/how-to/exit-statuses.md"
+text   = "on a `from listen` service (its command ending always means it is started again), on a D-Bus method and on a polled file it is an error."
+source = ['docs/spec.md "on a `from listen` service (its command ending always means a restart), on a `from dbus` action and on a polled file it is a load error (`check::ok_not_here`)"']
+proof  = "crates/strand-compiler/tests/checker.rs::each_proc_output_check_has_its_code"
+
+[[claim]]
+page   = "site/how-to/exit-statuses.md"
+text   = "A program ended by a signal is never ok."
+source = ['docs/spec.md "A signal is never ok"']
+proof  = "docs/features.md, Programs' output: the runtime's an_ok_status_is_not_a_failure"

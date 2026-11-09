@@ -1627,6 +1627,22 @@
                 "type": "SYMBOL",
                 "name": "_expression"
               }
+            },
+            {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "FIELD",
+                  "name": "ok",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "ok_clause"
+                  }
+                },
+                {
+                  "type": "BLANK"
+                }
+              ]
             }
           ]
         },
@@ -1660,8 +1676,61 @@
                 "type": "SYMBOL",
                 "name": "_expression"
               }
+            },
+            {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "FIELD",
+                  "name": "ok",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "ok_clause"
+                  }
+                },
+                {
+                  "type": "BLANK"
+                }
+              ]
             }
           ]
+        }
+      ]
+    },
+    "ok_clause": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "ok"
+        },
+        {
+          "type": "FIELD",
+          "name": "status",
+          "content": {
+            "type": "SYMBOL",
+            "name": "number"
+          }
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "STRING",
+                "value": ","
+              },
+              {
+                "type": "FIELD",
+                "name": "status",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "number"
+                }
+              }
+            ]
+          }
         }
       ]
     },
@@ -1841,6 +1910,38 @@
                 "type": "SYMBOL",
                 "name": "_expression"
               }
+            }
+          ]
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "ok",
+              "content": {
+                "type": "SYMBOL",
+                "name": "ok_clause"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "fields",
+              "content": {
+                "type": "SYMBOL",
+                "name": "field_block"
+              }
+            },
+            {
+              "type": "BLANK"
             }
           ]
         }

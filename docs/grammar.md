@@ -77,7 +77,7 @@ name** (`enter: popin(0.8)`, `type: password`, `text: <-> query`).
 | Start of a tree item | `when` `if` `match` `for` `on` `after` `every` `enter` `exit` `state` `let` `slot` `set` (only before `{`) `play` |
 | Start of a handler statement | `let` `if` `match` `for` `play` |
 | Start of an expression | `true` `false` `null` `match` `await` |
-| Inside a construct | `else` `in` `key` `persist` `from` `extends` `override` `palette` `while` `change` `after` `rw` `system` `session` `every` |
+| Inside a construct | `else` `in` `key` `persist` `from` `extends` `override` `palette` `while` `change` `after` `rw` `system` `session` `every` `ok` |
 
 ### Token references, attributes and hash words
 
@@ -355,7 +355,8 @@ action  = kw:action IDENT params ( '->' type )? SAME_LINE expr ok_clause? action
                                       // the command: a list
 ok_clause = SAME_LINE kw:ok INT ( ',' INT )*
 action_block = '{' SEP? ( field ( SEP field )* )? SEP? '}'   // fields only
-method_action = kw:action IDENT params '=' IDENT    // `from dbus` only
+method_action = kw:action IDENT params '=' IDENT ok_clause? action_block?
+                                      // `from dbus` only
 ```
 
 The source kind is one of `dbus`, `dir`, `file`, `listen`, `poll` (others
@@ -424,12 +425,14 @@ m6-w2-language).
 
 (proc-ok, proc-run) `ok` is a keyword only right after a command (an
 action's, or a source's after its `every`) on the same line, followed
-by a number, so a name `ok` elsewhere is still a name. Its statuses
-are integer literals. The parser reads an `ok_clause` after any source
-and an `action_block` after any action, and the checker refuses those
-the spec does not allow (`check::ok_not_here` on a `listen` source, a
-polled file or a `from dbus` action; `check::block_with_result` on an
-action with `-> T`). An action's block holds fields only, written as a
+by a number (or a `-`, so `ok -1` is one `syntax::expected`), so a
+name `ok` elsewhere is still a name. Its statuses are integer literals
+(`2.5` and `2s` are `syntax::expected`). The parser reads an
+`ok_clause` after any source and an `action_block` after any action,
+and the checker refuses those the spec does not allow
+(`check::ok_not_here` on a `listen` source, a polled file or a `from
+dbus` action; `check::block_with_result` on an action with `-> T`;
+`check::misplaced` for a block on a `from dbus` action). An action's block holds fields only, written as a
 service block's fields are; a `permit` or an `action` in it is
 `syntax::expected`. A parameter's type may be a list (`pkgs: [text]`),
 as anywhere a type is written (spec.md 5.7, proc-list).

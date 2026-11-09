@@ -2744,6 +2744,8 @@ fn an_action_without_a_result_called_together_is_warned_about() {
     );
     let help = d.help.as_deref().unwrap_or("");
     assert!(help.contains("-> text") && help.contains("await"), "{help}");
+    // (proc-list) One call with every item.
+    assert!(help.contains("(items: [text])"), "{help}");
 }
 
 /// (dbus-unfollowed) A field bound to a property annotated
@@ -4378,5 +4380,355 @@ fn a_scope_text_is_checked_as_an_expression() {
     assert!(
         errs.iter().any(|e| e.starts_with("check::type")),
         "{errs:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (proc-output) Following programs' output: list parameters, `ok`, an
+// action's block (spec.md 5.7, 5.8).
+
+/// The codes (and whether each is an error) a config gives.
+fn proc_codes(src: &str) -> Vec<(&'static str, bool)> {
+    let (out, _) = compile_files(&[("a.strand", src.to_string())]);
+    out.diagnostics
+        .iter()
+        .map(|d| (d.code, d.is_error()))
+        .collect()
+}
+
+fn proc_action(out: &Compiled, name: &str) -> hir::ActionDecl {
+    out.program
+        .files
+        .iter()
+        .flat_map(|f| &f.items)
+        .find_map(|i| match i {
+            hir::Item::Action(a) if out.program.def(a.def).name == name => Some(a.clone()),
+            _ => None,
+        })
+        .unwrap()
+}
+
+/// The plan's five use cases' syntax checks cleanly: a list parameter
+/// spreads (`Spread`), `ok` lists its statuses (0 first), the block's
+/// fields read beside the run's members and `on backup.line(doc)` hears
+/// its lines, a polled command's `ok` reaches its source, and `lines`,
+/// `code` and `numbers` type as the spec says.
+#[test]
+fn action_blocks_ok_and_list_parameters_check() {
+    let src = r#"permit exec "restic", "curl", "upkeep-tx", "pacman", "checkupdates"
+action backup(dirs: [path]) ["restic", "-r", "/mnt/usb/restic", "backup", "--json", "--", dirs] ok 3, 0 {
+  message_type: text
+  percent_done: float?
+  snapshot: text? = snapshot_id
+}
+action fetch(url: text, to: path) ["curl", "-fL", "-#", "-o", to, "--", url]
+action tx_run(op: text, helper: text, pkgs: [text]) ["upkeep-tx", "run", op, helper, "--", pkgs]
+action updates() -> [text] ["checkupdates", "--nocolor"] ok 0, 2
+service orphans from poll ["pacman", "-Qdtq"] every 1h ok 0, 1 { names: [text] }
+state seen = 0
+on backup.line(d) { if d.message_type == "status" { seen += 1 } }
+on change backup.running { if !backup.running { seen = 0 } }
+let bar = fetch.lines.last?.text ?? ""
+let pct: float = (numbers(bar).last ?? 0) / 100
+let failed: bool = (tx_run.code ?? 0) != 0
+let stderr_lines: [Line] = tx_run.lines.filter(l => l.stderr)
+bar B {
+  text backup.message_type
+  text join(" ", backup.percent_done ?? 0, backup.snapshot ?? "", backup.error ?? "", backup.code ?? 0)
+  text bar
+  for l in tx_run.lines { text l.text { opacity: l.open ? 0.6 : 1 } }
+  meter pct
+  text failed ? "failed" : join(" ", stderr_lines.len, orphans.names.len)
+  on click { backup(["~/Documents", "~/Pictures"]); tx_run("-S", "yay", ["a", "b"]) }
+}
+"#;
+    let (out, map) = compile_files(&[("a.strand", src.to_string())]);
+    assert!(
+        out.diagnostics.is_empty(),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    let backup = proc_action(&out, "backup");
+    assert_eq!(backup.ok, [0, 3]);
+    assert_eq!(backup.argv.last(), Some(&hir::ArgvPart::Spread(0)));
+    let block = backup.fields.as_ref().unwrap();
+    let names: Vec<_> = block.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["message_type", "percent_done", "snapshot"]);
+    assert_eq!(block.fields[2].key, ["snapshot_id"]);
+    assert_eq!(
+        backup.shown(),
+        "restic -r /mnt/usb/restic backup --json -- {dirs…} ok 0, 3"
+    );
+    let tx = proc_action(&out, "tx_run");
+    assert_eq!(tx.shown(), "upkeep-tx run {op} {helper} -- {pkgs…}");
+    assert_eq!(tx.ok, [0]);
+    assert!(tx.fields.is_none());
+    assert_eq!(proc_action(&out, "updates").ok, [0, 2]);
+    let poll_ok = out
+        .program
+        .files
+        .iter()
+        .flat_map(|f| &f.items)
+        .find_map(|i| match i {
+            hir::Item::Service(s) => match &s.spec {
+                Some(hir::SourceSpec::Poll { ok, .. }) => Some(ok.clone()),
+                _ => None,
+            },
+            _ => None,
+        });
+    assert_eq!(poll_ok, Some(vec![0, 1]));
+}
+
+/// Each check the plan names, alone: its code, and whether it is an
+/// error (a warning still loads).
+#[test]
+fn each_proc_output_check_has_its_code() {
+    let cases: &[(&str, &[(&str, bool)])] = &[
+        // `ok` outside 0..=255, without 0, in the wrong places.
+        (
+            "permit exec\naction a() [\"x\"] ok 0, 256\n",
+            &[("check::ok_status", true)],
+        ),
+        (
+            "permit exec\naction a() [\"x\"] ok 2\n",
+            &[("check::ok_without_zero", true)],
+        ),
+        (
+            "permit exec\nservice l from listen [\"x\"] ok 0, 1 { line: text }\n",
+            &[("check::ok_not_here", true)],
+        ),
+        (
+            "service f from poll \"/sys/class/x\" every 1s ok 0, 1 { v: int }\n",
+            &[("check::ok_not_here", true)],
+        ),
+        (
+            "service b from dbus system \"org.x\" { action m() = M ok 0, 1 }\n",
+            &[("check::ok_not_here", true)],
+        ),
+        (
+            "service b from dbus system \"org.x\" { action m() = M { v: int } }\n",
+            &[("check::misplaced", true)],
+        ),
+        // A whole number only.
+        (
+            "permit exec\naction a() [\"x\"] ok 0, 2.5\n",
+            &[("syntax::expected", true)],
+        ),
+        // A block on `-> T`; a run member's name; fields only.
+        (
+            "permit exec\naction a() -> text [\"x\"] { v: int }\n",
+            &[("check::block_with_result", true)],
+        ),
+        (
+            "permit exec\naction a() [\"x\"] { error: text? }\n",
+            &[("check::reserved_field", true)],
+        ),
+        (
+            "permit exec\naction a() [\"x\"] { ready: bool }\n",
+            &[("check::reserved_field", true)],
+        ),
+        (
+            "permit exec\naction a() [\"x\"] { v: int rw }\n",
+            &[("check::not_writable", true)],
+        ),
+        (
+            "permit exec\naction a() [\"x\"] { permit exec \"y\" }\n",
+            &[("syntax::expected", true)],
+        ),
+        // `lines`/`code` on `-> T`: a warning; on a D-Bus action: an error.
+        (
+            "permit exec\naction a() -> text [\"x\"]\nlet n = a.lines.len\n",
+            &[("check::no_run_output", false)],
+        ),
+        (
+            "permit exec\naction a() -> text [\"x\"]\nlet n = a.code ?? 0\n",
+            &[("check::no_run_output", false)],
+        ),
+        (
+            "service b from dbus system \"org.x\" { action m() = M }\nlet n = b.m.code ?? 0\n",
+            &[("check::unknown_field", true)],
+        ),
+        // `on a.line` needs a block.
+        (
+            "permit exec\naction a() [\"x\"]\non a.line(d) { }\n",
+            &[("check::unknown_event", true)],
+        ),
+        (
+            "permit exec\naction a() [\"x\"] { v: int }\non a.lin(d) { }\n",
+            &[("check::unknown_event", true)],
+        ),
+        // A block is read as a service of the action's name.
+        (
+            "permit exec\naction audio() [\"x\"] { v: int }\n",
+            &[
+                ("check::shadows_builtin", false),
+                ("check::redeclared", true),
+            ],
+        ),
+        // A list of lists or records is no argument.
+        (
+            "permit exec\naction a(x: [[text]]) [\"x\", x]\n",
+            &[("check::type_mismatch", true)],
+        ),
+        (
+            "type P { n: text }\npermit exec\naction a(x: [P]) [\"x\", x]\n",
+            &[("check::type_mismatch", true)],
+        ),
+        // A list right after a shell's `-c`.
+        (
+            "permit exec\naction a(x: [text]) [\"sh\", \"-c\", x]\n",
+            &[("check::shell_script", false)],
+        ),
+        (
+            "permit exec \"sh\"\naction a(x: [text]) [\"env\", \"LC_ALL=C\", \"sh\", \"-c\", x]\n",
+            &[("check::shell_script", false)],
+        ),
+    ];
+    for (src, want) in cases {
+        assert_eq!(proc_codes(src), *want, "{src}");
+    }
+    // The ones that are clean.
+    for src in [
+        "permit exec\naction a(x: [int], y: [bool], z: [float]) [\"x\", x, y, z]\n",
+        "enum K { a, b }\npermit exec\naction a(k: [K], p: [path]) [\"x\", k, p]\n",
+        "permit exec\naction a(x: [text]) [\"sh\", \"-c\", \"echo \\\"$@\\\"\", \"sh\", x]\n",
+        "permit exec\naction a() [\"x\"] ok 0\n",
+        "permit exec\nservice p from poll [\"x\"] every 5s ok 0, 1 { v: int }\n",
+        "permit exec\naction a() [\"x\"] { line: text }\non a.line(d) { let got: text = d.line }\n",
+    ] {
+        assert_eq!(proc_codes(src), [], "{src}");
+    }
+}
+
+/// The help of each new check says what to write instead.
+#[test]
+fn proc_output_checks_help_with_the_fix() {
+    let help = |src: &str, code: &str| {
+        let (out, _) = compile_files(&[("a.strand", src.to_string())]);
+        out.diagnostics
+            .iter()
+            .find(|d| d.code == code)
+            .and_then(|d| d.help.clone())
+            .unwrap_or_default()
+    };
+    assert!(
+        help(
+            "permit exec\naction a() [\"x\"] ok 2, 3\n",
+            "check::ok_without_zero"
+        )
+        .contains("`ok 0, 2, 3`")
+    );
+    assert!(
+        help(
+            "permit exec\naction a() [\"x\"] { error: text? }\n",
+            "check::reserved_field"
+        )
+        .contains("`err: text? = error`")
+    );
+    assert!(
+        help(
+            "permit exec\naction a() -> text [\"x\"]\nlet n = a.lines.len\n",
+            "check::no_run_output"
+        )
+        .contains("drop the `-> T`, or read the call's `.error`")
+    );
+    assert!(
+        help(
+            "permit exec\naction a() [\"x\"]\non a.line(d) { }\n",
+            "check::unknown_event"
+        )
+        .contains("{ line: text }")
+    );
+    assert!(
+        help(
+            "permit exec\naction a(x: [text]) [\"sh\", \"-c\", x]\n",
+            "check::shell_script"
+        )
+        .contains("\"sh\", x]")
+    );
+    assert!(
+        help(
+            "permit exec\naction a(x: [[text]]) [\"x\", x]\n",
+            "check::type_mismatch"
+        )
+        .contains("json(v)")
+    );
+}
+
+/// (proc-permit) `permit exec` sees through `stdbuf` with only
+/// `-i`/`-o`/`-e` options and `env` with only `NAME=value` items, both
+/// written out, in either order, for actions, polled and listen commands
+/// and `file run:`; anything else checks `stdbuf` or `env` itself, and a
+/// permit of either still allows what follows it.
+#[test]
+fn the_see_through_permits_only_name_value_and_buffer_options() {
+    let permitted = |permit: &str, cmd: &str| {
+        let action = proc_codes(&format!("permit exec {permit}\naction a(p: text) {cmd}\n"));
+        let poll = proc_codes(&format!(
+            "permit exec {permit}\nservice s from poll {} every 5s {{ v: text }}\n",
+            cmd.replace(", p", "")
+        ));
+        let file = proc_codes(&format!(
+            "permit exec {permit}\nfile \"~/.cache/x\" {{ text: \"x\"; run: {} }}\n",
+            cmd.replace(", p", "")
+        ));
+        let refused = |c: &Vec<(&str, bool)>| c.iter().any(|(c, _)| *c == "check::no_permit");
+        // A source's command holds no parameter: compared where it can.
+        if !cmd.contains(", p,") {
+            assert_eq!(
+                refused(&action),
+                refused(&poll),
+                "{permit} {cmd}: {action:?} {poll:?}"
+            );
+            assert_eq!(
+                refused(&action),
+                refused(&file),
+                "{permit} {cmd}: {action:?} {file:?}"
+            );
+        }
+        !refused(&action)
+    };
+    for cmd in [
+        r#"["stdbuf", "-oL", "pacman", "-Syu"]"#,
+        r#"["stdbuf", "-oL", "-eL", "pacman"]"#,
+        r#"["stdbuf", "-o", "L", "pacman"]"#,
+        r#"["stdbuf", "--output=L", "--error=0", "pacman"]"#,
+        r#"["stdbuf", "-i0", "-o4096", "-e1K", "pacman"]"#,
+        r#"["/usr/bin/stdbuf", "-oL", "pacman"]"#,
+        r#"["env", "LC_ALL=C", "pacman", "-Qi"]"#,
+        r#"["env", "LC_ALL=C", "_X1=a=b", "pacman"]"#,
+        r#"["env", "pacman"]"#,
+        r#"["stdbuf", "-oL", "env", "LC_ALL=C", "pacman"]"#,
+        r#"["env", "LC_ALL=C", "stdbuf", "-oL", "pacman"]"#,
+    ] {
+        assert!(permitted(r#""pacman""#, cmd), "seen through: {cmd}");
+    }
+    for cmd in [
+        r#"["env", "-i", "pacman"]"#,
+        r#"["env", "-u", "X", "pacman"]"#,
+        r#"["env", "1X=a", "pacman"]"#,
+        r#"["env", "--", "pacman"]"#,
+        r#"["stdbuf", "--help"]"#,
+        r#"["stdbuf", "pacman"]"#,
+        r#"["stdbuf", "-oX", "pacman"]"#,
+        r#"["stdbuf", "-o", "pacman"]"#,
+        r#"["stdbuf", "-x", "L", "pacman"]"#,
+        r#"["env", "LC_ALL=C", p, "pacman"]"#,
+        r#"["env", "LC_ALL=C"]"#,
+        r#"["env", "LC_ALL=C", "-pacman"]"#,
+    ] {
+        assert!(!permitted(r#""pacman""#, cmd), "not seen through: {cmd}");
+    }
+    // A permit of the prefix allows anything after it, as before.
+    assert!(permitted(r#""env""#, r#"["env", "-i", "pacman"]"#));
+    assert!(permitted(r#""stdbuf""#, r#"["stdbuf", "-oL", "anything"]"#));
+    // The message names the program seen through to.
+    let (out, _) = compile_files(&[(
+        "a.strand",
+        "permit exec \"x\"\naction a() [\"env\", \"LC_ALL=C\", \"pacman\"]\n".to_string(),
+    )]);
+    assert_eq!(
+        out.diagnostics[0].message,
+        "running `pacman` needs `permit exec`"
     );
 }

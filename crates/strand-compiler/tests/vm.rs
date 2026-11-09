@@ -903,3 +903,127 @@ fn dictionaries_compare_by_their_entries() {
     assert_eq!(get(&inst, "widened"), Value::Bool(true));
     assert_eq!(get(&inst, "a"), get(&inst, "b"));
 }
+
+/// (proc-list) A list parameter is one argument per item, in place, each
+/// as `text` shows it and never split; an empty list adds none; each
+/// `[path]` item's `~/` is the home folder, a `[text]` item's is not.
+#[test]
+fn a_list_parameter_is_one_argument_per_item() {
+    let src = "permit exec \"set-wall\"\n\
+        state go = 0\n\
+        state outs = [\"DP-1\", \"HDMI A\"]\n\
+        state files: [path] = [\"~/Pictures/a b.png\", \"/tmp/c.png\"]\n\
+        state none: [path] = []\n\
+        action wall(outputs: [text], n: [int], files: [path]) [\"set-wall\", \"--outputs\", outputs, \"-n\", n, \"--\", files]\n\
+        on change go {\n  if go == 1 { wall(outs, [1, 2], files) } else { wall([], [], none) }\n}\n";
+    let (_rt, _, inst) = run(src);
+    assert!(inst.take_execs().is_empty(), "nothing runs at boot");
+    inst.set_value("t", "go", Value::int(1)).unwrap();
+    inst.flush();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let argv: Vec<Vec<String>> = inst.take_execs().into_iter().map(|e| e.argv).collect();
+    let expanded = if home.starts_with('/') {
+        format!("{}/Pictures/a b.png", home.trim_end_matches('/'))
+    } else {
+        "~/Pictures/a b.png".to_string()
+    };
+    assert_eq!(
+        argv,
+        [vec![
+            "set-wall".to_string(),
+            "--outputs".into(),
+            "DP-1".into(),
+            "HDMI A".into(),
+            "-n".into(),
+            "1".into(),
+            "2".into(),
+            "--".into(),
+            expanded,
+            "/tmp/c.png".into(),
+        ]]
+    );
+    inst.set_value("t", "go", Value::int(2)).unwrap();
+    inst.flush();
+    let argv: Vec<Vec<String>> = inst.take_execs().into_iter().map(|e| e.argv).collect();
+    assert_eq!(
+        argv,
+        [["set-wall", "--outputs", "-n", "--"]
+            .map(String::from)
+            .to_vec()]
+    );
+}
+
+/// (proc-reason) `numbers(t)`: every run of digits with its fraction, in
+/// order, no sign, exponent or grouping; null in, `[]` out.
+#[test]
+fn numbers_reads_progress_text() {
+    let src = "state t: text? = null\n\
+        let git = numbers(\"Receiving objects:  45% (1740/3867), 1.2 MiB | 600 KiB/s\")\n\
+        let bar = numbers(\"######                        37.5%\")\n\
+        let odd = numbers(\"5-6 1,234 v1.2.3 3. .5 -7 1e3\")\n\
+        let none = numbers(\"no digits\")\n\
+        let got = numbers(t)\n\
+        let last: float = numbers(\"(2/5)\").last ?? 0\n";
+    let (_rt, _, inst) = run(src);
+    let floats = |name: &str| -> Vec<f64> {
+        match get(&inst, name) {
+            Value::List(items) => items.iter().map(|v| v.as_f64().unwrap()).collect(),
+            v => panic!("{name}: {v:?}"),
+        }
+    };
+    assert_eq!(floats("git"), [45.0, 1740.0, 3867.0, 1.2, 600.0]);
+    assert_eq!(floats("bar"), [37.5]);
+    assert_eq!(
+        floats("odd"),
+        [5.0, 6.0, 1.0, 234.0, 1.2, 3.0, 3.0, 5.0, 7.0, 1.0, 3.0]
+    );
+    assert_eq!(floats("none"), Vec::<f64>::new());
+    assert_eq!(floats("got"), Vec::<f64>::new(), "null in, [] out");
+    inst.set_value("t", "t", Value::text("12 of 40")).unwrap();
+    inst.flush();
+    assert_eq!(floats("got"), [12.0, 40.0]);
+    assert_eq!(get(&inst, "last").as_f64(), Some(5.0));
+}
+
+/// (proc-run) An action's block is read as the service named after the
+/// action (decisions.md proc-interface): its fields beside the run's
+/// members, its `line` event heard by `on backup.line(doc)`. Reading the
+/// fields and hearing the lines starts no command.
+#[test]
+fn an_action_block_is_read_as_the_service_named_after_it() {
+    let src = "permit exec \"restic\"\n\
+        action backup(dirs: [path]) [\"restic\", \"backup\", \"--json\", \"--\", dirs] ok 0, 3 {\n  \
+        message_type: text\n  percent_done: float?\n}\n\
+        state heard: [text] = []\n\
+        on backup.line(d) { heard = heard + [d.message_type] }\n\
+        let pct = backup.percent_done ?? -1\n\
+        let kind = backup.message_type\n\
+        let busy = backup.running\n";
+    let (rt, host, inst) = run(src);
+    assert_eq!(get(&inst, "pct").as_f64(), Some(-1.0));
+    assert_eq!(get(&inst, "busy"), Value::Bool(false));
+    host.set(&rt, "backup.percent_done", Value::float(0.25))
+        .unwrap();
+    host.set(&rt, "backup.message_type", Value::text("status"))
+        .unwrap();
+    inst.flush();
+    assert_eq!(get(&inst, "pct").as_f64(), Some(0.25));
+    assert_eq!(get(&inst, "kind"), Value::text("status"));
+    for kind in ["status", "summary"] {
+        let doc = host.record(
+            "backup",
+            &[
+                ("message_type", Value::text(kind)),
+                ("percent_done", Value::Null),
+            ],
+        );
+        host.emit(&rt, "backup.line", vec![doc]).unwrap();
+    }
+    inst.flush();
+    assert_eq!(
+        get(&inst, "heard"),
+        Value::list(vec![Value::text("status"), Value::text("summary")])
+    );
+    assert!(inst.take_execs().is_empty(), "reading a block runs nothing");
+    assert!(host.readers("backup") > 0, "its readers hold the block");
+}
