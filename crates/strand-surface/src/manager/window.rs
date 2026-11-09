@@ -50,6 +50,28 @@ pub struct ToplevelState {
     pub can_minimize: bool,
 }
 
+impl ToplevelState {
+    /// (window-edge) The compositor frames it: tiled on any edge,
+    /// maximized or fullscreen. Its borders, gaps and rounding sit at its
+    /// box's edge, so its buffer is its box, with no shadow overhang
+    /// (render's `Renderer::set_window_framed` takes none either), as a
+    /// client-decorated app draws no shadow on a tiled edge. Hyprland
+    /// says every toplevel is maximized and tiled on all four edges, and
+    /// draws its buffer from the window's top-left corner whatever the
+    /// window geometry's offset, so an overhang showed there as a
+    /// transparent strip, the box cut by as much on the far side, and
+    /// input (which does take the offset) missed what it was drawn on.
+    pub fn framed(&self) -> bool {
+        self.tiled || self.maximized || self.fullscreen
+    }
+}
+
+/// The overhang a window takes from its spec's `overhang` in `state`:
+/// none where the compositor frames it ([`ToplevelState::framed`]).
+fn framed_overhang(overhang: [i32; 4], state: &ToplevelState) -> [i32; 4] {
+    if state.framed() { [0; 4] } else { overhang }
+}
+
 /// A window surface's role state.
 pub(super) struct Toplevel {
     pub(super) window: Window,
@@ -66,6 +88,9 @@ pub(super) struct Toplevel {
     /// The size of its own it last committed on each axis (`None`: that
     /// axis was the compositor's then).
     pub(super) own: [Option<u32>; 2],
+    /// (window-edge) Its spec's overhang, which `config` takes while the
+    /// compositor does not frame it ([`framed_overhang`]).
+    pub(super) overhang: [i32; 4],
 }
 
 /// At most this many sizes are kept per axis as echoes; a window does
@@ -224,6 +249,7 @@ impl<H: SurfaceHost + 'static> State<H> {
             config.height
         );
         let layer_like = config.as_layer();
+        let overhang = config.overhang;
         let surface = Surface {
             id,
             generation,
@@ -240,6 +266,7 @@ impl<H: SurfaceHost + 'static> State<H> {
                 told: None,
                 echoes: [Vec::new(), Vec::new()],
                 own: [None, None],
+                overhang,
             })),
             config: layer_like,
             viewport,
@@ -287,7 +314,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         let Some(spec) = self.specs.get(&node).cloned() else {
             return;
         };
-        let Ok(new) = window_config(&spec) else {
+        let Ok(spec_config) = window_config(&spec) else {
             return;
         };
         for id in self.surfaces_of(node) {
@@ -297,6 +324,11 @@ impl<H: SurfaceHost + 'static> State<H> {
             let Role::Window(t) = &mut s.role else {
                 continue;
             };
+            // (window-edge) Framed by its last configure: no overhang,
+            // whatever a spec render sent before it heard of the frame.
+            let mut new = spec_config.clone();
+            t.overhang = new.overhang;
+            new.overhang = framed_overhang(new.overhang, &t.state);
             let old = std::mem::replace(&mut t.config, new.clone());
             if old == new {
                 continue;
@@ -531,6 +563,17 @@ impl<H: SurfaceHost + 'static> WindowHandler for State<H> {
             can_fullscreen: caps.contains(WindowManagerCapabilities::FULLSCREEN),
             can_minimize: caps.contains(WindowManagerCapabilities::MINIMIZE),
         };
+        // (window-edge) Framed now: its buffer is its box. Unframed, its
+        // spec's overhang comes back (render's next spec has its
+        // shadows' room again).
+        let c = WindowConfig {
+            overhang: framed_overhang(t.overhang, &state),
+            ..c
+        };
+        let rehang = c.overhang != t.config.overhang;
+        if rehang {
+            t.config.overhang = c.overhang;
+        }
         let buffer = c.buffer((w, h));
         log::debug!(
             "{}: window configured {:?}×{:?} ({}×{} kept), {:?}, decoration {:?}",
@@ -550,11 +593,17 @@ impl<H: SurfaceHost + 'static> WindowHandler for State<H> {
         if tell {
             self.host.window_state(id, &state);
         }
+        if rehang && let Some(s) = self.surfaces.get_mut(&id) {
+            s.config = c.as_layer();
+        }
         self.configured(id, buffer);
         // sctk acked it already; the window geometry rides the next
         // commit.
         if let Some(s) = self.surfaces.get_mut(&id) {
             s.geometry_dirty = true;
+        }
+        if rehang {
+            self.sync_input_region(id);
         }
     }
 }

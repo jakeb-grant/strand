@@ -262,3 +262,95 @@ fn pick_mode_lets_a_windows_close_through() {
         "{out:?}"
     );
 }
+
+/// (window-edge) A window 400 × 300 whose accent bar glows past its
+/// left edge (the owner's Upkeep window: a selected row's 3 px bar with a
+/// 12 px glow, flush with the window's side).
+fn glowing_scene(b: &mut Builder) -> NodeId {
+    let win = b.node(
+        NodeKind::Window,
+        None,
+        vec![
+            (Prop::Name, text("Upkeep")),
+            (Prop::Open, PropValue::Bool(true)),
+            (Prop::TwoWay, PropValue::List(vec![kw("open")])),
+            (Prop::Width, num(400.0)),
+            (Prop::Height, num(300.0)),
+            (Prop::Bg, color("#1e1e2e")),
+        ],
+    );
+    b.node(
+        NodeKind::Box,
+        Some(win),
+        vec![
+            (Prop::Width, num(3.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#a6e3a1")),
+            (
+                Prop::Shadow,
+                PropValue::Shadow(vec![Shadow {
+                    x: 0.0,
+                    y: 0.0,
+                    blur: 12.0,
+                    spread: 0.0,
+                    color: hex("#a6e3a1").with_alpha(0.55),
+                }]),
+            ),
+        ],
+    );
+    win
+}
+
+/// (window-edge) A window the compositor frames (tiled, maximized,
+/// fullscreen: `set_window_framed`) has no overhang: its buffer is its
+/// box, its background reaches the buffer's edges and what glows past
+/// them is cut, so a compositor that draws a toplevel's buffer from its
+/// corner whatever its window geometry (Hyprland) shows no strip of
+/// nothing inside its border. Floating again, the glow's room comes back.
+#[test]
+fn a_framed_window_has_no_overhang() {
+    let mut r = renderer();
+    let mut b = Builder::default();
+    let win = glowing_scene(&mut b);
+    r.apply(b.diff);
+    r.take_surface_changes();
+    r.attach_surface(WIN, win);
+    // Floating at its own size: the glow takes room past its left edge.
+    r.configure_surface(WIN, Size::new(400, 300), Scale::ONE);
+    paint(&mut r, 400, 300);
+    let o = r.surface_spec(win).unwrap().overhang;
+    assert!(o.left >= 12.0, "the glow's room: {o:?}");
+    let (bw, bh) = (
+        (400.0 + o.left + o.right) as u32,
+        (300.0 + o.top + o.bottom) as u32,
+    );
+    r.configure_surface(WIN, Size::new(bw, bh), Scale::ONE);
+    paint(&mut r, bw, bh);
+    assert_eq!(
+        r.boxes(WIN).unwrap().rects[&win],
+        LogicalRect::new(o.left, o.top, 400.0, 300.0)
+    );
+    r.take_surface_changes();
+    // Tiled: none, said at once (before the configure's size).
+    r.set_window_sized(WIN, (true, true));
+    r.set_window_framed(WIN, true);
+    let spec = spec_of(&r.take_surface_changes(), win).expect("the overhang goes");
+    assert_eq!(spec.overhang, Insets::default());
+    r.configure_surface(WIN, Size::new(640, 400), Scale::ONE);
+    let buf = paint(&mut r, 640, 400);
+    assert_eq!(
+        r.boxes(WIN).unwrap().rects[&win],
+        LogicalRect::new(0.0, 0.0, 640.0, 400.0)
+    );
+    assert_eq!(r.surface_spec(win).unwrap().overhang, Insets::default());
+    for (x, y) in [(0, 200), (639, 200), (320, 0), (320, 399)] {
+        assert_eq!(buf.px(x, y)[3], 255, "its background at ({x}, {y})");
+    }
+    assert_matches_ref("window_framed", &buf, TOLERANCE);
+    // Floating again: the glow's room comes back.
+    r.set_window_sized(WIN, (false, false));
+    r.set_window_framed(WIN, false);
+    r.configure_surface(WIN, Size::new(400, 300), Scale::ONE);
+    paint(&mut r, 400, 300);
+    assert_eq!(r.surface_spec(win).unwrap().overhang, o);
+}

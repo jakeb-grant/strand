@@ -1630,6 +1630,11 @@ impl SurfaceHost for Host {
         if old.map(|o| o.sized) != Some(state.sized) {
             self.renderer.set_window_sized(surface, state.sized);
         }
+        // (window-edge) Tiled, maximized or fullscreen: no overhang, as
+        // the surface manager sizes its buffer from the same state.
+        if old.map(|o| o.framed()) != Some(state.framed()) {
+            self.renderer.set_window_framed(surface, state.framed());
+        }
         if let Some((w, h)) = state.bounds
             && old.and_then(|o| o.bounds) != state.bounds
         {

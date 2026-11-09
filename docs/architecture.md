@@ -72,7 +72,9 @@ a hot path.
 - **Windows**: `SurfaceHost::window_state(surface, &ToplevelState)`
   reports each configure that changes the window's state; the host
   passes the sized axes to `Renderer::set_window_sized`, the bounds to
-  `set_surface_bounds`, and changed states to logic as `NodeFlag`s
+  `set_surface_bounds`, `ToplevelState::framed` (tiled, maximized or
+  fullscreen: no shadow overhang, the buffer its box; window-edge) to
+  `Renderer::set_window_framed`, and changed states to logic as `NodeFlag`s
   (`Focused`, `Maximized`, `Fullscreen`, `Tiled`, `Decorated`) on the
   root, so an interactive resize wakes no logic.
   `SurfaceHost::window_closed` precedes the compositor-close

@@ -2327,3 +2327,113 @@ fn a_mapped_layer_surface_sends_no_layer_state_after_its_first_configure() {
         "stretched to the output from its first configure: {launcher:?}"
     );
 }
+
+/// (window-edge) A window whose shadows reach past its box (19 px on
+/// its left, as the owner's Upkeep window's glow did) commits that
+/// overhang while it floats: its buffer the box plus it, its window
+/// geometry the box inside it. Framed by the compositor (Hyprland's
+/// configure: maximized and tiled on every edge, at its tile's size),
+/// its buffer is its box at once, its window geometry at (0, 0) and its
+/// input region the whole of it: Hyprland draws a toplevel's buffer from
+/// its corner whatever the geometry's offset, so an overhang showed as a
+/// transparent strip inside its border. Floating again, the overhang
+/// comes back.
+#[test]
+fn a_framed_window_commits_its_box_alone() {
+    use strand_fake_wayland::{BufferKind, WindowConfigure};
+    use strand_scene::Insets;
+    const WIN: NodeId = NodeId::new(9, 0);
+    const APP: &str = "strand-Upkeep";
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let mut spec = common::window_spec("Upkeep", "Upkeep", 300.0, 200.0);
+    spec.overhang = Insets {
+        top: 4.0,
+        right: 6.0,
+        bottom: 8.0,
+        left: 19.0,
+    };
+    mgr.state_mut()
+        .apply_surface_change(WIN, SurfaceChange::Created(spec));
+    let committed = |fake: &Fake, buffer: (i32, i32), geometry: (i32, i32, i32, i32)| {
+        fake.windows(APP).first().is_some_and(|r| {
+            r.buffer
+                == Some(BufferKind::Shm {
+                    width: buffer.0,
+                    height: buffer.1,
+                })
+                && r.toplevel
+                    .as_ref()
+                    .is_some_and(|t| t.geometry == Some(geometry))
+        })
+    };
+    // Floating at its own size: the box inside its overhang.
+    let ok = mgr
+        .dispatch_until(WAIT, |_| committed(&fake, (325, 212), (19, 4, 300, 200)))
+        .unwrap();
+    assert!(ok, "the floating window: {:?}", fake.windows(APP));
+    let input = fake.windows(APP)[0].input.clone().expect("an input region");
+    assert!(
+        !input.contains(18, 100) && input.contains(19, 100),
+        "{input:?}"
+    );
+
+    // Hyprland's configure: maximized, tiled, at its tile's size.
+    let framed = WindowConfigure {
+        size: (1238, 638),
+        maximized: true,
+        tiled: true,
+        ..WindowConfigure::default()
+    };
+    fake.cmd(Cmd::ConfigureWindow {
+        app_id: APP.into(),
+        configure: framed,
+    });
+    let ok = mgr
+        .dispatch_until(WAIT, |_| committed(&fake, (1238, 638), (0, 0, 1238, 638)))
+        .unwrap();
+    assert!(ok, "the framed window: {:?}", fake.windows(APP));
+    // `None`: the whole surface.
+    let input = fake.windows(APP)[0].input.clone();
+    assert!(
+        input
+            .as_ref()
+            .is_none_or(|i| i.contains(0, 0) && i.contains(1237, 637)),
+        "{input:?}"
+    );
+    let state = mgr.state().toplevel_state(WIN).expect("configured");
+    assert!(state.framed() && state.size == (1238, 638), "{state:?}");
+    // Tiled on its own, or fullscreen, frames it too.
+    for configure in [
+        WindowConfigure {
+            size: (900, 500),
+            tiled: true,
+            ..WindowConfigure::default()
+        },
+        WindowConfigure {
+            size: (1920, 1080),
+            fullscreen: true,
+            ..WindowConfigure::default()
+        },
+    ] {
+        fake.cmd(Cmd::ConfigureWindow {
+            app_id: APP.into(),
+            configure,
+        });
+        let (w, h) = (configure.size.0 as i32, configure.size.1 as i32);
+        let ok = mgr
+            .dispatch_until(WAIT, |_| committed(&fake, (w, h), (0, 0, w, h)))
+            .unwrap();
+        assert!(ok, "{configure:?}: {:?}", fake.windows(APP));
+    }
+
+    // Floating again, at its own size: its overhang is back.
+    fake.cmd(Cmd::ConfigureWindow {
+        app_id: APP.into(),
+        configure: WindowConfigure::default(),
+    });
+    let ok = mgr
+        .dispatch_until(WAIT, |_| committed(&fake, (325, 212), (19, 4, 300, 200)))
+        .unwrap();
+    assert!(ok, "floating again: {:?}", fake.windows(APP));
+}

@@ -261,6 +261,57 @@ impl Renderer {
         self.refresh_specs();
     }
 
+    /// (window-edge) Whether the compositor frames the window on
+    /// `surface` (its last configure tiled, maximized or made it
+    /// fullscreen; `strand_surface::ToplevelState::framed`). A framed
+    /// window's buffer is its box: its shadows are cut at its edge, as a
+    /// lock's are at its output's, and it asks for no overhang. The
+    /// compositor's borders, gaps and rounding sit at that edge, and
+    /// Hyprland draws a toplevel's buffer from its top-left corner,
+    /// ignoring the window geometry's offset, so an overhang showed there
+    /// as a transparent strip with the box cut on the far side. Ignored
+    /// for any other surface.
+    pub fn set_window_framed(&mut self, surface: SurfaceId, framed: bool) {
+        let Some(root) = self.surfaces.get(&surface).map(|s| s.root) else {
+            return;
+        };
+        if self
+            .tree
+            .get(root)
+            .is_none_or(|n| n.kind != NodeKind::Window)
+        {
+            return;
+        }
+        let changed = if framed {
+            self.window_framed.insert(root)
+        } else {
+            self.window_framed.remove(&root)
+        };
+        if !changed {
+            return;
+        }
+        if framed {
+            // At once, before the configure's size: the surface manager
+            // sizes the buffer as the box from the same state.
+            self.shadow_held.remove(&root);
+            self.held_reach.remove(&root);
+            if let Some(mut spec) = self.specs.get(&root).cloned()
+                && spec.overhang != Insets::default()
+            {
+                spec.overhang = Insets::default();
+                self.record_spec(root, spec);
+            }
+        }
+        // Let go, its shadows' reach is taken again at its next layout.
+        for s in self.surfaces.values_mut() {
+            if s.root == root {
+                s.mark_layout();
+            }
+        }
+        self.spec_dirty.insert(root);
+        self.refresh_specs();
+    }
+
     /// (popup-shrink) [`resize_share`] of the surface node `root`.
     pub(super) fn resize_share_of(&self, root: NodeId) -> Option<(f32, f32)> {
         let spec = self.specs.get(&root)?;
@@ -374,6 +425,10 @@ impl Renderer {
         // (lock-polish) A lock covers its output, which sizes it: its
         // shadows are paint cut at its edge, as past any output's edge.
         if kind == NodeKind::Lock {
+            return Insets::default();
+        }
+        // (window-edge) Nor does a window the compositor frames.
+        if kind == NodeKind::Window && self.window_framed.contains(&root) {
             return Insets::default();
         }
         if !matches!(kind, NodeKind::Panel | NodeKind::Osd) {
@@ -1053,6 +1108,7 @@ impl Renderer {
         }
         self.content_sized.retain(|id, _| live.contains(id));
         self.window_sized.retain(|id, _| live.contains(id));
+        self.window_framed.retain(|id| live.contains(id));
         self.window_let_go.retain(|id| live.contains(id));
         self.held.retain(|id| live.contains(id));
         self.shadow_held.retain(|id| live.contains(id));

@@ -486,6 +486,10 @@ pub struct Renderer {
     /// there it fills what it was given, asks for nothing and springs
     /// nothing ([`Renderer::set_window_sized`]).
     window_sized: HashMap<NodeId, (bool, bool)>,
+    /// (window-edge) `window` roots the compositor frames (tiled,
+    /// maximized or fullscreen): their buffer is their box, with no
+    /// shadow overhang ([`Renderer::set_window_framed`]).
+    window_framed: HashSet<NodeId>,
     /// (window) Window roots the compositor stopped sizing on an axis:
     /// the next step of their box is taken at once (the compositor
     /// configured their own size already), not sprung from its size.
@@ -696,6 +700,7 @@ impl Renderer {
             content_sized: BTreeMap::new(),
             bounds: HashMap::new(),
             window_sized: HashMap::new(),
+            window_framed: HashSet::new(),
             window_let_go: HashSet::new(),
             resize_wait: Duration::ZERO,
             anim: Animator::default(),
