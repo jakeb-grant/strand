@@ -622,6 +622,9 @@ pub struct Router {
     /// (flex) Whether each slider being dragged runs upward, as it did
     /// when the press began: a drag does not change axis mid-way.
     drag_upright: HashMap<NodeId, bool>,
+    /// (audit-detach-drag) Sliders whose drag ended with their surface,
+    /// told the scene at the next flush ([`Router::detached`] has none).
+    drags_gone: Vec<NodeId>,
     /// The `input` whose text a held left button selects, per surface.
     selecting: HashMap<SurfaceId, NodeId>,
     /// (M4) A press on a `drag:` source, or the drag it became.
@@ -983,6 +986,15 @@ impl Router {
         self.release(surface);
         self.right_down.remove(&surface);
         self.middle_down.remove(&surface);
+        // (audit-detach-drag) So does a slider drag on it: the slider
+        // draws its `value` again at the next flush, or a panel, bar or
+        // osd (whose content stays mounted while closed) would show the
+        // drag's value, not its binding's, when it reopens.
+        if let Some(slider) = self.dragging.remove(&surface) {
+            self.drag_upright.remove(&slider);
+            self.drags_gone.push(slider);
+        }
+        self.selecting.remove(&surface);
         // (flex) Its focus is let go as a keyboard leave lets it go: the
         // node is told it lost focus, or it would keep its caret into
         // the next time its surface opens, beside the one focus gives
@@ -2039,6 +2051,11 @@ impl Router {
 
     /// Widgets draw hover, press, focus and selection at once.
     fn flush(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
+        for slider in std::mem::take(&mut self.drags_gone) {
+            if !self.dragging.values().any(|s| *s == slider) {
+                scene.set_drag(slider, None);
+            }
+        }
         self.hover_popups(scene.tree(), self.now());
         self.tell_indexes();
         self.note_away_rows(scene.tree());

@@ -544,6 +544,37 @@ fn a_slider_follows_a_drag_and_writes_its_value() {
     assert!(writes(&out, c.dragged).is_empty(), "{out:?}");
 }
 
+/// A surface that goes while one of its sliders is dragged (a panel
+/// closed by Escape or focus loss with the button held) ends the drag:
+/// the slider, still mounted in the closed panel, draws its `value`
+/// again, not the drag's.
+#[test]
+fn a_detached_surface_ends_its_slider_drag() {
+    let mut r = renderer();
+    let mut b = Builder::default();
+    let c = controls(&mut b);
+    let (root, _buf) = show(&mut r, b.diff);
+    let mut router = Router::new();
+    let s = SurfaceId(1);
+    router.attached(s, root);
+    let sb = r.boxes(s).unwrap().rects[&c.slider];
+    let y = sb.y + sb.h / 2.0;
+    router.handle(
+        &press(s, sb.x + sb.w / 4.0, y, ButtonState::Pressed),
+        &mut r,
+    );
+    router.handle(&motion(s, sb.x + sb.w / 2.0, y), &mut r);
+    assert!(r.widgets().drags.contains_key(&c.slider));
+    r.detach_surface(s);
+    router.detached(s);
+    router.tick(&mut r);
+    assert!(
+        r.widgets().drags.is_empty(),
+        "a surface gone ends its slider drag: {:?}",
+        r.widgets().drags
+    );
+}
+
 /// (m6-owner-fixes, owner-testing.md bug 16) A slider and a `segmented`
 /// inside a card moved by a paint offset (`x: 60; y: 6`, the island
 /// card that springs by `x`) and shrunk by `scale: 0.8` (a `when pressed`
