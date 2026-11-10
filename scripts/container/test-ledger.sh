@@ -58,15 +58,16 @@ fi
 
 # (install) The release archive replaced M5's trial binaries: the
 # package job uploads it, and the site (which serves install.sh) and
-# the release wait for that job.
+# the release wait for that job, through `checks` (audit-main-rerun).
 job() {
   awk -v j="  $1:" '$0 == j {on=1; next} on && /^  [a-z][a-z-]*:$/ {exit} on' \
     "$HERE/../../.github/workflows/ci.yml"
 }
 if grep -q 'name: strand-dist' <<<"$(job package)" &&
   ! grep -q 'strand-release-binaries' "$HERE/../../.github/workflows/ci.yml" &&
-  grep -Eq 'needs: \[.*\bpackage\b' <<<"$(job deploy)" &&
-  grep -Eq 'needs: \[.*\bpackage\b' <<<"$(job release)"; then
+  grep -Eq 'needs: \[.*\bpackage\b' <<<"$(job checks)" &&
+  grep -Eq '^    needs: checks$' <<<"$(job deploy)" &&
+  grep -Eq '^    needs: checks$' <<<"$(job release)"; then
   echo "ok   the package job uploads the release archive; deploy and release wait for it"
 else
   echo "FAIL the package job uploads the release archive; deploy and release wait for it"; bad=1
