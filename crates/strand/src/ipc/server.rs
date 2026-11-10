@@ -1,7 +1,7 @@
 //! The socket's server, on the logic thread's loop: every socket is
 //! non-blocking, and a client that does not read its events is dropped
-//! once it is more than [`MAX_QUEUED`] behind as another line comes; a
-//! line of any size is queued whole.
+//! once the last flush left more than [`MAX_QUEUED`] unwritten as another
+//! line comes; a line of any size is queued whole.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -15,7 +15,8 @@ use serde_json::{Value as Json, json};
 use super::{MAX_LINE, Request, parse};
 
 /// Output a client may leave unread before it is dropped, checked as
-/// another line is queued (never against the line itself).
+/// another line is queued against what the last flush left unwritten
+/// (never against the line itself, nor lines queued since that flush).
 const MAX_QUEUED: usize = 1 << 20;
 
 /// What one [`Server::read`] takes from a client at most: the rest waits
@@ -37,6 +38,10 @@ struct Client {
     wtoken: Option<RegistrationToken>,
     inbuf: Vec<u8>,
     out: Vec<u8>,
+    /// What of `out` the last [`Server::flush`] could not write: what
+    /// the client left unread. Lines queued since (several answers or
+    /// events of one loop turn) never count against it.
+    backlog: usize,
     watching: bool,
     /// Requests handed to the shell and not answered yet.
     pending: usize,
@@ -157,6 +162,7 @@ impl Server {
                             wtoken: None,
                             inbuf: Vec::new(),
                             out: Vec::new(),
+                            backlog: 0,
                             watching: false,
                             pending: 0,
                             eof: false,
@@ -238,11 +244,12 @@ impl Server {
         out
     }
 
-    /// Queue `v` as one line for `id`. A client still more than
-    /// [`MAX_QUEUED`] behind on what was queued before is dropped: the
-    /// cap is for a client that does not read, so one line of any size
-    /// (a `get` of a long list) is always queued whole and delivered to
-    /// a client that reads it (decisions.md ipc-large-answer).
+    /// Queue `v` as one line for `id`. A client that left more than
+    /// [`MAX_QUEUED`] unread at the last flush is dropped: the cap is for
+    /// a client that does not read, so one line of any size (a `get` of
+    /// a long list), and any lines after it in the same loop turn, are
+    /// queued whole and delivered to a client that reads them
+    /// (decisions.md ipc-large-answer).
     pub fn send(&mut self, id: ClientId, v: &Json) {
         let Some(c) = self.clients.get_mut(&id) else {
             return;
@@ -250,10 +257,10 @@ impl Server {
         if c.closed {
             return;
         }
-        if c.out.len() > MAX_QUEUED {
+        if c.backlog > MAX_QUEUED {
             log::warn!(
                 "ipc: client {id} does not read its events: dropped with {} bytes unread",
-                c.out.len()
+                c.backlog
             );
             c.closed = true;
             return;
@@ -313,6 +320,7 @@ impl Server {
                     Err(_) => c.closed = true,
                 }
             }
+            c.backlog = c.out.len();
             let waiting = !c.out.is_empty() && !c.closed;
             queued |= waiting;
             match (waiting, c.wtoken.is_some()) {
@@ -621,6 +629,61 @@ mod tests {
         assert!(!server.has(id));
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         writer.join().unwrap();
+        drop(server);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (ipc-large-answer) Two answers queued for one client in one loop
+    /// turn, the first over the cap (two pipelined requests, a `get` of
+    /// a long list first), are both delivered: the client had no flush
+    /// to read from, so nothing is held against it.
+    #[test]
+    fn answers_queued_in_one_turn_are_delivered_past_the_cap() {
+        use calloop::EventLoop;
+        let dir = std::env::temp_dir().join(format!("strand-ipc-turn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.sock");
+        let mut el = EventLoop::<Data>::try_new().unwrap();
+        let handle = el.handle();
+        let mut server = Server::bind(&path, &handle).unwrap();
+        let mut data = Data::default();
+        let mut getter = std::io::BufReader::new(UnixStream::connect(&path).unwrap());
+        while server.clients.is_empty() {
+            el.dispatch(Some(Duration::from_millis(50)), &mut data)
+                .unwrap();
+            if std::mem::take(&mut data.0).accept {
+                server.accept(&handle);
+            }
+        }
+        let id = *server.clients.keys().next().unwrap();
+        let big = "x".repeat(3 * MAX_QUEUED / 2);
+        server.answer(id, &json!({"ok": true, "value": big}));
+        server.answer(id, &json!({"ok": true, "value": "after"}));
+        let reader = std::thread::spawn(move || {
+            let mut lines = Vec::new();
+            for _ in 0..2 {
+                let mut line = String::new();
+                getter.read_line(&mut line).unwrap();
+                lines.push(line);
+            }
+            lines
+        });
+        while server.flush(&handle) {
+            el.dispatch(Some(Duration::from_secs(5)), &mut data)
+                .unwrap();
+        }
+        assert!(
+            server.has(id),
+            "a client that had no chance to read is kept"
+        );
+        let lines = reader.join().unwrap();
+        let first: Json = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(
+            first["value"].as_str().map(str::len),
+            Some(3 * MAX_QUEUED / 2)
+        );
+        assert_eq!(lines[1].trim(), r#"{"ok":true,"value":"after"}"#);
         drop(server);
         let _ = std::fs::remove_dir_all(dir);
     }

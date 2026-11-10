@@ -163,9 +163,10 @@ new watcher first gets a `notices` event with the running config's
 check warnings, when it has any. A reload event's `total_ms` runs from
 the watcher's last event behind the save to the send of the diff
 holding the reload. A client that cannot take its output gets a write
-source on the logic loop; one more than 1 MiB behind when another line
-is queued is dropped, and a line of any size is queued whole
-(decisions.md ipc-large-answer).
+source on the logic loop; one that left more than 1 MiB unwritten at
+the last flush is dropped when another line is queued (lines queued in
+one loop turn never count against it), and a line of any size is queued
+whole (decisions.md ipc-large-answer, audit-ipc-turn-backlog).
 
 **M4 additions.** The GPU thread, promotion and hand-off are in
 "`strand-gpu`".
@@ -542,8 +543,8 @@ name them.
   only. Token paths are spelled `$accent`.
 - `MAX_LINE` (64 KiB) bounds requests; an answer is delivered whole,
   whatever its size: the connection's 1 MiB queue drops a client only
-  when that much it has not read is queued before another line
-  (decisions.md ipc-large-answer).
+  when the last flush left that much unread and another line is queued
+  (decisions.md ipc-large-answer, audit-ipc-turn-backlog).
 - **The D-Bus name**: `DBUS_NAME` (`io.github.jakeb_grant.Strand`), bus
   and interface name, object path `/`; its only spelling (a
   strand-services test holds any zbus literal equal to it). It may be
