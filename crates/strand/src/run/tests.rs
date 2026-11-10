@@ -2019,6 +2019,60 @@ fn a_password_value_is_redacted_from_fault_messages() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A password input nested in a container that unmounts (the guide's
+/// lock: `col { input { type: password } }`) gets no `Remove` of its
+/// own: once it is gone, a fault's message is no longer redacted whole,
+/// since no password input is mounted (architecture.md, "Redaction";
+/// decisions.md audit-nested-password).
+#[test]
+fn a_fault_after_a_nested_password_input_unmounts_keeps_its_message() {
+    let dir = temp_dir("redact-nested");
+    std::fs::write(
+        dir.join("shell.strand"),
+        "bar Top {\n  state f = \"\"\n  input { text: <-> f }\n           if f == \"\" { col { input { type: password } } }\n           text clock.format(f)\n}\n",
+    )
+    .unwrap();
+    let socket = dir.join("ipc.sock");
+    let (_compiler, to_logic, t, mut m) = spawn_live(&dir, Some(socket.clone()));
+    m.until("both inputs", |s| {
+        s.of_kind(strand_scene::NodeKind::Input).len() == 2
+    });
+    let plain = m
+        .scene
+        .of_kind(strand_scene::NodeKind::Input)
+        .into_iter()
+        .find(|n| m.scene.prop(*n, Prop::InputType).is_none())
+        .unwrap();
+    let mut next = watch(&socket);
+    // `%Q` is no time pattern: `clock.format` fails, quoting it, as the
+    // `if` unmounts the column holding the password input.
+    to_logic
+        .send(ToLogic::Write {
+            node: plain,
+            prop: Prop::Text,
+            value: PropValue::Text("%Q".into()),
+            input: None,
+        })
+        .unwrap();
+    let ev = loop {
+        let ev = next();
+        if ev["event"] == "fault" {
+            break ev;
+        }
+    };
+    let message = ev["message"].as_str().unwrap_or_default();
+    assert!(
+        !message.contains("<redacted>") && message.contains("%Q"),
+        "{ev}"
+    );
+    m.until("the password input gone", |s| {
+        s.of_kind(strand_scene::NodeKind::Input) == [plain]
+    });
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A watcher on `socket`: the next event it hears, past the `auth`
 /// service's warning that no helper is installed ([`heard`]).
 fn watch(socket: &Path) -> impl FnMut() -> Json {

@@ -204,7 +204,9 @@ whole (decisions.md ipc-large-answer, audit-ipc-turn-backlog).
   redacted whole when any 4-byte run of one remains (lower-cased,
   escapes undone). Known values are the inputs' current ones and the
   newest four replaced (`lock::Secrets`, zeroized); values under 4 bytes
-  are never matched. Residual risk: up to four recent passwords outlive
+  are never matched. A password input is mounted while strand-compiler's
+  `Instance::is_password_input` says so: `Secrets` prunes by it after
+  each step, since a `Remove` names only a removed subtree's top. Residual risk: up to four recent passwords outlive
   the lock in memory and in a core dump (`LimitCORE=0` avoids the
   latter).
 - **Supervisor.** If the process dies while locked, the compositor keeps

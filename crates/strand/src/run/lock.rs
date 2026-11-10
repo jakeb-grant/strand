@@ -328,6 +328,24 @@ impl Secrets {
         }
     }
 
+    /// Forgets the inputs `mounted` no longer says are mounted password
+    /// inputs, remembering their values as a `Remove` does: the emitter
+    /// sends `Remove` for a subtree's top only, so an input nested in a
+    /// removed container gets none (audit-nested-password).
+    pub(super) fn prune(&mut self, mounted: impl Fn(NodeId) -> bool) {
+        let gone: Vec<NodeId> = self
+            .inputs
+            .keys()
+            .copied()
+            .filter(|id| !mounted(*id))
+            .collect();
+        for id in gone {
+            if let Some(Some(old)) = self.inputs.remove(&id) {
+                self.remember(old);
+            }
+        }
+    }
+
     /// A write to `node`'s `prop` (the `Router` editing an input).
     pub(super) fn see_write(&mut self, node: NodeId, prop: Prop, value: &PropValue) {
         if prop != Prop::Text {
@@ -2622,6 +2640,36 @@ mod tests {
         assert_eq!(secrets.redact("again"), "<redacted>", "removed, kept");
         assert!(matches!(secrets.redact("x"), std::borrow::Cow::Borrowed(_)));
         assert_eq!(secrets.redact("visible"), "visible");
+    }
+
+    /// A password input nested in a container gets no `Remove` of its own
+    /// when the container goes: pruned by what the instance still mounts,
+    /// it is forgotten, a fault is no longer redacted whole, and its value
+    /// is kept as a removed input's is (decisions.md audit-nested-password).
+    #[test]
+    fn a_nested_password_input_is_forgotten_with_its_container() {
+        let (col, pw) = (NodeId::new(1, 0), NodeId::new(2, 0));
+        let mut secrets = Secrets::default();
+        let mut d = SceneDiff::new();
+        d.create(col, NodeKind::Col, None, 0)
+            .create(pw, NodeKind::Input, Some(col), 0)
+            .set(pw, Prop::InputType, PropValue::Keyword("password".into()));
+        secrets.see_diff(&d);
+        secrets.prune(|id| id == col || id == pw);
+        secrets.see_write(pw, Prop::Text, &PropValue::Text("hunter-two".into()));
+        assert_eq!(
+            secrets.redact_error(&strand_core::Error::failed("x")),
+            REDACTED
+        );
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::Remove {
+            id: col,
+            window: false,
+        });
+        secrets.see_diff(&d);
+        secrets.prune(|_| false);
+        assert_eq!(secrets.redact_error(&strand_core::Error::failed("x")), "x");
+        assert_eq!(secrets.redact("hunter-two"), REDACTED, "removed, kept");
     }
 
     /// A kept cell's value and its notice line never show a password: a

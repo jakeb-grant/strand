@@ -361,6 +361,7 @@ pub fn logic(
         let (mut update, wake) = shell.inst.step(start.elapsed(), wall);
         let mut diff = std::mem::take(&mut update.diff);
         shell.secrets.see_diff(&diff);
+        shell.secrets.prune(|id| shell.inst.is_password_input(id));
         diff.layout_seen = shell.layout_seen.take();
         diff.config = shell.committed_config.take();
         // The services' answer to a pressed action (a tray menu's

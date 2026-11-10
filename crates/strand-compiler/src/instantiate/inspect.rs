@@ -400,6 +400,13 @@ fn leaks(v: &PropValue, shown: &str, secrets: &[String]) -> bool {
 }
 
 impl Instance {
+    /// `node` is a `type: password` input this instance has mounted (a
+    /// node inside a removed subtree, which gets no `Remove` of its own,
+    /// is not): the binary's lock `Secrets` prunes its inputs by this.
+    pub fn is_password_input(&self, node: NodeId) -> bool {
+        is_password(&self.ctx.em.borrow(), node)
+    }
+
     /// Where `node` sits in the instance tree; `None` for a node this
     /// instance did not make (the error overlay's) or that is gone.
     pub fn identity(&self, node: NodeId) -> Option<Identity> {
