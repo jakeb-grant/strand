@@ -649,13 +649,22 @@ impl State {
     /// image's atlas slot in the encoder. A slot freed first and handed
     /// to a new image in the same frame would be cleared after the new
     /// pixels were written (a re-rasterised island drawn as nothing).
+    ///
+    /// (audit-upload-size) A pixmap vello_gpu's image atlas cannot hold
+    /// (a side over the atlas's, or every atlas full) is not uploaded
+    /// and the frame is answered `Failed { Render }`: vello_gpu unwraps
+    /// its atlas allocation, and that panic would count as a lost
+    /// device. The rest still goes up and is freed, so the image table
+    /// stays true.
     fn upload(
         &mut self,
         dev: &Device,
         encoder: &mut wgpu::CommandEncoder,
         uploads: &[Upload],
         retire: &[u64],
-    ) {
+    ) -> Result<(), GpuError> {
+        let side = atlas_side(dev);
+        let mut refused = None;
         let mut freed = Vec::new();
         for u in uploads {
             if let Some(h) = self.images.get(&u.id) {
@@ -668,14 +677,31 @@ impl State {
             if u.pixmap.width() == 0 || u.pixmap.height() == 0 {
                 continue;
             }
+            let (w, h) = (u.pixmap.width(), u.pixmap.height());
+            if u32::from(w) > side || u32::from(h) > side {
+                refused.get_or_insert_with(|| {
+                    render_error(format!(
+                        "a {w}×{h} image is larger than the GPU's {side} px image atlas"
+                    ))
+                });
+                continue;
+            }
             let px = draw::unswap(&u.pixmap);
-            let id = self.renderer.upload_image(
-                &mut self.resources,
-                &dev.device,
-                &dev.queue,
-                encoder,
-                &px,
-            );
+            // vello_gpu has no fallible upload: its allocation is
+            // unwrapped before anything is written, so a full atlas
+            // panics with its state as it was, and is caught here.
+            let (renderer, resources) = (&mut self.renderer, &mut self.resources);
+            let uploaded = catch_unwind(AssertUnwindSafe(|| {
+                renderer.upload_image(resources, &dev.device, &dev.queue, encoder, &px)
+            }));
+            let Ok(id) = uploaded else {
+                refused.get_or_insert_with(|| {
+                    render_error(format!(
+                        "the GPU's image atlas has no room for a {w}×{h} image"
+                    ))
+                });
+                continue;
+            };
             self.images.insert(
                 u.id,
                 Held {
@@ -693,6 +719,7 @@ impl State {
             self.renderer
                 .destroy_image(&mut self.resources, encoder, old);
         }
+        refused.map_or(Ok(()), Err)
     }
 
     /// Draws the [`Op::Pass`]es among `ops` (and inside their backdrops)
@@ -1006,7 +1033,12 @@ impl State {
         // Before anything draws into the frame texture: the snapshot of
         // the frame it holds.
         self.snapshot(dev, &mut encoder, surface, frame.snapshot, (w, h));
-        self.upload(dev, &mut encoder, &frame.uploads, &frame.retire);
+        if let Err(e) = self.upload(dev, &mut encoder, &frame.uploads, &frame.retire) {
+            // As a failed pass below: what was recorded still runs, and
+            // render draws the frame on the CPU.
+            dev.queue.submit([encoder.finish()]);
+            return Err(e);
+        }
         ph.mark("upload");
         ph.uploads = (
             frame.uploads.len(),
@@ -1499,6 +1531,14 @@ fn backdrop_keys(ops: &[Op], out: &mut Vec<u64>) {
 
 fn kurbo_translate(x: f64, y: f64) -> vello_common::kurbo::Affine {
     vello_common::kurbo::Affine::translate((x, y))
+}
+
+/// (audit-upload-size) The widest and tallest image vello_gpu's atlas
+/// holds: its configured side, clamped to the device's as vello_gpu
+/// clamps it.
+fn atlas_side(dev: &Device) -> u32 {
+    let (w, h) = vello_common::multi_atlas::AtlasConfig::default().atlas_size;
+    u32::from(w.min(h)).min(dev.device.limits().max_texture_dimension_2d)
 }
 
 fn render_error(message: impl Into<String>) -> GpuError {

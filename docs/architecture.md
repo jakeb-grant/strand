@@ -2714,7 +2714,11 @@ Wayland crate. Its interface (`strand-gpu/src/lib.rs`):
   into (`strand-render/src/renderer/backend.rs`); the GPU thread builds
   the vello_gpu scene from the ops. `Upload`s (atlas pages, cached
   pixmaps; masks are always CPU-rasterised) live on the GPU until a
-  frame lists them in `retire` or the device drops. `Op::BlurredRect`,
+  frame lists them in `retire` or the device drops. An `Upload` wider
+  or taller than vello_gpu's image atlas (4096 px, or the device's
+  limit if smaller), or one the full atlas has no room for, is not
+  uploaded and its frame is answered `Failed` with kind `Render`
+  (audit-upload-size). `Op::BlurredRect`,
   `Op::Backdrop` and `Op::Snapshot` draw on the GPU what the CPU would
   have uploaded; `Op::Backdrop`'s `key` lets an unchanged backdrop
   reuse the last frame's pixels, and its textures come from a
