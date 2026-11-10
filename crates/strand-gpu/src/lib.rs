@@ -352,6 +352,13 @@ pub enum GpuReply {
     /// The device was lost; the thread ends ([`GpuReply::Exited`]
     /// follows).
     Lost(GpuError),
+    /// (audit-hung-renew) The device hung, so the thread ends without
+    /// dropping its swapchains: these surfaces' WSI objects are leaked
+    /// with it, and what the driver made on their `wl_surface`s (Mesa's
+    /// `wp_linux_drm_syncobj_surface_v1` under explicit sync) lives on.
+    /// Their owners never commit `wl_shm` on those `wl_surface`s again:
+    /// they make new ones. Sent after `Lost`, before `Exited`.
+    Leaked(Vec<SurfaceId>),
     /// The thread is ending: everything it held is dropped.
     Exited,
 }

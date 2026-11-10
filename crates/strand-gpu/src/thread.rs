@@ -161,9 +161,19 @@ pub(crate) fn run(
     if dev.hung.load(Ordering::SeqCst) {
         // A hung queue: dropping the swapchains, the renderer or the
         // device would wait for it, so they are leaked (with the driver's
-        // spinning queue) and the thread ends now. The surfaces' owners
-        // may commit them again once they hear `Exited`: nothing here
-        // presents any more.
+        // spinning queue) and the thread ends now. Nothing here presents
+        // any more, but (audit-hung-renew) a leaked WSI surface keeps
+        // what the driver made on its `wl_surface` (Mesa's explicit-sync
+        // surface): the owners hear which, and give those surfaces a new
+        // `wl_surface` rather than commit `wl_shm` on them.
+        let mut leaked: Vec<SurfaceId> = state
+            .targets
+            .iter()
+            .filter(|(_, t)| t.present.is_some())
+            .map(|(id, _)| *id)
+            .collect();
+        leaked.sort_unstable_by_key(|id| id.0);
+        reply.send(GpuReply::Leaked(leaked));
         std::mem::forget(state);
         std::mem::forget(dev);
         reply.send(GpuReply::Exited);

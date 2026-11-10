@@ -281,6 +281,10 @@ mod host {
         read: u64,
         /// (lock-4k) A lock was asked for or held at the last pump.
         locked: bool,
+        /// (audit-hung-renew) The surfaces whose swapchains the running
+        /// thread leaked as it hung (`GpuReply::Leaked`), renewed at its
+        /// `Exited`.
+        leaked: Vec<SurfaceId>,
     }
 
     impl std::fmt::Debug for GpuHost {
@@ -316,6 +320,7 @@ mod host {
                 stamps: Default::default(),
                 read: 0,
                 locked: false,
+                leaked: Vec::new(),
             }
         }
 
@@ -841,6 +846,7 @@ mod host {
                         }
                         state.forget_present_callback(*surface);
                     }
+                    GpuReply::Leaked(ids) => self.leaked.clone_from(ids),
                     GpuReply::Exited => {
                         // Every swapchain went with the thread: the
                         // manager commits its surfaces again and no
@@ -851,15 +857,28 @@ mod host {
                             state.lock_settle_look();
                         }
                         let attached = std::mem::take(&mut self.attached);
-                        for id in lent(&attached) {
-                            state.take_back(id);
-                            // (lock-gpu) A lock surface the thread held is
-                            // never committed to with `wl_shm`: it is
-                            // renewed before any paint, so its old
-                            // `wl_surface`, no longer held, goes at once.
-                            if attached.get(&id).is_some_and(|a| a.lock) {
-                                log::warn!("lock: the GPU thread ended under surface {}", id.0);
-                                state.renew_lock_content(id);
+                        let leaked = std::mem::take(&mut self.leaked);
+                        for (id, how) in regain(&attached, &leaked) {
+                            match how {
+                                Regain::TakeBack => state.take_back(id),
+                                // (lock-gpu) A lock surface the thread held
+                                // is never committed to with `wl_shm`: it
+                                // is renewed before any paint, so its old
+                                // `wl_surface`, no longer held, goes at once.
+                                Regain::RenewLock => {
+                                    state.take_back(id);
+                                    log::warn!("lock: the GPU thread ended under surface {}", id.0);
+                                    state.renew_lock_content(id);
+                                }
+                                // (audit-hung-renew) Nor one whose WSI
+                                // objects the hung thread leaked.
+                                Regain::Renew => {
+                                    log::warn!(
+                                        "GPU: surface {} gets a new wl_surface: the hung GPU thread kept its old one's swapchain",
+                                        id.0
+                                    );
+                                    state.renew_surface(id);
+                                }
                             }
                         }
                         if let Some(g) = self.gpu.take() {
@@ -1133,6 +1152,44 @@ mod host {
             .filter(|(_, a)| a.lent)
             .map(|(id, _)| *id)
             .collect()
+    }
+
+    /// How a surface lent to a thread that ended comes back to the
+    /// manager.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Regain {
+        /// Committed with `wl_shm` again, on the same `wl_surface`.
+        TakeBack,
+        /// (lock-gpu) Lock content: a fresh lock surface, on the CPU.
+        RenewLock,
+        /// (audit-hung-renew) Its WSI objects were leaked with a hung
+        /// thread (`GpuReply::Leaked`): a fresh `wl_surface`.
+        Renew,
+    }
+
+    /// The lent surfaces of `attached` and how each comes back once the
+    /// thread ended, `leaked` naming those whose swapchains it leaked;
+    /// those taken back as they were first, so a popup renewed is made
+    /// again on a parent the manager owns.
+    fn regain(
+        attached: &BTreeMap<SurfaceId, Attachment>,
+        leaked: &[SurfaceId],
+    ) -> Vec<(SurfaceId, Regain)> {
+        let mut out: Vec<(SurfaceId, Regain)> = lent(attached)
+            .into_iter()
+            .map(|id| {
+                let how = if attached.get(&id).is_some_and(|a| a.lock) {
+                    Regain::RenewLock
+                } else if leaked.contains(&id) {
+                    Regain::Renew
+                } else {
+                    Regain::TakeBack
+                };
+                (id, how)
+            })
+            .collect();
+        out.sort_by_key(|(_, how)| *how == Regain::Renew);
+        out
     }
 
     /// (lock-gpu) When lock surface `a` (presented as `p`, if it is) is
@@ -1410,6 +1467,43 @@ mod host {
                 },
             );
             assert_eq!(lent(&attached), [SurfaceId(1), SurfaceId(2)]);
+        }
+
+        /// (audit-hung-renew) When the thread ends, a surface whose
+        /// swapchain a hung thread leaked gets a new `wl_surface`, after
+        /// those taken back as they were; lock content is renewed as
+        /// ever, and a surface never lent is not the thread's to give.
+        #[test]
+        fn a_surface_a_hung_thread_leaked_is_renewed_not_taken_back() {
+            let lent_to = |lock| Attachment {
+                mode: Some(GpuMode::Present),
+                lent: true,
+                lock,
+                ..Attachment::default()
+            };
+            let mut attached = BTreeMap::new();
+            attached.insert(SurfaceId(1), lent_to(false));
+            attached.insert(SurfaceId(2), lent_to(false));
+            attached.insert(SurfaceId(3), lent_to(true));
+            attached.insert(SurfaceId(4), Attachment::default());
+            assert_eq!(
+                regain(&attached, &[]),
+                [
+                    (SurfaceId(1), Regain::TakeBack),
+                    (SurfaceId(2), Regain::TakeBack),
+                    (SurfaceId(3), Regain::RenewLock),
+                ],
+                "a thread that dropped its swapchains"
+            );
+            assert_eq!(
+                regain(&attached, &[SurfaceId(1), SurfaceId(3), SurfaceId(4)]),
+                [
+                    (SurfaceId(2), Regain::TakeBack),
+                    (SurfaceId(3), Regain::RenewLock),
+                    (SurfaceId(1), Regain::Renew),
+                ],
+                "a hung thread"
+            );
         }
 
         /// (gpu-first review) A presented surface whose next frame is held

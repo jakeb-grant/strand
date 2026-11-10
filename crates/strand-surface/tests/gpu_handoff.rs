@@ -382,6 +382,50 @@ fn a_surface_destroyed_after_its_handles_were_lent_waits_for_take_back() {
     assert!(ok, "a surface given back was kept");
 }
 
+/// (audit-hung-renew) A handed-off surface whose swapchain a hung GPU
+/// thread leaked is renewed, not taken back: its `wl_surface`, which may
+/// still carry the driver's explicit-sync surface, is destroyed without
+/// another buffer, and the panel comes back on a new one, painted on
+/// the CPU, under the same id.
+#[test]
+fn a_surface_renewed_after_a_hang_gets_a_new_wl_surface_and_no_shm_on_the_old() {
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let id = show_panel(&fake, &mut mgr);
+    mgr.dispatch_until(Duration::from_millis(200), |_| false)
+        .unwrap();
+    mgr.state_mut().raw_handles(id).expect("raw handles");
+    assert!(mgr.state_mut().hand_off(id));
+    let dash = |fake: &Fake| {
+        fake.surfaces()
+            .into_iter()
+            .enumerate()
+            .filter(|(_, s)| s.namespace.as_deref() == Some("strand-Dash"))
+            .collect::<Vec<_>>()
+    };
+    let [(old, before)] = dash(&fake).try_into().expect("one panel surface");
+    change(&mut mgr, 40.0);
+
+    assert!(mgr.state_mut().renew_surface(id));
+    let ok = mgr
+        .dispatch_until(WAIT, |_| {
+            dash(&fake)
+                .iter()
+                .any(|(i, s)| *i != old && !s.destroyed && s.buffer_commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "the panel never came back: {:?}", fake.surfaces());
+    let now = dash(&fake);
+    let (_, gone) = now.iter().find(|(i, _)| *i == old).expect("the old one");
+    assert!(gone.destroyed, "the old wl_surface was kept");
+    assert_eq!(
+        gone.buffer_commits, before.buffer_commits,
+        "a buffer was committed to the old wl_surface"
+    );
+    assert_eq!(mgr.state().surfaces_of(PANEL), [id], "the same id");
+    assert!(!mgr.state().is_handed_off(id));
+}
+
 fn buffer_commits(fake: &Fake) -> usize {
     fake.surfaces()
         .iter()

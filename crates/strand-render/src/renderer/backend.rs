@@ -1034,7 +1034,7 @@ impl Renderer {
                 self.repaint_fallen();
             }
             // The binary's: it changes nothing here.
-            GpuReply::Committed { .. } => {}
+            GpuReply::Committed { .. } | GpuReply::Leaked(_) => {}
             GpuReply::Exited => {
                 self.gpu.warming = false;
                 if self.gpu.device.is_up() || self.gpu.device.starting() {

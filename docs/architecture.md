@@ -2701,10 +2701,17 @@ Wayland crate. Its interface (`strand-gpu/src/lib.rs`):
   waits for a presented frame's GPU work), `Committed { surface,
   committed }` (false: it presented nothing), `Pixels`, `PassPixels`,
   `Failed { surface, key, error }` (the device stays up), `Lost`,
-  `Exited`. Every frame, commit and pass is answered, a panic included.
+  `Leaked(Vec<SurfaceId>)` (a hung thread's presented surfaces, whose
+  swapchains it leaks; between `Lost` and `Exited`), `Exited`. Every
+  frame, commit and pass is answered, a panic included.
 - Hangs: a readback waits at most `HUNG_AFTER` (10 s); past it, or on
   a wgpu panic after a driver reset, the request answers `Failed`, then
   `Lost` and `Exited`, and a hung device is leaked rather than dropped.
+  (audit-hung-renew) Its swapchains are leaked too, with what the
+  driver made on their `wl_surface`s (Mesa's explicit-sync surface), so
+  the thread names them (`Leaked`) and the binary gives each a new
+  `wl_surface` at `Exited` (`State::renew_surface`, same id) instead of
+  taking it back to commit `wl_shm` on the old one.
   Render never reruns a shader file answered `Failed` with kind `Lost`
   in that process (`ShaderResults::lost`), so a looping file leaks at
   most one device. The thread keeps at most 64 pipelines and 16 pass
