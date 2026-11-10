@@ -50,12 +50,13 @@
 //!   Vulkan mapped, aiming at 76 MB and failing above 128 MiB in release.
 //! - `the_release_binary_code_stays_within_its_gate`: the release
 //!   binary's `.text` (most of it resident on a large-folio page cache):
-//!   30,408,704 B with the GPU backend (the default build), 26,476,544 B
+//!   31,195,136 B with the GPU backend (the default build), 26,476,544 B
 //!   for the CPU core (`--no-default-features`); both re-based for the
 //!   speed profile and since by the measured-plus-reserve rule, last for
-//!   the document formats and the monitor-profile building blocks
+//!   the document formats and the monitor-profile building blocks and,
+//!   the GPU build's alone, for the audit's fixes
 //!   (decisions.md m5-speed, growth, services-round, wave-cost,
-//!   services-merge, blocks-ci; docs/architecture.md,
+//!   services-merge, blocks-ci, audit-text-gate; docs/architecture.md,
 //!   "`strand-gpu`", "Budgets and tests").
 //! - `the_binary_holds_no_fault_code`: no `STRAND_FAULT` point in a
 //!   default build (the lock's `faults` feature).
@@ -2540,7 +2541,11 @@ fn the_ledger_half_reads_size_delta_baseline_and_gate() {
     assert_eq!(grouped(1_000), "1,000");
 }
 
-/// `.text` of the default (GPU) release build: 30,408,704 B (116 × 256
+/// `.text` of the default (GPU) release build: 31,195,136 B (119 × 256
+/// KiB): the audit's fixes measured 30,413,527 B in GitHub CI's budgets
+/// job (run 42785591536), 4,823 B over the gate before (5,609 B under
+/// it eleven fixes earlier), plus a 512 KiB reserve, rounded up to 256
+/// KiB (decisions.md audit-text-gate). It was 30,408,704 B (116 × 256
 /// KiB): `main` with doc-formats and the blocks merged
 /// (`laptop/blocks-ready`) measured 29,764,823 B in the container suite,
 /// 142,551 B over the gate before, plus a 512 KiB reserve, rounded up to
@@ -2577,7 +2582,7 @@ fn the_ledger_half_reads_size_delta_baseline_and_gate() {
 /// reserve, decisions.md m6-integration-w1), 22,806,528 B from M5 wave 2's re-base (decisions.md
 /// m5-integration-w2), 22,282,240 B after the speed review (decisions.md
 /// m5-speed) and 18.5 MiB before it.
-const TEXT_GATE_GPU: u64 = 30_408_704;
+const TEXT_GATE_GPU: u64 = 31_195_136;
 /// `.text` of the CPU-only release build: 26,476,544 B (101 × 256 KiB):
 /// the same tree measured 25,691,287 B, 1,175 B over the gate before,
 /// plus the reserve, rounded up (decisions.md blocks-ci). It was

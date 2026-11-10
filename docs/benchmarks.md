@@ -379,7 +379,9 @@ re-based them to 28,311,552 and 24,379,392 B (decisions.md
 services-round), wave-cost to 29,097,984 and 24,903,680 B, and
 services-merge to 29,622,272 and 25,690,112 B, and blocks-ci to
 30,408,704 and 26,476,544 B (29,764,823 and 25,691,287 B measured at the
-blocks merge, 2026-11-07).
+blocks merge, 2026-11-07), and audit-text-gate the default build's alone
+to 31,195,136 B (30,413,527 B measured with the audit's fixes,
+2026-11-10; the CPU-only build, 26,316,375 B, stayed under its gate).
 
 No idle-wakeup window in budgets.rs changed: nothing records on a timer,
 and the `strand-report` thread lives only while a report is written.
