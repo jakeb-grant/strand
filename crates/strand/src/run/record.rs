@@ -615,8 +615,21 @@ impl InputRecorder {
         output: Option<(&str, Option<&str>)>,
         kind: NodeKind,
     ) {
-        let slot = self.next_surface;
-        self.next_surface = self.next_surface.wrapping_add(1);
+        // The counter wraps after 65,536 maps: a slot a surface still
+        // mapped holds (a bar since boot) is skipped, since a report keys
+        // frames, roots and input by slot.
+        let mut slot = self.next_surface;
+        for _ in 0..=u16::MAX {
+            if !self
+                .surfaces
+                .iter()
+                .any(|(id, s)| *id != surface && s.slot == slot)
+            {
+                break;
+            }
+            slot = slot.wrapping_add(1);
+        }
+        self.next_surface = slot.wrapping_add(1);
         self.surfaces.insert(
             surface,
             SurfaceSlot {
@@ -2675,6 +2688,24 @@ mod tests {
         );
         assert_eq!(node_of(e[2].rec.u64(0)), n);
         assert_eq!(e[2].rec.t, 5);
+    }
+
+    /// A surface mapped after the slot counter wraps never takes the slot
+    /// of one still mapped, so a report's frames and input stay apart.
+    #[test]
+    fn a_wrapped_slot_skips_surfaces_still_mapped() {
+        let mut r = InputRecorder::new(false);
+        let bar = SurfaceId(1);
+        r.mapped(0, bar, NodeId::new(1, 0), None, NodeKind::Bar);
+        for i in 0..u32::from(u16::MAX) {
+            let s = SurfaceId(2 + i);
+            r.mapped(0, s, NodeId::new(2, 0), None, NodeKind::Popup);
+            r.unmapped(0, s);
+        }
+        let late = SurfaceId(1_000_000);
+        r.mapped(0, late, NodeId::new(3, 0), None, NodeKind::Popup);
+        assert_eq!(r.slot(bar), Some(0));
+        assert_eq!(r.slot(late), Some(1));
     }
 
     #[test]
