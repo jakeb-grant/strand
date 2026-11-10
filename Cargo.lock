@@ -3089,6 +3089,7 @@ version = "0.1.0"
 dependencies = [
  "rustix",
  "tempfile",
+ "wayland-client",
  "wayland-protocols",
  "wayland-protocols-wlr",
  "wayland-server",

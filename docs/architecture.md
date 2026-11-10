@@ -376,7 +376,11 @@ The site also serves the installer, `scripts/install.sh`, at
 outside `[dev-dependencies]`. It serves what strand-services' wm,
 capture and clipboard clients and strand-surface speak, records each
 commit (`Fake::commits`) and can present only at refreshes the test
-sends (`SurfaceGlobals::vblank`); `src/lib.rs` lists the globals.
+sends (`SurfaceGlobals::vblank`); `src/lib.rs` lists the globals. It
+posts the protocol errors a compositor kills a client for when popups
+are destroyed or grab out of order, a buffer comes before the first
+`ack_configure` or is not a multiple of its scale
+(`tests/protocol_errors.rs`).
 
 **`eval/`** (`strand-eval`; docs/eval.md) runs scenarios on a virtual
 clock against `Renderer` and the logic VM, through

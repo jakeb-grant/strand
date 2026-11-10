@@ -3,8 +3,17 @@
 //! configured at its positioner's size on its first commit, and at its
 //! new positioner's size when it is repositioned (xdg_popup v3: a
 //! `repositioned`, then the popup's and its surface's configure, at once
-//! once it was configured, else on its first commit). Grabs are accepted
-//! and ignored; keyboard focus moves only by [`crate::Cmd`]s.
+//! once it was configured, else on its first commit). Grabs change no
+//! focus; keyboard focus moves only by [`crate::Cmd`]s.
+//!
+//! (audit-fake-strict) What xdg-shell makes a protocol error is posted,
+//! as a compositor does, so a test sees the client disconnected: a popup
+//! destroyed while a popup on it is not (`not_the_topmost_popup`), a
+//! grab whose parent is not the seat's topmost grabbing popup while
+//! there is one (the same) or that comes after the popup mapped
+//! (`invalid_grab`), and a buffer before the first `ack_configure`
+//! (`unconfigured_buffer`; the same for layer surfaces, and a buffer
+//! not a multiple of its scale, in `surfaces.rs`).
 //!
 //! (oi-window) And an `xdg_toplevel` (strand's `window`): its first
 //! configure answers its first commit, as a floating compositor's does (no
@@ -40,6 +49,9 @@ pub(crate) struct PopupState {
     pub(crate) popup: XdgPopup,
     pub(crate) size: (i32, i32),
     pub(crate) configured: bool,
+    /// (audit-fake-strict) The surface of the `xdg_surface` it was made
+    /// on (`None`: a layer surface's, given by `get_popup` there).
+    pub(crate) parent: Option<ObjectId>,
 }
 
 impl PopupState {
@@ -226,9 +238,9 @@ impl GlobalDispatch<XdgWmBase, ()> for Server {
 
 impl Dispatch<XdgWmBase, ()> for Server {
     fn request(
-        _: &mut Self,
+        state: &mut Self,
         _: &Client,
-        _: &XdgWmBase,
+        base: &XdgWmBase,
         request: xdg_wm_base::Request,
         _: &(),
         _: &DisplayHandle,
@@ -240,6 +252,7 @@ impl Dispatch<XdgWmBase, ()> for Server {
             }
             xdg_wm_base::Request::GetXdgSurface { id, surface } => {
                 init.init(id, surface.id());
+                state.surf.set_wm_base(&surface.id(), base.clone());
             }
             _ => {}
         }
@@ -294,6 +307,7 @@ impl Dispatch<XdgSurface, ObjectId> for Server {
                         popup,
                         size,
                         configured: false,
+                        parent: parent.cloned(),
                     },
                 );
             }
@@ -316,6 +330,7 @@ impl Dispatch<XdgSurface, ObjectId> for Server {
                 height,
             } => state.surf.set_geometry(surface, (x, y, width, height)),
             xdg_surface::Request::AckConfigure { serial } => {
+                state.surf.xdg_acked(surface);
                 state
                     .surf
                     .toplevel_record(surface, |t| t.acked.push(serial));
@@ -392,15 +407,17 @@ impl Dispatch<XdgPopup, ObjectId> for Server {
                     .surf
                     .reposition_popup(surface, token, positioner_size(&positioner));
             }
-            xdg_popup::Request::Grab { .. } => {
+            xdg_popup::Request::Grab { seat, .. } => {
                 state
                     .surf
                     .log_popup(surface, None, |n, _| format!("grab {n}"));
+                state.surf.popup_grab(surface, seat.id());
             }
             xdg_popup::Request::Destroy => {
                 state
                     .surf
                     .log_popup(surface, None, |n, _| format!("popup_destroy {n}"));
+                state.surf.popup_destroyed(surface);
             }
             _ => {}
         }

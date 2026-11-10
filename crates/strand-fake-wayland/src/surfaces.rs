@@ -31,6 +31,11 @@ use wayland_protocols::wp::viewporter::server::{
     wp_viewport::{self, WpViewport},
     wp_viewporter::{self, WpViewporter},
 };
+use wayland_protocols::xdg::shell::server::{
+    xdg_popup::{self, XdgPopup},
+    xdg_surface,
+    xdg_wm_base::{self, XdgWmBase},
+};
 use wayland_protocols::xdg::xdg_output::zv1::server::{
     zxdg_output_manager_v1::{self, ZxdgOutputManagerV1},
     zxdg_output_v1::{self, ZxdgOutputV1},
@@ -326,6 +331,13 @@ struct Live {
     /// next commit.
     sub_parent: Option<ObjectId>,
     pending_position: Option<(i32, i32)>,
+    /// (audit-fake-strict) The `xdg_wm_base` its `xdg_surface` came
+    /// from, which xdg-shell's popup errors are posted on.
+    wm_base: Option<XdgWmBase>,
+    /// (audit-fake-strict) Its `xdg_surface` acked a configure.
+    xdg_acked: bool,
+    /// (audit-fake-strict) Its layer surface acked a configure.
+    layer_acked: bool,
 }
 
 /// The surface state of the fake.
@@ -359,6 +371,9 @@ pub(crate) struct Surfaces {
     /// (oi-window) The last [`crate::Cmd::ConfigureWindow`] for each app
     /// id: what a window of it is told (its first configure too).
     window_configures: HashMap<String, crate::xdg::WindowConfigure>,
+    /// (audit-fake-strict) Each seat's grabbing popups, bottom first:
+    /// their surfaces and roles.
+    grabs: HashMap<ObjectId, Vec<(ObjectId, XdgPopup)>>,
 }
 
 impl Surfaces {
@@ -411,6 +426,80 @@ impl Surfaces {
         let parent = parent.and_then(|p| self.live.get(p)).map(|l| l.index);
         if let Ok(mut log) = self.popup_log.lock() {
             log.push(what(index, parent));
+        }
+    }
+
+    /// (audit-fake-strict) `surface` got its `xdg_surface` from `base`.
+    pub(crate) fn set_wm_base(&mut self, surface: &ObjectId, base: XdgWmBase) {
+        if let Some(l) = self.live.get_mut(surface) {
+            l.wm_base = Some(base);
+        }
+    }
+
+    /// (audit-fake-strict) `surface`'s `xdg_surface` acked a configure.
+    pub(crate) fn xdg_acked(&mut self, surface: &ObjectId) {
+        if let Some(l) = self.live.get_mut(surface) {
+            l.xdg_acked = true;
+        }
+    }
+
+    /// (audit-fake-strict) Posts xdg_wm_base's `not_the_topmost_popup`
+    /// for `surface`'s client.
+    fn not_topmost(&self, surface: &ObjectId, what: String) {
+        if let Some(base) = self.live.get(surface).and_then(|l| l.wm_base.as_ref()) {
+            base.post_error(xdg_wm_base::Error::NotTheTopmostPopup, what);
+        }
+    }
+
+    /// (audit-fake-strict) The popup on `surface` is destroyed: an error
+    /// if a popup on it is still there (xdg-shell destroys popups
+    /// topmost first).
+    pub(crate) fn popup_destroyed(&self, surface: &ObjectId) {
+        let child = self.live.values().find(|l| {
+            l.popup
+                .as_ref()
+                .is_some_and(|p| p.popup.is_alive() && p.parent.as_ref() == Some(surface))
+        });
+        if let Some(child) = child {
+            let index = self.live.get(surface).map_or(0, |l| l.index);
+            let what = format!("popup {index} destroyed before its child {}", child.index);
+            self.not_topmost(surface, what);
+        }
+    }
+
+    /// (audit-fake-strict) The popup on `surface` grabs `seat`: an error
+    /// once it is mapped (`invalid_grab`), or unless its parent is the
+    /// seat's topmost grabbing popup while there is one.
+    pub(crate) fn popup_grab(&mut self, surface: &ObjectId, seat: ObjectId) {
+        let Some(live) = self.live.get(surface) else {
+            return;
+        };
+        let Some(p) = live.popup.as_ref() else {
+            return;
+        };
+        if live.current.is_some() {
+            p.popup.post_error(
+                xdg_popup::Error::InvalidGrab,
+                "a grab after the popup mapped",
+            );
+            return;
+        }
+        let (parent, popup, index) = (p.parent.clone(), p.popup.clone(), live.index);
+        let stack = self.grabs.entry(seat.clone()).or_default();
+        stack.retain(|(_, p)| p.is_alive());
+        let top = stack.last().map(|(s, _)| s.clone());
+        if let Some(top) = top
+            && Some(&top) != parent.as_ref()
+        {
+            let top = self.live.get(&top).map_or(0, |l| l.index);
+            self.not_topmost(
+                surface,
+                format!("popup {index} grabs over {top}, not on it"),
+            );
+            return;
+        }
+        if let Some(stack) = self.grabs.get_mut(&seat) {
+            stack.push((surface.clone(), popup));
         }
     }
 
@@ -643,6 +732,18 @@ impl Surfaces {
             return;
         };
         let pending = std::mem::take(&mut live.pending);
+        if let Some(Some(buffer)) = &pending.buffer {
+            let scale = pending.buffer_scale.unwrap_or_else(|| {
+                self.records
+                    .lock()
+                    .ok()
+                    .and_then(|r| r.get(live.index).map(|r| r.buffer_scale))
+                    .unwrap_or(1)
+            });
+            if !may_attach(live, buffer, scale) {
+                return;
+            }
+        }
         let mut attached = None;
         if let Some(buffer) = pending.buffer {
             if let Some(old) = live.current.take()
@@ -838,6 +939,49 @@ impl Surfaces {
     }
 }
 
+/// (audit-fake-strict) Whether `live` may commit `buffer` at buffer
+/// scale `scale`. If not, the error a compositor answers with is posted
+/// (the client is disconnected): an xdg surface's or a layer surface's
+/// buffer before its first `ack_configure` (xdg-shell's
+/// `unconfigured_buffer`; layer-shell names no code, and
+/// `invalid_surface_state` is the nearest), or a buffer whose size is
+/// not a multiple of its scale (`wl_surface.invalid_size`).
+fn may_attach(live: &Live, buffer: &wl_buffer::WlBuffer, scale: i32) -> bool {
+    let xdg = (live.popup.as_ref().map(|p| &p.xdg_surface))
+        .or(live.toplevel.as_ref().map(|t| &t.xdg_surface));
+    if let Some(x) = xdg
+        && !live.xdg_acked
+    {
+        x.post_error(
+            xdg_surface::Error::UnconfiguredBuffer,
+            "a buffer attached before the first ack_configure",
+        );
+        return false;
+    }
+    if let Some(l) = &live.layer
+        && !live.layer_acked
+    {
+        l.post_error(
+            zwlr_layer_surface_v1::Error::InvalidSurfaceState,
+            "a buffer attached before the first ack_configure",
+        );
+        return false;
+    }
+    let size = match buffer.data::<BufferKind>() {
+        Some(BufferKind::Shm { width, height }) => (*width, *height),
+        Some(BufferKind::SinglePixel(_)) => (1, 1),
+        None => return true,
+    };
+    if scale > 0 && (size.0 % scale != 0 || size.1 % scale != 0) {
+        live.wl.post_error(
+            wl_surface::Error::InvalidSize,
+            format!("a {}x{} buffer at scale {scale}", size.0, size.1),
+        );
+        return false;
+    }
+    true
+}
+
 fn region_of(r: Option<&wl_region::WlRegion>) -> Option<Region> {
     r.and_then(|r| r.data::<Mutex<Region>>())
         .and_then(|m| m.lock().ok().map(|g| g.clone()))
@@ -896,6 +1040,9 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for Server {
                         serial: 0,
                         sub_parent: None,
                         pending_position: None,
+                        wm_base: None,
+                        xdg_acked: false,
+                        layer_acked: false,
                     },
                 );
             }
@@ -1232,6 +1379,10 @@ impl Dispatch<ZwlrLayerSurfaceV1, ObjectId> for Server {
             }
             zwlr_layer_surface_v1::Request::SetExclusiveZone { zone } => {
                 Some(format!("zone {zone}"))
+            }
+            zwlr_layer_surface_v1::Request::AckConfigure { .. } => {
+                live.layer_acked = true;
+                None
             }
             zwlr_layer_surface_v1::Request::Destroy => {
                 live.layer = None;
