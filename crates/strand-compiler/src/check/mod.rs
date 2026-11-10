@@ -193,14 +193,27 @@ pub(crate) fn is_whole_literal(e: &ast::Expr) -> bool {
 /// 2]`), `[[int]]` for a list of those, and so on; through `?:` and
 /// `match` when every branch has that shape or is an empty list (`match
 /// name { "DP-8" => [1, 2], _ => [] }` is `[int]`, decisions.md
-/// m6-w2-language, Gaps 12). `None` for anything else, a lone empty list
-/// included.
+/// m6-w2-language, Gaps 12). Arithmetic other than `/` on such whole
+/// numbers is one too (`24 * 60`, `-(1 + 2)`, spec.md 7.1). `None` for
+/// anything else, a lone empty list included.
 pub(crate) fn whole_shape(e: &ast::Expr) -> Option<Ty> {
     if is_whole_literal(e) {
         return Some(Ty::INT);
     }
+    // A sum of thousands of terms is as deep, so each level may grow the
+    // stack as the checker's own walk does.
+    let whole_int = |e: &ast::Expr| grow(|| whole_shape(e)) == Some(Ty::INT);
     match &e.kind {
         ast::ExprKind::Paren(inner) => whole_shape(inner),
+        ast::ExprKind::Binary {
+            op: ast::BinaryOp::Add | ast::BinaryOp::Sub | ast::BinaryOp::Mul | ast::BinaryOp::Rem,
+            lhs,
+            rhs,
+        } => (whole_int(lhs) && whole_int(rhs)).then_some(Ty::INT),
+        ast::ExprKind::Unary {
+            op: ast::UnaryOp::Neg,
+            expr,
+        } => whole_int(expr).then_some(Ty::INT),
         ast::ExprKind::Array(items) => {
             let mut items = items.iter().map(whole_shape);
             let first = items.next()??;

@@ -2336,8 +2336,10 @@ units). `1min` is `60s` and `1h` is `60min`.
 A whole-number literal with no unit is an `int` (an `int` widens to
 `float` where one is expected); beside another operand of an arithmetic
 operator it takes that operand's type, so with `n: int`, `2500 + n` and `n + 2500`
-are both `int`s (and with `x: float`, `2500 + x` a `float`). A
-fractional literal (`0.5`) is always a `float`. A `float` where an `int`
+are both `int`s (and with `x: float`, `2500 + x` a `float`). Arithmetic
+on such literals alone is an `int` like the literal it comes to (`let
+minutes = 24 * 60`, `[1 + 1, 2]` is `[int]`), but for `/`, whose result
+is a `float`. A fractional literal (`0.5`) is always a `float`. A `float` where an `int`
 is expected is a load error whose help suggests rounding it (`.round()`,
 `.floor()`, `.ceil()`).
 
