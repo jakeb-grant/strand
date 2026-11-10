@@ -1046,10 +1046,10 @@ impl Notifications {
                                 let all = &cx.state().all;
                                 all.iter().take(over_kept(all)).map(|n| n.id).collect()
                             };
-                            for id in over {
-                                if !close(&mut cx, &conn, &ids, &mut kept, &mut history, id, Closed::Expired).await {
-                                    return Ok(());
-                                }
+                            if !over.is_empty()
+                                && !close_all(&mut cx, &conn, &ids, &mut kept, &mut history, &over, Closed::Expired).await
+                            {
+                                return Ok(());
                             }
                         }
                         FromBus::Close(id) => {
@@ -1078,13 +1078,10 @@ impl Notifications {
                         // (M5) Sent before `ActionInvoked` (spec 1.2).
                         let token = cx.activation_token().map(str::to_owned);
                         let alive = match a {
+                            // In one update: one list change, one snapshot.
                             NotificationsAction::Clear => {
                                 let all: Vec<i64> = cx.state().all.iter().map(|n| n.id).collect();
-                                let mut alive = true;
-                                for id in all {
-                                    alive &= close(&mut cx, &conn, &ids, &mut kept, &mut history, id, Closed::Dismissed).await;
-                                }
-                                alive
+                                close_all(&mut cx, &conn, &ids, &mut kept, &mut history, &all, Closed::Dismissed).await
                             }
                             // The popup ends; the notification stays open in
                             // `all` (closed once, when it leaves it).
@@ -1708,47 +1705,80 @@ async fn close(
     id: i64,
     why: Closed,
 ) -> bool {
-    let (alive, to) = forget(cx, ids, kept, history, id);
-    if let Some(to) = to {
+    close_all(cx, conn, ids, kept, history, &[id], why).await
+}
+
+/// Close the notifications `gone` in one update (one list change and one
+/// history snapshot however many: `clear()` with 1,000 kept), then tell
+/// each sender why. `false` once the service was stopped.
+async fn close_all(
+    cx: &mut Cx<Notifications>,
+    conn: &zbus::Connection,
+    ids: &Arc<Mutex<Ids>>,
+    kept: &mut Kept,
+    history: &mut History,
+    gone: &[i64],
+    why: Closed,
+) -> bool {
+    let (alive, told) = forget(cx, ids, kept, history, gone);
+    for (id, to) in told {
         signal_closed(conn, &to, id, why).await;
     }
     alive
 }
 
-/// What [`close`] does before its one wait, on which a stop can drop the body:
-/// the state and the history change first, so what was closed stays closed at
-/// the next boot whichever the stop lands on. Returns whether the service still
-/// runs, and who to tell.
+/// What [`close_all`] does before its waits, on which a stop can drop the
+/// body: the state and the history change first, so what was closed stays
+/// closed at the next boot whichever the stop lands on. Returns whether the
+/// service still runs, and who to tell of which.
 fn forget(
     cx: &mut Cx<Notifications>,
     ids: &Arc<Mutex<Ids>>,
     kept: &mut Kept,
     history: &mut History,
-    id: i64,
-) -> (bool, Option<String>) {
-    let known = cx.state().all.iter().any(|n| n.id == id);
-    let to = ids.lock().ok().and_then(|mut ids| {
-        ids.live.remove(&(id as u32));
-        ids.senders.remove(&(id as u32))
-    });
-    kept.resident.remove(&id);
-    kept.default.remove(&id);
-    kept.transient.remove(&id);
-    let restored = kept.restored.remove(&id);
-    // The file goes once the state no longer names it.
-    let image = kept.images.remove(&id);
-    if !known {
-        return (!cx.stopped(), None);
+    gone: &[i64],
+) -> (bool, Vec<(i64, String)>) {
+    let present: HashSet<i64> = cx.state().all.iter().map(|n| n.id).collect();
+    let senders: Vec<Option<String>> = {
+        let mut ids = ids.lock().ok();
+        gone.iter()
+            .map(|&id| {
+                let ids = ids.as_mut()?;
+                ids.live.remove(&(id as u32));
+                ids.senders.remove(&(id as u32))
+            })
+            .collect()
+    };
+    let mut told = Vec::new();
+    let mut images = Vec::new();
+    let mut known = HashSet::new();
+    for (&id, to) in gone.iter().zip(senders) {
+        kept.resident.remove(&id);
+        kept.default.remove(&id);
+        kept.transient.remove(&id);
+        let restored = kept.restored.remove(&id);
+        // The file goes once the state no longer names it.
+        images.push(kept.images.remove(&id));
+        if !present.contains(&id) {
+            continue;
+        }
+        known.insert(id);
+        // A restored one's sender is not told: it never knew this id.
+        if let Some(to) = to.filter(|_| !restored) {
+            told.push((id, to));
+        }
+    }
+    if known.is_empty() {
+        return (!cx.stopped(), Vec::new());
     }
     let alive = cx.update(|s| {
-        s.popups.retain(|n| n.id != id);
-        s.all.retain(|n| n.id != id);
+        s.popups.retain(|n| !known.contains(&n.id));
+        s.all.retain(|n| !known.contains(&n.id));
         s.count = s.all.len() as i64;
     });
     history.changed(cx.state(), kept);
-    drop(image);
-    // A restored one's sender is not told: it never knew this id.
-    (alive, to.filter(|_| !restored))
+    drop(images);
+    (alive, told)
 }
 
 /// Record `from` as the sender of notification `id` ([`Ids::senders`]),
@@ -2348,13 +2378,13 @@ mod tests {
         }
         assert_eq!(to_save(&history), ["kept", "dismissed", "cleared"]);
 
-        let (alive, to) = forget(&mut cx, &ids, &mut kept, &mut history, 2);
-        assert_eq!((alive, to), (false, None));
+        let (alive, to) = forget(&mut cx, &ids, &mut kept, &mut history, &[2]);
+        assert_eq!((alive, to), (false, Vec::new()));
         assert_eq!(to_save(&history), ["kept", "cleared"]);
 
         ids.lock().unwrap().senders.insert(3, ":1.1".to_string());
-        let (alive, to) = forget(&mut cx, &ids, &mut kept, &mut history, 3);
-        assert_eq!((alive, to.as_deref()), (false, Some(":1.1")));
+        let (alive, to) = forget(&mut cx, &ids, &mut kept, &mut history, &[3]);
+        assert_eq!((alive, to), (false, vec![(3, ":1.1".to_string())]));
         assert_eq!(
             to_save(&history),
             ["kept"],

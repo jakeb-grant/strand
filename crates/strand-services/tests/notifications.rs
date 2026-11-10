@@ -1659,3 +1659,56 @@ fn clear_forgets_every_remembered_notification() {
     s.shutdown();
     notifications::set_config(None);
 }
+
+/// (audit-notify-clear) `clear()` closes every kept notification in one
+/// change of `all`, where each closed in an update of its own (1,000
+/// list changes, each copying the whole history, for a full one); every
+/// sender is still told.
+#[test]
+fn clear_closes_every_notification_in_one_change() {
+    let _serial = serial();
+    history_in(None);
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let heard = hear(&tokio, &conn);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let changes = Arc::new(Mutex::new(0usize));
+    let c = changes.clone();
+    let all_field = {
+        use strand_services::Store;
+        notifications::Notifications::FIELDS
+            .iter()
+            .position(|f| f.name == "all")
+            .unwrap()
+    };
+    b.notifications.dynamic().observe(Box::new(move |_, a| {
+        if let strand_services::Applied::Keyed { field, .. } = a
+            && *field == all_field
+        {
+            *c.lock().unwrap() += 1;
+        }
+    }));
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    let ids: Vec<u32> = (0..50)
+        .map(|i| notify(&tokio, &conn, 0, &format!("n{i}"), &[], HashMap::new(), -1))
+        .collect();
+    until(&rt, &s, "all fifty", || all(&b, &rt).len() == 50);
+    *changes.lock().unwrap() = 0;
+    b.notifications
+        .dynamic()
+        .action(&rt, "clear", None, &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "cleared", || all(&b, &rt).is_empty());
+    for id in &ids {
+        wait_heard(&heard, &format!("Closed {id} 2"));
+    }
+    s.pump(&rt);
+    assert_eq!(*changes.lock().unwrap(), 1, "one change of `all`");
+    s.shutdown();
+}

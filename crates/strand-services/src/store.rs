@@ -244,13 +244,38 @@ where
         .unwrap_or_else(|_| KeyedVec::new(|t: &T| t.key()))
 }
 
-/// The keyed diffs turning `old` into `new`.
+/// The keyed diffs turning `old` into `new`. Compared by reference: only
+/// the items a diff carries are cloned, so an update that leaves a long
+/// list alone (or changes one item of it) copies none (or one) of its
+/// items.
 pub fn keyed_changes<T>(old: &[T], new: &[T]) -> Vec<VecDiff<T::Key, T>>
 where
     T: Keyed + Clone + PartialEq,
 {
-    let pairs = |v: &[T]| -> Vec<(T::Key, T)> { v.iter().map(|t| (t.key(), t.clone())).collect() };
+    fn pairs<T: Keyed>(v: &[T]) -> Vec<(T::Key, &T)> {
+        v.iter().map(|t| (t.key(), t)).collect()
+    }
+    let owned = |d: VecDiff<T::Key, &T>| match d {
+        VecDiff::Reset { items } => VecDiff::Reset {
+            items: items.into_iter().map(|(k, t)| (k, t.clone())).collect(),
+        },
+        VecDiff::Insert { index, key, value } => VecDiff::Insert {
+            index,
+            key,
+            value: value.clone(),
+        },
+        VecDiff::Update { index, key, value } => VecDiff::Update {
+            index,
+            key,
+            value: value.clone(),
+        },
+        VecDiff::Remove { index, key } => VecDiff::Remove { index, key },
+        VecDiff::Move { from, to, key } => VecDiff::Move { from, to, key },
+    };
     keyed_diff(&pairs(old), &pairs(new))
+        .into_iter()
+        .map(owned)
+        .collect()
 }
 
 /// Apply keyed diffs to a plain list (a diff that does not apply leaves
