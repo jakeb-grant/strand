@@ -155,9 +155,9 @@ proof  = "read: the release job needs every other job, the package job's smoke t
 
 [[claim]]
 page   = "site/start/install.md"
-text   = "An edge build ran those only if its push changed the lock's code; they run on `main` every night as well."
-source = ['.github/workflows/ci.yml "cron: "17 3 * * *""', '.github/workflows/ci.yml "schedule:* | workflow_dispatch:* | push:tag:* | *:true)"', '.github/workflows/ci.yml "no lock paths changed: the lock VM tier is skipped"']
-proof  = "read: the lock-vm job's Decide step boots the VM on a schedule, a dispatch, a tag, or when a lock path changed"
+text   = "So did every edge build: they run on each push to `main`, and on `main` every night as well."
+source = ['.github/workflows/ci.yml "cron: "17 3 * * *""', '.github/workflows/ci.yml "schedule:* | workflow_dispatch:* | push:tag:* | push:branch:refs/heads/main:* | *:true)"', '''.github/workflows/ci.yml "release: if: github.event_name == 'push' && (github.ref == 'refs/heads/main'"''']
+proof  = "read: the lock-vm job's Decide step boots the VM on a schedule, a dispatch, a tag or a push to main, and the release job, which publishes edge from main, needs the lock-vm job"
 
 [[claim]]
 page   = "site/start/install.md"
@@ -3288,7 +3288,7 @@ proof  = "read: `[ \"$(id -u)\" != 0 ] || [ $force = 1 ]`"
 [[claim]]
 page   = "site/start/install.md"
 text   = "Every release also passed the lock screen's tests in their VM."
-source = ['.github/workflows/ci.yml "schedule:* | workflow_dispatch:* | push:tag:* | *:true)"', '''.github/workflows/ci.yml "startsWith(github.ref, 'refs/tags/v')) needs: [lint, test, budgets, acceptance, timing, eval, site, wasm, compositors, lock-vm, package]"''']
+source = ['.github/workflows/ci.yml "schedule:* | workflow_dispatch:* | push:tag:* | push:branch:refs/heads/main:* | *:true)"', '''.github/workflows/ci.yml "startsWith(github.ref, 'refs/tags/v')) needs: [lint, test, budgets, acceptance, timing, eval, site, wasm, compositors, lock-vm, package]"''']
 proof  = "read: a tag push always boots the VM, and the release job needs the lock-vm job"
 
 [[claim]]

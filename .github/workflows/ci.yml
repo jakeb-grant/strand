@@ -662,12 +662,14 @@ jobs:
   # virtualization, 2024-04-02) once a udev rule opens it; that sudo
   # step runs on the runner only, never in the container scripts. A
   # runner without /dev/kvm fails here instead of emulating. Runs
-  # nightly, on demand, on tags and on pushes and pull requests that
-  # touch the lock code or the harness. (lockmon review) Its image's
-  # polkit 127 stage takes polkit's tag archive and meson's sdist, both
-  # sha256-pinned (Dockerfile.lockvm), so a cold build here runs nothing
-  # unpinned; a tag archive GitHub regenerates fails with a message
-  # saying so.
+  # nightly, on demand, on tags, on every push to main (release and
+  # deploy need it, and a diff against the previous push would let a red
+  # lock tier be followed by a green one; audit-lock-main) and on other
+  # pushes and pull requests that touch the lock code or the harness.
+  # (lockmon review) Its image's polkit 127 stage takes polkit's tag
+  # archive and meson's sdist, both sha256-pinned (Dockerfile.lockvm), so
+  # a cold build here runs nothing unpinned; a tag archive GitHub
+  # regenerates fails with a message saying so.
   lock-vm:
     needs: image-publish
     runs-on: ubuntu-24.04
@@ -676,7 +678,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Lock paths changed
         id: paths
-        if: (github.event_name == 'push' && github.ref_type == 'branch') || github.event_name == 'pull_request'
+        if: (github.event_name == 'push' && github.ref_type == 'branch' && github.ref != 'refs/heads/main') || github.event_name == 'pull_request'
         uses: dorny/paths-filter@v4
         with:
           filters: |
@@ -775,8 +777,8 @@ jobs:
       - name: Decide
         id: run
         run: |
-          case "${{ github.event_name }}:${{ github.ref_type }}:${{ steps.paths.outputs.lock }}" in
-            schedule:* | workflow_dispatch:* | push:tag:* | *:true) echo "go=true" >>"$GITHUB_OUTPUT" ;;
+          case "${{ github.event_name }}:${{ github.ref_type }}:${{ github.ref }}:${{ steps.paths.outputs.lock }}" in
+            schedule:* | workflow_dispatch:* | push:tag:* | push:branch:refs/heads/main:* | *:true) echo "go=true" >>"$GITHUB_OUTPUT" ;;
             *) echo "go=false" >>"$GITHUB_OUTPUT"; echo "no lock paths changed: the lock VM tier is skipped" ;;
           esac
       - name: KVM for the runner's user
