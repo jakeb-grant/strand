@@ -2576,9 +2576,11 @@ mod tests {
         let colors = wal.join("colors.json");
         core.add_file(&colors, Role::Other, None);
         assert!(core.backend.done);
-        std::fs::write(&colors, "{}").unwrap();
         let due = core.deadline().expect("the new directory is looked at");
-        let b = core.flush(due).unwrap();
+        std::fs::write(&colors, "{}").unwrap();
+        // A quiet period after the write, so it is not too fresh to read.
+        let quiet = Instant::now() + Options::default().coalesce + MTIME_SKEW;
+        let b = core.flush(due.max(quiet)).unwrap();
         assert_eq!(b.changes.len(), 1, "{b:#?}");
         assert_eq!(b.changes[0].kind, ChangeKind::Created);
         assert_eq!(core.watched_dirs(), vec![wal]);
