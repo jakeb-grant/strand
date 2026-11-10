@@ -479,6 +479,10 @@ struct Ids {
     /// closing. A broadcast would let any peer on the bus (a sandboxed app
     /// among them) read what the user typed in reply to another app.
     senders: HashMap<u32, String>,
+    /// Replacements handed to the body whose sender it has not recorded
+    /// yet (id, sender): told of the id's closing too if the run ends
+    /// with them still queued, since `Notify` gave them the id.
+    queued: Vec<(u32, String)>,
     /// The run ended: `Notify` and `CloseNotification` are refused (the
     /// name may still be ours while the closing signals go out).
     closed: bool,
@@ -697,18 +701,29 @@ impl Server {
         // A new id is its sender's at once. A replacement's sender is
         // recorded by the body together with the new content
         // ([`Arrival::sender`]).
-        if fresh && let Ok(mut ids) = self.ids.lock() {
-            match &a.sender {
-                Some(s) => ids.senders.insert(id, s.clone()),
-                None => ids.senders.remove(&id),
-            };
+        if let Ok(mut ids) = self.ids.lock() {
+            match (fresh, &a.sender) {
+                (true, Some(s)) => {
+                    ids.senders.insert(id, s.clone());
+                }
+                (true, None) => {
+                    ids.senders.remove(&id);
+                }
+                (false, Some(s)) => ids.queued.push((id, s.clone())),
+                (false, None) => {}
+            }
         }
+        let from = a.sender.clone();
         if self.tx.send(FromBus::Notify(Box::new(a))).is_err() {
             // The body is gone: no id is handed out for a notification
             // nobody shows.
-            if fresh && let Ok(mut ids) = self.ids.lock() {
-                ids.live.remove(&id);
-                ids.senders.remove(&id);
+            if let Ok(mut ids) = self.ids.lock() {
+                if fresh {
+                    ids.live.remove(&id);
+                    ids.senders.remove(&id);
+                } else if let Some(from) = from {
+                    unqueue(&mut ids, id, &from);
+                }
             }
             if data {
                 self.images.fetch_sub(1, Ordering::AcqRel);
@@ -1206,9 +1221,13 @@ impl Drop for CloseOnStop {
             Ok(mut ids) => {
                 ids.closed = true;
                 let senders = std::mem::take(&mut ids.senders);
+                let queued = std::mem::take(&mut ids.queued);
+                // A replacement still queued: its sender holds the id
+                // too (audit-notify-sender).
                 ids.live
                     .drain()
                     .filter_map(|id| Some((id, senders.get(&id)?.clone())))
+                    .chain(queued)
                     .collect()
             }
             Err(_) => return,
@@ -1217,6 +1236,7 @@ impl Drop for CloseOnStop {
             return;
         }
         open.sort_unstable();
+        open.dedup();
         let conn = self.conn.clone();
         // Sent after the body is gone, and waited for (bounded) when the
         // services' thread ends: `Services::shutdown` closes them too.
@@ -1789,9 +1809,20 @@ fn forget(
 /// returning the one recorded before.
 fn record_sender(ids: &Mutex<Ids>, id: i64, from: Option<String>) -> Option<String> {
     let mut ids = ids.lock().ok()?;
+    if let Some(from) = &from {
+        unqueue(&mut ids, id as u32, from);
+    }
     match from {
         Some(s) => ids.senders.insert(id as u32, s),
         None => ids.senders.remove(&(id as u32)),
+    }
+}
+
+/// One replacement of `id` by `from` is no longer queued
+/// ([`Ids::queued`]).
+fn unqueue(ids: &mut Ids, id: u32, from: &str) {
+    if let Some(i) = ids.queued.iter().position(|(q, s)| *q == id && s == from) {
+        ids.queued.swap_remove(i);
     }
 }
 

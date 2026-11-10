@@ -1139,6 +1139,56 @@ fn shutdown_closes_the_notifications_still_open() {
     wait_heard(&heard, &format!("Closed {two} 3"));
 }
 
+/// (audit-notify-sender) A replacement from another peer still queued
+/// behind the body's work (pictures being written) when strand exits:
+/// its sender was answered with the id, so it is told the id closed too,
+/// as is the first sender.
+#[test]
+fn shutdown_tells_a_queued_replacements_sender() {
+    let _serial = serial();
+    history_in(None);
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let first = connect(&tokio, &bus.address);
+    let heard_first = hear(&tokio, &first);
+    let other = connect(&tokio, &bus.address);
+    let heard_other = hear(&tokio, &other);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    let id = notify(&tokio, &first, 0, "Hi", &[], HashMap::new(), -1);
+    until(&rt, &s, "the popup", || popups(&b, &rt).len() == 1);
+    // The body is kept busy writing pictures, the replacement behind them.
+    const W: i32 = 2048;
+    const H: i32 = 2048;
+    let pixels: Vec<u8> = (0..W * H * 4).map(|i| (i % 251) as u8).collect();
+    for _ in 0..notifications::IMAGES_QUEUED - 1 {
+        let image = SerializeValue(&(W, H, W * 4, true, 8i32, 4i32, &pixels));
+        let hints = HashMap::from([("image-data", image)]);
+        let _: u32 = call(
+            &tokio,
+            &first,
+            NAME,
+            PATH,
+            NAME,
+            "Notify",
+            &("Viewer", 0u32, "", "Big", "", &[] as &[&str], hints, -1i32),
+        )
+        .body()
+        .deserialize()
+        .unwrap();
+    }
+    let again = notify(&tokio, &other, id, "Replaced", &[], HashMap::new(), -1);
+    assert_eq!(again, id);
+    s.shutdown();
+    wait_heard(&heard_first, &format!("Closed {id} 3"));
+    wait_heard(&heard_other, &format!("Closed {id} 3"));
+}
+
 /// (M5) A handler's press: surface 2, serial 77, invocation `n`.
 fn pressed(invocation: u64) -> strand_core::ActionCtx {
     strand_core::ActionCtx {
