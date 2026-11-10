@@ -305,10 +305,14 @@ impl Parser<'_> {
     }
 
     fn ternary(&mut self) -> Expr {
-        let cond = self.binary(0);
+        let (cond, height) = self.measured(|p| p.binary(0));
         if !self.at(K::Question) {
             return cond;
         }
+        // The node sits one level above its condition.
+        self.links += height;
+        let level = u32::from(self.enter_link());
+        self.leave_links(height + level);
         let start = cond.span.start;
         self.bump();
         let then = self.expr();
@@ -328,15 +332,16 @@ impl Parser<'_> {
     }
 
     fn binary(&mut self, min: u8) -> Expr {
-        let mut lhs = self.unary();
+        let (mut lhs, height) = self.measured(Self::unary);
         // An error operand sits at the end of the previous token, which
         // may be before the current one: start the node at whichever is
         // first so children stay inside it.
         let start = lhs.span.start;
         let mut last_compare = false;
         // Each link of a left-associative chain deepens the tree, so it
-        // counts toward the tree-depth limit.
-        let mut links = 0;
+        // counts toward the tree-depth limit, on top of the first operand.
+        self.links += height;
+        let mut links = height;
         while let Some((op, prec, right)) = binary_op(self.kind()) {
             // A line starting with a sign touching its operand (`-1 => b`,
             // `-y.f()`) starts a new item; `- 1` continues the line.
@@ -434,9 +439,11 @@ impl Parser<'_> {
     }
 
     fn postfix(&mut self) -> Expr {
-        let mut e = self.primary();
+        let (mut e, height) = self.measured(Self::primary);
         let start = e.span.start;
-        let mut links = 0;
+        // Links count on top of the base (`(a.b.c).d`).
+        self.links += height;
+        let mut links = height;
         loop {
             let link = matches!(self.kind(), K::Dot | K::QuestionDot)
                 || (matches!(self.kind(), K::LParen | K::LBracket) && self.touching());

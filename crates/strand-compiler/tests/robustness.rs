@@ -362,6 +362,19 @@ fn pathological_nesting_reports_instead_of_overflowing() {
         format!("component X {{ {} }}", "if a { ".repeat(n)),
         format!("let x = {}", "[".repeat(n)),
         format!("let x = {}1", "a + ".repeat(n)),
+        // A chain on a parenthesised chain counts on top of it, so these
+        // are thousands of levels deep, not a few hundred.
+        format!(
+            "let x = {}1{}",
+            "(".repeat(120),
+            format!("{})", " + 1".repeat(130)).repeat(120)
+        ),
+        format!(
+            "let x = {}a{}",
+            "(".repeat(120),
+            format!("{})", ".b".repeat(130)).repeat(120)
+        ),
+        format!("let x = a{}{}", ".b".repeat(250), " + 1".repeat(250)),
     ];
     for src in &cases {
         // Run on a thread with the default 2 MiB stack used by test threads.
@@ -380,11 +393,74 @@ fn pathological_nesting_reports_instead_of_overflowing() {
             &src[..60]
         );
         assert!(codes.len() <= 2, "{codes:?} on {}", &src[..60]);
+        // What did parse stays within the limit later passes rely on (a
+        // dump spends two levels on each `else if`).
+        let height = tree_height(&dump::tree(&parse(FileId::default(), src).file));
+        assert!(height <= 2 * 256 + 8, "{height} levels on {}", &src[..60]);
         gates.check(elapsed < Duration::from_secs(5), || {
             format!("{elapsed:?} on {}", &src[..60])
         });
     }
     gates.hold();
+}
+
+/// The height of a dump tree, walked without recursion. A dump has more
+/// levels than the AST (the item, the `let`), so callers allow some.
+fn tree_height(root: &dump::TreeNode) -> usize {
+    let mut stack = vec![(root, 1)];
+    let mut height = 0;
+    while let Some((node, depth)) = stack.pop() {
+        height = height.max(depth);
+        stack.extend(node.children.iter().map(|c| (c, depth + 1)));
+    }
+    height
+}
+
+/// The checker grows its stack per expression, so a tree deeper than the
+/// parser allows (built here by hand) costs heap on a small thread instead
+/// of overflowing it.
+#[test]
+fn the_checker_survives_a_tree_deeper_than_the_parser_allows() {
+    use strand_compiler::check;
+    use strand_compiler::syntax::ast::{BinaryOp, Expr, ExprKind, ItemKind};
+    let src = "let x = 1\n";
+    let mut parsed = parse(FileId::default(), src);
+    let Some(ItemKind::Let(l)) = parsed.file.items.first_mut().map(|i| &mut i.kind) else {
+        panic!("no let in {:?}", parsed.file);
+    };
+    let one = l.value.clone();
+    for _ in 0..5_000 {
+        let lhs = std::mem::replace(&mut l.value, one.clone());
+        l.value = Expr {
+            span: one.span,
+            kind: ExprKind::Binary {
+                op: BinaryOp::Add,
+                lhs: Box::new(lhs),
+                rhs: Box::new(one.clone()),
+            },
+        };
+    }
+    let schema = strand_compiler::schema::Schema::builtin();
+    let modules = [check::Module {
+        file: parsed.file_id,
+        name: "deep",
+        ast: &parsed.file,
+        text: src,
+    }];
+    let errors = std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn_scoped(s, || {
+                let checked = check::check(&modules, schema);
+                let errors: Vec<_> = checked.diagnostics.iter().map(|d| d.code).collect();
+                // The deep HIR is dropped on the test's own stack.
+                (errors, checked)
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    });
+    assert!(errors.0.is_empty(), "{:?}", errors.0);
 }
 
 /// miette panics drawing a column past 65,535; such lines (minified or

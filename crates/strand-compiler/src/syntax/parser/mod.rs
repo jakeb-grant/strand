@@ -168,6 +168,9 @@ pub(crate) struct Parser<'s> {
     depth: u32,
     /// Chain links open on the current path (see [`MAX_TREE_DEPTH`]).
     links: u32,
+    /// The highest `depth + links` reached since [`Parser::measured`] last
+    /// started measuring: how deep the tree parsed since then reaches.
+    peak: u32,
     depth_reported: bool,
     eof_reported: bool,
     last_error_at: Option<u32>,
@@ -270,6 +273,7 @@ impl<'s> Parser<'s> {
             diags: Vec::new(),
             depth: 0,
             links: 0,
+            peak: 0,
             depth_reported: false,
             eof_reported: false,
             last_error_at: None,
@@ -416,6 +420,7 @@ impl<'s> Parser<'s> {
             return false;
         }
         self.depth += 1;
+        self.peak = self.peak.max(self.depth + self.links);
         true
     }
 
@@ -431,11 +436,25 @@ impl<'s> Parser<'s> {
             return false;
         }
         self.links += 1;
+        self.peak = self.peak.max(self.depth + self.links);
         true
     }
 
     pub(crate) fn leave_links(&mut self, n: u32) {
         self.links = self.links.saturating_sub(n);
+    }
+
+    /// Parses an operand that a chain then builds on and returns it with
+    /// its height: the levels it reaches below the current one. The chain
+    /// starts its link count from that height, so links over a deep base
+    /// (`(a + … + a) + b`) count toward [`MAX_TREE_DEPTH`] on top of it.
+    pub(crate) fn measured<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> (T, u32) {
+        let base = self.depth + self.links;
+        let outer = std::mem::replace(&mut self.peak, base);
+        let out = f(self);
+        let height = self.peak.saturating_sub(base);
+        self.peak = self.peak.max(outer);
+        (out, height)
     }
 
     fn too_deep(&mut self) {

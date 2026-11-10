@@ -213,6 +213,42 @@ fn long_chains_are_not_nesting() {
 }
 
 #[test]
+fn chains_count_on_top_of_their_first_operand() {
+    // Each chain is short, but the second builds on the first, so the
+    // tree is as deep as both together.
+    let c = codes(&format!(
+        "let x = a{}{}",
+        ".b".repeat(120),
+        " + 1".repeat(120)
+    ));
+    assert!(c.is_empty(), "{c:?}");
+    let c = codes(&format!(
+        "let x = a{}{}",
+        ".b".repeat(200),
+        " + 1".repeat(200)
+    ));
+    assert_eq!(c, ["syntax::too_deep"]);
+    // A parenthesised chain is a base as deep as its links.
+    let nested = |n: usize| {
+        format!(
+            "let x = {}1{}",
+            "(".repeat(n),
+            format!("{})", " + 1".repeat(100)).repeat(n)
+        )
+    };
+    let c = codes(&nested(2));
+    assert!(c.is_empty(), "{c:?}");
+    let c = codes(&nested(3));
+    assert_eq!(c.first(), Some(&"syntax::too_deep"), "{c:?}");
+    let c = codes(&format!(
+        "let x = ({}).b{}",
+        vec!["a"; 200].join(" + "),
+        ".b".repeat(100)
+    ));
+    assert_eq!(c.first(), Some(&"syntax::too_deep"), "{c:?}");
+}
+
+#[test]
 fn trailing_operators_and_commas_continue_the_line() {
     assert_eq!(body("text a ??\n  b"), "element text (?? a b)");
     assert_eq!(

@@ -113,7 +113,9 @@ impl<'a> Checker<'a> {
         {
             self.ctx.place = false;
         }
-        let h = self.expr_kind(e, expected, span);
+        // The parser bounds trees at 256 levels; grow the stack anyway, so
+        // a deeper tree costs heap rather than aborting the process.
+        let h = super::grow(|| self.expr_kind(e, expected, span));
         self.ctx.place = place;
         h
     }

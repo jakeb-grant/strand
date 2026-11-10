@@ -778,7 +778,9 @@ diagnostic and resynchronises:
   operands) is an error, never a stack overflow. Flat chains (`a + b + c`,
   `a.b.c`, `else if`) are parsed in loops, but each link deepens the tree,
   so the tree as a whole may be at most 256 levels deep; past that is one
-  `syntax::too_deep` error. A per-file step budget guarantees termination.
+  `syntax::too_deep` error. A chain's links count on top of its first
+  operand, so `(a + … + a) + b` and `a.b.c + 1` are as deep as both
+  chains together. A per-file step budget guarantees termination.
 - Unknown words where a keyword was expected get a did-you-mean from the
   keywords valid at that position (`componnet` → `component`,
   `on chnage a` → `change`, `for x im xs` → `in`, `dbsu` → `dbus`), and

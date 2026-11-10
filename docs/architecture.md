@@ -1758,7 +1758,9 @@ Public interfaces:
 - **Parsing** (`strand_compiler::syntax`): `parse(file, src) -> Parse`.
   Never panics. `Parse::tokens` is the lossless token stream. Trees are
   at most 256 levels deep (grammar.md, "Error recovery"), so passes may
-  recurse on a 2 MiB stack.
+  recurse on a 2 MiB stack; the checker's and the lowerer's expression
+  recursion still grow the stack on demand (`stacker`), so a miss in that
+  bound costs heap, not an abort.
 - **Lowering into `strand-core`** (the VM's obligations): declare every
   read set with `rt.reads_from` and every assignment and `emit` with
   `rt.writes_to` as nodes are created; read keyed collections with
