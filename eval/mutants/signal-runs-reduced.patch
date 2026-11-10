@@ -1,21 +1,21 @@
 diff --git a/crates/strand-render/src/anim/mod.rs b/crates/strand-render/src/anim/mod.rs
-index d38e3e69..6a462e22 100644
+index fb0d222..07ff3af 100644
 --- a/crates/strand-render/src/anim/mod.rs
 +++ b/crates/strand-render/src/anim/mod.rs
-@@ -375,7 +375,7 @@ impl Animator {
+@@ -550,7 +550,7 @@ impl Animator {
          id: NodeId,
          rate: crate::clock::Rate,
      ) -> (strand_scene::TimeContext, Option<Duration>) {
--        let frozen = self.snapping();
+-        let frozen = self.frozen();
 +        let frozen = self.time.is_zero();
          let period = match rate {
              crate::clock::Rate::Refresh => None,
              crate::clock::Rate::Every(p) => Some(p),
 diff --git a/crates/strand-render/src/renderer/frame.rs b/crates/strand-render/src/renderer/frame.rs
-index 2384bcab..8fffeb60 100644
+index 938fa1c..657af85 100644
 --- a/crates/strand-render/src/renderer/frame.rs
 +++ b/crates/strand-render/src/renderer/frame.rs
-@@ -609,7 +609,7 @@ impl Renderer {
+@@ -783,7 +783,7 @@ impl Renderer {
          if fresh {
              // Its clocks run while it draws them: not frozen (reduced
              // motion, a frame with no clock), and not after it detached.

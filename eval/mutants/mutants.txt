@@ -31,8 +31,9 @@
 # bug23-gpu-regions.patch: b293b8ef's fix (gpu-regions; owner-testing.md
 # bug 23) reverted in what it does, cut against this branch:
 # `State::sync_presented` keeps its signature (eval's surface leg calls it,
-# as crates/strand's GPU host did) and does nothing, and that host's call
-# is removed. The surface leg sees the first hunk (docs/eval.md, "Surface
+# as crates/strand's GPU host does) and does only lock-int's
+# `lock_painted`, a later addition the revert keeps, so the host's calls
+# stay. The surface leg sees the first hunk (docs/eval.md, "Surface
 # leg"): the island's presents keep its first frame's regions.
 # popup-still-pose.patch: eval-r3's fix reverted (decisions.md eval-r3): a
 # preview that finds an exit at its pose with nothing to move no longer

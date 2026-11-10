@@ -1,7 +1,9 @@
+diff --git a/crates/strand-render/src/renderer/layout_pass.rs b/crates/strand-render/src/renderer/layout_pass.rs
+index 4200cc4..fb0dcfb 100644
 --- a/crates/strand-render/src/renderer/layout_pass.rs
 +++ b/crates/strand-render/src/renderer/layout_pass.rs
-@@ -780,7 +780,7 @@
-             } else {
+@@ -1515,7 +1515,7 @@ pub(super) fn glide_moved(
+                 }
                  given
              };
 -            let (mut acc_c, real_c) = (add(acc, glided), add(real, glided));

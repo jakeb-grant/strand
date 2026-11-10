@@ -1980,7 +1980,10 @@ again against another scenario runs as `<name>-<scenario id>`. In a detached wor
 must pass on HEAD and fail under its patch with at least the checks listed,
 or, for an expected failure written `unmatched:SELECTOR`, stop because
 that selector matches no node (how a name the product loses shows).
-A patch that no longer applies is STALE: regenerate it. Each mutant leaves
+A patch that no longer applies is STALE: regenerate it. That part is
+checked on every push too: `scripts/eval/check-mutants.sh` (the `eval`
+job's step 3) runs `git apply --check` on every patch, so the commit that
+moves a patched line fails by the patch's name and regenerates it. Each mutant leaves
 an A/B page of HEAD against it. Commit first: the mutants run HEAD.
 A scenario that fails on HEAD (its control) is a failure, its mutant
 lines are not run, and its run is kept as

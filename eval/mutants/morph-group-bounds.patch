@@ -1,5 +1,5 @@
 diff --git a/crates/strand-render/src/flatten/image.rs b/crates/strand-render/src/flatten/image.rs
-index 4692759f..a2a242cf 100644
+index 4692759..a2a242c 100644
 --- a/crates/strand-render/src/flatten/image.rs
 +++ b/crates/strand-render/src/flatten/image.rs
 @@ -109,7 +109,7 @@ impl Flattener<'_> {
@@ -21,11 +21,11 @@ index 4692759f..a2a242cf 100644
              }
          }
 diff --git a/crates/strand-render/src/flatten/node.rs b/crates/strand-render/src/flatten/node.rs
-index eaa12048..f45fd166 100644
+index dc95412..a9e30a8 100644
 --- a/crates/strand-render/src/flatten/node.rs
 +++ b/crates/strand-render/src/flatten/node.rs
-@@ -82,15 +82,6 @@ impl<'a> Flattener<'a> {
-         self.out.clocks.extend(clock);
+@@ -120,15 +120,6 @@ impl<'a> Flattener<'a> {
+         }
      }
  
 -    /// (cross-surface-morph) Sets the bounds of the group marker `i` to
@@ -40,7 +40,7 @@ index eaa12048..f45fd166 100644
      /// Pushes a group marker; returns its index so a push marker's bounds
      /// can be set to its group's once known.
      pub(super) fn marker(&mut self, item: Item) -> usize {
-@@ -1384,7 +1375,7 @@ impl<'a> Flattener<'a> {
+@@ -1526,7 +1517,7 @@ impl<'a> Flattener<'a> {
              let clip = (clip_text && !bounds.is_empty())
                  .then(|| self.marker(Item::PushClip(frame.to_path(0.1))));
              if let Some(i) = clip {
@@ -50,10 +50,10 @@ index eaa12048..f45fd166 100644
              if !bounds.is_empty() {
                  // (M4) `roll: true`: changed letters roll
 diff --git a/crates/strand-render/src/flatten/widget.rs b/crates/strand-render/src/flatten/widget.rs
-index 7f7d1577..390f5a4f 100644
+index fdea29a..c63d156 100644
 --- a/crates/strand-render/src/flatten/widget.rs
 +++ b/crates/strand-render/src/flatten/widget.rs
-@@ -215,7 +215,7 @@ impl Flattener<'_> {
+@@ -241,7 +241,7 @@ impl Flattener<'_> {
                      kurbo::Rect::new(f.x0, f.y0, f.x0 + f.width() * v, f.y1)
                  };
                  let clip = self.marker(Item::PushClip(w.box_path.clone()));

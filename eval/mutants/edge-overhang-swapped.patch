@@ -1,10 +1,10 @@
 diff --git a/crates/strand-scene/src/placement.rs b/crates/strand-scene/src/placement.rs
-index 0176512c..ec60c529 100644
+index ea69ddd..c640740 100644
 --- a/crates/strand-scene/src/placement.rs
 +++ b/crates/strand-scene/src/placement.rs
-@@ -408,9 +408,9 @@ pub fn layer_config_with(
+@@ -498,9 +498,9 @@ pub fn layer_config_with(
      // The box keeps its place: each margin moves out by the overhang.
-     let margin = [
+     let mut margin = [
          px(m.top) - ot,
 -        px(m.right) - or,
 +        px(m.right) - ol,
@@ -12,5 +12,5 @@ index 0176512c..ec60c529 100644
 -        px(m.left) - ol,
 +        px(m.left) - or,
      ];
-     let (anchors, width, height, exclusive_zone) = if spec.kind == NodeKind::Bar {
-         let edge = spec.edge.unwrap_or(Edge::Top);
+     // (centred-surface) A stretched axis's two margins are each their
+     // mean: its box stays centred on the output, as the compositor
