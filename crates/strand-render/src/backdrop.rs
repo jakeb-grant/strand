@@ -20,7 +20,10 @@
 //!
 //! What is behind is the earlier items over the node's box grown by the
 //! blur's reach. Groups still open at the node (its ancestors' clips,
-//! transforms and layers) are left open: their items draw as they are.
+//! opacities and layers) are left open: their items draw as they are.
+//! An ancestor's transform is kept (audit-backdrop-transform): it places
+//! the items inside it, which are in its local space, so without it the
+//! glass would show what sits at their untransformed places.
 //! Inside an offscreen ancestor (a `filter: blur` or colour matrix around
 //! it) the backdrop is drawn first, from what is behind it on the
 //! surface, and the ancestor then draws it with the rest of its content
@@ -171,7 +174,9 @@ pub(crate) fn reach_of(e: &Effect, scale: Scale) -> u32 {
 }
 
 /// The items before `end` that draw over `region`, with the groups still
-/// open at `end` left open (their push markers dropped): a balanced list.
+/// open at `end` left open (their push markers dropped), but for their
+/// transforms, which are kept to place what they hold (each marker is
+/// absolute, so no pop is needed after it).
 pub(crate) fn behind(items: &[DisplayItem], end: usize, region: Rect) -> Vec<DisplayItem> {
     items
         .iter()
@@ -203,7 +208,7 @@ pub(crate) fn behind_mask(items: &[DisplayItem], end: usize, region: Rect) -> Ve
         }
     }
     for i in open {
-        keep[i] = false;
+        keep[i] = matches!(items[i].item, Item::PushTransform(_));
     }
     for (k, d) in keep.iter_mut().zip(items) {
         *k = *k && (is_marker(&d.item) || d.bounds.intersects(region));
@@ -233,8 +238,9 @@ fn is_marker(i: &Item) -> bool {
 /// group, pixels read back), so a fade, clip, flip or filter of what is
 /// behind changes it as a change of the items does. Groups still open at
 /// `end` hold the backdrop itself and are left out ([`behind`]): an
-/// ancestor fading is not a change behind it. A group around nothing
-/// over `region` draws nothing there and is left out too.
+/// ancestor fading is not a change behind it. Their transforms are
+/// hashed, since [`behind`] keeps them to place what is behind. A group
+/// around nothing over `region` draws nothing there and is left out too.
 pub(crate) fn hash_behind(items: &[DisplayItem], end: usize, region: Rect, h: &mut impl Hasher) {
     let end = end.min(items.len());
     let mut open: Vec<usize> = Vec::new();
@@ -254,6 +260,9 @@ pub(crate) fn hash_behind(items: &[DisplayItem], end: usize, region: Rect, h: &m
     let mut groups: Vec<(usize, bool)> = Vec::new();
     for (i, d) in items[..end].iter().enumerate() {
         if ancestor[i] {
+            if matches!(d.item, Item::PushTransform(_)) {
+                crate::flatten::hash_item(h, &d.item);
+            }
             continue;
         }
         if is_push(&d.item) {

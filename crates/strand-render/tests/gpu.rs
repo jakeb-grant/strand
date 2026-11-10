@@ -3059,6 +3059,62 @@ fn a_backdrops_key_follows_a_fade_a_filter_or_a_move() {
     }
 }
 
+/// (audit-backdrop-transform) A backdrop inside a scaled ancestor reads
+/// what is behind it under the ancestor's transform in a presented
+/// frame as on the CPU: red and blue meet under the glass where they
+/// meet on the surface, not where they would unscaled.
+#[test]
+fn a_backdrop_under_a_scaled_ancestor_looks_the_same_on_either_backend() {
+    let Some(opts) = device() else { return };
+    let size = (480u32, 160u32);
+    let scene = || {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let abs = |x: f32, y: f32, w: f32, h: f32| {
+            vec![
+                (Prop::X, num(x)),
+                (Prop::Y, num(y)),
+                (Prop::Width, num(w)),
+                (Prop::Height, num(h)),
+                (Prop::Place, PropValue::Keyword("absolute".into())),
+            ]
+        };
+        // Scaled 0.5 about (240, 80): local 400 is the surface's 320.
+        let mut p = abs(0.0, 0.0, 480.0, 160.0);
+        p.push((Prop::Scale, num(0.5)));
+        let holder = b.node(NodeKind::Box, Some(root), p);
+        for (x, w, c) in [(0.0, 400.0, "#ff0000"), (400.0, 80.0, "#0000ff")] {
+            let mut p = abs(x, 0.0, w, 160.0);
+            p.push((Prop::Bg, color(c)));
+            b.node(NodeKind::Box, Some(holder), p);
+        }
+        let mut p = abs(320.0, 20.0, 160.0, 120.0);
+        p.push((Prop::Backdrop, backdrop_call("blur", vec![num(8.0)])));
+        b.node(NodeKind::Box, Some(holder), p);
+        b.diff
+    };
+    let want = backdrop_on_cpu(scene(), size);
+    // Glass over the surface's 280..360: red left of 320, blue right.
+    let (left, right) = (want.px(290, 80), want.px(350, 80));
+    assert!(left[2] > 200 && left[0] < 50, "CPU: red at left {left:?}");
+    assert!(
+        right[0] > 200 && right[2] < 50,
+        "CPU: blue at right {right:?}"
+    );
+    let (mut r, mut gpu, pings) = backdrop_presented(opts, scene(), size);
+    let t = Duration::from_secs(1) + Duration::from_millis(16);
+    let frame = r.paint_gpu(S, t).expect("the switch repaints");
+    assert_eq!(backdrops_in(&frame).len(), 1, "in the frame");
+    let px = draw(&mut gpu, &pings, frame);
+    let (bad, worst) = compare_bytes(&px, &want.pixels);
+    let share = bad as f64 / f64::from(size.0 * size.1);
+    assert!(
+        share <= EDGE_SHARE,
+        "{bad} pixels past {GPU_TOLERANCE} of the CPU's (worst {worst})"
+    );
+    drop(gpu);
+}
+
 /// An ancestor fading leaves a backdrop's key alone: the group open
 /// around the card holds the backdrop itself, not what is behind it, so
 /// a box fading in with a blurred card in it blurs it once. Needs no

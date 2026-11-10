@@ -1446,6 +1446,48 @@ fn a_backdrop_inside_a_filtered_ancestor_shows_what_is_behind() {
     );
 }
 
+/// (audit-backdrop-transform) A backdrop inside a scaled ancestor reads
+/// what the surface shows behind it: the ancestor's own transform places
+/// the earlier siblings it reads, as it places them on the surface.
+#[test]
+fn a_backdrop_under_a_scaled_ancestor_reads_the_surface() {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    // A holder scaled 0.5 about its centre (120, 32).
+    let mut p = at_xy(0.0, 0.0, 240.0, 64.0);
+    p.extend([(Prop::Place, kw("absolute")), (Prop::Scale, num(0.5))]);
+    let holder = b.node(NodeKind::Box, Some(root), p);
+    // Red over 0..200 and blue over 200..240 of its own space: on the
+    // surface the boundary is at 120 + (200 - 120) / 2 = 160.
+    for (x, w, c) in [(0.0, 200.0, "#ff0000"), (200.0, 40.0, "#0000ff")] {
+        let mut p = at_xy(x, 0.0, w, 64.0);
+        p.extend([(Prop::Place, kw("absolute")), (Prop::Bg, color(c))]);
+        b.node(NodeKind::Box, Some(holder), p);
+    }
+    // Glass over 180..220 × 12..52 of its space: 150..170 × 22..42.
+    let mut p = at_xy(180.0, 12.0, 40.0, 40.0);
+    p.extend([
+        (Prop::Place, kw("absolute")),
+        (Prop::Backdrop, call("blur", vec![num(1.0)])),
+    ]);
+    b.node(NodeKind::Box, Some(holder), p);
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(240, 64, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, std::time::Duration::from_millis(1000));
+    // BGRA; 7 px either side of the boundary, past blur(1)'s 3 px reach.
+    let (left, right) = (buf.px(153, 32), buf.px(167, 32));
+    assert!(
+        left[2] > 200 && left[0] < 50,
+        "red behind the left: {left:?}"
+    );
+    assert!(
+        right[0] > 200 && right[2] < 50,
+        "blue behind the right: {right:?}"
+    );
+}
+
 /// The five built-in effects and a particle field, 72×48 each, on a
 /// 432×64 bar; the first frame at 1 s (their clocks' `t = 0`).
 fn generative(scale: Scale, reduced: bool) -> (Renderer, Buffer) {
