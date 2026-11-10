@@ -750,13 +750,15 @@ impl Parser<'_> {
     }
 
     /// `els { … }` right after an `if` body: a misspelt `else` (it would
-    /// otherwise parse as an element). Reports and skips it.
+    /// otherwise parse as an element). Reports and skips it. A word that
+    /// starts with a capital (`Else { … }`) is a component's element,
+    /// never the lowercase keyword.
     fn else_typo(&mut self) -> bool {
         if !(self.at(K::Ident) && matches!(self.nth_kind(1), K::LBrace | K::Ident)) {
             return false;
         }
         let word = self.text(self.cur());
-        if strsim::osa_distance(word, "else") != 1 {
+        if word.starts_with(char::is_uppercase) || strsim::osa_distance(word, "else") != 1 {
             return false;
         }
         if self.nth_kind(1) == K::Ident && self.text(self.nth(1)) != "if" {

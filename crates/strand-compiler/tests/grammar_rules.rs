@@ -275,6 +275,26 @@ fn else_may_start_a_line() {
     );
 }
 
+/// A capitalised word one edit from `else` after an `if` body is an
+/// element (`component Else`), not a misspelt `else`; `els` still is.
+#[test]
+fn a_capitalised_else_after_an_if_is_an_element() {
+    let tree = body("if a { x }\nElse { y }");
+    assert!(
+        tree.starts_with("if a\n  then\n    element x\n") && tree.contains("element Else"),
+        "{tree}"
+    );
+    assert!(!tree.contains("  else"), "{tree}");
+    assert_eq!(
+        body("if a { x } Ele { y }").matches("element Ele").count(),
+        1
+    );
+    assert_eq!(
+        codes("component R { if a { x } els { y } }"),
+        ["syntax::expected"]
+    );
+}
+
 #[test]
 fn optional_blocks_must_start_on_the_head_line() {
     // `row` then a stray block on the next line: the line break ended `row`.

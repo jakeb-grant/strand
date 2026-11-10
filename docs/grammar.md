@@ -787,7 +787,8 @@ diagnostic and resynchronises:
   so do clause keywords: `for … kye` → `key`, `state p: T kye` → `key`,
   `state q = 1 persits` → `persist`, `state s frm` → `from`,
   `tokens c extnd` → `extends`, `on change a aftr` → `after`, a field's
-  `rx` → `rw`, `if … { } els { }` → `else`, `overide space { … }` →
+  `rx` → `rw`, `if … { } els { }` → `else` (a capitalised word, `Else {
+  … }`, stays an element), `overide space { … }` →
   `override` (design.md: a misspelt override is an error, never a new
   token), `export stat` → `state`, a component's `tokns` → `tokens`,
   `permit exc` → `exec` and a poll's `evry` → `every`. The misspelt word is
