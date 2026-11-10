@@ -35,7 +35,7 @@ use vello_cpu::{
 
 use crate::cache::{IDLE_FREE, PaintCache};
 use crate::clock::Rate;
-use crate::flatten::{DisplayItem, Item};
+use crate::flatten::{DisplayItem, Item, Shift, hash_item_from};
 use crate::raster::AtlasMirror;
 
 mod fade;
@@ -379,44 +379,48 @@ impl Offscreen {
                 continue;
             }
             let inner = &items[i + 1..end.saturating_sub(1).max(i + 1)];
+            // (audit-group-shift) Keyed from the region's own corner, as a
+            // fade layer is: a group that only moves by whole pixels finds
+            // the pixels it drew, placed where it is this frame. What the
+            // surface cuts off it is in the key (its size, its cut sides,
+            // where its items lie in it).
+            let o = Shift {
+                x: i64::from(region.x),
+                y: i64::from(region.y),
+            };
+            let cut = cut_sides(region, surface);
             let mut h = DefaultHasher::new();
-            (
-                region.x,
-                region.y,
-                region.w,
-                region.h,
-                scale.as_f32().to_bits(),
-            )
-                .hash(&mut h);
-            crate::layers::hash_effects(&mut h, &layer.effects);
-            (
-                layer.mosaic,
-                layer.frame.x0.to_bits(),
-                layer.frame.y0.to_bits(),
-            )
-                .hash(&mut h);
-            for v in layer.xform.as_coeffs() {
-                v.to_bits().hash(&mut h);
-            }
+            ("group", region.w, region.h, scale.as_f32().to_bits(), cut).hash(&mut h);
+            hash_item_from(&mut h, &items[i].item, o);
             for d in inner {
-                crate::flatten::hash_item(&mut h, &d.item);
-                // A nested group's own pixels (drawn just before).
+                hash_item_from(&mut h, &d.item, o);
+                // A nested group's own pixels (drawn just before), and
+                // where they are in this one.
                 if let Item::PushLayer(l) = &d.item
                     && let Some(n) = self.current.get(&layer_key(l))
                 {
-                    (Arc::as_ptr(&n.pixmap) as usize).hash(&mut h);
+                    (
+                        Arc::as_ptr(&n.pixmap) as usize,
+                        i64::from(n.x) - o.x,
+                        i64::from(n.y) - o.y,
+                    )
+                        .hash(&mut h);
                 }
             }
             let key = h.finish();
             let drawn = match self.get(key) {
-                Some(d) => d,
+                Some(d) => Drawn {
+                    x: region.x,
+                    y: region.y,
+                    ..d
+                },
                 None => {
                     let started = Instant::now();
                     let Some(drawn) = render_group(
                         inner,
                         layer,
                         region,
-                        cut_sides(region, surface),
+                        cut,
                         atlas,
                         cache,
                         scale,

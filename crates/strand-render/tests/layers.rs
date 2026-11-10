@@ -508,6 +508,82 @@ fn a_backdrop_beside_a_filtered_group_matches_full_on_a_partial_repaint() {
     }
 }
 
+/// A `filter: grayscale(1)` box (60×40) at `x` holding a blue and a
+/// pink square, alone on the bar. Returns the scene, its effects and the
+/// box.
+fn sliding(x: f32) -> (SceneDiff, Vec<(NodeId, Fx)>, NodeId) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let abs = PropValue::Keyword("absolute".into());
+    let group = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::X, num(x)),
+            (Prop::Y, num(10.0)),
+            (Prop::Width, num(60.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Place, abs.clone()),
+            (Prop::Bg, color("#f9e2af")),
+        ],
+    );
+    for (x, c) in [(4.0, "#89b4fa"), (30.0, "#f38ba8")] {
+        b.node(
+            NodeKind::Box,
+            Some(group),
+            vec![
+                (Prop::X, num(x)),
+                (Prop::Y, num(8.0)),
+                (Prop::Size, num(24.0)),
+                (Prop::Place, abs.clone()),
+                (Prop::Bg, color(c)),
+            ],
+        );
+    }
+    (b.diff, vec![(group, vec![grayscale()])], group)
+}
+
+/// (audit-group-shift) design.md: a filtered subtree renders once and
+/// redraws only when its children change; a subtree that only moves by
+/// whole pixels is one, drawn once and placed where it is each frame,
+/// and each frame equals a full paint at that place.
+#[test]
+fn a_filtered_group_that_only_moves_is_drawn_once() {
+    let (diff, effects, group) = sliding(20.0);
+    let (mut r, mut buf) = drawn(diff, &effects, Scale::ONE);
+    let (bytes, builds, _) = r.offscreen_cache();
+    assert_eq!(builds, 1);
+    for k in 1..=10 {
+        let x = 20.0 + 7.0 * k as f32;
+        let mut d = SceneDiff::new();
+        d.set(group, Prop::X, num(x));
+        assert!(r.apply(d).is_empty());
+        buf.paint(&mut r, S, 1);
+        let (diff, effects, _) = sliding(x);
+        let (_, full) = drawn(diff, &effects, Scale::ONE);
+        assert!(
+            buf.pixels == full.pixels,
+            "at {x}: differs from a full paint"
+        );
+    }
+    assert_eq!(r.offscreen_cache().1, builds, "drawn once");
+    assert_eq!(r.offscreen_cache().0, bytes, "one pixmap kept");
+    // Cut by the surface's edges, and a fraction of a pixel off: still
+    // each a full paint's pixels.
+    for x in [-10.0, -17.0, 200.0, 207.0, 50.5, 20.0] {
+        let mut d = SceneDiff::new();
+        d.set(group, Prop::X, num(x));
+        assert!(r.apply(d).is_empty());
+        buf.paint(&mut r, S, 1);
+        let (diff, effects, _) = sliding(x);
+        let (_, full) = drawn(diff, &effects, Scale::ONE);
+        assert!(
+            buf.pixels == full.pixels,
+            "at {x}: differs from a full paint"
+        );
+    }
+}
+
 /// design.md: cached offscreen groups redraw only when their children
 /// change, within a 32 MB budget, freed when idle. A repaint of the whole
 /// surface reuses the group; a change inside it draws it again; four
@@ -518,22 +594,25 @@ fn offscreen_groups_are_reused_bounded_and_freed_when_idle() {
     let (diff, effects, sq) = filtered("#f38ba8");
     let (mut r, mut buf) = drawn_80(diff, &effects, Scale::ONE);
     let (bytes, builds, kept) = r.offscreen_cache();
-    assert_eq!((builds, kept), (3, 3));
+    // (audit-group-shift) The two blurred groups draw the same pixels
+    // (their opacity is not the group's filter), 160 px apart: one entry.
+    assert_eq!((builds, kept), (2, 2));
     assert!(bytes > 0);
     // Repainted whole (buffer age 0): every group comes from the cache.
     let mut d = SceneDiff::new();
     d.set(r.tree().roots()[0], Prop::Bg, color("#11111b"));
     assert!(r.apply(d).is_empty());
     buf.paint(&mut r, S, 0);
-    assert_eq!(r.offscreen_cache().1, 3, "reused");
+    assert_eq!(r.offscreen_cache().1, 2, "reused");
     // A child changes: its group alone is drawn again.
     let mut d = SceneDiff::new();
     d.set(sq, Prop::Bg, color("#a6e3a1"));
     assert!(r.apply(d).is_empty());
     buf.paint(&mut r, S, 1);
-    assert_eq!(r.offscreen_cache().1, 4, "the changed group redraws");
+    assert_eq!(r.offscreen_cache().1, 3, "the changed group redraws");
 
-    // The budget: four grayscale groups of 30% of it each.
+    // The budget: four grayscale groups of 30% of it each, each its own
+    // colour (the same pixels would be one entry).
     let side = (strand_render::OFFSCREEN_BYTES as f64 * 0.3 / 4.0).sqrt() as u32;
     let pitch = side + 10;
     let mut b = Builder::default();
@@ -546,7 +625,10 @@ fn offscreen_groups_are_reused_bounded_and_freed_when_idle() {
             vec![
                 (Prop::X, num((i * pitch) as f32)),
                 (Prop::Size, num(side as f32)),
-                (Prop::Bg, color("#f38ba8")),
+                (
+                    Prop::Bg,
+                    color(["#f38ba8", "#a6e3a1", "#89b4fa", "#f9e2af"][i as usize]),
+                ),
             ],
         );
         big.push((g, vec![grayscale()]));
