@@ -239,17 +239,23 @@ pub fn system_theme() -> String {
 
 /// The icon theme the desktop's settings portal names (`None`: no portal,
 /// or it names none), which [`system_theme`] prefers to GTK's settings
-/// files. `true` when it differs from the one set before: the caches were
-/// invalidated ([`invalidate`]), and holders of icons must look them up
-/// again.
+/// files. `true` when the theme [`system_theme`] gives changes with it:
+/// the caches were invalidated ([`invalidate`]), and holders of icons
+/// must look them up again. A name that leaves that theme as it was (the
+/// one GTK's settings files already give, or any name while
+/// `$STRAND_ICON_THEME` is set) is recorded and invalidates nothing.
 pub fn set_desktop_theme(name: Option<String>) -> bool {
     let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
-    {
+    let old = {
         let mut s = state();
         if s.desktop == name {
             return false;
         }
-        s.desktop = name;
+        std::mem::replace(&mut s.desktop, name.clone())
+    };
+    // The settings files are read without the lock held.
+    if read_system_theme(old) == read_system_theme(name) {
+        return false;
     }
     invalidate();
     true
@@ -872,25 +878,60 @@ mod tests {
 
     /// The portal's theme name wins over GTK's settings files (not over
     /// `$STRAND_ICON_THEME`); setting a different one invalidates, the
-    /// same one does nothing, and `None` falls back to the files.
+    /// same one does nothing, and `None` falls back to the files. Under
+    /// `$STRAND_ICON_THEME` no name switches anything.
     #[test]
     fn the_portal_theme_is_preferred_and_invalidates_on_change() {
         let _serial = serial();
+        set_desktop_theme(None);
         let files = read_system_theme(None);
         let pinned = std::env::var("STRAND_ICON_THEME").is_ok_and(|t| !t.trim().is_empty());
         let g = generation();
-        assert!(set_desktop_theme(Some("PortalTheme".into())));
-        assert!(generation() > g, "a switch invalidates");
-        if !pinned {
+        assert_eq!(set_desktop_theme(Some("PortalTheme".into())), !pinned);
+        if pinned {
+            assert_eq!(generation(), g, "the pinned theme stays");
+        } else {
+            assert!(generation() > g, "a switch invalidates");
             assert_eq!(system_theme(), "PortalTheme");
         }
         let g = generation();
         assert!(!set_desktop_theme(Some(" PortalTheme ".into())));
         assert_eq!(generation(), g, "the same theme again changes nothing");
-        assert!(set_desktop_theme(Some(String::new())), "empty: no theme");
+        assert_eq!(
+            set_desktop_theme(Some(String::new())),
+            !pinned,
+            "empty: no theme"
+        );
         assert_eq!(system_theme(), files);
         assert!(!set_desktop_theme(None));
         assert_eq!(system_theme(), files);
+    }
+
+    /// A portal naming the theme the lookup already uses (the one GTK's
+    /// settings files give, Adwaita by default) is no switch: at boot,
+    /// its first answer drops no lookup and asks no holder of icons to
+    /// look them up again.
+    #[test]
+    fn a_portal_name_that_leaves_the_theme_as_it_was_invalidates_nothing() {
+        let _serial = serial();
+        set_desktop_theme(None);
+        let files = system_theme();
+        let g = generation();
+        assert!(!set_desktop_theme(Some(files.clone())), "the same theme");
+        assert_eq!(generation(), g, "no lookup dropped");
+        assert_eq!(system_theme(), files);
+        // It is recorded all the same: another name switches, and the
+        // files' theme again switches back.
+        if read_system_theme(Some("PortalTheme".into())) == "PortalTheme" {
+            assert!(set_desktop_theme(Some("PortalTheme".into())));
+            assert_eq!(system_theme(), "PortalTheme");
+            assert!(set_desktop_theme(Some(files.clone())));
+            assert_eq!(system_theme(), files);
+            let g = generation();
+            assert!(!set_desktop_theme(None), "None gives the files' theme too");
+            assert_eq!(generation(), g);
+        }
+        set_desktop_theme(None);
     }
 
     #[test]
