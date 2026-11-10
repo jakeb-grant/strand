@@ -1691,6 +1691,17 @@ impl Instance {
         let mut left: Vec<(Rc<str>, reload::CellRec)> = carry.old.cells.drain().collect();
         left.sort_by(|a, b| a.0.cmp(&b.0));
         let parked = |key: &str| ctx.parked.borrow().iter().any(|p| key.starts_with(&**p));
+        // (audit-reload-closed-state) The cells a closed popup's content
+        // kept wait for it to open (`pending`, as a parked bar's do) while
+        // the surface it is in is still mounted.
+        let in_surface = |key: &str| {
+            carry.surfaces.iter().any(|(ident, _)| {
+                key.strip_prefix(&**ident)
+                    .is_some_and(|r| r.starts_with(['/', '[', '#']))
+            })
+        };
+        let waits =
+            |key: &str| parked(key) || (old.closed.borrow().contains(key) && in_surface(key));
         // A file renamed in this load is one owner under both names: the
         // cells of the modules gone pair with those of the modules new
         // (decisions.md 2026-10-05, the edit table as the fuzzer reads
@@ -1713,7 +1724,7 @@ impl Instance {
         // How many cells each owner lost: more than it gained, and some of
         // them were removed (decisions.md, removed-state-notice).
         let mut lost: HashMap<String, usize> = HashMap::new();
-        for (key, _) in left.iter().filter(|(k, _)| !parked(k)) {
+        for (key, _) in left.iter().filter(|(k, _)| !waits(k)) {
             *lost.entry(group(reload::cell_owner(key))).or_default() += 1;
         }
         let mut gained: HashMap<String, usize> = HashMap::new();
@@ -1721,7 +1732,7 @@ impl Instance {
             *gained.entry(group(owner)).or_default() += 1;
         }
         for (key, rec) in left {
-            if parked(&key) {
+            if waits(&key) {
                 if let Some(r) = &self.root {
                     let _ = rt.reparent(rec_holder(&rec), Some(r.id()));
                 }
@@ -1753,6 +1764,30 @@ impl Instance {
                     rec.path().to_string(),
                     "removed with its module".to_string(),
                 );
+            }
+        }
+        // Cells waiting since an earlier reload move to the new root, out
+        // of the old one disposed below; those of a closed popup whose
+        // surface went go: nothing will open them again.
+        let gone: Vec<Rc<str>> = ctx
+            .pending
+            .borrow()
+            .iter()
+            .filter_map(|(k, (rec, _))| {
+                if parked(k) || in_surface(k) {
+                    if let Some(r) = &self.root {
+                        let _ = rt.reparent(rec_holder(rec), Some(r.id()));
+                    }
+                    None
+                } else {
+                    Some(k.clone())
+                }
+            })
+            .collect();
+        for k in gone {
+            let rec = ctx.pending.borrow_mut().remove(&k);
+            if let Some((rec, _)) = rec {
+                rec.dispose(&rt);
             }
         }
         report.finish();

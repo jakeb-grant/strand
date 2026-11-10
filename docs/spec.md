@@ -3021,6 +3021,11 @@ new program with the running one.
 - A reload that keeps a surface shown does not run its `on show`: the
   surface did not open. One the reload adds, opens, or makes again as
   another kind does open, and runs it (decisions.md audit-reload-show).
+- The `state`s of a closed `popup`'s components (its content unmounts
+  as it closes, their values kept) are kept through a reload too, and
+  taken over when it next opens: a changed type or `@reset` then starts
+  them from their default, and that tick's notices say so, as the
+  reload's would (decisions.md audit-reload-closed-state).
 - A surface's state is keyed by its place in the program, not its name,
   so a renamed surface keeps it. Turning a `bar` into a single surface
   keeps its state when it had one instance, and resets it with a warning

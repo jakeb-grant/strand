@@ -553,7 +553,16 @@ impl Ctx {
     pub(crate) fn report(&self, f: impl FnOnce(&mut Report)) {
         if let Some(c) = self.carry.borrow_mut().as_mut() {
             f(&mut c.report);
+            return;
         }
+        // (audit-reload-closed-state) A cell a reload kept waiting (a
+        // closed popup's, a parked bar's) is taken over when its content
+        // mounts again, after the reload: what that does is the tick's
+        // notices.
+        let mut r = Report::default();
+        f(&mut r);
+        self.notices.borrow_mut().extend(r.notices);
+        self.kept.borrow_mut().extend(r.kept_over_default);
     }
 
     /// A handler at `key` with Merkle hash `hash` and task site `site`:

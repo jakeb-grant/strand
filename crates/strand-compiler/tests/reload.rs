@@ -1014,6 +1014,33 @@ fn a_parked_bar_keeps_its_state_through_a_reload() {
     assert_eq!(shell.scene.texts(), ["false", "true"]);
 }
 
+/// (audit-reload-closed-state) A cell waiting for a parked bar outlives
+/// the reload after the one that kept it: each reload moves it to its
+/// own root.
+#[test]
+fn a_parked_bar_keeps_its_state_through_two_reloads() {
+    let src = |c: &str| {
+        format!(
+            "bar Top {{\n  state open = false\n  text join(\"\", open) {{ color: {c}; on click {{ open = !open }} }}\n}}\n"
+        )
+    };
+    let mut shell = boot_with(
+        &[("t.strand", &src("#ff0000"))],
+        Storage::none(),
+        &["DP-1", "DP-2"],
+    );
+    let t = shell.scene.of_kind(NodeKind::Text)[1];
+    shell.inst.event(t, "click", Vec::new());
+    shell.flush();
+    screens(&shell.rt, &shell.host, &["DP-1"]);
+    shell.flush();
+    shell.reload(&[("t.strand", &src("#00ff00"))]);
+    shell.reload(&[("t.strand", &src("#0000ff"))]);
+    screens(&shell.rt, &shell.host, &["DP-1", "DP-2"]);
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["false", "true"]);
+}
+
 /// While a lock is shown, an edit to it waits for the unlock.
 #[test]
 fn a_lock_edit_is_deferred_while_shown() {
@@ -1662,6 +1689,87 @@ fn a_reopened_popup_keeps_its_state_across_a_reload() {
     shell.inst.set("cal.p", Value::Bool(true)).unwrap();
     shell.flush();
     assert_eq!(shell.scene.texts(), ["Month 2"]);
+}
+
+const CLOSED_CAL: &str = "export state p = false\ncomponent Cal {\n  state month = 1\n  text join(\" \", \"M\", month)\n  box { on click { month += 1 } }\n}\nbar B { popup { open: <-> p; Cal } }\n";
+
+/// Boot [`CLOSED_CAL`], open the popup, advance the month to 2 and close
+/// it again.
+fn closed_cal_at_month_two() -> Shell {
+    let mut shell = boot(&[("cal.strand", CLOSED_CAL)]);
+    shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    let inc = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(inc, "click", Vec::new()));
+    shell.flush();
+    shell.inst.set("cal.p", Value::Bool(false)).unwrap();
+    shell.flush();
+    assert!(shell.scene.texts().is_empty());
+    shell
+}
+
+/// (audit-reload-closed-state) A reload while a popup is closed keeps
+/// the `state`s its content kept on closing: they wait for it to open,
+/// through later reloads too.
+#[test]
+fn a_closed_popup_keeps_its_state_across_a_reload() {
+    let mut shell = closed_cal_at_month_two();
+    let edited = CLOSED_CAL.replace("\"M\"", "\"Month\"");
+    let (report, _) = shell.reload(&[("cal.strand", &edited)]);
+    assert!(report.reset.is_empty(), "{report:?}");
+    let again = edited.replace("\"Month\"", "\"Mo\"");
+    shell.reload(&[("cal.strand", &again)]);
+    shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+    let u = shell.flush();
+    assert_eq!(shell.scene.texts(), ["Mo 2"], "{report:?}");
+    assert!(u.notices.is_empty(), "{:?}", u.notices);
+}
+
+/// (audit-reload-closed-state) A closed popup's kept `state` whose type
+/// changed, or that `@reset` names, starts from its default when the
+/// popup opens, and that tick's notices say it was reset.
+#[test]
+fn a_closed_popups_retyped_or_reset_state_resets_with_a_notice() {
+    for (edit, why, text) in [
+        (
+            CLOSED_CAL.replace("state month = 1", "state month = 1.0"),
+            "type changed",
+            "M 1",
+        ),
+        (
+            CLOSED_CAL.replace("state month = 1", "@reset state month = 1"),
+            "@reset",
+            "M 1",
+        ),
+    ] {
+        let mut shell = closed_cal_at_month_two();
+        let (report, _) = shell.reload(&[("cal.strand", &edit)]);
+        assert!(report.reset.is_empty(), "{report:?}");
+        shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+        let u = shell.flush();
+        assert_eq!(shell.scene.texts(), [text]);
+        assert!(
+            u.notices
+                .iter()
+                .any(|n| n.contains("month: reset (") && n.contains(why)),
+            "{:?}",
+            u.notices
+        );
+    }
+}
+
+/// (audit-reload-closed-state) The cells kept for a closed popup go when
+/// a reload removes the surface it is in: the surface added back starts
+/// from its defaults.
+#[test]
+fn a_closed_popups_kept_state_goes_with_its_surface() {
+    let mut shell = closed_cal_at_month_two();
+    let without = CLOSED_CAL.replace("bar B { popup { open: <-> p; Cal } }\n", "");
+    shell.reload(&[("cal.strand", &without)]);
+    shell.reload(&[("cal.strand", CLOSED_CAL)]);
+    shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["M 1"]);
 }
 
 /// (M6, the review of the owner's ruling) On the schema host, a config
