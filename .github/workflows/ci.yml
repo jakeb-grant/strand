@@ -77,8 +77,11 @@ jobs:
   # what can write a tag twice). The compositor matrix's Dockerfile.matrix the
   # same, at strand-matrix.
   # `image` looks, with no registry login; `image-publish` is the only job
-  # that may write to packages, and always runs, so the jobs after it need no
-  # special `if`. A branch's runs that will publish share a group, by branch: a
+  # that may write to packages, and always runs. The check jobs after it
+  # take its result in their own `if:` (`needs.image-publish.result ==
+  # 'success'`), which they need beside `!cancelled()`: that is what lets
+  # them run when `prior` fails, and it would let them run after a failed
+  # publish too (decisions.md audit-main-rerun). A branch's runs that will publish share a group, by branch: a
   # push and its pull request start together with one new Dockerfile, and one
   # waits for the other, then finds the tag. GitHub keeps only the newest job
   # waiting in a group, so a third run there replaces the second. A third
