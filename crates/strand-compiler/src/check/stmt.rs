@@ -1,9 +1,10 @@
 //! Handler and fn bodies: statements, assignment, handlers and timers.
 
 use super::Checker;
+use super::expr::arith_prim;
 use crate::hir::{self, Event, LocalKind, StmtKind, Target};
 use crate::syntax::Span;
-use crate::syntax::ast::{self, AssignOp};
+use crate::syntax::ast::{self, AssignOp, BinaryOp};
 use crate::ty::{ParamSig, Prim, Ty};
 use strand_scene::{KEY_MODIFIERS, KeyPattern, KeyPatternError};
 
@@ -273,6 +274,10 @@ impl<'a> Checker<'a> {
                     _ => v.ty.clone(),
                 };
                 let widened = self.widen(&t, &fraction);
+                // `x op= e` is `x = x op e`: its result must fit `x`, so
+                // `n /= 2` or `n *= 0.5` on an `int` is refused as
+                // `n = n / 2` is, while `w *= 0.5` keeps a length.
+                let mut fraction_in_int = false;
                 let ok = match (t.ty.prim(), v.ty.prim()) {
                     _ if widened || t.ty.is_lenient() || v.ty.is_lenient() => true,
                     (Some(Prim::Text), Some(Prim::Text)) => op == AssignOp::Add,
@@ -281,19 +286,28 @@ impl<'a> Checker<'a> {
                         op == AssignOp::Add && self.types.assignable(&v.ty, &t.ty)
                     }
                     (Some(a), Some(b)) if a.is_numeric() && b.is_numeric() => {
-                        matches!(op, AssignOp::Mul | AssignOp::Div) && b.is_scalar()
-                            || self.types.assignable(&v.ty, &t.ty)
+                        let bin = match op {
+                            AssignOp::Mul => BinaryOp::Mul,
+                            AssignOp::Div => BinaryOp::Div,
+                            AssignOp::Sub => BinaryOp::Sub,
+                            _ => BinaryOp::Add,
+                        };
+                        let res = arith_prim(bin, a, b).map(Ty::Prim);
+                        fraction_in_int = a == Prim::Int && res == Some(Ty::FLOAT);
+                        res.is_some_and(|r| self.types.assignable(&r, &t.ty))
                     }
                     _ => false,
                 };
                 if !ok {
                     let (a, b) = (self.show(&t.ty), self.show(&v.ty));
+                    let help = fraction_in_int.then(|| self.int_help(&v));
                     self.error(
                         "check::type_mismatch",
                         format!("cannot apply `{}` to `{a}` and `{b}`", op.as_str()),
                         v.span,
                         format!("this is `{b}`"),
-                    );
+                    )
+                    .help = help;
                 }
                 v
             }

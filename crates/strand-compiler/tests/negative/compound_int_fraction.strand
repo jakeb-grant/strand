@@ -1,0 +1,12 @@
+// expect: check::type_mismatch
+// `x op= e` is `x = x op e`: `/=` on an `int`, or `*=` with a fraction,
+// makes a fraction the `int` place cannot hold, on a state, a list item
+// or a record field alike.
+type Grid { columns: int }
+state n: int = 5
+state xs: [int] = [4]
+state g: Grid = Grid(columns: 4)
+component C {
+  box { on click { n /= 2; n *= 0.5 } }
+  box { on click { xs[0] /= 2; g.columns /= 3 } }
+}

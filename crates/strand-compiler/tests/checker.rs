@@ -957,6 +957,51 @@ fn whole_number_declarations_are_ints_until_a_fraction_arrives() {
     );
 }
 
+/// spec.md 8.3: `x op= e` is `x = x op e`, so a compound assignment is
+/// accepted exactly when its long form is. `/=` on an `int`, or `*=` with
+/// a fraction, is refused like `n = n / 2` (the negative corpus's
+/// `compound_int_fraction`); these keep checking clean.
+#[test]
+fn compound_assignment_checks_as_its_long_form() {
+    for body in [
+        "n += 1",
+        "n -= 2",
+        "n *= 2",
+        "n *= k",
+        "xs[0] *= 3",
+        "f /= 2",
+        "f *= 0.5",
+        "f += n",
+        "w *= 0.5",
+        "w /= 2",
+        "w += 4px",
+        "i /= 2",
+        "j *= 0.5",
+    ] {
+        let src = format!(
+            "state n: int = 5\nstate k: int = 2\nstate xs: [int] = [4]\n\
+             state f: float = 1.5\nstate w: length = 4px\nstate i = 4\nstate j = 4\n\
+             component C {{ box {{ on click {{ {body} }} }} }}\n"
+        );
+        let (out, map) = compile_files(&[("a.strand", src)]);
+        assert!(
+            out.diagnostics.is_empty(),
+            "{body}: {}",
+            render(&out.diagnostics, &map, Style::Plain)
+        );
+    }
+    // The fraction widens an untyped whole-number declaration.
+    let out = one("state i = 4\nstate j = 4\n\
+                   component C { box { on click { i /= 2; j *= 0.5 } } }\n");
+    assert_eq!(def_ty(&out.program, "i"), "float");
+    assert_eq!(def_ty(&out.program, "j"), "float");
+    // `w * 2px` has no unit, so `w *= 2px` is refused as `w = w * 2px` is.
+    assert_eq!(
+        codes("state w: length = 4px\ncomponent C { box { on click { w *= 2px } } }\n"),
+        ["check::type_mismatch"]
+    );
+}
+
 /// An untyped component parameter takes its type from its callers
 /// (grammar.md's `component Toast(n) tokens { … }`).
 #[test]

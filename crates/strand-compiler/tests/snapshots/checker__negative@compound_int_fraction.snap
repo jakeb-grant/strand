@@ -1,0 +1,51 @@
+---
+source: crates/strand-compiler/tests/checker.rs
+expression: rendered
+---
+check::type_mismatch
+
+  × cannot apply `/=` to `int` and `int`
+    ╭─[compound_int_fraction.strand:10:25]
+  9 │ component C {
+ 10 │   box { on click { n /= 2; n *= 0.5 } }
+    ·                         ┬
+    ·                         ╰── this is `int`
+ 11 │   box { on click { xs[0] /= 2; g.columns /= 3 } }
+    ╰────
+  help: round it: `(…).round()`, `.floor()` or `.ceil()`
+
+check::type_mismatch
+
+  × cannot apply `*=` to `int` and `float`
+    ╭─[compound_int_fraction.strand:10:33]
+  9 │ component C {
+ 10 │   box { on click { n /= 2; n *= 0.5 } }
+    ·                                 ─┬─
+    ·                                  ╰── this is `float`
+ 11 │   box { on click { xs[0] /= 2; g.columns /= 3 } }
+    ╰────
+  help: round it: `(…).round()`, `.floor()` or `.ceil()`
+
+check::type_mismatch
+
+  × cannot apply `/=` to `int` and `int`
+    ╭─[compound_int_fraction.strand:11:29]
+ 10 │   box { on click { n /= 2; n *= 0.5 } }
+ 11 │   box { on click { xs[0] /= 2; g.columns /= 3 } }
+    ·                             ┬
+    ·                             ╰── this is `int`
+ 12 │ }
+    ╰────
+  help: round it: `(…).round()`, `.floor()` or `.ceil()`
+
+check::type_mismatch
+
+  × cannot apply `/=` to `int` and `int`
+    ╭─[compound_int_fraction.strand:11:45]
+ 10 │   box { on click { n /= 2; n *= 0.5 } }
+ 11 │   box { on click { xs[0] /= 2; g.columns /= 3 } }
+    ·                                             ┬
+    ·                                             ╰── this is `int`
+ 12 │ }
+    ╰────
+  help: round it: `(…).round()`, `.floor()` or `.ceil()`
