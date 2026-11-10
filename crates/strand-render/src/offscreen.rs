@@ -321,8 +321,8 @@ impl Offscreen {
                 let drawn = match self.get(key) {
                     Some(d) => d,
                     None => {
-                        let behind = crate::backdrop::read(items, i, pass, region);
-                        let pins = pins(&behind, &self.current);
+                        let pins =
+                            pins(crate::backdrop::read(items, i, pass, region), &self.current);
                         let started = Instant::now();
                         let Some(drawn) = crate::backdrop::render(
                             items,
@@ -461,7 +461,10 @@ impl Offscreen {
 
 /// The pixmaps that `hash_item` (and a key's nested groups) name by
 /// address among `items`, to pin in the entry keyed by them.
-fn pins(items: &[DisplayItem], groups: &HashMap<usize, Drawn>) -> Vec<Weak<Pixmap>> {
+fn pins<'a>(
+    items: impl IntoIterator<Item = &'a DisplayItem>,
+    groups: &HashMap<usize, Drawn>,
+) -> Vec<Weak<Pixmap>> {
     let mut out = Vec::new();
     for d in items {
         match &d.item {

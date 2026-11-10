@@ -298,9 +298,18 @@ fn is_push(i: &Item) -> bool {
 }
 
 /// What the backdrop group at `i` over `region` reads: the items behind
-/// it within its blur's reach.
-pub(crate) fn read(items: &[DisplayItem], i: usize, pass: Pass, region: Rect) -> Vec<DisplayItem> {
-    behind(items, i, region.inflate(pass.reach()))
+/// it within its blur's reach, as [`behind`] keeps them, by reference
+/// (audit-backdrop-borrow: keying and pinning them clones none).
+pub(crate) fn read(
+    items: &[DisplayItem],
+    i: usize,
+    pass: Pass,
+    region: Rect,
+) -> impl Iterator<Item = &DisplayItem> {
+    items
+        .iter()
+        .zip(behind_mask(items, i, region.inflate(pass.reach())))
+        .filter_map(|(d, k)| k.then_some(d))
 }
 
 /// The cache key of the backdrop group at `i` over `region`.
@@ -536,6 +545,101 @@ mod tests {
         // The first and last clips are open at the end: dropped.
         assert_eq!(got.len(), 2);
         assert!(matches!(got[0].item, Item::PushOpacity(..)));
+    }
+
+    /// Counts the allocations made on this thread while `COUNTING` is set.
+    struct Counting;
+
+    std::thread_local! {
+        static COUNTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static ALLOCS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    fn note() {
+        let _ = COUNTING.try_with(|c| {
+            if c.get() {
+                let _ = ALLOCS.try_with(|a| a.set(a.get() + 1));
+            }
+        });
+    }
+
+    // SAFETY: every call goes to `System` as given; counting touches only
+    // const thread-locals, which do not allocate.
+    unsafe impl std::alloc::GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+            note();
+            unsafe { std::alloc::System.alloc(layout) }
+        }
+        unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+            note();
+            unsafe { std::alloc::System.alloc_zeroed(layout) }
+        }
+        unsafe fn realloc(
+            &self,
+            ptr: *mut u8,
+            layout: std::alloc::Layout,
+            new_size: usize,
+        ) -> *mut u8 {
+            note();
+            unsafe { std::alloc::System.realloc(ptr, layout, new_size) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+            unsafe { std::alloc::System.dealloc(ptr, layout) }
+        }
+    }
+
+    #[global_allocator]
+    static GLOBAL: Counting = Counting;
+
+    /// (audit-backdrop-borrow) Keying a backdrop walks what is behind it
+    /// by reference: a thousand clipped groups behind it, each with a
+    /// path a clone would copy, cost the key its mask and nothing more.
+    #[test]
+    fn a_backdrops_key_clones_nothing_behind_it() {
+        let d = |item| DisplayItem {
+            item,
+            bounds: Rect::new(0, 0, 100, 100),
+        };
+        let mut path = vello_cpu::kurbo::BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((100.0, 0.0));
+        path.line_to((100.0, 100.0));
+        path.close_path();
+        let mut items = Vec::new();
+        for _ in 0..1000 {
+            items.push(d(Item::PushClip(path.clone())));
+            items.push(d(Item::PopClip));
+        }
+        let at = items.len();
+        let blur = effect(
+            &PropValue::Call {
+                name: "blur".into(),
+                args: vec![PropValue::Number(4.0)],
+            },
+            1.0,
+        )
+        .unwrap();
+        let layer = Layer {
+            effects: Arc::from([blur]),
+            frame: Default::default(),
+            scale: 1.0,
+            xform: Affine::IDENTITY,
+            mosaic: None,
+            gpu: None,
+        };
+        let p = pass(&layer, Scale::ONE).unwrap();
+        items.push(d(Item::PushLayer(Arc::new(layer))));
+        items.push(d(Item::PopLayer));
+        let groups = HashMap::new();
+        let region = Rect::new(10, 10, 50, 50);
+        let first = key(&items, at, p, region, Scale::ONE, &groups);
+        ALLOCS.with(|a| a.set(0));
+        COUNTING.with(|c| c.set(true));
+        let again = key(&items, at, p, region, Scale::ONE, &groups);
+        COUNTING.with(|c| c.set(false));
+        let allocs = ALLOCS.with(std::cell::Cell::get);
+        assert_eq!(first, again);
+        assert!(allocs <= 2, "{allocs} allocations to key a backdrop");
     }
 
     #[test]
