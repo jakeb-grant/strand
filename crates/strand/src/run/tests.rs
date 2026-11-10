@@ -523,6 +523,69 @@ fn strand_get_and_set_reach_one_dictionary_entry() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (spec.md 4.2, 13) `strand set` on a config's own `service power`,
+/// which shadows the builtin `power`, writes the config's `text rw`
+/// field: `power-saver` is a text, not the builtin's `PowerProfile`
+/// enum, and reaches the daemon.
+#[test]
+fn strand_set_writes_a_config_service_that_shadows_a_builtin() {
+    use strand_services::testing::{DbusMock, PrivateBus};
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let Some(_ppd) = DbusMock::start(
+        &bus,
+        "power_profiles_daemon",
+        true,
+        None,
+        "net.hadess.PowerProfiles",
+    ) else {
+        return;
+    };
+    let dir = temp_dir("set-shadow");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "service power from dbus system \"net.hadess.PowerProfiles\" { profile: text rw = ActiveProfile }\nbar Top {\n  text power.profile\n}\n",
+    )
+    .unwrap();
+    let program = load(&dir);
+    let storage = Storage::in_dirs(dir.join("state"), &dir);
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let (give, take) = std::sync::mpsc::channel();
+    let live = Live {
+        buses: Some(bus.buses()),
+        requests_to: Some(logic::RequestsTo(Box::new(move |r| {
+            let _ = give.send(r);
+        }))),
+        ..Live::default()
+    };
+    let t = std::thread::spawn(move || logic(program, storage, from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the daemon's profile", |s| s.texts() == ["balanced"]);
+    let requests = take.recv_timeout(Duration::from_secs(10)).unwrap();
+    let ans = std::thread::spawn(move || {
+        block_on(
+            requests
+                .call(ipc::Request::Set {
+                    path: "power.profile".into(),
+                    value: "power-saver".into(),
+                })
+                .unwrap(),
+        )
+    })
+    .join()
+    .unwrap();
+    assert_eq!(ans, json!({"ok": true}), "the config's text field");
+    m.until("the written profile", |s| s.texts() == ["power-saver"]);
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// (S-tools) `strand report` goes through the snapshot hop: logic asks
 /// main, main's half comes back, and the socket's answer is it with
 /// logic's half added (the PSS, the version, the compositor's name); an
