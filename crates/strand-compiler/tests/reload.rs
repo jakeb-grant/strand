@@ -1041,6 +1041,45 @@ fn a_parked_bar_keeps_its_state_through_two_reloads() {
     assert_eq!(shell.scene.texts(), ["false", "true"]);
 }
 
+/// (audit-reload-parked) A bar its own `screens:` pick parked, which a
+/// reload's program picks again, is created anew with all its props
+/// (render removed it at park) and opens: its `on show` runs.
+#[test]
+fn a_bar_parked_by_its_pick_comes_back_on_a_reload() {
+    let src = |pick: &str| {
+        format!(
+            "state only = false\nstate shows = 0\nbar Top {{\n  screens: {pick}\n  on show {{ shows += 1 }}\n  text \"x\" {{ on click {{ only = true }} }}\n}}\n"
+        )
+    };
+    let a = src("only ? [\"DP-1\"] : [\"DP-1\", \"DP-2\"]");
+    let mut shell = boot_with(&[("t.strand", &a)], Storage::none(), &["DP-1", "DP-2"]);
+    assert_eq!(shell.scene.of_kind(NodeKind::Bar).len(), 2);
+    let t = shell.scene.of_kind(NodeKind::Text)[0];
+    assert!(shell.inst.event(t, "click", Vec::new()));
+    shell.flush();
+    assert_eq!(shell.scene.of_kind(NodeKind::Bar).len(), 1);
+    assert_eq!(shell.value("t", "shows"), Value::int(2));
+    let (_, ops) = shell.reload(&[("t.strand", &src("[\"DP-1\", \"DP-2\"]"))]);
+    assert_eq!(shell.scene.of_kind(NodeKind::Bar).len(), 2, "{ops:#?}");
+    assert_eq!(shell.scene.texts(), ["x", "x"]);
+    assert!(
+        ops.iter().any(|op| matches!(
+            op,
+            SceneOp::Create {
+                kind: NodeKind::Bar,
+                ..
+            }
+        )),
+        "{ops:#?}"
+    );
+    shell.flush();
+    assert_eq!(
+        shell.value("t", "shows"),
+        Value::int(3),
+        "the bar opened again"
+    );
+}
+
 /// While a lock is shown, an edit to it waits for the unlock.
 #[test]
 fn a_lock_edit_is_deferred_while_shown() {
