@@ -256,7 +256,9 @@ impl Shell {
                     hidden,
                 } = &event
                 {
-                    let args = super::lists::drop_args(inst, &self.host, payload, *at, *hidden);
+                    let live = super::logic::live_host(&self.host, &self.real);
+                    let args =
+                        super::lists::drop_args(inst, &self.host, &*live, payload, *at, *hidden);
                     if let Some(args) = args {
                         inst.event(node, "drop", args);
                     }

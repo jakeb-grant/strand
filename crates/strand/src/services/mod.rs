@@ -560,7 +560,7 @@ impl Real {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -1979,8 +1979,8 @@ panel Login {
     /// launches the app (detached) and closes the launcher. A query typed
     /// while it is closed is never searched.
     /// The apps tests set the process's apps configuration: one at a
-    /// time.
-    static APPS_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// time (`run::tests`' too).
+    pub(crate) static APPS_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn the_design_launcher_searches_real_apps_only_while_open() {

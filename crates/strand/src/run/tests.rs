@@ -3804,6 +3804,72 @@ fn a_drop_reaches_its_handler_with_the_hidden_rows_judged() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// An app dropped from another program reaches `on drop` with its `App`
+/// under the real services: the lookup reads `apps.all` through the
+/// host the instance runs against, the composite, where it read the
+/// schema host's own `apps.all`, which only the mock fills, and `d.app`
+/// was always null (audit-drop-app).
+#[test]
+fn an_app_dropped_from_another_program_names_the_installed_app() {
+    let _serial = crate::services::tests::APPS_SERIAL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let dir = temp_dir("drop-app");
+    let apps = dir.join("applications");
+    std::fs::create_dir_all(&apps).unwrap();
+    std::fs::write(
+        apps.join("firefox.desktop"),
+        "[Desktop Entry]\nType=Application\nName=Firefox\nExec=true\n",
+    )
+    .unwrap();
+    strand_services::apps::set_config(Some(strand_services::apps::Config {
+        dirs: vec![apps],
+        desktops: Vec::new(),
+        state: None,
+    }));
+    std::fs::write(
+        dir.join("bar.strand"),
+        "bar Top {\n  state got = \"\"\n  row {\n    \
+         on drop(d: Drop, i: int) { got = d.app?.name ?? \"-\" }\n    \
+         for a in apps.all { text a.name }\n    \
+         text join(\" \", \"got\", got)\n  }\n}\n",
+    )
+    .unwrap();
+    let (compiler, to_logic, t, mut m) = spawn_live(&dir, None);
+    m.until("the app listed", |s| {
+        s.texts().contains(&"Firefox".to_string())
+    });
+    let row = m.scene.of_kind(NodeKind::Row)[0];
+    to_logic
+        .send(ToLogic::Event {
+            input: None,
+            node: row,
+            event: NodeEvent::Drop {
+                payload: strand_scene::DropPayload::External {
+                    kind: strand_scene::DropKind::App,
+                    files: Vec::new(),
+                    text: String::new(),
+                    app_id: Some("firefox.desktop".into()),
+                },
+                at: 0,
+                hidden: None,
+            },
+        })
+        .unwrap();
+    m.until("the drop", |s| {
+        s.texts()
+            .iter()
+            .any(|t| t.starts_with("got ") && t != "got ")
+    });
+    let got = m.scene.texts();
+    strand_services::apps::set_config(None);
+    assert!(got.contains(&"got Firefox".to_string()), "{got:?}");
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    drop(compiler);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// (M6, the review of the owner's ruling) A declared action's command
 /// that fails is a `strand watch` notice naming the action, and the bar
 /// goes on.
