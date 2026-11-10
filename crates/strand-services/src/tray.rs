@@ -29,7 +29,7 @@
 //! are resolved off the runtime thread when the item's properties are
 //! read, and kept with the item until it changes.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -42,7 +42,8 @@ use zbus::message::Type as MessageType;
 use zbus::zvariant::{OwnedValue, Value};
 use zbus::{MatchRule, MessageStream};
 
-use crate::dbus::{self, Props, timed};
+use crate::dbus::{self, timed};
+use crate::lean::{Keys, Lean, Typed};
 use crate::pixmap::Pinned;
 use crate::{Call, Cx, Msg, ServiceError, Store, service};
 
@@ -273,27 +274,84 @@ pub fn strip_mnemonic(label: &str) -> String {
 
 /// A DBusMenu `shortcut` (`aas`: each a key combination, e.g.
 /// `[["Control", "S"]]`) as text (`Control+S`; combinations comma
-/// separated).
-fn shortcut(props: &Props) -> Option<String> {
-    let v = props.get("shortcut")?.try_clone().ok()?;
-    let combos: Vec<Vec<String>> = v.try_into().ok()?;
-    let text = combos
-        .iter()
-        .filter(|c| !c.is_empty())
-        .map(|c| c.join("+"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    (!text.is_empty()).then_some(text)
+/// separated), as [`Typed::Combos`] read it.
+fn shortcut(props: &MenuProps) -> Option<String> {
+    match props.typed.get("shortcut") {
+        Some(Typed::Combos(text)) if !text.is_empty() => Some(text.clone()),
+        _ => None,
+    }
 }
 
+/// The properties of a menu entry the shell reads.
+#[derive(Debug)]
+struct MenuKeys;
+
+impl Keys for MenuKeys {
+    const KEYS: &'static [&'static str] = &[
+        "visible",
+        "type",
+        "toggle-type",
+        "icon-name",
+        "icon-data",
+        "label",
+        "enabled",
+        "toggle-state",
+        "shortcut",
+    ];
+}
+
+/// A menu entry's properties, read without a `Value` per byte of its
+/// `icon-data` ([`Lean`]).
+type MenuProps = Lean<MenuKeys>;
+
 /// One menu node of a `GetLayout` reply: `(ia{sv}av)`.
-type Node = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
+#[derive(Debug, serde::Deserialize)]
+struct Node(i32, MenuProps, Vec<Child>);
+
+impl zbus::zvariant::Type for Node {
+    const SIGNATURE: &'static zbus::zvariant::Signature =
+        <(i32, dbus::Props, Vec<OwnedValue>) as zbus::zvariant::Type>::SIGNATURE;
+}
+
+/// One of a node's children (`v`): a node, or nothing when it holds
+/// something else (skipped unread). A node in a further variant is
+/// unwrapped.
+#[derive(Debug)]
+struct Child(Option<Node>);
+
+impl<'de> serde::Deserialize<'de> for Child {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = Child;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a variant holding a menu node")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Child, A::Error> {
+                let missing = || serde::de::Error::custom("a variant without its value");
+                let sig: zbus::zvariant::Signature = seq.next_element()?.ok_or_else(missing)?;
+                Ok(if sig == "(ia{sv}av)" {
+                    Child(Some(seq.next_element::<Node>()?.ok_or_else(missing)?))
+                } else if sig == "v" {
+                    seq.next_element::<Child>()?.ok_or_else(missing)?
+                } else {
+                    seq.next_element::<serde::de::IgnoredAny>()?;
+                    Child(None)
+                })
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
 
 /// A DBusMenu node's entries (its visible children), for tray item
 /// `item`; the files of entries' `icon-data` go to `pins`.
 fn entries(
     item: &str,
-    children: &[OwnedValue],
+    children: &[Child],
     depth: usize,
     pins: &mut Vec<Pinned>,
 ) -> Vec<TrayMenuItem> {
@@ -302,32 +360,27 @@ fn entries(
     }
     let mut out = Vec::new();
     for c in children {
-        let Some(v) = c.try_clone().ok().map(Value::from) else {
+        let Child(Some(Node(id, props, kids))) = c else {
             continue;
         };
-        let v = match v {
-            Value::Value(inner) => *inner,
-            v => v,
-        };
-        let Ok((id, props, kids)) = Node::try_from(v) else {
-            continue;
-        };
-        let props: Props = props;
-        if dbus::boolean(&props, "visible") == Some(false) {
+        let (id, values) = (*id, &props.values);
+        if dbus::boolean(values, "visible") == Some(false) {
             continue;
         }
-        let kind = dbus::text(&props, "type").unwrap_or_else(|| "standard".into());
-        let toggle = match dbus::text(&props, "toggle-type").as_deref() {
+        let kind = dbus::text(values, "type").unwrap_or_else(|| "standard".into());
+        let toggle = match dbus::text(values, "toggle-type").as_deref() {
             Some("checkmark") => "checkmark",
             Some("radio") => "radio",
             _ => "none",
         };
         // An icon name, else the PNG the app sent.
-        let icon = dbus::text(&props, "icon-name")
+        let icon = dbus::text(values, "icon-name")
             .filter(|s| !s.is_empty())
             .or_else(|| {
-                let data: Vec<u8> = props.get("icon-data")?.try_clone().ok()?.try_into().ok()?;
-                let pinned = crate::pixmap::write_png(&data)
+                let Some(Typed::Bytes(data)) = props.typed.get("icon-data") else {
+                    return None;
+                };
+                let pinned = crate::pixmap::write_png(data)
                     .map_err(|e| log::debug!("tray: menu icon of {item} not shown: {e}"))
                     .ok()?;
                 let text = pinned.text();
@@ -337,18 +390,18 @@ fn entries(
         out.push(TrayMenuItem {
             id: i64::from(id),
             item: item.to_string(),
-            label: strip_mnemonic(&dbus::text(&props, "label").unwrap_or_default()),
-            enabled: dbus::boolean(&props, "enabled").unwrap_or(true),
+            label: strip_mnemonic(&dbus::text(values, "label").unwrap_or_default()),
+            enabled: dbus::boolean(values, "enabled").unwrap_or(true),
             kind: if kind == "separator" {
                 kind
             } else {
                 "standard".into()
             },
             toggle: toggle.to_string(),
-            checked: dbus::number(&props, "toggle-state") == Some(1.0),
+            checked: dbus::number(values, "toggle-state") == Some(1.0),
             icon,
-            shortcut: shortcut(&props),
-            children: entries(item, &kids, depth + 1, pins),
+            shortcut: shortcut(props),
+            children: entries(item, kids, depth + 1, pins),
         });
     }
     out
@@ -382,14 +435,15 @@ fn themed_icon(theme: &Path, name: &str) -> Option<PathBuf> {
 }
 
 /// The largest pixmap of an `a(iiay)` property, as a PNG file.
-fn pixmap_icon(props: &Props, key: &str) -> Option<Pinned> {
-    let v = props.get(key)?.try_clone().ok()?;
-    let list: Vec<(i32, i32, Vec<u8>)> = v.try_into().ok()?;
+fn pixmap_icon(props: &ItemProps, key: &str) -> Option<Pinned> {
+    let Some(Typed::Pixmaps(list)) = props.typed.get(key) else {
+        return None;
+    };
     let (w, h, data) = list
-        .into_iter()
+        .iter()
         .filter(|(w, h, _)| *w > 0 && *h > 0)
         .max_by_key(|(w, h, _)| i64::from(*w) * i64::from(*h))?;
-    let written = crate::pixmap::from_argb32(w, h, &data)
+    let written = crate::pixmap::from_argb32(*w, *h, data)
         .and_then(|(w, h, rgba)| crate::pixmap::write_rgba(w, h, &rgba));
     match written {
         Ok(p) => Some(p),
@@ -402,10 +456,10 @@ fn pixmap_icon(props: &Props, key: &str) -> Option<Pinned> {
 
 /// The icon to show for an item's properties (and the file it wrote, if
 /// any). Blocking: file lookups and PNG encoding.
-fn icon(props: &Props) -> (String, Option<Pinned>) {
-    let theme = dbus::text(props, "IconThemePath").filter(|t| !t.is_empty());
+fn icon(props: &ItemProps) -> (String, Option<Pinned>) {
+    let theme = dbus::text(&props.values, "IconThemePath").filter(|t| !t.is_empty());
     let named = |key: &str| {
-        let name = dbus::text(props, key).filter(|n| !n.is_empty())?;
+        let name = dbus::text(&props.values, key).filter(|n| !n.is_empty())?;
         if let Some(t) = &theme
             && let Some(p) = themed_icon(Path::new(t), &name)
         {
@@ -414,7 +468,7 @@ fn icon(props: &Props) -> (String, Option<Pinned>) {
         Some(name)
     };
     let pixmap = |key: &str| pixmap_icon(props, key).map(|p| (p.text(), Some(p)));
-    let attention = dbus::text(props, "Status").as_deref() == Some("NeedsAttention");
+    let attention = dbus::text(&props.values, "Status").as_deref() == Some("NeedsAttention");
     let attention_icon = attention
         .then(|| {
             named("AttentionIconName")
@@ -429,10 +483,10 @@ fn icon(props: &Props) -> (String, Option<Pinned>) {
 }
 
 /// An item's tooltip: its title, and its description under it.
-fn tooltip(props: &Props) -> Option<String> {
-    let v = props.get("ToolTip")?.try_clone().ok()?;
-    type Tip = (String, Vec<(i32, i32, Vec<u8>)>, String, String);
-    let (_, _, title, body): Tip = v.try_into().ok()?;
+fn tooltip(props: &ItemProps) -> Option<String> {
+    let Some(Typed::Tip { title, body }) = props.typed.get("ToolTip") else {
+        return None;
+    };
     let text = match (title.trim(), body.trim()) {
         ("", "") => return None,
         (t, "") => t.to_string(),
@@ -457,10 +511,35 @@ struct Look {
     is_menu: bool,
 }
 
+/// The properties of a tray item the shell reads.
+#[derive(Debug)]
+struct ItemKeys;
+
+impl Keys for ItemKeys {
+    const KEYS: &'static [&'static str] = &[
+        "IconThemePath",
+        "Status",
+        "AttentionIconName",
+        "AttentionIconPixmap",
+        "IconName",
+        "IconPixmap",
+        "ToolTip",
+        "Title",
+        "Id",
+        "Menu",
+        "ItemIsMenu",
+    ];
+}
+
+/// A tray item's properties, read without a `Value` per byte of its
+/// pixmaps ([`Lean`]).
+type ItemProps = Lean<ItemKeys>;
+
 impl Look {
     /// Blocking (icon lookups, PNG encoding): run off the runtime thread.
-    fn of(props: &Props) -> Look {
-        let (icon, pin) = icon(props);
+    fn of(item: &ItemProps) -> Look {
+        let (icon, pin) = icon(item);
+        let props = &item.values;
         Look {
             title: dbus::text(props, "Title")
                 .filter(|t| !t.is_empty())
@@ -468,7 +547,7 @@ impl Look {
                 .unwrap_or_default(),
             icon,
             _pin: pin,
-            tooltip: tooltip(props),
+            tooltip: tooltip(item),
             status: dbus::text(props, "Status").unwrap_or_else(|| "Active".into()),
             menu_path: props
                 .get("Menu")
@@ -564,7 +643,7 @@ struct Target {
 /// An item's properties, read and resolved (`GetAll`, then the icon off
 /// the runtime thread).
 async fn read_look(conn: &zbus::Connection, bus: &str, path: &str) -> zbus::Result<Look> {
-    let props = timed(dbus::get_all(conn, bus, path, ITEM)).await?;
+    let props: ItemProps = timed(dbus::get_all_as(conn, bus, path, ITEM)).await?;
     tokio::task::spawn_blocking(move || Look::of(&props))
         .await
         .map_err(|e| zbus::Error::Failure(format!("icon lookup failed: {e}")))
@@ -587,7 +666,7 @@ async fn read_menu(conn: &zbus::Connection, t: &Target) -> MenuModel {
     .await;
     let layout = reply.and_then(|r| r.body().deserialize::<(u32, Node)>());
     match layout {
-        Ok((_, (_, _, children))) => {
+        Ok((_, Node(_, _, children))) => {
             let id = t.id.clone();
             tokio::task::spawn_blocking(move || {
                 let mut pins = Vec::new();
@@ -1441,11 +1520,13 @@ mod tests {
         assert_eq!(scroll_delta(-1e30), i32::MAX);
         assert_eq!(strip_mnemonic("_Open"), "Open");
         assert_eq!(strip_mnemonic("Save__As"), "Save_As");
-        let mut p = Props::new();
-        p.insert(
-            "shortcut".into(),
-            OwnedValue::try_from(Value::from(vec![vec!["Control", "S"]])).unwrap(),
-        );
+        let p = std::collections::HashMap::from([(
+            "shortcut",
+            Value::from(vec![vec!["Control", "S"]]),
+        )]);
+        let ctxt = zbus::zvariant::serialized::Context::new_dbus(zbus::zvariant::LE, 0);
+        let bytes = zbus::zvariant::to_bytes(ctxt, &p).unwrap();
+        let (p, _): (MenuProps, _) = bytes.deserialize().unwrap();
         assert_eq!(shortcut(&p).as_deref(), Some("Control+S"));
     }
 }

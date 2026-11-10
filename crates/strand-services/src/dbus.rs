@@ -113,12 +113,26 @@ pub async fn get_all(
     path: &str,
     iface: &str,
 ) -> zbus::Result<Props> {
+    get_all_as(conn, dest, path, iface).await
+}
+
+/// `GetAll` read as `T`, an `a{sv}` of its own (the tray reads its
+/// items' pixmaps as bytes, never as a `Value` a byte).
+pub async fn get_all_as<T>(
+    conn: &Connection,
+    dest: &str,
+    path: &str,
+    iface: &str,
+) -> zbus::Result<T>
+where
+    T: serde::de::DeserializeOwned + zbus::zvariant::Type,
+{
     let reply = timed_for(
         READ_TIMEOUT,
         conn.call_method(Some(dest), path, Some(PROPERTIES), "GetAll", &(iface,)),
     )
     .await?;
-    reply.body().deserialize::<Props>()
+    reply.body().deserialize::<T>()
 }
 
 /// One property (`Get`).

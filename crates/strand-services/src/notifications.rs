@@ -75,6 +75,7 @@ use tokio::sync::mpsc;
 use zbus::fdo::RequestNameReply;
 use zbus::zvariant::OwnedValue;
 
+use crate::lean::{ImageData, Lean, Typed};
 use crate::{Call, Cx, Event, Msg, ServiceError, Store, service};
 
 /// The schema the `notifications` service serves.
@@ -415,9 +416,28 @@ enum Image {
     Data(ImageData),
 }
 
-/// `image-data`: width, height, rowstride, has alpha, bits, channels,
-/// pixels.
-type ImageData = (i32, i32, i32, bool, i32, i32, Vec<u8>);
+/// The hints a `Notify` is read for; the rest are skipped unread.
+#[derive(Debug)]
+struct HintKeys;
+
+impl crate::lean::Keys for HintKeys {
+    const KEYS: &'static [&'static str] = &[
+        "urgency",
+        "desktop-entry",
+        "image-data",
+        "image_data",
+        "icon_data",
+        "image-path",
+        "image_path",
+        "resident",
+        "transient",
+        "value",
+        "category",
+    ];
+}
+
+/// A `Notify`'s hints, read without a `Value` per pixel ([`Lean`]).
+type Hints = Lean<HintKeys>;
 
 /// What a sender's `Notify` asked for, as the store keeps it.
 #[derive(Clone, Debug)]
@@ -476,16 +496,18 @@ fn hint_text(hints: &HashMap<String, OwnedValue>, keys: &[&str]) -> Option<Strin
     })
 }
 
-/// The `image-data` hint (or its older names), else `image-path`.
-fn image(hints: &HashMap<String, OwnedValue>) -> Image {
+/// The `image-data` hint (or its older names; one of another shape is
+/// left out), else `image-path`. Taken out of `hints`: never copied.
+fn image(hints: &mut Hints) -> Image {
     let data = ["image-data", "image_data", "icon_data"]
         .iter()
-        .find_map(|k| hints.get(*k))
-        .and_then(|v| v.try_clone().ok())
-        .and_then(|v| ImageData::try_from(v).ok());
+        .find_map(|k| match hints.typed.remove(*k) {
+            Some(Typed::Image(d)) => Some(d),
+            _ => None,
+        });
     match data {
         Some(d) => Image::Data(d),
-        None => hint_text(hints, &["image-path", "image_path"])
+        None => hint_text(&hints.values, &["image-path", "image_path"])
             .map(Image::Path)
             .unwrap_or_default(),
     }
@@ -516,7 +538,7 @@ impl Server {
         summary: String,
         body: String,
         actions: Vec<String>,
-        hints: HashMap<String, OwnedValue>,
+        mut hints: Hints,
         expire_timeout: i32,
     ) -> Option<Arrival> {
         let (id, replaces) = {
@@ -533,6 +555,8 @@ impl Server {
                 (id, false)
             }
         };
+        let image = image(&mut hints);
+        let hints = hints.values;
         // A byte by the spec; some senders use another integer type.
         let urgency = match crate::dbus::number(&hints, "urgency").map(|n| n as i64) {
             Some(0) => Urgency::Low,
@@ -544,7 +568,7 @@ impl Server {
         } else {
             clip(app_icon, MAX_HINT)
         };
-        let mut image = image(&hints);
+        let mut image = image;
         if let Image::Data(_) = image {
             // Bounded: a flood of pictures leaves the later ones out.
             if self.images.fetch_add(1, Ordering::AcqRel) >= IMAGES_QUEUED {
@@ -639,7 +663,7 @@ impl Server {
         summary: String,
         body: String,
         actions: Vec<String>,
-        hints: HashMap<String, OwnedValue>,
+        hints: Hints,
         expire_timeout: i32,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<u32> {
@@ -1774,10 +1798,10 @@ mod tests {
         };
         let pixels = || {
             let d: ImageData = (1, 1, 4, true, 8, 4, vec![1, 2, 3, 4]);
-            HashMap::from([(
-                "image-data".to_string(),
-                OwnedValue::try_from(zbus::zvariant::Value::from(d)).unwrap(),
-            )])
+            Hints::new(
+                HashMap::new(),
+                HashMap::from([("image-data".to_string(), Typed::Image(d))]),
+            )
         };
         let arrive = |hints| {
             server
@@ -1802,7 +1826,7 @@ mod tests {
         assert_eq!(server.images.load(Ordering::Acquire), IMAGES_QUEUED);
         // An image-path is still shown.
         let mut hints = pixels();
-        hints.insert(
+        hints.values.insert(
             "image-path".into(),
             OwnedValue::try_from(zbus::zvariant::Value::from("/tmp/p.png")).unwrap(),
         );
@@ -1821,7 +1845,7 @@ mod tests {
             "s".into(),
             String::new(),
             vec![],
-            HashMap::new(),
+            Hints::default(),
             -1,
         );
         assert!(none.is_none());
@@ -1847,11 +1871,14 @@ mod tests {
             .collect();
         actions.extend(["default".to_string(), "Open".to_string()]);
         let hint = |s: String| OwnedValue::try_from(zbus::zvariant::Value::from(s)).unwrap();
-        let hints = HashMap::from([
-            ("category".to_string(), hint(big(10_000))),
-            ("desktop-entry".to_string(), hint(big(10_000))),
-            ("image-path".to_string(), hint(big(10_000))),
-        ]);
+        let hints = Hints::new(
+            HashMap::from([
+                ("category".to_string(), hint(big(10_000))),
+                ("desktop-entry".to_string(), hint(big(10_000))),
+                ("image-path".to_string(), hint(big(10_000))),
+            ]),
+            HashMap::new(),
+        );
         let n = server
             .arrival(
                 big(10_000),
@@ -1893,7 +1920,7 @@ mod tests {
                 "s".into(),
                 "b".into(),
                 vec!["a".into(), "A".into()],
-                HashMap::new(),
+                Hints::default(),
                 -1,
             )
             .unwrap()
@@ -2389,6 +2416,7 @@ mod tests {
             images: Arc::new(AtomicUsize::new(0)),
         };
         let arrive = |hints: HashMap<String, OwnedValue>| {
+            let hints = Hints::new(hints, HashMap::new());
             server
                 .arrival(
                     "a".into(),

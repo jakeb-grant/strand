@@ -9,7 +9,10 @@
 
 mod support;
 
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::HashMap;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,7 +22,30 @@ use strand_services::notifications::{self, Date, NAME, Notification, PATH, Urgen
 use strand_services::testing::{DbusMock, PrivateBus};
 use strand_services::{Data, ToData};
 use support::*;
-use zbus::zvariant::Value;
+use zbus::zvariant::{SerializeValue, Value};
+
+/// Every allocation of this binary counted, so a test can bound what one
+/// call cost at its peak.
+struct Counting;
+
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+static PEAK: AtomicUsize = AtomicUsize::new(0);
+
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        let now = LIVE.fetch_add(l.size(), Relaxed) + l.size();
+        PEAK.fetch_max(now, Relaxed);
+        unsafe { System.alloc(l) }
+    }
+
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        LIVE.fetch_sub(l.size(), Relaxed);
+        unsafe { System.dealloc(p, l) }
+    }
+}
+
+#[global_allocator]
+static ALLOC: Counting = Counting;
 
 fn notify(
     tokio: &tokio::runtime::Runtime,
@@ -653,6 +679,85 @@ fn history_is_bounded_and_lying_pictures_are_refused() {
     until(&rt, &s, "the picture's file removed", || {
         !std::path::Path::new(&file).exists()
     });
+    s.shutdown();
+}
+
+/// (audit-byte-arrays) An 8 MiB `image-data` costs a few copies of its
+/// bytes at the peak, from the call to the picture shown, where a `Value`
+/// a byte cost 60 or more times its size (half a GiB) on the services
+/// thread before anything looked at it; one of another shape is left out
+/// and the notification is still shown.
+#[test]
+fn image_data_costs_its_bytes_and_a_mistyped_one_is_left_out() {
+    let _serial = serial();
+    history_in(None);
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+
+    const W: i32 = 1024;
+    const H: i32 = 2048;
+    let pixels: Vec<u8> = (0..W * H * 4).map(|i| (i % 251) as u8).collect();
+    // Sent as bytes: a `Value` here would cost this side what it cost
+    // the server.
+    let image = SerializeValue(&(W, H, W * 4, true, 8i32, 4i32, &pixels));
+    let hints = HashMap::from([("image-data", image)]);
+    let base = LIVE.load(Relaxed);
+    PEAK.store(base, Relaxed);
+    let big: u32 = call(
+        &tokio,
+        &conn,
+        NAME,
+        PATH,
+        NAME,
+        "Notify",
+        &("Viewer", 0u32, "", "Big", "", &[] as &[&str], hints, -1i32),
+    )
+    .body()
+    .deserialize()
+    .unwrap();
+    until(&rt, &s, "the big picture", || {
+        popups(&b, &rt)
+            .iter()
+            .any(|n| n.id == i64::from(big) && n.image.is_some())
+    });
+    let peak = PEAK.load(Relaxed).saturating_sub(base);
+    assert!(
+        peak < 16 * pixels.len(),
+        "{} MiB of pixels peaked at {} MiB",
+        pixels.len() >> 20,
+        peak >> 20
+    );
+
+    // image-data of another shape: left out, the rest read.
+    let mistyped = notify(
+        &tokio,
+        &conn,
+        0,
+        "Mistyped",
+        &[],
+        HashMap::from([
+            ("image-data", Value::from((1i32, 2i32))),
+            ("urgency", Value::from(2u8)),
+        ]),
+        -1,
+    );
+    until(&rt, &s, "the mistyped one", || {
+        popups(&b, &rt).iter().any(|n| n.id == i64::from(mistyped))
+    });
+    let n = popups(&b, &rt)
+        .into_iter()
+        .find(|n| n.id == i64::from(mistyped))
+        .unwrap();
+    assert_eq!(n.image, None);
+    assert_eq!(n.urgency, Urgency::Critical);
     s.shutdown();
 }
 
