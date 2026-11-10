@@ -565,14 +565,26 @@ async fn follow(
                             .iter()
                             .find(|(_, i)| i.contains_key(ADAPTER))
                             .map(|(p, _)| p.clone());
-                        let ok = match adapter {
-                            Some(path) => dbus::set(conn, BLUEZ, &path, ADAPTER, "Powered", on.into())
+                        let ok = match &adapter {
+                            Some(path) => dbus::set(conn, BLUEZ, path, ADAPTER, "Powered", on.into())
                                 .await
                                 .map_err(|e| e.to_string()),
                             None => Err("no adapter".to_string()),
                         };
                         let now = match ok {
-                            Ok(()) => on,
+                            Ok(()) => {
+                                // As BlueZ's `PropertiesChanged` will say: a
+                                // signal of another property meanwhile (its
+                                // `PowerState`, a device going) does not
+                                // undo it.
+                                if let Some(props) = adapter
+                                    .and_then(|p| objects.get_mut(&p))
+                                    .and_then(|i| i.get_mut(ADAPTER))
+                                {
+                                    props.insert("Powered".into(), on.into());
+                                }
+                                on
+                            }
                             Err(e) => {
                                 log::warn!("bluetooth: not powered {}: {e}", if on { "on" } else { "off" });
                                 // The adapter as last read.

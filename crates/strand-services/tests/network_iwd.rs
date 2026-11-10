@@ -75,6 +75,9 @@ struct World {
     refuse_forget: bool,
     /// How often `GetOrderedNetworks` was asked.
     ordered_reads: u32,
+    /// The device's `Powered` is served by [`QuietDevice`]: a `Set` of it
+    /// sends no signal (iwd's comes later).
+    quiet_power: bool,
 }
 
 type W = Arc<Mutex<World>>;
@@ -115,6 +118,34 @@ impl Device {
     }
 
     #[zbus(property)]
+    fn powered(&self) -> bool {
+        self.0.lock().unwrap().powered
+    }
+
+    #[zbus(property)]
+    fn set_powered(&mut self, on: bool) {
+        let mut w = self.0.lock().unwrap();
+        w.powered = on;
+        w.calls.push(format!("Powered {on}"));
+    }
+}
+
+/// [`Device`] whose `Powered` changes without a signal.
+struct QuietDevice(W);
+
+#[zbus::interface(name = "net.connman.iwd.Device")]
+impl QuietDevice {
+    #[zbus(property)]
+    fn name(&self) -> String {
+        "wlan0".into()
+    }
+
+    #[zbus(property)]
+    fn mode(&self) -> String {
+        "station".into()
+    }
+
+    #[zbus(property(emits_changed_signal = "false"))]
     fn powered(&self) -> bool {
         self.0.lock().unwrap().powered
     }
@@ -582,6 +613,7 @@ fn set_scanning(tokio: &tokio::runtime::Runtime, conn: &zbus::Connection, w: &W,
 /// unknown) in range; its diagnostics served when the world has some.
 fn fake_iwd(tokio: &tokio::runtime::Runtime, address: &str, w: &W) -> zbus::Connection {
     let diagnostics = w.lock().unwrap().diagnostics.is_some();
+    let quiet_power = w.lock().unwrap().quiet_power;
     tokio.block_on(async {
         let mut b = zbus::connection::Builder::address(address)
             .unwrap()
@@ -590,9 +622,12 @@ fn fake_iwd(tokio: &tokio::runtime::Runtime, address: &str, w: &W) -> zbus::Conn
             .serve_at("/", zbus::fdo::ObjectManager)
             .unwrap()
             .serve_at(iwd::MANAGER, AgentManager(w.clone()))
-            .unwrap()
-            .serve_at(DEV, Device(w.clone()))
             .unwrap();
+        b = if quiet_power {
+            b.serve_at(DEV, QuietDevice(w.clone())).unwrap()
+        } else {
+            b.serve_at(DEV, Device(w.clone())).unwrap()
+        };
         if diagnostics {
             b = b.serve_at(DEV, Diagnostic(w.clone())).unwrap();
         }
@@ -930,6 +965,57 @@ fn a_refused_signal_agent_is_asked_once() {
         });
     }
     assert_eq!(w.lock().unwrap().level_registrations, 1);
+    s.shutdown();
+}
+
+/// (audit-bluetooth-powered) A `wifi` iwd accepted stays written while
+/// another of its properties changes before iwd's own `Powered` signal:
+/// it does not flip back to the value last read.
+#[test]
+fn a_wifi_write_holds_while_another_iwd_property_changes() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let w = home_world("", None);
+    w.lock().unwrap().quiet_power = true;
+    let iwd_conn = fake_iwd(&tokio, &bus.address, &w);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.network.cells();
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert_eq!(cells.wifi.get_untracked(&rt), Ok(true));
+    b.network
+        .dynamic()
+        .write(&rt, field("wifi"), &[], Data::Bool(false))
+        .unwrap();
+    until(&rt, &s, "the radio off", || {
+        !w.lock().unwrap().powered && cells.wifi.get_untracked(&rt) == Ok(false)
+    });
+    // The station says its state before the device says `Powered`.
+    tokio.block_on(async {
+        let st = iwd_conn
+            .object_server()
+            .interface::<_, Station>(DEV)
+            .await
+            .unwrap();
+        st.get()
+            .await
+            .state_changed(st.signal_emitter())
+            .await
+            .unwrap();
+    });
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(10));
+        s.pump(&rt);
+        rt.flush();
+        assert_eq!(
+            cells.wifi.get_untracked(&rt),
+            Ok(false),
+            "the write flipped back"
+        );
+    }
     s.shutdown();
 }
 

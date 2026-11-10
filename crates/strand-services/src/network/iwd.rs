@@ -1409,7 +1409,17 @@ pub(super) async fn run(
                                 )
                                 .await;
                                 match set {
-                                    Ok(()) => on,
+                                    Ok(()) => {
+                                        // As iwd's `PropertiesChanged` will
+                                        // say: a signal of another property
+                                        // meanwhile does not undo it.
+                                        if let Some(props) =
+                                            iwd.objects.get_mut(&dev).and_then(|i| i.get_mut(DEVICE))
+                                        {
+                                            props.insert("Powered".into(), on.into());
+                                        }
+                                        on
+                                    }
                                     Err(e) => {
                                         log::warn!("network: Wi-Fi not switched: {e}");
                                         was
