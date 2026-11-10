@@ -587,6 +587,15 @@ fn is_missing(e: &io::Error) -> bool {
     )
 }
 
+/// A directory that exists but cannot be listed, or whose `stat` fails
+/// for another reason than its absence.
+fn unreachable_dir(dir: &Path) -> bool {
+    match std::fs::metadata(dir) {
+        Ok(m) => m.is_dir(),
+        Err(e) => !is_missing(&e),
+    }
+}
+
 fn open_nonblocking(path: &Path) -> io::Result<std::fs::File> {
     // O_NONBLOCK: a FIFO swapped in after the `stat` still opens at once
     // (and is then refused by `fstat`) instead of blocking this thread.
@@ -1119,6 +1128,17 @@ impl<B: Backend> Core<B> {
         self.writing.get(&e.resolved.path).copied()
     }
 
+    /// The mount table changed (`/proc/self/mountinfo`): a filesystem
+    /// mounted or unmounted makes no inotify event, the watches staying on
+    /// the covered inodes. A waiting path a mount brought is woken, and
+    /// every watched directory is stat'ed so one now covered or uncovered
+    /// is watched again and what lies below it re-read at the next flush.
+    pub(crate) fn mounts_changed(&mut self) {
+        self.wake_appeared();
+        self.sync_watches(true);
+        self.mark_if_notices();
+    }
+
     pub(crate) fn has_polled_dirs(&self) -> bool {
         self.watched.values().any(|m| *m == Mode::Poll)
     }
@@ -1376,9 +1396,11 @@ impl<B: Backend> Core<B> {
         for dir in dirs {
             match snapshot(&dir) {
                 Some(new) => self.compare_listing(&dir, new, now),
-                // Exists but cannot be listed (EACCES): keep the last
-                // listing and keep polling, quietly.
-                None if dir.is_dir() => {}
+                // Exists but cannot be listed (EACCES), or cannot be
+                // reached without being gone (a network mount's ENOTCONN
+                // or EIO while its server is away): keep the last listing
+                // and keep polling, quietly, so its return is seen.
+                None if unreachable_dir(&dir) => {}
                 None => {
                     self.on_path(dir, What::Gone, now);
                     continue;
@@ -2611,6 +2633,97 @@ mod tests {
         assert_eq!(b.changes[0].kind, ChangeKind::Created);
         assert_eq!(core.watched_dirs(), vec![wal]);
         assert!(core.waiting.is_empty());
+    }
+
+    /// A mount makes no inotify event: the directory it brings, and a
+    /// watched directory it covers (a new inode at the same path), are
+    /// seen when the mount table changes, and the files there are read.
+    #[test]
+    fn a_mount_table_change_finds_what_a_mount_brought() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let mnt = root.join("mnt");
+        let usb = root.join("usb");
+        std::fs::create_dir(&mnt).unwrap();
+        std::fs::create_dir(&usb).unwrap();
+        let mut core = Core::new(Silent::default(), Options::default(), None);
+        let wall = mnt.join("walls/w.jpg");
+        let notes = usb.join("notes.toml");
+        core.add_file(&wall, Role::Wallpaper, None);
+        core.add_file(&notes, Role::Settings, None);
+        assert!(core.waiting.contains(&mnt.join("walls")));
+        assert!(core.deadline().is_none());
+
+        // Behind the watches' back, as a mount does it.
+        std::fs::create_dir(mnt.join("walls")).unwrap();
+        std::fs::write(&wall, "jpg").unwrap();
+        std::fs::rename(&usb, root.join("covered")).unwrap();
+        std::fs::create_dir(&usb).unwrap();
+        std::fs::write(&notes, "a = 1").unwrap();
+        core.mounts_changed();
+        let due = core.deadline().expect("the mount is looked at");
+        let quiet = Instant::now() + Options::default().coalesce + MTIME_SKEW;
+        let b = core.flush(due.max(quiet)).unwrap();
+        let mut got: Vec<_> = b.changes.iter().map(|c| (c.path.clone(), c.kind)).collect();
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            got,
+            vec![
+                (wall.clone(), ChangeKind::Created),
+                (notes.clone(), ChangeKind::Created),
+            ],
+            "{b:#?}"
+        );
+        assert!(core.watched_dirs().contains(&mnt.join("walls")));
+        assert!(core.waiting.is_empty());
+        // Nothing changed since: another mount elsewhere finds nothing.
+        core.mounts_changed();
+        assert!(core.deadline().is_none());
+    }
+
+    /// A polled directory that errors without being gone (a network
+    /// mount whose server is away; here a link loop) keeps being polled,
+    /// and its files are read again once it is back.
+    #[test]
+    fn a_polled_directory_that_errors_is_polled_until_it_is_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let share = root.join("share");
+        std::fs::create_dir(&share).unwrap();
+        let prefs = share.join("prefs.toml");
+        std::fs::write(&prefs, "a = 1").unwrap();
+        let opts = Options {
+            force_polling: true,
+            ..Options::default()
+        };
+        let mut core = Core::new(Silent::default(), opts.clone(), None);
+        core.add_file(&prefs, Role::Settings, None);
+        core.flush(core.deadline().unwrap());
+
+        let away = root.join("away");
+        std::fs::rename(&share, &away).unwrap();
+        std::os::unix::fs::symlink(&share, &share).unwrap();
+        let t0 = Instant::now();
+        core.poll(t0);
+        assert!(core.has_polled_dirs());
+        assert!(core.watched_dirs().contains(&share), "still polled");
+        if let Some(d) = core.deadline() {
+            core.flush(d.max(Instant::now()));
+        }
+
+        std::fs::remove_file(&share).unwrap();
+        std::fs::rename(&away, &share).unwrap();
+        std::fs::write(&prefs, "a = 2").unwrap();
+        let t1 = Instant::now() + opts.coalesce + MTIME_SKEW;
+        core.poll(t1);
+        let b = core.flush(core.deadline().unwrap().max(t1)).unwrap();
+        let prefs_change = b
+            .changes
+            .iter()
+            .find(|c| c.path == prefs)
+            .expect("the file is read again");
+        assert_eq!(prefs_change.kind, ChangeKind::Modified);
+        assert_eq!(prefs_change.hash, Some(blake3::hash(b"a = 2")));
     }
 
     /// Watch, then list: the rescan lists a new directory before its watch

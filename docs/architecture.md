@@ -3603,8 +3603,12 @@ writes. It depends on neither `strand-compiler` nor `strand-core`.
     `unwatch_file` add counted ad-hoc registrations that
     `set_referenced` never replaces (the wallpaper owner);
     `watch_file_loaded(path, role, hash)` is read-then-register. Neither
-    a referenced file nor its directory need exist yet. Module-set
-    membership is separate from roles.
+    a referenced file nor its directory need exist yet, nor its
+    filesystem be mounted: the thread polls `/proc/self/mountinfo` and
+    looks again when the mount table changes, and a polled directory
+    that errors without being gone (a network share whose server is
+    away) is polled until it answers. Module-set membership is separate
+    from roles.
   - Caches: `watch_tree(dir, depth, CacheKind::{Apps, Icons, Fonts})`
     and `watch_file(path, Role::Cache(kind))`. `strand run`'s compiler
     worker takes them as `live::Job::Caches` and calls `changed(kind)`
