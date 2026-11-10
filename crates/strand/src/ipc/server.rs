@@ -18,6 +18,11 @@ use super::{MAX_LINE, Request, parse};
 /// another line is queued (never against the line itself).
 const MAX_QUEUED: usize = 1 << 20;
 
+/// What one [`Server::read`] takes from a client at most: the rest waits
+/// for the loop's next turn (its read source is level-triggered), so a
+/// client that writes faster than it is read cannot hold the loop.
+const READ_BUDGET: usize = 4 * MAX_LINE;
+
 /// A connected client, by number.
 pub type ClientId = u64;
 
@@ -176,13 +181,17 @@ impl Server {
             return out;
         };
         let mut buf = [0u8; 4096];
-        while !c.eof {
+        let mut taken = 0;
+        while !c.eof && !c.closed && taken < READ_BUDGET {
             match c.stream.read(&mut buf) {
                 Ok(0) => {
                     c.eof = true;
                     break;
                 }
-                Ok(n) => c.inbuf.extend_from_slice(&buf[..n]),
+                Ok(n) => {
+                    taken += n;
+                    c.inbuf.extend_from_slice(&buf[..n]);
+                }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(_) => {
@@ -193,6 +202,12 @@ impl Server {
         }
         let mut answers = Vec::new();
         while let Some(nl) = c.inbuf.iter().position(|b| *b == b'\n') {
+            // A line over the cap closes the connection, whether or not
+            // its newline came in the same read (strand-core's MAX_LINE).
+            if nl > MAX_LINE {
+                c.closed = true;
+                break;
+            }
             let line: Vec<u8> = c.inbuf.drain(..=nl).collect();
             let line = String::from_utf8_lossy(&line);
             let line = line.trim();
@@ -533,6 +548,79 @@ mod tests {
         }
         assert!(!server.has(w), "a watcher that does not read is dropped");
         drop(watcher);
+        drop(server);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A request line over MAX_LINE closes the connection even when its
+    /// newline comes in the same read, and is never handed out; a client
+    /// that streams bytes with no newline is closed after one bounded
+    /// read, which returns although the client keeps writing.
+    #[test]
+    fn an_oversize_line_closes_the_client_and_a_stream_is_read_in_bounds() {
+        use calloop::EventLoop;
+        let dir = std::env::temp_dir().join(format!("strand-ipc-long-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.sock");
+        let mut el = EventLoop::<Data>::try_new().unwrap();
+        let handle = el.handle();
+        let mut server = Server::bind(&path, &handle).unwrap();
+        let mut data = Data::default();
+        let mut connect = |server: &mut Server| {
+            let stream = UnixStream::connect(&path).unwrap();
+            while server.clients.is_empty() {
+                el.dispatch(Some(Duration::from_millis(50)), &mut data)
+                    .unwrap();
+                if std::mem::take(&mut data.0).accept {
+                    server.accept(&handle);
+                }
+            }
+            let id = *server.clients.keys().next().unwrap();
+            (stream, id)
+        };
+
+        // One line over the cap, its newline and EOF after it, all
+        // waiting before the server reads (the socket buffer holds it).
+        let (mut long, id) = connect(&mut server);
+        let mut line = format!("get {}", "x".repeat(MAX_LINE));
+        line.push('\n');
+        long.write_all(line.as_bytes()).unwrap();
+        long.shutdown(std::net::Shutdown::Write).unwrap();
+        let handed = server.read(id);
+        assert!(handed.is_empty(), "{handed:?}");
+        assert!(server.clients[&id].closed, "the over-long line closes it");
+        server.flush(&handle);
+        assert!(!server.has(id));
+        drop(long);
+
+        // A client that never stops writing and never sends a newline.
+        let (mut stream, id) = connect(&mut server);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writing = stop.clone();
+        let writer = std::thread::spawn(move || {
+            let zeros = [0u8; 1 << 16];
+            while !writing.load(std::sync::atomic::Ordering::Relaxed) {
+                if stream.write_all(&zeros).is_err() {
+                    break;
+                }
+            }
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !server.clients[&id].closed {
+            assert!(std::time::Instant::now() < deadline, "never closed");
+            server.read(id);
+        }
+        let c = &server.clients[&id];
+        assert!(
+            c.inbuf.len() <= MAX_LINE + READ_BUDGET + 4096,
+            "read in bounds: {} bytes",
+            c.inbuf.len()
+        );
+        server.flush(&handle);
+        assert!(!server.has(id));
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
         drop(server);
         let _ = std::fs::remove_dir_all(dir);
     }
