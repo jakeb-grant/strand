@@ -283,10 +283,11 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      # One dependency cache for both release jobs; this one saves it.
+      # One dependency cache for both release jobs; acceptance saves it.
       - uses: ./.github/actions/setup
         with:
           cache-key: release
+          cache-save: "false"
       # The three test binaries and `strand` in one build, so they link side
       # by side; the gated binary's fat LTO link happens once. The package job
       # builds another program with other features (decisions.md ci-speed-2).
@@ -311,16 +312,9 @@ jobs:
       - run: scripts/container/run.sh cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
         env:
           STRAND_LEDGER_FILE: ${{ runner.temp }}/ledger
-      # The CPU core's .text keeps its own gate (24,903,680 B; the GPU
-      # backend's is 29,097,984 B), both re-based on wave-cost's
-      # tree with a 512 KiB reserve (decisions.md growth, services-round, wave-cost;
-      # docs/architecture.md, "`strand-gpu`").
-      - run: scripts/container/run.sh scripts/container/tests-ran.sh cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
-        env:
-          STRAND_LEDGER_FILE: ${{ runner.temp }}/ledger
-      # M5's size ledger line (scripts/container/ledger.sh):
-      # both builds' .text against the gates and M4's baseline, in the
-      # log and the job summary.
+      # M5's size ledger line (scripts/container/ledger.sh): the GPU
+      # build's .text against its gate and M4's baseline, in the log and
+      # the job summary; the CPU-only half is acceptance's.
       - name: Size ledger
         if: always()
         run: scripts/container/ledger.sh "$RUNNER_TEMP/ledger"
@@ -339,11 +333,25 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      # The release dependency cache budgets restores too: this job builds
+      # both feature sets, so it is the one that saves it.
       - uses: ./.github/actions/setup
         with:
           cache-key: release
-          cache-save: "false"
       - run: scripts/container/run.sh cargo test --release -p strand --test acceptance -- --nocapture --test-threads=1
+      # The CPU core's .text keeps its own gate (24,903,680 B; the GPU
+      # backend's is 29,097,984 B), both re-based on wave-cost's
+      # tree with a 512 KiB reserve (decisions.md growth, services-round, wave-cost;
+      # docs/architecture.md, "`strand-gpu`"). Here rather than in budgets,
+      # whose last step it was and whose run it lengthened by its 6 min
+      # fat-LTO build (decisions.md audit-cpu-gate-move).
+      - run: scripts/container/run.sh scripts/container/tests-ran.sh cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
+        env:
+          STRAND_LEDGER_FILE: ${{ runner.temp }}/ledger
+      # The CPU-only half of M5's size ledger line (budgets prints the GPU's).
+      - name: Size ledger
+        if: always()
+        run: scripts/container/ledger.sh "$RUNNER_TEMP/ledger"
       # A screenshot that missed its reference, with its diff, and a failed
       # test's sway.log and timed.log (target/acceptance/logs/<tag>/).
       - uses: actions/upload-artifact@v7

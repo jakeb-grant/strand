@@ -197,13 +197,16 @@ step "cargo test --release -p strand --test services" 60 \
   cargo test --release -p strand --test services -- --test-threads=1
 step "cargo test --release -p strand --test budgets" 60 \
   cargo test --release -p strand --test budgets -- --nocapture --test-threads=1
-step "cargo test --release -p strand --no-default-features --test budgets (.text gate)" 60 \
-  scripts/container/tests-ran.sh cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
 step "size ledger" 1 scripts/container/ledger.sh "$STRAND_LEDGER_FILE"
 
 job=acceptance
 step "cargo test --release -p strand --test acceptance" 60 \
   cargo test --release -p strand --test acceptance -- --nocapture --test-threads=1
+# The CPU-only .text gate runs in acceptance, off budgets' critical path
+# (decisions.md audit-cpu-gate-move); its ledger half prints here.
+step "cargo test --release -p strand --no-default-features --test budgets (.text gate)" 60 \
+  scripts/container/tests-ran.sh cargo test --release -p strand --no-default-features --test budgets the_release_binary_code_stays_within_its_gate -- --nocapture
+step "size ledger" 1 scripts/container/ledger.sh "$STRAND_LEDGER_FILE"
 
 job=timing
 timing_step "cargo test --profile timing -p strand-render --test theme_swap_bench" 60 \
