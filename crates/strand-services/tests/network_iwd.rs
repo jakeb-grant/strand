@@ -968,6 +968,40 @@ fn a_refused_signal_agent_is_asked_once() {
     s.shutdown();
 }
 
+/// (audit-iwd-agents) A `network` stopped after its last reader leaves
+/// unregisters its passphrase and signal level agents with iwd, though
+/// the stop drops its body mid-run; started again, it registers anew.
+#[test]
+fn a_stopped_network_unregisters_its_iwd_agents() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let w = home_world("", None);
+    let _iwd = fake_iwd(&tokio, &bus.address, &w);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let registered = |w: &W| {
+        let w = w.lock().unwrap();
+        w.agent.is_some() && w.levels.is_some()
+    };
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    until(&rt, &s, "the agents registered", || registered(&w));
+
+    b.network.release(&rt);
+    rt.tick(strand_services::STOP_GRACE + Duration::from_millis(1));
+    assert!(!b.network.running());
+    until(&rt, &s, "the agents unregistered", || {
+        let w = w.lock().unwrap();
+        w.agent.is_none() && w.levels.is_none()
+    });
+
+    b.network.acquire(&rt);
+    until(&rt, &s, "the agents registered again", || registered(&w));
+    s.shutdown();
+}
+
 /// (audit-bluetooth-powered) A `wifi` iwd accepted stays written while
 /// another of its properties changes before iwd's own `Powered` signal:
 /// it does not flip back to the value last read.
