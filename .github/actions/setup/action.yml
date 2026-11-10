@@ -77,7 +77,7 @@ runs:
     # deprecations cannot fail -D warnings on unchanged code. In the
     # image's jobs nothing compiles with it: rust-cache runs rustc and cargo
     # on the runner, for its key and for what it cleans.
-    - uses: dtolnay/rust-toolchain@master
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master at 2026-11-10
       with:
         toolchain: 1.97.0
         components: ${{ inputs.tier == 'headers' && 'rustfmt, clippy' || '' }}
@@ -85,7 +85,7 @@ runs:
     # doesn't cover the C compiler or the system headers, so without it a new
     # image would keep the old one's C objects and bindgen output in the gates
     # and the archive until a manifest changed (decisions.md ci-speed-2).
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       env:
         STRAND_CI_IMAGE: ${{ inputs.tier == 'image' && hashFiles('scripts/container/Dockerfile') || '' }}
       with:

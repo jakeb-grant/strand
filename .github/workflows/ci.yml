@@ -188,7 +188,8 @@ jobs:
       # crates (the laptop's inner loop, CLAUDE.md), prune-rust-caches.sh
       # (the nightly cache pruning) and check-path-filters.sh, which then holds the lock-vm and package
       # jobs' path filters to the tree: an entry naming a moved file would
-      # silently stop that job running for it; image.sh, publish-image.sh and
+      # silently stop that job running for it; check-action-pins.sh, which
+      # then holds every third-party action to a commit SHA; image.sh, publish-image.sh and
       # what run.sh passes, on a stand-in docker; then, on the runner's real
       # one, that ci.yml's top env reaches the container.
       - run: scripts/container/run.sh scripts/container/test-gate-misses.sh
@@ -208,6 +209,7 @@ jobs:
       - run: scripts/container/run.sh scripts/container/test-prune-rust-caches.sh
       - run: scripts/container/run.sh scripts/container/test-check-path-filters.sh
       - run: scripts/container/run.sh scripts/container/check-path-filters.sh
+      - run: scripts/container/run.sh scripts/container/test-check-action-pins.sh
       - run: scripts/container/run.sh scripts/container/test-image.sh
       - run: scripts/container/test-run-env.sh
 
@@ -687,7 +689,7 @@ jobs:
       - name: Lock paths changed
         id: paths
         if: (github.event_name == 'push' && github.ref_type == 'branch' && github.ref != 'refs/heads/main') || github.event_name == 'pull_request'
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           filters: |
             lock:
@@ -862,7 +864,7 @@ jobs:
       - name: Package inputs changed
         id: paths
         if: (github.event_name == 'push' && github.ref_type == 'branch' && github.ref != 'refs/heads/main') || github.event_name == 'pull_request'
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           filters: |
             package:

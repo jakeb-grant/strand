@@ -163,6 +163,7 @@ step "scripts/container/test-affected.sh" 5 scripts/container/test-affected.sh
 step "scripts/container/test-prune-rust-caches.sh" 5 scripts/container/test-prune-rust-caches.sh
 step "scripts/container/test-check-path-filters.sh" 5 scripts/container/test-check-path-filters.sh
 step "scripts/container/check-path-filters.sh" 1 scripts/container/check-path-filters.sh
+step "scripts/container/test-check-action-pins.sh" 5 scripts/container/test-check-action-pins.sh
 step "scripts/container/test-image.sh" 5 scripts/container/test-image.sh
 # ci.yml's lint ends with test-run-env.sh, which has no step here: it needs a
 # real docker and ci.yml's env on the runner, and this runs inside the image.
