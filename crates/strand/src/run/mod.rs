@@ -1094,7 +1094,7 @@ pub fn run(dir: &Path, log: &LogConfig) -> Result<(), DemoError> {
 fn exit_beside_gpu_thread(result: &Result<(), DemoError>) -> ! {
     use std::io::Write;
     if let Err(e) = result {
-        eprintln!("strand run: {e}");
+        crate::logging::to_stderr(&format!("strand run: {e}\n"));
     }
     log::logger().flush();
     let _ = std::io::stdout().flush();
