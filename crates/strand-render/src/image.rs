@@ -44,6 +44,11 @@ use vello_cpu::color::PremulRgba8;
 /// twice (decisions.md, m5-speed-caches).
 pub const IMAGE_CACHE_BYTES: usize = 32 << 20;
 
+/// Bytes of decodes no frame draws that stay however much of
+/// [`IMAGE_CACHE_BYTES`] the drawn ones take: a 4K wallpaper drawn
+/// (33 MB) leaves a closed launcher its icons (audit-image-floor).
+const UNDRAWN_FLOOR: usize = 8 << 20;
+
 /// (integration-r7 part 2) How many times its box's area the whole-source
 /// stand-in of a `cover` box may be ([`ImageStore::whole_for`]).
 const WHOLE_AREA: f64 = 4.0;
@@ -1924,6 +1929,7 @@ impl ImageStore {
                 }
             }
         }
+        let new = key.clone();
         if let Some(old) = self.entries.insert(
             key,
             Entry {
@@ -1935,18 +1941,29 @@ impl ImageStore {
             self.bytes -= old.bytes;
         }
         self.bytes += bytes;
-        // Least recently used first, never what a live frame draws.
-        while self.bytes > IMAGE_CACHE_BYTES {
-            let drawn = |k: &ImageKey| self.frames.values().any(|f| f.contains(k));
+        // Least recently used first, never what a live frame draws nor
+        // the decode just arrived, and never below `UNDRAWN_FLOOR` of
+        // undrawn bytes: drawn decodes over the budget do not empty it.
+        let drawn = |frames: &HashMap<SurfaceId, HashSet<ImageKey>>, k: &ImageKey| {
+            frames.values().any(|f| f.contains(k))
+        };
+        let mut undrawn: usize = self
+            .entries
+            .iter()
+            .filter(|(k, _)| !drawn(&self.frames, k))
+            .map(|(_, e)| e.bytes)
+            .sum();
+        while self.bytes > IMAGE_CACHE_BYTES && undrawn > UNDRAWN_FLOOR {
             let victim = self
                 .entries
                 .iter()
-                .filter(|(k, e)| e.bytes > 0 && !drawn(k))
+                .filter(|(k, e)| e.bytes > 0 && **k != new && !drawn(&self.frames, k))
                 .min_by_key(|(_, e)| e.used)
                 .map(|(k, _)| k.clone());
             let Some(v) = victim else { break };
             if let Some(e) = self.entries.remove(&v) {
                 self.bytes -= e.bytes;
+                undrawn -= e.bytes;
             }
             self.unhold(&v);
             if !self.entries.keys().any(|k| k.source == v.source) {
@@ -2157,6 +2174,57 @@ mod tests {
         assert_eq!(s.bytes(), held * 512 * 512 * 4);
         let has = |s: &ImageStore, i: usize| s.entries.keys().any(|k| k.source == format!("k{i}"));
         assert!(!has(&s, 0) && has(&s, held + 3), "the oldest go first");
+    }
+
+    /// A launcher closed while a 4K wallpaper is drawn keeps its icons:
+    /// the drawn decode over the budget does not evict every undrawn one,
+    /// nor the decode that just arrived.
+    #[test]
+    fn undrawn_icons_survive_a_large_drawn_image() {
+        let mut s = ImageStore::default();
+        let key = |src: String, w: u32, h: u32| ImageKey {
+            source: src,
+            icon: false,
+            w,
+            h,
+            fit: Fit::Cover,
+            scale: 1,
+            frame: 0,
+        };
+        let dec = |w: u32, h: u32| {
+            Ok(Decoded {
+                pixmap: Arc::new(Pixmap::new(w as u16, h as u16)),
+                symbolic: false,
+                source: (w as f64, h as f64),
+                fit: Fit::Cover,
+                anim: None,
+            })
+        };
+        let wall = key("wall".into(), 3840, 2160);
+        s.frames
+            .insert(SurfaceId(1), [wall.clone()].into_iter().collect());
+        s.insert(wall.clone(), dec(3840, 2160));
+        let icons: Vec<_> = (0..50).map(|i| key(format!("i{i}"), 96, 96)).collect();
+        s.frames
+            .insert(SurfaceId(2), icons.iter().cloned().collect());
+        for k in &icons {
+            s.insert(k.clone(), dec(96, 96));
+        }
+        s.frames.insert(SurfaceId(2), HashSet::new());
+        let extra = key("extra".into(), 96, 96);
+        s.insert(extra.clone(), dec(96, 96));
+        let kept = icons.iter().filter(|k| s.entries.contains_key(*k)).count();
+        assert_eq!(kept, 50, "closing the launcher must not drop its icons");
+        assert!(s.entries.contains_key(&extra), "the decode just arrived");
+        assert!(s.entries.contains_key(&wall));
+        // Undrawn decodes past the floor still go, oldest first.
+        let big: Vec<_> = (0..12).map(|i| key(format!("b{i}"), 1024, 1024)).collect();
+        for k in &big {
+            s.insert(k.clone(), dec(1024, 1024));
+        }
+        let undrawn = s.bytes() - 3840 * 2160 * 4;
+        assert!(undrawn <= UNDRAWN_FLOOR + 1024 * 1024 * 4, "{undrawn}");
+        assert!(s.entries.contains_key(&big[11]) && !s.entries.contains_key(&icons[0]));
     }
 
     /// A surface drawing one image twice (two rows with one app's icon)
