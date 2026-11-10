@@ -4969,6 +4969,11 @@ service early {
             live.until("the refusal is the run's error", |l| {
                 error(l) != Value::Null
             });
+            // The first call can be refused on the closed channel before
+            // the body's end is applied; the backoff wording needs that end.
+            live.until("the failed body", |l| {
+                !l.real.custom.client("bolt").is_some_and(|c| c.running())
+            });
             let (r, caught) = call(&live);
             assert_eq!(r, Ok(()));
             assert_eq!(caught.len(), 1, "{caught:?}");
