@@ -323,6 +323,10 @@ pub struct Stats {
     /// a learned edge ranked it higher. Zero for a declared graph without
     /// feedback edges.
     pub reruns: u64,
+    /// Passes over the held list looking for work a suspension released
+    /// (a resume, a reparent, the disposal of a suspended scope). A
+    /// disposal that ends no suspension makes none.
+    pub held_scans: u64,
     /// Live nodes.
     pub nodes: usize,
 }
@@ -1524,19 +1528,29 @@ impl Runtime {
             }
         }
         {
-            let mut held = self.inner.held.borrow_mut();
-            if !held.is_empty() {
-                let nodes = self.inner.nodes.borrow();
-                held.retain(|&n| nodes.contains_key(n));
-                self.inner
-                    .held_set
-                    .borrow_mut()
-                    .retain(|&n| nodes.contains_key(n));
+            // Only the disposed ids leave the held list: a disposal costs
+            // what it disposed, not what hidden surfaces hold.
+            let mut held_set = self.inner.held_set.borrow_mut();
+            if !held_set.is_empty() {
+                let mut gone = false;
+                for &n in &order {
+                    gone |= held_set.remove(&n);
+                }
+                if gone {
+                    self.inner
+                        .held
+                        .borrow_mut()
+                        .retain(|n| held_set.contains(n));
+                }
             }
         }
         // A suspended scope that went away (its live parts moved out first)
-        // no longer freezes what it held.
-        self.release_held(unfroze);
+        // no longer freezes what it held. A disposal that ended no
+        // suspension releases nothing: work leaves a suspension only by a
+        // resume, a reparent or this, so the held list is not walked.
+        if unfroze {
+            self.release_held(true);
+        }
         self.forget_rate_state();
         // Live observers of disposed nodes re-run and see the error value.
         for node in &dropped {
@@ -1826,6 +1840,7 @@ impl Runtime {
         if !unfroze && self.inner.held.borrow().is_empty() {
             return;
         }
+        self.bump(|s| s.held_scans += 1);
         let held = std::mem::take(&mut *self.inner.held.borrow_mut());
         let mut keep = Vec::new();
         let mut requeued = false;
