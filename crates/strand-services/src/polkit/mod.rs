@@ -144,9 +144,14 @@ pub struct PolkitRequest {
 #[service(name = "polkit", action = PolkitAction)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Polkit {
-    /// The request being answered, or null when none waits.
+    /// The request being answered, or null when none waits. Null for a
+    /// moment between two requests too: when the shown one ends (answered,
+    /// cancelled or withdrawn) it is null, as an update of its own, before
+    /// the next shows, so a dialog `open: polkit.request != null` closes
+    /// and opens again (its `on show` runs).
     pub request: Option<PolkitRequest>,
-    /// How many more requests wait behind `request`, each shown in turn.
+    /// How many more requests wait behind `request`, each shown in turn
+    /// (every one, while `request` is null between two).
     pub waiting: i64,
     /// An answer is being checked.
     pub busy: bool,
