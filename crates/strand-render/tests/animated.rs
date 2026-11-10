@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use common::*;
 use strand_render::Renderer;
-use strand_render::image::{Fit, IconTheme, ImageBackend, ImageKey, ImageStore, load};
+use strand_render::image::{
+    Fit, IconTheme, ImageBackend, ImageKey, ImageStore, Players, load, load_with,
+};
 use strand_scene::*;
 
 const S: SurfaceId = SurfaceId(1);
@@ -673,4 +675,55 @@ fn still_gif_and_webp_draw_and_broken_files_fail() {
     let broken = d.join("broken.webp");
     std::fs::write(&broken, b"RIFF\x04\x00\x00\x00WEBP").unwrap();
     assert!(load(&key(&broken), &theme).is_err());
+}
+
+/// A still GIF or WebP keeps no player once decoded: only its drawn
+/// pixmap stays, not the file and a canvas at the source's size, even
+/// while a frame draws it.
+#[test]
+fn a_still_gif_or_webp_keeps_no_player() {
+    let d = dir();
+    let theme = IconTheme::named("hicolor");
+    let key = |p: &Path| ImageKey {
+        source: p.to_string_lossy().into_owned(),
+        icon: false,
+        w: 8,
+        h: 8,
+        fit: Fit::Fill,
+        scale: 1,
+        frame: 0,
+    };
+    let webp = d.join("kept.webp");
+    let mut file = Vec::new();
+    image_webp::WebPEncoder::new(&mut file)
+        .encode(&solid(64, 64, GREEN), 64, 64, image_webp::ColorType::Rgba8)
+        .unwrap();
+    std::fs::write(&webp, &file).unwrap();
+    let gif = d.join("kept.gif");
+    let mut out = Vec::new();
+    {
+        let mut enc = gif::Encoder::new(&mut out, 4, 4, &[0xe0, 0x30, 0x30]).unwrap();
+        enc.write_frame(&gif::Frame::from_palette_pixels(
+            4,
+            4,
+            vec![0; 16],
+            vec![0xe0, 0x30, 0x30],
+            None,
+        ))
+        .unwrap();
+    }
+    std::fs::write(&gif, &out).unwrap();
+    // Every player counts as drawn, as the worker's do while shown.
+    let mut players = Players::with_live(|_| true);
+    for f in [&webp, &gif] {
+        let r = load_with(&key(f), &theme, &mut players).unwrap();
+        assert!(r.anim.is_none());
+        assert_eq!(players.len(), 0, "{f:?} keeps a player");
+    }
+    // An animated one still keeps its player between frames.
+    let anim = d.join("kept-anim.gif");
+    write_gif(&anim, true);
+    let r = load_with(&key(&anim), &theme, &mut players).unwrap();
+    assert!(r.anim.is_some());
+    assert_eq!(players.len(), 1);
 }

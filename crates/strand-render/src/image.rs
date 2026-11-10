@@ -524,14 +524,23 @@ pub fn load_with(
             let pm = |c: u8| ((c as u32 * a + 127) / 255) as u8;
             rgba.extend_from_slice(&[pm(px[0]), pm(px[1]), pm(px[2]), px[3]]);
         }
+        let still = anim.is_none();
         let src = Raster::new(sw, sh, rgba);
-        return Ok(Decoded {
+        let decoded = Decoded {
             pixmap: Arc::new(to_pixmap(&fit_raster(&src, w, h, key.fit))),
             symbolic,
             source: (sw as f64, sh as f64),
             fit: key.fit,
             anim,
-        });
+        };
+        // A still GIF or WebP has no next frame to stream: its player
+        // (the file and a canvas at the source's size) goes now, so the
+        // store holds only what is drawn.
+        if still {
+            let first = key.first();
+            players.retain(|k| *k != first);
+        }
+        return Ok(decoded);
     }
     let data = match data {
         Some(d) => d,
