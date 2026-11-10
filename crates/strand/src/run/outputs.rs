@@ -587,7 +587,8 @@ struct Retry {
 /// The `strand-files` thread.
 struct Writer {
     manifest_file: Option<PathBuf>,
-    /// Path → FNV-1a hash of what Strand last wrote there.
+    /// Path → FNV-1a hash of what Strand held there when it first
+    /// owned it: ownership is the key; the hash is not kept current.
     owned: BTreeMap<PathBuf, u64>,
     shared: Arc<Shared>,
     ping: calloop::ping::Ping,
@@ -969,9 +970,11 @@ impl Writer {
         Ok(true)
     }
 
-    /// Records `path` as Strand's, with the hash of what it holds.
+    /// Records `path` as Strand's, with the hash of what it holds. The
+    /// manifest is written only for a newly owned path: nothing reads
+    /// the hash, so a later write does not rewrite and fsync it again.
     fn own(&mut self, path: &Path, hash: u64) {
-        if self.owned.get(path) == Some(&hash) {
+        if self.owned.contains_key(path) {
             return;
         }
         self.owned.insert(path.to_path_buf(), hash);
@@ -1360,6 +1363,33 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().contains("strand-tmp"))
             .collect();
         assert!(left.is_empty());
+    }
+
+    /// A path's manifest line is written once, as Strand first owns it:
+    /// later writes of new bytes there (a status file following a track)
+    /// do not rewrite and fsync the manifest each time.
+    #[test]
+    fn the_manifest_is_written_once_per_owned_path() {
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = temp("manifest-once");
+        let out = dir.join("out/a.css");
+        let (mut w, _rx) = writer(&dir);
+        assert_eq!(w.write_file(&out, b"one"), Ok(true));
+        let m = w.manifest_file.clone().unwrap();
+        let (ino, text) = (
+            std::fs::metadata(&m).unwrap().ino(),
+            std::fs::read_to_string(&m).unwrap(),
+        );
+        for bytes in [&b"two"[..], b"three"] {
+            assert_eq!(w.write_file(&out, bytes), Ok(true));
+            assert_eq!(std::fs::metadata(&m).unwrap().ino(), ino, "not rewritten");
+            assert_eq!(std::fs::read_to_string(&m).unwrap(), text);
+        }
+        // A second path is new: the manifest is written, naming both.
+        let other = dir.join("out/b.css");
+        assert_eq!(w.write_file(&other, b"b"), Ok(true));
+        let text = std::fs::read_to_string(&m).unwrap();
+        assert_eq!(parse_manifest(&text).len(), 2, "{text}");
     }
 
     /// Unowned, read-only and `.strand` targets are refused, the file
