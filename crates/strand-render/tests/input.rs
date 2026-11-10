@@ -1966,6 +1966,41 @@ fn a_drag_carried_to_another_surface_drops_there() {
     assert!(events(f.drain()).is_empty());
 }
 
+/// The release the surface manager makes up on the origin when a drag
+/// the compositor carried away ends (dropped elsewhere or cancelled)
+/// comes after the origin's leave: it ends the drag but hovers nothing
+/// and leaves no pointer on the origin.
+#[test]
+fn a_carried_drag_ending_leaves_no_pointer_on_its_origin() {
+    let (mut r, [panel, _, _, _, _, _, _]) = dnd_scene();
+    let s = SurfaceId(1);
+    let mut f = R::default();
+    f.attached(s, panel);
+    f.input(&motion(s, 50.0, 20.0, 0), &mut r);
+    f.input(&left(s, 50.0, 20.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s, 50.0, 40.0, 10), &mut r);
+    f.input(&InputEvent::PointerLeave { surface: s }, &mut r);
+    assert!(f.router.hovered(s).is_empty());
+    assert_eq!(f.router.pointer(s), None);
+    f.drain();
+    f.input(&left(s, -1e6, -1e6, ButtonState::Released), &mut r);
+    assert_eq!(f.router.drag(), None);
+    let out = f.drain();
+    assert!(
+        !out.iter().any(|i| matches!(
+            i,
+            Intent::Flag {
+                flag: Flag::Hover,
+                on: true,
+                ..
+            }
+        )),
+        "a release the pointer is not there for hovered a node: {out:?}"
+    );
+    assert!(f.router.hovered(s).is_empty(), "{:?}", f.router.hovered(s));
+    assert_eq!(f.router.pointer(s), None);
+}
+
 /// (M5) A drag handed to another surface whose list draws the same
 /// items (one pin on the dock of each monitor) counts that list's rows
 /// without its own copy of the dragged item (`drag_identity`), as

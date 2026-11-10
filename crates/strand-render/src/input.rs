@@ -2240,8 +2240,18 @@ impl Router {
                 position,
                 ..
             } => {
-                self.pointer.insert(surface, *position);
-                let under = chain(scene, *position);
+                // (audit-release-presence) A release on a surface the
+                // pointer is not on (the manager's made-up release that
+                // ends a drag the compositor carried away, after its
+                // leave) ends the drag and the press but places no
+                // pointer there and hovers nothing.
+                let on = *state == ButtonState::Pressed || self.pointer.contains_key(&surface);
+                let under = if on {
+                    self.pointer.insert(surface, *position);
+                    chain(scene, *position)
+                } else {
+                    Vec::new()
+                };
                 if *b == button::LEFT && *state == ButtonState::Pressed {
                     self.click_away_from_others(surface, root, &under, scene);
                 }
