@@ -1556,6 +1556,72 @@ fn a_frame_that_cannot_be_drawn_takes_its_surface_back() {
     assert_eq!(d.area(), 80 * 40, "the CPU repaints it in full");
 }
 
+/// (audit-upload-size) A frame answered `Failed` may have had its
+/// uploads refused (a pixmap over the atlas, the atlas full), so the
+/// renderer forgets them: promoted again, the surface's next frame
+/// uploads the filtered group's pixmap anew rather than drawing an id
+/// the GPU never held, and the forgotten id is retired. Needs no device.
+#[test]
+fn a_failed_frames_uploads_are_sent_again() {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let group = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::X, num(10.0)),
+            (Prop::Y, num(10.0)),
+            (Prop::Size, num(40.0)),
+            (Prop::Filter, backdrop_call("grayscale", vec![num(1.0)])),
+        ],
+    );
+    b.node(
+        NodeKind::Box,
+        Some(group),
+        vec![(Prop::Size, num(20.0)), (Prop::Bg, color("#f38ba8"))],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(120, 60, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, Duration::from_secs(1));
+    let promote = |r: &mut Renderer, at: u64| {
+        r.promote_now(S);
+        r.set_backend(S, Backend::GpuPresent);
+        let _ = r.take_backend_changes();
+        r.paint_gpu(S, Duration::from_secs(at))
+            .expect("the switch's frame")
+    };
+    let first = promote(&mut r, 1);
+    let sent: Vec<(u64, Arc<_>)> = first
+        .uploads
+        .iter()
+        .map(|u| (u.id, u.pixmap.clone()))
+        .collect();
+    assert!(!sent.is_empty(), "the group's pixmap is uploaded");
+    r.deliver_gpu(GpuReply::Failed {
+        surface: Some(S),
+        key: None,
+        error: strand_gpu::GpuError {
+            kind: GpuErrorKind::Render,
+            message: "a 9000×40 image is larger than the GPU's image atlas".into(),
+        },
+    });
+    assert_eq!(r.backend(S), Backend::Cpu);
+    buf.paint_at(&mut r, S, 1, Duration::from_secs(2));
+    let again = promote(&mut r, 3);
+    for (id, pm) in &sent {
+        assert!(
+            again
+                .uploads
+                .iter()
+                .any(|u| Arc::ptr_eq(&u.pixmap, pm) && u.id != *id),
+            "upload {id} sent again under a new id"
+        );
+        assert!(again.retire.contains(id), "upload {id} retired");
+    }
+}
+
 /// (M5, m5-tools review) `strand report`'s frame time of a promoted
 /// surface includes the GPU's work: a `GpuPresent` frame runs from its
 /// `paint` to its `Presented`'s `at` (its submission; round 3,

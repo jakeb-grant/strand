@@ -518,6 +518,11 @@ fn value_floats(v: &PropValue, scale: f32, out: &mut Vec<f32>) {
 /// times at most two at once, so an older one's never comes.
 const UNTIMED: usize = 4;
 
+/// Frames of one surface whose new uploads are remembered until their
+/// reply ([`Surf::uploading`]); every frame is answered, so this only
+/// bounds a reply that never comes.
+const UPLOADING: usize = 16;
+
 /// (lock-int re-check) The most a lock's hand-off to the GPU thread holds
 /// its clock ([`HandOff`]): the GPU thread's silence strand allows a lock
 /// surface's request (its `LOCK_GPU_BOUND`, which a test in strand holds
@@ -586,6 +591,12 @@ struct Surf {
     /// moves on (a motion or a clock); true from a switch of backend, so
     /// a hand-off's first presented frame is held.
     moved: bool,
+    /// (audit-upload-size) The upload ids its sent frames queued (frame
+    /// number, ids), oldest first, until their reply: a frame answered
+    /// `Failed` may have had them refused, so they are forgotten then
+    /// ([`Uploads::forget`]) and the next frame drawing them uploads
+    /// them again. Only frames that queued an upload are here.
+    uploading: VecDeque<(u64, Vec<u64>)>,
 }
 
 /// (lock-int review) A lock surface's hand-off to the GPU thread holds its
@@ -704,6 +715,30 @@ impl GpuState {
         self.surfaces.entry(surface).or_default()
     }
 
+    /// (audit-upload-size) Remembers the uploads `frame` queues until its
+    /// reply; a frame that queues none costs nothing.
+    fn sending(&mut self, frame: &Frame) {
+        if frame.uploads.is_empty() {
+            return;
+        }
+        let s = self.surf(frame.surface);
+        if s.uploading.len() == UPLOADING {
+            s.uploading.pop_front();
+        }
+        s.uploading
+            .push_back((frame.id, frame.uploads.iter().map(|u| u.id).collect()));
+    }
+
+    /// `surface`'s frames up to `frame` were drawn: their uploads are
+    /// the GPU's.
+    fn answered(&mut self, surface: SurfaceId, frame: u64) {
+        if let Some(s) = self.surfaces.get_mut(&surface) {
+            while s.uploading.front().is_some_and(|(f, _)| *f <= frame) {
+                s.uploading.pop_front();
+            }
+        }
+    }
+
     /// The device is gone (failed, lost, dropped): every promoted surface
     /// goes back to the CPU at once, and what was in flight is forgotten.
     fn fall_back(&mut self) -> Vec<SurfaceId> {
@@ -719,6 +754,7 @@ impl GpuState {
             s.pixels = None;
             s.hold = None;
             s.shown = None;
+            s.uploading.clear();
         }
         for id in &back {
             self.changes.push(BackendChange::Demote(*id));
@@ -1058,6 +1094,7 @@ impl Renderer {
                 waited,
                 ran,
             } => {
+                self.gpu.answered(surface, frame);
                 if let Some(s) = self.gpu.surfaces.get_mut(&surface) {
                     // The frame's time: its paint on main and the GPU
                     // thread's work to its submission, less the thread's
@@ -1098,6 +1135,7 @@ impl Renderer {
                 pixels,
                 waited,
             } => {
+                self.gpu.answered(surface, frame);
                 if let Some(s) = self.gpu.surfaces.get_mut(&surface)
                     && s.inflight.is_some_and(|(f, _)| f == frame)
                 {
@@ -1197,6 +1235,15 @@ impl Renderer {
                                 },
                             );
                         }
+                    }
+                    // (audit-upload-size) Its uploads may have been
+                    // refused (too large, the atlas full): forgotten, so
+                    // a later frame drawing the same pixmap (another
+                    // surface's, or this one's promoted again) uploads it
+                    // anew rather than drawing an id the GPU never held.
+                    // Those it did take are freed with the next frame.
+                    for (_, ids) in std::mem::take(&mut s.uploading) {
+                        self.gpu.uploads.forget(&ids);
                     }
                     // A frame that cannot be drawn: back to the CPU.
                     s.inflight = None;
@@ -1598,6 +1645,7 @@ impl Renderer {
         if fresh && (changed || ready.is_none()) {
             let id = self.gpu.frame_id();
             let frame = self.lower_frame(surface, id, items, passes, target.size, target.scale);
+            self.gpu.sending(&frame);
             self.gpu.out.push(GpuRequest::Frame(frame));
             self.gpu.sent = true;
             if let Some(s) = self.gpu.surfaces.get_mut(&surface) {
@@ -1788,6 +1836,7 @@ impl Renderer {
             s.shown = Some(size);
             s.snap = frame.snapshot;
         }
+        self.gpu.sending(&frame);
         self.gpu.present = Some(frame);
         self.gpu.sent = true;
         Damage::full(size)
@@ -2131,6 +2180,9 @@ pub(super) struct Uploads {
     by_ptr: HashMap<usize, Held>,
     next: u64,
     lowering: u64,
+    /// Ids [`Uploads::forget`] dropped, retired with the next frame (the
+    /// GPU frees those it took; one it refused is not in its table).
+    forgotten: Vec<u64>,
 }
 
 #[derive(Debug)]
@@ -2189,7 +2241,7 @@ impl Uploads {
     /// [`RETIRE_AFTER`] lowerings.
     fn retire(&mut self) -> Vec<u64> {
         let now = self.lowering;
-        let mut out = Vec::new();
+        let mut out = std::mem::take(&mut self.forgotten);
         self.by_ptr.retain(|_, h| {
             let keep = h.pixmap.strong_count() > 0 && now.saturating_sub(h.used) < RETIRE_AFTER;
             if !keep {
@@ -2200,8 +2252,17 @@ impl Uploads {
         out
     }
 
+    /// (audit-upload-size) Forgets `ids`, sent with a frame answered
+    /// `Failed`, which the GPU may have refused: the next lowering that
+    /// draws their pixmaps queues them again under new ids.
+    fn forget(&mut self, ids: &[u64]) {
+        self.by_ptr.retain(|_, h| !ids.contains(&h.id));
+        self.forgotten.extend_from_slice(ids);
+    }
+
     fn clear(&mut self) {
         self.by_ptr.clear();
+        self.forgotten.clear();
     }
 }
 

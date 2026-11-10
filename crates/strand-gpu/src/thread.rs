@@ -670,7 +670,8 @@ impl State {
     /// and the frame is answered `Failed { Render }`: vello_gpu unwraps
     /// its atlas allocation, and that panic would count as a lost
     /// device. The rest still goes up and is freed, so the image table
-    /// stays true.
+    /// stays true; render forgets a failed frame's uploads, so a later
+    /// frame drawing a refused pixmap sends it again.
     fn upload(
         &mut self,
         dev: &Device,
