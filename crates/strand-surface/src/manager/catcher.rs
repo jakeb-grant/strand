@@ -21,8 +21,8 @@ use strand_scene::Color;
 /// edges). It takes no keyboard; clicks on bars (outside the usable
 /// area) do not reach it (the router closes the surface on a press on
 /// any other Strand surface, its own bar included). Every other output
-/// that shows no surface of the same node gets a catcher of its own,
-/// over the whole output (exclusive zone -1, bars included) and with no
+/// that shows no surface of the same node gets a catcher of its own (one
+/// plugged in while the surface is open too), over the whole output (exclusive zone -1, bars included) and with no
 /// hole.
 ///
 /// A scrim is the primary catcher made visible: one solid colour
@@ -205,6 +205,47 @@ impl<H: SurfaceHost + 'static> State<H> {
             .collect();
         for (g, o) in others {
             let c = self.new_catcher(id, &under, (Some(g), Some(&o)), false);
+            self.catchers.entry(id).or_default().push(c);
+        }
+    }
+
+    /// (audit-hotplug-catcher) Output `global` was plugged in: every
+    /// surface whose click-away catchers cover the other outputs gets one
+    /// over it too, unless a surface of its node shows there or it has
+    /// one there already. A surface whose own output is not known yet
+    /// gets its secondaries when it enters one.
+    pub(super) fn add_catchers_on(&mut self, global: u32) {
+        let Some(output) = self.outputs.get(&global).cloned() else {
+            return;
+        };
+        let wanting: Vec<(SurfaceId, Under)> = self
+            .catchers
+            .iter()
+            .filter_map(|(id, list)| {
+                let primary = list.iter().find(|c| c.primary)?;
+                let own = primary.output?;
+                if !primary.clicks || own == global || list.iter().any(|c| c.output == Some(global))
+                {
+                    return None;
+                }
+                let s = self.surfaces.get(id)?;
+                let shown = self
+                    .surfaces
+                    .values()
+                    .any(|o| o.node == s.node && o.output == Some(global));
+                (!shown).then(|| {
+                    let under = Under {
+                        layer: primary.on_layer,
+                        namespace: s.config.namespace.clone(),
+                        clicks: true,
+                        scrim: None,
+                    };
+                    (*id, under)
+                })
+            })
+            .collect();
+        for (id, under) in wanting {
+            let c = self.new_catcher(id, &under, (Some(global), Some(&output)), false);
             self.catchers.entry(id).or_default().push(c);
         }
     }
