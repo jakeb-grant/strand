@@ -269,6 +269,11 @@ impl Entry {
         self.roles().into_iter().all(|r| r == Role::Asset)
     }
 
+    /// The baseline is a stamp with no hash ([`Entry::take_stamp`]).
+    fn stamped(&self) -> bool {
+        self.exists && self.hash.is_none() && self.error.is_none() && self.stamp.is_some()
+    }
+
     fn unused(&self) -> bool {
         !self.module && self.loader.is_empty() && self.explicit.is_empty()
     }
@@ -891,6 +896,28 @@ impl<B: Backend> Core<B> {
                 recheck = true;
             }
         }
+        // (audit-asset-stamp) An entry known by its stamp alone (an asset)
+        // that another role holds now takes its hash, so that role's
+        // first no-op event is dropped as it would have been. A stamp
+        // that moved meanwhile is a change: the file is compared.
+        let stamped: Vec<PathBuf> = self
+            .files
+            .iter()
+            .filter(|(_, e)| e.stamped() && !e.stamp_only())
+            .map(|(f, _)| f.clone())
+            .collect();
+        for path in stamped {
+            let unchanged = fresh_stamp(&path);
+            let Some(e) = self.files.get_mut(&path) else {
+                continue;
+            };
+            if unchanged == e.stamp {
+                e.take_baseline(&path);
+            } else {
+                self.pending.files.insert(path);
+                recheck = true;
+            }
+        }
         if recheck {
             self.mark(Instant::now());
         }
@@ -1504,7 +1531,16 @@ impl<B: Backend> Core<B> {
         // just begun.
         let mut unsettled = HashSet::new();
         if p.full.is_some() {
-            touched.extend(self.files.keys().cloned());
+            // Every file is read again, but one known by its stamp alone
+            // (an asset) whose stamp is as it was: with no hash to compare,
+            // its read would be reported `Modified`, and a rescan would
+            // decode every mounted image again (audit-asset-stamp).
+            touched.extend(
+                self.files
+                    .iter()
+                    .filter(|(f, e)| !(e.stamped() && fresh_stamp(f) == e.stamp))
+                    .map(|(f, _)| f.clone()),
+            );
         }
         if p.full.is_some() || p.config {
             self.rescan_config(
@@ -3998,6 +4034,62 @@ mod tests {
         assert_eq!(b.changes.len(), 1, "{b:#?}");
         assert_eq!(b.changes[0].kind, ChangeKind::Modified);
         assert_eq!(b.changes[0].hash, Some(blake3::hash(b"png 2")));
+    }
+
+    /// A rescan (`strand reload`, an overflow) reads no asset whose stamp
+    /// is as it was and reports none of them; one whose stamp moved is
+    /// read and reported.
+    #[test]
+    fn a_rescan_reports_no_unchanged_asset() {
+        let (_tmp, root) = cfg_dir();
+        let (same, other) = (root.join("same.png"), root.join("other.png"));
+        std::fs::write(&same, "png").unwrap();
+        std::fs::write(&other, "png").unwrap();
+        let mut core = Core::new(Silent::default(), Options::default(), None);
+        core.set_referenced(vec![
+            Referenced::from((same.clone(), Role::Asset)),
+            Referenced::from((other.clone(), Role::Asset)),
+        ]);
+        std::fs::write(&other, "png, longer").unwrap();
+        let now = Instant::now();
+        core.request_rescan(RescanReason::Requested, now);
+        let quiet = now + Options::default().coalesce + MTIME_SKEW;
+        let b = core.flush(core.deadline().unwrap().max(quiet));
+        let changed: Vec<_> = b
+            .iter()
+            .flat_map(|b| &b.changes)
+            .map(|c| (c.path.clone(), c.kind))
+            .collect();
+        assert_eq!(changed, vec![(other.clone(), ChangeKind::Modified)]);
+        assert_eq!(core.files[&same].hash, None, "not read");
+    }
+
+    /// An asset another role comes to hold takes its hash then: that
+    /// role's first event with the bytes unchanged reports nothing.
+    #[test]
+    fn an_asset_that_gains_a_role_takes_its_hash() {
+        let (_tmp, root) = cfg_dir();
+        let wall = root.join("wall.png");
+        std::fs::write(&wall, "png").unwrap();
+        let mut core = Core::new(Silent::default(), Options::default(), None);
+        core.set_referenced(vec![Referenced::from((wall.clone(), Role::Asset))]);
+        assert_eq!(core.files[&wall].hash, None);
+        core.set_referenced(vec![
+            Referenced::from((wall.clone(), Role::Asset)),
+            Referenced::from((wall.clone(), Role::Wallpaper)),
+        ]);
+        assert_eq!(core.files[&wall].hash, Some(blake3::hash(b"png")));
+        std::fs::write(&wall, "png").unwrap();
+        core.on_raw(Raw::Written(wall.clone()), Instant::now());
+        let quiet = Instant::now() + Options::default().coalesce + MTIME_SKEW;
+        let b = core.flush(core.deadline().unwrap().max(quiet));
+        assert!(b.is_none_or(|b| b.changes.is_empty()), "no-op write");
+        // The explicit registration settles it too.
+        let other = root.join("other.png");
+        std::fs::write(&other, "png").unwrap();
+        core.set_referenced(vec![Referenced::from((other.clone(), Role::Asset))]);
+        core.add_file(&other, Role::Settings, None);
+        assert_eq!(core.files[&other].hash, Some(blake3::hash(b"png")));
     }
 
     /// Polling: the content sweep fills in a small asset's stamp-only
