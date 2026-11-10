@@ -169,6 +169,10 @@ impl RuntimeError {
 /// Drops a parked bar by its monitor's key; true if one was parked.
 pub(crate) type Forget = dyn Fn(&Runtime, &Value) -> bool;
 
+/// Disposes the cells a closed popup kept for a keyed `for`'s rows whose
+/// key its data no longer has ([`Ctx::sweep_kept`]).
+pub(crate) type Sweep = dyn Fn(&Runtime);
+
 /// Services a mounted scope reads ([`Ctx::hold`]).
 pub(crate) struct Hold {
     pub scope: Option<CoreId>,
@@ -250,6 +254,12 @@ pub(crate) struct Ctx {
     pub settings_prune_at: Cell<usize>,
     /// Per-monitor bar lists: forget a parked monitor's bar by key.
     pub forgetters: RefCell<Vec<std::rc::Weak<Forget>>>,
+    /// Mounted keyed `for`s: each disposes the kept cells of its rows
+    /// whose key the data dropped, when a popup closes.
+    pub sweepers: RefCell<Vec<std::rc::Weak<Sweep>>>,
+    /// The length `sweepers` is next pruned of unmounted entries at, as
+    /// `settings_prune_at`.
+    pub sweepers_prune_at: Cell<usize>,
     pub notices: RefCell<Vec<String>>,
     /// Persisted cells kept over a changed default since the last tick.
     pub kept: RefCell<Vec<crate::reconcile::KeptCell>>,
@@ -1026,6 +1036,8 @@ impl Ctx {
             errors: RefCell::default(),
             sites: RefCell::default(),
             forgetters: RefCell::default(),
+            sweepers: RefCell::default(),
+            sweepers_prune_at: Cell::new(SETTINGS_PRUNE_MIN),
             settings: RefCell::default(),
             settings_prune_at: Cell::new(SETTINGS_PRUNE_MIN),
             holds: RefCell::default(),
@@ -1274,7 +1286,8 @@ fn fault_outline() -> PropValue {
     })
 }
 
-/// The mounted-settings list is first pruned at this length.
+/// The mounted-settings list (and the keyed `for`s' sweepers) is first
+/// pruned at this length.
 pub(crate) const SETTINGS_PRUNE_MIN: usize = 16;
 
 /// The seed of the palette a config without `use palette` gets: the

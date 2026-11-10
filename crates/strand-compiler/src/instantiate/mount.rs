@@ -1096,6 +1096,26 @@ impl Ctx {
         kept
     }
 
+    /// A popup closes: each mounted keyed `for` disposes the cells kept
+    /// for its rows whose key its data no longer has, as a row the data
+    /// removes while it is mounted loses its state. Without it, a row
+    /// whose key left while its popup was closed kept its cells under the
+    /// popup's keep scope for the life of the surface.
+    fn sweep_kept(&self, rt: &Runtime) {
+        if self.closed.borrow().is_empty() {
+            return;
+        }
+        let live: Vec<Rc<super::Sweep>> = self
+            .sweepers
+            .borrow()
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .collect();
+        for sweep in live {
+            sweep(rt);
+        }
+    }
+
     /// A windowed list's rows leave the window (`rows`: each row's
     /// content scope and key): the cells owned under each are moved to a
     /// scope of its own under `root`, made only for rows that have any,
@@ -2012,6 +2032,7 @@ impl Ctx {
                             mounted.set(false);
                             let old = block.get();
                             let _ = me.keep_cells(rt, old.id(), keep.id());
+                            me.sweep_kept(rt);
                             me.unmount(rt, inner, true);
                             old.dispose(rt);
                             let fresh = match outer {
@@ -3280,6 +3301,56 @@ impl Ctx {
             // The list's scope keeps its forgetter alive.
             rt.on_cleanup(move || drop(forget));
         }
+        // Every key the data has (a windowed list mounts only some), for
+        // its sweeper: a closed popup's kept cells of rows whose key is
+        // not among them are disposed when a popup closes.
+        let live: Rc<RefCell<std::collections::HashSet<ValueKey>>> = Rc::default();
+        if !park {
+            let (ctx, live, prefix) = (self.clone(), live.clone(), prefix.clone());
+            let sweep: Rc<super::Sweep> = Rc::new(move |rt: &Runtime| {
+                let start = format!("{prefix}[");
+                let gone: Vec<strand_core::Scope> = {
+                    let closed = ctx.closed.borrow();
+                    let mine: Vec<&Rc<str>> =
+                        closed.iter().filter(|k| k.starts_with(&start)).collect();
+                    if mine.is_empty() {
+                        return;
+                    }
+                    let rows: Vec<String> = live
+                        .borrow()
+                        .iter()
+                        .map(|k| format!("{prefix}[{}]", k.0.show(&ctx.vm.prog.types)))
+                        .collect();
+                    let in_row = |k: &str| {
+                        rows.iter().any(|r| {
+                            k.strip_prefix(r.as_str())
+                                .is_some_and(|rest| rest.starts_with(['#', '/']))
+                        })
+                    };
+                    let reg = ctx.registry.borrow();
+                    mine.into_iter()
+                        .filter(|k| !in_row(k))
+                        .filter_map(|k| reg.cells.get(k).map(|c| c.holder()))
+                        .collect()
+                };
+                // Their cleanups take them out of the registry and
+                // `closed`.
+                for s in gone {
+                    s.dispose(rt);
+                }
+            });
+            {
+                let mut all = self.sweepers.borrow_mut();
+                if all.len() >= self.sweepers_prune_at.get() {
+                    all.retain(|w| w.strong_count() > 0);
+                    self.sweepers_prune_at
+                        .set((all.len() * 2).max(super::SETTINGS_PRUNE_MIN));
+                }
+                all.push(Rc::downgrade(&sweep));
+            }
+            // The list's scope keeps its sweeper alive.
+            rt.on_cleanup(move || drop(sweep));
+        }
         let plain = {
             let (ctx, items) = (self.clone(), items.clone());
             let (leave, arrive) = (leave.clone(), arrive.clone());
@@ -3344,7 +3415,7 @@ impl Ctx {
                 },
             )
         };
-        let apply: Rc<KeyedApply> = match window {
+        let inner: Rc<KeyedApply> = match window {
             None => plain,
             Some((list, nodes)) => {
                 let probe = probe::RowProbe {
@@ -3356,6 +3427,31 @@ impl Ctx {
                 };
                 self.windowed(rt, list, frag, items, leave, arrive, probe)
             }
+        };
+        let apply: Rc<KeyedApply> = match park {
+            true => inner,
+            false => Rc::new(move |rt, diffs| {
+                {
+                    let mut live = live.borrow_mut();
+                    for d in &diffs {
+                        match d {
+                            strand_core::VecDiff::Reset { items } => {
+                                live.clear();
+                                live.extend(items.iter().map(|(k, _)| k.clone()));
+                            }
+                            strand_core::VecDiff::Insert { key, .. } => {
+                                live.insert(key.clone());
+                            }
+                            strand_core::VecDiff::Remove { key, .. } => {
+                                live.remove(key);
+                            }
+                            strand_core::VecDiff::Move { .. }
+                            | strand_core::VecDiff::Update { .. } => {}
+                        }
+                    }
+                }
+                inner(rt, diffs)
+            }),
         };
         let r = read.clone();
         match rt.untrack(|rt| r(rt, None)) {

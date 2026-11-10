@@ -4506,6 +4506,78 @@ fn popup_content_unmounts_when_closed_and_keeps_its_state() {
     );
 }
 
+/// A closed popup keeps the `state`s of its `for` rows for the keys its
+/// data still has; a row whose key left while it was closed has its cells
+/// disposed when the popup next closes, as a row the data removes while
+/// mounted loses its state. Before, they stayed under the popup's keep
+/// scope for the life of the surface, one set per key that ever left.
+#[test]
+fn a_closed_popups_rows_whose_key_left_free_their_cells() {
+    let src = "export state p = false\n\
+               export state n = 1\n\
+               component Row {\n\
+                 state taps = 0\n\
+                 text join(\" \", \"row\", taps)\n\
+                 box { on click { taps += 1 } }\n\
+               }\n\
+               bar B {\n\
+                 text \"x\"\n\
+                 popup { open: <-> p; for r in [n] key r { Row } }\n\
+               }\n";
+    let mut shell = boot(&[("pop.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let open = |shell: &mut Shell, on: bool| {
+        shell.inst.set("pop.p", Value::Bool(on)).unwrap();
+        shell.flush();
+    };
+    let row = |shell: &Shell| {
+        shell
+            .scene
+            .texts()
+            .into_iter()
+            .find(|t| t.starts_with("row "))
+            .unwrap_or_default()
+    };
+    // A row whose key stays keeps its state across a close.
+    open(&mut shell, true);
+    let tap = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(tap, "click", Vec::new()));
+    shell.flush();
+    assert_eq!(row(&shell), "row 1");
+    open(&mut shell, false);
+    open(&mut shell, true);
+    assert_eq!(row(&shell), "row 1", "a kept row lost its state");
+    open(&mut shell, false);
+
+    // Its key leaves while the popup is closed, and comes back after a
+    // close: its state went with it.
+    shell.inst.set("pop.n", Value::int(2)).unwrap();
+    shell.flush();
+    open(&mut shell, true);
+    assert_eq!(row(&shell), "row 0");
+    open(&mut shell, false);
+    shell.inst.set("pop.n", Value::int(1)).unwrap();
+    shell.flush();
+    open(&mut shell, true);
+    assert_eq!(row(&shell), "row 0", "a dropped key's state came back");
+    open(&mut shell, false);
+
+    // Keys churning while closed leak nothing.
+    let after_first = shell.rt.stats().nodes;
+    for i in 3..60 {
+        shell.inst.set("pop.n", Value::int(i)).unwrap();
+        shell.flush();
+        open(&mut shell, true);
+        open(&mut shell, false);
+    }
+    assert_eq!(
+        shell.rt.stats().nodes,
+        after_first,
+        "kept cells of rows whose key left were never freed"
+    );
+}
+
 /// A settings file and a persisted `state` in a closed popup's content
 /// are kept as a plain one is.
 #[test]
