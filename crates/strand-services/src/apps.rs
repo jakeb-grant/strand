@@ -781,53 +781,74 @@ fn unescape_string(s: &str) -> String {
     out
 }
 
-/// An `Exec` line's arguments, split as the spec quotes them: by spaces,
-/// a double-quoted argument taking `\"`, `` \` ``, `\$` and `\\`
-/// escapes. A field code stays in its argument (as `%`-prefixed text) for
-/// [`command`] to expand; `quoted` says which arguments were quoted
-/// (field codes are not expanded inside quotes).
-fn split_exec(exec: &str) -> Result<Vec<(String, bool)>, String> {
+/// An `Exec` line's arguments, split with the shell-style quoting GLib's
+/// and KDE's launchers accept (a superset of the spec's): words split at
+/// spaces and tabs; a double- or single-quoted part may start anywhere in
+/// a word and joins the text around it; outside quotes a backslash
+/// escapes the next character; inside double quotes it escapes only
+/// `"`, `` ` ``, `$` and `\`; single quotes take everything literally.
+/// Each word comes as its parts, `true` for a quoted part: a field code
+/// stays in an unquoted part (as `%`-prefixed text) for [`command`] to
+/// expand, and is not expanded inside quotes.
+fn split_exec(exec: &str) -> Result<Vec<Vec<(String, bool)>>, String> {
+    fn push(parts: &mut Vec<(String, bool)>, c: char, quoted: bool) {
+        match parts.last_mut() {
+            Some((s, q)) if *q == quoted => s.push(c),
+            _ => parts.push((c.to_string(), quoted)),
+        }
+    }
     let exec = unescape_string(exec);
-    let mut args = Vec::new();
+    let mut words = Vec::new();
     let mut chars = exec.chars().peekable();
     loop {
         while chars.peek().is_some_and(|c| *c == ' ' || *c == '\t') {
             chars.next();
         }
-        let Some(&first) = chars.peek() else {
+        if chars.peek().is_none() {
             break;
-        };
-        let mut arg = String::new();
-        if first == '"' {
-            chars.next();
-            loop {
-                match chars.next() {
-                    Some('"') => break,
-                    Some('\\') => match chars.next() {
-                        Some(c @ ('"' | '`' | '$' | '\\')) => arg.push(c),
-                        Some(c) => {
-                            arg.push('\\');
-                            arg.push(c);
-                        }
-                        None => return Err("unterminated quote".into()),
-                    },
-                    Some(c) => arg.push(c),
-                    None => return Err("unterminated quote".into()),
-                }
-            }
-            args.push((arg, true));
-        } else {
-            while let Some(&c) = chars.peek() {
-                if c == ' ' || c == '\t' {
-                    break;
-                }
-                arg.push(c);
-                chars.next();
-            }
-            args.push((arg, false));
         }
+        let mut parts: Vec<(String, bool)> = Vec::new();
+        while let Some(c) = chars.next() {
+            match c {
+                ' ' | '\t' => break,
+                '"' => {
+                    // An empty quoted part still makes the word.
+                    parts.push((String::new(), true));
+                    loop {
+                        match chars.next() {
+                            Some('"') => break,
+                            Some('\\') => match chars.next() {
+                                Some(c @ ('"' | '`' | '$' | '\\')) => push(&mut parts, c, true),
+                                Some(c) => {
+                                    push(&mut parts, '\\', true);
+                                    push(&mut parts, c, true);
+                                }
+                                None => return Err("unterminated quote".into()),
+                            },
+                            Some(c) => push(&mut parts, c, true),
+                            None => return Err("unterminated quote".into()),
+                        }
+                    }
+                }
+                '\'' => {
+                    parts.push((String::new(), true));
+                    loop {
+                        match chars.next() {
+                            Some('\'') => break,
+                            Some(c) => push(&mut parts, c, true),
+                            None => return Err("unterminated quote".into()),
+                        }
+                    }
+                }
+                // An escaped character is literal: quoted, so `\%f` is
+                // not a field code. A trailing backslash stays itself.
+                '\\' => push(&mut parts, chars.next().unwrap_or('\\'), true),
+                c => push(&mut parts, c, false),
+            }
+        }
+        words.push(parts);
     }
-    Ok(args)
+    Ok(words)
 }
 
 /// The program and arguments that start `entry` (no files or URLs: the
@@ -837,12 +858,13 @@ fn split_exec(exec: &str) -> Result<Vec<(String, bool)>, String> {
 /// entry's file, `%%` a `%`.
 pub fn command(entry: &Entry) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
-    for (arg, quoted) in split_exec(&entry.exec)? {
-        if quoted {
-            out.push(arg);
-            continue;
-        }
-        match arg.as_str() {
+    for parts in split_exec(&entry.exec)? {
+        // A standalone field code is a whole unquoted word.
+        let whole = match parts.as_slice() {
+            [(arg, false)] => arg.as_str(),
+            _ => "",
+        };
+        match whole {
             "%f" | "%F" | "%u" | "%U" | "%d" | "%D" | "%n" | "%N" | "%v" | "%m" => continue,
             "%i" => {
                 if let Some(icon) = &entry.icon_key {
@@ -854,19 +876,25 @@ pub fn command(entry: &Entry) -> Result<Vec<String>, String> {
             _ => {}
         }
         let mut s = String::new();
-        let mut chars = arg.chars();
-        while let Some(c) = chars.next() {
-            if c != '%' {
-                s.push(c);
+        for (part, quoted) in &parts {
+            if *quoted {
+                s.push_str(part);
                 continue;
             }
-            match chars.next() {
-                Some('%') => s.push('%'),
-                Some('c') => s.push_str(&entry.app.name),
-                Some('k') => s.push_str(&entry.file.to_string_lossy()),
-                // Files, URLs and the deprecated codes inside an argument
-                // expand to nothing.
-                Some(_) | None => {}
+            let mut chars = part.chars();
+            while let Some(c) = chars.next() {
+                if c != '%' {
+                    s.push(c);
+                    continue;
+                }
+                match chars.next() {
+                    Some('%') => s.push('%'),
+                    Some('c') => s.push_str(&entry.app.name),
+                    Some('k') => s.push_str(&entry.file.to_string_lossy()),
+                    // Files, URLs and the deprecated codes inside an
+                    // argument expand to nothing.
+                    Some(_) | None => {}
+                }
             }
         }
         out.push(s);
@@ -1165,6 +1193,39 @@ mod tests {
         assert_eq!(cmd(r#""/opt/My App/run" --x"#), ["/opt/My App/run", "--x"]);
         assert!(command(&entry("\"unterminated")).is_err());
         assert!(command(&entry("%f")).is_err(), "nothing left to run");
+    }
+
+    /// Lines that break the spec's whole-argument quoting but that GLib
+    /// and KDE launch (Wine's generated entries, `sh -c '...'`) split the
+    /// way a shell would.
+    #[test]
+    fn exec_lines_take_shell_style_quoting() {
+        let cmd = |e: &str| command(&entry(e)).unwrap();
+        // Wine's line as it is in the file (`\\ ` there is `\ ` after the
+        // string escapes, an escaped space).
+        assert_eq!(
+            cmd(
+                r#"env WINEPREFIX="/home/u/.wine" wine C:\\\\windows\\\\command\\\\start.exe /Unix /home/u/Start\\ Menu/App.lnk"#
+            ),
+            [
+                "env",
+                "WINEPREFIX=/home/u/.wine",
+                "wine",
+                r"C:\windows\command\start.exe",
+                "/Unix",
+                "/home/u/Start Menu/App.lnk"
+            ]
+        );
+        assert_eq!(cmd("sh -c 'echo a b'"), ["sh", "-c", "echo a b"]);
+        assert_eq!(cmd(r#"a 'x\"y' "it's""#), ["a", r#"x\"y"#, "it's"]);
+        assert_eq!(cmd(r#"a '' """#), ["a", "", ""], "empty quotes are words");
+        // A field code inside a quoted or escaped part is text; beside
+        // one it still expands.
+        assert_eq!(cmd("app '%f' x'%c'"), ["app", "%f", "x%c"]);
+        assert_eq!(cmd(r#"app --title="%c":%c"#), ["app", "--title=%c:X Files"]);
+        assert_eq!(cmd(r"app \\%f"), ["app", "%f"]);
+        assert!(command(&entry("sh -c 'unterminated")).is_err());
+        assert!(command(&entry(r#"env A="x wine"#)).is_err());
     }
 
     /// strand-fuzzy's test of the same name holds the rule; a hit carries
