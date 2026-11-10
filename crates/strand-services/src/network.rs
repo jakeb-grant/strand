@@ -889,7 +889,8 @@ impl Nm {
     /// did not, `None` read everything again (the set of objects moved).
     /// A device's access points coming and going matter only while
     /// `scanning` (the one in use is followed through its connection's
-    /// `SpecificObject`); then only the new ones are read.
+    /// `SpecificObject`); then only the new ones are read, and one read
+    /// that times out is `None`.
     async fn signal(&mut self, daemon: &Daemon, m: &zbus::Message, scanning: bool) -> Option<bool> {
         if let Some(changed) = self.settings_signal(daemon, m).await {
             return changed;
@@ -947,8 +948,16 @@ impl Nm {
                     if self.aps.contains_key(&path) {
                         continue;
                     }
-                    if let Ok(p) = dbus::get_all(daemon.conn(), NM, &path, AP).await {
-                        self.aps.insert(path, p);
+                    match dbus::get_all(daemon.conn(), NM, &path, AP).await {
+                        Ok(p) => {
+                            self.aps.insert(path, p);
+                        }
+                        // NetworkManager stopped answering: read
+                        // everything again, which fails the run as
+                        // [`Nm::read`] does, not one wait per new path.
+                        Err(e) if dbus::is_timeout(&e) => return None,
+                        // It went meanwhile.
+                        Err(_) => {}
                     }
                 }
                 Some(true)
