@@ -966,8 +966,13 @@ jobs:
       RAILWAY_CLI_VERSION: 5.67.1
       RAILWAY_CLI_SHA256: f65fcb7d9b97e81e9cc2c8af08cbdf57d3801579a727ec2302e5774965b0575e
     steps:
-      - name: Is there a token?
+      # (audit-deploy-head) As publish.sh for edge: a run main has moved
+      # on from (re-run, or finished late) deploys nothing, so an older
+      # site and install.sh never replace a newer one.
+      - name: Is there a token, and is main still here?
         id: token
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ -z "$RAILWAY_TOKEN" ]; then
             echo "::notice::No RAILWAY_TOKEN secret: the site is not deployed (deploy/railway/README.md)"
@@ -976,7 +981,13 @@ jobs:
             echo "::error::RAILWAY_TOKEN is set but the RAILWAY_SERVICE variable is not"
             exit 1
           else
-            echo "go=true" >> "$GITHUB_OUTPUT"
+            head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha) || exit 1
+            if [ "$head" != "$GITHUB_SHA" ]; then
+              echo "::notice::main is at ${head::12} now, not ${GITHUB_SHA::12}: that push's run deploys the site"
+              echo "go=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "go=true" >> "$GITHUB_OUTPUT"
+            fi
           fi
       - uses: actions/checkout@v7
         if: steps.token.outputs.go == 'true'
