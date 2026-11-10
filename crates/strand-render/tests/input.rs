@@ -979,6 +979,79 @@ fn logic_clearing_an_input_wins_over_edits_in_flight() {
     assert_eq!(key(&mut f, &mut r, "d"), "d", "logic's own text wins");
 }
 
+/// The window in which a key builds on an unanswered write runs on the
+/// Router's clock, as a host on a virtual clock sets it: held still, the
+/// window stays open however much wall time passes (here the virtual
+/// clock lags it by seconds); moved 600 ms on, it has closed and the next
+/// key builds on the text the scene shows, whatever the wall clock says.
+#[test]
+fn edits_in_flight_expire_on_the_routers_clock() {
+    use std::time::Duration;
+    use strand_scene::{NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let (p, i) = (NodeId::new(0, 0), NodeId::new(1, 0));
+    let mut d = SceneDiff::new();
+    d.create(p, NodeKind::Panel, None, 0)
+        .set(p, Prop::Size, PropValue::Number(80.0))
+        .create(i, NodeKind::Input, Some(p), 0)
+        .set(i, Prop::Text, PropValue::Text(String::new()))
+        .set(i, Prop::Focus, PropValue::Bool(true));
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    let mut f = R::default();
+    f.attached(s, p);
+    // A virtual clock well behind the wall clock.
+    let t0 = std::time::Instant::now()
+        .checked_sub(Duration::from_secs(10))
+        .unwrap();
+    f.router.set_now(Some(t0));
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    let key = |f: &mut R, r: &mut Renderer, t: &str| {
+        f.input(
+            &InputEvent::Key {
+                surface: s,
+                key: KeyInput {
+                    name: t.into(),
+                    text: t.into(),
+                    state: ButtonState::Pressed,
+                    repeat: false,
+                    modifiers: Default::default(),
+                    time: 0,
+                    latin: None,
+                },
+            },
+            r,
+        );
+        f.drain()
+            .into_iter()
+            .find_map(|i| match i {
+                Intent::Write {
+                    value: PropValue::Text(t),
+                    ..
+                } => Some(t),
+                _ => None,
+            })
+            .unwrap()
+    };
+    // Logic never answers: the scene shows "" throughout.
+    assert_eq!(key(&mut f, &mut r, "a"), "a");
+    assert_eq!(
+        key(&mut f, &mut r, "b"),
+        "ab",
+        "the virtual clock has not moved: the write is still in flight"
+    );
+    f.router.set_now(Some(t0 + Duration::from_millis(600)));
+    assert_eq!(
+        key(&mut f, &mut r, "c"),
+        "c",
+        "600 ms on the virtual clock: the window has closed"
+    );
+}
+
 /// (lockmon) The lock's password field on two monitors (twin inputs,
 /// `Prop::Twin`, one text between them): keys typed on the second
 /// monitor right after the keyboard moved there build on the first's

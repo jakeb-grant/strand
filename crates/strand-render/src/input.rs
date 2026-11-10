@@ -3446,12 +3446,17 @@ impl Router {
             Some(PropValue::Text(t)) => t.clone(),
             _ => String::new(),
         };
+        // (audit-edit-clock) On the Router's clock, as the edit was
+        // stamped: a host on a virtual clock measures the window by it.
+        let clock = self.now();
         let in_flight = self
             .with_twins(input)
             .into_iter()
             .filter_map(|n| self.edits.get(&n))
             .filter(|e| {
-                e.latest != text && e.at.elapsed() < EDIT_IN_FLIGHT && e.pending.contains(&text)
+                e.latest != text
+                    && clock.saturating_duration_since(e.at) < EDIT_IN_FLIGHT
+                    && e.pending.contains(&text)
             })
             .max_by_key(|e| e.at);
         // (`observe` already dropped what logic answered.)
