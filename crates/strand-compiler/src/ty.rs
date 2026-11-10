@@ -527,6 +527,40 @@ impl TypeTable {
         &self.enums[id.0 as usize]
     }
 
+    /// [`TypeTable::record`] for an id a value carries: `None` when this
+    /// table has no such record (a value from another program).
+    pub fn get_record(&self, id: RecordId) -> Option<&RecordDef> {
+        self.records.get(id.0 as usize)
+    }
+
+    /// [`TypeTable::enum_`] for an id a value carries.
+    pub fn get_enum(&self, id: EnumId) -> Option<&EnumDef> {
+        self.enums.get(id.0 as usize)
+    }
+
+    /// Whether a value built against `other` means the same here: every
+    /// record and enum at the same id, with the same name, file, fields
+    /// (names, types and order), key and variants. A reload whose types
+    /// differ so cannot hand a kept handler's tasks over: they run the old
+    /// program's bytecode and table against the new program's values.
+    pub fn same_layout(&self, other: &TypeTable) -> bool {
+        let field = |a: &FieldDef, b: &FieldDef| a.name == b.name && a.ty == b.ty;
+        self.records.len() == other.records.len()
+            && self.enums.len() == other.enums.len()
+            && self.records.iter().zip(&other.records).all(|(a, b)| {
+                a.name == b.name
+                    && a.home == b.home
+                    && a.key == b.key
+                    && a.fields.len() == b.fields.len()
+                    && a.fields.iter().zip(&b.fields).all(|(x, y)| field(x, y))
+            })
+            && self
+                .enums
+                .iter()
+                .zip(&other.enums)
+                .all(|(a, b)| a.name == b.name && a.home == b.home && a.variants == b.variants)
+    }
+
     pub fn add_record(&mut self, def: RecordDef) -> RecordId {
         self.records.push(def);
         RecordId(self.records.len() as u32 - 1)

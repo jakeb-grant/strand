@@ -1498,6 +1498,7 @@ impl Instance {
         *ctx.carry.borrow_mut() = Some(reload::Carry {
             old: std::mem::take(&mut *old.registry.borrow_mut()),
             old_prog: old.vm.prog.clone(),
+            same_layout: old.vm.prog.types.same_layout(&build.program.types),
             report: Report::default(),
             kept_nodes: Default::default(),
             scopes: Default::default(),

@@ -3012,7 +3012,10 @@ new program with the running one.
   resets the cell, as a list's item does.
 - A handler counts as changed when its code or anything it reaches
   (the `fn`s and `let`s it calls or reads) changed; an unchanged handler
-  keeps its in-flight work.
+  keeps its in-flight work, unless the edit renumbered or reshaped the
+  program's types (a `type` or `enum` added, removed, moved or changed):
+  then its in-flight `await` is cancelled and reported as a restart's is
+  (decisions.md audit-reload-layout).
 - A rescaled timer keeps the fraction it has counted and finishes at the
   new duration; an `after` that already ran stays done.
 - A surface's state is keyed by its place in the program, not its name,

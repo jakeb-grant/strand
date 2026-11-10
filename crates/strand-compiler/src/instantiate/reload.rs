@@ -151,6 +151,10 @@ pub(crate) struct Registry {
 pub(crate) struct Carry {
     pub old: Registry,
     pub old_prog: Arc<Program>,
+    /// The old and new programs' types are the same at every id
+    /// ([`crate::ty::TypeTable::same_layout`]): only then may a kept
+    /// handler's in-flight tasks be handed over.
+    pub same_layout: bool,
     pub report: Report,
     /// Ids of old scene nodes the new instance kept.
     pub kept_nodes: std::collections::HashSet<NodeId>,
@@ -548,7 +552,11 @@ impl Ctx {
         site: Option<CoreId>,
         class: EditClass,
     ) -> Option<HandlerRec> {
-        let old = self.carry.borrow_mut().as_mut()?.old.handlers.remove(key)?;
+        let (old, same_layout) = {
+            let mut carry = self.carry.borrow_mut();
+            let c = carry.as_mut()?;
+            (c.old.handlers.remove(key)?, c.same_layout)
+        };
         let tasks: Vec<CoreId> = old
             .site
             .and_then(|s| rt.owned(s).ok())
@@ -557,10 +565,25 @@ impl Ctx {
             .filter(|t| rt.kind(*t) == Ok(strand_core::NodeKind::Task))
             .collect();
         if hash != 0 && hash == old.hash {
-            if let Some(s) = site {
-                for t in tasks {
-                    let _ = rt.reparent(t, Some(s));
+            if same_layout {
+                if let Some(s) = site {
+                    for t in tasks {
+                        let _ = rt.reparent(t, Some(s));
+                    }
                 }
+            } else if !tasks.is_empty() {
+                // (audit-reload-layout) The code is unchanged but the
+                // types were renumbered or reshaped: its tasks would run
+                // the old bytecode and table against the new program's
+                // values, so they restart as a changed handler's do.
+                let n = tasks.len();
+                self.report(|r| {
+                    r.class(class);
+                    if class == EditClass::Handler {
+                        r.restarted += 1;
+                    }
+                    r.cancelled += n;
+                });
             }
         } else {
             let n = tasks.len();

@@ -610,6 +610,58 @@ fn handler_restart_cancels_its_await() {
     assert_eq!(shell.value("t", "a"), Value::int(2));
 }
 
+/// (audit-reload-layout) An unchanged handler awaiting across a reload
+/// that renumbers the types (one declared above the one it reads) is
+/// restarted with the notice: its old bytecode and table would read the
+/// new program's values by the old ids (an out-of-bounds index, or
+/// another type's fields).
+#[test]
+fn a_kept_handler_restarts_when_the_types_are_renumbered() {
+    let src = "type P { n: int }\nstate p = P(n: 1)\nstate out = 0\nbar Top {\n  box { on click { await sleep(1s); out = p.n } }\n  row { on click { await sleep(1s); p = P(n: 2) } }\n}\n";
+    let mut shell = boot(&[("t.strand", src)]);
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    let r = shell.scene.of_kind(NodeKind::Row)[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.inst.event(r, "click", Vec::new());
+    shell.at(0.5);
+    let renumbered = format!("type A {{ x: int }}\n{src}");
+    let (report, _) = shell.reload(&[("t.strand", &renumbered)]);
+    assert_eq!(report.restarted, 2, "{report:?}");
+    assert_eq!(report.cancelled, 2, "{report:?}");
+    let u = shell.at(2.0);
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(shell.value("t", "out"), Value::int(0), "cancelled");
+    // The restarted handlers run on the new program's types.
+    shell.inst.event(r, "click", Vec::new());
+    shell.at(2.0);
+    shell.at(3.0);
+    shell.inst.event(b, "click", Vec::new());
+    shell.at(3.0);
+    let u = shell.at(4.0);
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(shell.value("t", "out"), Value::int(2));
+}
+
+/// (audit-reload-layout) An edit that leaves the types as they were
+/// still hands an unchanged handler's `await` over.
+#[test]
+fn a_kept_handler_keeps_its_await_when_the_types_stay() {
+    let src = |t: &str| {
+        format!(
+            "type P {{ n: int }}\nstate p = P(n: 1)\nstate out = 0\nbar Top {{\n  box {{ on click {{ await sleep(1s); out = p.n }} }}\n  text \"{t}\"\n}}\n"
+        )
+    };
+    let mut shell = boot(&[("t.strand", &src("a"))]);
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.at(0.5);
+    let (report, _) = shell.reload(&[("t.strand", &src("b"))]);
+    assert_eq!(report.restarted, 0, "{report:?}");
+    assert_eq!(report.cancelled, 0, "{report:?}");
+    shell.at(2.0);
+    assert_eq!(shell.value("t", "out"), Value::int(1), "kept running");
+}
+
 /// A timer's duration edit rescales the remaining time.
 #[test]
 fn timer_duration_rescales() {

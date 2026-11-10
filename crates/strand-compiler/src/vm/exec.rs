@@ -1321,7 +1321,10 @@ fn set_in(
             let Value::Record(r) = cur else {
                 return Err(fail(format!("cannot set `{name}` of a missing value")));
             };
-            let def = vm.types().record(r.ty);
+            let def = vm
+                .types()
+                .get_record(r.ty)
+                .ok_or_else(|| builtins::unknown_record(name))?;
             let Some(i) = def.fields.iter().position(|f| f.name == *name) else {
                 return Err(fail(format!("`{}` has no field `{name}`", def.name)));
             };

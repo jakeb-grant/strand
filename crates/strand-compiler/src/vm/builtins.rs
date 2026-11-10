@@ -216,11 +216,22 @@ fn laid_out_box(vm: &Vm, n: &Rc<NodeState>, v: Value) -> Value {
 // ---------------------------------------------------------------------------
 // Fields
 
+/// A record whose type this program does not have (a value of another
+/// program's table): a fault, not an out-of-bounds index.
+pub(crate) fn unknown_record(member: &str) -> Error {
+    fail(format!(
+        "`{member}` of a record of a type this program does not have"
+    ))
+}
+
 pub(crate) fn field(vm: &Rc<Vm>, rt: &Runtime, base: &Value, name: &str) -> Result<Value, Error> {
     Ok(match base {
         Value::Null => Value::Null,
         Value::Record(r) => {
-            let def = vm.types().record(r.ty);
+            let def = vm
+                .types()
+                .get_record(r.ty)
+                .ok_or_else(|| unknown_record(name))?;
             match def.fields.iter().position(|f| f.name == name) {
                 Some(i) => r.fields.get(i).cloned().unwrap_or(Value::Null),
                 None => return Err(fail(format!("`{}` has no field `{name}`", def.name))),
@@ -1287,7 +1298,10 @@ pub(crate) fn method(
             })
         }
         Value::Record(r) => {
-            let def = vm.types().record(r.ty);
+            let def = vm
+                .types()
+                .get_record(r.ty)
+                .ok_or_else(|| unknown_record(name))?;
             if def.name == "Date" {
                 return super::clock::date_method(vm.types(), recv, name, &args.into_vec());
             }
