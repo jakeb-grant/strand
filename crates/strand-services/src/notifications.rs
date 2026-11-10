@@ -104,7 +104,9 @@ pub const MAX_TEXT: usize = 1024;
 /// The most bytes of `app_icon` and of a string hint (`category`,
 /// `desktop-entry`, `image-path`) kept.
 pub const MAX_HINT: usize = 1024;
-/// The most bytes of an action's key and of its label kept.
+/// The most bytes of an action's label kept, and of a key: an action
+/// whose key is longer is left out (a key is what `ActionInvoked` sends
+/// back, so it is never cut).
 pub const MAX_ACTION_TEXT: usize = 256;
 /// The most buttons (`actions`) a notification keeps; the rest are left
 /// out (`default` and `inline-reply` are still seen anywhere in the list).
@@ -601,9 +603,11 @@ impl Server {
                 can_reply = true;
                 continue;
             }
-            if buttons.len() < MAX_ACTIONS {
+            // A key is the sender's identifier: one too long to keep is
+            // left out whole, never cut into a key it did not register.
+            if buttons.len() < MAX_ACTIONS && key.len() <= MAX_ACTION_TEXT {
                 buttons.push(NotificationAction {
-                    id: clipped(key, MAX_ACTION_TEXT).to_string(),
+                    id: key.clone(),
                     label: clipped(label, MAX_ACTION_TEXT).to_string(),
                     notification: i64::from(id),
                 });
@@ -1921,7 +1925,7 @@ mod tests {
     /// A sender's text and actions are cut as they arrive, at a char
     /// boundary: the body to [`MAX_BODY`], summary and app name to
     /// [`MAX_TEXT`], the icon and string hints to [`MAX_HINT`], each
-    /// action's key and label to [`MAX_ACTION_TEXT`], the buttons to
+    /// action's label to [`MAX_ACTION_TEXT`], the buttons to
     /// [`MAX_ACTIONS`] (a `default` past them still counts).
     #[test]
     fn an_oversized_notification_is_stored_cut() {
@@ -1934,7 +1938,7 @@ mod tests {
         // Three-byte chars, so no cap falls on a char boundary.
         let big = |bytes: usize| "€".repeat(bytes / 3 + 1);
         let mut actions: Vec<String> = (0..100)
-            .flat_map(|i| [format!("k{i}{}", big(1000)), big(1000)])
+            .flat_map(|i| [format!("k{i}"), big(1000)])
             .collect();
         actions.extend(["default".to_string(), "Open".to_string()]);
         let hint = |s: String| OwnedValue::try_from(zbus::zvariant::Value::from(s)).unwrap();
@@ -1971,10 +1975,9 @@ mod tests {
         cut(n.desktop_entry.as_deref().unwrap(), MAX_HINT);
         cut(n.image.as_deref().unwrap(), MAX_HINT);
         assert_eq!(n.actions.len(), MAX_ACTIONS);
-        assert!(n.actions[0].id.starts_with("k0"));
-        assert!(n.actions[MAX_ACTIONS - 1].id.starts_with("k15"));
+        assert_eq!(n.actions[0].id, "k0");
+        assert_eq!(n.actions[MAX_ACTIONS - 1].id, "k15");
         for a in &n.actions {
-            assert!(a.id.len() <= MAX_ACTION_TEXT, "{}", a.id.len());
             cut(&a.label, MAX_ACTION_TEXT);
         }
         assert!(n.can_activate, "a default past the cap still counts");

@@ -3097,7 +3097,9 @@ new program with the running one.
   file about 16 MiB (one past 17 MiB is not read). What a sender sends is
   cut as it arrives, at a character boundary: a body to 64 KiB, a
   summary and app name to 1 KiB, the icon and text hints to 1 KiB, each
-  action's key and label to 256 bytes, and the buttons to 16.
+  action's label to 256 bytes, and the buttons to 16; an action whose
+  key is longer than 256 bytes is left out, since its key is what the
+  sender hears back.
 
 ### 10.4 Escape hatches
 

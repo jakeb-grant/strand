@@ -760,6 +760,43 @@ fn no_reply_field_no_inline_reply() {
     s.shutdown();
 }
 
+/// (audit-notify-bounds) An action's key is what `ActionInvoked` sends
+/// back, so one longer than the cap is left out whole rather than cut
+/// into a key its sender never registered; the label is cut.
+#[test]
+fn an_action_with_an_overlong_key_is_left_out() {
+    let _serial = serial();
+    history_in(None);
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    let long = format!("open:{}", "k".repeat(notifications::MAX_ACTION_TEXT));
+    let same_start = format!("{long}-other");
+    let label = "L".repeat(2 * notifications::MAX_ACTION_TEXT);
+    notify(
+        &tokio,
+        &conn,
+        0,
+        "Keys",
+        &[&long, "Long", &same_start, "Long too", "ok", &label],
+        HashMap::new(),
+        -1,
+    );
+    until(&rt, &s, "the popup", || popups(&b, &rt).len() == 1);
+    let n = popups(&b, &rt).remove(0);
+    let buttons: Vec<&str> = n.actions.iter().map(|a| a.id.as_str()).collect();
+    assert_eq!(buttons, ["ok"], "no key is cut");
+    assert_eq!(n.actions[0].label.len(), notifications::MAX_ACTION_TEXT);
+    s.shutdown();
+}
+
 #[test]
 fn history_is_bounded_and_lying_pictures_are_refused() {
     let _serial = serial();
