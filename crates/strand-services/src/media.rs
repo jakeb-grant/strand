@@ -1519,7 +1519,7 @@ impl Media {
                     looking = Some((
                         asked,
                         tokio::task::spawn_blocking(move || {
-                            let index = crate::apps::AppIndex::load(&config);
+                            let index = crate::apps::AppIndex::shared(&config);
                             names
                                 .into_iter()
                                 .map(|n| {

@@ -332,8 +332,18 @@ pub fn resolve_icon(icon: Option<&str>) -> String {
     }
 }
 
+/// How many times this process read the desktop entries ([`load`]).
+static READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The desktop-entry reads ([`load`]) this process made (tests: the
+/// services that link to apps share one read, [`AppIndex::shared`]).
+pub fn reads() -> u64 {
+    READS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Read every listed entry under `config`'s directories, by name.
 pub fn load(config: &Config) -> Vec<Entry> {
+    READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let locales = freedesktop_desktop_entry::get_languages_from_env();
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
@@ -477,6 +487,18 @@ fn listed(
 
 // --- Windows' apps -------------------------------------------------------
 
+/// The index [`AppIndex::shared`] last read: what it was read under, and
+/// the index itself while a holder keeps it (nothing is kept for nobody).
+struct Shared {
+    dirs: Vec<PathBuf>,
+    desktops: Vec<String>,
+    /// [`changed`]'s count and the icon lookups' generation.
+    stamp: (u64, u64),
+    index: std::sync::Weak<AppIndex>,
+}
+
+static SHARED: Mutex<Option<Shared>> = Mutex::new(None);
+
 /// The listed entries, for finding a window's app by its app id (Bugs 3
 /// and gaps 9, decisions.md m6-w2-services).
 #[derive(Clone, Debug, Default)]
@@ -493,6 +515,39 @@ impl AppIndex {
     /// The entries under `config`'s directories.
     pub fn load(config: &Config) -> AppIndex {
         AppIndex::new(load(config))
+    }
+
+    /// The entries under `config`'s directories, read once for every
+    /// holder: the `apps` service, the compositor service's windows and
+    /// `media`'s players get the same index while any of them holds it
+    /// and nothing changed since it was read ([`changed`], an icon
+    /// lookup invalidated). A read in progress is waited for, not done
+    /// again. Blocking: call it off the shared runtime.
+    pub fn shared(config: &Config) -> Arc<AppIndex> {
+        let mut shared = SHARED.lock().unwrap_or_else(PoisonError::into_inner);
+        // Before the read: a change during it is a change after it.
+        let stamp = (*CHANGES.borrow(), strand_icons::generation());
+        if let Some(s) = shared.as_ref()
+            && s.stamp == stamp
+            && s.dirs == config.dirs
+            && s.desktops == config.desktops
+            && let Some(index) = s.index.upgrade()
+        {
+            return index;
+        }
+        let index = Arc::new(AppIndex::load(config));
+        *shared = Some(Shared {
+            dirs: config.dirs.clone(),
+            desktops: config.desktops.clone(),
+            stamp,
+            index: Arc::downgrade(&index),
+        });
+        index
+    }
+
+    /// The entries, in [`load`]'s order.
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
     }
 
     /// The entry of the windows whose app id (a Wayland app id, an X11
@@ -998,7 +1053,7 @@ impl Apps {
         changes.mark_unchanged();
         let config = config();
         let read = |config: Config| async move {
-            tokio::task::spawn_blocking(move || load(&config))
+            tokio::task::spawn_blocking(move || AppIndex::shared(&config))
                 .await
                 .map_err(|e| ServiceError(format!("reading desktop entries: {e}")))
         };
@@ -1013,7 +1068,7 @@ impl Apps {
         // The snapshots saved: the latest one wins (`save_latest`).
         let written = Arc::new(Mutex::new(0u64));
         let mut generation = 0u64;
-        cx.update(|s| s.all = entries.iter().map(|e| e.app.clone()).collect());
+        cx.update(|s| s.all = entries.entries().iter().map(|e| e.app.clone()).collect());
         cx.ready();
         // Launches in flight (each on the blocking pool).
         let mut launching: tokio::task::JoinSet<Result<String, String>> =
@@ -1027,7 +1082,7 @@ impl Apps {
                             continue;
                         }
                         SEARCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        reply.send(Ok::<_, String>(search(&entries, &frecency, &query, unix_now())));
+                        reply.send(Ok::<_, String>(search(entries.entries(), &frecency, &query, unix_now())));
                     }
                     Some(Msg::Action(a)) => {
                         // (M5) The press's xdg-activation token, if any.
@@ -1038,7 +1093,7 @@ impl Apps {
                             AppsAction::Launch { item } => (item.id, None),
                             AppsAction::LaunchAction { item } => (item.app, Some(item.id)),
                         };
-                        let Some(entry) = entries.iter().find(|e| e.app.id == app) else {
+                        let Some(entry) = entries.entries().iter().find(|e| e.app.id == app) else {
                             log::warn!("apps: no app `{app}` to launch");
                             continue;
                         };
@@ -1072,7 +1127,7 @@ impl Apps {
                             LAUNCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             let now = unix_now();
                             frecency.record(&id, now);
-                            frecency.prune(|id| entries.iter().any(|e| e.app.id == id), now);
+                            frecency.prune(|id| entries.entries().iter().any(|e| e.app.id == id), now);
                             generation += 1;
                             let (f, s, w) = (frecency.clone(), state.clone(), written.clone());
                             tokio::task::spawn_blocking(move || {
@@ -1088,7 +1143,7 @@ impl Apps {
                         continue;
                     }
                     entries = read(config.clone()).await?;
-                    if !cx.update(|s| s.all = entries.iter().map(|e| e.app.clone()).collect()) {
+                    if !cx.update(|s| s.all = entries.entries().iter().map(|e| e.app.clone()).collect()) {
                         return Ok(());
                     }
                 }

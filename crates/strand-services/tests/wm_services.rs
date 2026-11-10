@@ -1033,6 +1033,96 @@ fn windows_are_linked_to_their_apps() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// The `apps` service and the windows' links share one read of the
+/// desktop entries, and one more when they change: the compositor
+/// service keeps no second copy of what a launcher already read.
+#[test]
+fn the_apps_service_and_the_windows_share_one_read_of_the_entries() {
+    let _serial = serial();
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let _enter = tokio.enter();
+    let root = std::env::temp_dir().join(format!("strand-wm-shared-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("applications");
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry = |name: &str| {
+        format!(
+            "[Desktop Entry]\nType=Application\nName={name}\nExec={}\n",
+            name.to_lowercase()
+        )
+    };
+    std::fs::write(dir.join("chromium.desktop"), entry("Chromium")).unwrap();
+    strand_icons::set_base_dirs(Some(vec![root.join("icons")]));
+    strand_services::apps::set_config(Some(strand_services::apps::Config {
+        dirs: vec![dir.clone()],
+        ..Default::default()
+    }));
+    let fake = common::hyprland::FakeHyprland::start();
+    let client = |address: &str, class: &str| {
+        serde_json::json!({
+            "address": address, "mapped": true, "hidden": false,
+            "workspace": {"id": 1, "name": "1"},
+            "class": class, "title": class, "xwayland": false,
+            "fullscreen": 0, "stableId": address.trim_start_matches("0x"),
+        })
+    };
+    let clients = serde_json::json!([client("0xa1", "chromium"), client("0xb2", "spotify")]);
+    fake.set_reply("j/clients", clients.to_string().as_bytes());
+    wm::configure(Some(WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: None,
+        ..Default::default()
+    }));
+    let reads = strand_services::apps::reads();
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    b.apps.acquire(&rt);
+    b.windows.acquire(&rt);
+    let linked = |class: &str| {
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .ok()
+            .and_then(|w| w.all.into_iter().find(|w| w.app_id == class))
+            .is_some_and(|w| w.app.is_some())
+    };
+    let listed = |id: &str| {
+        b.apps
+            .cells()
+            .snapshot(&rt)
+            .ok()
+            .is_some_and(|a| a.all.iter().any(|a| a.id == id))
+    };
+    until(&rt, &s, "chromium listed and linked", || {
+        listed("chromium") && linked("chromium")
+    });
+    assert_eq!(
+        strand_services::apps::reads() - reads,
+        1,
+        "one read for both"
+    );
+    std::fs::write(dir.join("spotify.desktop"), entry("Spotify")).unwrap();
+    strand_services::apps::changed();
+    until(&rt, &s, "spotify listed and linked", || {
+        listed("spotify") && linked("spotify")
+    });
+    assert_eq!(
+        strand_services::apps::reads() - reads,
+        2,
+        "one more for both"
+    );
+    s.shutdown();
+    wm::configure(None);
+    common::no_desktop_entries();
+    strand_icons::set_base_dirs(None);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Review minor 10 (m6-w2-services): the compositor's state does not wait
 /// for the desktop entries. A FIFO among them holds the read open: the
 /// windows are published with their app ids meanwhile, and patched with

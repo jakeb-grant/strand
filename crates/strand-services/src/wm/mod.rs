@@ -727,10 +727,11 @@ pub(crate) async fn drive<S>(
         // service's sources change: one read at a time, a change meanwhile
         // reading once more after it. The state does not wait for them:
         // a window shows its app id until its lookup (also on the blocking
-        // pool, one batch at a time) lands, and is patched then.
+        // pool, one batch at a time) lands, and is patched then. The read
+        // is the `apps` service's own when it runs (`AppIndex::shared`).
         let apps_config = crate::apps::Config::current();
         let read_apps = |c: crate::apps::Config| {
-            tokio::task::spawn_blocking(move || crate::apps::AppIndex::load(&c))
+            tokio::task::spawn_blocking(move || crate::apps::AppIndex::shared(&c))
         };
         let mut apps_reading = Some(read_apps(apps_config.clone()));
         let mut apps_dirty = false;
@@ -804,10 +805,10 @@ pub(crate) async fn drive<S>(
                     }, if apps_reading.is_some() => {
                         apps_reading = std::mem::take(&mut apps_dirty)
                             .then(|| read_apps(apps_config.clone()));
-                        apps = Some(std::sync::Arc::new(read.unwrap_or_else(|e| {
+                        apps = Some(read.unwrap_or_else(|e| {
                             log::warn!("reading desktop entries for windows: {e}");
-                            crate::apps::AppIndex::default()
-                        })));
+                            std::sync::Arc::default()
+                        }));
                         apps_generation += 1;
                     }
                     found = async {

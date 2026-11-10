@@ -3371,7 +3371,8 @@ itself.
   ignored; a known one that cannot be read triggers a re-read
   (decisions.md laptop-resilience). Windows carry `app` and `icon` from
   `apps::AppIndex`, read on the blocking pool and refreshed by
-  `apps::changed()`. `Window::toplevel` (not a schema field) is the
+  `apps::changed()`; `AppIndex::shared` gives `apps`, `windows` and
+  `media` one read while any of them holds it. `Window::toplevel` (not a schema field) is the
   identifier thumbnails capture by. `wm::follow_focused_screen(&Services,
   Fn(Option<String>)) -> FocusFollower` holds one hub subscription on the
   services runtime until dropped and calls back with each new
