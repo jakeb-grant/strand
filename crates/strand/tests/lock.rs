@@ -2003,6 +2003,35 @@ fn lock_unmounted_with_no_output_then_an_output_keeps_the_fallback() {
     assert!(vm.strand.running(), "logic is alive: the run goes on");
 }
 
+/// A healthy lock asked for while no output exists (lid closed, monitors
+/// gone) waits for one: its first-frame second runs from the content
+/// strand-surface makes on the returning output, not from the ask, so the
+/// config's lock shows there and the fallback never does
+/// (decisions.md audit-lock-no-output).
+#[test]
+fn lock_with_no_output_then_an_output_shows_the_config_lock() {
+    let test = "healthy_no_output";
+    if !in_lock_vm(test) {
+        return;
+    }
+    let mut vm = Vm::start(test, "");
+    vm.sway.unplug("HEADLESS-1");
+    vm.strand.cli(&["set", "lock.locked", "true"]);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let output = vm.sway.plug();
+    vm.until_locked(
+        &output,
+        "the config's lock on the returning output",
+        true,
+        |s| near(s.corner(), LOCK_BG),
+    );
+    let log = vm.strand.log_text();
+    assert!(
+        !log.contains("lock: showing the built-in password field"),
+        "the config's lock, not the fallback:\n{log}"
+    );
+}
+
 /// Killed by `sig` while locked: sway keeps the session locked; strand
 /// started again finds its marker, locks at once and shows the fallback.
 fn restart_after(test: &str, sig: i32) {

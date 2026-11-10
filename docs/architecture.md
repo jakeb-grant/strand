@@ -178,7 +178,8 @@ whole (decisions.md ipc-large-answer, audit-ipc-turn-backlog).
   logic ending or hanging (`ToLogic::Beat(seq)` 1 s after the last
   answer, 3 s to answer), SIGTERM, a runtime fault inside the lock, the
   text worker stopping, `auth` failing, `finished` after `locked`, no
-  `lock` open, or no first frame within 1 s leave the session locked and
+  `lock` open, or no first frame within 1 s of its first content surface
+  (none while no output exists) leave the session locked and
   show `strand_render::lock_fallback`. Its checks run on
   `strand-lock-auth` (`Checker`) and answer as `LockMsg::Checked`; each
   carries its lock session (`LockScreen::session`,
