@@ -590,6 +590,9 @@ struct Writer {
     /// Path → FNV-1a hash of what Strand held there when it first
     /// owned it: ownership is the key; the hash is not kept current.
     owned: BTreeMap<PathBuf, u64>,
+    /// The last manifest write failed: [`Writer::own`] writes it again
+    /// on its next call, owned path or not.
+    manifest_dirty: bool,
     shared: Arc<Shared>,
     ping: calloop::ping::Ping,
     /// Per path (a handful of files: lists, not maps).
@@ -618,6 +621,7 @@ impl Writer {
         Writer {
             manifest_file,
             owned,
+            manifest_dirty: false,
             shared,
             ping,
             runs: Vec::new(),
@@ -971,18 +975,24 @@ impl Writer {
     }
 
     /// Records `path` as Strand's, with the hash of what it holds. The
-    /// manifest is written only for a newly owned path: nothing reads
-    /// the hash, so a later write does not rewrite and fsync it again.
+    /// manifest is written only for a newly owned path, or when its last
+    /// write failed: nothing reads the hash, so a later write does not
+    /// rewrite and fsync it again, but a path the manifest never named
+    /// would be refused after a restart.
     fn own(&mut self, path: &Path, hash: u64) {
-        if self.owned.contains_key(path) {
+        if self.owned.contains_key(path) && !self.manifest_dirty {
             return;
         }
-        self.owned.insert(path.to_path_buf(), hash);
+        self.owned.entry(path.to_path_buf()).or_insert(hash);
         if let Some(f) = &self.manifest_file {
             let text = manifest_text(&self.owned);
-            if let Err(e) = write_atomic(f, text.as_bytes(), None) {
-                log::warn!("file outputs: manifest {}: {e}", f.display());
-            }
+            self.manifest_dirty = match write_atomic(f, text.as_bytes(), None) {
+                Ok(()) => false,
+                Err(e) => {
+                    log::warn!("file outputs: manifest {}: {e}", f.display());
+                    true
+                }
+            };
         }
     }
 
@@ -1450,6 +1460,33 @@ mod tests {
         assert_eq!(w.write_file(&other, b"b"), Ok(true));
         let text = std::fs::read_to_string(&m).unwrap();
         assert_eq!(parse_manifest(&text).len(), 2, "{text}");
+    }
+
+    /// A manifest write that failed (its directory briefly unwritable) is
+    /// made again on the next write, to a path already owned, so the
+    /// next run still knows the file is Strand's; once it lands, later
+    /// writes leave it alone again.
+    #[test]
+    fn a_failed_manifest_write_is_retried_by_the_next_write() {
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = temp("manifest-retry");
+        let out = dir.join("out/a.css");
+        // The manifest's directory is a regular file: it cannot be made.
+        std::fs::write(dir.join("state"), "in the way").unwrap();
+        let (mut w, _rx) = writer(&dir);
+        assert_eq!(w.write_file(&out, b"one"), Ok(true));
+        let m = w.manifest_file.clone().unwrap();
+        assert!(!m.exists());
+        std::fs::remove_file(dir.join("state")).unwrap();
+        assert_eq!(w.write_file(&out, b"two"), Ok(true));
+        let text = std::fs::read_to_string(&m).unwrap();
+        assert!(parse_manifest(&text).contains_key(&out), "{text}");
+        let ino = std::fs::metadata(&m).unwrap().ino();
+        assert_eq!(w.write_file(&out, b"three"), Ok(true));
+        assert_eq!(std::fs::metadata(&m).unwrap().ino(), ino, "not rewritten");
+        // A later run: the file is still Strand's.
+        let (mut w, _rx) = writer(&dir);
+        assert_eq!(w.write_file(&out, b"four"), Ok(true));
     }
 
     /// Unowned, read-only and `.strand` targets are refused, the file
