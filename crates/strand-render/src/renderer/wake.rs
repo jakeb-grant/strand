@@ -232,11 +232,21 @@ impl Renderer {
                 .get(&id)
                 .is_some_and(|s| self.anim.deferred(&self.tree, s.root));
             if let Some(s) = self.surfaces.get_mut(&id) {
+                // (audit-snapped-pose) What the compositor applies and
+                // the content does not draw: the delegated pose and the
+                // blur and input regions. A change only there (snapped,
+                // so no motion keeps the surface animating) still needs
+                // the paint that hands it over, damaging nothing.
+                let handed = s.posed == f.pose
+                    && s.painted_regions.as_ref().is_some_and(|p| {
+                        p.blur == f.blur && p.input == f.input && p.root_paints == f.root_paints
+                    });
                 if s.valid
                     && s.records == f.records
                     && s.order == f.order
                     && s.opaque == f.opaque
                     && s.hits == f.hits
+                    && handed
                     && !deferred
                     && !f.caret_restarted
                 {

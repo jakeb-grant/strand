@@ -525,3 +525,53 @@ fn a_surface_opened_again_after_its_exit_enters_again() {
         }
     }
 }
+
+/// (audit-snapped-pose) A pose-only change that snaps (reduced motion)
+/// draws nothing new, but the surface still wants a frame: its paint
+/// damages nothing and reports the new pose, which the surface manager
+/// commits. A preview whose records match the last frame's must not
+/// settle the surface while its pose differs from the one painted.
+#[test]
+fn a_snapped_pose_change_reaches_the_compositor() {
+    // A translucent background: no opaque region to change with it.
+    let (mut diff, root) = panel("top_right", vec![]);
+    diff.set(root, Prop::Bg, color("#ff000080"));
+    let mut h = Host::new(true, diff, root);
+    h.r.set_reduced_motion(true);
+    h.open(true);
+    let _ = h.run();
+    let id = h.surface.as_ref().unwrap().0;
+    assert_eq!(h.r.surface_pose(id).map(|p| p.opacity), Some(1.0));
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Opacity, num(0.5));
+    h.apply(d);
+    h.r.update();
+    assert!(h.r.wants_frame(id), "a pose-only change asks for a frame");
+    let seen = h.run();
+    assert!(seen.iter().all(|s| s.damage == 0), "{seen:?}");
+    let pose = h.r.surface_pose(id).expect("the new pose");
+    assert!((pose.opacity - 0.5).abs() < 1e-4, "{pose:?}");
+}
+
+/// (audit-snapped-pose) The same for a blur the compositor draws: `blur`
+/// set on a translucent panel paints nothing new, and the surface still
+/// wants the frame that reports the region.
+#[test]
+fn a_blur_only_change_reaches_the_compositor() {
+    let (mut diff, root) = panel("top_right", vec![]);
+    diff.set(root, Prop::Bg, color("#ff000080"));
+    let mut h = Host::new(true, diff, root);
+    h.r.set_compositor_blur(true);
+    h.open(true);
+    let _ = h.run();
+    let id = h.surface.as_ref().unwrap().0;
+    assert!(h.r.blur_region(id).is_empty());
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Blur, num(20.0));
+    h.apply(d);
+    h.r.update();
+    assert!(h.r.wants_frame(id), "a blur-only change asks for a frame");
+    let seen = h.run();
+    assert!(seen.iter().all(|s| s.damage == 0), "{seen:?}");
+    assert_eq!(h.r.blur_region(id).len(), 1);
+}
