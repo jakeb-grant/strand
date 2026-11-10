@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Tests validation-summary.py on made-up junit files: a clean run with its proofs
 # passes; the allowed hazard, exactly, passes and is counted; the same ID on other
-# accesses fails; any other message fails; a crash after the test passed is counted,
-# a crash before it fails; a run whose proofs say it can't fail fails.
+# accesses fails; any other message fails; a crash (SIGSEGV or SIGABRT) or a timeout
+# after the test passed is counted, each apart, and one before it fails; a run whose
+# proofs say it can't fail fails.
 # Run: scripts/container/run.sh scripts/container/test-validation-summary.sh
 
 set -uo pipefail
@@ -52,7 +53,25 @@ run && no "another message passed" || ok "another message fails"
 clean
 suite "$(case_bad one 'process aborted with signal 11 (SIGSEGV)' 'test result: ok. 1 passed; 0 failed')" >"$DIR/core-1.xml"
 run && ok "a crash after the test passed is no failure" || no "a crash at exit failed"
-grep -q '| core | 2 | 1 |' "$DIR/out" && ok "and is counted" || no "exit crash not counted"
+grep -q '| core | 2 | 1 | 0 |' "$DIR/out" && ok "and is counted" || no "exit crash not counted"
+
+clean
+suite "$(case_bad one 'process aborted with signal 6 (SIGABRT)' 'test result: ok. 1 passed; 0 failed')" >"$DIR/core-1.xml"
+run && ok "an abort after the test passed is no failure" || no "an abort at exit failed"
+grep -q '| core | 2 | 1 | 0 |' "$DIR/out" && ok "and is counted as a crash" || no "exit abort not counted"
+
+clean
+suite "$(case_bad one 'test timeout' 'test result: ok. 1 passed; 0 failed')" >"$DIR/sync-1.xml"
+run && ok "a hang after the test passed is no failure" || no "a hang at exit failed"
+grep -q '| sync | 2 | 0 | 1 |' "$DIR/out" && ok "and is counted as a hang" || no "exit hang not counted"
+
+clean
+suite "$(case_bad one 'test timeout' 'running 1 test')" >"$DIR/sync-1.xml"
+run && no "a hang mid-test passed" || ok "a hang before it passed fails"
+
+clean
+suite "$(case_bad one 'process aborted with signal 5 (SIGTRAP)' 'test result: ok. 1 passed; 0 failed')" >"$DIR/core-1.xml"
+run && no "a trap after the test passed passed" || ok "a trap after it passed still fails"
 
 clean
 suite "$(case_bad one 'process aborted with signal 11 (SIGSEGV)' 'running 1 test')" >"$DIR/core-1.xml"
@@ -74,6 +93,9 @@ run && no "no layer passed" || ok "the layer not loaded fails"
 clean
 suite "$trapped$(case_bad strands_gpu_thread_runs_under_the_layer 'process aborted with signal 11 (SIGSEGV)' 'test result: ok. 1 passed; 0 failed')" >"$DIR/proof-core.xml"
 run && ok "the layer's test crashing at exit after it passed is no failure" || no "a crash at exit failed the proof"
+clean
+suite "$trapped$(case_bad strands_gpu_thread_runs_under_the_layer 'test timeout' 'test result: ok. 1 passed; 0 failed')" >"$DIR/proof-core.xml"
+run && ok "or hanging at exit after it passed" || no "a hang at exit failed the proof"
 clean
 suite "$trapped$(case_bad strands_gpu_thread_runs_under_the_layer 'process aborted with signal 11 (SIGSEGV)' 'running 1 test')" >"$DIR/proof-core.xml"
 run && no "a crash before the layer's test passed passed" || ok "and crashing before it did fails"

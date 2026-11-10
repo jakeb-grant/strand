@@ -6,10 +6,11 @@ the job summary. Reads DIR's junit files and exits 1 unless:
 - every test of `core-*` and `sync-*` passed, a crash at exit apart (below);
 - no message the layer printed in `sync-*` is outside ALLOWED.
 
-A SIGSEGV after libtest said `test result: ok. 1 passed` is counted and not failed:
-the layer's own statics are torn down at exit while strand's detached GPU thread is
-still destroying its device (`Gpu`'s Drop doesn't wait, on purpose). A trap or a
-crash before that line fails. Self-test: scripts/container/test-validation-summary.sh
+A SIGSEGV or SIGABRT after libtest said `test result: ok. 1 passed`, or a hang
+there until nextest's timeout, is counted and not failed: the layer's own statics
+are torn down at exit while strand's detached GPU thread is still destroying its
+device (`Gpu`'s Drop doesn't wait, on purpose), and that race ends in a crash or a
+deadlock. A trap (a validation error), or a crash or hang before that line, fails. Self-test: scripts/container/test-validation-summary.sh
 """
 
 import collections
@@ -37,6 +38,17 @@ ALLOWED = {
 MESSAGE = re.compile(r"^\s*((?:VUID|SYNC|UNASSIGNED)-[\w.-]+)\(ERROR / ", re.M)
 PASSED = "test result: ok. 1 passed"
 BAD_CALL = "VUID-VkBufferCreateInfo-size-00912"
+
+
+def at_exit(kind, out):
+    """How a test that passed ended badly at exit: "crash", "hang" or None."""
+    if kind is None or PASSED not in out:
+        return None
+    if "SIGSEGV" in kind or "SIGABRT" in kind:
+        return "crash"
+    if "timeout" in kind:
+        return "hang"
+    return None
 
 
 def signature(out, start):
@@ -78,8 +90,7 @@ def proofs(directory, problems):
         if traps and "SIGTRAP" not in (bad[0] or ""):
             problems.append(f"{mode}: the bad call didn't trap: this run can't fail ({bad[0]})")
         # Passed, then the crash at exit every other test here can have (above).
-        crashed_after = layer[0] is not None and "SIGSEGV" in layer[0] and PASSED in layer[1]
-        if layer[0] is not None and not crashed_after:
+        if layer[0] is not None and at_exit(*layer) is None:
             problems.append(f"{mode}: strand's GPU thread didn't have the layer ({layer[0]})")
 
 
@@ -89,6 +100,7 @@ def main(directory):
     counts = collections.Counter()
     seen = collections.Counter()
     exits = {"core": [], "sync": []}
+    hangs = {"core": [], "sync": []}
     for mode in ("core", "sync"):
         paths = sorted(glob.glob(os.path.join(directory, f"{mode}-*.xml")))
         if len(paths) != 2:
@@ -103,8 +115,11 @@ def main(directory):
                         problems.append(f"{mode}: `{name}`: {' '.join(s for s in sign if s)}")
                 if kind is None:
                     continue
-                if "SIGSEGV" in kind and PASSED in out:
+                end = at_exit(kind, out)
+                if end == "crash":
                     exits[mode].append(name)
+                elif end == "hang":
+                    hangs[mode].append(name)
                 else:
                     problems.append(f"{mode}: `{name}` failed: {kind.strip()[:200]}")
         if not counts[mode]:
@@ -115,8 +130,10 @@ def main(directory):
     if os.path.exists(version):
         with open(version, encoding="utf-8") as f:
             lines.append(f"Layer {f.read().strip()}.\n")
-    lines += ["| pass | tests | crashes at exit |", "|---|---|---|"]
-    lines += [f"| {m} | {counts[m]} | {len(exits[m])} |" for m in ("core", "sync")]
+    lines += ["| pass | tests | crashes at exit | hangs at exit |", "|---|---|---|---|"]
+    lines += [
+        f"| {m} | {counts[m]} | {len(exits[m])} | {len(hangs[m])} |" for m in ("core", "sync")
+    ]
     lines.append("")
     if seen:
         lines += ["| reported | submitted | prior | times | |", "|---|---|---|---|---|"]
