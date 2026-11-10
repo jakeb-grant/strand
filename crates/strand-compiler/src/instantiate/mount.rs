@@ -1465,7 +1465,9 @@ impl Ctx {
                 let _ = p.set(rt, Value::Null);
             }
             // (M6) Conditional ids naming it name nothing now.
-            for a in st.claims.borrow().iter() {
+            // A remount pushes them again: the element's state outlives
+            // its unmount when an `if` or page remounts it.
+            for a in st.claims.take() {
                 let _ = a.hold(rt, &st, false);
             }
         }
@@ -5284,6 +5286,7 @@ fn read_start(rt: &Runtime, memo: strand_core::Memo<PropOut>, state: &Rc<NodeSta
 #[cfg(test)]
 mod tests {
     use super::longest_increasing;
+    use std::rc::Rc;
 
     #[test]
     fn longest_increasing_runs() {
@@ -5293,5 +5296,61 @@ mod tests {
         assert_eq!(longest_increasing(&[1, 2, 3, 0]), [1, 2, 3]);
         assert_eq!(longest_increasing(&[3, 0, 1, 2]), [0, 1, 2]);
         assert_eq!(longest_increasing(&[2, 1, 0]).len(), 1);
+    }
+
+    /// An element under an `if` keeps its state across remounts (it is
+    /// owned by the enclosing surface's `Env`); its conditional ids are
+    /// claimed once per mount, not once more on every remount.
+    #[test]
+    fn a_remounted_elements_conditional_ids_are_claimed_once() {
+        use crate::instantiate::{Instance, Storage};
+        use crate::vm::Value;
+        use crate::vm::schema_host::SchemaHost;
+        let mut map = crate::SourceMap::new();
+        map.add(
+            "cond.strand",
+            "export state c = true\n\
+             bar B {\n\
+               if c { box { when true { id: n }; text \"x\" } }\n\
+               text \"{n.hover}\"\n\
+             }\n"
+            .to_string(),
+        );
+        let compiled = crate::compile(&map);
+        assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+        let program = std::sync::Arc::new(crate::lower::lower(
+            &compiled.program,
+            crate::schema::Schema::builtin(),
+        ));
+        let rt = strand_core::Runtime::new();
+        let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+        let screen = host.record(
+            "Screen",
+            &[
+                ("id", Value::text("Mock | DP-1 | Display")),
+                ("name", Value::text("DP-1")),
+                ("make", Value::text("Mock")),
+                ("model", Value::text("DP-1")),
+                ("description", Value::text("Display")),
+            ],
+        );
+        host.set(&rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+        let inst = Instance::new(&rt, program, host.clone(), Storage::none());
+        inst.flush();
+        for _ in 0..20 {
+            inst.set("cond.c", Value::Bool(false)).unwrap();
+            inst.flush();
+            inst.set("cond.c", Value::Bool(true)).unwrap();
+            inst.flush();
+        }
+        let em = inst.ctx.em.borrow();
+        let claims: Vec<usize> = em
+            .nodes
+            .values()
+            .map(|n| n.state.claims.borrow().len())
+            .filter(|n| *n > 0)
+            .collect();
+        assert_eq!(claims, [1], "claims per element holding a conditional id");
     }
 }
