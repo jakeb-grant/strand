@@ -2920,7 +2920,9 @@ impl Router {
     /// two-way: the catcher under such a surface covers only the usable
     /// area of its own output, so a press on Strand's own bar (or a
     /// surface on another output) is caught here. The press itself still
-    /// goes to what it landed on.
+    /// goes to what it landed on. Not from the exclusive surface a press
+    /// landed under (audit-exclusive-popup): a press in a popup nested in
+    /// the panel is inside the panel, not away from it.
     ///
     /// (integration-r8) Likewise from every other open popup with a
     /// two-way `open` ([`InputScene::popup_open`]): a popup's grab ends
@@ -2941,7 +2943,7 @@ impl Router {
         let tree = scene.tree();
         let away = |r: NodeId| {
             if scene.exclusive_open(r) {
-                return true;
+                return !tree.is_some_and(|t| t.is_ancestor(r, root));
             }
             if !scene.popup_open(r) {
                 return false;

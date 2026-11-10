@@ -854,6 +854,58 @@ fn a_press_on_the_bar_closes_an_exclusive_launcher() {
     );
 }
 
+/// A left press in a popup nested in an open `keyboard: exclusive`
+/// panel with a two-way `open` is inside the panel, not a click away
+/// from it: the panel stays open.
+#[test]
+fn a_press_in_a_popup_of_an_exclusive_panel_keeps_it_open() {
+    use strand_scene::{NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let (panel, anchor, popup) = (NodeId::new(0, 0), NodeId::new(1, 0), NodeId::new(2, 0));
+    let two_way = PropValue::List(vec![PropValue::Keyword("open".into())]);
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Size, PropValue::Number(50.0))
+        .set(panel, Prop::Open, PropValue::Bool(true))
+        .set(
+            panel,
+            Prop::Keyboard,
+            PropValue::Keyword("exclusive".into()),
+        )
+        .set(panel, Prop::TwoWay, two_way.clone())
+        .create(anchor, NodeKind::Button, Some(panel), 0)
+        .create(popup, NodeKind::Popup, Some(anchor), 0)
+        .set(popup, Prop::Size, PropValue::Number(40.0))
+        .set(popup, Prop::Open, PropValue::Bool(true))
+        .set(popup, Prop::TwoWay, two_way);
+    assert!(r.apply(d).is_empty());
+    let mut f = R::default();
+    f.attached(SurfaceId(1), panel);
+    f.attached(SurfaceId(2), popup);
+    let press = |state| InputEvent::PointerButton {
+        surface: SurfaceId(2),
+        position: LogicalPoint::new(5.0, 5.0),
+        button: button::LEFT,
+        state,
+        time: 0,
+    };
+    f.input(&press(ButtonState::Pressed), &mut r);
+    f.input(&press(ButtonState::Released), &mut r);
+    let out = f.drain();
+    assert!(
+        !out.contains(&Intent::Write {
+            node: panel,
+            prop: Prop::Open,
+            value: PropValue::Bool(false),
+        }),
+        "a press in the panel's own popup closed the panel: {out:?}"
+    );
+}
+
 /// Keys typed faster than logic answers build on the last write; logic
 /// answering in order does not undo them, and a text of logic's own (a
 /// handler clearing the query) wins over the writes in flight.
