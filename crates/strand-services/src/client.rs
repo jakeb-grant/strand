@@ -1765,6 +1765,17 @@ impl<S: Service> ClientInner<S> {
     /// Applies every envelope the run has sent.
     fn pump_envelopes(&self, rt: &Runtime) -> bool {
         let mut any = self.settle_ready(rt);
+        // The updates applied in this pump, told to the run only as the
+        // pump ends ([`Cx::applied`]): what the run sends on hearing of
+        // them is then applied in a later pump, never in this one.
+        let mut applied = 0u64;
+        let told = |applied: u64| {
+            if applied > 0
+                && let Some(run) = self.run.borrow().as_ref()
+            {
+                run.applied.send_modify(|n| *n += applied);
+            }
+        };
         loop {
             let next = match self.run.borrow().as_ref() {
                 Some(run) => run.rx.try_recv(),
@@ -1772,8 +1783,12 @@ impl<S: Service> ClientInner<S> {
             };
             let env = match next {
                 Ok(env) => env,
-                Err(std::sync::mpsc::TryRecvError::Empty) => return any,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    told(applied);
+                    return any;
+                }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    told(applied);
                     // No `Ended` came first: the body panicked.
                     let live = self.run.borrow().as_ref().is_some_and(|r| !r.ended);
                     if live {
@@ -1803,9 +1818,7 @@ impl<S: Service> ClientInner<S> {
                         };
                         self.apply_tapped(rt, p, how);
                     }
-                    if let Some(run) = self.run.borrow().as_ref() {
-                        run.applied.send_modify(|n| *n += 1);
-                    }
+                    applied += 1;
                 }
                 Envelope::Notice(m) => {
                     if let Some(run) = self.run.borrow_mut().as_mut() {

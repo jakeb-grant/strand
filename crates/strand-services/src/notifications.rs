@@ -1308,7 +1308,8 @@ fn history_text(all: &[Notification], transient: &HashSet<i64>, ours: &HashSet<i
         .rev()
         .take_while(|saved| {
             let mut count = Counted(0);
-            total += serde_json::to_writer(&mut count, saved).map_or(usize::MAX, |()| count.0);
+            let bytes = serde_json::to_writer(&mut count, saved).map_or(usize::MAX, |()| count.0);
+            total = total.saturating_add(bytes);
             total <= KEPT_BYTES
         })
         .count();
