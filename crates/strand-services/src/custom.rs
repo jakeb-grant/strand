@@ -2110,6 +2110,18 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
             let _ = watch.drain();
             got = read_doc_bounded(path).await?;
         }
+        // (audit-file-torn) A JSON or XML file a change leaves as text or
+        // `key=value` lines is most often one written in more than one
+        // write (a large document, `curl -o`): read it again as it
+        // settles, until it parses as it did or `FILE_TORN_LIMIT` has
+        // passed, when what it holds is taken (a file that did change
+        // kind is read late, never lost).
+        let torn_until = std::time::Instant::now() + FILE_TORN_LIMIT;
+        while !first && torn(last.as_ref(), &got) && std::time::Instant::now() < torn_until {
+            tokio::time::sleep(FILE_SETTLE).await;
+            let _ = watch.drain();
+            got = read_doc_bounded(path).await?;
+        }
         note_over(&spec.name, path, &got, &mut over);
         // Too large: the last value stays (none yet: the defaults).
         let doc = match got {
@@ -2169,6 +2181,24 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
 /// How long a `from file` service waits before taking a file a change
 /// left empty as empty (a truncate-then-write shows empty in between).
 pub const FILE_SETTLE: Duration = Duration::from_millis(50);
+
+/// (audit-file-torn) How long a `from file` service reads a JSON or XML
+/// file again, every [`FILE_SETTLE`], while a change leaves it parsing as
+/// less (text, `key=value` lines): a write in progress.
+pub const FILE_TORN_LIMIT: Duration = Duration::from_millis(500);
+
+/// Whether `got` reads as a document torn by a write in progress: the
+/// last one read was JSON or XML and this one is not either.
+fn torn(last: Option<&(Document, Arc<str>)>, got: &Got) -> bool {
+    matches!(last, Some((Document::Json(_) | Document::Xml(..), _)))
+        && matches!(
+            got,
+            Got::Doc(
+                Document::Pairs(_) | Document::Text(_) | Document::NotXml { .. },
+                _
+            )
+        )
+}
 
 /// (services-round) The most files a `from dir` service lists (the
 /// first by name); more are left out, with a warning.

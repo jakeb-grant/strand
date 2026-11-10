@@ -883,6 +883,80 @@ fn a_file_rewritten_in_place_never_shows_it_empty() {
     custom::forget(id);
 }
 
+/// (audit-file-torn) A `from file` JSON document rewritten in place in
+/// two writes, the second coming later than `FILE_SETTLE`, is read once
+/// it parses again: the field goes from one value to the next, never
+/// through the half-written document's null; a file that does turn to
+/// text is read as text.
+#[test]
+fn a_file_written_in_two_writes_never_shows_it_half_written() {
+    use std::io::Write;
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("weather.json");
+    std::fs::write(&path, r#"{"level": 1}"#).unwrap();
+    let (client, id) = started(
+        &rt,
+        &services,
+        "weather",
+        Source::File { path: path.clone() },
+        vec![field("level", Default::default())],
+    );
+    let mut seen: Vec<Data> = Vec::new();
+    let look = |seen: &mut Vec<Data>| {
+        services.pump(&rt);
+        rt.flush();
+        let now = value(&rt, &client, 0);
+        // (Null is the seed, before the first read.)
+        if let Some(v) = now
+            .as_ref()
+            .filter(|v| **v != Data::Null || !seen.is_empty())
+            && seen.last() != Some(v)
+        {
+            seen.push(v.clone());
+        }
+        now
+    };
+    let wait = |seen: &mut Vec<Data>, want: &dyn Fn(&Data) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let now = look(seen);
+            if now.as_ref().is_some_and(want) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "never as wanted: {now:?}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    wait(&mut seen, &|v| *v == Data::Int(1));
+    for n in 2..=4 {
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(f, r#"{{"level": "#).unwrap();
+        f.flush().unwrap();
+        let until = Instant::now() + Duration::from_millis(120);
+        while Instant::now() < until {
+            let _ = look(&mut seen);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        write!(f, "{n}}}").unwrap();
+        drop(f);
+        wait(&mut seen, &|v| *v == Data::Int(n));
+    }
+    assert_eq!(
+        seen,
+        (1..=4).map(Data::Int).collect::<Vec<_>>(),
+        "one value after the other, never the half-written document"
+    );
+    // A file that does change kind is read, late.
+    std::fs::write(&path, "level=9").unwrap();
+    wait(&mut seen, &|v| *v != Data::Int(4) && *v != Data::Null);
+
+    client.release(&rt);
+    services.shutdown();
+    custom::forget(id);
+}
+
 /// (services-round) A directory past `MAX_DIR_FILES` lists the first
 /// files by name (whatever order the directory keeps them in), a
 /// subdirectory among them not counting as one.

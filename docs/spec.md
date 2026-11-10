@@ -720,7 +720,10 @@ monitor, the keyboard always).
   `invalidates` are followed.
 - `from file path { fields }` reads a file, again whenever it changes
   (a file a change leaves empty is read again 50 ms later, since a
-  rewrite in place truncates before it writes); `from listen command`
+  rewrite in place truncates before it writes, and a JSON or XML file
+  a change leaves parsing as neither is read again every 50 ms until
+  it does, half a second at most, since a large one is written in
+  more than one write); `from listen command`
   reads the lines a command prints; `from poll command every T` runs a
   command, or reads a file, at an interval. A file either reads that is
   missing, or goes, is no document (every field its default) until it
