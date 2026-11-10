@@ -258,7 +258,11 @@ impl Reveals {
     }
 
     /// Node `id`'s mask in `frame` (`None`: it has none), and whether it
-    /// is still moving. A mask settled at 1 is done and dropped.
+    /// is still moving. A mask settled at 1 is done and dropped, in the
+    /// frame it settles in: that frame, the last one drawn until
+    /// something else changes, draws the node unclipped, so what it
+    /// spreads past its box (a blur's spill) is not left cut at the
+    /// mask's edge (audit-mask-order).
     pub(crate) fn progress(&mut self, id: NodeId, frame: Frame) -> Option<(f32, bool)> {
         let m = self.nodes.get_mut(&id)?;
         let p = if frame.commit {
@@ -269,6 +273,7 @@ impl Reveals {
         let moving = !m.is_settled(frame.at);
         if !moving && m.target() == [1.0] && frame.commit {
             self.nodes.remove(&id);
+            return None;
         }
         Some((p.clamp(0.0, 1.0), moving))
     }

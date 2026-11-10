@@ -809,22 +809,22 @@ impl<'a> Flattener<'a> {
             }
             e => (None, e),
         };
-        let mut layer = |effects| {
-            self.marker(Item::PushLayer(Arc::new(crate::layers::Layer {
+        let layer = |this: &mut Self, effects| {
+            this.marker(Item::PushLayer(Arc::new(crate::layers::Layer {
                 effects,
                 frame,
-                scale: self.scale.as_f32(),
-                xform: self.xform,
+                scale: this.scale.as_f32(),
+                xform: this.xform,
                 mosaic: None,
                 gpu: None,
             })))
         };
         // `Some(None)`: grain over a filter with nothing around it.
-        let outer_group = outer.map(|rest| rest.map(&mut layer));
-        let layer_group = effects.map(layer);
-        let grain_over_filter = outer_group.is_some();
-        let outer_group = outer_group.flatten();
-        // (M4) The transition mask over the node and its subtree.
+        let outer_group = outer.map(|rest| rest.map(|e| layer(self, e)));
+        // (M4) The transition mask over the node and its subtree, outside
+        // its filter: a reveal clips what the filter drew, so the filtered
+        // group is built once and only clipped as it is composited. Every
+        // group opened here closes in the reverse order (audit-mask-order).
         let mask_group = transition_mask.map(|m| {
             let mut h = DefaultHasher::new();
             format!("{m:?}").hash(&mut h);
@@ -832,6 +832,9 @@ impl<'a> Flattener<'a> {
             let (push, pop) = m.group(frame, self.scale.as_f32(), self.xform);
             (self.marker(push), pop)
         });
+        let layer_group = effects.map(|e| layer(self, e));
+        let grain_over_filter = outer_group.is_some();
+        let outer_group = outer_group.flatten();
         let mask_hash = transition_mask.map(|m| format!("{m:?}"));
         // What the node itself draws starts here (`NodeRecord::geom`).
         let own_start = self.out.items.len();
@@ -2129,24 +2132,13 @@ impl<'a> Flattener<'a> {
                 self.marker(Item::PopLayer);
             }
         }
-        if let Some((i, pop)) = mask_group {
-            self.out.items[i].bounds = subtree;
-            self.marker(pop);
-        }
         // (lock-int, grain-over review) Its grain over what its filter
         // drew, under the same transition mask, and inside its `mask:`
         // and `blend:` (no pass of theirs on the GPU).
-        if !grain_held.is_empty() {
-            let mask = transition_mask.map(|m| {
-                let (push, pop) = m.group(frame, self.scale.as_f32(), self.xform);
-                let i = self.marker(push);
-                self.out.items[i].bounds = subtree;
-                pop
-            });
-            self.out.items.append(&mut grain_held);
-            if let Some(pop) = mask {
-                self.marker(pop);
-            }
+        self.out.items.append(&mut grain_held);
+        if let Some((i, pop)) = mask_group {
+            self.out.items[i].bounds = subtree;
+            self.marker(pop);
         }
         if let Some(i) = outer_group {
             self.out.items[i].bounds = subtree;

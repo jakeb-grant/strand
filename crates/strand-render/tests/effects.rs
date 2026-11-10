@@ -2520,6 +2520,15 @@ fn transition_of((name, arg): (&str, &str)) -> PropValue {
 /// box per transition mask created on it and painted at 1.016 s. Returns
 /// the boxes.
 fn masked(masks: bool, reduced: bool) -> (Renderer, Buffer, Vec<NodeId>) {
+    masked_with(masks, reduced, &[])
+}
+
+/// [`masked`] with `extra` props (a `filter:`, a `grain:`) on each box.
+fn masked_with(
+    masks: bool,
+    reduced: bool,
+    extra: &[(Prop, PropValue)],
+) -> (Renderer, Buffer, Vec<NodeId>) {
     let mut b = Builder::default();
     let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
     let mut r = renderer();
@@ -2538,6 +2547,9 @@ fn masked(masks: bool, reduced: bool) -> (Renderer, Buffer, Vec<NodeId>) {
         }
         set_now(&mut d, n, Prop::Place, kw("absolute"));
         set_now(&mut d, n, Prop::Bg, color("#f9e2af"));
+        for (p, v) in extra {
+            set_now(&mut d, n, *p, v.clone());
+        }
         if masks {
             d.set(n, Prop::Transition, transition_of(t));
         }
@@ -2618,6 +2630,68 @@ fn transition_masks_reveal_and_hide() {
     let (r, buf, _) = masked(true, true);
     assert!(buf.pixels == plain.pixels);
     assert!(!r.wants_frame(S));
+}
+
+/// design.md "Motion and time" and "Effects": a transition's mask lies
+/// over what the node's `filter:` draws (audit-mask-order). Every mask
+/// over a grayscale box paints partway (ref
+/// `effects_transitions_filtered.png`), the wipe's unrevealed half of the
+/// filtered box unpainted, and settles on the plain filtered boxes.
+#[test]
+fn transition_masks_clip_what_a_filter_draws() {
+    use std::time::Duration;
+    let grey = [(Prop::Filter, call("grayscale", vec![num(1.0)]))];
+    let (mut r, mut buf, _) = masked_with(true, false, &grey);
+    let (_, plain, _) = masked_with(false, false, &grey);
+    let bg = plain.px(199, 59);
+    // The filter drew the boxes grey.
+    let [b, g, rr, _] = plain.px(28, 30);
+    assert!(b == g && g == rr && plain.px(28, 30) != bg, "grey");
+    let t = 1032;
+    buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+    assert_matches_ref("effects_transitions_filtered", &buf, 2);
+    for i in 0..4 {
+        let n = shown(&buf, i);
+        assert!(n > 0 && (i == 3 || n < 1600), "mask {i} partway: {n}");
+    }
+    // The wipe: its left column is the filtered box, its right still
+    // the bar's background.
+    assert_eq!(buf.px(9, 30), plain.px(9, 30));
+    assert_eq!(buf.px(46, 30), bg);
+    settle(&mut r, &mut buf, t);
+    assert!(buf.pixels == plain.pixels, "revealed");
+}
+
+/// A transition's mask over a filter that draws an offscreen group (a
+/// blur), and over a filter with grain over it, paints partway and
+/// settles on the plain drawing (audit-mask-order: the mask's group and
+/// the filter's once crossed, and the group's build panicked in vello).
+#[test]
+fn transition_masks_over_blurred_and_grained_filters_paint() {
+    use std::time::Duration;
+    let cases: [Vec<(Prop, PropValue)>; 2] = [
+        vec![(Prop::Filter, call("blur", vec![num(4.0)]))],
+        vec![
+            (Prop::Filter, call("grayscale", vec![num(1.0)])),
+            (Prop::Grain, num(0.35)),
+        ],
+    ];
+    for extra in &cases {
+        let (mut r, mut buf, _) = masked_with(true, false, extra);
+        let (_, plain, _) = masked_with(false, false, extra);
+        let t = 1032;
+        buf.paint_at(&mut r, S, 1, Duration::from_millis(t));
+        for i in 0..4 {
+            assert!(shown(&buf, i) > 0, "{extra:?}: mask {i} partway");
+        }
+        // The wipe's right edge is not in yet.
+        assert_eq!(buf.px(46, 30), plain.px(199, 59), "{extra:?}");
+        // (Grain ticks on: only the blur settles.)
+        if extra.iter().all(|(p, _)| *p != Prop::Grain) {
+            settle(&mut r, &mut buf, t);
+            assert!(buf.pixels == plain.pixels, "{extra:?}: revealed");
+        }
+    }
 }
 
 /// design.md "Motion and time": `transition: pixelate` draws the subtree
