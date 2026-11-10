@@ -1150,6 +1150,15 @@ impl<'a> TokenScope<'a> {
                 let v = self.exact(e, depth, base, budget)? as f32;
                 v.is_finite().then_some(PropValue::Number(v))
             }
+            // A turn of time (`sin(t * 90deg)`) is reduced in f64 before
+            // the trig narrows it, as a time-bound angle slot is.
+            TokenExpr::Math {
+                f: MathFn::Sin | MathFn::Cos | MathFn::Tan,
+                ..
+            } if e.reads_time() => {
+                let v = self.exact(e, depth, base, budget)? as f32;
+                v.is_finite().then_some(PropValue::Number(v))
+            }
             TokenExpr::Math { f, args } => {
                 let mut xs = [0.0f32; 3];
                 for (slot, a) in xs.iter_mut().zip(args) {
@@ -1190,6 +1199,15 @@ impl TokenScope<'_> {
                 0.5 - 0.5 * (std::f64::consts::TAU * turns).cos()
             }
             TokenExpr::Noise(x) => noise_at(sub(x)?) as f64,
+            // Degrees: millions of them after a day, so a turn's
+            // remainder is what the f32 trig is given.
+            TokenExpr::Math {
+                f: f @ (MathFn::Sin | MathFn::Cos | MathFn::Tan),
+                args,
+            } if e.reads_time() => {
+                let x = sub(args.first()?)? % 360.0;
+                f.apply(&[x as f32])? as f64
+            }
             TokenExpr::Binary { op, lhs, rhs } => {
                 let (a, b) = (sub(lhs)?, sub(rhs)?);
                 match op {
@@ -1437,6 +1455,20 @@ mod tests {
         for (k, w) in waves.iter().enumerate() {
             let want = 0.5 - 0.5 * (std::f64::consts::TAU * (k as f64 / 120.0)).cos();
             assert!((*w as f64 - want).abs() < 1e-4, "frame {k}: {waves:?}");
+        }
+        // `sin(t * 90deg)`: a degree and a half a frame.
+        let turn = TokenExpr::Math {
+            f: MathFn::Sin,
+            args: vec![TokenExpr::Binary {
+                op: BinOp::Mul,
+                lhs: Box::new(TokenExpr::Time),
+                rhs: lit(90.0),
+            }],
+        };
+        let sines = frames(&turn);
+        for (k, s) in sines.iter().enumerate() {
+            let want = (1.5 * k as f64).to_radians().sin();
+            assert!((*s as f64 - want).abs() < 1e-4, "frame {k}: {sines:?}");
         }
         // `t * 40deg` as a conic's start: two thirds of a degree a frame,
         // reduced to a turn before it is narrowed.
