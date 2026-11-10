@@ -237,11 +237,11 @@ impl Shell {
                 {
                     match c {
                         Click::Open(file, line, col) => overlay::open_editor(&file, line, col),
-                        Click::Reset(path) => {
-                            if let Err(e) = inst.reset(&path) {
-                                log::warn!("[reset] {path}: {e}");
-                            }
-                        }
+                        Click::Reset(path) => match inst.reset(&path) {
+                            // The overlay dropped its rows itself.
+                            Ok(()) => self.reset_done(&path),
+                            Err(e) => log::warn!("[reset] {path}: {e}"),
+                        },
                         Click::Clear(file, field) => {
                             inst.clear_settings_overlay(&file, &field);
                         }

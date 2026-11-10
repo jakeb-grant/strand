@@ -3575,6 +3575,99 @@ fn a_boot_kept_cell_reset_or_set_over_ipc_is_not_reported_kept() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A cell kept over a changed default at boot, with nobody watching, and
+/// then put back by the overlay's own `[reset]`: the next reload event
+/// no longer lists it, as after an IPC `reset` (audit-overlay-reset).
+#[test]
+fn a_boot_kept_cell_reset_from_the_overlay_is_not_reported_kept() {
+    let dir = temp_dir("boot-kept-overlay-reset");
+    let src = "export state hits = 0 persist\nbar Top {\n  \
+               text join(\"\", \"h\", hits) { on click { hits += 1 } }\n}\n";
+    let file = dir.join("bar.strand");
+    std::fs::write(&file, src).unwrap();
+    let storage = || Storage::in_dirs(dir.join("state"), &dir);
+    // A first run persists `hits = 1`.
+    {
+        let program = load(&dir);
+        let st = storage();
+        let (to_logic, from_main) = calloop::channel::channel();
+        let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+        to_logic
+            .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+            .unwrap();
+        let t = std::thread::spawn(move || logic(program, st, from_main, tx, Live::default()));
+        let mut m = Mirror::new(rx);
+        m.until("the bar", |s| s.texts() == ["h0"]);
+        let text = m.scene.of_kind(NodeKind::Text)[0];
+        to_logic
+            .send(ToLogic::Event {
+                input: None,
+                node: text,
+                event: NodeEvent::Click,
+            })
+            .unwrap();
+        m.until("a click", |s| s.texts() == ["h1"]);
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+    }
+    // The default changes: the persisted 1 is kept over it at boot, with
+    // nobody watching.
+    std::fs::write(&file, src.replace("hits = 0", "hits = 5")).unwrap();
+    let (wtx, wrx) = calloop::channel::channel();
+    let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+    let st = storage();
+    compiler.register_own_writes(&st);
+    let (give, take) = std::sync::mpsc::channel();
+    let live = Live {
+        worker: Some(wrx),
+        jobs: Some(compiler.jobs()),
+        requests_to: Some(logic::RequestsTo(Box::new(move |r| {
+            let _ = give.send(r);
+        }))),
+        ..Live::default()
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(boot, st, from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the kept value", |s| s.texts().contains(&"h1".to_string()));
+    let row = |s: &SceneMirror| {
+        s.of_kind(NodeKind::Text).into_iter().find(|n| {
+            matches!(s.prop(*n, Prop::Text), Some(PropValue::Text(t))
+                if t.contains("hits") && t.contains("[reset]"))
+        })
+    };
+    m.until("the overlay's [reset] row", |s| row(s).is_some());
+    let node = row(&m.scene).unwrap();
+    to_logic
+        .send(ToLogic::Event {
+            input: None,
+            node,
+            event: NodeEvent::Click,
+        })
+        .unwrap();
+    m.until("the default", |s| s.texts() == ["h5"]);
+    let requests = take.recv_timeout(Duration::from_secs(10)).unwrap();
+    let ans = std::thread::spawn(move || {
+        block_on(requests.call(ipc::Request::Reload { hard: false }).unwrap())
+    })
+    .join()
+    .unwrap();
+    assert_eq!(ans["ok"], true, "{ans}");
+    assert_eq!(
+        ans["event"]["kept_over_default"],
+        json!([]),
+        "a cell back at its default is not kept: {ans}"
+    );
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    drop(compiler);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_cell_kept_at_boot_reaches_the_event_sink_as_a_late_watcher_hears_it() {
     let dir = temp_dir("boot-kept-sink");
