@@ -688,8 +688,12 @@ impl LockScreen {
 
     /// The main loop's turn at `now` with this lock asked for or held: the
     /// first content it has starts the first-frame deadline.
+    /// The last content going before a frame ends it: an output that came
+    /// and went gets a whole second when one returns.
     fn content_seen(&mut self, now: Instant) {
-        if !self.contents.is_empty() {
+        if self.contents.is_empty() {
+            self.content_from = None;
+        } else {
             self.content_from.get_or_insert(now);
         }
     }
@@ -2330,6 +2334,15 @@ mod tests {
         s.content_seen(output);
         s.content_seen(output + FIRST_FRAME / 2);
         assert_eq!(s.first_frame_due(), Some(output + FIRST_FRAME));
+        // The output goes before a frame and another comes much later:
+        // its second is its own.
+        s.sync_contents(&[]);
+        s.content_seen(output + FIRST_FRAME / 2);
+        assert_eq!(s.first_frame_due(), None, "no output again");
+        let back = output + FIRST_FRAME * 9;
+        s.sync_contents(&[SurfaceId(4)]);
+        s.content_seen(back);
+        assert_eq!(s.first_frame_due(), Some(back + FIRST_FRAME));
         s.drew = true;
         assert_eq!(s.first_frame_due(), None, "it drew");
         s.reset();
