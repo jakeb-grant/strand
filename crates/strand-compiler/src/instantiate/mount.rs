@@ -2394,7 +2394,7 @@ impl Ctx {
                 let canvas = self
                     .vm
                     .types()
-                    .find_record("Canvas")
+                    .find_schema_record("Canvas")
                     .map_or(Value::Null, |r| Value::record(r, vec![w, h]));
                 let (out, ops) = self.vm.record_canvas(|| self.vm.call(rt, &f, vec![canvas]));
                 out?;
@@ -4199,7 +4199,7 @@ impl Ctx {
                         f => Some(f),
                     };
                     let screen = screen.unwrap_or_else(|| {
-                        types.find_record("Screen").map_or(Value::Null, |r| {
+                        types.find_schema_record("Screen").map_or(Value::Null, |r| {
                             crate::vm::builtins::default_of(types, &crate::ty::Ty::Record(r))
                         })
                     });

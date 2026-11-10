@@ -6046,6 +6046,26 @@ fn user_types_named_rect_or_node_do_not_hijack_boxes() {
     );
 }
 
+/// (audit-schema-names) A config's own `type Day` and `type Date` hide
+/// the schema's records by name in the config's code, but the clock
+/// still builds the schema's: the calendar's 42 days read `d.date` and
+/// format it, and the config's own records keep their own fields.
+#[test]
+fn user_types_named_day_or_date_do_not_hijack_the_clock() {
+    let src = "type Day { n: int }\ntype Date { s: text }\nbar Top {\n  row {\n    for d in calendar.days(clock.today) { text d.date.format(\"%d\") { when d.today { opacity: 0.5 } } }\n    text Date(s: \"mine\").s\n    text join(\" \", Day(n: 7).n)\n  }\n}\n";
+    let shell = boot(&[("w.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    // `boot` holds the boot tick to no runtime errors.
+    let texts = shell.scene.texts();
+    assert_eq!(texts.len(), 44, "{texts:?}");
+    assert!(texts.contains(&"mine".to_string()), "{texts:?}");
+    assert!(texts.contains(&"7".to_string()), "{texts:?}");
+    assert!(texts.contains(&"01".to_string()), "{texts:?}");
+}
+
 /// (M6, decisions.md m6-integration-w2, the final pass) Where the
 /// surface stream's conditional ids and `.box` meet the language
 /// stream's same-named components, looped whole numbers and implicit

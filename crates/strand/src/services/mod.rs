@@ -2212,6 +2212,85 @@ panel Login {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// (audit-schema-names) A config's own `type App` hides the schema's
+    /// `App` by name in the config's code only: the real apps service
+    /// still hands out the schema's record (its `id`, `name`,
+    /// `categories`),
+    /// while the config builds and reads its own. A reload that drops
+    /// that type and adds another (`type Window`, renumbering the
+    /// config's records) reads the same items.
+    #[test]
+    fn a_config_type_named_app_does_not_reshape_the_apps_items() {
+        let _serial = APPS_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("strand-own-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("applications");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("editor.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Text Editor\nCategories=Utility;\nExec=true\n",
+        )
+        .unwrap();
+        strand_services::apps::set_config(Some(strand_services::apps::Config {
+            dirs: vec![dir.clone()],
+            desktops: Vec::new(),
+            state: None,
+        }));
+        let dock = "bar B { row { for a in apps.all { text join(\":\", a.id, a.name, a.categories.join(\"+\")) } } }\n";
+        let build = |prev: Option<&strand_compiler::reconcile::Build>, text: String| {
+            let mut map = SourceMap::new();
+            map.add("svc.strand", text);
+            strand_compiler::reconcile::Build::compile_with(prev, map, schema())
+                .unwrap_or_else(|d| panic!("{d:#?}"))
+        };
+        let first = build(
+            None,
+            format!(
+                "type App {{ pinned: bool }}\n{dock}bar C {{ text join(\" \", App(pinned: true).pinned) }}\n"
+            ),
+        );
+        let rt = Runtime::new();
+        let fallback = Rc::new(SchemaHost::new(&rt, &first.program.types, None));
+        let screen = fallback.record("Screen", &[("name", Value::text("DP-1"))]);
+        fallback
+            .set(&rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+        let real = Real::start(&rt, &first.program.types, Buses::none(), fallback, || {});
+        let mut inst = Instance::from_build(&rt, &first, real.host.clone(), Storage::none());
+        let mut scene = SceneMirror::new();
+        let until = |inst: &Instance, scene: &mut SceneMirror, want: &[&str]| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                real.services.pump(&rt);
+                let u = inst.tick(Duration::ZERO);
+                assert!(u.errors.is_empty(), "{:?}", u.errors);
+                scene.apply(&u.diff).unwrap();
+                let texts = scene.texts();
+                if want.iter().all(|w| texts.contains(&w.to_string())) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out: {want:?} in {texts:?}"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        until(&inst, &mut scene, &["editor:Text Editor:Utility", "true"]);
+        let second = build(
+            Some(&first),
+            format!(
+                "type Window {{ n: int }}\n{dock}bar C {{ text join(\" \", Window(n: 7).n) }}\n"
+            ),
+        );
+        inst.reload(&second);
+        until(&inst, &mut scene, &["editor:Text Editor:Utility", "7"]);
+        inst.shutdown();
+        real.shutdown(&rt);
+        strand_services::apps::set_config(None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A hidden surface stops a visible-only stream at once (cpu samples
     /// only while a reader is visible), long before the service stops.
     #[test]

@@ -94,7 +94,7 @@ impl std::fmt::Debug for StoreHost {
 /// (its item record's `key`), from the schema the program was checked
 /// against; `None` keys by identity.
 fn key_path(types: &TypeTable, service: &str, field: &str) -> Option<Vec<String>> {
-    let rec = types.record(types.find_record(service)?);
+    let rec = types.record(types.find_schema_record(service)?);
     let f = rec.fields.iter().find(|f| f.name == field)?;
     match &f.ty {
         Ty::List(item, _) => match &**item {

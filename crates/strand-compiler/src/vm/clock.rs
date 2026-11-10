@@ -135,8 +135,10 @@ impl Clock {
             zone,
             minute,
             second,
-            date: types.find_record("Date"),
-            day: types.find_record("Day"),
+            // The schema's records: a config's own `type Date` or `type
+            // Day` hides them by name, but the clock builds the schema's.
+            date: types.find_schema_record("Date"),
+            day: types.find_schema_record("Day"),
         }
     }
 
