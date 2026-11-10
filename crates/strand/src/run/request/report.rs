@@ -23,7 +23,6 @@ use strand_core::ipc as proto;
 
 use super::{Caller, Shell};
 use crate::report::bundle::{self, Job, MainBundle};
-use crate::run::record::ChangeRecorder;
 use crate::run::{Snapshot, SnapshotId, SnapshotKind, ToMain};
 
 /// The refusal while a lock is asked for or shown.
@@ -146,7 +145,7 @@ impl Shell {
                 let fields: Map<String, Json> = named
                     .iter()
                     .map(|(f, d)| {
-                        let j = ChangeRecorder::service_json(&s.name, d);
+                        let j = rec.service_json(&s.name, d);
                         (f.clone(), serde_json::from_str(&j).unwrap_or(Json::Null))
                     })
                     .collect();

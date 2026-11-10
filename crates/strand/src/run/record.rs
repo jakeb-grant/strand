@@ -1683,11 +1683,14 @@ impl ChangeRecorder {
         Some(out)
     }
 
-    /// A service's value as the bundle keeps it, under the same rules.
-    pub(crate) fn service_json(service: &str, d: &Data) -> String {
+    /// A service's value as the bundle keeps it, under the same rules:
+    /// (proc-run) a block whose last run was given a text that is not
+    /// the config's keeps no text, as the ring holds it back.
+    pub(crate) fn service_json(&self, service: &str, d: &Data) -> String {
         let clip = service == "clipboard";
+        let held = self.run_tainted.get(service).copied().unwrap_or(false);
         let mut s = String::new();
-        let _ = d.write_json(&mut s, &mut |t: &str| !clip || t.is_empty());
+        let _ = d.write_json(&mut s, &mut |t: &str| !held && (!clip || t.is_empty()));
         s
     }
 
@@ -3345,14 +3348,11 @@ mod tests {
         assert_ne!(e[0].rec.flags & flags::REDACTED, 0);
         assert!(!contains(&c.dump().unwrap(), b"hunter2"));
         assert_eq!(
-            ChangeRecorder::service_json("clipboard", &new),
+            c.service_json("clipboard", &new),
             r#"{"text":{"~text":11},"width":64}"#
         );
         // Another service's texts are kept as reported.
-        assert_eq!(
-            ChangeRecorder::service_json("windows", &Data::text("Helix")),
-            "\"Helix\""
-        );
+        assert_eq!(c.service_json("windows", &Data::text("Helix")), "\"Helix\"");
     }
 
     /// A declared service's item of field `i`.
@@ -4241,6 +4241,24 @@ mod tests {
         );
         assert_eq!(value_of(&e[n - 1]), serde_json::json!({"~text": 23}));
         assert!(!contains(&c.dump().unwrap(), b"s3cret"));
+    }
+
+    /// (proc-run) The bundle's snapshot of a block keeps no text after a
+    /// run given a text that is not the config's, as the ring holds it
+    /// back; a run given only the config's texts keeps it.
+    #[test]
+    fn a_tainted_runs_block_keeps_no_text_in_the_bundle() {
+        let src = "permit exec \"sh\"\naction upd(q: text) [\"sh\", \"-c\", \"x\", q]\n\
+                   bar B { on click { upd(\"main\") } }";
+        let mut c = ChangeRecorder::new(true, program(src));
+        let argv = |q: &str| -> Vec<String> { ["sh", "-c", "x", q].map(str::to_string).to_vec() };
+        c.run_started("upd", &argv("main"), false);
+        assert_eq!(c.service_json("upd", &Data::text("main ok")), "\"main ok\"");
+        c.run_started("upd", &argv("s3cret-pkg"), false);
+        let j = c.service_json("upd", &Data::text("s3cret-pkg ok"));
+        assert_eq!(j, r#"{"~text":13}"#);
+        // Another service is not the job's.
+        assert_eq!(c.service_json("windows", &Data::text("Helix")), "\"Helix\"");
     }
 
     /// (proc-run) A declared service's `line` event is recorded, an
