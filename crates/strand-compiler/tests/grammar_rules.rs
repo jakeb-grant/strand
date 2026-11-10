@@ -249,6 +249,50 @@ fn chains_count_on_top_of_their_first_operand() {
 }
 
 #[test]
+fn siblings_do_not_add_up_toward_the_depth_limit() {
+    // A right operand, an argument or an index hangs beside what it
+    // follows, so the tree is as high as the higher of the two.
+    let sum = |name: &str, n: usize| vec![name; n].join(" + ");
+    let c = codes(&format!(
+        "let x = ({}) + ({})",
+        sum("a", 130),
+        sum("b", 130)
+    ));
+    assert!(c.is_empty(), "{c:?}");
+    let c = codes(&format!(
+        "let x = f({}) + g({})",
+        sum("a", 130),
+        sum("b", 130)
+    ));
+    assert!(c.is_empty(), "{c:?}");
+    let c = codes(&format!("let x = f({})[{}]", sum("a", 130), sum("b", 130)));
+    assert!(c.is_empty(), "{c:?}");
+    // A balanced tree 7 levels deep with 128 leaves.
+    fn balanced(n: u32) -> String {
+        if n == 0 {
+            "a".into()
+        } else {
+            format!("({}) + ({})", balanced(n - 1), balanced(n - 1))
+        }
+    }
+    let c = codes(&format!("let x = {}", balanced(7)));
+    assert!(c.is_empty(), "{c:?}");
+    // A sibling past the limit is still refused.
+    let c = codes(&format!(
+        "let x = ({}) + ({})",
+        sum("a", 130),
+        sum("b", 300)
+    ));
+    assert_eq!(c.first(), Some(&"syntax::too_deep"), "{c:?}");
+    let c = codes(&format!(
+        "let x = f({}) + g({})",
+        sum("a", 10),
+        sum("b", 300)
+    ));
+    assert_eq!(c.first(), Some(&"syntax::too_deep"), "{c:?}");
+}
+
+#[test]
 fn trailing_operators_and_commas_continue_the_line() {
     assert_eq!(body("text a ??\n  b"), "element text (?? a b)");
     assert_eq!(

@@ -444,9 +444,25 @@ impl<'s> Parser<'s> {
         self.links = self.links.saturating_sub(n);
     }
 
+    /// Whether a node one level above an operand `height` levels high
+    /// fits under [`MAX_TREE_DEPTH`]; false (after reporting once) when
+    /// it does not. The node counts as reached, so an enclosing
+    /// [`Parser::measured`] sees it. Its other children are parsed at the
+    /// node's own level: the operand's height is not held while they are.
+    pub(crate) fn node_fits(&mut self, height: u32) -> bool {
+        let at = self.depth + self.links + height;
+        if at >= MAX_TREE_DEPTH {
+            self.too_deep();
+            return false;
+        }
+        self.peak = self.peak.max(at + 1);
+        true
+    }
+
     /// Parses an operand that a chain then builds on and returns it with
-    /// its height: the levels it reaches below the current one. The chain
-    /// starts its link count from that height, so links over a deep base
+    /// its height: the levels it reaches below the current one. Each link
+    /// of the chain is one level above the higher of its children
+    /// ([`Parser::node_fits`]), so links over a deep base
     /// (`(a + … + a) + b`) count toward [`MAX_TREE_DEPTH`] on top of it.
     pub(crate) fn measured<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> (T, u32) {
         let base = self.depth + self.links;

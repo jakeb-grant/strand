@@ -780,7 +780,9 @@ diagnostic and resynchronises:
   so the tree as a whole may be at most 256 levels deep; past that is one
   `syntax::too_deep` error. A chain's links count on top of its first
   operand, so `(a + … + a) + b` and `a.b.c + 1` are as deep as both
-  chains together. A per-file step budget guarantees termination.
+  chains together; operands side by side (`(a + … + a) + (b + … + b)`,
+  `f(…)[…]`) are as deep as the deeper one. A per-file step budget
+  guarantees termination.
 - Unknown words where a keyword was expected get a did-you-mean from the
   keywords valid at that position (`componnet` → `component`,
   `on chnage a` → `change`, `for x im xs` → `in`, `dbsu` → `dbus`), and
