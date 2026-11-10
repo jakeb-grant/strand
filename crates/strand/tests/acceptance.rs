@@ -24,7 +24,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 mod support;
-use support::{keyboard, pointer};
+use support::{diff, keyboard, pointer};
 
 struct Proc(Child);
 
@@ -647,7 +647,8 @@ const PIXEL_TOLERANCE: f64 = 0.005;
 /// No 4x4 block may hold more than this many differing pixels: a missing
 /// or changed glyph (the clock's digits, the OSD's "30%", a toast's
 /// summary) fails however small it is against the whole region, while
-/// antialiasing noise, scattered, passes.
+/// antialiasing noise, scattered, passes. A feature too thin for a block
+/// to see (a 1px line, a 2x2 dot) fails by [`diff::thin_feature`].
 const BLOCK_TOLERANCE: usize = 4;
 
 impl Img {
@@ -710,8 +711,9 @@ impl Img {
 
     /// Compares with the reference `name`: the differing pixels (further
     /// apart than 24 in a channel, marked red in the returned diff) may
-    /// be at most 0.5% of the image, and at most [`BLOCK_TOLERANCE`] in
-    /// any 4x4 block.
+    /// be at most 0.5% of the image, at most [`BLOCK_TOLERANCE`] in any
+    /// 4x4 block, and form no run of [`diff::RUN_TOLERANCE`] along a row
+    /// or column nor a 2x2 square.
     fn compare(&self, name: &str) -> Result<(), (String, Img)> {
         let reference = Img::reference(name);
         let (rw, rh) = (reference.width() as usize, reference.height() as usize);
@@ -726,6 +728,7 @@ impl Img {
         }
         let mut diff = self.clone();
         let mut differ = 0usize;
+        let mut mask = vec![false; self.w * self.h];
         let mut blocks = vec![0usize; self.w.div_ceil(4) * self.h.div_ceil(4)];
         let bw = self.w.div_ceil(4);
         for (i, (p, q)) in self
@@ -740,6 +743,7 @@ impl Img {
                 .any(|(a, b)| a.abs_diff(*b) > CHANNEL_TOLERANCE);
             if far {
                 differ += 1;
+                mask[i] = true;
                 let (x, y) = (i % self.w, i / self.w);
                 blocks[(y / 4) * bw + x / 4] += 1;
                 diff.rgb[i * 3..i * 3 + 3].copy_from_slice(&[255, 0, 0]);
@@ -762,6 +766,15 @@ impl Img {
                     PIXEL_TOLERANCE * 100.0,
                     (at % bw) * 4,
                     (at / bw) * 4,
+                ),
+                diff,
+            ));
+        }
+        if let Some((x, y, what)) = diff::thin_feature(&mask, self.w, self.h) {
+            return Err((
+                format!(
+                    "{name}: {differ} pixels differ from the reference, a {what} of them at \
+                     {x},{y} (a line or dot too thin for the 4x4 blocks); see target/acceptance/"
                 ),
                 diff,
             ));
@@ -1664,6 +1677,53 @@ fn the_comparison_catches_one_glyph_but_not_noise() {
         }
     }
     assert!(sparse.compare("bar_headless1").is_ok());
+}
+
+/// A feature too thin for a 4x4 block to see fails all the same: a 1px
+/// line puts one differing pixel in each row of the blocks it crosses
+/// and a 2x2 dot four in one, each within the block tolerance.
+#[test]
+fn the_comparison_catches_a_thin_line_and_a_small_dot() {
+    let reference = Img::reference("bar_headless1");
+    let img = Img {
+        w: reference.width() as usize,
+        h: reference.height() as usize,
+        rgb: reference.into_raw(),
+    };
+    let flip = |img: &mut Img, x: usize, y: usize| {
+        let i = (y * img.w + x) * 3;
+        for c in &mut img.rgb[i..i + 3] {
+            *c ^= 0x80;
+        }
+    };
+    // A 1px vertical line, 40 px long, and a horizontal one.
+    let mut column = img.clone();
+    for y in 10..50 {
+        flip(&mut column, 300, y);
+    }
+    assert!(
+        column.compare("bar_headless1").is_err(),
+        "a 1px column passed"
+    );
+    let mut row = img.clone();
+    for x in 300..340 {
+        flip(&mut row, x, 30);
+    }
+    assert!(row.compare("bar_headless1").is_err(), "a 1px row passed");
+    // A 2x2 dot across the corner of four blocks, and on one block.
+    for (x0, y0) in [(303, 31), (300, 28)] {
+        let mut dot = img.clone();
+        for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            flip(&mut dot, x0 + x, y0 + y);
+        }
+        assert!(dot.compare("bar_headless1").is_err(), "a 2x2 dot passed");
+    }
+    // Short strokes, as antialiasing makes, still pass.
+    let mut short = img.clone();
+    for y in 10..15 {
+        flip(&mut short, 300, y);
+    }
+    assert!(short.compare("bar_headless1").is_ok());
 }
 
 /// design.md's hello bar alone (no theme file), on the acceptance mock

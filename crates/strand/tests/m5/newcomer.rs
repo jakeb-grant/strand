@@ -42,6 +42,7 @@ use serde_json::Value as Json;
 #[path = "../../../strand-dev/tests/support/guide.rs"]
 mod guide;
 use crate::support;
+use crate::support::diff;
 
 /// The cursor theme and size of every process on the desk, pinned: the
 /// calendar shot is taken with the pointer on the desktop.
@@ -527,7 +528,8 @@ struct Img {
 
 /// The comparison of acceptance.rs: a pixel differs when a channel is
 /// more than 24 apart; at most 0.5% of the pixels may, and at most 4 in
-/// any 4x4 block (a changed glyph fails, scattered antialiasing passes).
+/// any 4x4 block (a changed glyph fails, scattered antialiasing passes),
+/// and no thin line or dot ([`diff::thin_feature`]).
 const CHANNEL_TOLERANCE: u8 = 24;
 const PIXEL_TOLERANCE: f64 = 0.005;
 const BLOCK_TOLERANCE: usize = 4;
@@ -596,6 +598,7 @@ impl Img {
         }
         let mut diff = self.clone();
         let mut differ = 0usize;
+        let mut mask = vec![false; self.w * self.h];
         let bw = self.w.div_ceil(4);
         let mut blocks = vec![0usize; bw * self.h.div_ceil(4)];
         for (i, (p, q)) in self
@@ -609,6 +612,7 @@ impl Img {
                 .any(|(a, b)| a.abs_diff(*b) > CHANNEL_TOLERANCE)
             {
                 differ += 1;
+                mask[i] = true;
                 let (x, y) = (i % self.w, i / self.w);
                 blocks[(y / 4) * bw + x / 4] += 1;
                 diff.rgb[i * 3..i * 3 + 3].copy_from_slice(&[255, 0, 0]);
@@ -622,6 +626,15 @@ impl Img {
                     "{name}: {differ} pixels ({:.2}%) differ from the reference, {worst} in one \
                      4x4 block; see target/newcomer/",
                     share * 100.0
+                ),
+                diff,
+            ));
+        }
+        if let Some((x, y, what)) = diff::thin_feature(&mask, self.w, self.h) {
+            return Err((
+                format!(
+                    "{name}: {differ} pixels differ from the reference, a {what} of them at \
+                     {x},{y}; see target/newcomer/"
                 ),
                 diff,
             ));
