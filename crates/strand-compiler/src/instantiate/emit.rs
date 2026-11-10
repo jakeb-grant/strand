@@ -911,6 +911,11 @@ impl Emitter {
         self.order.values().any(|v| v.contains(&id))
     }
 
+    /// Every node on the scene (not parked, not gone).
+    pub fn on_scene(&self) -> std::collections::HashSet<NodeId> {
+        self.order.values().flatten().copied().collect()
+    }
+
     /// `strand reload --hard`: remove every program node of `old`'s
     /// scene and free its ids here (external nodes stay).
     pub fn drop_all(&mut self, old: &Emitter) -> Vec<SceneOp> {

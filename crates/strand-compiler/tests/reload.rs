@@ -576,6 +576,72 @@ fn on_change_does_not_fire_on_reload() {
     assert_eq!(shell.value("t", "fired"), Value::int(1));
 }
 
+/// (audit-reload-show) `on show` runs when a surface opens, not when a
+/// reload keeps it shown: an open panel and an always-shown bar keep
+/// what their `on show` would reset. A real close and open after the
+/// reload still runs it.
+#[test]
+fn on_show_does_not_fire_when_a_reload_keeps_the_surface_shown() {
+    let panel = |t: &str| {
+        format!(
+            "export state o = true\nstate shows = 0\npanel P {{\n  open: <-> o\n  on show {{ shows += 1 }}\n  text \"{t}\"\n}}\n"
+        )
+    };
+    let mut shell = boot(&[("p.strand", &panel("a"))]);
+    shell.flush();
+    assert_eq!(shell.value("p", "shows"), Value::int(1));
+    shell.reload(&[("p.strand", &panel("b"))]);
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["b"]);
+    assert_eq!(
+        shell.value("p", "shows"),
+        Value::int(1),
+        "a reload is not an opening"
+    );
+    shell.inst.set_value("p", "o", Value::Bool(false)).unwrap();
+    shell.flush();
+    shell.inst.set_value("p", "o", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(shell.value("p", "shows"), Value::int(2));
+
+    let bar = |t: &str| {
+        format!("state shows = 0\nbar Top {{\n  on show {{ shows += 1 }}\n  text \"{t}\"\n}}\n")
+    };
+    let mut shell = boot(&[("b.strand", &bar("a"))]);
+    shell.flush();
+    assert_eq!(shell.value("b", "shows"), Value::int(1));
+    shell.reload(&[("b.strand", &bar("b"))]);
+    shell.flush();
+    assert_eq!(
+        shell.value("b", "shows"),
+        Value::int(1),
+        "a reload is not an opening"
+    );
+}
+
+/// (audit-reload-show) A surface the reload adds, or one that was closed
+/// before it and is open after it, does open: its `on show` runs.
+#[test]
+fn on_show_fires_for_a_surface_a_reload_opens() {
+    let src = "export state o = false\nstate shows = 0\npanel P {\n  open: <-> o\n  on show { shows += 1 }\n  text \"a\"\n}\n";
+    let mut shell = boot(&[("p.strand", src)]);
+    shell.flush();
+    assert_eq!(shell.value("p", "shows"), Value::int(0));
+    // An unchanged cell adopts its new default: closed before, open after.
+    let opened = src.replace("state o = false", "state o = true");
+    shell.reload(&[("p.strand", &opened)]);
+    shell.flush();
+    assert_eq!(shell.value("p", "o"), Value::Bool(true));
+    assert_eq!(shell.value("p", "shows"), Value::int(1));
+
+    let one = "state shows = 0\nbar Top {\n  text \"a\"\n}\n";
+    let two = format!("{one}bar Bottom {{\n  on show {{ shows += 1 }}\n  text \"b\"\n}}\n");
+    let mut shell = boot(&[("b.strand", one)]);
+    shell.reload(&[("b.strand", &two)]);
+    shell.flush();
+    assert_eq!(shell.value("b", "shows"), Value::int(1), "a new bar opens");
+}
+
 /// A handler whose code changed is restarted: its in-flight `await` is
 /// cancelled and reported. An unchanged one keeps running.
 #[test]

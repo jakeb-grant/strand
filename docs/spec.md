@@ -3018,6 +3018,9 @@ new program with the running one.
   (decisions.md audit-reload-layout).
 - A rescaled timer keeps the fraction it has counted and finishes at the
   new duration; an `after` that already ran stays done.
+- A reload that keeps a surface shown does not run its `on show`: the
+  surface did not open. One the reload adds, opens, or makes again as
+  another kind does open, and runs it (decisions.md audit-reload-show).
 - A surface's state is keyed by its place in the program, not its name,
   so a renamed surface keeps it. Turning a `bar` into a single surface
   keeps its state when it had one instance, and resets it with a warning

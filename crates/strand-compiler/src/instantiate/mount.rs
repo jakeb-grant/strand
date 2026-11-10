@@ -1949,6 +1949,10 @@ impl Ctx {
         let mounted = Rc::new(Cell::new(false));
         let blocked = Rc::new(Cell::new(false));
         let shown: Rc<Cell<Option<bool>>> = Rc::default();
+        // (audit-reload-show) A reload that keeps this surface shown
+        // mounts it as a boot does, but it does not open: its first
+        // `show` mounts, holds and resumes without routing `show`.
+        let quiet = Cell::new(self.kept_shown(rt, ec.scene, ec.state.open));
         let (me, env) = (self.clone(), env.clone());
         let open_state = ec.state.open;
         let show = move |rt: &Runtime, is_open: bool| {
@@ -1956,6 +1960,7 @@ impl Ctx {
             if prev == Some(is_open) {
                 return;
             }
+            let quiet = quiet.replace(false);
             // (M6) `p.open` follows it (a `trigger: hover` popup's is
             // what drives it already).
             let _ = open_state.set(rt, is_open);
@@ -1989,7 +1994,9 @@ impl Ctx {
                         }
                     });
                 }
-                me.route(rt, ec.scene, "show", Vec::new(), None);
+                if !quiet {
+                    me.route(rt, ec.scene, "show", Vec::new(), None);
+                }
             } else {
                 // Closed before anything else mounted: its body's
                 // `on change` handlers wait, keeping up.

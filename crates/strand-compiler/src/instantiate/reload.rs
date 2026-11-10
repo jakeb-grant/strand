@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
-use strand_core::{NodeId as CoreId, Runtime, Scope};
+use strand_core::{NodeId as CoreId, Runtime, Scope, Signal};
 use strand_scene::{NodeId, NodeKind};
 
 use super::Ctx;
@@ -158,6 +158,8 @@ pub(crate) struct Carry {
     pub report: Report,
     /// Ids of old scene nodes the new instance kept.
     pub kept_nodes: std::collections::HashSet<NodeId>,
+    /// Ids of the old nodes render shows (a parked bar's are not).
+    pub on_scene: std::collections::HashSet<NodeId>,
     /// Scope keys the new instance mounted.
     pub scopes: std::collections::HashSet<Rc<str>>,
     /// The owners of the cells the new instance created fresh, one
@@ -406,6 +408,21 @@ impl Ctx {
     /// Whether a reload is being mounted.
     pub(crate) fn reloading(&self) -> bool {
         self.carry.borrow().is_some()
+    }
+
+    /// (audit-reload-show) Whether the surface node `id` is one this
+    /// reload kept from the old scene, where it was shown: its mount is
+    /// not an opening, so it does not route `show`. A surface new in the
+    /// reload, recreated as another kind, closed before it, or a parked
+    /// bar the reload mounts again still opens.
+    pub(crate) fn kept_shown(&self, rt: &Runtime, id: NodeId, open: Signal<bool>) -> bool {
+        let carry = self.carry.borrow();
+        let Some(c) = carry.as_ref() else {
+            return false;
+        };
+        c.kept_nodes.contains(&id)
+            && c.on_scene.contains(&id)
+            && matches!(open.get_untracked(rt), Ok(true))
     }
 
     /// A bar under `ident` mounts `n` instances in this reload (its

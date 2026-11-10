@@ -1605,6 +1605,7 @@ impl Instance {
             same_layout: old.vm.prog.types.same_layout(&build.program.types),
             report: Report::default(),
             kept_nodes: Default::default(),
+            on_scene: old.em.borrow().on_scene(),
             scopes: Default::default(),
             fresh: Vec::new(),
             handover: Vec::new(),
