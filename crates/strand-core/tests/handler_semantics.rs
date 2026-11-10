@@ -711,6 +711,61 @@ fn a_task_left_ready_after_a_flush_calls_the_wake_hook() {
     assert!(rt.is_idle());
 }
 
+/// A task a handler spawns, and a sleeper a tick wakes, are polled by the
+/// flush they appear in, so neither calls the wake hook: one handled click
+/// is one turn of the host's loop, not two. A spawn outside a flush still
+/// calls it.
+#[test]
+fn a_wake_polled_in_the_same_flush_does_not_call_the_wake_hook() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let rt = Runtime::new();
+    let woken = Arc::new(AtomicUsize::new(0));
+    let w = woken.clone();
+    rt.set_wake_hook(move || {
+        w.fetch_add(1, Ordering::SeqCst);
+    });
+    let done = Rc::new(RefCell::new(0));
+    let clicks = rt.input_events::<()>();
+    let d = done.clone();
+    let weak = rt.downgrade();
+    clicks
+        .on(&rt, move |rt, _| {
+            let d = d.clone();
+            let weak = weak.clone();
+            rt.spawn(async move {
+                *d.borrow_mut() += 1;
+                if let Some(rt) = weak.upgrade() {
+                    rt.sleep(10 * MS).await;
+                }
+                *d.borrow_mut() += 1;
+                Ok(())
+            });
+            Ok(())
+        })
+        .unwrap();
+    clicks.emit(&rt, ()).unwrap();
+    let before = woken.load(Ordering::SeqCst);
+    rt.flush();
+    assert_eq!(*done.borrow(), 1, "the spawned task ran in this flush");
+    assert_eq!(woken.load(Ordering::SeqCst), before, "no hook for a spawn");
+    rt.tick(10 * MS);
+    assert_eq!(*done.borrow(), 2, "the sleeper ran in the tick's flush");
+    assert!(rt.is_idle());
+    assert_eq!(
+        woken.load(Ordering::SeqCst),
+        before,
+        "no hook for a sleeper"
+    );
+    rt.spawn(async { Ok(()) });
+    assert_eq!(
+        woken.load(Ordering::SeqCst),
+        before + 1,
+        "outside a flush the host is told"
+    );
+    rt.flush();
+}
+
 /// `on change x, y` created before an effect that writes `x = y * 10`: one
 /// outside write to `y` fires it once, with the settled values, never with
 /// the intermediate `(0, 1)`.

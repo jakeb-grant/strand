@@ -36,6 +36,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
+use std::sync::atomic::Ordering as AtomicOrdering;
 use std::time::Duration;
 
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
@@ -2052,6 +2053,10 @@ impl Runtime {
             tick.errors.push((at, Error::Reentrant));
             return tick;
         }
+        self.inner
+            .ready
+            .ticking
+            .store(true, AtomicOrdering::Relaxed);
         tick.seq = self.inner.tick.get() + 1;
         self.inner.tick.set(tick.seq);
         self.inner.epoch.set(self.inner.epoch.get() + 1);
@@ -2217,8 +2222,14 @@ impl Runtime {
             }
         }
         self.inner.flushing.set(false);
+        self.inner
+            .ready
+            .ticking
+            .store(false, AtomicOrdering::Relaxed);
         // A task that woke itself during this flush waits for the next one;
-        // tell the host so a loop sleeping on the hook polls it.
+        // tell the host so a loop sleeping on the hook polls it. (Wakes on
+        // this thread during the flush did not call it: what this flush
+        // did not poll is still here.)
         if !self.ready_is_empty() {
             self.call_wake_hook();
         }
@@ -2329,6 +2340,14 @@ impl Runtime {
     /// Advance the logic clock and end the tick: fire due timers, wake due
     /// sleepers, apply due throttled writes, then [`Runtime::flush`].
     pub fn tick(&self, now: Duration) -> Tick {
+        // Sleepers coming due are polled by the flush below: no wake hook.
+        // A reentrant tick leaves the flag to the flush it is inside.
+        if !self.inner.flushing.get() {
+            self.inner
+                .ready
+                .ticking
+                .store(true, AtomicOrdering::Relaxed);
+        }
         let mut errors = self.advance_to(now);
         let mut tick = self.flush();
         errors.append(&mut tick.errors);

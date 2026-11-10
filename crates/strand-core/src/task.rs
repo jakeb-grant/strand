@@ -56,6 +56,10 @@ pub(crate) struct ReadyQueue {
     /// The logic thread (the runtime is not `Send`).
     home: std::thread::ThreadId,
     hook: Mutex<Option<Hook>>,
+    /// The runtime is in a flush (or a tick's clock advance before one),
+    /// which polls what the logic thread wakes and calls the hook itself
+    /// when it ends with work left: such a wake does not call it.
+    pub(crate) ticking: AtomicBool,
 }
 
 impl Default for ReadyQueue {
@@ -68,6 +72,7 @@ impl Default for ReadyQueue {
             wakes: AtomicU64::new(0),
             home: std::thread::current().id(),
             hook: Mutex::new(None),
+            ticking: AtomicBool::new(false),
         }
     }
 }
@@ -84,6 +89,9 @@ impl ReadyQueue {
     fn push(&self, id: NodeId) {
         if std::thread::current().id() == self.home {
             self.push_quiet(id);
+            if self.ticking.load(AtomicOrdering::Relaxed) {
+                return;
+            }
         } else {
             let n = self.wakes.fetch_add(1, AtomicOrdering::Relaxed);
             let mut ids = self.foreign.lock().unwrap_or_else(PoisonError::into_inner);
