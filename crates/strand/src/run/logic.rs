@@ -462,6 +462,10 @@ pub fn logic(
                 &mut inbox,
             )
             .map_err(|e| format!("logic loop: {e}"))?;
+        // (audit-timer-pause) The clock to the wake before the input it
+        // woke for: a pause written now counts up to here, not to the
+        // last step, and nothing fires until the step.
+        shell.inst.runtime().stamp(start.elapsed());
         for m in inbox.msgs.drain(..) {
             if m == ToLogic::Shutdown {
                 stop = true;

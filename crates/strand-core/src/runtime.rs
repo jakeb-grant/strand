@@ -842,6 +842,18 @@ impl Runtime {
         self.inner.now.get()
     }
 
+    /// Raise the logic clock to `now` (never lower it) and run nothing: no
+    /// timer fires, no sleeper wakes. A host calls it when it wakes, before
+    /// it applies the input it woke for, so a write that pauses an
+    /// `after T while c` counts the time up to the wake, and a timer
+    /// mounted by that input starts from it (`audit-timer-pause`).
+    /// [`Runtime::advance_to`] still decides what fires.
+    pub fn stamp(&self, now: Duration) {
+        if now > self.inner.now.get() {
+            self.inner.now.set(now);
+        }
+    }
+
     /// The current tick number (incremented by every flush).
     pub fn tick_seq(&self) -> u64 {
         self.inner.tick.get()
@@ -2317,7 +2329,9 @@ impl Runtime {
     /// brought up to date first, so `hover = true` followed by
     /// `tick(deadline)` pauses the timer instead of firing it. A pause counts
     /// up to the previous time and a resume from `now`: a timer never counts
-    /// time its condition may not have held for.
+    /// time its condition may not have held for. A host that sleeps between
+    /// steps calls [`Runtime::stamp`] when it wakes, so "the previous time"
+    /// is the wake, not the last step.
     pub fn advance_to(&self, now: Duration) -> Vec<(NodeId, Error)> {
         self.inner.epoch.set(self.inner.epoch.get() + 1);
         self.refresh_timers(now);

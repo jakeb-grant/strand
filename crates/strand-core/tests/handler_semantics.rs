@@ -348,6 +348,35 @@ fn a_timer_sees_a_pause_written_in_the_same_tick() {
 }
 
 #[test]
+fn a_pause_after_an_idle_gap_keeps_the_time_counted_to_the_wake() {
+    // after 6s while !hover on an idle shell: nothing steps between the
+    // mount at 0 and the pointer entering at 5.5 s. The host wakes,
+    // stamps the clock, applies the write, then steps.
+    let rt = Runtime::new();
+    let hover = rt.signal(false);
+    let expired = rt.signal(false);
+    rt.after(
+        Duration::from_secs(6),
+        move |rt| Ok(!hover.get(rt)?),
+        move |rt| expired.set(rt, true),
+    );
+    rt.tick(Duration::ZERO);
+    assert_eq!(rt.next_deadline(), Some(6000 * MS));
+    rt.stamp(5500 * MS);
+    assert_eq!(expired.get(&rt), Ok(false), "a stamp fires nothing");
+    hover.set(&rt, true).unwrap();
+    rt.tick(5500 * MS);
+    assert_eq!(rt.next_deadline(), None, "paused while hovered");
+    // The pointer leaves at 7 s: 0.5 s were left at 5.5 s.
+    rt.stamp(7000 * MS);
+    hover.set(&rt, false).unwrap();
+    rt.tick(7000 * MS);
+    assert_eq!(rt.next_deadline(), Some(7500 * MS));
+    rt.tick(7500 * MS);
+    assert_eq!(expired.get(&rt), Ok(true));
+}
+
+#[test]
 fn a_timer_body_pausing_another_timer_takes_effect_at_once() {
     let rt = Runtime::new();
     let paused = rt.signal(false);

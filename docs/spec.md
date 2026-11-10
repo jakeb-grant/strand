@@ -2563,7 +2563,9 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   mount of the node or component it is written in (once for the program
   at the top level), after `c` has held for a total of `T`. It counts
   only time during which `c` holds and schedules nothing while `c` is
-  false; when `c` turns false the count pauses and is not reset, and
+  false; when `c` turns false the count pauses and is not reset (it
+  keeps the time counted up to when the host took the write that turned
+  it false, however long logic was idle before), and
   once the body has run the timer is done, so `c` turning false and
   true again never re-arms it. A delay that runs each time a condition
   ends (a hover popup closing 200 ms after the pointer leaves) is

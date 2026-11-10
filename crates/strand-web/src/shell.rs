@@ -920,6 +920,13 @@ impl LoopHost for Shell {
     }
 
     fn intents(&mut self, _: Cause<'_>, intents: Vec<Intent>) -> Result<(), String> {
+        // (audit-timer-pause) Logic's clock to the input's time before
+        // its writes, as the logic thread stamps its wake; no later than
+        // a timer still due, which `logic` fires at its own time.
+        if !intents.is_empty() {
+            let due = self.inst.next_deadline().unwrap_or(self.t);
+            self.inst.runtime().stamp(self.t.min(due));
+        }
         if !intents.is_empty() && to_logic(&self.inst, &self.host, intents, &mut self.notes) {
             self.logic_owed = true;
         }

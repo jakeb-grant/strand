@@ -4824,6 +4824,14 @@ impl LoopHost for Harness {
     }
 
     fn intents(&mut self, _: Cause<'_>, intents: Vec<strand_render::Intent>) -> Result<(), Error> {
+        // (audit-timer-pause) Logic's clock to the input's time before
+        // its writes, as the logic thread stamps its wake; no later than
+        // a timer still due, which `logic` fires at its own time.
+        if !intents.is_empty() {
+            let t = self.clock.now();
+            let due = self.inst.next_deadline().unwrap_or(t);
+            self.inst.runtime().stamp(t.min(due));
+        }
         if !intents.is_empty() && to_logic(&self.inst, &self.host, intents, &mut self.notes) {
             self.logic_owed = true;
         }

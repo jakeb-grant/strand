@@ -1626,7 +1626,11 @@ by `strand-compiler`, not here. See `crates/strand-core/src/lib.rs`.
   and not `Send`. Reads and memo closures return `Result<T, Error>`.
 - The host loop calls `rt.tick(now)` and sleeps until
   `rt.next_deadline()` or the wake hook (`rt.set_wake_hook`);
-  `rt.is_idle()` with no deadline means idle. Each `Tick` carries the
+  `rt.is_idle()` with no deadline means idle. When it wakes it calls
+  `rt.stamp(now)` (raises the clock, runs nothing) before it applies
+  the input it woke for, so a write that pauses an `after T while c`
+  counts the time up to the wake; the harnesses that model the loop
+  (eval, strand-web) stamp before an input's writes too. Each `Tick` carries the
   `errors` and `diagnostics` raised since the last one.
 - The scene emitter calls `rt.watch(id)` per bound prop and turns
   `Tick::changed` (creation order) into `SetProp`s; `for` loops turn a
