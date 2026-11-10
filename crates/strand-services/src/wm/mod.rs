@@ -912,6 +912,7 @@ pub(crate) async fn drive<S>(
             let sources = Sources {
                 ipc: kind,
                 connected,
+                adapter_ids: published_ipc_ids == Some(true),
                 toplevel_list: proto.toplevel_list,
                 toplevel_management: proto.toplevel_management,
                 workspace_protocol: proto.workspace_manager,

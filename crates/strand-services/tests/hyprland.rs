@@ -652,6 +652,7 @@ async fn a_hyprland_reply_of_another_shape_degrades_until_it_is_read_again() {
     c.until("boot", |m| m.sources.connected && !m.workspaces.is_empty())
         .await;
     assert_eq!(degraded(&c.mirror), None);
+    assert!(c.mirror.sources.adapter_ids, "Hyprland's own ids");
 
     fake.set_reply(
         "j/clients",
@@ -667,6 +668,7 @@ async fn a_hyprland_reply_of_another_shape_degrades_until_it_is_read_again() {
     );
     assert!(why.contains("standard Wayland protocols"), "{why}");
     assert!(!c.mirror.sources.connected);
+    assert!(!c.mirror.sources.adapter_ids, "the protocols' ids");
     assert!(
         c.mirror.workspaces.is_empty() && c.mirror.windows.is_empty(),
         "the protocols' state, not the last one: {:?}",
@@ -707,6 +709,7 @@ async fn a_hyprland_reply_of_another_shape_degrades_until_it_is_read_again() {
     })
     .await;
     assert!(c.mirror.window_by_app("kitty").is_some());
+    assert!(c.mirror.sources.adapter_ids, "Hyprland's ids again");
     let (r, done) = WmRequest::new(WmAction::FocusWorkspace(3));
     req_tx.send(r).unwrap();
     assert_eq!(done.await, Ok(()));
