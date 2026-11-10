@@ -128,6 +128,10 @@ pub struct Loader {
     /// or why it cannot be read), until a change to one of them
     /// ([`Loader::changed`]) or a rescan drops it.
     wgsl: std::cell::RefCell<BTreeMap<PathBuf, Result<Arc<str>, String>>>,
+    /// Boot's compile of every readable file, when it had no errors: the
+    /// files it took, their sources, the result and its time, used by the
+    /// reconcile right after it in place of compiling them again.
+    probe: Option<(BTreeSet<PathBuf>, SourceMap, crate::Compiled, Duration)>,
 }
 
 /// A check run on each compiled config, adding diagnostics
@@ -171,6 +175,7 @@ impl Loader {
             tried: None,
             extra: None,
             wgsl: Default::default(),
+            probe: None,
         }
     }
 
@@ -269,12 +274,25 @@ impl Loader {
         // Broken at boot: start from the cached last good sources, if
         // any, and take the saved files on top as far as they are
         // consistent.
-        let all: BTreeSet<PathBuf> = self.disk.keys().cloned().collect();
-        let broken = self.compile(&self.assemble(&all)).errors() > 0;
-        let cached = match broken {
-            true => self.cache.as_ref().and_then(|c| c.load(&self.schema)),
-            false => None,
-        };
+        // The readable files: what the reconcile below takes from disk
+        // when nothing is live yet.
+        let all: BTreeSet<PathBuf> = self
+            .disk
+            .iter()
+            .filter(|(_, t)| t.is_ok())
+            .map(|(p, _)| p.clone())
+            .collect();
+        let started = Instant::now();
+        let full = self.assemble(&all);
+        let compiled = self.compile(&full);
+        if compiled.errors() == 0 {
+            // Not compiled twice: the reconcile commits this result.
+            self.probe = Some((all, full, compiled, started.elapsed()));
+            let out = self.reconcile(false);
+            self.probe = None;
+            return out;
+        }
+        let cached = self.cache.as_ref().and_then(|c| c.load(&self.schema));
         let Some(cached) = cached else {
             return self.reconcile(false);
         };
@@ -500,8 +518,16 @@ impl Loader {
     ) -> Outcome {
         let started = Instant::now();
         self.compiled = true;
-        let full = self.assemble(&changed);
-        let compiled = self.compile(&full);
+        let (full, compiled, spent) = match self.probe.take() {
+            Some((took, full, compiled, spent)) if took == changed && self.live.is_empty() => {
+                (full, compiled, spent)
+            }
+            _ => {
+                let full = self.assemble(&changed);
+                let compiled = self.compile(&full);
+                (full, compiled, Duration::ZERO)
+            }
+        };
         let mut out = Outcome {
             unreadable,
             ..Outcome::default()
@@ -515,7 +541,7 @@ impl Loader {
             out.build = Some(self.commit(&changed, full, &compiled));
             out.committed = changed.into_iter().collect();
             out.held = unread;
-            out.compile_time = started.elapsed();
+            out.compile_time = started.elapsed() + spent;
             return out;
         }
         // Hold back what breaks, keep what does not.
@@ -595,7 +621,7 @@ impl Loader {
         out.held.extend(unread);
         out.diagnostics = compiled.diagnostics;
         out.sources = Arc::new(full);
-        out.compile_time = started.elapsed();
+        out.compile_time = started.elapsed() + spent;
         out
     }
 

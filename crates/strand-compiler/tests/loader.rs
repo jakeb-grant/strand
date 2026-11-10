@@ -364,6 +364,35 @@ fn the_same_broken_files_are_not_compiled_twice() {
     let _ = std::fs::remove_dir_all(d);
 }
 
+/// A config that compiles at boot is compiled once: the boot's check of
+/// every file is the build it commits, and a change after it compiles
+/// again as before.
+#[test]
+fn a_clean_boot_compiles_its_config_once() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use strand_compiler::reconcile::loader::ExtraCheck;
+    let d = dir("once");
+    write(&d, "bar.strand", BAR);
+    let clock = write(&d, "clock.strand", CLOCK);
+    let compiles = Arc::new(AtomicUsize::new(0));
+    let n = compiles.clone();
+    let mut l = loader(&d).with_check(ExtraCheck(Box::new(move |_| {
+        n.fetch_add(1, Ordering::SeqCst);
+        Vec::new()
+    })));
+    let out = l.boot();
+    assert!(out.build.is_some(), "{:?}", out.diagnostics);
+    assert_eq!(out.committed.len(), 2);
+    assert!(out.compile_time > std::time::Duration::ZERO);
+    assert_eq!(compiles.load(Ordering::SeqCst), 1, "one compile at boot");
+    std::fs::write(&clock, CLOCK.replace("shut", "closed")).unwrap();
+    let out = l.changed([(clock.clone(), true)]);
+    assert_eq!(out.committed, [clock]);
+    assert_eq!(compiles.load(Ordering::SeqCst), 2);
+    let _ = std::fs::remove_dir_all(d);
+}
+
 /// (M6, spec.md 4.2) A saved file that declares a second `Row` makes a
 /// third file's bare `Row` ambiguous: `check::ambiguous_name` at the
 /// use, the new file held back and the last good tree kept. Naming the
