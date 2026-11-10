@@ -238,7 +238,7 @@ impl TypeTable {
     /// service items: `Window`, `App`); any other record is data when every
     /// field is.
     pub fn is_data(&self, ty: &Ty) -> bool {
-        self.data_walk(ty, true, &mut Vec::new())
+        self.data_walk(ty, true, &mut Walk::default())
     }
 
     /// True if values of this type can identify the items of a `for`
@@ -246,7 +246,7 @@ impl TypeTable {
     /// opaque values and fonts compare, functions and pending loads do
     /// not.
     pub fn is_comparable(&self, ty: &Ty) -> bool {
-        self.data_walk(ty, false, &mut Vec::new())
+        self.data_walk(ty, false, &mut Walk::default())
     }
 
     /// True if values of this type can key a dictionary (`[K: V]`):
@@ -261,7 +261,7 @@ impl TypeTable {
         )
     }
 
-    fn data_walk(&self, ty: &Ty, stored: bool, seen: &mut Vec<RecordId>) -> bool {
+    fn data_walk(&self, ty: &Ty, stored: bool, seen: &mut Walk) -> bool {
         match ty {
             Ty::Error | Ty::Null | Ty::Enum(_) => true,
             Ty::Prim(p) => {
@@ -272,9 +272,11 @@ impl TypeTable {
                     )
             }
             Ty::Record(r) => {
-                if seen.contains(r) {
+                if seen.path.contains(r) || seen.done.contains(r) {
                     // A recursive type (`type Node { kids: [Node] }`):
-                    // the fields already being walked decide.
+                    // the fields already being walked decide. A record
+                    // already walked to `true` is not walked again, so a
+                    // type reached by many paths costs one walk.
                     return true;
                 }
                 let rec = self.record(*r);
@@ -285,12 +287,16 @@ impl TypeTable {
                 {
                     return false;
                 }
-                seen.push(*r);
+                seen.path.push(*r);
                 let ok = rec
                     .fields
                     .iter()
                     .all(|f| self.data_walk(&f.ty, stored, seen));
-                seen.pop();
+                seen.path.pop();
+                // Only `true` is kept: a `false` ends the whole walk.
+                if ok {
+                    seen.done.insert(*r);
+                }
                 ok
             }
             Ty::List(t, _) | Ty::Optional(t) => self.data_walk(t, stored, seen),
@@ -300,6 +306,14 @@ impl TypeTable {
             Ty::Any | Ty::Unit | Ty::EnumType(_) | Ty::Async(_) | Ty::Fn(_) | Ty::Union(_) => false,
         }
     }
+}
+
+/// The records of one [`TypeTable::data_walk`]: those on the path being
+/// walked, and those already walked to `true`.
+#[derive(Default)]
+struct Walk {
+    path: Vec<RecordId>,
+    done: std::collections::HashSet<RecordId>,
 }
 
 /// A function or method signature.

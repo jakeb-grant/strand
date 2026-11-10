@@ -492,6 +492,30 @@ fn errors_far_along_a_long_line_render() {
     }
 }
 
+/// Whether a `persist` state's type is data walks each record type once,
+/// however many fields reach it: 28 levels of a record holding two of
+/// the next were 2^28 walks of the last one, so a short file hung the
+/// load.
+#[test]
+fn a_record_reached_by_many_paths_is_walked_once() {
+    let levels = 28;
+    let mut src = format!("type T{levels} {{ a: int; b: int }}\n");
+    for i in (0..levels).rev() {
+        src.push_str(&format!("type T{i} {{ a: T{n}; b: T{n} }}\n", n = i + 1));
+    }
+    src.push_str("state s: T0? = null persist\n");
+    let (map, _) = SourceMap::single("dag.strand", src);
+    let started = Instant::now();
+    let out = strand_compiler::compile(&map);
+    let elapsed = started.elapsed();
+    assert!(
+        out.diagnostics.is_empty(),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+    gate(elapsed, Duration::from_secs(1), "a 28-level record DAG");
+}
+
 /// The gate of a test with one, at its end. These watch the whole compile
 /// and no count could: the regression of de671192 added 12% to the allocations
 /// of its chain and 15 times to the time (decisions.md robustness).
