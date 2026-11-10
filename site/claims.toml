@@ -583,7 +583,7 @@ proof  = "crates/strand/src/logging.rs::tests::parses_levels_and_topics"
 [[claim]]
 page   = "site/start/running.md"
 text   = "strand: WARN strand::run::logic: no IPC socket (strand reload, strand watch): …"
-source = ['crates/strand/src/logging.rs ""strand: {} {}: {}","', 'crates/strand/src/run/logic.rs ""no IPC socket (strand reload, strand watch): {}: {e}","']
+source = ['crates/strand/src/logging.rs ""strand: {} {}: {}\n","', 'crates/strand/src/run/logic.rs ""no IPC socket (strand reload, strand watch): {}: {e}","']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
@@ -1063,7 +1063,7 @@ proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "`strand run` prints why it stopped and exits with an error status."
-source = ['crates/strand/src/entry.rs "eprintln!("strand run: no config directory (set XDG_CONFIG_HOME or HOME)"); return ExitCode::FAILURE;"']
+source = ['crates/strand/src/entry.rs "to_stderr("strand run: no config directory (set XDG_CONFIG_HOME or HOME)\n"); return ExitCode::FAILURE;"']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check): exit 1"
 
 [[claim]]
@@ -1087,7 +1087,7 @@ proof  = "crates/strand/tests/m5/cli.rs::run_names_a_missing_config_dir_plainly"
 [[claim]]
 page   = "site/help/troubleshooting.md"
 text   = "- **\"no config directory (set XDG\\_CONFIG\\_HOME or HOME)\".** Neither"
-source = ['crates/strand/src/entry.rs ""strand run: no config directory (set XDG_CONFIG_HOME or HOME)""']
+source = ['crates/strand/src/entry.rs ""strand run: no config directory (set XDG_CONFIG_HOME or HOME)\n""']
 proof  = "ran in the container (scripts/container/run.sh) on headless sway 1.9, 2026-10-26 (fact-check)"
 
 [[claim]]
