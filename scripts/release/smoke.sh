@@ -39,7 +39,9 @@ apt="export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get instal
 root_refused="out=\$(sh /dist/install.sh 2>&1) && exit 1; echo \"\$out\" | grep -q 'not root' || { echo \"\$out\"; exit 1; }; echo 'ok   root is refused'"
 
 case_ "Ubuntu 24.04" ubuntu:24.04 "$apt $UBUNTU_LIBS && $root_refused" full
-case_ "Arch" archlinux:latest "pacman -Sy --noconfirm --needed curl $ARCH_LIBS" full
+# A whole upgrade (-Syu): Arch supports no other, and the image is older
+# than the repositories, so -Sy alone breaks on the first soname bump.
+case_ "Arch" archlinux:latest "pacman -Syu --noconfirm --needed curl $ARCH_LIBS" full
 case_ "Ubuntu 24.04 without the libraries" ubuntu:24.04 "$apt" nolibs
 case_ "Ubuntu 22.04" ubuntu:22.04 "$apt" oldglibc
 

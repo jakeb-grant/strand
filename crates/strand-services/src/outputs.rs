@@ -659,6 +659,11 @@ struct Client {
     /// (outputs-mode) The `wl_output`s, for the current mode of a head
     /// that names none, and (outputs-resync) to check the heads against.
     wl_outputs: Vec<WlOut>,
+    /// (outputs-apply) The compositor announced a `wl_output` before
+    /// version 4, which is not bound (it gives no name): the outputs then
+    /// tell nothing of an apply, where an empty [`Client::wl_outputs`] on
+    /// its own only says that no monitor is on.
+    old_wl_outputs: bool,
     /// (outputs-resync) xdg-output, for each `wl_output`'s logical place
     /// and size.
     xdg_manager: Option<ZxdgOutputManagerV1>,
@@ -1005,8 +1010,10 @@ impl Client {
             && (self.undone.is_some() || self.shown_at.is_some() && self.disagrees())
     }
 
-    /// When the next resync or check falls due, for the poll's timeout.
+    /// When the next resync or check falls due, for the poll's timeout:
+    /// none with no manager, as [`Client::resync_due`] acts on none then.
     fn resync_at(&self) -> Option<Instant> {
+        self.manager.as_ref()?;
         match (self.undone, self.shown_at) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -1043,10 +1050,13 @@ impl Client {
     /// unless it was on with none when asked (`unseen`, a mirror): until
     /// it has one, what the configuration changed of its place, transform
     /// or scale is checked against its head ([`Client::unseen_unlike`]).
-    /// A compositor whose `wl_output`s give no names (before version 4)
-    /// tells nothing.
+    /// A compositor whose `wl_output`s give no names (before version 4,
+    /// [`Client::old_wl_outputs`]) tells nothing, nor do outputs bound but
+    /// not named yet; no `wl_output` at all is every monitor off.
     fn unlike(&self, asked: &[Expect]) -> Option<String> {
-        if self.wl_outputs.iter().all(|o| o.name.is_empty()) {
+        if self.old_wl_outputs
+            || !self.wl_outputs.is_empty() && self.wl_outputs.iter().all(|o| o.name.is_empty())
+        {
             return None;
         }
         asked.iter().find_map(|e| {
@@ -1188,6 +1198,10 @@ impl Client {
         self.manager = None;
         self.manager_global = None;
         self.serial = None;
+        // Nothing resyncs without a manager: a timer left set would put
+        // the poll's deadline in the past for good, a busy loop.
+        self.undone = None;
+        self.shown_at = None;
         self.changed = true;
         self.lost = true;
     }
@@ -2107,6 +2121,11 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
                     .wl_outputs
                     .push(WlOut::new(name, registry.bind(name, 4, qh, name)));
                 state.get_xdg_output(name, qh);
+            }
+            wl_registry::Event::Global { interface, .. }
+                if interface == wl_output::WlOutput::interface().name && !state.probe =>
+            {
+                state.old_wl_outputs = true;
             }
             wl_registry::Event::Global {
                 name,
@@ -3332,7 +3351,20 @@ mod tests {
             Some("DP-1 shows no mode")
         );
         c.wl_outputs[0].name.clear();
-        assert_eq!(c.unlike(&[asked]), None, "no names: nothing to tell by");
+        assert_eq!(
+            c.unlike(std::slice::from_ref(&asked)),
+            None,
+            "no names: nothing to tell by"
+        );
+        // No `wl_output` at all: every monitor is off, so the one asked
+        // on is not, unless the compositor's outputs give no names.
+        c.wl_outputs.clear();
+        assert_eq!(
+            c.unlike(std::slice::from_ref(&asked)).as_deref(),
+            Some("DP-1 is not on")
+        );
+        c.old_wl_outputs = true;
+        assert_eq!(c.unlike(&[asked]), None, "before version 4");
     }
 
     /// (outputs-apply, review round 5) A fractional scale is checked as
@@ -3670,5 +3702,19 @@ mod tests {
         assert_eq!(c.publish(true), Publish::Cleared);
         assert_eq!(c.publish(false), Publish::Nothing, "not ready again");
         assert_eq!(c.publish(false), Publish::Nothing);
+    }
+
+    /// (outputs-resync) A manager that goes with a change undone or a
+    /// check pending leaves no resync deadline: nothing would act on it,
+    /// and a deadline in the past made the poll return at once forever.
+    #[test]
+    fn a_lost_manager_leaves_no_resync_deadline() {
+        let mut c = Client::default();
+        let now = Instant::now();
+        c.undone = Some(now);
+        c.shown_at = Some(now);
+        c.drop_manager();
+        assert!(!c.resync_due(now + RESYNC_AFTER * 2));
+        assert_eq!(c.resync_at(), None);
     }
 }

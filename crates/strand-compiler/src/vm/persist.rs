@@ -206,8 +206,12 @@ fn number(p: Prim, n: f64) -> Option<Value> {
         Prim::Length => Num::Px,
         Prim::Percent => Num::Percent,
         Prim::Angle => Num::Deg,
-        // A plain number of seconds.
-        Prim::Duration => return Some(Value::Num(n * 1000.0, Num::Ms)),
+        // A plain number of seconds, finite and not negative as the
+        // `"6s"` form is.
+        Prim::Duration => {
+            let ms = n * 1000.0;
+            return (ms.is_finite() && n >= 0.0).then_some(Value::Num(ms, Num::Ms));
+        }
         _ => return None,
     };
     n.is_finite().then_some(Value::Num(n, unit))
@@ -508,6 +512,29 @@ mod tests {
 
     fn types() -> TypeTable {
         crate::schema::Schema::builtin().types.clone()
+    }
+
+    /// A settings duration written as a bare number of seconds is held to
+    /// what its `"6s"` form is: finite and not negative, else the field is
+    /// bad (spec.md 11) rather than a value `sleep` faults on later.
+    #[test]
+    fn a_bare_number_duration_is_finite_and_not_negative() {
+        let t = types();
+        let item = |src: &str| toml_edit::Item::Value(src.parse::<toml_edit::Value>().unwrap());
+        for src in ["-1", "-1.5", "nan", "inf", "-inf", "1e308", "\"-1s\""] {
+            assert!(
+                decode_item(&t, &Ty::DURATION, &item(src)).is_err(),
+                "{src} accepted"
+            );
+        }
+        assert_eq!(
+            decode_item(&t, &Ty::DURATION, &item("2")),
+            Ok(Value::Num(2000.0, Num::Ms))
+        );
+        assert_eq!(
+            decode_item(&t, &Ty::DURATION, &item("0.25")),
+            Ok(Value::Num(250.0, Num::Ms))
+        );
     }
 
     #[test]

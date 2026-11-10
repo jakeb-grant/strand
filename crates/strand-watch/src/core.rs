@@ -248,6 +248,32 @@ impl Entry {
         };
     }
 
+    /// Record only the file's stat stamp as the baseline, leaving its
+    /// hash unknown: its first change after this is read and reported
+    /// `Modified` whatever its bytes. Anything but a regular file takes
+    /// [`Entry::take_baseline`], which reads none of those.
+    fn take_stamp(&mut self, path: &Path) {
+        match std::fs::metadata(path) {
+            Ok(m) if m.is_file() => {
+                (self.hash, self.stamp, self.error, self.exists) =
+                    (None, Some(Stamp::of(&m)), None, true);
+            }
+            _ => self.take_baseline(path),
+        }
+    }
+
+    /// Only drawn (`Role::Asset`): the baseline's bytes would serve only
+    /// to drop a no-op event, and a mounted image can be large and
+    /// mounted again and again, so the baseline is the stamp alone.
+    fn stamp_only(&self) -> bool {
+        self.roles().into_iter().all(|r| r == Role::Asset)
+    }
+
+    /// The baseline is a stamp with no hash ([`Entry::take_stamp`]).
+    fn stamped(&self) -> bool {
+        self.exists && self.hash.is_none() && self.error.is_none() && self.stamp.is_some()
+    }
+
     fn unused(&self) -> bool {
         !self.module && self.loader.is_empty() && self.explicit.is_empty()
     }
@@ -566,6 +592,15 @@ fn is_missing(e: &io::Error) -> bool {
     )
 }
 
+/// A directory that exists but cannot be listed, or whose `stat` fails
+/// for another reason than its absence.
+fn unreachable_dir(dir: &Path) -> bool {
+    match std::fs::metadata(dir) {
+        Ok(m) => m.is_dir(),
+        Err(e) => !is_missing(&e),
+    }
+}
+
 fn open_nonblocking(path: &Path) -> io::Result<std::fs::File> {
     // O_NONBLOCK: a FIFO swapped in after the `stat` still opens at once
     // (and is then refused by `fstat`) instead of blocking this thread.
@@ -840,6 +875,7 @@ impl<B: Backend> Core<B> {
                     self.pending.files.insert(path.clone());
                     recheck = true;
                 }
+                None if e.stamp_only() => e.take_stamp(path),
                 None => e.take_baseline(path),
             }
         }
@@ -857,6 +893,28 @@ impl<B: Backend> Core<B> {
                 e.exists = true;
                 e.error = None;
                 self.pending.files.insert(path.clone());
+                recheck = true;
+            }
+        }
+        // (audit-asset-stamp) An entry known by its stamp alone (an asset)
+        // that another role holds now takes its hash, so that role's
+        // first no-op event is dropped as it would have been. A stamp
+        // that moved meanwhile is a change: the file is compared.
+        let stamped: Vec<PathBuf> = self
+            .files
+            .iter()
+            .filter(|(_, e)| e.stamped() && !e.stamp_only())
+            .map(|(f, _)| f.clone())
+            .collect();
+        for path in stamped {
+            let unchanged = fresh_stamp(&path);
+            let Some(e) = self.files.get_mut(&path) else {
+                continue;
+            };
+            if unchanged == e.stamp {
+                e.take_baseline(&path);
+            } else {
+                self.pending.files.insert(path);
                 recheck = true;
             }
         }
@@ -1095,6 +1153,17 @@ impl<B: Backend> Core<B> {
     fn busy_since(&self, f: &Path) -> Option<Instant> {
         let e = self.files.get(f)?;
         self.writing.get(&e.resolved.path).copied()
+    }
+
+    /// The mount table changed (`/proc/self/mountinfo`): a filesystem
+    /// mounted or unmounted makes no inotify event, the watches staying on
+    /// the covered inodes. A waiting path a mount brought is woken, and
+    /// every watched directory is stat'ed so one now covered or uncovered
+    /// is watched again and what lies below it re-read at the next flush.
+    pub(crate) fn mounts_changed(&mut self) {
+        self.wake_appeared();
+        self.sync_watches(true);
+        self.mark_if_notices();
     }
 
     pub(crate) fn has_polled_dirs(&self) -> bool {
@@ -1354,22 +1423,28 @@ impl<B: Backend> Core<B> {
         for dir in dirs {
             match snapshot(&dir) {
                 Some(new) => self.compare_listing(&dir, new, now),
-                // Exists but cannot be listed (EACCES): keep the last
-                // listing and keep polling, quietly.
-                None if dir.is_dir() => {}
+                // Exists but cannot be listed (EACCES), or cannot be
+                // reached without being gone (a network mount's ENOTCONN
+                // or EIO while its server is away): keep the last listing
+                // and keep polling, quietly, so its return is seen.
+                None if unreachable_dir(&dir) => {}
                 None => {
                     self.on_path(dir, What::Gone, now);
                     continue;
                 }
             }
             let mut any = false;
-            for (f, e) in &self.files {
+            for (f, e) in self.files.iter_mut() {
                 if !e.exists || !e.resolved.watch_dirs().any(|d| d == dir) {
                     continue;
                 }
                 let stamp = fresh_stamp(f);
                 let swept = sweep && stamp.is_some_and(|s| s.len <= self.opts.sweep_max_bytes);
-                if stamp != e.stamp || swept {
+                if swept && stamp == e.stamp && e.hash.is_none() && e.error.is_none() {
+                    // A stamp-only baseline (an asset): the sweep fills in
+                    // its hash, reporting nothing.
+                    e.take_baseline(f);
+                } else if stamp != e.stamp || swept {
                     self.pending.files.insert(f.clone());
                     any = true;
                 }
@@ -1456,7 +1531,16 @@ impl<B: Backend> Core<B> {
         // just begun.
         let mut unsettled = HashSet::new();
         if p.full.is_some() {
-            touched.extend(self.files.keys().cloned());
+            // Every file is read again, but one known by its stamp alone
+            // (an asset) whose stamp is as it was: with no hash to compare,
+            // its read would be reported `Modified`, and a rescan would
+            // decode every mounted image again (audit-asset-stamp).
+            touched.extend(
+                self.files
+                    .iter()
+                    .filter(|(f, e)| !(e.stamped() && fresh_stamp(f) == e.stamp))
+                    .map(|(f, _)| f.clone()),
+            );
         }
         if p.full.is_some() || p.config {
             self.rescan_config(
@@ -2212,7 +2296,29 @@ impl<B: Backend> Core<B> {
             self.watched.insert(d.clone(), mode);
             added.push(d);
         }
+        // Watch, then check: a waiting directory created after the walk
+        // above looked for it and before its ancestor's watch existed made
+        // no event. Seen now, it is woken as its creation would have.
+        self.wake_appeared();
         added
+    }
+
+    /// Wake every waiting path that is a directory now (created or
+    /// mounted with no event heard), so the next flush re-syncs and reads
+    /// what lies below it.
+    fn wake_appeared(&mut self) {
+        let appeared: Vec<PathBuf> = self
+            .waiting
+            .iter()
+            .filter(|p| p.is_dir())
+            .cloned()
+            .collect();
+        for p in &appeared {
+            self.wake_under(p);
+        }
+        if !appeared.is_empty() {
+            self.mark(Instant::now());
+        }
     }
 
     /// Notices raised outside a flush (a new watch fell back to polling)
@@ -2518,6 +2624,144 @@ mod tests {
         assert_eq!(core.watched_dirs(), vec![root.join("state/strand")]);
         assert!(core.waiting.is_empty());
     }
+
+    /// A backend that creates `dir` the moment its parent gets the watch
+    /// that would hear it: the creation lands between the existence check
+    /// and the watch, and makes no event.
+    struct CreatesDuringWatch {
+        dir: PathBuf,
+        done: bool,
+    }
+
+    impl Backend for CreatesDuringWatch {
+        fn watch(&mut self, d: &Path, kind: WatchKind) -> Result<(), String> {
+            if kind == WatchKind::Parent && self.dir.parent() == Some(d) && !self.done {
+                self.done = true;
+                std::fs::create_dir(&self.dir).unwrap();
+            }
+            Ok(())
+        }
+        fn unwatch(&mut self, _: &Path) {}
+    }
+
+    /// Watch, then check: a waiting directory created while its ancestor's
+    /// watch was being added is checked for once the watch exists, and the
+    /// file written in it is reported.
+    #[test]
+    fn a_directory_created_before_its_ancestor_is_watched_is_seen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let wal = root.join("wal");
+        let backend = CreatesDuringWatch {
+            dir: wal.clone(),
+            done: false,
+        };
+        let mut core = Core::new(backend, Options::default(), None);
+        let colors = wal.join("colors.json");
+        core.add_file(&colors, Role::Other, None);
+        assert!(core.backend.done);
+        let due = core.deadline().expect("the new directory is looked at");
+        std::fs::write(&colors, "{}").unwrap();
+        // A quiet period after the write, so it is not too fresh to read.
+        let quiet = Instant::now() + Options::default().coalesce + MTIME_SKEW;
+        let b = core.flush(due.max(quiet)).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].kind, ChangeKind::Created);
+        assert_eq!(core.watched_dirs(), vec![wal]);
+        assert!(core.waiting.is_empty());
+    }
+
+    /// A mount makes no inotify event: the directory it brings, and a
+    /// watched directory it covers (a new inode at the same path), are
+    /// seen when the mount table changes, and the files there are read.
+    #[test]
+    fn a_mount_table_change_finds_what_a_mount_brought() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let mnt = root.join("mnt");
+        let usb = root.join("usb");
+        std::fs::create_dir(&mnt).unwrap();
+        std::fs::create_dir(&usb).unwrap();
+        let mut core = Core::new(Silent::default(), Options::default(), None);
+        let wall = mnt.join("walls/w.jpg");
+        let notes = usb.join("notes.toml");
+        core.add_file(&wall, Role::Wallpaper, None);
+        core.add_file(&notes, Role::Settings, None);
+        assert!(core.waiting.contains(&mnt.join("walls")));
+        assert!(core.deadline().is_none());
+
+        // Behind the watches' back, as a mount does it.
+        std::fs::create_dir(mnt.join("walls")).unwrap();
+        std::fs::write(&wall, "jpg").unwrap();
+        std::fs::rename(&usb, root.join("covered")).unwrap();
+        std::fs::create_dir(&usb).unwrap();
+        std::fs::write(&notes, "a = 1").unwrap();
+        core.mounts_changed();
+        let due = core.deadline().expect("the mount is looked at");
+        let quiet = Instant::now() + Options::default().coalesce + MTIME_SKEW;
+        let b = core.flush(due.max(quiet)).unwrap();
+        let mut got: Vec<_> = b.changes.iter().map(|c| (c.path.clone(), c.kind)).collect();
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            got,
+            vec![
+                (wall.clone(), ChangeKind::Created),
+                (notes.clone(), ChangeKind::Created),
+            ],
+            "{b:#?}"
+        );
+        assert!(core.watched_dirs().contains(&mnt.join("walls")));
+        assert!(core.waiting.is_empty());
+        // Nothing changed since: another mount elsewhere finds nothing.
+        core.mounts_changed();
+        assert!(core.deadline().is_none());
+    }
+
+    /// A polled directory that errors without being gone (a network
+    /// mount whose server is away; here a link loop) keeps being polled,
+    /// and its files are read again once it is back.
+    #[test]
+    fn a_polled_directory_that_errors_is_polled_until_it_is_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let share = root.join("share");
+        std::fs::create_dir(&share).unwrap();
+        let prefs = share.join("prefs.toml");
+        std::fs::write(&prefs, "a = 1").unwrap();
+        let opts = Options {
+            force_polling: true,
+            ..Options::default()
+        };
+        let mut core = Core::new(Silent::default(), opts.clone(), None);
+        core.add_file(&prefs, Role::Settings, None);
+        core.flush(core.deadline().unwrap());
+
+        let away = root.join("away");
+        std::fs::rename(&share, &away).unwrap();
+        std::os::unix::fs::symlink(&share, &share).unwrap();
+        let t0 = Instant::now();
+        core.poll(t0);
+        assert!(core.has_polled_dirs());
+        assert!(core.watched_dirs().contains(&share), "still polled");
+        if let Some(d) = core.deadline() {
+            core.flush(d.max(Instant::now()));
+        }
+
+        std::fs::remove_file(&share).unwrap();
+        std::fs::rename(&away, &share).unwrap();
+        std::fs::write(&prefs, "a = 2").unwrap();
+        let t1 = Instant::now() + opts.coalesce + MTIME_SKEW;
+        core.poll(t1);
+        let b = core.flush(core.deadline().unwrap().max(t1)).unwrap();
+        let prefs_change = b
+            .changes
+            .iter()
+            .find(|c| c.path == prefs)
+            .expect("the file is read again");
+        assert_eq!(prefs_change.kind, ChangeKind::Modified);
+        assert_eq!(prefs_change.hash, Some(blake3::hash(b"a = 2")));
+    }
+
     /// Watch, then list: the rescan lists a new directory before its watch
     /// exists, so it is listed once more after the next quiet period. A
     /// file written in between (no event at all) is found then.
@@ -3750,6 +3994,123 @@ mod tests {
         let b = core.flush(core.deadline().unwrap()).unwrap();
         assert_eq!(b.changes[0].hash, Some(blake3::hash(b"png 3")));
         assert!(b.notices.is_empty());
+    }
+
+    /// A file only drawn (`Role::Asset`) is registered with its stamp
+    /// alone, never read, however often it is mounted again; its first
+    /// change is read and reported `Modified`. A file another role holds
+    /// too is still read at registration.
+    #[test]
+    fn an_asset_baseline_is_its_stamp_alone() {
+        let (_tmp, root) = cfg_dir();
+        let big = root.join("big.png");
+        let prefs = root.join("prefs.toml");
+        std::fs::write(&big, vec![7u8; 1 << 20]).unwrap();
+        std::fs::write(&prefs, "a = 1").unwrap();
+        let mut core = Core::new(Silent::default(), Options::default(), None);
+        let refs = || {
+            vec![
+                Referenced::from((big.clone(), Role::Asset)),
+                Referenced::from((prefs.clone(), Role::Asset)),
+                Referenced::from((prefs.clone(), Role::Settings)),
+            ]
+        };
+        for _ in 0..2 {
+            core.set_referenced(refs());
+            let e = &core.files[&big];
+            assert!(e.exists && e.stamp.is_some() && e.error.is_none());
+            assert_eq!(e.hash, None, "an asset is not read at registration");
+            assert_eq!(core.files[&prefs].hash, Some(blake3::hash(b"a = 1")));
+            assert!(core.deadline().is_none());
+            core.set_referenced(Vec::<Referenced>::new());
+            assert!(!core.files.contains_key(&big));
+        }
+        core.set_referenced(refs());
+        std::fs::write(&big, b"png 2").unwrap();
+        core.on_raw(Raw::Written(big.clone()), Instant::now());
+        // A quiet period after the write, so it is not too fresh to read.
+        let quiet = Instant::now() + Options::default().coalesce + MTIME_SKEW;
+        let b = core.flush(core.deadline().unwrap().max(quiet)).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].kind, ChangeKind::Modified);
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"png 2")));
+    }
+
+    /// A rescan (`strand reload`, an overflow) reads no asset whose stamp
+    /// is as it was and reports none of them; one whose stamp moved is
+    /// read and reported.
+    #[test]
+    fn a_rescan_reports_no_unchanged_asset() {
+        let (_tmp, root) = cfg_dir();
+        let (same, other) = (root.join("same.png"), root.join("other.png"));
+        std::fs::write(&same, "png").unwrap();
+        std::fs::write(&other, "png").unwrap();
+        let mut core = Core::new(Silent::default(), Options::default(), None);
+        core.set_referenced(vec![
+            Referenced::from((same.clone(), Role::Asset)),
+            Referenced::from((other.clone(), Role::Asset)),
+        ]);
+        std::fs::write(&other, "png, longer").unwrap();
+        let now = Instant::now();
+        core.request_rescan(RescanReason::Requested, now);
+        let quiet = now + Options::default().coalesce + MTIME_SKEW;
+        let b = core.flush(core.deadline().unwrap().max(quiet));
+        let changed: Vec<_> = b
+            .iter()
+            .flat_map(|b| &b.changes)
+            .map(|c| (c.path.clone(), c.kind))
+            .collect();
+        assert_eq!(changed, vec![(other.clone(), ChangeKind::Modified)]);
+        assert_eq!(core.files[&same].hash, None, "not read");
+    }
+
+    /// An asset another role comes to hold takes its hash then: that
+    /// role's first event with the bytes unchanged reports nothing.
+    #[test]
+    fn an_asset_that_gains_a_role_takes_its_hash() {
+        let (_tmp, root) = cfg_dir();
+        let wall = root.join("wall.png");
+        std::fs::write(&wall, "png").unwrap();
+        let mut core = Core::new(Silent::default(), Options::default(), None);
+        core.set_referenced(vec![Referenced::from((wall.clone(), Role::Asset))]);
+        assert_eq!(core.files[&wall].hash, None);
+        core.set_referenced(vec![
+            Referenced::from((wall.clone(), Role::Asset)),
+            Referenced::from((wall.clone(), Role::Wallpaper)),
+        ]);
+        assert_eq!(core.files[&wall].hash, Some(blake3::hash(b"png")));
+        std::fs::write(&wall, "png").unwrap();
+        core.on_raw(Raw::Written(wall.clone()), Instant::now());
+        let quiet = Instant::now() + Options::default().coalesce + MTIME_SKEW;
+        let b = core.flush(core.deadline().unwrap().max(quiet));
+        assert!(b.is_none_or(|b| b.changes.is_empty()), "no-op write");
+        // The explicit registration settles it too.
+        let other = root.join("other.png");
+        std::fs::write(&other, "png").unwrap();
+        core.set_referenced(vec![Referenced::from((other.clone(), Role::Asset))]);
+        core.add_file(&other, Role::Settings, None);
+        assert_eq!(core.files[&other].hash, Some(blake3::hash(b"png")));
+    }
+
+    /// Polling: the content sweep fills in a small asset's stamp-only
+    /// baseline silently, and compares it from then on.
+    #[test]
+    fn the_sweep_fills_in_an_asset_baseline_silently() {
+        let (_tmp, root) = cfg_dir();
+        let icon = root.join("icon.png");
+        std::fs::write(&icon, "png").unwrap();
+        let opts = Options {
+            force_polling: true,
+            ..Options::default()
+        };
+        let mut core = Core::new(Silent::default(), opts.clone(), None);
+        core.set_referenced(vec![Referenced::from((icon.clone(), Role::Asset))]);
+        core.flush(core.deadline().unwrap());
+        assert_eq!(core.files[&icon].hash, None);
+        let t0 = Instant::now() + opts.content_sweep + Duration::from_secs(1);
+        core.poll(t0);
+        assert!(core.deadline().is_none(), "nothing changed");
+        assert_eq!(core.files[&icon].hash, Some(blake3::hash(b"png")));
     }
 
     /// A batch of content edits does not touch the watches, so its cost

@@ -430,8 +430,17 @@ fn workspace_fns(
 
 /// The workspaces' ids are their numbers (Hyprland: a positive id is a
 /// numbered workspace, whatever its `defaultName:`). One compositor per
-/// process, so one flag, set from the hub's `Sources`.
+/// process, so one flag, set from the hub's `Sources`
+/// ([`ids_are_numbers`]).
 static IDS_ARE_NUMBERS: AtomicBool = AtomicBool::new(false);
+
+/// Whether the published workspace ids are Hyprland's numbers: only
+/// while the ids are its adapter's. The protocols' ids (the adapter
+/// degraded or not connected) are keys in announcement order, so the
+/// names number the workspaces then, as on sway and niri.
+fn ids_are_numbers(s: &model::Sources) -> bool {
+    s.ipc == Some(model::CompositorKind::Hyprland) && s.adapter_ids
+}
 
 /// A screen's slots: its workspaces and the configured ones not made yet,
 /// by their number (a positive id when `ids_are_numbers`, as on
@@ -459,7 +468,7 @@ pub fn slots(
 /// The hub's subscription, or the error that ends the body.
 fn subscribe() -> Result<WmSubscription, ServiceError> {
     hub()
-        .map(|h| h.subscribe())
+        .map(|h| h.subscribe_reporting())
         .ok_or_else(|| ServiceError("no services runtime".into()))
 }
 
@@ -609,10 +618,7 @@ impl Workspaces {
                             )));
                         }
                         WmChange::Sources(s) => {
-                            IDS_ARE_NUMBERS.store(
-                                s.ipc == Some(model::CompositorKind::Hyprland),
-                                Ordering::Relaxed,
-                            );
+                            IDS_ARE_NUMBERS.store(ids_are_numbers(&s), Ordering::Relaxed);
                         }
                         _ => {}
                     }
@@ -791,5 +797,36 @@ mod tests {
             names(slots(sway, vec![ws(-1, "2")], false)),
             ["1: mail", "2", "4"]
         );
+    }
+
+    /// On Hyprland with its adapter degraded or not connected, the ids
+    /// are the protocols' keys in announcement order (workspaces 1, 5, 2
+    /// made in that order are keys 1, 2, 3): the names number them.
+    #[test]
+    fn hyprlands_protocol_ids_are_not_its_numbers() {
+        let ws = |id: i64, name: &str| WorkspaceItem {
+            id,
+            name: name.into(),
+            ..Default::default()
+        };
+        let names = |v: Vec<WorkspaceItem>| v.into_iter().map(|w| w.name).collect::<Vec<_>>();
+        let hyprland = |adapter_ids: bool, degraded: Option<&str>| model::Sources {
+            ipc: Some(model::CompositorKind::Hyprland),
+            adapter_ids,
+            degraded: degraded.map(Into::into),
+            ..Default::default()
+        };
+        assert!(ids_are_numbers(&hyprland(true, None)));
+        for s in [
+            hyprland(false, Some("not understood")),
+            hyprland(false, None),
+        ] {
+            let made = vec![ws(1, "1"), ws(2, "5"), ws(3, "2")];
+            assert_eq!(
+                names(slots(made, Vec::new(), ids_are_numbers(&s))),
+                ["1", "2", "5"],
+                "{s:?}"
+            );
+        }
     }
 }

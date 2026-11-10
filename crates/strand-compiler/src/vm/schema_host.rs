@@ -515,8 +515,14 @@ impl SchemaHost {
 
     /// A record of the named type with the given fields, the rest at
     /// their defaults: `host.record("Workspace", &[("id", 1.into())])`.
+    /// The schema's record by that name comes first (a config's own
+    /// type of the same name hides it only in the config's code).
     pub fn record(&self, name: &str, fields: &[(&str, Value)]) -> Value {
-        let Some(r) = self.types.find_record(name) else {
+        let Some(r) = self
+            .types
+            .find_schema_record(name)
+            .or_else(|| self.types.find_record(name))
+        else {
             return Value::Null;
         };
         let def = self.types.record(r);
@@ -1098,8 +1104,8 @@ impl ServiceHost for SchemaHost {
                 let q: Vec<char> = arg(0).as_text().unwrap_or("").chars().collect();
                 let all = self.read(rt, "apps", "all")?;
                 let (Some(hit), Some(range)) = (
-                    self.types.find_record("Hit"),
-                    self.types.find_record("Range"),
+                    self.types.find_schema_record("Hit"),
+                    self.types.find_schema_record("Range"),
                 ) else {
                     return Ok(Value::Null);
                 };

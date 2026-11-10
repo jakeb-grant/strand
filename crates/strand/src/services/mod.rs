@@ -560,7 +560,7 @@ impl Real {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -1979,8 +1979,8 @@ panel Login {
     /// launches the app (detached) and closes the launcher. A query typed
     /// while it is closed is never searched.
     /// The apps tests set the process's apps configuration: one at a
-    /// time.
-    static APPS_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// time (`run::tests`' too).
+    pub(crate) static APPS_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn the_design_launcher_searches_real_apps_only_while_open() {
@@ -2208,6 +2208,85 @@ panel Login {
             "nothing reads apps"
         );
         drop(shell);
+        strand_services::apps::set_config(None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// (audit-schema-names) A config's own `type App` hides the schema's
+    /// `App` by name in the config's code only: the real apps service
+    /// still hands out the schema's record (its `id`, `name`,
+    /// `categories`),
+    /// while the config builds and reads its own. A reload that drops
+    /// that type and adds another (`type Window`, renumbering the
+    /// config's records) reads the same items.
+    #[test]
+    fn a_config_type_named_app_does_not_reshape_the_apps_items() {
+        let _serial = APPS_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("strand-own-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("applications");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("editor.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Text Editor\nCategories=Utility;\nExec=true\n",
+        )
+        .unwrap();
+        strand_services::apps::set_config(Some(strand_services::apps::Config {
+            dirs: vec![dir.clone()],
+            desktops: Vec::new(),
+            state: None,
+        }));
+        let dock = "bar B { row { for a in apps.all { text join(\":\", a.id, a.name, a.categories.join(\"+\")) } } }\n";
+        let build = |prev: Option<&strand_compiler::reconcile::Build>, text: String| {
+            let mut map = SourceMap::new();
+            map.add("svc.strand", text);
+            strand_compiler::reconcile::Build::compile_with(prev, map, schema())
+                .unwrap_or_else(|d| panic!("{d:#?}"))
+        };
+        let first = build(
+            None,
+            format!(
+                "type App {{ pinned: bool }}\n{dock}bar C {{ text join(\" \", App(pinned: true).pinned) }}\n"
+            ),
+        );
+        let rt = Runtime::new();
+        let fallback = Rc::new(SchemaHost::new(&rt, &first.program.types, None));
+        let screen = fallback.record("Screen", &[("name", Value::text("DP-1"))]);
+        fallback
+            .set(&rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+        let real = Real::start(&rt, &first.program.types, Buses::none(), fallback, || {});
+        let mut inst = Instance::from_build(&rt, &first, real.host.clone(), Storage::none());
+        let mut scene = SceneMirror::new();
+        let until = |inst: &Instance, scene: &mut SceneMirror, want: &[&str]| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                real.services.pump(&rt);
+                let u = inst.tick(Duration::ZERO);
+                assert!(u.errors.is_empty(), "{:?}", u.errors);
+                scene.apply(&u.diff).unwrap();
+                let texts = scene.texts();
+                if want.iter().all(|w| texts.contains(&w.to_string())) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out: {want:?} in {texts:?}"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        until(&inst, &mut scene, &["editor:Text Editor:Utility", "true"]);
+        let second = build(
+            Some(&first),
+            format!(
+                "type Window {{ n: int }}\n{dock}bar C {{ text join(\" \", Window(n: 7).n) }}\n"
+            ),
+        );
+        inst.reload(&second);
+        until(&inst, &mut scene, &["editor:Text Editor:Utility", "7"]);
+        inst.shutdown();
+        real.shutdown(&rt);
         strand_services::apps::set_config(None);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -4889,6 +4968,11 @@ service early {
             assert_eq!(r, Ok(()));
             live.until("the refusal is the run's error", |l| {
                 error(l) != Value::Null
+            });
+            // The first call can be refused on the closed channel before
+            // the body's end is applied; the backoff wording needs that end.
+            live.until("the failed body", |l| {
+                !l.real.custom.client("bolt").is_some_and(|c| c.running())
             });
             let (r, caught) = call(&live);
             assert_eq!(r, Ok(()));

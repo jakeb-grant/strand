@@ -34,7 +34,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use wayland_client::protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool};
+use wayland_client::protocol::{
+    wl_buffer, wl_callback, wl_output, wl_registry, wl_shm, wl_shm_pool,
+};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 use wayland_protocols::ext::image_capture_source::v1::client::{
     ext_image_capture_source_v1::ExtImageCaptureSourceV1,
@@ -136,6 +138,10 @@ struct Shot {
     y_invert: bool,
     ready: bool,
     failed: Option<String>,
+    /// The last `wl_display.sync` answered (numbered from 1): the
+    /// startup's syncs wait under the shot's deadline, where a
+    /// `roundtrip` waits for a stalled compositor without one.
+    synced: u32,
 }
 
 /// The format to read in: ARGB8888 or XRGB8888, the first offered.
@@ -277,9 +283,12 @@ fn shoot(target: &WaylandTarget, connector: &str, max: (u32, u32)) -> Result<Cap
     let display = conn.display();
     let _registry = display.get_registry(&qh, ());
     let mut shot = Shot::default();
-    // The globals, then the outputs' names.
-    queue.roundtrip(&mut shot).map_err(|e| e.to_string())?;
-    queue.roundtrip(&mut shot).map_err(|e| e.to_string())?;
+    // The globals, then the outputs' names, each by a sync answered
+    // within the deadline.
+    for n in 1..=2 {
+        display.sync(&qh, n);
+        until(&conn, &mut queue, &mut shot, deadline, |s| s.synced >= n)?;
+    }
     let (output, transform) = shot
         .outputs
         .iter()
@@ -410,6 +419,21 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Shot {
             state.copy = Some(registry.bind(name, version.min(1), qh, ()));
         } else if interface == ZwlrScreencopyManagerV1::interface().name {
             state.screencopy = Some(registry.bind(name, version.min(3), qh, ()));
+        }
+    }
+}
+
+impl Dispatch<wl_callback::WlCallback, u32> for Shot {
+    fn event(
+        state: &mut Self,
+        _: &wl_callback::WlCallback,
+        event: wl_callback::Event,
+        n: &u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_callback::Event::Done { .. } = event {
+            state.synced = state.synced.max(*n);
         }
     }
 }

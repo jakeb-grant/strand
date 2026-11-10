@@ -720,10 +720,14 @@ monitor, the keyboard always).
   `invalidates` are followed.
 - `from file path { fields }` reads a file, again whenever it changes
   (a file a change leaves empty is read again 50 ms later, since a
-  rewrite in place truncates before it writes); `from listen command`
+  rewrite in place truncates before it writes, and a JSON or XML file
+  a change leaves parsing as neither is read again every 50 ms until
+  it does, half a second at most, since a large one is written in
+  more than one write); `from listen command`
   reads the lines a command prints; `from poll command every T` runs a
-  command, or reads a file, at an interval. Their fields are checked
-  against the schema you declare.
+  command, or reads a file, at an interval. A file either reads that is
+  missing, or goes, is no document (every field its default) until it
+  is back. Their fields are checked against the schema you declare.
 - `from dir path { files: [File] }` (services-round) lists a
   directory's files: its document is `{ files: [...] }`, each a `File`
   (`path`, `name`, `modified: Date`, `size` in bytes) for a regular
@@ -2336,8 +2340,10 @@ units). `1min` is `60s` and `1h` is `60min`.
 A whole-number literal with no unit is an `int` (an `int` widens to
 `float` where one is expected); beside another operand of an arithmetic
 operator it takes that operand's type, so with `n: int`, `2500 + n` and `n + 2500`
-are both `int`s (and with `x: float`, `2500 + x` a `float`). A
-fractional literal (`0.5`) is always a `float`. A `float` where an `int`
+are both `int`s (and with `x: float`, `2500 + x` a `float`). Arithmetic
+on such literals alone is an `int` like the literal it comes to (`let
+minutes = 24 * 60`, `[1 + 1, 2]` is `[int]`), but for `/`, whose result
+is a `float`. A fractional literal (`0.5`) is always a `float`. A `float` where an `int`
 is expected is a load error whose help suggests rounding it (`.round()`,
 `.floor()`, `.ceil()`).
 
@@ -2563,7 +2569,9 @@ is expected is a load error whose help suggests rounding it (`.round()`,
   mount of the node or component it is written in (once for the program
   at the top level), after `c` has held for a total of `T`. It counts
   only time during which `c` holds and schedules nothing while `c` is
-  false; when `c` turns false the count pauses and is not reset, and
+  false; when `c` turns false the count pauses and is not reset (it
+  keeps the time counted up to when the host took the write that turned
+  it false, however long logic was idle before), and
   once the body has run the timer is done, so `c` turning false and
   true again never re-arms it. A delay that runs each time a condition
   ends (a hover popup closing 200 ms after the pointer leaves) is
@@ -3010,9 +3018,20 @@ new program with the running one.
   resets the cell, as a list's item does.
 - A handler counts as changed when its code or anything it reaches
   (the `fn`s and `let`s it calls or reads) changed; an unchanged handler
-  keeps its in-flight work.
+  keeps its in-flight work, unless the edit renumbered or reshaped the
+  program's types (a `type` or `enum` added, removed, moved or changed):
+  then its in-flight `await` is cancelled and reported as a restart's is
+  (decisions.md audit-reload-layout).
 - A rescaled timer keeps the fraction it has counted and finishes at the
   new duration; an `after` that already ran stays done.
+- A reload that keeps a surface shown does not run its `on show`: the
+  surface did not open. One the reload adds, opens, or makes again as
+  another kind does open, and runs it (decisions.md audit-reload-show).
+- The `state`s of a closed `popup`'s components (its content unmounts
+  as it closes, their values kept) are kept through a reload too, and
+  taken over when it next opens: a changed type or `@reset` then starts
+  them from their default, and that tick's notices say so, as the
+  reload's would (decisions.md audit-reload-closed-state).
 - A surface's state is keyed by its place in the program, not its name,
   so a renamed surface keeps it. Turning a `bar` into a single surface
   keeps its state when it had one instance, and resets it with a warning
@@ -3073,7 +3092,14 @@ new program with the running one.
   so the notification history comes back after a restart (without
   buttons, never as popups; a sender's `transient` notifications are
   never kept). `notifications.remember = false` erases it at once and
-  stays off.
+  stays off. `all` keeps at most 1000 notifications and 16 MiB of their
+  text (beyond either the oldest closes as expired), and the history
+  file about 16 MiB (one past 17 MiB is not read). What a sender sends is
+  cut as it arrives, at a character boundary: a body to 64 KiB, a
+  summary and app name to 1 KiB, the icon and text hints to 1 KiB, each
+  action's label to 256 bytes, and the buttons to 16; an action whose
+  key is longer than 256 bytes is left out, since its key is what the
+  sender hears back.
 
 ### 10.4 Escape hatches
 

@@ -1962,6 +1962,96 @@ fn an_unreachable_network_is_unavailable_and_fails_as_values() {
     s.shutdown();
 }
 
+/// (audit-nm-ap-timeout) NetworkManager announcing new access points
+/// while the list is shown and then not answering fails the run as a
+/// read that times out does, within about two read timeouts, not one
+/// timeout per new access point while the body reads nothing else.
+#[test]
+fn networkmanager_hanging_after_new_access_points_fails_the_run() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some(_nm) = DbusMock::start(&bus, "networkmanager", true, None, NM) else {
+        return;
+    };
+    let (dev, home) = wifi_home(&tokio, &conn);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.network.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    let field = network::Network::FIELDS
+        .iter()
+        .position(|f| f.name == "access_points")
+        .unwrap();
+    b.network.acquire_field(field);
+    until(&rt, &s, "the access points", || {
+        names(&b, &rt) == [("Home".to_string(), true)]
+    });
+    // The re-reads the mock's own `MethodCalled` signals cause settle.
+    std::thread::sleep(Duration::from_millis(500));
+    s.pump(&rt);
+    let _ = s.take_diagnostics();
+
+    // Three new access points, then NetworkManager hangs (the mock
+    // sleeps, answering nothing).
+    let code = format!(
+        "dev = objects['{dev}']\n\
+         aps = dbus.Array([dbus.ObjectPath('{home}')] + \
+         [dbus.ObjectPath('/org/freedesktop/NetworkManager/AccessPoint/9%d' % i) for i in range(3)], \
+         signature='o', variant_level=1)\n\
+         dev.props['org.freedesktop.NetworkManager.Device.Wireless']['AccessPoints'] = aps\n\
+         dev.EmitSignal('org.freedesktop.DBus.Properties', 'PropertiesChanged', 'sa{{sv}}as', \
+         ['org.freedesktop.NetworkManager.Device.Wireless', {{'AccessPoints': aps}}, []])\n\
+         self.connection.flush()\n\
+         time.sleep(25)"
+    );
+    // On an object of its own: the mock's `MethodCalled` signal for it
+    // is on no path the service follows.
+    const HANG: &str = "/org/strand/Hang";
+    mock(
+        &tokio,
+        &conn,
+        NM,
+        ROOT,
+        "AddObject",
+        &(
+            HANG,
+            "org.strand.Hang",
+            std::collections::HashMap::<String, zbus::zvariant::Value>::new(),
+            vec![("Hang", "", "", code.as_str())],
+        ),
+    );
+    let hang = conn.clone();
+    tokio.spawn(async move {
+        let _ = hang
+            .call_method(Some(NM), HANG, Some("org.strand.Hang"), "Hang", &())
+            .await;
+    });
+    let t = std::time::Instant::now();
+    let failed = |d: &strand_services::ServiceDiagnostic| {
+        d.service == "network" && d.message.contains("NetworkManager did not answer")
+    };
+    let mut seen = Vec::new();
+    while !seen.iter().any(failed) {
+        assert!(
+            t.elapsed() < Duration::from_secs(13),
+            "the run did not fail: {:?}",
+            seen.iter()
+                .map(|d: &strand_services::ServiceDiagnostic| &d.message)
+                .collect::<Vec<_>>()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        s.pump(&rt);
+        rt.flush();
+        seen.extend(s.take_diagnostics());
+    }
+    // The new access point's read timed out, then the read again.
+    assert!(t.elapsed() > Duration::from_secs(9), "{:?}", t.elapsed());
+    s.shutdown();
+}
+
 /// An access point at `freq` MHz with `security` as its WPA and RSN flags
 /// (python-dbusmock writes both alike).
 #[allow(clippy::too_many_arguments)]

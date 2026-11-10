@@ -411,7 +411,8 @@ impl GnomePortal {
 /// The icon theme a GNOME desktop sets through GSettings reaches the
 /// icon lookup through the portal: read at start, followed on
 /// `SettingChanged` (another key changes nothing), each switch reported
-/// once; `$STRAND_ICON_THEME` still wins over it.
+/// once; `$STRAND_ICON_THEME` still wins over it, and then no name
+/// switches anything.
 #[test]
 fn the_portal_icon_theme_is_followed_live() {
     let Some(bus) = PrivateBus::start() else {
@@ -458,7 +459,10 @@ fn the_portal_icon_theme_is_followed_live() {
         "no thread of its own: {:?}",
         threads()
     );
+    // Under `$STRAND_ICON_THEME` the portal's names change no theme.
+    let switches_for = |count: u32| if pinned { 0 } else { count };
     let wait = |what: &str, count: u32| {
+        let count = switches_for(count);
         let deadline = Instant::now() + Duration::from_secs(10);
         while *switches.lock().unwrap() < count {
             assert!(Instant::now() < deadline, "never: {what}");
@@ -492,7 +496,11 @@ fn the_portal_icon_theme_is_followed_live() {
     emit("icon-theme", "Adwaita");
     wait("the second switch", 3);
     std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(*switches.lock().unwrap(), 3, "one call per switch");
+    assert_eq!(
+        *switches.lock().unwrap(),
+        switches_for(3),
+        "one call per switch"
+    );
     drop(follower);
     builtin.system.release(&rt);
     services.shutdown();

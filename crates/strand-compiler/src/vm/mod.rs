@@ -223,16 +223,25 @@ impl Env {
     /// against this scope, and from now on reads and writes the new
     /// program's cells. `old` and `new` name the programs' declarations
     /// and locals.
+    ///
+    /// A declaration is found by its module and name: every file's
+    /// top-level cells live in the root scope, and two files may each
+    /// have a `state open` (spec.md 4.2). By name alone only when its
+    /// module is gone (a file renamed).
     pub fn redirect(&self, new: &Env, old: &Program, newp: &Program) {
         let mut defs = self.defs.borrow_mut();
         for (d, slot) in defs.iter_mut() {
-            let name = &old.def(*d).name;
+            let od = old.def(*d);
+            let module_kept = newp.files.iter().any(|f| f.module == od.module);
             let found = new
                 .defs
                 .borrow()
                 .iter()
                 .rev()
-                .find(|(nd, _)| newp.def(*nd).name == *name)
+                .find(|(nd, _)| {
+                    let nd = newp.def(*nd);
+                    nd.name == od.name && (!module_kept || nd.module == od.module)
+                })
                 .map(|(_, s)| *s);
             if let Some(s) = found {
                 *slot = s;
@@ -468,8 +477,10 @@ pub struct Vm {
     /// `let`s that reach it read from these slots.
     other: RefCell<Option<Rc<OtherEnv>>>,
     /// (M6) Commands declared actions asked to run since the last
-    /// [`Vm::take_execs`].
-    execs: RefCell<Vec<ExecRequest>>,
+    /// [`Vm::take_execs`]: the instance's queue, kept across reloads, so
+    /// a handler kept with an `await` in flight (still on the old VM)
+    /// asks where the host takes from.
+    execs: RefCell<Rc<RefCell<Vec<ExecRequest>>>>,
     /// (lockmon) Declared actions' runs (`rec.running`), the instance's,
     /// kept across reloads.
     runs: RefCell<Rc<runs::ActionRuns>>,
@@ -752,6 +763,17 @@ impl Vm {
         *self.runs.borrow_mut() = runs;
     }
 
+    /// (audit-reload-queues) The queue declared actions' commands go to.
+    pub fn exec_queue(&self) -> Rc<RefCell<Vec<ExecRequest>>> {
+        self.execs.borrow().clone()
+    }
+
+    /// (audit-reload-queues) Asks into `queue` from now on (a reload's
+    /// new VM takes the instance's).
+    pub fn set_exec_queue(&self, queue: Rc<RefCell<Vec<ExecRequest>>>) {
+        *self.execs.borrow_mut() = queue;
+    }
+
     /// (lockmon) Declared action `def`'s run (`rec.running`,
     /// `rec.started`): an `ActionRun` record, tracked.
     pub(crate) fn action_run(&self, rt: &Runtime, def: DefId) -> Result<Value, Error> {
@@ -773,7 +795,7 @@ impl Vm {
         let Some(action) = self.prog.execs.get(&def) else {
             return Err(Error::failed("no such action"));
         };
-        self.execs.borrow_mut().push(ExecRequest {
+        self.execs.borrow().borrow_mut().push(ExecRequest {
             action: action.name.clone(),
             argv: Vec::new(),
             reply: None,
@@ -821,7 +843,7 @@ impl Vm {
             self.types(),
             home.as_deref(),
         );
-        self.execs.borrow_mut().push(ExecRequest {
+        self.execs.borrow().borrow_mut().push(ExecRequest {
             action: action.name.clone(),
             argv,
             reply,
@@ -832,7 +854,7 @@ impl Vm {
 
     /// (M6) The commands asked for since the last call, in order.
     pub fn take_execs(&self) -> Vec<ExecRequest> {
-        std::mem::take(&mut *self.execs.borrow_mut())
+        std::mem::take(&mut *self.execs.borrow().borrow_mut())
     }
 
     /// (M5) Runs `f` in the other mode: `system.dark` reads negated (the

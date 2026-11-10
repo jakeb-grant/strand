@@ -21,10 +21,24 @@ impl Shell {
         // (report review) What a replay repeats: a state or settings
         // field, or a token overlay (a service's write is its patch).
         let recorded = token.is_some() || exported;
+        // (audit-set-shadow) The config's own service of this name comes
+        // first, as `strand call`'s does: a config `service power` that
+        // shadows the builtin is written by its own record's types, and
+        // the builtin is neither started nor consulted.
+        let config = (!exported && token.is_none())
+            .then(|| crate::services::config_service(&self.inst.vm().prog, path))
+            .flatten();
         let r = if let Some(token) = token {
             self.inst
                 .set_token_overlay(token, value)
                 .map_err(|e| e.to_string())
+        } else if let Some(record) = config {
+            // The config's own service (`ppd.profile`): its record is in
+            // the program's types, and the VM's host writes it by name, as
+            // a handler's `ppd.profile = …` does.
+            let vm = self.inst.vm();
+            let types = &vm.prog.types;
+            crate::services::set_field_text(types, record, &*vm.host, rt, types, path, value)
         } else if !exported && crate::services::is_service_path(path) {
             match &self.real {
                 Some(real) => real.set_text(rt, path, value),
@@ -36,16 +50,6 @@ impl Shell {
                     value,
                 ),
             }
-        } else if let Some(record) = (!exported)
-            .then(|| crate::services::config_service(&self.inst.vm().prog, path))
-            .flatten()
-        {
-            // The config's own service (`ppd.profile`): its record is in
-            // the program's types, and the VM's host writes it by name, as
-            // a handler's `ppd.profile = …` does.
-            let vm = self.inst.vm();
-            let types = &vm.prog.types;
-            crate::services::set_field_text(types, record, &*vm.host, rt, types, path, value)
         } else {
             self.inst.set_text(path, value).map_err(|e| e.to_string())
         };

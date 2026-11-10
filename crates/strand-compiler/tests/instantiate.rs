@@ -2491,6 +2491,90 @@ fn surfaces_show_hide_and_hold_services_while_shown() {
     assert_eq!(shell.host.readers("battery"), 1);
 }
 
+/// (audit-polkit-answer) A panel's `state` outlives its closing, so what
+/// clears the guide's polkit dialog between two requests is its
+/// `on show { answer = "" }`, run when `polkit.request` turns null and
+/// then the next request: text typed for one request is gone when the
+/// next shows. Without the null in between (one request replaced by the
+/// next) the panel never closes and the text stays.
+#[test]
+fn the_polkit_dialog_clears_its_answer_when_it_shows_again() {
+    let dialog = |reset: &str| {
+        format!(
+            "panel Polkit {{
+  layer: overlay; anchor: center; keyboard: exclusive
+  open: polkit.request != null
+  state answer = \"\"
+  {reset}
+  col {{
+    text polkit.request?.message ?? \"\"
+    input {{ type: password; placeholder: polkit.request?.prompt ?? \"\"; text: <-> answer; focus: true
+      on activate {{ if answer != \"\" {{ polkit.respond(answer) }}; answer = \"\" }}
+    }}
+  }}
+}}
+"
+        )
+    };
+    let request = |host: &SchemaHost, message: &str| {
+        host.record(
+            "PolkitRequest",
+            &[
+                ("message", Value::text(message)),
+                ("user", Value::text("alex")),
+                ("users", Value::list(vec![Value::text("alex")])),
+                ("prompt", Value::text("Password: ")),
+            ],
+        )
+    };
+    let typed = |shell: &Shell| {
+        let input = shell.scene.of_kind(NodeKind::Input)[0];
+        match shell.scene.prop(input, Prop::Text) {
+            Some(PropValue::Text(t)) => t.clone(),
+            other => panic!("{other:?}"),
+        }
+    };
+    for (reset, cleared) in [("on show { answer = \"\" }", true), ("", false)] {
+        let src = dialog(reset);
+        let mut shell = boot(&[("polkit.strand", &src)], |_, _| {});
+        let a = request(&shell.host, "a");
+        shell.host.set(&shell.rt, "polkit.request", a).unwrap();
+        shell.flush();
+        let input = shell.scene.of_kind(NodeKind::Input)[0];
+        shell
+            .inst
+            .write(input, Prop::Text, PropValue::Text("hunt".into()))
+            .unwrap();
+        shell.flush();
+        assert_eq!(typed(&shell), "hunt");
+        // Replaced in place: the panel stays open, and so does the text.
+        let b = request(&shell.host, "b");
+        shell.host.set(&shell.rt, "polkit.request", b).unwrap();
+        shell.flush();
+        assert!(shell.scene.find_text("b").is_some());
+        assert_eq!(typed(&shell), "hunt", "{reset:?}");
+        // Null, then the next: the panel closes and shows again.
+        shell
+            .host
+            .set(&shell.rt, "polkit.request", Value::Null)
+            .unwrap();
+        shell.flush();
+        let c = request(&shell.host, "c");
+        shell.host.set(&shell.rt, "polkit.request", c).unwrap();
+        shell.flush();
+        assert!(shell.scene.find_text("c").is_some());
+        if cleared {
+            assert_eq!(typed(&shell), "", "on show cleared it");
+        } else {
+            assert_eq!(
+                typed(&shell),
+                "hunt",
+                "a panel's state outlives its closing"
+            );
+        }
+    }
+}
+
 /// `segmented { options: Edge }`: a builtin enum names its options as a
 /// config enum does (`options: Look`), and a click writes the chosen
 /// variant through to the settings field.
@@ -4422,6 +4506,78 @@ fn popup_content_unmounts_when_closed_and_keeps_its_state() {
     );
 }
 
+/// A closed popup keeps the `state`s of its `for` rows for the keys its
+/// data still has; a row whose key left while it was closed has its cells
+/// disposed when the popup next closes, as a row the data removes while
+/// mounted loses its state. Before, they stayed under the popup's keep
+/// scope for the life of the surface, one set per key that ever left.
+#[test]
+fn a_closed_popups_rows_whose_key_left_free_their_cells() {
+    let src = "export state p = false\n\
+               export state n = 1\n\
+               component Row {\n\
+                 state taps = 0\n\
+                 text join(\" \", \"row\", taps)\n\
+                 box { on click { taps += 1 } }\n\
+               }\n\
+               bar B {\n\
+                 text \"x\"\n\
+                 popup { open: <-> p; for r in [n] key r { Row } }\n\
+               }\n";
+    let mut shell = boot(&[("pop.strand", src)], |rt, host| {
+        screens(rt, host, &["DP-1"])
+    });
+    let open = |shell: &mut Shell, on: bool| {
+        shell.inst.set("pop.p", Value::Bool(on)).unwrap();
+        shell.flush();
+    };
+    let row = |shell: &Shell| {
+        shell
+            .scene
+            .texts()
+            .into_iter()
+            .find(|t| t.starts_with("row "))
+            .unwrap_or_default()
+    };
+    // A row whose key stays keeps its state across a close.
+    open(&mut shell, true);
+    let tap = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(tap, "click", Vec::new()));
+    shell.flush();
+    assert_eq!(row(&shell), "row 1");
+    open(&mut shell, false);
+    open(&mut shell, true);
+    assert_eq!(row(&shell), "row 1", "a kept row lost its state");
+    open(&mut shell, false);
+
+    // Its key leaves while the popup is closed, and comes back after a
+    // close: its state went with it.
+    shell.inst.set("pop.n", Value::int(2)).unwrap();
+    shell.flush();
+    open(&mut shell, true);
+    assert_eq!(row(&shell), "row 0");
+    open(&mut shell, false);
+    shell.inst.set("pop.n", Value::int(1)).unwrap();
+    shell.flush();
+    open(&mut shell, true);
+    assert_eq!(row(&shell), "row 0", "a dropped key's state came back");
+    open(&mut shell, false);
+
+    // Keys churning while closed leak nothing.
+    let after_first = shell.rt.stats().nodes;
+    for i in 3..60 {
+        shell.inst.set("pop.n", Value::int(i)).unwrap();
+        shell.flush();
+        open(&mut shell, true);
+        open(&mut shell, false);
+    }
+    assert_eq!(
+        shell.rt.stats().nodes,
+        after_first,
+        "kept cells of rows whose key left were never freed"
+    );
+}
+
 /// A settings file and a persisted `state` in a closed popup's content
 /// are kept as a plain one is.
 #[test]
@@ -4695,7 +4851,7 @@ fn time_values_convert_to_token_time_leaves() {
     let mut table = TokenTable::default();
     table.insert("accent", PropValue::Color(strand_scene::Color::WHITE));
     let levels = [&table];
-    let at = |t: f32, v: &PropValue| {
+    let at = |t: f64, v: &PropValue| {
         TokenScope::new(&levels)
             .with_time(Some(TimeContext::at(t)))
             .resolve(v)
@@ -6044,6 +6200,26 @@ fn user_types_named_rect_or_node_do_not_hijack_boxes() {
         shell.scene.prop(kids[1], Prop::Width).cloned(),
         Some(PropValue::Number(42.0))
     );
+}
+
+/// (audit-schema-names) A config's own `type Day` and `type Date` hide
+/// the schema's records by name in the config's code, but the clock
+/// still builds the schema's: the calendar's 42 days read `d.date` and
+/// format it, and the config's own records keep their own fields.
+#[test]
+fn user_types_named_day_or_date_do_not_hijack_the_clock() {
+    let src = "type Day { n: int }\ntype Date { s: text }\nbar Top {\n  row {\n    for d in calendar.days(clock.today) { text d.date.format(\"%d\") { when d.today { opacity: 0.5 } } }\n    text Date(s: \"mine\").s\n    text join(\" \", Day(n: 7).n)\n  }\n}\n";
+    let shell = boot(&[("w.strand", src)], |rt, host| {
+        let screen = host.record("Screen", &[("name", Value::text("DP-1"))]);
+        host.set(rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+    });
+    // `boot` holds the boot tick to no runtime errors.
+    let texts = shell.scene.texts();
+    assert_eq!(texts.len(), 44, "{texts:?}");
+    assert!(texts.contains(&"mine".to_string()), "{texts:?}");
+    assert!(texts.contains(&"7".to_string()), "{texts:?}");
+    assert!(texts.contains(&"01".to_string()), "{texts:?}");
 }
 
 /// (M6, decisions.md m6-integration-w2, the final pass) Where the

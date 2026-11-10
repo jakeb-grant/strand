@@ -19,6 +19,28 @@ from playwright.sync_api import sync_playwright
 
 WIDTHS = {"desktop": 1440, "tablet": 768, "phone": 390}
 
+# A page is ready for its shot once its fonts are in, its images have
+# loaded or failed, the example strips near the screen (site.js loads
+# those within 800px) are drawn, and two frames have been painted after
+# that, at most 3 s in all. It replaced a fixed 400 ms wait on each of the
+# 744 shots (decisions.md audit-shots-settle).
+SETTLE = """async () => {
+  const frame = () => new Promise(r => requestAnimationFrame(() => r()));
+  const ready = async () => {
+    await document.fonts.ready;
+    await Promise.all([...document.images].filter(i => !i.complete && i.loading !== "lazy").map(i =>
+      new Promise(r => { i.addEventListener("load", r, {once: true}); i.addEventListener("error", r, {once: true}); })));
+    const near = () => [...document.querySelectorAll(".ex-moving[data-src]")].filter(el => {
+      const b = el.getBoundingClientRect();
+      return el.offsetParent && b.top < innerHeight + 800 && b.bottom > -800 && !el.parentNode.classList.contains("ex-loaded");
+    });
+    while (near().length) await frame();
+  };
+  await Promise.race([ready(), new Promise(r => setTimeout(r, 3000))]);
+  await frame();
+  await frame();
+}"""
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -185,7 +207,7 @@ def main() -> int:
                     where = f"{rel} [{wname} {scheme}]"
                     watch(page, where)
                     page.goto((site / rel).resolve().as_uri(), wait_until="load")
-                    page.wait_for_timeout(400)
+                    page.evaluate(SETTLE)
                     over = page.evaluate("document.documentElement.scrollWidth - window.innerWidth")
                     if over > 0:
                         problems.append(f"{where}: {over}px wider than the screen")

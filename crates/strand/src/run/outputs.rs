@@ -587,8 +587,12 @@ struct Retry {
 /// The `strand-files` thread.
 struct Writer {
     manifest_file: Option<PathBuf>,
-    /// Path → FNV-1a hash of what Strand last wrote there.
+    /// Path → FNV-1a hash of what Strand held there when it first
+    /// owned it: ownership is the key; the hash is not kept current.
     owned: BTreeMap<PathBuf, u64>,
+    /// The last manifest write failed: [`Writer::own`] writes it again
+    /// on its next call, owned path or not.
+    manifest_dirty: bool,
     shared: Arc<Shared>,
     ping: calloop::ping::Ping,
     /// Per path (a handful of files: lists, not maps).
@@ -617,6 +621,7 @@ impl Writer {
         Writer {
             manifest_file,
             owned,
+            manifest_dirty: false,
             shared,
             ping,
             runs: Vec::new(),
@@ -969,17 +974,25 @@ impl Writer {
         Ok(true)
     }
 
-    /// Records `path` as Strand's, with the hash of what it holds.
+    /// Records `path` as Strand's, with the hash of what it holds. The
+    /// manifest is written only for a newly owned path, or when its last
+    /// write failed: nothing reads the hash, so a later write does not
+    /// rewrite and fsync it again, but a path the manifest never named
+    /// would be refused after a restart.
     fn own(&mut self, path: &Path, hash: u64) {
-        if self.owned.get(path) == Some(&hash) {
+        if self.owned.contains_key(path) && !self.manifest_dirty {
             return;
         }
-        self.owned.insert(path.to_path_buf(), hash);
+        self.owned.entry(path.to_path_buf()).or_insert(hash);
         if let Some(f) = &self.manifest_file {
             let text = manifest_text(&self.owned);
-            if let Err(e) = write_atomic(f, text.as_bytes(), None) {
-                log::warn!("file outputs: manifest {}: {e}", f.display());
-            }
+            self.manifest_dirty = match write_atomic(f, text.as_bytes(), None) {
+                Ok(()) => false,
+                Err(e) => {
+                    log::warn!("file outputs: manifest {}: {e}", f.display());
+                    true
+                }
+            };
         }
     }
 
@@ -1157,7 +1170,10 @@ fn run_once(argv: &[String], timeout: Duration, keeper: &Keeper) -> Option<Strin
 }
 
 /// Writes `bytes` to `path` through a temporary file beside it and a
-/// rename, with `meta`'s mode when the file was there.
+/// rename, with `meta`'s mode when the file was there. Over a file that
+/// was there the temporary file is created 0600 and given that mode
+/// only once written, so content bound for a private file is never
+/// readable by others on its way; a new file gets the umask's default.
 fn write_atomic(
     path: &Path,
     bytes: &[u8],
@@ -1174,7 +1190,16 @@ fn write_atomic(
         .map_or_else(|| "out".into(), |n| n.to_string_lossy().into_owned());
     let tmp = dir.join(format!(".{name}.strand-tmp.{}", std::process::id()));
     let result = (|| {
-        let mut f = std::fs::File::create(&tmp)?;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        // A leftover of a run that died with this pid, so `create_new`
+        // makes the file with the mode below and never opens another's.
+        let _ = std::fs::remove_file(&tmp);
+        let mode = if meta.is_some() { 0o600 } else { 0o666 };
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
         if let Some(m) = meta {
@@ -1322,6 +1347,54 @@ mod tests {
         d
     }
 
+    /// Over a private file, the temporary file the new content is written
+    /// to is never readable by group or others while it holds it; a new
+    /// file still gets the umask's default.
+    #[test]
+    fn a_private_file_is_never_readable_by_others_while_rewritten() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = temp("private");
+        let out = dir.join("secret.conf");
+        std::fs::write(&out, "old").unwrap();
+        std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let meta = std::fs::metadata(&out).unwrap();
+        let tmp = dir.join(format!(".secret.conf.strand-tmp.{}", std::process::id()));
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let watcher = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let (mut worst, mut seen) = (0, 0u32);
+                while !stop.load(Ordering::Relaxed) {
+                    if let Ok(m) = std::fs::metadata(&tmp) {
+                        worst |= m.permissions().mode() & 0o077;
+                        seen += 1;
+                    }
+                }
+                (worst, seen)
+            })
+        };
+        let payload = vec![b'x'; 1 << 20];
+        for _ in 0..200 {
+            write_atomic(&out, &payload, Some(&meta)).unwrap();
+        }
+        stop.store(true, Ordering::Relaxed);
+        let (worst, seen) = watcher.join().unwrap();
+        assert!(seen > 0, "the watcher never saw the temporary file");
+        assert_eq!(worst, 0, "the temporary file was readable by others");
+        let mode = std::fs::metadata(&out).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        // A new file: the mode a plain create gives under this umask.
+        let plain = dir.join("plain");
+        std::fs::File::create(&plain).unwrap();
+        let fresh = dir.join("fresh.conf");
+        write_atomic(&fresh, b"new", None).unwrap();
+        assert_eq!(
+            std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
+            std::fs::metadata(&plain).unwrap().permissions().mode() & 0o777
+        );
+    }
+
     /// A file Strand wrote is written again (boot's catch-up over a hand
     /// edit, from the manifest a later run reads), one holding the bytes
     /// already is not, and the mode and a link are kept.
@@ -1360,6 +1433,60 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().contains("strand-tmp"))
             .collect();
         assert!(left.is_empty());
+    }
+
+    /// A path's manifest line is written once, as Strand first owns it:
+    /// later writes of new bytes there (a status file following a track)
+    /// do not rewrite and fsync the manifest each time.
+    #[test]
+    fn the_manifest_is_written_once_per_owned_path() {
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = temp("manifest-once");
+        let out = dir.join("out/a.css");
+        let (mut w, _rx) = writer(&dir);
+        assert_eq!(w.write_file(&out, b"one"), Ok(true));
+        let m = w.manifest_file.clone().unwrap();
+        let (ino, text) = (
+            std::fs::metadata(&m).unwrap().ino(),
+            std::fs::read_to_string(&m).unwrap(),
+        );
+        for bytes in [&b"two"[..], b"three"] {
+            assert_eq!(w.write_file(&out, bytes), Ok(true));
+            assert_eq!(std::fs::metadata(&m).unwrap().ino(), ino, "not rewritten");
+            assert_eq!(std::fs::read_to_string(&m).unwrap(), text);
+        }
+        // A second path is new: the manifest is written, naming both.
+        let other = dir.join("out/b.css");
+        assert_eq!(w.write_file(&other, b"b"), Ok(true));
+        let text = std::fs::read_to_string(&m).unwrap();
+        assert_eq!(parse_manifest(&text).len(), 2, "{text}");
+    }
+
+    /// A manifest write that failed (its directory briefly unwritable) is
+    /// made again on the next write, to a path already owned, so the
+    /// next run still knows the file is Strand's; once it lands, later
+    /// writes leave it alone again.
+    #[test]
+    fn a_failed_manifest_write_is_retried_by_the_next_write() {
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = temp("manifest-retry");
+        let out = dir.join("out/a.css");
+        // The manifest's directory is a regular file: it cannot be made.
+        std::fs::write(dir.join("state"), "in the way").unwrap();
+        let (mut w, _rx) = writer(&dir);
+        assert_eq!(w.write_file(&out, b"one"), Ok(true));
+        let m = w.manifest_file.clone().unwrap();
+        assert!(!m.exists());
+        std::fs::remove_file(dir.join("state")).unwrap();
+        assert_eq!(w.write_file(&out, b"two"), Ok(true));
+        let text = std::fs::read_to_string(&m).unwrap();
+        assert!(parse_manifest(&text).contains_key(&out), "{text}");
+        let ino = std::fs::metadata(&m).unwrap().ino();
+        assert_eq!(w.write_file(&out, b"three"), Ok(true));
+        assert_eq!(std::fs::metadata(&m).unwrap().ino(), ino, "not rewritten");
+        // A later run: the file is still Strand's.
+        let (mut w, _rx) = writer(&dir);
+        assert_eq!(w.write_file(&out, b"four"), Ok(true));
     }
 
     /// Unowned, read-only and `.strand` targets are refused, the file

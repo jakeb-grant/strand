@@ -453,6 +453,62 @@ fn the_scrim_is_the_click_away_catcher() {
     assert_eq!(mgr.state().surface(id).unwrap().scrim, Some(DIM));
 }
 
+/// A monitor plugged in while a click-away panel is open on another one
+/// gets a catcher of its own, over the whole output and with no hole: a
+/// click there is a click away from the panel too.
+#[test]
+fn a_hotplugged_output_gets_a_click_away_catcher() {
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let ok = mgr
+        .dispatch_until(WAIT, |s| !s.host().monitors_added.is_empty())
+        .unwrap();
+    assert!(ok, "no monitor");
+    let first = mgr.state().host().monitors_added[0]
+        .0
+        .id
+        .as_str()
+        .to_string();
+    let mut spec = scrim_spec(None, true);
+    spec.screens = strand_scene::Screens::Named(vec![first]);
+    mgr.state_mut()
+        .apply_surface_change(PANEL, SurfaceChange::Created(spec));
+    wait_layer(&fake, &mut mgr, "strand-Dash-click-away", |s| {
+        s.buffer.is_some() && s.input.is_some()
+    });
+    assert_eq!(fake.layer("strand-Dash-click-away").len(), 1);
+
+    fake.cmd(Cmd::AddOutput("HOT-1", 1280, 720));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| s.host().monitors_added.len() == 2)
+        .unwrap();
+    assert!(ok, "the new output never came");
+    // A catcher's commit brings no event back: poll the fake.
+    let mapped = || {
+        fake.layer("strand-Dash-click-away")
+            .iter()
+            .filter(|c| c.buffer.is_some())
+            .count()
+    };
+    let deadline = Instant::now() + WAIT;
+    while mapped() < 2 && Instant::now() < deadline {
+        common::pump(&mut mgr, Duration::from_millis(50));
+    }
+    assert_eq!(
+        mapped(),
+        2,
+        "no catcher on the new output: {:?}",
+        fake.surfaces()
+    );
+    let catchers = fake.layer("strand-Dash-click-away");
+    assert_eq!(catchers.len(), 2, "{catchers:?}");
+    assert!(
+        catchers.iter().any(|c| c.input.is_none()),
+        "the new one has no hole: {catchers:?}"
+    );
+    assert_eq!(fake.layer("strand-Dash").len(), 1, "the panel stays one");
+}
+
 /// A click-away panel the user put on `overlay` keeps its layer when it
 /// gains a scrim, so its catcher moves: from the panel's layer (a
 /// transparent catcher) to the one below (the scrim), and back when the

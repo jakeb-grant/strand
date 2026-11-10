@@ -8,6 +8,7 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use crate::cli;
+use crate::logging::{to_stderr, to_stdout};
 use strand_compiler::diagnostic::Style;
 
 /// Subcommands the design commits to; each is served (`tool`, `one_shot`
@@ -251,8 +252,7 @@ pub fn main() -> ExitCode {
     // `strand <command> --help`: its usage on stdout, as asked for.
     let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     if let Some(usage) = help_asked(&raw) {
-        print!("{usage}");
-        return ExitCode::SUCCESS;
+        return print_out(&usage);
     }
     // (replay-owner) Handed off to `strand-eval`, which is not part of
     // the shell (`report::replay`), its arguments as they are: a path
@@ -274,7 +274,7 @@ pub fn main() -> ExitCode {
         let color = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
         let style = if color { Style::Color } else { Style::Plain };
         let (text, ok) = tool(&args[1..], style);
-        eprint!("{text}");
+        to_stderr(&text);
         return if ok {
             ExitCode::SUCCESS
         } else {
@@ -283,28 +283,22 @@ pub fn main() -> ExitCode {
     }
     if let Some(command) = args.first().and_then(|a| one_shot(a)) {
         return match command(&args[1..]) {
-            Ok(text) => {
-                print!("{text}");
-                ExitCode::SUCCESS
-            }
+            Ok(text) => print_out(&text),
             Err(e) => {
-                eprintln!("strand {}: {e}", args[0]);
+                to_stderr(&format!("strand {}: {e}\n", args[0]));
                 ExitCode::FAILURE
             }
         };
     }
     match dispatch(&args) {
-        Ok(Action::Print(out)) => {
-            print!("{out}");
-            ExitCode::SUCCESS
-        }
+        Ok(Action::Print(out)) => print_out(&out),
         Ok(Action::Demo) => {
             let log = cli::LogConfig::from_env();
             log.install();
             match cli::demo(&log) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(err) => {
-                    eprintln!("strand run: {err}");
+                    to_stderr(&format!("strand run: {err}\n"));
                     ExitCode::FAILURE
                 }
             }
@@ -319,19 +313,31 @@ pub fn main() -> ExitCode {
                 )
             });
             let Some(dir) = dir else {
-                eprintln!("strand run: no config directory (set XDG_CONFIG_HOME or HOME)");
+                to_stderr("strand run: no config directory (set XDG_CONFIG_HOME or HOME)\n");
                 return ExitCode::FAILURE;
             };
             match cli::run(&dir, &log) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(err) => {
-                    eprintln!("strand run: {err}");
+                    to_stderr(&format!("strand run: {err}\n"));
                     ExitCode::FAILURE
                 }
             }
         }
         Err(err) => {
-            eprintln!("{err}");
+            to_stderr(&format!("{err}\n"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// A command's output on stdout: success, also when the reader closed
+/// early (`strand ... | head`); a failure only for another write error.
+fn print_out(text: &str) -> ExitCode {
+    match to_stdout(text) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            to_stderr(&format!("strand: cannot write the output: {e}\n"));
             ExitCode::FAILURE
         }
     }

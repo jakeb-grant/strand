@@ -36,6 +36,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
+use std::sync::atomic::Ordering as AtomicOrdering;
 use std::time::Duration;
 
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
@@ -323,6 +324,10 @@ pub struct Stats {
     /// a learned edge ranked it higher. Zero for a declared graph without
     /// feedback edges.
     pub reruns: u64,
+    /// Passes over the held list looking for work a suspension released
+    /// (a resume, a reparent, the disposal of a suspended scope). A
+    /// disposal that ends no suspension makes none.
+    pub held_scans: u64,
     /// Live nodes.
     pub nodes: usize,
 }
@@ -840,6 +845,18 @@ impl Runtime {
     /// [`Runtime::advance_to`].
     pub fn now(&self) -> Duration {
         self.inner.now.get()
+    }
+
+    /// Raise the logic clock to `now` (never lower it) and run nothing: no
+    /// timer fires, no sleeper wakes. A host calls it when it wakes, before
+    /// it applies the input it woke for, so a write that pauses an
+    /// `after T while c` counts the time up to the wake, and a timer
+    /// mounted by that input starts from it (`audit-timer-pause`).
+    /// [`Runtime::advance_to`] still decides what fires.
+    pub fn stamp(&self, now: Duration) {
+        if now > self.inner.now.get() {
+            self.inner.now.set(now);
+        }
     }
 
     /// The current tick number (incremented by every flush).
@@ -1512,19 +1529,29 @@ impl Runtime {
             }
         }
         {
-            let mut held = self.inner.held.borrow_mut();
-            if !held.is_empty() {
-                let nodes = self.inner.nodes.borrow();
-                held.retain(|&n| nodes.contains_key(n));
-                self.inner
-                    .held_set
-                    .borrow_mut()
-                    .retain(|&n| nodes.contains_key(n));
+            // Only the disposed ids leave the held list: a disposal costs
+            // what it disposed, not what hidden surfaces hold.
+            let mut held_set = self.inner.held_set.borrow_mut();
+            if !held_set.is_empty() {
+                let mut gone = false;
+                for &n in &order {
+                    gone |= held_set.remove(&n);
+                }
+                if gone {
+                    self.inner
+                        .held
+                        .borrow_mut()
+                        .retain(|n| held_set.contains(n));
+                }
             }
         }
         // A suspended scope that went away (its live parts moved out first)
-        // no longer freezes what it held.
-        self.release_held(unfroze);
+        // no longer freezes what it held. A disposal that ended no
+        // suspension releases nothing: work leaves a suspension only by a
+        // resume, a reparent or this, so the held list is not walked.
+        if unfroze {
+            self.release_held(true);
+        }
         self.forget_rate_state();
         // Live observers of disposed nodes re-run and see the error value.
         for node in &dropped {
@@ -1814,6 +1841,7 @@ impl Runtime {
         if !unfroze && self.inner.held.borrow().is_empty() {
             return;
         }
+        self.bump(|s| s.held_scans += 1);
         let held = std::mem::take(&mut *self.inner.held.borrow_mut());
         let mut keep = Vec::new();
         let mut requeued = false;
@@ -2025,6 +2053,10 @@ impl Runtime {
             tick.errors.push((at, Error::Reentrant));
             return tick;
         }
+        self.inner
+            .ready
+            .ticking
+            .store(true, AtomicOrdering::Relaxed);
         tick.seq = self.inner.tick.get() + 1;
         self.inner.tick.set(tick.seq);
         self.inner.epoch.set(self.inner.epoch.get() + 1);
@@ -2190,8 +2222,14 @@ impl Runtime {
             }
         }
         self.inner.flushing.set(false);
+        self.inner
+            .ready
+            .ticking
+            .store(false, AtomicOrdering::Relaxed);
         // A task that woke itself during this flush waits for the next one;
-        // tell the host so a loop sleeping on the hook polls it.
+        // tell the host so a loop sleeping on the hook polls it. (Wakes on
+        // this thread during the flush did not call it: what this flush
+        // did not poll is still here.)
         if !self.ready_is_empty() {
             self.call_wake_hook();
         }
@@ -2302,6 +2340,14 @@ impl Runtime {
     /// Advance the logic clock and end the tick: fire due timers, wake due
     /// sleepers, apply due throttled writes, then [`Runtime::flush`].
     pub fn tick(&self, now: Duration) -> Tick {
+        // Sleepers coming due are polled by the flush below: no wake hook.
+        // A reentrant tick leaves the flag to the flush it is inside.
+        if !self.inner.flushing.get() {
+            self.inner
+                .ready
+                .ticking
+                .store(true, AtomicOrdering::Relaxed);
+        }
         let mut errors = self.advance_to(now);
         let mut tick = self.flush();
         errors.append(&mut tick.errors);
@@ -2317,7 +2363,9 @@ impl Runtime {
     /// brought up to date first, so `hover = true` followed by
     /// `tick(deadline)` pauses the timer instead of firing it. A pause counts
     /// up to the previous time and a resume from `now`: a timer never counts
-    /// time its condition may not have held for.
+    /// time its condition may not have held for. A host that sleeps between
+    /// steps calls [`Runtime::stamp`] when it wakes, so "the previous time"
+    /// is the wake, not the last step.
     pub fn advance_to(&self, now: Duration) -> Vec<(NodeId, Error)> {
         self.inner.epoch.set(self.inner.epoch.get() + 1);
         self.refresh_timers(now);

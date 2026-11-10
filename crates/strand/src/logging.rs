@@ -5,7 +5,28 @@
 //! frame once its time is known: its CPU part and its GPU run, and an
 //! `unsent` line per paint of a presented surface that sent nothing).
 
+use std::io::Write;
+
 use log::{LevelFilter, Log, Metadata, Record};
+
+/// Writes `text` to stderr in one write under the lock, ignoring a stderr
+/// that is gone (a closed pipe, a hung-up terminal): `eprintln!` panics
+/// there, and a log line or a last error is never worth the process. One
+/// write per line also keeps threads from interleaving within a line.
+pub(crate) fn to_stderr(text: &str) {
+    let _ = std::io::stderr().lock().write_all(text.as_bytes());
+}
+
+/// Writes a one-shot command's output to stdout in one write and flushes
+/// it. A reader that closed early (`strand export json | head -1`) is a
+/// quiet, successful end, not an error: only other write errors come back.
+pub(crate) fn to_stdout(text: &str) -> std::io::Result<()> {
+    let mut out = std::io::stdout().lock();
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        done => done,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogConfig {
@@ -56,12 +77,12 @@ impl Log for Stderr {
 
     fn log(&self, record: &Record<'_>) {
         if self.enabled(record.metadata()) {
-            eprintln!(
-                "strand: {} {}: {}",
+            to_stderr(&format!(
+                "strand: {} {}: {}\n",
                 record.level(),
                 record.target(),
                 record.args()
-            );
+            ));
         }
     }
 

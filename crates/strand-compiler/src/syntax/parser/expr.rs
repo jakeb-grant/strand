@@ -305,10 +305,13 @@ impl Parser<'_> {
     }
 
     fn ternary(&mut self) -> Expr {
-        let cond = self.binary(0);
+        let (cond, height) = self.measured(|p| p.binary(0));
         if !self.at(K::Question) {
             return cond;
         }
+        // The node sits one level above its condition; its branches are
+        // parsed at its own level.
+        self.node_fits(height);
         let start = cond.span.start;
         self.bump();
         let then = self.expr();
@@ -328,38 +331,42 @@ impl Parser<'_> {
     }
 
     fn binary(&mut self, min: u8) -> Expr {
-        let mut lhs = self.unary();
+        let (mut lhs, mut height) = self.measured(Self::unary);
         // An error operand sits at the end of the previous token, which
         // may be before the current one: start the node at whichever is
         // first so children stay inside it.
         let start = lhs.span.start;
         let mut last_compare = false;
         // Each link of a left-associative chain deepens the tree, so it
-        // counts toward the tree-depth limit.
-        let mut links = 0;
+        // counts toward the tree-depth limit, on top of the operand it
+        // builds on; `height` is the height of `lhs`.
         while let Some((op, prec, right)) = binary_op(self.kind()) {
             // A line starting with a sign touching its operand (`-1 => b`,
             // `-y.f()`) starts a new item; `- 1` continues the line.
             if self.kind() == K::Minus && self.on_new_line() && !self.nth(1).ws_before {
                 break;
             }
-            if prec < min || !self.enter_link() {
+            if prec < min || !self.node_fits(height) {
                 break;
             }
-            links += 1;
             let op_tok = self.bump();
             if matches!(op, BinaryOp::Add | BinaryOp::Sub) {
                 self.check_sign(op_tok);
             }
             let chained = prec == COMPARE && last_compare;
             last_compare = prec == COMPARE;
-            let rhs = if self.enter() {
-                let r = self.binary(if right { prec } else { prec + 1 });
-                self.leave();
-                r
-            } else {
-                self.error_expr()
-            };
+            // The right operand hangs under the new node, beside `lhs`:
+            // the node is as high as the higher of the two, plus one.
+            let (rhs, rhs_height) = self.measured(|p| {
+                if p.enter() {
+                    let r = p.binary(if right { prec } else { prec + 1 });
+                    p.leave();
+                    r
+                } else {
+                    p.error_expr()
+                }
+            });
+            height = (height + 1).max(rhs_height);
             if chained {
                 let help = self.chain_help(&lhs, op_tok, &rhs);
                 self.push_error(
@@ -380,7 +387,6 @@ impl Parser<'_> {
                 span: self.finish(start),
             };
         }
-        self.leave_links(links);
         lhs
     }
 
@@ -434,16 +440,18 @@ impl Parser<'_> {
     }
 
     fn postfix(&mut self) -> Expr {
-        let mut e = self.primary();
+        let (mut e, mut height) = self.measured(Self::primary);
         let start = e.span.start;
-        let mut links = 0;
+        // Links count on top of the base (`(a.b.c).d`); arguments and
+        // indices hang under their link, beside the base. `height` is the
+        // height of `e`.
         loop {
             let link = matches!(self.kind(), K::Dot | K::QuestionDot)
                 || (matches!(self.kind(), K::LParen | K::LBracket) && self.touching());
-            if !link || !self.enter_link() {
+            if !link || !self.node_fits(height) {
                 break;
             }
-            links += 1;
+            height += 1;
             match self.kind() {
                 K::Dot | K::QuestionDot => {
                     let optional = self.bump().kind == K::QuestionDot;
@@ -458,7 +466,8 @@ impl Parser<'_> {
                     };
                 }
                 K::LParen if self.touching() => {
-                    let args = self.call_args();
+                    let (args, args_height) = self.measured(Self::call_args);
+                    height = height.max(args_height);
                     e = Expr {
                         kind: ExprKind::Call {
                             callee: Box::new(e),
@@ -469,11 +478,14 @@ impl Parser<'_> {
                 }
                 K::LBracket if self.touching() => {
                     self.bump();
-                    let index = self.with_nl(false, |p| {
-                        let i = p.expr();
-                        p.expect(K::RBracket);
-                        i
+                    let (index, index_height) = self.measured(|p| {
+                        p.with_nl(false, |p| {
+                            let i = p.expr();
+                            p.expect(K::RBracket);
+                            i
+                        })
                     });
+                    height = height.max(index_height);
                     e = Expr {
                         kind: ExprKind::Index {
                             base: Box::new(e),
@@ -485,7 +497,6 @@ impl Parser<'_> {
                 _ => break,
             }
         }
-        self.leave_links(links);
         e
     }
 

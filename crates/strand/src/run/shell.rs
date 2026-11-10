@@ -237,11 +237,11 @@ impl Shell {
                 {
                     match c {
                         Click::Open(file, line, col) => overlay::open_editor(&file, line, col),
-                        Click::Reset(path) => {
-                            if let Err(e) = inst.reset(&path) {
-                                log::warn!("[reset] {path}: {e}");
-                            }
-                        }
+                        Click::Reset(path) => match inst.reset(&path) {
+                            // The overlay dropped its rows itself.
+                            Ok(()) => self.reset_done(&path),
+                            Err(e) => log::warn!("[reset] {path}: {e}"),
+                        },
                         Click::Clear(file, field) => {
                             inst.clear_settings_overlay(&file, &field);
                         }
@@ -256,7 +256,9 @@ impl Shell {
                     hidden,
                 } = &event
                 {
-                    let args = super::lists::drop_args(inst, &self.host, payload, *at, *hidden);
+                    let live = super::logic::live_host(&self.host, &self.real);
+                    let args =
+                        super::lists::drop_args(inst, &self.host, &*live, payload, *at, *hidden);
                     if let Some(args) = args {
                         inst.event(node, "drop", args);
                     }

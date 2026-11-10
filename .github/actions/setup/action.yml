@@ -12,8 +12,11 @@ inputs:
       headers from apt, and rustfmt and clippy.
     default: image
   free-disk:
-    description: Removes the image's unused SDKs first ("true" or "false").
-    default: "true"
+    description: >
+      Removes the image's unused SDKs first ("true" or "false"). Off: the
+      runner's disk has room for every job, and the removal cost 1-2 min a
+      job (decisions.md audit-free-disk). Kept for a runner with less disk.
+    default: "false"
   cache-key:
     description: >
       Swatinem/rust-cache's shared-key; empty keeps its default (one cache
@@ -25,14 +28,21 @@ inputs:
 runs:
   using: composite
   steps:
-    # Room for the debug and release builds: the image's SDKs we never
-    # use take most of the disk.
+    # The SDKs we never use, removed only when a job asks for the room.
     - name: Free disk space
       if: inputs.free-disk == 'true'
       shell: bash
+      run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+    # The room the debug and release builds start from, logged; a warning
+    # when it falls under 40 GB, the sign to turn free-disk on again.
+    - name: Disk space
+      shell: bash
       run: |
-        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
         df -h /
+        avail=$(df --output=avail -BG / | tail -1 | tr -dc 0-9)
+        if [ "${avail:-0}" -lt 40 ]; then
+          echo "::warning::${avail}G free on /, under the 40G the builds were sized for; set free-disk: \"true\""
+        fi
     # smithay-client-toolkit's build script finds xkbcommon through
     # pkg-config; wayland-sys and fontconfig link their system libraries;
     # pipewire-rs needs its headers and libclang (bindgen); strand-auth's
@@ -67,7 +77,7 @@ runs:
     # deprecations cannot fail -D warnings on unchanged code. In the
     # image's jobs nothing compiles with it: rust-cache runs rustc and cargo
     # on the runner, for its key and for what it cleans.
-    - uses: dtolnay/rust-toolchain@master
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master at 2026-11-10
       with:
         toolchain: 1.97.0
         components: ${{ inputs.tier == 'headers' && 'rustfmt, clippy' || '' }}
@@ -75,7 +85,7 @@ runs:
     # doesn't cover the C compiler or the system headers, so without it a new
     # image would keep the old one's C objects and bindgen output in the gates
     # and the archive until a manifest changed (decisions.md ci-speed-2).
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       env:
         STRAND_CI_IMAGE: ${{ inputs.tier == 'image' && hashFiles('scripts/container/Dockerfile') || '' }}
       with:

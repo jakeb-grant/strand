@@ -40,7 +40,12 @@
 //! stack cannot loop. `cancel()` dismisses the request (the call fails
 //! `org.freedesktop.PolicyKit1.Error.Cancelled`); the authority's
 //! `CancelAuthentication` (the program gave up) withdraws it, shown or
-//! waiting.
+//! waiting. (audit-polkit-answer) However the shown one ends, `request`
+//! is null, as an update of its own, before the next shows: the next
+//! one's conversation begins only once the logic thread has applied the
+//! null ([`Cx::applied`]), so a dialog bound to `request != null` closes
+//! and its text goes; what arrives meanwhile (an answer, a dismissal, a
+//! choice) was meant for the one that ended and is dropped.
 //!
 //! **Answers.** An answer is a [`Password`] from the moment it arrives,
 //! wiped once written to the helper or dropped; one the helper could not
@@ -53,7 +58,9 @@
 pub mod helper;
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use strand_auth::Password;
@@ -137,9 +144,14 @@ pub struct PolkitRequest {
 #[service(name = "polkit", action = PolkitAction)]
 #[derive(Store, Clone, Debug, Default, PartialEq)]
 pub struct Polkit {
-    /// The request being answered, or null when none waits.
+    /// The request being answered, or null when none waits. Null for a
+    /// moment between two requests too: when the shown one ends (answered,
+    /// cancelled or withdrawn) it is null, as an update of its own, before
+    /// the next shows, so a dialog `open: polkit.request != null` closes
+    /// and opens again (its `on show` runs).
     pub request: Option<PolkitRequest>,
-    /// How many more requests wait behind `request`, each shown in turn.
+    /// How many more requests wait behind `request`, each shown in turn
+    /// (every one, while `request` is null between two).
     pub waiting: i64,
     /// An answer is being checked.
     pub busy: bool,
@@ -505,8 +517,18 @@ struct Requests {
     /// before its conversation asks is a retry of it, and waits for the
     /// question. False from the moment another request (or user) is
     /// shown until then, so an answer typed for the one before is never
-    /// given to it.
+    /// given to it. (audit-polkit-answer) It turns true only once the
+    /// request has been published after `hidden`'s gap and its helper
+    /// has asked.
     seen: bool,
+    /// (audit-polkit-answer) A shown request ended: `request = null` has
+    /// been published and nothing is shown, the next one included, until
+    /// the logic side has applied that null ([`Cx::applied`]). So a
+    /// dialog bound to `polkit.request != null` always closes between two
+    /// requests, and what was typed in it goes; an answer, dismissal or
+    /// choice arriving meanwhile was meant for the one that ended and is
+    /// dropped.
+    hidden: bool,
 }
 
 impl Requests {
@@ -549,20 +571,24 @@ impl Requests {
         Ok(())
     }
 
-    /// Ends the shown request with `outcome` and shows the next.
-    fn finish(&mut self, outcome: Result<(), AgentError>) -> Result<(), String> {
+    /// Ends the shown request with `outcome`: nothing is shown until its
+    /// null has been applied (`hidden`), then the next.
+    fn finish(&mut self, outcome: Result<(), AgentError>) {
         self.conv = None;
         self.seen = false;
+        self.hidden = true;
         if let Some(p) = self.queue.pop_front() {
             let _ = p.reply.send(outcome);
         }
-        self.begin(None)
     }
 
     /// Refuses every request (the store stops, polkit went).
     fn drop_all(&mut self, why: &str) {
         self.conv = None;
         self.seen = false;
+        if !self.queue.is_empty() {
+            self.hidden = true;
+        }
         for p in self.queue.drain(..) {
             let _ = p.reply.send(Err(AgentError::Cancelled(why.to_string())));
         }
@@ -626,6 +652,7 @@ impl Polkit {
             helper: found.clone().ok(),
             said: said_tx,
             seen: false,
+            hidden: false,
         };
         let unhelped = found.err();
         if !register(
@@ -641,7 +668,14 @@ impl Polkit {
             return Ok(());
         }
         cx.ready();
+        // While `reqs.hidden`: the wait for its null to be applied.
+        let mut gap: Option<Pin<Box<dyn Future<Output = ()> + Send>>> = None;
         let end = loop {
+            if !reqs.hidden {
+                gap = None;
+            } else if gap.is_none() {
+                gap = Some(Box::pin(cx.applied()));
+            }
             tokio::select! {
                 ev = daemon.next() => match ev {
                     None => break Err(ServiceError("the system bus connection ended".into())),
@@ -693,6 +727,19 @@ impl Polkit {
                     }
                     Some(_) => {}
                 },
+                () = async {
+                    match gap.as_mut() {
+                        Some(g) => g.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    // The null was applied on its own: the next shows.
+                    gap = None;
+                    reqs.hidden = false;
+                    if !begin_shown(&mut cx, &mut reqs, None) {
+                        break Ok(());
+                    }
+                }
             }
         };
         // Unregistered and taken down by `reg`'s drop, as when the store
@@ -813,10 +860,19 @@ async fn register(
     })
 }
 
-/// Publishes the queue's shown request and count, after `also`.
+/// Publishes the queue's shown request (none while `hidden`) and the
+/// count waiting, after `also`.
 fn publish(cx: &mut Cx<Polkit>, reqs: &Requests, also: impl FnOnce(&mut Polkit)) -> bool {
-    let shown = reqs.queue.front().map(|p| p.request.clone());
-    let waiting = reqs.queue.len().saturating_sub(1) as i64;
+    let shown = reqs
+        .queue
+        .front()
+        .filter(|_| !reqs.hidden)
+        .map(|p| p.request.clone());
+    let waiting = if reqs.hidden {
+        reqs.queue.len()
+    } else {
+        reqs.queue.len().saturating_sub(1)
+    } as i64;
     cx.update(|s| {
         s.request = shown;
         s.waiting = waiting;
@@ -864,7 +920,7 @@ fn asked(cx: &mut Cx<Polkit>, reqs: &mut Requests, a: Asked) -> bool {
                 request,
                 reply,
             });
-            if reqs.queue.len() == 1 {
+            if reqs.queue.len() == 1 && !reqs.hidden {
                 return begin_shown(cx, reqs, None)
                     && publish(cx, reqs, |s| {
                         s.failed = false;
@@ -878,9 +934,9 @@ fn asked(cx: &mut Cx<Polkit>, reqs: &mut Requests, a: Asked) -> bool {
                 return true;
             };
             let gone = Err(AgentError::Cancelled("the program withdrew it".into()));
-            if i == 0 {
-                let r = reqs.finish(gone);
-                return shown_next(cx, reqs, r);
+            if i == 0 && !reqs.hidden {
+                reqs.finish(gone);
+                return shown_next(cx, reqs);
             }
             if let Some(p) = reqs.queue.remove(i) {
                 let _ = p.reply.send(gone);
@@ -890,25 +946,16 @@ fn asked(cx: &mut Cx<Polkit>, reqs: &mut Requests, a: Asked) -> bool {
     }
 }
 
-/// After the shown request ended: the next one shows (or why its
-/// conversation could not begin).
-fn shown_next(cx: &mut Cx<Polkit>, reqs: &mut Requests, began: Result<(), String>) -> bool {
-    let error = match began {
-        Ok(()) => String::new(),
-        Err(why) => {
-            cx.warn(why.clone());
-            why
-        }
-    };
+/// After the shown request ended: `request = null`, as an update of its
+/// own; the next one shows once that has been applied (`hidden`).
+fn shown_next(cx: &mut Cx<Polkit>, reqs: &mut Requests) -> bool {
     let available = cx.state().available;
     publish(cx, reqs, |s| {
         s.busy = false;
         s.failed = false;
-        s.error = if error.is_empty() && !available {
-            s.error.clone()
-        } else {
-            error
-        };
+        if available {
+            s.error.clear();
+        }
     })
 }
 
@@ -948,8 +995,8 @@ fn said(cx: &mut Cx<Polkit>, reqs: &mut Requests, s: Said) -> bool {
             publish(cx, reqs, |_| {})
         }
         Said::Done(Ok(true)) => {
-            let r = reqs.finish(Ok(()));
-            shown_next(cx, reqs, r)
+            reqs.finish(Ok(()));
+            shown_next(cx, reqs)
         }
         Said::Done(Ok(false)) => {
             let answered = reqs.conv.as_ref().is_some_and(|c| c.answered);
@@ -997,6 +1044,13 @@ fn said(cx: &mut Cx<Polkit>, reqs: &mut Requests, s: Said) -> bool {
 /// An action from the config.
 fn act(cx: &mut Cx<Polkit>, reqs: &mut Requests, a: PolkitAction) -> bool {
     if reqs.queue.is_empty() {
+        return true;
+    }
+    if reqs.hidden {
+        // Between a request that ended and the next: what arrives now
+        // (an answer, a dismissal, a choice) was meant for the one that
+        // ended, and is dropped (an answer wiped).
+        log::info!("polkit: an action for a request no longer shown was dropped");
         return true;
     }
     match a {
@@ -1047,8 +1101,8 @@ fn act(cx: &mut Cx<Polkit>, reqs: &mut Requests, a: PolkitAction) -> bool {
             })
         }
         PolkitAction::Cancel => {
-            let r = reqs.finish(Err(AgentError::Cancelled("dismissed".into())));
-            shown_next(cx, reqs, r)
+            reqs.finish(Err(AgentError::Cancelled("dismissed".into())));
+            shown_next(cx, reqs)
         }
         PolkitAction::Choose { user } => {
             let Some(r) = front(reqs) else {

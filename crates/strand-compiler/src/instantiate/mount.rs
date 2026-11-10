@@ -1096,6 +1096,26 @@ impl Ctx {
         kept
     }
 
+    /// A popup closes: each mounted keyed `for` disposes the cells kept
+    /// for its rows whose key its data no longer has, as a row the data
+    /// removes while it is mounted loses its state. Without it, a row
+    /// whose key left while its popup was closed kept its cells under the
+    /// popup's keep scope for the life of the surface.
+    fn sweep_kept(&self, rt: &Runtime) {
+        if self.closed.borrow().is_empty() && self.pending.borrow().is_empty() {
+            return;
+        }
+        let live: Vec<Rc<super::Sweep>> = self
+            .sweepers
+            .borrow()
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .collect();
+        for sweep in live {
+            sweep(rt);
+        }
+    }
+
     /// A windowed list's rows leave the window (`rows`: each row's
     /// content scope and key): the cells owned under each are moved to a
     /// scope of its own under `root`, made only for rows that have any,
@@ -1465,7 +1485,9 @@ impl Ctx {
                 let _ = p.set(rt, Value::Null);
             }
             // (M6) Conditional ids naming it name nothing now.
-            for a in st.claims.borrow().iter() {
+            // A remount pushes them again: the element's state outlives
+            // its unmount when an `if` or page remounts it.
+            for a in st.claims.take() {
                 let _ = a.hold(rt, &st, false);
             }
         }
@@ -1949,6 +1971,10 @@ impl Ctx {
         let mounted = Rc::new(Cell::new(false));
         let blocked = Rc::new(Cell::new(false));
         let shown: Rc<Cell<Option<bool>>> = Rc::default();
+        // (audit-reload-show) A reload that keeps this surface shown
+        // mounts it as a boot does, but it does not open: its first
+        // `show` mounts, holds and resumes without routing `show`.
+        let quiet = Cell::new(self.kept_shown(rt, ec.scene, ec.state.open));
         let (me, env) = (self.clone(), env.clone());
         let open_state = ec.state.open;
         let show = move |rt: &Runtime, is_open: bool| {
@@ -1956,6 +1982,7 @@ impl Ctx {
             if prev == Some(is_open) {
                 return;
             }
+            let quiet = quiet.replace(false);
             // (M6) `p.open` follows it (a `trigger: hover` popup's is
             // what drives it already).
             let _ = open_state.set(rt, is_open);
@@ -1989,7 +2016,9 @@ impl Ctx {
                         }
                     });
                 }
-                me.route(rt, ec.scene, "show", Vec::new(), None);
+                if !quiet {
+                    me.route(rt, ec.scene, "show", Vec::new(), None);
+                }
             } else {
                 // Closed before anything else mounted: its body's
                 // `on change` handlers wait, keeping up.
@@ -2003,6 +2032,7 @@ impl Ctx {
                             mounted.set(false);
                             let old = block.get();
                             let _ = me.keep_cells(rt, old.id(), keep.id());
+                            me.sweep_kept(rt);
                             me.unmount(rt, inner, true);
                             old.dispose(rt);
                             let fresh = match outer {
@@ -2394,7 +2424,7 @@ impl Ctx {
                 let canvas = self
                     .vm
                     .types()
-                    .find_record("Canvas")
+                    .find_schema_record("Canvas")
                     .map_or(Value::Null, |r| Value::record(r, vec![w, h]));
                 let (out, ops) = self.vm.record_canvas(|| self.vm.call(rt, &f, vec![canvas]));
                 out?;
@@ -3271,6 +3301,72 @@ impl Ctx {
             // The list's scope keeps its forgetter alive.
             rt.on_cleanup(move || drop(forget));
         }
+        // Every key the data has (a windowed list mounts only some), for
+        // its sweeper: a closed popup's kept cells of rows whose key is
+        // not among them are disposed when a popup closes, and so are
+        // those a reload left waiting in `pending`.
+        let live: Rc<RefCell<std::collections::HashSet<ValueKey>>> = Rc::default();
+        if !park {
+            let (ctx, live, prefix) = (self.clone(), live.clone(), prefix.clone());
+            let sweep: Rc<super::Sweep> = Rc::new(move |rt: &Runtime| {
+                let start = format!("{prefix}[");
+                let (gone, waiting): (Vec<strand_core::Scope>, Vec<Rc<str>>) = {
+                    let closed = ctx.closed.borrow();
+                    let pending = ctx.pending.borrow();
+                    let mine: Vec<&Rc<str>> =
+                        closed.iter().filter(|k| k.starts_with(&start)).collect();
+                    let waits: Vec<&Rc<str>> =
+                        pending.keys().filter(|k| k.starts_with(&start)).collect();
+                    if mine.is_empty() && waits.is_empty() {
+                        return;
+                    }
+                    let rows: Vec<String> = live
+                        .borrow()
+                        .iter()
+                        .map(|k| format!("{prefix}[{}]", k.0.show(&ctx.vm.prog.types)))
+                        .collect();
+                    let in_row = |k: &str| {
+                        rows.iter().any(|r| {
+                            k.strip_prefix(r.as_str())
+                                .is_some_and(|rest| rest.starts_with(['#', '/']))
+                        })
+                    };
+                    let reg = ctx.registry.borrow();
+                    (
+                        mine.into_iter()
+                            .filter(|k| !in_row(k))
+                            .filter_map(|k| reg.cells.get(k).map(|c| c.holder()))
+                            .collect(),
+                        waits.into_iter().filter(|k| !in_row(k)).cloned().collect(),
+                    )
+                };
+                // Their cleanups take them out of the registry and
+                // `closed`.
+                for s in gone {
+                    s.dispose(rt);
+                }
+                // (audit-popup-row-cells) A reload moved a closed popup's
+                // row cells (and a windowed list's off-window ones) to
+                // `pending`: they obey the same rule.
+                for k in waiting {
+                    let rec = ctx.pending.borrow_mut().remove(&k);
+                    if let Some((rec, _)) = rec {
+                        rec.dispose(rt);
+                    }
+                }
+            });
+            {
+                let mut all = self.sweepers.borrow_mut();
+                if all.len() >= self.sweepers_prune_at.get() {
+                    all.retain(|w| w.strong_count() > 0);
+                    self.sweepers_prune_at
+                        .set((all.len() * 2).max(super::SETTINGS_PRUNE_MIN));
+                }
+                all.push(Rc::downgrade(&sweep));
+            }
+            // The list's scope keeps its sweeper alive.
+            rt.on_cleanup(move || drop(sweep));
+        }
         let plain = {
             let (ctx, items) = (self.clone(), items.clone());
             let (leave, arrive) = (leave.clone(), arrive.clone());
@@ -3335,7 +3431,7 @@ impl Ctx {
                 },
             )
         };
-        let apply: Rc<KeyedApply> = match window {
+        let inner: Rc<KeyedApply> = match window {
             None => plain,
             Some((list, nodes)) => {
                 let probe = probe::RowProbe {
@@ -3347,6 +3443,31 @@ impl Ctx {
                 };
                 self.windowed(rt, list, frag, items, leave, arrive, probe)
             }
+        };
+        let apply: Rc<KeyedApply> = match park {
+            true => inner,
+            false => Rc::new(move |rt, diffs| {
+                {
+                    let mut live = live.borrow_mut();
+                    for d in &diffs {
+                        match d {
+                            strand_core::VecDiff::Reset { items } => {
+                                live.clear();
+                                live.extend(items.iter().map(|(k, _)| k.clone()));
+                            }
+                            strand_core::VecDiff::Insert { key, .. } => {
+                                live.insert(key.clone());
+                            }
+                            strand_core::VecDiff::Remove { key, .. } => {
+                                live.remove(key);
+                            }
+                            strand_core::VecDiff::Move { .. }
+                            | strand_core::VecDiff::Update { .. } => {}
+                        }
+                    }
+                }
+                inner(rt, diffs)
+            }),
         };
         let r = read.clone();
         match rt.untrack(|rt| r(rt, None)) {
@@ -4199,7 +4320,7 @@ impl Ctx {
                         f => Some(f),
                     };
                     let screen = screen.unwrap_or_else(|| {
-                        types.find_record("Screen").map_or(Value::Null, |r| {
+                        types.find_schema_record("Screen").map_or(Value::Null, |r| {
                             crate::vm::builtins::default_of(types, &crate::ty::Ty::Record(r))
                         })
                     });
@@ -5277,6 +5398,7 @@ fn read_start(rt: &Runtime, memo: strand_core::Memo<PropOut>, state: &Rc<NodeSta
 #[cfg(test)]
 mod tests {
     use super::longest_increasing;
+    use std::rc::Rc;
 
     #[test]
     fn longest_increasing_runs() {
@@ -5286,5 +5408,61 @@ mod tests {
         assert_eq!(longest_increasing(&[1, 2, 3, 0]), [1, 2, 3]);
         assert_eq!(longest_increasing(&[3, 0, 1, 2]), [0, 1, 2]);
         assert_eq!(longest_increasing(&[2, 1, 0]).len(), 1);
+    }
+
+    /// An element under an `if` keeps its state across remounts (it is
+    /// owned by the enclosing surface's `Env`); its conditional ids are
+    /// claimed once per mount, not once more on every remount.
+    #[test]
+    fn a_remounted_elements_conditional_ids_are_claimed_once() {
+        use crate::instantiate::{Instance, Storage};
+        use crate::vm::Value;
+        use crate::vm::schema_host::SchemaHost;
+        let mut map = crate::SourceMap::new();
+        map.add(
+            "cond.strand",
+            "export state c = true\n\
+             bar B {\n\
+               if c { box { when true { id: n }; text \"x\" } }\n\
+               text \"{n.hover}\"\n\
+             }\n"
+            .to_string(),
+        );
+        let compiled = crate::compile(&map);
+        assert_eq!(compiled.errors(), 0, "{:#?}", compiled.diagnostics);
+        let program = std::sync::Arc::new(crate::lower::lower(
+            &compiled.program,
+            crate::schema::Schema::builtin(),
+        ));
+        let rt = strand_core::Runtime::new();
+        let host = Rc::new(SchemaHost::mock(&rt, &program.types));
+        let screen = host.record(
+            "Screen",
+            &[
+                ("id", Value::text("Mock | DP-1 | Display")),
+                ("name", Value::text("DP-1")),
+                ("make", Value::text("Mock")),
+                ("model", Value::text("DP-1")),
+                ("description", Value::text("Display")),
+            ],
+        );
+        host.set(&rt, "screens.all", Value::list(vec![screen]))
+            .unwrap();
+        let inst = Instance::new(&rt, program, host.clone(), Storage::none());
+        inst.flush();
+        for _ in 0..20 {
+            inst.set("cond.c", Value::Bool(false)).unwrap();
+            inst.flush();
+            inst.set("cond.c", Value::Bool(true)).unwrap();
+            inst.flush();
+        }
+        let em = inst.ctx.em.borrow();
+        let claims: Vec<usize> = em
+            .nodes
+            .values()
+            .map(|n| n.state.claims.borrow().len())
+            .filter(|n| *n > 0)
+            .collect();
+        assert_eq!(claims, [1], "claims per element holding a conditional id");
     }
 }

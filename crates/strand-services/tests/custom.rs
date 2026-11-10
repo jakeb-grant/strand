@@ -883,6 +883,80 @@ fn a_file_rewritten_in_place_never_shows_it_empty() {
     custom::forget(id);
 }
 
+/// (audit-file-torn) A `from file` JSON document rewritten in place in
+/// two writes, the second coming later than `FILE_SETTLE`, is read once
+/// it parses again: the field goes from one value to the next, never
+/// through the half-written document's null; a file that does turn to
+/// text is read as text.
+#[test]
+fn a_file_written_in_two_writes_never_shows_it_half_written() {
+    use std::io::Write;
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("weather.json");
+    std::fs::write(&path, r#"{"level": 1}"#).unwrap();
+    let (client, id) = started(
+        &rt,
+        &services,
+        "weather",
+        Source::File { path: path.clone() },
+        vec![field("level", Default::default())],
+    );
+    let mut seen: Vec<Data> = Vec::new();
+    let look = |seen: &mut Vec<Data>| {
+        services.pump(&rt);
+        rt.flush();
+        let now = value(&rt, &client, 0);
+        // (Null is the seed, before the first read.)
+        if let Some(v) = now
+            .as_ref()
+            .filter(|v| **v != Data::Null || !seen.is_empty())
+            && seen.last() != Some(v)
+        {
+            seen.push(v.clone());
+        }
+        now
+    };
+    let wait = |seen: &mut Vec<Data>, want: &dyn Fn(&Data) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let now = look(seen);
+            if now.as_ref().is_some_and(want) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "never as wanted: {now:?}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    wait(&mut seen, &|v| *v == Data::Int(1));
+    for n in 2..=4 {
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(f, r#"{{"level": "#).unwrap();
+        f.flush().unwrap();
+        let until = Instant::now() + Duration::from_millis(120);
+        while Instant::now() < until {
+            let _ = look(&mut seen);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        write!(f, "{n}}}").unwrap();
+        drop(f);
+        wait(&mut seen, &|v| *v == Data::Int(n));
+    }
+    assert_eq!(
+        seen,
+        (1..=4).map(Data::Int).collect::<Vec<_>>(),
+        "one value after the other, never the half-written document"
+    );
+    // A file that does change kind is read, late.
+    std::fs::write(&path, "level=9").unwrap();
+    wait(&mut seen, &|v| *v != Data::Int(4) && *v != Data::Null);
+
+    client.release(&rt);
+    services.shutdown();
+    custom::forget(id);
+}
+
 /// (services-round) A directory past `MAX_DIR_FILES` lists the first
 /// files by name (whatever order the directory keeps them in), a
 /// subdirectory among them not counting as one.
@@ -1068,6 +1142,109 @@ fn file_and_poll_declarations_are_ready_after_their_first_read() {
         services.shutdown();
         custom::forget(id);
     }
+}
+
+/// (audit-poll-gone) A polled file removed after a poll read it reads
+/// null, as under `from file`, not its last values; back, it is read
+/// again.
+#[test]
+fn a_polled_file_removed_reads_null_until_it_is_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("bat.json");
+    std::fs::write(&path, r#"{"level": 2}"#).unwrap();
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let (client, id) = started(
+        &rt,
+        &services,
+        "bat",
+        Source::Poll {
+            target: custom::PollTarget::File(path.clone()),
+            every: Duration::from_millis(50),
+            ok: vec![0],
+        },
+        vec![field("level", Default::default())],
+    );
+    until(&rt, &services, "read", || {
+        value(&rt, &client, 0) == Some(Data::Int(2))
+    });
+    std::fs::remove_file(&path).unwrap();
+    until(&rt, &services, "null once gone", || {
+        value(&rt, &client, 0) == Some(Data::Null)
+    });
+    assert!(client.ready(&rt), "a file gone is still ready");
+    std::fs::write(&path, r#"{"level": 3}"#).unwrap();
+    until(&rt, &services, "read again", || {
+        value(&rt, &client, 0) == Some(Data::Int(3))
+    });
+    services.shutdown();
+    custom::forget(id);
+}
+
+/// (audit-kill-exit) A `from listen` command that ignores `SIGTERM` is
+/// killed when strand shuts its services down and exits at once: this
+/// test runs itself as that strand, and the command must not outlive it.
+#[test]
+fn a_command_ignoring_sigterm_ends_when_strand_exits() {
+    const HELPER: &str = "STRAND_KILL_EXIT_HELPER";
+    if let Some(file) = std::env::var_os(HELPER) {
+        let file = std::path::PathBuf::from(file);
+        let script = format!(
+            "trap '' TERM; echo $$ > {}; while :; do sleep 1; done",
+            file.display()
+        );
+        let rt = Runtime::new();
+        let services = Services::new(&rt, Buses::none(), || {});
+        let _started = started(
+            &rt,
+            &services,
+            "stubborn",
+            Source::Listen {
+                command: sh(&script),
+            },
+            vec![field("level", Default::default())],
+        );
+        until(&rt, &services, "the command started", || {
+            std::fs::read_to_string(&file).is_ok_and(|s| s.ends_with('\n'))
+        });
+        services.shutdown();
+        std::process::exit(0);
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("pid");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_command_ignoring_sigterm_ends_when_strand_exits",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(HELPER, &file)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "the helper ran");
+    let pid = std::fs::read_to_string(&file).unwrap().trim().to_string();
+    // Ended: no process, or a zombie its new parent has yet to reap.
+    let gone = || {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |s| {
+            s.rsplit_once(')')
+                .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
+        })
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !gone() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let ended = gone();
+    if !ended && let Ok(p) = pid.parse::<i32>() {
+        // The test's own leftover.
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &format!("-{p}")])
+            .status();
+    }
+    assert!(ended, "the command {pid} outlived its strand");
 }
 
 /// (build-ready) A `from poll` command that fails is a warning naming

@@ -674,7 +674,14 @@ impl Emitter {
                 trans.insert((*id, *prop), transition.clone());
             }
         }
-        let kept = |id: &NodeId| old.nodes.contains_key(id) || old.external.contains_key(id);
+        // (audit-reload-parked) Kept: an old node render still shows. A
+        // parked bar's nodes a reload mounts again keep their ids but
+        // were removed from render at park: they are created anew, with
+        // every prop.
+        let on_scene = old.on_scene();
+        let kept = |id: &NodeId| {
+            (old.nodes.contains_key(id) && on_scene.contains(id)) || old.external.contains_key(id)
+        };
         let live_now =
             |s: &Self, id: &NodeId| s.nodes.contains_key(id) || s.external.contains_key(id);
         let mut r = Reduced::default();
@@ -909,6 +916,21 @@ impl Emitter {
     /// True if `id` is on the scene (not parked, not gone).
     pub fn is_on_scene(&self, id: NodeId) -> bool {
         self.order.values().any(|v| v.contains(&id))
+    }
+
+    /// Every node on the scene: under a root, not parked (a parked
+    /// bar's descendants keep their places under it), not gone.
+    pub fn on_scene(&self) -> std::collections::HashSet<NodeId> {
+        let mut out = std::collections::HashSet::new();
+        let mut walk = vec![None];
+        while let Some(p) = walk.pop() {
+            for k in self.order.get(&p).into_iter().flatten() {
+                if out.insert(*k) {
+                    walk.push(Some(*k));
+                }
+            }
+        }
+        out
     }
 
     /// `strand reload --hard`: remove every program node of `old`'s

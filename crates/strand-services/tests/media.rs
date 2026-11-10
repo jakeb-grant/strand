@@ -650,6 +650,7 @@ fn remote_art_is_fetched_cached_and_never_stalls_the_player() {
     let (s, b) = services(&rt, bus.buses());
     let cells = b.media.cells();
     b.media.acquire(&rt);
+    b.media.acquire_field(art_field());
     assert!(s.wait_ready(&rt, Duration::from_secs(10)));
     let shows = |bytes: &[u8]| match cells.art.get_untracked(&rt) {
         Ok(Some(path)) => std::fs::read(&path).is_ok_and(|b| b == bytes),
@@ -728,6 +729,55 @@ fn remote_art_is_fetched_cached_and_never_stalls_the_player() {
     until(&rt, &s, "the next body", || b.media.starts() == 2);
     until(&rt, &s, "the art again", || shows(&a_png));
     assert_eq!(count("/slow.png"), 1, "fetched again");
+    s.shutdown();
+}
+
+fn art_field() -> usize {
+    media::Media::FIELDS
+        .iter()
+        .position(|f| f.name == "art")
+        .unwrap()
+}
+
+/// (audit-art-read) Remote art is fetched only while a visible reader
+/// reads `media.art`: a config reading other media fields makes no
+/// request for the URL a player sends, and the art is fetched once the
+/// field is read.
+#[test]
+fn remote_art_is_fetched_only_while_it_is_read() {
+    let Some(bus) = strand_services::testing::PrivateBus::start() else {
+        return;
+    };
+    let a_png = png([255, 0, 0, 255]);
+    let a = a_png.clone();
+    let (port, asked) = http_server(move |_| (Duration::ZERO, ok(&a)));
+    let tokio = tokio();
+    let first = format!("http://127.0.0.1:{port}/a.png");
+    let (_conn, _track) = player_with(&tokio, &bus.address, "spotify", "Playing", "Song", 0, |t| {
+        t.art = first.clone()
+    });
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.media.cells();
+    b.media.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    until(&rt, &s, "the track", || {
+        cells.title.get_untracked(&rt) == Ok(Some("Song".into()))
+    });
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_millis(500) {
+        s.pump(&rt);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(asked.lock().unwrap().is_empty(), "fetched with no reader");
+    assert_eq!(cells.art.get_untracked(&rt), Ok(None));
+
+    b.media.acquire_field(art_field());
+    until(&rt, &s, "the art once read", || {
+        matches!(cells.art.get_untracked(&rt),
+            Ok(Some(path)) if std::fs::read(&path).is_ok_and(|b| b == a_png))
+    });
+    assert_eq!(asked.lock().unwrap().len(), 1);
     s.shutdown();
 }
 

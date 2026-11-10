@@ -10,7 +10,9 @@
 #   3  check-lock.sh, check-isolation.sh and their self-tests,
 #      test-worktree.sh (ab.sh's and mutants.sh's worktree helpers) and
 #      test-local-mounts.sh (what `run.sh eval local` mounts) and
-#      test-repeat.sh (the repeated gate and matrix, on a stand-in build)
+#      test-repeat.sh (the repeated gate and matrix, on a stand-in build),
+#      test-mutants-summary.sh, and check-mutants.sh (every mutant patch
+#      still applies; the mutants themselves run nightly) and its self-test
 #   4  cargo test of eval/, then test-report-view.sh (report-view.sh and
 #      replay-mounts.sh on fixture bundles)
 #   5  strand-eval refs-check (the reference files: seals, notes, and a
@@ -58,7 +60,9 @@ lock_and_isolation() {
     bash scripts/eval/test-worktree.sh &&
     bash scripts/eval/test-local-mounts.sh &&
     bash scripts/eval/test-repeat.sh &&
-    bash scripts/eval/test-mutants-summary.sh
+    bash scripts/eval/test-mutants-summary.sh &&
+    bash scripts/eval/check-mutants.sh &&
+    bash scripts/eval/test-check-mutants.sh
 }
 
 # The merge base with main, which refs-check holds changed references

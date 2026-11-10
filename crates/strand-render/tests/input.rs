@@ -854,6 +854,58 @@ fn a_press_on_the_bar_closes_an_exclusive_launcher() {
     );
 }
 
+/// A left press in a popup nested in an open `keyboard: exclusive`
+/// panel with a two-way `open` is inside the panel, not a click away
+/// from it: the panel stays open.
+#[test]
+fn a_press_in_a_popup_of_an_exclusive_panel_keeps_it_open() {
+    use strand_scene::{NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let (panel, anchor, popup) = (NodeId::new(0, 0), NodeId::new(1, 0), NodeId::new(2, 0));
+    let two_way = PropValue::List(vec![PropValue::Keyword("open".into())]);
+    let mut d = SceneDiff::new();
+    d.create(panel, NodeKind::Panel, None, 0)
+        .set(panel, Prop::Size, PropValue::Number(50.0))
+        .set(panel, Prop::Open, PropValue::Bool(true))
+        .set(
+            panel,
+            Prop::Keyboard,
+            PropValue::Keyword("exclusive".into()),
+        )
+        .set(panel, Prop::TwoWay, two_way.clone())
+        .create(anchor, NodeKind::Button, Some(panel), 0)
+        .create(popup, NodeKind::Popup, Some(anchor), 0)
+        .set(popup, Prop::Size, PropValue::Number(40.0))
+        .set(popup, Prop::Open, PropValue::Bool(true))
+        .set(popup, Prop::TwoWay, two_way);
+    assert!(r.apply(d).is_empty());
+    let mut f = R::default();
+    f.attached(SurfaceId(1), panel);
+    f.attached(SurfaceId(2), popup);
+    let press = |state| InputEvent::PointerButton {
+        surface: SurfaceId(2),
+        position: LogicalPoint::new(5.0, 5.0),
+        button: button::LEFT,
+        state,
+        time: 0,
+    };
+    f.input(&press(ButtonState::Pressed), &mut r);
+    f.input(&press(ButtonState::Released), &mut r);
+    let out = f.drain();
+    assert!(
+        !out.contains(&Intent::Write {
+            node: panel,
+            prop: Prop::Open,
+            value: PropValue::Bool(false),
+        }),
+        "a press in the panel's own popup closed the panel: {out:?}"
+    );
+}
+
 /// Keys typed faster than logic answers build on the last write; logic
 /// answering in order does not undo them, and a text of logic's own (a
 /// handler clearing the query) wins over the writes in flight.
@@ -925,6 +977,79 @@ fn logic_clearing_an_input_wins_over_edits_in_flight() {
     // window: the next key builds on that.
     logic(&mut f, &mut r, "");
     assert_eq!(key(&mut f, &mut r, "d"), "d", "logic's own text wins");
+}
+
+/// The window in which a key builds on an unanswered write runs on the
+/// Router's clock, as a host on a virtual clock sets it: held still, the
+/// window stays open however much wall time passes (here the virtual
+/// clock lags it by seconds); moved 600 ms on, it has closed and the next
+/// key builds on the text the scene shows, whatever the wall clock says.
+#[test]
+fn edits_in_flight_expire_on_the_routers_clock() {
+    use std::time::Duration;
+    use strand_scene::{NodeKind, SceneDiff};
+    let data = std::fs::read(strand_text::test_font_path()).unwrap();
+    let engine = strand_text::TextEngine::new(strand_text::FontConfig::isolated(vec![
+        std::sync::Arc::new(data),
+    ]));
+    let mut r = Renderer::new(TextBackend::Inline(Box::new(engine)));
+    let (p, i) = (NodeId::new(0, 0), NodeId::new(1, 0));
+    let mut d = SceneDiff::new();
+    d.create(p, NodeKind::Panel, None, 0)
+        .set(p, Prop::Size, PropValue::Number(80.0))
+        .create(i, NodeKind::Input, Some(p), 0)
+        .set(i, Prop::Text, PropValue::Text(String::new()))
+        .set(i, Prop::Focus, PropValue::Bool(true));
+    assert!(r.apply(d).is_empty());
+    let s = SurfaceId(1);
+    let mut f = R::default();
+    f.attached(s, p);
+    // A virtual clock well behind the wall clock.
+    let t0 = std::time::Instant::now()
+        .checked_sub(Duration::from_secs(10))
+        .unwrap();
+    f.router.set_now(Some(t0));
+    f.input(&InputEvent::KeyboardEnter { surface: s }, &mut r);
+    let key = |f: &mut R, r: &mut Renderer, t: &str| {
+        f.input(
+            &InputEvent::Key {
+                surface: s,
+                key: KeyInput {
+                    name: t.into(),
+                    text: t.into(),
+                    state: ButtonState::Pressed,
+                    repeat: false,
+                    modifiers: Default::default(),
+                    time: 0,
+                    latin: None,
+                },
+            },
+            r,
+        );
+        f.drain()
+            .into_iter()
+            .find_map(|i| match i {
+                Intent::Write {
+                    value: PropValue::Text(t),
+                    ..
+                } => Some(t),
+                _ => None,
+            })
+            .unwrap()
+    };
+    // Logic never answers: the scene shows "" throughout.
+    assert_eq!(key(&mut f, &mut r, "a"), "a");
+    assert_eq!(
+        key(&mut f, &mut r, "b"),
+        "ab",
+        "the virtual clock has not moved: the write is still in flight"
+    );
+    f.router.set_now(Some(t0 + Duration::from_millis(600)));
+    assert_eq!(
+        key(&mut f, &mut r, "c"),
+        "c",
+        "600 ms on the virtual clock: the window has closed"
+    );
 }
 
 /// (lockmon) The lock's password field on two monitors (twin inputs,
@@ -1912,6 +2037,41 @@ fn a_drag_carried_to_another_surface_drops_there() {
     f.input(&left(s, -1e4, -1e4, ButtonState::Released), &mut r);
     assert_eq!(f.router.drag(), None);
     assert!(events(f.drain()).is_empty());
+}
+
+/// The release the surface manager makes up on the origin when a drag
+/// the compositor carried away ends (dropped elsewhere or cancelled)
+/// comes after the origin's leave: it ends the drag but hovers nothing
+/// and leaves no pointer on the origin.
+#[test]
+fn a_carried_drag_ending_leaves_no_pointer_on_its_origin() {
+    let (mut r, [panel, _, _, _, _, _, _]) = dnd_scene();
+    let s = SurfaceId(1);
+    let mut f = R::default();
+    f.attached(s, panel);
+    f.input(&motion(s, 50.0, 20.0, 0), &mut r);
+    f.input(&left(s, 50.0, 20.0, ButtonState::Pressed), &mut r);
+    f.input(&motion(s, 50.0, 40.0, 10), &mut r);
+    f.input(&InputEvent::PointerLeave { surface: s }, &mut r);
+    assert!(f.router.hovered(s).is_empty());
+    assert_eq!(f.router.pointer(s), None);
+    f.drain();
+    f.input(&left(s, -1e6, -1e6, ButtonState::Released), &mut r);
+    assert_eq!(f.router.drag(), None);
+    let out = f.drain();
+    assert!(
+        !out.iter().any(|i| matches!(
+            i,
+            Intent::Flag {
+                flag: Flag::Hover,
+                on: true,
+                ..
+            }
+        )),
+        "a release the pointer is not there for hovered a node: {out:?}"
+    );
+    assert!(f.router.hovered(s).is_empty(), "{:?}", f.router.hovered(s));
+    assert_eq!(f.router.pointer(s), None);
 }
 
 /// (M5) A drag handed to another surface whose list draws the same

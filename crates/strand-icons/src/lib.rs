@@ -96,9 +96,28 @@ impl Dir {
 #[derive(Debug)]
 struct Theme {
     inherits: Vec<String>,
-    dirs: Vec<Dir>,
+    /// The directories it lists that exist under one of its roots at
+    /// least, in its order.
+    dirs: Vec<ThemeDir>,
     /// `<base>/<name>` for every base directory that has it.
     roots: Vec<PathBuf>,
+}
+
+/// A directory a theme lists, with the roots it exists under: a lookup
+/// probes no file in a directory that is not there (hicolor lists
+/// hundreds of sizes, about half of them absent from a usual install).
+/// Read once per [`generation`], as the theme is.
+#[derive(Debug)]
+struct ThemeDir {
+    dir: Dir,
+    /// Indices into [`Theme::roots`].
+    roots: Vec<usize>,
+}
+
+impl ThemeDir {
+    fn roots<'a>(&'a self, t: &'a Theme) -> impl Iterator<Item = &'a PathBuf> + 'a {
+        self.roots.iter().filter_map(|&i| t.roots.get(i))
+    }
 }
 
 /// Parses an `index.theme`'s text. `None` without an `[Icon Theme]`
@@ -239,17 +258,23 @@ pub fn system_theme() -> String {
 
 /// The icon theme the desktop's settings portal names (`None`: no portal,
 /// or it names none), which [`system_theme`] prefers to GTK's settings
-/// files. `true` when it differs from the one set before: the caches were
-/// invalidated ([`invalidate`]), and holders of icons must look them up
-/// again.
+/// files. `true` when the theme [`system_theme`] gives changes with it:
+/// the caches were invalidated ([`invalidate`]), and holders of icons
+/// must look them up again. A name that leaves that theme as it was (the
+/// one GTK's settings files already give, or any name while
+/// `$STRAND_ICON_THEME` is set) is recorded and invalidates nothing.
 pub fn set_desktop_theme(name: Option<String>) -> bool {
     let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
-    {
+    let old = {
         let mut s = state();
         if s.desktop == name {
             return false;
         }
-        s.desktop = name;
+        std::mem::replace(&mut s.desktop, name.clone())
+    };
+    // The settings files are read without the lock held.
+    if read_system_theme(old) == read_system_theme(name) {
+        return false;
     }
     invalidate();
     true
@@ -439,7 +464,13 @@ fn supplied_dir(path: &Path) -> bool {
         .is_some_and(|f| f.keys().any(|k| k != path && k.starts_with(path)))
 }
 
+/// The files a lookup has probed, for the tests that count them.
+#[cfg(test)]
+static PROBES: AtomicU64 = AtomicU64::new(0);
+
 fn is_file(path: &Path) -> bool {
+    #[cfg(test)]
+    PROBES.fetch_add(1, Ordering::Relaxed);
     file(path).is_some() || path.is_file()
 }
 
@@ -462,10 +493,21 @@ fn load_theme(bases: &[PathBuf], name: &str) -> Option<Theme> {
         .collect();
     // The first `index.theme` found describes it (spec: "the first one
     // found in the base directories").
-    let (inherits, dirs) = roots
+    let (inherits, listed) = roots
         .iter()
         .find_map(|r| read_text(&r.join("index.theme")))
         .and_then(|t| parse_index(&t))?;
+    // One stat per listed directory and root, here rather than two per
+    // icon name looked up.
+    let dirs = listed
+        .into_iter()
+        .filter_map(|dir| {
+            let roots: Vec<usize> = (0..roots.len())
+                .filter(|&i| is_dir(&roots[i].join(&dir.path)))
+                .collect();
+            (!roots.is_empty()).then_some(ThemeDir { dir, roots })
+        })
+        .collect();
     Some(Theme {
         inherits,
         dirs,
@@ -535,21 +577,22 @@ fn file_in(root: &Path, dir: &str, name: &str) -> Option<PathBuf> {
 }
 
 fn lookup_in(t: &Theme, name: &str, size: u32, scale: u32) -> Option<PathBuf> {
-    for d in t.dirs.iter().filter(|d| d.matches(size, scale)) {
-        for root in &t.roots {
-            if let Some(p) = file_in(root, &d.path, name) {
+    for d in t.dirs.iter().filter(|d| d.dir.matches(size, scale)) {
+        for root in d.roots(t) {
+            if let Some(p) = file_in(root, &d.dir.path, name) {
                 return Some(p);
             }
         }
     }
     let mut best: Option<(u32, PathBuf)> = None;
-    for d in &t.dirs {
-        let dist = d.distance(size, scale);
+    // The matching directories were probed above, in vain.
+    for d in t.dirs.iter().filter(|d| !d.dir.matches(size, scale)) {
+        let dist = d.dir.distance(size, scale);
         if best.as_ref().is_some_and(|(b, _)| *b <= dist) {
             continue;
         }
-        for root in &t.roots {
-            if let Some(p) = file_in(root, &d.path, name) {
+        for root in d.roots(t) {
+            if let Some(p) = file_in(root, &d.dir.path, name) {
                 best = Some((dist, p));
                 break;
             }
@@ -870,27 +913,124 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// A name the theme lacks costs a probe per directory it lists that is
+    /// there, once: none in a listed directory missing from every root,
+    /// and none twice in a directory of the size asked for. What it finds
+    /// is the same: the closest size that exists, under any root.
+    #[test]
+    fn a_miss_probes_only_the_listed_directories_that_exist() {
+        let _serial = serial();
+        let base = std::env::temp_dir().join(format!("strand-icons-probe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (first, second) = (base.join("one"), base.join("two"));
+        let dirs: Vec<String> = (1..=100).map(|i| format!("{i}x{i}/apps")).collect();
+        let mut index = format!("[Icon Theme]\nDirectories={}\n", dirs.join(","));
+        for (i, d) in (1..=100).zip(&dirs) {
+            index += &format!("[{d}]\nSize={i}\nType=Fixed\n");
+        }
+        write(&first.join("T/index.theme"), &index);
+        write(&first.join("T/48x48/apps/here.png"), "png");
+        write(&second.join("T/48x48/apps/other.svg"), "svg");
+        write(&second.join("T/20x20/apps/far.png"), "png");
+        set_base_dirs(Some(vec![first.clone(), second.clone()]));
+        let t = Some("T");
+        assert!(theme_exists("T"));
+        let probes = |f: &dyn Fn()| {
+            PROBES.store(0, Ordering::Relaxed);
+            f();
+            PROBES.load(Ordering::Relaxed)
+        };
+        // 48x48 under both roots, 20x20 under the second: three
+        // directories, two extensions each, then the two base directories.
+        let n = probes(&|| assert_eq!(lookup("missing", 48, 1, t), None));
+        assert_eq!(n, 3 * 2 + 2 * 2, "a hundred listed, three there");
+        let n = probes(&|| assert_eq!(lookup("missing", 48, 1, t), None));
+        assert_eq!(n, 0, "remembered");
+        assert_eq!(
+            lookup("here", 48, 1, t),
+            Some(first.join("T/48x48/apps/here.png"))
+        );
+        assert_eq!(
+            lookup("other", 48, 1, t),
+            Some(second.join("T/48x48/apps/other.svg"))
+        );
+        assert_eq!(
+            lookup("far", 48, 1, t),
+            Some(second.join("T/20x20/apps/far.png")),
+            "the closest size there is"
+        );
+        assert_eq!(
+            lookup("other", 30, 1, t),
+            Some(second.join("T/48x48/apps/other.svg"))
+        );
+        // A directory made later is probed once the watcher's report
+        // invalidates, as an icon added there is found.
+        write(&first.join("T/64x64/apps/late.png"), "png");
+        invalidate();
+        assert_eq!(
+            lookup("late", 64, 1, t),
+            Some(first.join("T/64x64/apps/late.png"))
+        );
+        set_base_dirs(None);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// The portal's theme name wins over GTK's settings files (not over
     /// `$STRAND_ICON_THEME`); setting a different one invalidates, the
-    /// same one does nothing, and `None` falls back to the files.
+    /// same one does nothing, and `None` falls back to the files. Under
+    /// `$STRAND_ICON_THEME` no name switches anything.
     #[test]
     fn the_portal_theme_is_preferred_and_invalidates_on_change() {
         let _serial = serial();
+        set_desktop_theme(None);
         let files = read_system_theme(None);
         let pinned = std::env::var("STRAND_ICON_THEME").is_ok_and(|t| !t.trim().is_empty());
         let g = generation();
-        assert!(set_desktop_theme(Some("PortalTheme".into())));
-        assert!(generation() > g, "a switch invalidates");
-        if !pinned {
+        assert_eq!(set_desktop_theme(Some("PortalTheme".into())), !pinned);
+        if pinned {
+            assert_eq!(generation(), g, "the pinned theme stays");
+        } else {
+            assert!(generation() > g, "a switch invalidates");
             assert_eq!(system_theme(), "PortalTheme");
         }
         let g = generation();
         assert!(!set_desktop_theme(Some(" PortalTheme ".into())));
         assert_eq!(generation(), g, "the same theme again changes nothing");
-        assert!(set_desktop_theme(Some(String::new())), "empty: no theme");
+        assert_eq!(
+            set_desktop_theme(Some(String::new())),
+            !pinned,
+            "empty: no theme"
+        );
         assert_eq!(system_theme(), files);
         assert!(!set_desktop_theme(None));
         assert_eq!(system_theme(), files);
+    }
+
+    /// A portal naming the theme the lookup already uses (the one GTK's
+    /// settings files give, Adwaita by default) is no switch: at boot,
+    /// its first answer drops no lookup and asks no holder of icons to
+    /// look them up again.
+    #[test]
+    fn a_portal_name_that_leaves_the_theme_as_it_was_invalidates_nothing() {
+        let _serial = serial();
+        set_desktop_theme(None);
+        let files = system_theme();
+        let g = generation();
+        assert!(!set_desktop_theme(Some(files.clone())), "the same theme");
+        assert_eq!(generation(), g, "no lookup dropped");
+        assert_eq!(system_theme(), files);
+        // It is recorded all the same: another name switches, and the
+        // files' theme again switches back.
+        if read_system_theme(Some("PortalTheme".into())) == "PortalTheme" {
+            assert!(set_desktop_theme(Some("PortalTheme".into())));
+            assert_eq!(system_theme(), "PortalTheme");
+            assert!(set_desktop_theme(Some(files.clone())));
+            assert_eq!(system_theme(), files);
+            let g = generation();
+            assert!(!set_desktop_theme(None), "None gives the files' theme too");
+            assert_eq!(generation(), g);
+        }
+        set_desktop_theme(None);
     }
 
     #[test]

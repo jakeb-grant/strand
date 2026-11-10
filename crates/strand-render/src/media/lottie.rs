@@ -480,13 +480,22 @@ impl std::fmt::Debug for Lottie {
 }
 
 /// The frame shown `t` seconds in at `speed`, looping over `frames`.
-pub fn frame_at(comp: &velato::Composition, t: f32, speed: f32) -> f64 {
+pub fn frame_at(comp: &velato::Composition, t: f64, speed: f32) -> f64 {
     let (a, b) = (comp.frames.start, comp.frames.end);
     let len = b - a;
     if len.is_nan() || len <= 0.0 || !comp.frame_rate.is_finite() {
         return a;
     }
-    let f = (t as f64 * speed as f64 * comp.frame_rate).rem_euclid(len);
+    // A capped clock's tick is whole nanoseconds, so its `t` lands a
+    // hair short of the frame it shows: within a thousandth of a frame
+    // is that frame.
+    let at = t * speed as f64 * comp.frame_rate;
+    let at = if (at - at.round()).abs() < 1e-3 {
+        at.round()
+    } else {
+        at
+    };
+    let f = at.rem_euclid(len);
     // Whole frames: a capped clock shows the file's frames, not between.
     a + f.floor().min(len - 1.0).max(0.0)
 }

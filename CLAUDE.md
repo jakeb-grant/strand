@@ -56,7 +56,10 @@ it fails at step N: fix it, rerun that test alone, then resume with
 checked the fix). Run it from the start again only if the fix touched
 what an earlier step checks (formatting, lints, another crate's tests).
 The commit that goes to `main` needs one whole run from step 1; that is
-the integration's, not each stream's.
+the integration's, not each stream's. On GitHub, that commit's push to
+`main` skips each check job a green run of the same commit on its branch
+already passed (`prior` and `checks` in ci.yml, decisions.md
+audit-main-rerun): push the branch and let its run go green first.
 
 Run them, and every build and test, through the container below, never
 natively.

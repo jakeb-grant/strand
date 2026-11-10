@@ -214,7 +214,10 @@ impl Shared {
                 let enter = rt.enter();
                 crate::bus::forget();
                 drop(enter);
-                drop(rt);
+                // Blocking work still running (an art fetch, a `statvfs`
+                // on a hung disk) is waited for, bounded, then left: a
+                // plain drop would wait for it however long it takes.
+                rt.shutdown_timeout(JOIN_LIMIT);
             })?;
         Ok(Shared {
             jobs: Some(tx),
@@ -231,7 +234,18 @@ impl Drop for Shared {
     fn drop(&mut self) {
         self.jobs.take();
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            // Its finalizers, then its blocking work, each bounded; one
+            // that overruns anyway (a future's drop that hangs) is left.
+            let deadline =
+                Instant::now() + FINALIZE_LIMIT + JOIN_LIMIT + Duration::from_millis(500);
+            while !t.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            if t.is_finished() {
+                let _ = t.join();
+            } else {
+                log::warn!("the services' runtime did not end in time; left running");
+            }
         }
     }
 }
@@ -674,9 +688,12 @@ impl Services {
     }
 
     /// Stop every service now and end the shared runtime (joining its
-    /// thread). Services on threads of their own are told to stop and
-    /// joined, [`JOIN_LIMIT`] at most in all (one that overruns is
-    /// logged and left).
+    /// thread, which waits [`FINALIZE_LIMIT`] at most for finalizers and
+    /// [`JOIN_LIMIT`] at most for blocking work still running). Services
+    /// on threads of their own are told to stop and joined, [`JOIN_LIMIT`]
+    /// at most in all (one that overruns is logged and left). A stopped
+    /// command that ignores `SIGTERM` is sent its `SIGKILL` before this
+    /// returns, [`crate::custom::KILL_GRACE`] at most later.
     pub fn shutdown(&self) {
         let members: Vec<Rc<dyn Member>> = self.0.members.borrow().clone();
         for m in &members {
@@ -684,6 +701,9 @@ impl Services {
         }
         self.0.shared.borrow_mut().take();
         join_all(members.iter().filter_map(|m| m.take_thread()).collect());
+        // (audit-kill-exit) Before strand can exit: a stopped command
+        // that ignored `SIGTERM` gets its `SIGKILL` here.
+        crate::custom::end_stopped_groups();
     }
 }
 
@@ -695,6 +715,7 @@ impl Drop for Registry {
         }
         self.shared.get_mut().take();
         join_all(members.iter().filter_map(|m| m.take_thread()).collect());
+        crate::custom::end_stopped_groups();
     }
 }
 
@@ -738,6 +759,8 @@ struct Run<S: Service> {
     /// The actions its body never read, left as its context went
     /// ([`Cx`]'s `Drop`): refused as the run ends.
     unread: crate::cx::Unread<S>,
+    /// How many of its updates have been applied ([`Cx::applied`]).
+    applied: tokio::sync::watch::Sender<u64>,
 }
 
 impl<S: Service> Run<S> {
@@ -1170,13 +1193,16 @@ impl<S: Service> ClientInner<S> {
         let (out_tx, rx) = std::sync::mpsc::channel();
         let (tx, msgs) = mpsc::unbounded_channel();
         let notify: Notify = Arc::new(Mutex::new(None));
+        let (applied, applied_rx) = tokio::sync::watch::channel(0);
         let out = Out {
             tx: out_tx.clone(),
             wake: reg.wake.clone(),
+            applied: applied_rx.clone(),
         };
         let ended = Out {
             tx: out_tx,
             wake: reg.wake.clone(),
+            applied: applied_rx,
         };
         let watched = S::FIELDS
             .iter()
@@ -1272,6 +1298,7 @@ impl<S: Service> ClientInner<S> {
             started: rt.now(),
             stopped: Arc::default(),
             unread,
+            applied,
         });
     }
 
@@ -1759,6 +1786,17 @@ impl<S: Service> ClientInner<S> {
     /// Applies every envelope the run has sent.
     fn pump_envelopes(&self, rt: &Runtime) -> bool {
         let mut any = self.settle_ready(rt);
+        // The updates applied in this pump, told to the run only as the
+        // pump ends ([`Cx::applied`]): what the run sends on hearing of
+        // them is then applied in a later pump, never in this one.
+        let mut applied = 0u64;
+        let told = |applied: u64| {
+            if applied > 0
+                && let Some(run) = self.run.borrow().as_ref()
+            {
+                run.applied.send_modify(|n| *n += applied);
+            }
+        };
         loop {
             let next = match self.run.borrow().as_ref() {
                 Some(run) => run.rx.try_recv(),
@@ -1766,8 +1804,12 @@ impl<S: Service> ClientInner<S> {
             };
             let env = match next {
                 Ok(env) => env,
-                Err(std::sync::mpsc::TryRecvError::Empty) => return any,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    told(applied);
+                    return any;
+                }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    told(applied);
                     // No `Ended` came first: the body panicked.
                     let live = self.run.borrow().as_ref().is_some_and(|r| !r.ended);
                     if live {
@@ -1797,6 +1839,7 @@ impl<S: Service> ClientInner<S> {
                         };
                         self.apply_tapped(rt, p, how);
                     }
+                    applied += 1;
                 }
                 Envelope::Notice(m) => {
                     if let Some(run) = self.run.borrow_mut().as_mut() {
@@ -2742,5 +2785,36 @@ impl<S: Service> DynService for Client<S> {
 
     fn observe(&self, f: Observer) {
         self.0.observers.borrow_mut().push(f);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// (audit-runtime-bound) Blocking work still running on the shared
+    /// runtime does not hold the shutdown longer than its bound.
+    #[test]
+    fn shutdown_does_not_wait_out_stuck_blocking_work() {
+        let rt = Runtime::new();
+        let services = Services::new(&rt, Buses::none(), || {});
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let _stop = services
+            .spawn_task(move |_| async move {
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _ = started_tx.send(());
+                    std::thread::sleep(Duration::from_secs(30));
+                })
+                .await;
+            })
+            .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let t = Instant::now();
+        services.shutdown();
+        let took = t.elapsed();
+        assert!(
+            took < FINALIZE_LIMIT + JOIN_LIMIT + Duration::from_secs(1),
+            "took {took:?}"
+        );
     }
 }

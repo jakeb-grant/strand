@@ -35,7 +35,7 @@ use vello_cpu::{
 
 use crate::cache::{IDLE_FREE, PaintCache};
 use crate::clock::Rate;
-use crate::flatten::{DisplayItem, Item};
+use crate::flatten::{DisplayItem, Item, Shift, hash_item_from};
 use crate::raster::AtlasMirror;
 
 mod fade;
@@ -280,17 +280,49 @@ impl Offscreen {
         // Every group the damage touches, and every group inside one: an
         // outer group is drawn whole, so its inner groups must be ready
         // (their pixels drawn filtered) whether or not damage meets them.
-        let mut groups: Vec<usize> = Vec::new();
-        let mut i = 0;
-        while i < items.len() {
-            if offscreen(&items[i]) && touches(&items[i].bounds) {
+        // (audit-backdrop-reads) And every group closed before a chosen
+        // backdrop that meets what it reads, which it draws behind it
+        // whether or not damage meets them; to a fixed point, since such
+        // a group may hold, or be, a backdrop reading further.
+        let n = items.len();
+        let mut chosen = vec![false; n];
+        // The chosen backdrops: where they are and what they read.
+        let mut reads: Vec<(usize, Rect)> = Vec::new();
+        loop {
+            let before = reads.len();
+            for i in 0..n {
+                if chosen[i] || !offscreen(&items[i]) {
+                    continue;
+                }
+                let b = items[i].bounds;
                 let end = crate::raster::skip_group(items, i);
-                groups.extend((i..end.min(items.len())).filter(|&j| offscreen(&items[j])));
-                i = end.max(i + 1);
-            } else {
-                i += 1;
+                if !touches(&b) && !reads.iter().any(|&(at, r)| end <= at && r.intersects(b)) {
+                    continue;
+                }
+                for j in i..end.min(n) {
+                    if chosen[j] || !offscreen(&items[j]) {
+                        continue;
+                    }
+                    chosen[j] = true;
+                    if let Item::PushLayer(l) = &items[j].item
+                        && l.gpu.is_none()
+                        && !skip(j)
+                        && let Some(pass) = crate::backdrop::pass(l, scale)
+                        && let Some(read) = items[j]
+                            .bounds
+                            .intersect(surface)
+                            .and_then(|r| r.inflate(pass.reach()).intersect(surface))
+                    {
+                        reads.push((j, read));
+                    }
+                }
+            }
+            // Only a new read can choose more.
+            if reads.len() == before {
+                break;
             }
         }
+        let groups: Vec<usize> = (0..n).filter(|&i| chosen[i]).collect();
         // Each group after every group it shows: by where it ends, so
         // the groups inside one come before it (it is drawn whole), and a
         // backdrop (an empty group) comes after the groups closed before
@@ -317,12 +349,13 @@ impl Offscreen {
                 continue;
             };
             if let Some(pass) = crate::backdrop::pass(layer, scale) {
-                let key = crate::backdrop::key(items, i, pass, region, scale, &self.current);
+                let key =
+                    crate::backdrop::key(items, i, pass, region, surface, scale, &self.current);
                 let drawn = match self.get(key) {
                     Some(d) => d,
                     None => {
-                        let behind = crate::backdrop::read(items, i, pass, region);
-                        let pins = pins(&behind, &self.current);
+                        let pins =
+                            pins(crate::backdrop::read(items, i, pass, region), &self.current);
                         let started = Instant::now();
                         let Some(drawn) = crate::backdrop::render(
                             items,
@@ -346,44 +379,48 @@ impl Offscreen {
                 continue;
             }
             let inner = &items[i + 1..end.saturating_sub(1).max(i + 1)];
+            // (audit-group-shift) Keyed from the region's own corner, as a
+            // fade layer is: a group that only moves by whole pixels finds
+            // the pixels it drew, placed where it is this frame. What the
+            // surface cuts off it is in the key (its size, its cut sides,
+            // where its items lie in it).
+            let o = Shift {
+                x: i64::from(region.x),
+                y: i64::from(region.y),
+            };
+            let cut = cut_sides(region, surface);
             let mut h = DefaultHasher::new();
-            (
-                region.x,
-                region.y,
-                region.w,
-                region.h,
-                scale.as_f32().to_bits(),
-            )
-                .hash(&mut h);
-            crate::layers::hash_effects(&mut h, &layer.effects);
-            (
-                layer.mosaic,
-                layer.frame.x0.to_bits(),
-                layer.frame.y0.to_bits(),
-            )
-                .hash(&mut h);
-            for v in layer.xform.as_coeffs() {
-                v.to_bits().hash(&mut h);
-            }
+            ("group", region.w, region.h, scale.as_f32().to_bits(), cut).hash(&mut h);
+            hash_item_from(&mut h, &items[i].item, o);
             for d in inner {
-                crate::flatten::hash_item(&mut h, &d.item);
-                // A nested group's own pixels (drawn just before).
+                hash_item_from(&mut h, &d.item, o);
+                // A nested group's own pixels (drawn just before), and
+                // where they are in this one.
                 if let Item::PushLayer(l) = &d.item
                     && let Some(n) = self.current.get(&layer_key(l))
                 {
-                    (Arc::as_ptr(&n.pixmap) as usize).hash(&mut h);
+                    (
+                        Arc::as_ptr(&n.pixmap) as usize,
+                        i64::from(n.x) - o.x,
+                        i64::from(n.y) - o.y,
+                    )
+                        .hash(&mut h);
                 }
             }
             let key = h.finish();
             let drawn = match self.get(key) {
-                Some(d) => d,
+                Some(d) => Drawn {
+                    x: region.x,
+                    y: region.y,
+                    ..d
+                },
                 None => {
                     let started = Instant::now();
                     let Some(drawn) = render_group(
                         inner,
                         layer,
                         region,
-                        cut_sides(region, surface),
+                        cut,
                         atlas,
                         cache,
                         scale,
@@ -461,7 +498,10 @@ impl Offscreen {
 
 /// The pixmaps that `hash_item` (and a key's nested groups) name by
 /// address among `items`, to pin in the entry keyed by them.
-fn pins(items: &[DisplayItem], groups: &HashMap<usize, Drawn>) -> Vec<Weak<Pixmap>> {
+fn pins<'a>(
+    items: impl IntoIterator<Item = &'a DisplayItem>,
+    groups: &HashMap<usize, Drawn>,
+) -> Vec<Weak<Pixmap>> {
     let mut out = Vec::new();
     for d in items {
         match &d.item {

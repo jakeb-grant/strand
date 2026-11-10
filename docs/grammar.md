@@ -778,14 +778,19 @@ diagnostic and resynchronises:
   operands) is an error, never a stack overflow. Flat chains (`a + b + c`,
   `a.b.c`, `else if`) are parsed in loops, but each link deepens the tree,
   so the tree as a whole may be at most 256 levels deep; past that is one
-  `syntax::too_deep` error. A per-file step budget guarantees termination.
+  `syntax::too_deep` error. A chain's links count on top of its first
+  operand, so `(a + … + a) + b` and `a.b.c + 1` are as deep as both
+  chains together; operands side by side (`(a + … + a) + (b + … + b)`,
+  `f(…)[…]`) are as deep as the deeper one. A per-file step budget
+  guarantees termination.
 - Unknown words where a keyword was expected get a did-you-mean from the
   keywords valid at that position (`componnet` → `component`,
   `on chnage a` → `change`, `for x im xs` → `in`, `dbsu` → `dbus`), and
   so do clause keywords: `for … kye` → `key`, `state p: T kye` → `key`,
   `state q = 1 persits` → `persist`, `state s frm` → `from`,
   `tokens c extnd` → `extends`, `on change a aftr` → `after`, a field's
-  `rx` → `rw`, `if … { } els { }` → `else`, `overide space { … }` →
+  `rx` → `rw`, `if … { } els { }` → `else` (a capitalised word, `Else {
+  … }`, stays an element), `overide space { … }` →
   `override` (design.md: a misspelt override is an error, never a new
   token), `export stat` → `state`, a component's `tokns` → `tokens`,
   `permit exc` → `exec` and a poll's `evry` → `every`. The misspelt word is

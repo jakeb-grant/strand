@@ -300,6 +300,7 @@ impl Renderer {
                 text_came: None,
                 new_text_until: None,
                 painted_at: None,
+                sampled_at: None,
                 dirty: true,
                 opaque: Damage::new(),
                 time: Duration::ZERO,

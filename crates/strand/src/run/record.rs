@@ -615,8 +615,21 @@ impl InputRecorder {
         output: Option<(&str, Option<&str>)>,
         kind: NodeKind,
     ) {
-        let slot = self.next_surface;
-        self.next_surface = self.next_surface.wrapping_add(1);
+        // The counter wraps after 65,536 maps: a slot a surface still
+        // mapped holds (a bar since boot) is skipped, since a report keys
+        // frames, roots and input by slot.
+        let mut slot = self.next_surface;
+        for _ in 0..=u16::MAX {
+            if !self
+                .surfaces
+                .iter()
+                .any(|(id, s)| *id != surface && s.slot == slot)
+            {
+                break;
+            }
+            slot = slot.wrapping_add(1);
+        }
+        self.next_surface = slot.wrapping_add(1);
         self.surfaces.insert(
             surface,
             SurfaceSlot {
@@ -1168,6 +1181,29 @@ impl ChangeRecorder {
         }
     }
 
+    /// (proc-run) Whether a command of `action` run with `argv` was given
+    /// a text that is not the config's: an argument after the program
+    /// that is neither one of the action's own written words (`"-c"`, a
+    /// script, a flag; `Program::is_text_literal` holds chunk constants
+    /// only) nor a text of the program.
+    fn given_typed_text(&self, action: &str, argv: &[String]) -> bool {
+        let home = std::env::var_os("HOME").and_then(|h| h.into_string().ok());
+        let written: Vec<&str> = self
+            .program
+            .execs
+            .values()
+            .filter(|a| a.name == action)
+            .flat_map(|a| &a.argv)
+            .filter_map(|p| match p {
+                strand_compiler::hir::ArgvPart::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        argv.iter()
+            .skip(1)
+            .any(|a| !written.contains(&a.as_str()) && !self.argument_literal(a, home.as_deref()))
+    }
+
     /// A service's patch, from `Services::tap`.
     pub(crate) fn service(&mut self, t: u64, ev: &TapEvent<'_>) {
         if strand_services::secret(ev.service) {
@@ -1406,11 +1442,7 @@ impl ChangeRecorder {
         argv: &[String],
         answer: &Result<Value, String>,
     ) {
-        let home = std::env::var_os("HOME").and_then(|h| h.into_string().ok());
-        let tainted = argv
-            .iter()
-            .skip(1)
-            .any(|a| !self.argument_literal(a, home.as_deref()));
+        let tainted = self.given_typed_text(action, argv);
         if self.ring.as_ref().is_none_or(Ring::paused) {
             return;
         }
@@ -1501,23 +1533,7 @@ impl ChangeRecorder {
     /// `queued`: it waits behind one running, whose output it then
     /// holds back too if it would.
     pub(crate) fn run_started(&mut self, action: &str, argv: &[String], queued: bool) {
-        let home = std::env::var_os("HOME").and_then(|h| h.into_string().ok());
-        // The command's own words (`"-c"`, a script) are the config's.
-        let written: Vec<&str> = self
-            .program
-            .execs
-            .values()
-            .filter(|a| a.name == action)
-            .flat_map(|a| &a.argv)
-            .filter_map(|p| match p {
-                strand_compiler::hir::ArgvPart::Text(t) => Some(t.as_str()),
-                _ => None,
-            })
-            .collect();
-        let tainted = argv
-            .iter()
-            .skip(1)
-            .any(|a| !written.contains(&a.as_str()) && !self.argument_literal(a, home.as_deref()));
+        let tainted = self.given_typed_text(action, argv);
         let was = queued && self.run_tainted.get(action).copied().unwrap_or(false);
         self.run_tainted.insert(action.to_string(), tainted || was);
     }
@@ -1683,11 +1699,14 @@ impl ChangeRecorder {
         Some(out)
     }
 
-    /// A service's value as the bundle keeps it, under the same rules.
-    pub(crate) fn service_json(service: &str, d: &Data) -> String {
+    /// A service's value as the bundle keeps it, under the same rules:
+    /// (proc-run) a block whose last run was given a text that is not
+    /// the config's keeps no text, as the ring holds it back.
+    pub(crate) fn service_json(&self, service: &str, d: &Data) -> String {
         let clip = service == "clipboard";
+        let held = self.run_tainted.get(service).copied().unwrap_or(false);
         let mut s = String::new();
-        let _ = d.write_json(&mut s, &mut |t: &str| !clip || t.is_empty());
+        let _ = d.write_json(&mut s, &mut |t: &str| !held && (!clip || t.is_empty()));
         s
     }
 
@@ -2671,6 +2690,24 @@ mod tests {
         assert_eq!(e[2].rec.t, 5);
     }
 
+    /// A surface mapped after the slot counter wraps never takes the slot
+    /// of one still mapped, so a report's frames and input stay apart.
+    #[test]
+    fn a_wrapped_slot_skips_surfaces_still_mapped() {
+        let mut r = InputRecorder::new(false);
+        let bar = SurfaceId(1);
+        r.mapped(0, bar, NodeId::new(1, 0), None, NodeKind::Bar);
+        for i in 0..u32::from(u16::MAX) {
+            let s = SurfaceId(2 + i);
+            r.mapped(0, s, NodeId::new(2, 0), None, NodeKind::Popup);
+            r.unmapped(0, s);
+        }
+        let late = SurfaceId(1_000_000);
+        r.mapped(0, late, NodeId::new(3, 0), None, NodeKind::Popup);
+        assert_eq!(r.slot(bar), Some(0));
+        assert_eq!(r.slot(late), Some(1));
+    }
+
     #[test]
     fn surfaces_and_outputs_get_slots() {
         let mut r = InputRecorder::new(true);
@@ -3345,14 +3382,11 @@ mod tests {
         assert_ne!(e[0].rec.flags & flags::REDACTED, 0);
         assert!(!contains(&c.dump().unwrap(), b"hunter2"));
         assert_eq!(
-            ChangeRecorder::service_json("clipboard", &new),
+            c.service_json("clipboard", &new),
             r#"{"text":{"~text":11},"width":64}"#
         );
         // Another service's texts are kept as reported.
-        assert_eq!(
-            ChangeRecorder::service_json("windows", &Data::text("Helix")),
-            "\"Helix\""
-        );
+        assert_eq!(c.service_json("windows", &Data::text("Helix")), "\"Helix\"");
     }
 
     /// A declared service's item of field `i`.
@@ -3565,16 +3599,31 @@ mod tests {
     /// <name>`; a command given typed text keeps no text of its answer.
     #[test]
     fn a_result_actions_answer_is_recorded_as_its_call() {
-        let mut c = ChangeRecorder::new(true, program("let q = \"-t\""));
+        let src = "permit exec \"qalc\"\naction calc(q: text) -> text [\"qalc\", \"-t\", q]\n\
+                   let q = \"1+1\"";
+        let mut c = ChangeRecorder::new(true, program(src));
         let argv = |q: &str| vec!["qalc".to_string(), "-t".to_string(), q.to_string()];
         c.exec_answered(5, "calc", &argv("hunter2+1"), &Ok(Value::text("hunter3")));
-        c.exec_answered(6, "calc", &argv("-t"), &Err("`qalc` failed".into()));
+        c.exec_answered(6, "calc", &argv("1+1"), &Err("`qalc` failed".into()));
         let e = entries(c.ring().unwrap());
         assert_eq!(e[0].name.as_deref(), Some("action calc"));
         assert_eq!(e[0].rec.kind, kind::FETCH);
         assert_eq!(value_of(&e[0]), serde_json::json!({"ok": {"~text": 7}}));
         assert_eq!(value_of(&e[1]), serde_json::json!({"err": "`qalc` failed"}));
         assert!(!contains(&c.dump().unwrap(), b"hunter"));
+    }
+
+    /// (proc-run) A result action's own written words (a flag, a
+    /// subcommand) are the config's: called with no typed text, its
+    /// answer is kept, though no code names the flag.
+    #[test]
+    fn a_result_actions_own_flag_keeps_its_answer() {
+        let src = "permit exec \"uname\"\naction kernel() -> text [\"uname\", \"-r\"]\nlet x = 1";
+        let mut c = ChangeRecorder::new(true, program(src));
+        let argv = vec!["uname".to_string(), "-r".to_string()];
+        c.exec_answered(5, "kernel", &argv, &Ok(Value::text("6.1")));
+        let e = entries(c.ring().unwrap());
+        assert_eq!(value_of(&e[0]), serde_json::json!({"ok": "6.1"}));
     }
 
     /// (path-tilde) A `path` argument written as `~/…` reaches the
@@ -4241,6 +4290,24 @@ mod tests {
         );
         assert_eq!(value_of(&e[n - 1]), serde_json::json!({"~text": 23}));
         assert!(!contains(&c.dump().unwrap(), b"s3cret"));
+    }
+
+    /// (proc-run) The bundle's snapshot of a block keeps no text after a
+    /// run given a text that is not the config's, as the ring holds it
+    /// back; a run given only the config's texts keeps it.
+    #[test]
+    fn a_tainted_runs_block_keeps_no_text_in_the_bundle() {
+        let src = "permit exec \"sh\"\naction upd(q: text) [\"sh\", \"-c\", \"x\", q]\n\
+                   bar B { on click { upd(\"main\") } }";
+        let mut c = ChangeRecorder::new(true, program(src));
+        let argv = |q: &str| -> Vec<String> { ["sh", "-c", "x", q].map(str::to_string).to_vec() };
+        c.run_started("upd", &argv("main"), false);
+        assert_eq!(c.service_json("upd", &Data::text("main ok")), "\"main ok\"");
+        c.run_started("upd", &argv("s3cret-pkg"), false);
+        let j = c.service_json("upd", &Data::text("s3cret-pkg ok"));
+        assert_eq!(j, r#"{"~text":13}"#);
+        // Another service is not the job's.
+        assert_eq!(c.service_json("windows", &Data::text("Helix")), "\"Helix\"");
     }
 
     /// (proc-run) A declared service's `line` event is recorded, an

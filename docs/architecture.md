@@ -136,8 +136,8 @@ blocking-pool thread 500 ms after its last task
 (`client::BLOCKING_KEEP_ALIVE`). The memory budget rests on the root
 `Cargo.toml`'s `[profile.release.package]` opt-levels (decisions.md
 m5-speed-profile), which packagers' profiles do not carry, so packages
-build from the workspace. `budgets.rs` holds `.text` to 30,408,704 B
-(26,476,544 B without the GPU backend; re-bases are dated decisions.md
+build from the workspace. `budgets.rs` holds `.text` to 31,195,136 B
+(27,262,976 B without the GPU backend; re-bases are dated decisions.md
 entries). Every program strand starts gets back the inherited THP
 setting (`strand_services::child`).
 
@@ -163,9 +163,10 @@ new watcher first gets a `notices` event with the running config's
 check warnings, when it has any. A reload event's `total_ms` runs from
 the watcher's last event behind the save to the send of the diff
 holding the reload. A client that cannot take its output gets a write
-source on the logic loop; one more than 1 MiB behind when another line
-is queued is dropped, and a line of any size is queued whole
-(decisions.md ipc-large-answer).
+source on the logic loop; one that left more than 1 MiB unwritten at
+the last flush is dropped when another line is queued (lines queued in
+one loop turn never count against it), and a line of any size is queued
+whole (decisions.md ipc-large-answer, audit-ipc-turn-backlog).
 
 **M4 additions.** The GPU thread, promotion and hand-off are in
 "`strand-gpu`".
@@ -177,7 +178,8 @@ is queued is dropped, and a line of any size is queued whole
   logic ending or hanging (`ToLogic::Beat(seq)` 1 s after the last
   answer, 3 s to answer), SIGTERM, a runtime fault inside the lock, the
   text worker stopping, `auth` failing, `finished` after `locked`, no
-  `lock` open, or no first frame within 1 s leave the session locked and
+  `lock` open, or no first frame within 1 s of its first content surface
+  (none while no output exists) leave the session locked and
   show `strand_render::lock_fallback`. Its checks run on
   `strand-lock-auth` (`Checker`) and answer as `LockMsg::Checked`; each
   carries its lock session (`LockScreen::session`,
@@ -202,7 +204,9 @@ is queued is dropped, and a line of any size is queued whole
   redacted whole when any 4-byte run of one remains (lower-cased,
   escapes undone). Known values are the inputs' current ones and the
   newest four replaced (`lock::Secrets`, zeroized); values under 4 bytes
-  are never matched. Residual risk: up to four recent passwords outlive
+  are never matched. A password input is mounted while strand-compiler's
+  `Instance::is_password_input` says so: `Secrets` prunes by it after
+  each step, since a `Remove` names only a removed subtree's top. Residual risk: up to four recent passwords outlive
   the lock in memory and in a core dump (`LimitCORE=0` avoids the
   latter).
 - **Supervisor.** If the process dies while locked, the compositor keeps
@@ -372,7 +376,11 @@ The site also serves the installer, `scripts/install.sh`, at
 outside `[dev-dependencies]`. It serves what strand-services' wm,
 capture and clipboard clients and strand-surface speak, records each
 commit (`Fake::commits`) and can present only at refreshes the test
-sends (`SurfaceGlobals::vblank`); `src/lib.rs` lists the globals.
+sends (`SurfaceGlobals::vblank`); `src/lib.rs` lists the globals. It
+posts the protocol errors a compositor kills a client for when popups
+are destroyed or grab out of order, a buffer comes before the first
+`ack_configure` or is not a multiple of its scale
+(`tests/protocol_errors.rs`).
 
 **`eval/`** (`strand-eval`; docs/eval.md) runs scenarios on a virtual
 clock against `Renderer` and the logic VM, through
@@ -418,7 +426,7 @@ The binary's default `gpu` feature enables render's and surface's `gpu`
 and the compiler's `shaders` (which `strand-dev` also turns on, so the
 LSP checks shaders); with `--no-default-features` it links
 none of wgpu, vello_gpu, naga or libwayland-client, which the CPU-only
-`.text` gate measures (26,476,544 B).
+`.text` gate measures (27,262,976 B).
 
 ```
 strand-scene <── strand-gpu (wgpu, vello_gpu, vello_common, raw-window-handle)
@@ -542,8 +550,9 @@ name them.
   only. Token paths are spelled `$accent`.
 - `MAX_LINE` (64 KiB) bounds requests; an answer is delivered whole,
   whatever its size: the connection's 1 MiB queue drops a client only
-  when that much it has not read is queued before another line
-  (decisions.md ipc-large-answer).
+  when the last flush left that much unread and another line is queued,
+  or when 16 MiB is queued for it at all (one loop turn's pipelined
+  answers) (decisions.md ipc-large-answer, audit-ipc-turn-backlog).
 - **The D-Bus name**: `DBUS_NAME` (`io.github.jakeb_grant.Strand`), bus
   and interface name, object path `/`; its only spelling (a
   strand-services test holds any zbus literal equal to it). It may be
@@ -1132,8 +1141,9 @@ is being saved, so the idle-wakeup windows hold.
   hit; the `Router` drops its focus) that unmounts when the pose
   settles; a surface whose `open` goes false stays open in its spec
   until its exit or its ghosts settle. Exits are bounded:
-  `MAX_GHOSTS_PER_PARENT` (8), and an exit on a surface that painted
-  nothing for `EXIT_STALL` (1 s) or older than `MAX_MOTION` + 1 s ends
+  `MAX_GHOSTS_PER_PARENT` (8), and an exit on a surface no frame
+  sampled for `EXIT_STALL` (1 s) (a delegated pose's frames that draw
+  nothing count) or older than `MAX_MOTION` + 1 s ends
   at the next `apply`/`update`. (lock-polish) A `lock` closing keeps the
   content logic removes with it that has no pose drawn as it was
   (`Renderer::lock_closing`) while what has one plays it, and while it
@@ -1293,7 +1303,12 @@ is being saved, so the idle-wakeup windows hold.
     `Template::numbers` holds numeric slots, so `glow: 10 * wave(2s),
     $accent` travels as one value. A scope reads a per-node
     `TimeContext` through `TokenScope::with_time`; under
-    `reduced_motion` it is `TimeContext::frozen`. A prop that reads time
+    `reduced_motion` it is `TimeContext::frozen`. `TimeContext::t` is
+    f64 seconds, and `t`, `wave`, `noise` and arithmetic on them are
+    evaluated in f64 (`wave` modulo its period, a time-bound angle slot
+    of a template modulo 360) before a value narrows to its f32
+    `PropValue`; animated images and Lottie pick frames from the f64
+    (decisions.md, audit-time-precision). A prop that reads time
     (`PropValue::reads_time`, also through a global token) repaints its
     node each frame while visible, and only it.
   - **Per-node clocks with frame caps.** A node that reads time or plays
@@ -1626,7 +1641,11 @@ by `strand-compiler`, not here. See `crates/strand-core/src/lib.rs`.
   and not `Send`. Reads and memo closures return `Result<T, Error>`.
 - The host loop calls `rt.tick(now)` and sleeps until
   `rt.next_deadline()` or the wake hook (`rt.set_wake_hook`);
-  `rt.is_idle()` with no deadline means idle. Each `Tick` carries the
+  `rt.is_idle()` with no deadline means idle. When it wakes it calls
+  `rt.stamp(now)` (raises the clock, runs nothing) before it applies
+  the input it woke for, so a write that pauses an `after T while c`
+  counts the time up to the wake; the harnesses that model the loop
+  (eval, strand-web) stamp before an input's writes too. Each `Tick` carries the
   `errors` and `diagnostics` raised since the last one.
 - The scene emitter calls `rt.watch(id)` per bound prop and turns
   `Tick::changed` (creation order) into `SetProp`s; `for` loops turn a
@@ -1754,7 +1773,9 @@ Public interfaces:
 - **Parsing** (`strand_compiler::syntax`): `parse(file, src) -> Parse`.
   Never panics. `Parse::tokens` is the lossless token stream. Trees are
   at most 256 levels deep (grammar.md, "Error recovery"), so passes may
-  recurse on a 2 MiB stack.
+  recurse on a 2 MiB stack; the checker's and the lowerer's expression
+  recursion still grow the stack on demand (`stacker`), so a miss in that
+  bound costs heap, not an abort.
 - **Lowering into `strand-core`** (the VM's obligations): declare every
   read set with `rt.reads_from` and every assignment and `emit` with
   `rt.writes_to` as nodes are created; read keyed collections with
@@ -2695,10 +2716,17 @@ Wayland crate. Its interface (`strand-gpu/src/lib.rs`):
   waits for a presented frame's GPU work), `Committed { surface,
   committed }` (false: it presented nothing), `Pixels`, `PassPixels`,
   `Failed { surface, key, error }` (the device stays up), `Lost`,
-  `Exited`. Every frame, commit and pass is answered, a panic included.
+  `Leaked(Vec<SurfaceId>)` (a hung thread's presented surfaces, whose
+  swapchains it leaks; between `Lost` and `Exited`), `Exited`. Every
+  frame, commit and pass is answered, a panic included.
 - Hangs: a readback waits at most `HUNG_AFTER` (10 s); past it, or on
   a wgpu panic after a driver reset, the request answers `Failed`, then
   `Lost` and `Exited`, and a hung device is leaked rather than dropped.
+  (audit-hung-renew) Its swapchains are leaked too, with what the
+  driver made on their `wl_surface`s (Mesa's explicit-sync surface), so
+  the thread names them (`Leaked`) and the binary gives each a new
+  `wl_surface` at `Exited` (`State::renew_surface`, same id) instead of
+  taking it back to commit `wl_shm` on the old one.
   Render never reruns a shader file answered `Failed` with kind `Lost`
   in that process (`ShaderResults::lost`), so a looping file leaks at
   most one device. The thread keeps at most 64 pipelines and 16 pass
@@ -2708,11 +2736,19 @@ Wayland crate. Its interface (`strand-gpu/src/lib.rs`):
   into (`strand-render/src/renderer/backend.rs`); the GPU thread builds
   the vello_gpu scene from the ops. `Upload`s (atlas pages, cached
   pixmaps; masks are always CPU-rasterised) live on the GPU until a
-  frame lists them in `retire` or the device drops. `Op::BlurredRect`,
+  frame lists them in `retire` or the device drops. An `Upload` wider
+  or taller than vello_gpu's image atlas (4096 px, or the device's
+  limit if smaller), or one the full atlas has no room for, is not
+  uploaded and its frame is answered `Failed` with kind `Render`;
+  render then forgets every upload that frame sent, uploading it again
+  when a later frame draws it, and lists it in the next `retire`
+  (audit-upload-size). `Op::BlurredRect`,
   `Op::Backdrop` and `Op::Snapshot` draw on the GPU what the CPU would
   have uploaded; `Op::Backdrop`'s `key` lets an unchanged backdrop
   reuse the last frame's pixels, and its textures come from a
-  per-surface `pass::Pool` so steady animation allocates nothing.
+  per-surface `pass::Pool` so steady animation allocates nothing;
+  `Op::Pass`'s steps draw into a second per-surface pool
+  (audit-pass-pool).
   `FrameSnapshot` is `None`, `Take` or `Keep` (the crossfade
   snapshot). The op and field contracts are documented on `Op` and
   `Frame`.
@@ -2864,7 +2900,9 @@ for a lock's content surface, renewed instead of taken back (below).
   `SurfaceHost::gpu_release`; the `wl_surface` lives until `take_back`,
   so the swapchain is always dropped first. A lock surface's
   `ext_session_lock_surface_v1` goes at once, so its output may get a new
-  one (one per output, `duplicate_output`).
+  one (one per output, `duplicate_output`); so do a popup's `xdg_popup`
+  and `xdg_surface`, so it is gone before its parent popup and before
+  the next grab (decisions.md audit-popup-roles).
 - (lock-gpu) A lent or presented lock content surface is never taken
   back for `wl_shm` once the GPU thread may have presented to it
   (decisions.md gpu-stay): it is renewed (`State::renew_lock_content`).
@@ -2946,8 +2984,8 @@ watch`, and keeps it for `strand report` and the inspector.
 **Budgets and tests.**
 
 - `.text` (`strand/tests/budgets.rs`, `TEXT_GATE_GPU`/`TEXT_GATE_CPU`):
-  the default build at most 30,408,704 B, `--no-default-features` at
-  most 26,476,544 B (decisions.md blocks-ci, 2026-11-07; services-merge, 2026-11-03; wave-cost,
+  the default build at most 31,195,136 B, `--no-default-features` at
+  most 27,262,976 B (decisions.md audit-text-gate-cpu, 2026-11-10, the CPU-only build's; audit-text-gate, 2026-11-10, the default build's; blocks-ci, 2026-11-07; services-merge, 2026-11-03; wave-cost,
   2026-10-30; services-round,
   2026-10-24, records each earlier re-base).
 - Memory (`budgets.rs`), two legs since the device is warm wherever one
@@ -3249,7 +3287,9 @@ itself.
   counted per running body (`bus::with_user`) and close with the last;
   a service owning a bus name uses its own (`bus::own_session`). What a
   dropped body still has to say is a finalizer (`client::finalize`),
-  awaited up to `FINALIZE_LIMIT` (500 ms) as the thread ends. Calls
+  awaited up to `FINALIZE_LIMIT` (500 ms) as the thread ends; blocking
+  work still running then (an art fetch, a `statvfs` on a hung disk) is
+  waited for up to `JOIN_LIMIT` (2 s) and left. Calls
   that may wait on an app run as tasks in a body-owned `JoinSet`.
   Pixels from D-Bus become bounded, content-addressed PNGs under
   `$XDG_RUNTIME_DIR/strand/pixmaps/<pid>` (`strand_services::pixmap`),
@@ -3330,12 +3370,16 @@ itself.
   connected but does not understand its compositor (`wm::understood`)
   sends `AdapterMsg::Degraded(text)`: the run serves the protocols as if
   disconnected, sets `Sources::degraded`, and retries on its backoff
-  without flapping ids (`understood::Degradation`); the oldest
-  subscription raises each new text with `Cx::warn`. Unknown events are
+  without flapping ids (`understood::Degradation`); the oldest store's
+  subscription (`WmHub::subscribe_reporting`; a follower's plain
+  `subscribe()` never reports) raises each new text with `Cx::failing`,
+  and when it leaves, the next oldest store is sent the current
+  `Sources` again and raises what still holds. Unknown events are
   ignored; a known one that cannot be read triggers a re-read
   (decisions.md laptop-resilience). Windows carry `app` and `icon` from
   `apps::AppIndex`, read on the blocking pool and refreshed by
-  `apps::changed()`. `Window::toplevel` (not a schema field) is the
+  `apps::changed()`; `AppIndex::shared` gives `apps`, `windows` and
+  `media` one read while any of them holds it. `Window::toplevel` (not a schema field) is the
   identifier thumbnails capture by. `wm::follow_focused_screen(&Services,
   Fn(Option<String>)) -> FocusFollower` holds one hub subscription on the
   services runtime until dropped and calls back with each new
@@ -3567,8 +3611,12 @@ writes. It depends on neither `strand-compiler` nor `strand-core`.
     `unwatch_file` add counted ad-hoc registrations that
     `set_referenced` never replaces (the wallpaper owner);
     `watch_file_loaded(path, role, hash)` is read-then-register. Neither
-    a referenced file nor its directory need exist yet. Module-set
-    membership is separate from roles.
+    a referenced file nor its directory need exist yet, nor its
+    filesystem be mounted: the thread polls `/proc/self/mountinfo` and
+    looks again when the mount table changes, and a polled directory
+    that errors without being gone (a network share whose server is
+    away) is polled until it answers. Module-set membership is separate
+    from roles.
   - Caches: `watch_tree(dir, depth, CacheKind::{Apps, Icons, Fonts})`
     and `watch_file(path, Role::Cache(kind))`. `strand run`'s compiler
     worker takes them as `live::Job::Caches` and calls `changed(kind)`
@@ -3581,7 +3629,10 @@ writes. It depends on neither `strand-compiler` nor `strand-core`.
     logic thread's `Job::Referenced` list. The worker hands changed
     asset files to `live::Job::Assets`' sink, which reaches
     `Renderer::assets_changed(&paths)` on the main thread: no reload;
-    the old decode or text is drawn until the new one replaces it.
+    the old decode or text is drawn until the new one replaces it. A
+    file held only as an asset is registered with its stat stamp, never
+    read: its first change is reported `Modified` even when its bytes
+    are the same.
   - **Blocking:** `watch_file`, `set_referenced` and `watch_tree` wait
     for the watcher thread; call them from the loader, compile worker,
     boot or a service thread, never from logic. `watch_file_loaded`,

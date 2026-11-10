@@ -4,7 +4,8 @@
 //! reported, `take_back` paints a full frame, a lent surface takes no
 //! buffer until it is handed off or taken back, and a surface destroyed
 //! while handed off, or after its handles were lent, keeps its
-//! `wl_surface` until `take_back`. On headless sway, a handed-off
+//! `wl_surface` until `take_back`, a popup's roles going at once. On
+//! headless sway, a handed-off
 //! surface's new size reaches the compositor with the next present.
 
 #![cfg(feature = "gpu")]
@@ -381,6 +382,50 @@ fn a_surface_destroyed_after_its_handles_were_lent_waits_for_take_back() {
     assert!(ok, "a surface given back was kept");
 }
 
+/// (audit-hung-renew) A handed-off surface whose swapchain a hung GPU
+/// thread leaked is renewed, not taken back: its `wl_surface`, which may
+/// still carry the driver's explicit-sync surface, is destroyed without
+/// another buffer, and the panel comes back on a new one, painted on
+/// the CPU, under the same id.
+#[test]
+fn a_surface_renewed_after_a_hang_gets_a_new_wl_surface_and_no_shm_on_the_old() {
+    let fake = Fake::compositor(SurfaceGlobals::default());
+    let mut mgr = manager(&fake);
+    let id = show_panel(&fake, &mut mgr);
+    mgr.dispatch_until(Duration::from_millis(200), |_| false)
+        .unwrap();
+    mgr.state_mut().raw_handles(id).expect("raw handles");
+    assert!(mgr.state_mut().hand_off(id));
+    let dash = |fake: &Fake| {
+        fake.surfaces()
+            .into_iter()
+            .enumerate()
+            .filter(|(_, s)| s.namespace.as_deref() == Some("strand-Dash"))
+            .collect::<Vec<_>>()
+    };
+    let [(old, before)] = dash(&fake).try_into().expect("one panel surface");
+    change(&mut mgr, 40.0);
+
+    assert!(mgr.state_mut().renew_surface(id));
+    let ok = mgr
+        .dispatch_until(WAIT, |_| {
+            dash(&fake)
+                .iter()
+                .any(|(i, s)| *i != old && !s.destroyed && s.buffer_commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "the panel never came back: {:?}", fake.surfaces());
+    let now = dash(&fake);
+    let (_, gone) = now.iter().find(|(i, _)| *i == old).expect("the old one");
+    assert!(gone.destroyed, "the old wl_surface was kept");
+    assert_eq!(
+        gone.buffer_commits, before.buffer_commits,
+        "a buffer was committed to the old wl_surface"
+    );
+    assert_eq!(mgr.state().surfaces_of(PANEL), [id], "the same id");
+    assert!(!mgr.state().is_handed_off(id));
+}
+
 fn buffer_commits(fake: &Fake) -> usize {
     fake.surfaces()
         .iter()
@@ -651,4 +696,176 @@ fn a_commit_is_paced_only_without_the_compositors_fifo() {
     mgr.state_mut().set_wsi_fifo(false);
     assert!(mgr.state_mut().pace_commit(id));
     assert!(!mgr.state().present_due(id), "its callback is waited for");
+}
+
+/// A popup's spec on `parent`, `w` by `h`, anchored near its top left.
+fn popup_spec(name: &str, parent: NodeId, w: f32, h: f32) -> strand_scene::SurfaceSpec {
+    let mut spec =
+        strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| None::<&strand_scene::PropValue>);
+    spec.name = Some(name.into());
+    spec.parent = Some(parent);
+    spec.anchor_rect = Some(LogicalRect::new(10.0, 10.0, 40.0, 20.0));
+    spec.width = Some(w);
+    spec.height = Some(h);
+    spec
+}
+
+/// Opens popup `node` from `spec` and waits for its configure: its
+/// surface, and its index in the fake's surfaces.
+fn open_popup(
+    fake: &Fake,
+    mgr: &mut SurfaceManager<TestHost>,
+    node: NodeId,
+    spec: strand_scene::SurfaceSpec,
+) -> (strand_scene::SurfaceId, usize) {
+    mgr.state_mut()
+        .apply_surface_change(node, SurfaceChange::Created(spec));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(node)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.logical_size != (0, 0))
+        })
+        .unwrap();
+    assert!(ok, "{node:?} was never configured");
+    (mgr.state().surfaces_of(node)[0], fake.surfaces().len() - 1)
+}
+
+/// Where `entry` is in the fake's popup log (it must be there).
+fn logged(fake: &Fake, entry: &str) -> usize {
+    let log = fake.popup_log();
+    log.iter()
+        .position(|e| e == entry)
+        .unwrap_or_else(|| panic!("no `{entry}` in {log:?}"))
+}
+
+/// (audit-popup-roles) A nested popup whose handles are lent loses its
+/// `xdg_popup` and `xdg_surface` with its parent popup, before the
+/// parent's, as xdg-shell's topmost rule wants; only its `wl_surface`
+/// waits for `take_back`. Drawn on the CPU, the order is the same.
+#[test]
+fn a_lent_popup_drops_its_role_before_its_parent_popup() {
+    const P: NodeId = NodeId::new(8, 0);
+    const C: NodeId = NodeId::new(9, 0);
+    for lend in [false, true] {
+        let fake = Fake::compositor(SurfaceGlobals::default());
+        let mut mgr = manager(&fake);
+        show_panel(&fake, &mut mgr);
+        let (_, p) = open_popup(&fake, &mut mgr, P, popup_spec("Menu", PANEL, 100.0, 50.0));
+        let (c_id, c) = open_popup(&fake, &mut mgr, C, popup_spec("Sub", P, 120.0, 60.0));
+        assert!(logged(&fake, &format!("popup {c} on {p}")) > 0);
+        if lend {
+            mgr.state_mut().raw_handles(c_id).expect("raw handles");
+        }
+
+        mgr.state_mut()
+            .apply_surface_change(P, SurfaceChange::Removed);
+        mgr.dispatch_until(Duration::from_millis(200), |_| false)
+            .unwrap();
+        let parent_goes = logged(&fake, &format!("popup_destroy {p}"));
+        assert!(
+            logged(&fake, &format!("popup_destroy {c}")) < parent_goes
+                && logged(&fake, &format!("xdg_surface_destroy {c}")) < parent_goes,
+            "lent: {lend}: the parent popup went before its child: {:?}",
+            fake.popup_log()
+        );
+        assert!(fake.surfaces()[p].destroyed);
+        assert_eq!(
+            fake.surfaces()[c].destroyed,
+            !lend,
+            "lent: {lend}: the child's wl_surface waits for take_back only when lent"
+        );
+        if lend {
+            assert_eq!(mgr.state().host().gpu_released, [c_id]);
+            mgr.state_mut().take_back(c_id);
+            let ok = mgr
+                .dispatch_until(WAIT, |_| fake.surfaces()[c].destroyed)
+                .unwrap();
+            assert!(ok, "the child's wl_surface was kept after take_back");
+            // Its roles were destroyed once.
+            let log = fake.popup_log();
+            assert_eq!(
+                log.iter()
+                    .filter(|e| **e == format!("popup_destroy {c}"))
+                    .count(),
+                1,
+                "{log:?}"
+            );
+        }
+    }
+}
+
+/// (audit-popup-roles) A grabbing popup handed off to the GPU thread and
+/// dismissed by the next grabbing popup outside its chain loses its
+/// `xdg_popup` before the new popup's grab: the new grab is the topmost.
+#[test]
+fn a_handed_off_grabbing_popup_goes_before_the_next_grab() {
+    use strand_scene::InputEvent;
+    const CALENDAR: NodeId = NodeId::new(2, 0);
+    const VOLUME: NodeId = NodeId::new(3, 0);
+    let fake = Fake::builder()
+        .toplevel_list(false)
+        .surfaces(SurfaceGlobals::default())
+        .seats(1)
+        .start();
+    let mut mgr = manager(&fake);
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.surfaces_of(BAR)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap();
+    assert!(ok, "the bar maps");
+    let bar = mgr.state().surfaces_of(BAR)[0];
+    fake.cmd(Cmd::KeyboardEnter("strand-Top"));
+    let ok = mgr
+        .dispatch_until(WAIT, |s| s.keyboard_focus() == Some(bar))
+        .unwrap();
+    assert!(ok, "the bar has keyboard focus");
+    // A key press on the bar opens `node`: it grabs.
+    let open = |mgr: &mut SurfaceManager<TestHost>, node: NodeId, name: &str| {
+        fake.cmd(Cmd::Key(1, true));
+        fake.cmd(Cmd::Key(1, false));
+        let n = mgr.state().host().input.len();
+        let ok = mgr
+            .dispatch_until(WAIT, |s| {
+                s.host().input[n..]
+                    .iter()
+                    .any(|e| matches!(e, InputEvent::Key { .. }))
+            })
+            .unwrap();
+        assert!(ok, "the press reached the bar");
+        let serial = *mgr.state().host().press_serials.last().unwrap();
+        mgr.state_mut().set_popup_cause(node, Some(serial));
+        open_popup(&fake, mgr, node, popup_spec(name, BAR, 200.0, 120.0))
+    };
+    let (calendar_id, calendar) = open(&mut mgr, CALENDAR, "Calendar");
+    logged(&fake, &format!("grab {calendar}"));
+    mgr.state_mut()
+        .raw_handles(calendar_id)
+        .expect("raw handles");
+    assert!(mgr.state_mut().hand_off(calendar_id));
+
+    let (_, volume) = open(&mut mgr, VOLUME, "Volume");
+    assert!(mgr.state().surfaces_of(CALENDAR).is_empty(), "dismissed");
+    assert!(
+        logged(&fake, &format!("popup_destroy {calendar}"))
+            < logged(&fake, &format!("grab {volume}")),
+        "the new grab went out while the dismissed popup lived: {:?}",
+        fake.popup_log()
+    );
+    assert!(
+        !fake.surfaces()[calendar].destroyed,
+        "the GPU thread's wl_surface went before take_back"
+    );
+    mgr.state_mut().take_back(calendar_id);
+    let ok = mgr
+        .dispatch_until(WAIT, |_| fake.surfaces()[calendar].destroyed)
+        .unwrap();
+    assert!(ok, "the calendar's wl_surface was kept after take_back");
 }

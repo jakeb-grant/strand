@@ -226,6 +226,27 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.mark(surface);
     }
 
+    /// (audit-hung-renew) The GPU thread ended without dropping its WSI
+    /// objects on `surface` (a hung device, `GpuReply::Leaked`): what the
+    /// driver made on its `wl_surface` lives on (Mesa's explicit-sync
+    /// surface, under which a `wl_shm` commit is a protocol error that
+    /// ends the connection), so the manager never commits to it again.
+    /// It is taken back ([`State::take_back`]) and destroyed with its
+    /// role at once, and its node is reconciled, which makes it anew
+    /// under the same id with a fresh `wl_surface`, painted on the CPU
+    /// from its first configure. Lock content is renewed with
+    /// [`State::renew_lock_content`] instead. False when there is no such
+    /// surface (gone meanwhile, or with a parent renewed before it).
+    pub fn renew_surface(&mut self, surface: SurfaceId) -> bool {
+        self.take_back(surface);
+        let Some(node) = self.surfaces.get(&surface).map(|s| s.node) else {
+            return false;
+        };
+        self.destroy_surface(surface);
+        self.reconcile(node);
+        true
+    }
+
     /// The GPU thread commits `surface` ([`State::hand_off`]).
     pub fn is_handed_off(&self, surface: SurfaceId) -> bool {
         self.gpu.has(surface)

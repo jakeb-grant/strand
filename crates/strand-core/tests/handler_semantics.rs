@@ -348,6 +348,35 @@ fn a_timer_sees_a_pause_written_in_the_same_tick() {
 }
 
 #[test]
+fn a_pause_after_an_idle_gap_keeps_the_time_counted_to_the_wake() {
+    // after 6s while !hover on an idle shell: nothing steps between the
+    // mount at 0 and the pointer entering at 5.5 s. The host wakes,
+    // stamps the clock, applies the write, then steps.
+    let rt = Runtime::new();
+    let hover = rt.signal(false);
+    let expired = rt.signal(false);
+    rt.after(
+        Duration::from_secs(6),
+        move |rt| Ok(!hover.get(rt)?),
+        move |rt| expired.set(rt, true),
+    );
+    rt.tick(Duration::ZERO);
+    assert_eq!(rt.next_deadline(), Some(6000 * MS));
+    rt.stamp(5500 * MS);
+    assert_eq!(expired.get(&rt), Ok(false), "a stamp fires nothing");
+    hover.set(&rt, true).unwrap();
+    rt.tick(5500 * MS);
+    assert_eq!(rt.next_deadline(), None, "paused while hovered");
+    // The pointer leaves at 7 s: 0.5 s were left at 5.5 s.
+    rt.stamp(7000 * MS);
+    hover.set(&rt, false).unwrap();
+    rt.tick(7000 * MS);
+    assert_eq!(rt.next_deadline(), Some(7500 * MS));
+    rt.tick(7500 * MS);
+    assert_eq!(expired.get(&rt), Ok(true));
+}
+
+#[test]
 fn a_timer_body_pausing_another_timer_takes_effect_at_once() {
     let rt = Runtime::new();
     let paused = rt.signal(false);
@@ -680,6 +709,61 @@ fn a_task_left_ready_after_a_flush_calls_the_wake_hook() {
     );
     rt.flush();
     assert!(rt.is_idle());
+}
+
+/// A task a handler spawns, and a sleeper a tick wakes, are polled by the
+/// flush they appear in, so neither calls the wake hook: one handled click
+/// is one turn of the host's loop, not two. A spawn outside a flush still
+/// calls it.
+#[test]
+fn a_wake_polled_in_the_same_flush_does_not_call_the_wake_hook() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let rt = Runtime::new();
+    let woken = Arc::new(AtomicUsize::new(0));
+    let w = woken.clone();
+    rt.set_wake_hook(move || {
+        w.fetch_add(1, Ordering::SeqCst);
+    });
+    let done = Rc::new(RefCell::new(0));
+    let clicks = rt.input_events::<()>();
+    let d = done.clone();
+    let weak = rt.downgrade();
+    clicks
+        .on(&rt, move |rt, _| {
+            let d = d.clone();
+            let weak = weak.clone();
+            rt.spawn(async move {
+                *d.borrow_mut() += 1;
+                if let Some(rt) = weak.upgrade() {
+                    rt.sleep(10 * MS).await;
+                }
+                *d.borrow_mut() += 1;
+                Ok(())
+            });
+            Ok(())
+        })
+        .unwrap();
+    clicks.emit(&rt, ()).unwrap();
+    let before = woken.load(Ordering::SeqCst);
+    rt.flush();
+    assert_eq!(*done.borrow(), 1, "the spawned task ran in this flush");
+    assert_eq!(woken.load(Ordering::SeqCst), before, "no hook for a spawn");
+    rt.tick(10 * MS);
+    assert_eq!(*done.borrow(), 2, "the sleeper ran in the tick's flush");
+    assert!(rt.is_idle());
+    assert_eq!(
+        woken.load(Ordering::SeqCst),
+        before,
+        "no hook for a sleeper"
+    );
+    rt.spawn(async { Ok(()) });
+    assert_eq!(
+        woken.load(Ordering::SeqCst),
+        before + 1,
+        "outside a flush the host is told"
+    );
+    rt.flush();
 }
 
 /// `on change x, y` created before an effect that writes `x = y * 10`: one

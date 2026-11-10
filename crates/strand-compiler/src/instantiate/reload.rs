@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
-use strand_core::{NodeId as CoreId, Runtime, Scope};
+use strand_core::{NodeId as CoreId, Runtime, Scope, Signal};
 use strand_scene::{NodeId, NodeKind};
 
 use super::Ctx;
@@ -151,9 +151,15 @@ pub(crate) struct Registry {
 pub(crate) struct Carry {
     pub old: Registry,
     pub old_prog: Arc<Program>,
+    /// The old and new programs' types are the same at every id
+    /// ([`crate::ty::TypeTable::same_layout`]): only then may a kept
+    /// handler's in-flight tasks be handed over.
+    pub same_layout: bool,
     pub report: Report,
     /// Ids of old scene nodes the new instance kept.
     pub kept_nodes: std::collections::HashSet<NodeId>,
+    /// Ids of the old nodes render shows (a parked bar's are not).
+    pub on_scene: std::collections::HashSet<NodeId>,
     /// Scope keys the new instance mounted.
     pub scopes: std::collections::HashSet<Rc<str>>,
     /// The owners of the cells the new instance created fresh, one
@@ -404,6 +410,21 @@ impl Ctx {
         self.carry.borrow().is_some()
     }
 
+    /// (audit-reload-show) Whether the surface node `id` is one this
+    /// reload kept from the old scene, where it was shown: its mount is
+    /// not an opening, so it does not route `show`. A surface new in the
+    /// reload, recreated as another kind, closed before it, or a parked
+    /// bar the reload mounts again still opens.
+    pub(crate) fn kept_shown(&self, rt: &Runtime, id: NodeId, open: Signal<bool>) -> bool {
+        let carry = self.carry.borrow();
+        let Some(c) = carry.as_ref() else {
+            return false;
+        };
+        c.kept_nodes.contains(&id)
+            && c.on_scene.contains(&id)
+            && matches!(open.get_untracked(rt), Ok(true))
+    }
+
     /// A bar under `ident` mounts `n` instances in this reload (its
     /// monitor list as first computed).
     pub(crate) fn bar_instances(&self, ident: &str, n: usize) {
@@ -532,7 +553,16 @@ impl Ctx {
     pub(crate) fn report(&self, f: impl FnOnce(&mut Report)) {
         if let Some(c) = self.carry.borrow_mut().as_mut() {
             f(&mut c.report);
+            return;
         }
+        // (audit-reload-closed-state) A cell a reload kept waiting (a
+        // closed popup's, a parked bar's) is taken over when its content
+        // mounts again, after the reload: what that does is the tick's
+        // notices.
+        let mut r = Report::default();
+        f(&mut r);
+        self.notices.borrow_mut().extend(r.notices);
+        self.kept.borrow_mut().extend(r.kept_over_default);
     }
 
     /// A handler at `key` with Merkle hash `hash` and task site `site`:
@@ -548,7 +578,11 @@ impl Ctx {
         site: Option<CoreId>,
         class: EditClass,
     ) -> Option<HandlerRec> {
-        let old = self.carry.borrow_mut().as_mut()?.old.handlers.remove(key)?;
+        let (old, same_layout) = {
+            let mut carry = self.carry.borrow_mut();
+            let c = carry.as_mut()?;
+            (c.old.handlers.remove(key)?, c.same_layout)
+        };
         let tasks: Vec<CoreId> = old
             .site
             .and_then(|s| rt.owned(s).ok())
@@ -557,10 +591,25 @@ impl Ctx {
             .filter(|t| rt.kind(*t) == Ok(strand_core::NodeKind::Task))
             .collect();
         if hash != 0 && hash == old.hash {
-            if let Some(s) = site {
-                for t in tasks {
-                    let _ = rt.reparent(t, Some(s));
+            if same_layout {
+                if let Some(s) = site {
+                    for t in tasks {
+                        let _ = rt.reparent(t, Some(s));
+                    }
                 }
+            } else if !tasks.is_empty() {
+                // (audit-reload-layout) The code is unchanged but the
+                // types were renumbered or reshaped: its tasks would run
+                // the old bytecode and table against the new program's
+                // values, so they restart as a changed handler's do.
+                let n = tasks.len();
+                self.report(|r| {
+                    r.class(class);
+                    if class == EditClass::Handler {
+                        r.restarted += 1;
+                    }
+                    r.cancelled += n;
+                });
             }
         } else {
             let n = tasks.len();

@@ -361,6 +361,7 @@ pub fn logic(
         let (mut update, wake) = shell.inst.step(start.elapsed(), wall);
         let mut diff = std::mem::take(&mut update.diff);
         shell.secrets.see_diff(&diff);
+        shell.secrets.prune(|id| shell.inst.is_password_input(id));
         diff.layout_seen = shell.layout_seen.take();
         diff.config = shell.committed_config.take();
         // The services' answer to a pressed action (a tray menu's
@@ -449,6 +450,12 @@ pub fn logic(
         if refocused {
             also(Some(Duration::ZERO));
         }
+        // Scene ops the work after the diff pushed (a fault's outline,
+        // the overlay shown, refreshed or hidden) go out in one more step
+        // now, not at the next unrelated wake (audit-pending-ops).
+        if shell.inst.has_pending_ops() {
+            also(Some(Duration::ZERO));
+        }
         // A step that closed the lock: the deferred load commits now
         // (no polling while it stays shown: only a step can unlock).
         if (shell.deferred.is_some() || shell.deferred_hard) && !shell.inst.lock_shown() {
@@ -462,6 +469,10 @@ pub fn logic(
                 &mut inbox,
             )
             .map_err(|e| format!("logic loop: {e}"))?;
+        // (audit-timer-pause) The clock to the wake before the input it
+        // woke for: a pause written now counts up to here, not to the
+        // last step, and nothing fires until the step.
+        shell.inst.runtime().stamp(start.elapsed());
         for m in inbox.msgs.drain(..) {
             if m == ToLogic::Shutdown {
                 stop = true;

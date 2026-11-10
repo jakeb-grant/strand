@@ -124,9 +124,10 @@ impl Flattener<'_> {
                     kind: Kind::Aurora, ..
                 },
             ) => (Bundled::Aurora, aurora_uniforms(b)),
-            Built::Particles(p) if p.capped() => {
-                (Bundled::Particles, p.gpu_uniforms(w, h, scale, time.t))
-            }
+            Built::Particles(p) if p.capped() => (
+                Bundled::Particles,
+                p.gpu_uniforms(w, h, scale, time.t as f32),
+            ),
             _ => return None,
         };
         let pass = ShaderPass {
@@ -147,7 +148,7 @@ impl Flattener<'_> {
             PassInput::None,
             0,
             scale,
-            time.t,
+            time.t as f32,
             [-1.0, -1.0],
         )?;
         let got = self.extras.shaders.usable(&want).cloned();

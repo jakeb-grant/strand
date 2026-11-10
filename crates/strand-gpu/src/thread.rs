@@ -161,9 +161,19 @@ pub(crate) fn run(
     if dev.hung.load(Ordering::SeqCst) {
         // A hung queue: dropping the swapchains, the renderer or the
         // device would wait for it, so they are leaked (with the driver's
-        // spinning queue) and the thread ends now. The surfaces' owners
-        // may commit them again once they hear `Exited`: nothing here
-        // presents any more.
+        // spinning queue) and the thread ends now. Nothing here presents
+        // any more, but (audit-hung-renew) a leaked WSI surface keeps
+        // what the driver made on its `wl_surface` (Mesa's explicit-sync
+        // surface): the owners hear which, and give those surfaces a new
+        // `wl_surface` rather than commit `wl_shm` on them.
+        let mut leaked: Vec<SurfaceId> = state
+            .targets
+            .iter()
+            .filter(|(_, t)| t.present.is_some())
+            .map(|(id, _)| *id)
+            .collect();
+        leaked.sort_unstable_by_key(|id| id.0);
+        reply.send(GpuReply::Leaked(leaked));
         std::mem::forget(state);
         std::mem::forget(dev);
         reply.send(GpuReply::Exited);
@@ -212,6 +222,10 @@ struct Target {
     /// same key is drawn from them, nothing rendered or run; those the
     /// next frame does not draw are freed.
     kept: Vec<(u64, pass::Drawn)>,
+    /// (audit-pass-pool) The textures its last frame's inline passes
+    /// ([`Op::Pass`]) drew their steps into, reused by the next frame's
+    /// of the same size; those it does not use are freed.
+    passes: pass::Pool,
 }
 
 /// (perf-gpu-retain) A surface's backdrop textures while a frame draws.
@@ -239,6 +253,7 @@ impl Target {
             snapshot: None,
             backdrops: pass::Pool::default(),
             kept: Vec::new(),
+            passes: pass::Pool::default(),
         }
     }
 }
@@ -649,13 +664,23 @@ impl State {
     /// image's atlas slot in the encoder. A slot freed first and handed
     /// to a new image in the same frame would be cleared after the new
     /// pixels were written (a re-rasterised island drawn as nothing).
+    ///
+    /// (audit-upload-size) A pixmap vello_gpu's image atlas cannot hold
+    /// (a side over the atlas's, or every atlas full) is not uploaded
+    /// and the frame is answered `Failed { Render }`: vello_gpu unwraps
+    /// its atlas allocation, and that panic would count as a lost
+    /// device. The rest still goes up and is freed, so the image table
+    /// stays true; render forgets a failed frame's uploads, so a later
+    /// frame drawing a refused pixmap sends it again.
     fn upload(
         &mut self,
         dev: &Device,
         encoder: &mut wgpu::CommandEncoder,
         uploads: &[Upload],
         retire: &[u64],
-    ) {
+    ) -> Result<(), GpuError> {
+        let side = atlas_side(dev);
+        let mut refused = None;
         let mut freed = Vec::new();
         for u in uploads {
             if let Some(h) = self.images.get(&u.id) {
@@ -668,14 +693,31 @@ impl State {
             if u.pixmap.width() == 0 || u.pixmap.height() == 0 {
                 continue;
             }
+            let (w, h) = (u.pixmap.width(), u.pixmap.height());
+            if u32::from(w) > side || u32::from(h) > side {
+                refused.get_or_insert_with(|| {
+                    render_error(format!(
+                        "a {w}×{h} image is larger than the GPU's {side} px image atlas"
+                    ))
+                });
+                continue;
+            }
             let px = draw::unswap(&u.pixmap);
-            let id = self.renderer.upload_image(
-                &mut self.resources,
-                &dev.device,
-                &dev.queue,
-                encoder,
-                &px,
-            );
+            // vello_gpu has no fallible upload: its allocation is
+            // unwrapped before anything is written, so a full atlas
+            // panics with its state as it was, and is caught here.
+            let (renderer, resources) = (&mut self.renderer, &mut self.resources);
+            let uploaded = catch_unwind(AssertUnwindSafe(|| {
+                renderer.upload_image(resources, &dev.device, &dev.queue, encoder, &px)
+            }));
+            let Ok(id) = uploaded else {
+                refused.get_or_insert_with(|| {
+                    render_error(format!(
+                        "the GPU's image atlas has no room for a {w}×{h} image"
+                    ))
+                });
+                continue;
+            };
             self.images.insert(
                 u.id,
                 Held {
@@ -693,13 +735,16 @@ impl State {
             self.renderer
                 .destroy_image(&mut self.resources, encoder, old);
         }
+        refused.map_or(Ok(()), Err)
     }
 
     /// Draws the [`Op::Pass`]es among `ops` (and inside their backdrops)
     /// into their own textures, numbering them as [`Op::passes_in`]
     /// does from `*next` (a backdrop's number is skipped here: its
     /// pixels are drawn by [`State::draw_backdrops`]). A pass that fails
-    /// draws nothing; the first failure is returned.
+    /// draws nothing; the first failure is returned. (audit-pass-pool)
+    /// Their steps draw into textures of `pool`, the surface's; what
+    /// they show is in `keep` until the frame is submitted.
     #[allow(clippy::too_many_arguments)]
     fn draw_passes(
         &mut self,
@@ -710,6 +755,7 @@ impl State {
         out: &mut [Option<DrawnPass>],
         bindings: &mut vello_gpu::TextureBindings,
         keep: &mut Vec<pass::Drawn>,
+        pool: &mut pass::Pool,
     ) -> Option<GpuError> {
         let mut failed = None;
         for op in ops {
@@ -725,10 +771,15 @@ impl State {
                     if !(w >= 1.0 && h >= 1.0 && w <= 16384.0 && h <= 16384.0) {
                         continue;
                     }
-                    match self
-                        .passes
-                        .draw(dev, encoder, pass, w as u32, h as u32, *globals, None)
-                    {
+                    match self.passes.draw_pooled(
+                        dev,
+                        encoder,
+                        pass,
+                        *globals,
+                        (w as u32, h as u32),
+                        None,
+                        pool,
+                    ) {
                         Ok(Some(d)) => {
                             let id = TextureId(at as u64 + 1);
                             bindings.insert(id, d.view.clone());
@@ -750,7 +801,7 @@ impl State {
                 Op::Backdrop { ops: inner, .. } => {
                     *next += 1;
                     if let Some(e) =
-                        self.draw_passes(dev, encoder, inner, next, out, bindings, keep)
+                        self.draw_passes(dev, encoder, inner, next, out, bindings, keep, pool)
                     {
                         failed.get_or_insert(e);
                     }
@@ -879,7 +930,8 @@ impl State {
                             &mut encoder,
                             p,
                             *globals,
-                            input,
+                            (input.width, input.height),
+                            Some(input),
                             &mut tex.pool,
                         ) {
                             Ok(d) => drawn = d,
@@ -1006,7 +1058,12 @@ impl State {
         // Before anything draws into the frame texture: the snapshot of
         // the frame it holds.
         self.snapshot(dev, &mut encoder, surface, frame.snapshot, (w, h));
-        self.upload(dev, &mut encoder, &frame.uploads, &frame.retire);
+        if let Err(e) = self.upload(dev, &mut encoder, &frame.uploads, &frame.retire) {
+            // As a failed pass below: what was recorded still runs, and
+            // render draws the frame on the CPU.
+            dev.queue.submit([encoder.finish()]);
+            return Err(e);
+        }
         ph.mark("upload");
         ph.uploads = (
             frame.uploads.len(),
@@ -1019,6 +1076,13 @@ impl State {
         let mut bindings = vello_gpu::TextureBindings::new();
         let mut keep = Vec::new();
         let mut drawn: Vec<Option<DrawnPass>> = vec![None; Op::passes_in(&frame.ops)];
+        // (audit-pass-pool) Back in the target once the frame is
+        // submitted; a frame that fails frees it.
+        let mut pool = self
+            .targets
+            .get_mut(&surface)
+            .map(|t| std::mem::take(&mut t.passes))
+            .unwrap_or_default();
         let pass_error = self.draw_passes(
             dev,
             &mut encoder,
@@ -1027,6 +1091,7 @@ impl State {
             &mut drawn,
             &mut bindings,
             &mut keep,
+            &mut pool,
         );
         if let Some(e) = pass_error {
             // The frame ends here with one answer, `Failed`: render takes
@@ -1173,7 +1238,7 @@ impl State {
                 queued,
                 Some(ph),
             );
-            drop(keep);
+            target.passes = pool.end_frame_with(keep);
             reply.send(presented?);
             Ok(())
         } else {
@@ -1186,8 +1251,9 @@ impl State {
             read.record(&mut encoder, &ft.texture);
             dev.queue.submit([encoder.finish()]);
             ph.mark("submit");
-            drop(keep);
-            let pixels = read.read(dev)?;
+            let pixels = read.read(dev);
+            target.passes = pool.end_frame_with(keep);
+            let pixels = pixels?;
             ph.mark("read");
             reply.send(GpuReply::Pixels {
                 surface,
@@ -1499,6 +1565,14 @@ fn backdrop_keys(ops: &[Op], out: &mut Vec<u64>) {
 
 fn kurbo_translate(x: f64, y: f64) -> vello_common::kurbo::Affine {
     vello_common::kurbo::Affine::translate((x, y))
+}
+
+/// (audit-upload-size) The widest and tallest image vello_gpu's atlas
+/// holds: its configured side, clamped to the device's as vello_gpu
+/// clamps it.
+fn atlas_side(dev: &Device) -> u32 {
+    let (w, h) = vello_common::multi_atlas::AtlasConfig::default().atlas_size;
+    u32::from(w.min(h)).min(dev.device.limits().max_texture_dimension_2d)
 }
 
 fn render_error(message: impl Into<String>) -> GpuError {
@@ -1897,6 +1971,83 @@ mod tests {
             assert_eq!(held(&st), 1, "reduce {reduce}: kept alone");
         }
         draw(&mut st, 0, 1, false);
+        assert_eq!(held(&st), 0, "freed");
+    }
+
+    /// (audit-pass-pool) An inline pass drawn every frame (an animated
+    /// shader node on a GPU surface) makes no texture once the surface's
+    /// pool has its steps' (here a two-step blur's two, which swap roles
+    /// each frame), where every step made a surface-sized texture each
+    /// frame; a frame without it frees them.
+    #[test]
+    fn a_pass_drawn_every_frame_reuses_its_textures() {
+        let dev = match Device::open(&GpuOptions::from_env()) {
+            Ok(d) => d,
+            Err(e) => {
+                let required = std::env::var("STRAND_REQUIRE_GPU").is_ok_and(|v| v == "1");
+                assert!(!required, "STRAND_REQUIRE_GPU=1 but no GPU: {e}");
+                eprintln!("skipped: no GPU ({e})");
+                return;
+            }
+        };
+        use crate::kurbo::Rect;
+        use strand_scene::{Bundled, ShaderInput, ShaderRef};
+        let mut st = State::new(&dev);
+        let s = SurfaceId(1);
+        let size = Size::new(64, 32);
+        st.targets
+            .insert(s, Target::new(size, Scale::ONE, None, None));
+        let (tx, rx) = mpsc::channel();
+        let waker = || {};
+        let reply = Reply {
+            tx: &tx,
+            waker: &waker,
+        };
+        let frame = |id: u64, pass: bool| Frame {
+            surface: s,
+            id,
+            size,
+            scale: Scale::ONE,
+            ops: if pass {
+                vec![Op::Pass {
+                    pass: crate::ShaderPass {
+                        code: ShaderRef::Bundled(Bundled::BackdropBlur),
+                        uniforms: std::sync::Arc::from([3.0f32].as_slice()),
+                        input: ShaderInput::None,
+                    },
+                    bounds: Rect::new(0.0, 0.0, 64.0, 32.0),
+                    globals: crate::PassGlobals {
+                        time: id as f32,
+                        ..crate::PassGlobals::default()
+                    },
+                }]
+            } else {
+                Vec::new()
+            },
+            uploads: Vec::new(),
+            retire: Vec::new(),
+            clear: crate::AlphaColor::TRANSPARENT,
+            snapshot: FrameSnapshot::None,
+        };
+        let made = || pass::TARGETS_MADE.with(std::cell::Cell::get);
+        let held = |st: &State| st.targets.get(&s).map_or(0, |t| t.passes.len());
+        let mut id = 0;
+        let mut draw = |st: &mut State, pass: bool| {
+            id += 1;
+            st.frame(&dev, frame(id, pass), Duration::ZERO, &reply);
+            match rx.try_recv() {
+                Ok(GpuReply::Pixels { .. }) => {}
+                other => panic!("frame {id}: {other:?}"),
+            }
+        };
+        draw(&mut st, true);
+        let before = made();
+        for n in 2..=6 {
+            draw(&mut st, true);
+            assert_eq!(made(), before, "frame {n}: a texture made");
+            assert_eq!(held(&st), 2, "frame {n}");
+        }
+        draw(&mut st, false);
         assert_eq!(held(&st), 0, "freed");
     }
 

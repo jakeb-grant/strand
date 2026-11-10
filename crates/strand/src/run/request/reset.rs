@@ -15,13 +15,21 @@ impl Shell {
     pub(super) fn reset_request(&mut self, from: Caller, path: &str) {
         let ans = match self.inst.reset(path) {
             Ok(()) => {
-                self.record_request(flight::request::RESET, path, None);
                 self.overlay.forget_cell(path, &self.inst);
-                self.forget_unheard(path);
+                self.reset_done(path);
                 json!({"ok": true})
             }
             Err(e) => json!({"ok": false, "error": e.to_string()}),
         };
         self.answer(from, ans);
+    }
+
+    /// What follows a cell's reset, from IPC or the overlay's own
+    /// `[reset]` click alike: the reset is recorded (a glitch report's
+    /// replay repeats it), and the next reload event no longer lists the
+    /// cell as kept over its default.
+    pub(in crate::run) fn reset_done(&mut self, path: &str) {
+        self.record_request(flight::request::RESET, path, None);
+        self.forget_unheard(path);
     }
 }

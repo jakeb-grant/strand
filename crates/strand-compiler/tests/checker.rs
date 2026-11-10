@@ -957,6 +957,51 @@ fn whole_number_declarations_are_ints_until_a_fraction_arrives() {
     );
 }
 
+/// spec.md 8.3: `x op= e` is `x = x op e`, so a compound assignment is
+/// accepted exactly when its long form is. `/=` on an `int`, or `*=` with
+/// a fraction, is refused like `n = n / 2` (the negative corpus's
+/// `compound_int_fraction`); these keep checking clean.
+#[test]
+fn compound_assignment_checks_as_its_long_form() {
+    for body in [
+        "n += 1",
+        "n -= 2",
+        "n *= 2",
+        "n *= k",
+        "xs[0] *= 3",
+        "f /= 2",
+        "f *= 0.5",
+        "f += n",
+        "w *= 0.5",
+        "w /= 2",
+        "w += 4px",
+        "i /= 2",
+        "j *= 0.5",
+    ] {
+        let src = format!(
+            "state n: int = 5\nstate k: int = 2\nstate xs: [int] = [4]\n\
+             state f: float = 1.5\nstate w: length = 4px\nstate i = 4\nstate j = 4\n\
+             component C {{ box {{ on click {{ {body} }} }} }}\n"
+        );
+        let (out, map) = compile_files(&[("a.strand", src)]);
+        assert!(
+            out.diagnostics.is_empty(),
+            "{body}: {}",
+            render(&out.diagnostics, &map, Style::Plain)
+        );
+    }
+    // The fraction widens an untyped whole-number declaration.
+    let out = one("state i = 4\nstate j = 4\n\
+                   component C { box { on click { i /= 2; j *= 0.5 } } }\n");
+    assert_eq!(def_ty(&out.program, "i"), "float");
+    assert_eq!(def_ty(&out.program, "j"), "float");
+    // `w * 2px` has no unit, so `w *= 2px` is refused as `w = w * 2px` is.
+    assert_eq!(
+        codes("state w: length = 4px\ncomponent C { box { on click { w *= 2px } } }\n"),
+        ["check::type_mismatch"]
+    );
+}
+
 /// An untyped component parameter takes its type from its callers
 /// (grammar.md's `component Toast(n) tokens { … }`).
 #[test]
@@ -3341,6 +3386,56 @@ fn a_file_named_like_a_builtin_type_is_not_a_qualifier() {
         ("Edge.strand", "fn top() -> int { 1 }\n".to_string()),
         ("c.strand", "bar P { edge: Edge.top }\n".to_string()),
     ]);
+    assert!(
+        out.diagnostics.is_empty(),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+}
+
+/// A qualified variant pattern (`Look.dark`, `k.Look.dark`) against a
+/// scrutinee that is not that enum is the mismatch the bare `dark` is,
+/// in an expression, a statement and a tree `match`; against `Look?` it
+/// still matches.
+#[test]
+fn a_qualified_variant_against_a_non_enum_is_a_mismatch() {
+    for (scrutinee, arm) in [
+        ("\"dark\"", "Look.dark"),
+        ("3", "Look.dark"),
+        ("true", "Look.dark"),
+        ("\"dark\"", "k.Look.dark"),
+    ] {
+        for use_ in [
+            format!("let x = match mode {{ {arm} => 1, _ => 2 }}\n"),
+            format!(
+                "state n = 0\nbar H {{ box {{ on click {{ match mode {{ {arm} => n = 1, _ => n = 2 }} }} }} }}\n"
+            ),
+            format!("bar B {{ match mode {{ {arm} => text \"a\", _ => text \"b\" }} }}\n"),
+        ] {
+            let mut files = vec![("a.strand", format!("state mode = {scrutinee}\n{use_}"))];
+            let look = "enum Look { dark, light }\n".to_string();
+            if arm.starts_with("k.") {
+                files.push(("k.strand", look));
+            } else {
+                files[0].1.insert_str(0, &look);
+            }
+            let (out, map) = compile_files(&files);
+            let shown = render(&out.diagnostics, &map, Style::Plain);
+            assert_eq!(
+                codes_of(&out),
+                ["check::type_mismatch"],
+                "{}{shown}",
+                files[0].1
+            );
+            assert!(shown.contains("not `Look`"), "{shown}");
+        }
+    }
+    let (out, map) = compile_files(&[(
+        "a.strand",
+        "enum Look { dark, light }\nstate mode: Look? = null\n\
+         let x = match mode { Look.dark => 1, _ => 2 }\n"
+            .to_string(),
+    )]);
     assert!(
         out.diagnostics.is_empty(),
         "{}",

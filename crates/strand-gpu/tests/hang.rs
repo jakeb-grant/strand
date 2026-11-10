@@ -63,12 +63,23 @@ fn main(v: StrandVertex) -> @location(0) vec4<f32> {
     // hardware driver resets the hung context first (ANV after about
     // 6 s) and wgpu reports the device lost; either way the pass failed
     // above and the device is gone.
-    match h.next() {
-        GpuReply::Lost(e) => assert!(
-            e.message.contains("stopped answering") || e.message.contains("was lost"),
-            "{e}"
-        ),
+    let hung = match h.next() {
+        GpuReply::Lost(e) => {
+            assert!(
+                e.message.contains("stopped answering") || e.message.contains("was lost"),
+                "{e}"
+            );
+            e.message.contains("stopped answering")
+        }
         other => panic!("expected Lost, got {other:?}"),
+    };
+    // (audit-hung-renew) A hung thread names the surfaces whose
+    // swapchains it leaks: none here, nothing was presented.
+    if hung {
+        match h.next() {
+            GpuReply::Leaked(ids) => assert!(ids.is_empty(), "{ids:?}"),
+            other => panic!("expected Leaked, got {other:?}"),
+        }
     }
     assert!(matches!(h.next(), GpuReply::Exited));
     assert!(

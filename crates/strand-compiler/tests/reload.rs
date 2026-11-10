@@ -576,6 +576,72 @@ fn on_change_does_not_fire_on_reload() {
     assert_eq!(shell.value("t", "fired"), Value::int(1));
 }
 
+/// (audit-reload-show) `on show` runs when a surface opens, not when a
+/// reload keeps it shown: an open panel and an always-shown bar keep
+/// what their `on show` would reset. A real close and open after the
+/// reload still runs it.
+#[test]
+fn on_show_does_not_fire_when_a_reload_keeps_the_surface_shown() {
+    let panel = |t: &str| {
+        format!(
+            "export state o = true\nstate shows = 0\npanel P {{\n  open: <-> o\n  on show {{ shows += 1 }}\n  text \"{t}\"\n}}\n"
+        )
+    };
+    let mut shell = boot(&[("p.strand", &panel("a"))]);
+    shell.flush();
+    assert_eq!(shell.value("p", "shows"), Value::int(1));
+    shell.reload(&[("p.strand", &panel("b"))]);
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["b"]);
+    assert_eq!(
+        shell.value("p", "shows"),
+        Value::int(1),
+        "a reload is not an opening"
+    );
+    shell.inst.set_value("p", "o", Value::Bool(false)).unwrap();
+    shell.flush();
+    shell.inst.set_value("p", "o", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(shell.value("p", "shows"), Value::int(2));
+
+    let bar = |t: &str| {
+        format!("state shows = 0\nbar Top {{\n  on show {{ shows += 1 }}\n  text \"{t}\"\n}}\n")
+    };
+    let mut shell = boot(&[("b.strand", &bar("a"))]);
+    shell.flush();
+    assert_eq!(shell.value("b", "shows"), Value::int(1));
+    shell.reload(&[("b.strand", &bar("b"))]);
+    shell.flush();
+    assert_eq!(
+        shell.value("b", "shows"),
+        Value::int(1),
+        "a reload is not an opening"
+    );
+}
+
+/// (audit-reload-show) A surface the reload adds, or one that was closed
+/// before it and is open after it, does open: its `on show` runs.
+#[test]
+fn on_show_fires_for_a_surface_a_reload_opens() {
+    let src = "export state o = false\nstate shows = 0\npanel P {\n  open: <-> o\n  on show { shows += 1 }\n  text \"a\"\n}\n";
+    let mut shell = boot(&[("p.strand", src)]);
+    shell.flush();
+    assert_eq!(shell.value("p", "shows"), Value::int(0));
+    // An unchanged cell adopts its new default: closed before, open after.
+    let opened = src.replace("state o = false", "state o = true");
+    shell.reload(&[("p.strand", &opened)]);
+    shell.flush();
+    assert_eq!(shell.value("p", "o"), Value::Bool(true));
+    assert_eq!(shell.value("p", "shows"), Value::int(1));
+
+    let one = "state shows = 0\nbar Top {\n  text \"a\"\n}\n";
+    let two = format!("{one}bar Bottom {{\n  on show {{ shows += 1 }}\n  text \"b\"\n}}\n");
+    let mut shell = boot(&[("b.strand", one)]);
+    shell.reload(&[("b.strand", &two)]);
+    shell.flush();
+    assert_eq!(shell.value("b", "shows"), Value::int(1), "a new bar opens");
+}
+
 /// A handler whose code changed is restarted: its in-flight `await` is
 /// cancelled and reported. An unchanged one keeps running.
 #[test]
@@ -608,6 +674,132 @@ fn handler_restart_cancels_its_await() {
     shell.at(2.0);
     shell.at(3.0);
     assert_eq!(shell.value("t", "a"), Value::int(2));
+}
+
+/// (audit-reload-layout) An unchanged handler awaiting across a reload
+/// that renumbers the types (one declared above the one it reads) is
+/// restarted with the notice: its old bytecode and table would read the
+/// new program's values by the old ids (an out-of-bounds index, or
+/// another type's fields).
+#[test]
+fn a_kept_handler_restarts_when_the_types_are_renumbered() {
+    let src = "type P { n: int }\nstate p = P(n: 1)\nstate out = 0\nbar Top {\n  box { on click { await sleep(1s); out = p.n } }\n  row { on click { await sleep(1s); p = P(n: 2) } }\n}\n";
+    let mut shell = boot(&[("t.strand", src)]);
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    let r = shell.scene.of_kind(NodeKind::Row)[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.inst.event(r, "click", Vec::new());
+    shell.at(0.5);
+    let renumbered = format!("type A {{ x: int }}\n{src}");
+    let (report, _) = shell.reload(&[("t.strand", &renumbered)]);
+    assert_eq!(report.restarted, 2, "{report:?}");
+    assert_eq!(report.cancelled, 2, "{report:?}");
+    let u = shell.at(2.0);
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(shell.value("t", "out"), Value::int(0), "cancelled");
+    // The restarted handlers run on the new program's types.
+    shell.inst.event(r, "click", Vec::new());
+    shell.at(2.0);
+    shell.at(3.0);
+    shell.inst.event(b, "click", Vec::new());
+    shell.at(3.0);
+    let u = shell.at(4.0);
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    assert_eq!(shell.value("t", "out"), Value::int(2));
+}
+
+/// (audit-reload-layout) An edit that leaves the types as they were
+/// still hands an unchanged handler's `await` over.
+#[test]
+fn a_kept_handler_keeps_its_await_when_the_types_stay() {
+    let src = |t: &str| {
+        format!(
+            "type P {{ n: int }}\nstate p = P(n: 1)\nstate out = 0\nbar Top {{\n  box {{ on click {{ await sleep(1s); out = p.n }} }}\n  text \"{t}\"\n}}\n"
+        )
+    };
+    let mut shell = boot(&[("t.strand", &src("a"))]);
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.at(0.5);
+    let (report, _) = shell.reload(&[("t.strand", &src("b"))]);
+    assert_eq!(report.restarted, 0, "{report:?}");
+    assert_eq!(report.cancelled, 0, "{report:?}");
+    shell.at(2.0);
+    assert_eq!(shell.value("t", "out"), Value::int(1), "kept running");
+}
+
+/// (audit-reload-queues) A handler kept with an `await` in flight still
+/// runs on the replaced VM: the declared actions it calls afterwards go
+/// to the queue the host takes from, and an `await` of one's result
+/// resumes when it is answered.
+#[test]
+fn a_kept_handler_calls_its_actions_after_a_reload() {
+    let src = |t: &str| {
+        format!(
+            "permit exec \"true\"\npermit exec \"calc\"\naction ping() [\"true\"]\naction calc() -> text [\"calc\"]\nstate out = \"\"\nbar Top {{\n  box {{ on click {{ await sleep(1s); ping(); out = await calc() }} }}\n  text \"{t}\"\n}}\n"
+        )
+    };
+    let mut shell = boot(&[("t.strand", &src("a"))]);
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.at(0.5);
+    let (report, _) = shell.reload(&[("t.strand", &src("b"))]);
+    assert_eq!(report.restarted, 0, "{report:?}");
+    shell.at(2.0);
+    let execs = shell.inst.take_execs();
+    let names: Vec<&str> = execs.iter().map(|e| e.action.as_str()).collect();
+    assert_eq!(names, ["ping", "calc"], "{execs:?}");
+    execs[1]
+        .reply
+        .as_ref()
+        .expect("a reply slot")
+        .answer(Ok(Value::text("42")));
+    shell.at(2.1);
+    assert_eq!(shell.value("t", "out"), Value::text("42"));
+}
+
+/// (audit-reload-queues) A kept handler's `play` after a reload reaches
+/// the tree the host now shows, its keyframes found in the new program
+/// though another block declared above moved their id.
+#[test]
+fn a_kept_handler_plays_on_the_new_tree_after_a_reload() {
+    let src = |extra: &str| {
+        format!(
+            "{extra}keyframes shake {{ 0%, 100% {{ x: 0 }}; 50% {{ x: 4 }} }}\nbar Top {{\n  box {{ on click {{ await sleep(1s); play shake }} }}\n}}\n"
+        )
+    };
+    let mut shell = boot(&[("t.strand", &src(""))]);
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.at(0.5);
+    let moved = src("keyframes pulse { 0% { scale: 1 }; 100% { scale: 1.1 } }\n");
+    let (report, _) = shell.reload(&[("t.strand", &moved)]);
+    assert_eq!(report.restarted, 0, "{report:?}");
+    assert!(shell.scene.prop(b, Prop::Play).is_none());
+    let u = shell.at(2.0);
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    let Some(PropValue::Keyframes(k)) = shell.scene.prop(b, Prop::Play) else {
+        panic!("the kept handler's play was lost");
+    };
+    assert_eq!(k.name, "shake");
+}
+
+/// (audit-reload-same-names) Two files may each have a top-level `state`
+/// of one name: a handler kept across a reload writes its own file's
+/// cell, not the one of the file declared last.
+#[test]
+fn a_kept_handler_writes_its_own_files_cell_of_a_shared_name() {
+    let a = "state open = false\nbar A {\n  box { on click { await sleep(1s); open = true } }\n}\n";
+    let b = |t: &str| format!("state open = false\nbar B {{\n  text \"{t}\"\n}}\n");
+    let mut shell = boot(&[("a.strand", a), ("b.strand", &b("b"))]);
+    let bx = shell.scene.of_kind(NodeKind::Box)[0];
+    shell.inst.event(bx, "click", Vec::new());
+    shell.at(0.5);
+    let (report, _) = shell.reload(&[("a.strand", a), ("b.strand", &b("b2"))]);
+    assert_eq!(report.restarted, 0, "{report:?}");
+    shell.at(2.0);
+    assert_eq!(shell.value("a", "open"), Value::Bool(true));
+    assert_eq!(shell.value("b", "open"), Value::Bool(false));
 }
 
 /// A timer's duration edit rescales the remaining time.
@@ -820,6 +1012,72 @@ fn a_parked_bar_keeps_its_state_through_a_reload() {
     screens(&shell.rt, &shell.host, &["DP-1", "DP-2"]);
     shell.flush();
     assert_eq!(shell.scene.texts(), ["false", "true"]);
+}
+
+/// (audit-reload-closed-state) A cell waiting for a parked bar outlives
+/// the reload after the one that kept it: each reload moves it to its
+/// own root.
+#[test]
+fn a_parked_bar_keeps_its_state_through_two_reloads() {
+    let src = |c: &str| {
+        format!(
+            "bar Top {{\n  state open = false\n  text join(\"\", open) {{ color: {c}; on click {{ open = !open }} }}\n}}\n"
+        )
+    };
+    let mut shell = boot_with(
+        &[("t.strand", &src("#ff0000"))],
+        Storage::none(),
+        &["DP-1", "DP-2"],
+    );
+    let t = shell.scene.of_kind(NodeKind::Text)[1];
+    shell.inst.event(t, "click", Vec::new());
+    shell.flush();
+    screens(&shell.rt, &shell.host, &["DP-1"]);
+    shell.flush();
+    shell.reload(&[("t.strand", &src("#00ff00"))]);
+    shell.reload(&[("t.strand", &src("#0000ff"))]);
+    screens(&shell.rt, &shell.host, &["DP-1", "DP-2"]);
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["false", "true"]);
+}
+
+/// (audit-reload-parked) A bar its own `screens:` pick parked, which a
+/// reload's program picks again, is created anew with all its props
+/// (render removed it at park) and opens: its `on show` runs.
+#[test]
+fn a_bar_parked_by_its_pick_comes_back_on_a_reload() {
+    let src = |pick: &str| {
+        format!(
+            "state only = false\nstate shows = 0\nbar Top {{\n  screens: {pick}\n  on show {{ shows += 1 }}\n  text \"x\" {{ on click {{ only = true }} }}\n}}\n"
+        )
+    };
+    let a = src("only ? [\"DP-1\"] : [\"DP-1\", \"DP-2\"]");
+    let mut shell = boot_with(&[("t.strand", &a)], Storage::none(), &["DP-1", "DP-2"]);
+    assert_eq!(shell.scene.of_kind(NodeKind::Bar).len(), 2);
+    let t = shell.scene.of_kind(NodeKind::Text)[0];
+    assert!(shell.inst.event(t, "click", Vec::new()));
+    shell.flush();
+    assert_eq!(shell.scene.of_kind(NodeKind::Bar).len(), 1);
+    assert_eq!(shell.value("t", "shows"), Value::int(2));
+    let (_, ops) = shell.reload(&[("t.strand", &src("[\"DP-1\", \"DP-2\"]"))]);
+    assert_eq!(shell.scene.of_kind(NodeKind::Bar).len(), 2, "{ops:#?}");
+    assert_eq!(shell.scene.texts(), ["x", "x"]);
+    assert!(
+        ops.iter().any(|op| matches!(
+            op,
+            SceneOp::Create {
+                kind: NodeKind::Bar,
+                ..
+            }
+        )),
+        "{ops:#?}"
+    );
+    shell.flush();
+    assert_eq!(
+        shell.value("t", "shows"),
+        Value::int(3),
+        "the bar opened again"
+    );
 }
 
 /// While a lock is shown, an edit to it waits for the unlock.
@@ -1470,6 +1728,142 @@ fn a_reopened_popup_keeps_its_state_across_a_reload() {
     shell.inst.set("cal.p", Value::Bool(true)).unwrap();
     shell.flush();
     assert_eq!(shell.scene.texts(), ["Month 2"]);
+}
+
+const CLOSED_CAL: &str = "export state p = false\ncomponent Cal {\n  state month = 1\n  text join(\" \", \"M\", month)\n  box { on click { month += 1 } }\n}\nbar B { popup { open: <-> p; Cal } }\n";
+
+/// Boot [`CLOSED_CAL`], open the popup, advance the month to 2 and close
+/// it again.
+fn closed_cal_at_month_two() -> Shell {
+    let mut shell = boot(&[("cal.strand", CLOSED_CAL)]);
+    shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    let inc = shell.scene.of_kind(NodeKind::Box)[0];
+    assert!(shell.inst.event(inc, "click", Vec::new()));
+    shell.flush();
+    shell.inst.set("cal.p", Value::Bool(false)).unwrap();
+    shell.flush();
+    assert!(shell.scene.texts().is_empty());
+    shell
+}
+
+/// (audit-reload-closed-state) A reload while a popup is closed keeps
+/// the `state`s its content kept on closing: they wait for it to open,
+/// through later reloads too.
+#[test]
+fn a_closed_popup_keeps_its_state_across_a_reload() {
+    let mut shell = closed_cal_at_month_two();
+    let edited = CLOSED_CAL.replace("\"M\"", "\"Month\"");
+    let (report, _) = shell.reload(&[("cal.strand", &edited)]);
+    assert!(report.reset.is_empty(), "{report:?}");
+    let again = edited.replace("\"Month\"", "\"Mo\"");
+    shell.reload(&[("cal.strand", &again)]);
+    shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+    let u = shell.flush();
+    assert_eq!(shell.scene.texts(), ["Mo 2"], "{report:?}");
+    assert!(u.notices.is_empty(), "{:?}", u.notices);
+}
+
+/// (audit-reload-closed-state) A closed popup's kept `state` whose type
+/// changed, or that `@reset` names, starts from its default when the
+/// popup opens, and that tick's notices say it was reset.
+#[test]
+fn a_closed_popups_retyped_or_reset_state_resets_with_a_notice() {
+    for (edit, why, text) in [
+        (
+            CLOSED_CAL.replace("state month = 1", "state month = 1.0"),
+            "type changed",
+            "M 1",
+        ),
+        (
+            CLOSED_CAL.replace("state month = 1", "@reset state month = 1"),
+            "@reset",
+            "M 1",
+        ),
+    ] {
+        let mut shell = closed_cal_at_month_two();
+        let (report, _) = shell.reload(&[("cal.strand", &edit)]);
+        assert!(report.reset.is_empty(), "{report:?}");
+        shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+        let u = shell.flush();
+        assert_eq!(shell.scene.texts(), [text]);
+        assert!(
+            u.notices
+                .iter()
+                .any(|n| n.contains("month: reset (") && n.contains(why)),
+            "{:?}",
+            u.notices
+        );
+    }
+}
+
+/// (audit-reload-closed-state) The cells kept for a closed popup go when
+/// a reload removes the surface it is in: the surface added back starts
+/// from its defaults.
+#[test]
+fn a_closed_popups_kept_state_goes_with_its_surface() {
+    let mut shell = closed_cal_at_month_two();
+    let without = CLOSED_CAL.replace("bar B { popup { open: <-> p; Cal } }\n", "");
+    shell.reload(&[("cal.strand", &without)]);
+    shell.reload(&[("cal.strand", CLOSED_CAL)]);
+    shell.inst.set("cal.p", Value::Bool(true)).unwrap();
+    shell.flush();
+    assert_eq!(shell.scene.texts(), ["M 1"]);
+}
+
+/// (audit-popup-row-cells) A reload while a popup is closed keeps its
+/// `for` rows' states waiting for it to open; a row whose key then
+/// leaves the data loses them at the popup's next close, as one whose key
+/// leaves without a reload does, while a row whose key stayed keeps its
+/// own.
+#[test]
+fn a_closed_popups_waiting_rows_whose_key_left_free_their_cells() {
+    let src = "export state p = false\n\
+               export state ks = [1, 2]\n\
+               component Row {\n\
+                 state taps = 0\n\
+                 text join(\" \", \"row\", taps)\n\
+                 box { on click { taps += 1 } }\n\
+               }\n\
+               bar B { popup { open: <-> p; for k in ks key k { Row } } }\n";
+    let mut shell = boot(&[("rows.strand", src)]);
+    let open = |shell: &mut Shell, on: bool| {
+        shell.inst.set("rows.p", Value::Bool(on)).unwrap();
+        shell.flush();
+    };
+    let keys = |shell: &mut Shell, ks: &[i64]| {
+        let ks = ks.iter().map(|&k| Value::int(k)).collect();
+        shell.inst.set("rows.ks", Value::list(ks)).unwrap();
+        shell.flush();
+    };
+    // Row 1 tapped once, row 2 twice.
+    open(&mut shell, true);
+    let taps = shell.scene.of_kind(NodeKind::Box);
+    for (b, n) in taps.into_iter().zip([1, 2]) {
+        for _ in 0..n {
+            assert!(shell.inst.event(b, "click", Vec::new()));
+            shell.flush();
+        }
+    }
+    assert_eq!(shell.scene.texts(), ["row 1", "row 2"]);
+    open(&mut shell, false);
+
+    let edited = src.replace("\"row\"", "\"Row\"");
+    let (report, _) = shell.reload(&[("rows.strand", &edited)]);
+    assert!(report.reset.is_empty(), "{report:?}");
+    // Key 1 leaves while the popup is closed; it opens and closes.
+    keys(&mut shell, &[2]);
+    open(&mut shell, true);
+    assert_eq!(shell.scene.texts(), ["Row 2"]);
+    open(&mut shell, false);
+    // Key 1 comes back: its state went; key 2 kept its own.
+    keys(&mut shell, &[1, 2]);
+    open(&mut shell, true);
+    assert_eq!(
+        shell.scene.texts(),
+        ["Row 0", "Row 2"],
+        "a dropped key's waiting state came back"
+    );
 }
 
 /// (M6, the review of the owner's ruling) On the schema host, a config

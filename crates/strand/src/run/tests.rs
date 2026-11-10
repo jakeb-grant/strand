@@ -523,6 +523,69 @@ fn strand_get_and_set_reach_one_dictionary_entry() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// (spec.md 4.2, 13) `strand set` on a config's own `service power`,
+/// which shadows the builtin `power`, writes the config's `text rw`
+/// field: `power-saver` is a text, not the builtin's `PowerProfile`
+/// enum, and reaches the daemon.
+#[test]
+fn strand_set_writes_a_config_service_that_shadows_a_builtin() {
+    use strand_services::testing::{DbusMock, PrivateBus};
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let Some(_ppd) = DbusMock::start(
+        &bus,
+        "power_profiles_daemon",
+        true,
+        None,
+        "net.hadess.PowerProfiles",
+    ) else {
+        return;
+    };
+    let dir = temp_dir("set-shadow");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "service power from dbus system \"net.hadess.PowerProfiles\" { profile: text rw = ActiveProfile }\nbar Top {\n  text power.profile\n}\n",
+    )
+    .unwrap();
+    let program = load(&dir);
+    let storage = Storage::in_dirs(dir.join("state"), &dir);
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let (give, take) = std::sync::mpsc::channel();
+    let live = Live {
+        buses: Some(bus.buses()),
+        requests_to: Some(logic::RequestsTo(Box::new(move |r| {
+            let _ = give.send(r);
+        }))),
+        ..Live::default()
+    };
+    let t = std::thread::spawn(move || logic(program, storage, from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the daemon's profile", |s| s.texts() == ["balanced"]);
+    let requests = take.recv_timeout(Duration::from_secs(10)).unwrap();
+    let ans = std::thread::spawn(move || {
+        block_on(
+            requests
+                .call(ipc::Request::Set {
+                    path: "power.profile".into(),
+                    value: "power-saver".into(),
+                })
+                .unwrap(),
+        )
+    })
+    .join()
+    .unwrap();
+    assert_eq!(ans, json!({"ok": true}), "the config's text field");
+    m.until("the written profile", |s| s.texts() == ["power-saver"]);
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// (S-tools) `strand report` goes through the snapshot hop: logic asks
 /// main, main's half comes back, and the socket's answer is it with
 /// logic's half added (the PSS, the version, the compositor's name); an
@@ -1956,6 +2019,60 @@ fn a_password_value_is_redacted_from_fault_messages() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A password input nested in a container that unmounts (the guide's
+/// lock: `col { input { type: password } }`) gets no `Remove` of its
+/// own: once it is gone, a fault's message is no longer redacted whole,
+/// since no password input is mounted (architecture.md, "Redaction";
+/// decisions.md audit-nested-password).
+#[test]
+fn a_fault_after_a_nested_password_input_unmounts_keeps_its_message() {
+    let dir = temp_dir("redact-nested");
+    std::fs::write(
+        dir.join("shell.strand"),
+        "bar Top {\n  state f = \"\"\n  input { text: <-> f }\n           if f == \"\" { col { input { type: password } } }\n           text clock.format(f)\n}\n",
+    )
+    .unwrap();
+    let socket = dir.join("ipc.sock");
+    let (_compiler, to_logic, t, mut m) = spawn_live(&dir, Some(socket.clone()));
+    m.until("both inputs", |s| {
+        s.of_kind(strand_scene::NodeKind::Input).len() == 2
+    });
+    let plain = m
+        .scene
+        .of_kind(strand_scene::NodeKind::Input)
+        .into_iter()
+        .find(|n| m.scene.prop(*n, Prop::InputType).is_none())
+        .unwrap();
+    let mut next = watch(&socket);
+    // `%Q` is no time pattern: `clock.format` fails, quoting it, as the
+    // `if` unmounts the column holding the password input.
+    to_logic
+        .send(ToLogic::Write {
+            node: plain,
+            prop: Prop::Text,
+            value: PropValue::Text("%Q".into()),
+            input: None,
+        })
+        .unwrap();
+    let ev = loop {
+        let ev = next();
+        if ev["event"] == "fault" {
+            break ev;
+        }
+    };
+    let message = ev["message"].as_str().unwrap_or_default();
+    assert!(
+        !message.contains("<redacted>") && message.contains("%Q"),
+        "{ev}"
+    );
+    m.until("the password input gone", |s| {
+        s.of_kind(strand_scene::NodeKind::Input) == [plain]
+    });
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A watcher on `socket`: the next event it hears, past the `auth`
 /// service's warning that no helper is installed ([`heard`]).
 fn watch(socket: &Path) -> impl FnMut() -> Json {
@@ -2848,6 +2965,67 @@ fn a_bad_settings_value_is_kept_and_shown() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A binding that faults on a value set from outside (`strand set`, its
+/// D-Bus call) is outlined red at once: the outline, pushed when the
+/// shell froze the component after the step's diff was taken, goes out in
+/// one more step, not at the next unrelated wake (audit-pending-ops). The
+/// overlay waits a minute here, so nothing else wakes the loop.
+#[test]
+fn a_fault_is_outlined_without_another_wake() {
+    let dir = temp_dir("fault-outline-wake");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "export state zero = 1\nbar Top {\n  text join(\" \", \"n\", 10 / zero)\n}\n",
+    )
+    .unwrap();
+    let program = load(&dir);
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let (give, take) = std::sync::mpsc::channel();
+    let live = Live {
+        requests_to: Some(logic::RequestsTo(Box::new(move |r| {
+            let _ = give.send(r);
+        }))),
+        ..Live::default()
+    };
+    let t = std::thread::spawn(move || {
+        crate::overlay::QUIET_ON_THIS_THREAD.with(|q| q.set(Some(Duration::from_secs(60))));
+        logic(program, Storage::none(), from_main, tx, live)
+    });
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| s.texts() == ["n 10"]);
+    let outlined = |s: &SceneMirror| {
+        s.of_kind(NodeKind::Bar)
+            .into_iter()
+            .chain(s.of_kind(NodeKind::Text))
+            .any(|n| s.prop(n, Prop::Border).is_some())
+    };
+    assert!(!outlined(&m.scene), "{}", m.scene.render());
+    // The trim the bar's Create armed has woken the loop and gone.
+    std::thread::sleep(Duration::from_millis(1200));
+    let requests = take.recv_timeout(Duration::from_secs(10)).unwrap();
+    let ans = std::thread::spawn(move || {
+        block_on(
+            requests
+                .call(ipc::Request::Set {
+                    path: "bar.zero".into(),
+                    value: "0".into(),
+                })
+                .unwrap(),
+        )
+    })
+    .join()
+    .unwrap();
+    assert_eq!(ans, json!({"ok": true}));
+    m.until("the outline", outlined);
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// A mock `org.freedesktop.portal.Settings` for the theme test.
 pub(crate) struct MockPortal {
     pub(crate) values: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
@@ -3514,6 +3692,99 @@ fn a_boot_kept_cell_reset_or_set_over_ipc_is_not_reported_kept() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A cell kept over a changed default at boot, with nobody watching, and
+/// then put back by the overlay's own `[reset]`: the next reload event
+/// no longer lists it, as after an IPC `reset` (audit-overlay-reset).
+#[test]
+fn a_boot_kept_cell_reset_from_the_overlay_is_not_reported_kept() {
+    let dir = temp_dir("boot-kept-overlay-reset");
+    let src = "export state hits = 0 persist\nbar Top {\n  \
+               text join(\"\", \"h\", hits) { on click { hits += 1 } }\n}\n";
+    let file = dir.join("bar.strand");
+    std::fs::write(&file, src).unwrap();
+    let storage = || Storage::in_dirs(dir.join("state"), &dir);
+    // A first run persists `hits = 1`.
+    {
+        let program = load(&dir);
+        let st = storage();
+        let (to_logic, from_main) = calloop::channel::channel();
+        let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+        to_logic
+            .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+            .unwrap();
+        let t = std::thread::spawn(move || logic(program, st, from_main, tx, Live::default()));
+        let mut m = Mirror::new(rx);
+        m.until("the bar", |s| s.texts() == ["h0"]);
+        let text = m.scene.of_kind(NodeKind::Text)[0];
+        to_logic
+            .send(ToLogic::Event {
+                input: None,
+                node: text,
+                event: NodeEvent::Click,
+            })
+            .unwrap();
+        m.until("a click", |s| s.texts() == ["h1"]);
+        to_logic.send(ToLogic::Shutdown).unwrap();
+        assert_eq!(t.join().unwrap(), Ok(()));
+    }
+    // The default changes: the persisted 1 is kept over it at boot, with
+    // nobody watching.
+    std::fs::write(&file, src.replace("hits = 0", "hits = 5")).unwrap();
+    let (wtx, wrx) = calloop::channel::channel();
+    let (compiler, boot) = Worker::spawn(&dir, None, wtx).unwrap();
+    let st = storage();
+    compiler.register_own_writes(&st);
+    let (give, take) = std::sync::mpsc::channel();
+    let live = Live {
+        worker: Some(wrx),
+        jobs: Some(compiler.jobs()),
+        requests_to: Some(logic::RequestsTo(Box::new(move |r| {
+            let _ = give.send(r);
+        }))),
+        ..Live::default()
+    };
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let t = std::thread::spawn(move || logic(boot, st, from_main, tx, live));
+    let mut m = Mirror::new(rx);
+    m.until("the kept value", |s| s.texts().contains(&"h1".to_string()));
+    let row = |s: &SceneMirror| {
+        s.of_kind(NodeKind::Text).into_iter().find(|n| {
+            matches!(s.prop(*n, Prop::Text), Some(PropValue::Text(t))
+                if t.contains("hits") && t.contains("[reset]"))
+        })
+    };
+    m.until("the overlay's [reset] row", |s| row(s).is_some());
+    let node = row(&m.scene).unwrap();
+    to_logic
+        .send(ToLogic::Event {
+            input: None,
+            node,
+            event: NodeEvent::Click,
+        })
+        .unwrap();
+    m.until("the default", |s| s.texts() == ["h5"]);
+    let requests = take.recv_timeout(Duration::from_secs(10)).unwrap();
+    let ans = std::thread::spawn(move || {
+        block_on(requests.call(ipc::Request::Reload { hard: false }).unwrap())
+    })
+    .join()
+    .unwrap();
+    assert_eq!(ans["ok"], true, "{ans}");
+    assert_eq!(
+        ans["event"]["kept_over_default"],
+        json!([]),
+        "a cell back at its default is not kept: {ans}"
+    );
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    drop(compiler);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_cell_kept_at_boot_reaches_the_event_sink_as_a_late_watcher_hears_it() {
     let dir = temp_dir("boot-kept-sink");
@@ -3737,6 +4008,72 @@ fn a_drop_reaches_its_handler_with_the_hidden_rows_judged() {
     m.until("the drop", |s| s.texts() == ["got 42"]);
     to_logic.send(dropped(None)).unwrap();
     m.until("the drop with nothing hidden", |s| s.texts() == ["got 43"]);
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    drop(compiler);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An app dropped from another program reaches `on drop` with its `App`
+/// under the real services: the lookup reads `apps.all` through the
+/// host the instance runs against, the composite, where it read the
+/// schema host's own `apps.all`, which only the mock fills, and `d.app`
+/// was always null (audit-drop-app).
+#[test]
+fn an_app_dropped_from_another_program_names_the_installed_app() {
+    let _serial = crate::services::tests::APPS_SERIAL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let dir = temp_dir("drop-app");
+    let apps = dir.join("applications");
+    std::fs::create_dir_all(&apps).unwrap();
+    std::fs::write(
+        apps.join("firefox.desktop"),
+        "[Desktop Entry]\nType=Application\nName=Firefox\nExec=true\n",
+    )
+    .unwrap();
+    strand_services::apps::set_config(Some(strand_services::apps::Config {
+        dirs: vec![apps],
+        desktops: Vec::new(),
+        state: None,
+    }));
+    std::fs::write(
+        dir.join("bar.strand"),
+        "bar Top {\n  state got = \"\"\n  row {\n    \
+         on drop(d: Drop, i: int) { got = d.app?.name ?? \"-\" }\n    \
+         for a in apps.all { text a.name }\n    \
+         text join(\" \", \"got\", got)\n  }\n}\n",
+    )
+    .unwrap();
+    let (compiler, to_logic, t, mut m) = spawn_live(&dir, None);
+    m.until("the app listed", |s| {
+        s.texts().contains(&"Firefox".to_string())
+    });
+    let row = m.scene.of_kind(NodeKind::Row)[0];
+    to_logic
+        .send(ToLogic::Event {
+            input: None,
+            node: row,
+            event: NodeEvent::Drop {
+                payload: strand_scene::DropPayload::External {
+                    kind: strand_scene::DropKind::App,
+                    files: Vec::new(),
+                    text: String::new(),
+                    app_id: Some("firefox.desktop".into()),
+                },
+                at: 0,
+                hidden: None,
+            },
+        })
+        .unwrap();
+    m.until("the drop", |s| {
+        s.texts()
+            .iter()
+            .any(|t| t.starts_with("got ") && t != "got ")
+    });
+    let got = m.scene.texts();
+    strand_services::apps::set_config(None);
+    assert!(got.contains(&"got Firefox".to_string()), "{got:?}");
     to_logic.send(ToLogic::Shutdown).unwrap();
     assert_eq!(t.join().unwrap(), Ok(()));
     drop(compiler);

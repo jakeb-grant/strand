@@ -449,6 +449,65 @@ fn bluetooth_finds_nearby_devices_only_while_read() {
     s.shutdown();
 }
 
+/// (audit-bluetooth-powered) A `powered` BlueZ accepted stays written while
+/// another adapter property changes before BlueZ's own `Powered` signal
+/// (BlueZ 5.65 and later say `PowerState` first): it does not flip back to
+/// the value last read.
+#[test]
+fn a_powered_write_holds_while_another_adapter_property_changes() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let Some((_mock, _)) = bluez(&tokio, &bus, &conn) else {
+        return;
+    };
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let cells = b.bluetooth.cells();
+    b.bluetooth.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert_eq!(cells.powered.get_untracked(&rt), Ok(true));
+
+    // BlueZ takes the `Set` and says `PowerState` before it replies; its
+    // `Powered` signal has not come yet.
+    mock(
+        &tokio,
+        &conn,
+        BLUEZ,
+        ADAPTER_PATH,
+        "AddMethod",
+        &(
+            "org.freedesktop.DBus.Properties",
+            "Set",
+            "ssv",
+            "",
+            "self.props[args[0]][args[1]] = args[2]\n\
+             self.EmitSignal('org.freedesktop.DBus.Properties', 'PropertiesChanged', 'sa{sv}as', \
+             [args[0], {'PowerState': dbus.String('off-disabling', variant_level=1)}, []])",
+        ),
+    );
+    b.bluetooth
+        .dynamic()
+        .write(&rt, field("powered"), &[], Data::Bool(false))
+        .unwrap();
+    until(&rt, &s, "powered off", || {
+        cells.powered.get_untracked(&rt) == Ok(false)
+    });
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(10));
+        s.pump(&rt);
+        rt.flush();
+        assert_eq!(
+            cells.powered.get_untracked(&rt),
+            Ok(false),
+            "the write flipped back"
+        );
+    }
+    s.shutdown();
+}
+
 /// (gap 29) `d.pair()` pairs, trusts and connects a nearby device, which
 /// is `connecting` throughout and paired after; a pairing BlueZ refuses
 /// fails saying why, and the device stays nearby.

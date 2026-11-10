@@ -9,7 +9,10 @@
 
 mod support;
 
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::HashMap;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,7 +22,30 @@ use strand_services::notifications::{self, Date, NAME, Notification, PATH, Urgen
 use strand_services::testing::{DbusMock, PrivateBus};
 use strand_services::{Data, ToData};
 use support::*;
-use zbus::zvariant::Value;
+use zbus::zvariant::{SerializeValue, Value};
+
+/// Every allocation of this binary counted, so a test can bound what one
+/// call cost at its peak.
+struct Counting;
+
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+static PEAK: AtomicUsize = AtomicUsize::new(0);
+
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        let now = LIVE.fetch_add(l.size(), Relaxed) + l.size();
+        PEAK.fetch_max(now, Relaxed);
+        unsafe { System.alloc(l) }
+    }
+
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        LIVE.fetch_sub(l.size(), Relaxed);
+        unsafe { System.dealloc(p, l) }
+    }
+}
+
+#[global_allocator]
+static ALLOC: Counting = Counting;
 
 fn notify(
     tokio: &tokio::runtime::Runtime,
@@ -522,6 +548,176 @@ fn hints_and_inline_replies() {
     s.shutdown();
 }
 
+/// (audit-notify-sender) A replacement from another peer (`notify-send
+/// -r` from a new process) keeps the id and shows the new content, and the
+/// first sender is told its notification closed (reason 3): what is done
+/// with the popup from then on (a reply typed into it) goes to the peer
+/// whose content it shows, and the first sender is never left holding an
+/// id whose signals another peer now hears. Another peer's
+/// `CloseNotification` closes one, as the spec allows, and its sender
+/// alone is told.
+#[test]
+fn a_replacement_by_another_peer_closes_the_first_senders_notification() {
+    let _serial = serial();
+    history_in(None);
+    notifications::offer_replies(true);
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let first = connect(&tokio, &bus.address);
+    let heard_first = hear(&tokio, &first);
+    let other = connect(&tokio, &bus.address);
+    let heard_other = hear(&tokio, &other);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+
+    let reply = ["inline-reply", "Reply"];
+    let id = notify(&tokio, &first, 0, "Hi", &reply, HashMap::new(), -1);
+    until(&rt, &s, "the popup", || popups(&b, &rt).len() == 1);
+    let again = notify(&tokio, &other, id, "Replaced", &reply, HashMap::new(), -1);
+    assert_eq!(again, id, "another peer's replacement keeps the id");
+    until(&rt, &s, "the replacement", || {
+        popups(&b, &rt)
+            .first()
+            .is_some_and(|n| n.summary == "Replaced")
+    });
+    wait_heard(&heard_first, &format!("Closed {id} 3"));
+
+    let item = popups(&b, &rt)[0].to_data();
+    b.notifications
+        .dynamic()
+        .action(
+            &rt,
+            "reply",
+            Some(&item),
+            &[Data::text("typed")],
+            Default::default(),
+        )
+        .unwrap();
+    wait_heard(&heard_other, &format!("Replied {id} typed"));
+    wait_heard(&heard_other, &format!("Closed {id} 2"));
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        *heard_first.lock().unwrap(),
+        [format!("Closed {id} 3")],
+        "the first sender hears its closing alone"
+    );
+
+    let mine = notify(&tokio, &first, 0, "Mine", &[], HashMap::new(), -1);
+    until(&rt, &s, "the second popup", || {
+        popups(&b, &rt).iter().any(|n| n.id == i64::from(mine))
+    });
+    call(
+        &tokio,
+        &other,
+        NAME,
+        PATH,
+        NAME,
+        "CloseNotification",
+        &(mine,),
+    );
+    wait_heard(&heard_first, &format!("Closed {mine} 3"));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        !heard_other
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with(&format!("Closed {mine} "))),
+        "{:?}",
+        heard_other.lock().unwrap()
+    );
+    s.shutdown();
+}
+
+/// (audit-notify-sender) A `Notify` replacing an id whose
+/// `CloseNotification` was sent just before it (both read before the
+/// server closes it) is a new notification under that id, its sender
+/// recorded: its buttons are heard, where they went nowhere.
+#[test]
+fn a_replacement_queued_behind_its_close_is_its_senders() {
+    let _serial = serial();
+    history_in(None);
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let heard = hear(&tokio, &conn);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+
+    // The close may be applied before the `Notify` is read, which then
+    // makes a new id: tried until both are read first.
+    for _ in 0..20 {
+        let id = notify(&tokio, &conn, 0, "First", &[], HashMap::new(), -1);
+        until(&rt, &s, "the first", || {
+            all(&b, &rt).iter().any(|n| n.id == i64::from(id))
+        });
+        let close = (id,);
+        let replace = (
+            "Mail",
+            id,
+            "",
+            "Second",
+            "",
+            vec!["open", "Open"],
+            HashMap::<&str, Value<'_>>::new(),
+            -1i32,
+        );
+        let (closed, again) = tokio.block_on(async {
+            tokio::join!(
+                conn.call_method(Some(NAME), PATH, Some(NAME), "CloseNotification", &close),
+                conn.call_method(Some(NAME), PATH, Some(NAME), "Notify", &replace),
+            )
+        });
+        closed.unwrap();
+        let again: u32 = again.unwrap().body().deserialize().unwrap();
+        wait_heard(&heard, &format!("Closed {id} 3"));
+        // Read in the other order, the replacement is closed in turn.
+        let shown = strand_test_support::wait::within(
+            Duration::from_secs(2),
+            Duration::from_millis(5),
+            || {
+                s.pump(&rt);
+                rt.flush();
+                all(&b, &rt)
+                    .iter()
+                    .any(|n| n.id == i64::from(again) && n.summary == "Second")
+            },
+        );
+        if again != id || !shown {
+            continue;
+        }
+        let n = all(&b, &rt)
+            .into_iter()
+            .find(|n| n.id == i64::from(id))
+            .unwrap();
+        b.notifications
+            .dynamic()
+            .action(
+                &rt,
+                "invoke",
+                Some(&n.actions[0].to_data()),
+                &[],
+                Default::default(),
+            )
+            .unwrap();
+        wait_heard(&heard, &format!("Invoked {id} open"));
+        wait_heard(&heard, &format!("Closed {id} 2"));
+        s.shutdown();
+        return;
+    }
+    panic!("the close was applied before the replacement was read every time");
+}
+
 /// (services-round) A program that names neither `can_reply` nor
 /// `reply` shows no reply field, so the server does not advertise
 /// `inline-reply` (an app told of it drops its own "Reply" button), and
@@ -561,6 +757,43 @@ fn no_reply_field_no_inline_reply() {
     assert!(!n.can_reply);
     let buttons: Vec<&str> = n.actions.iter().map(|a| a.id.as_str()).collect();
     assert_eq!(buttons, ["inline-reply"], "a button like any other");
+    s.shutdown();
+}
+
+/// (audit-notify-bounds) An action's key is what `ActionInvoked` sends
+/// back, so one longer than the cap is left out whole rather than cut
+/// into a key its sender never registered; the label is cut.
+#[test]
+fn an_action_with_an_overlong_key_is_left_out() {
+    let _serial = serial();
+    history_in(None);
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    let long = format!("open:{}", "k".repeat(notifications::MAX_ACTION_TEXT));
+    let same_start = format!("{long}-other");
+    let label = "L".repeat(2 * notifications::MAX_ACTION_TEXT);
+    notify(
+        &tokio,
+        &conn,
+        0,
+        "Keys",
+        &[&long, "Long", &same_start, "Long too", "ok", &label],
+        HashMap::new(),
+        -1,
+    );
+    until(&rt, &s, "the popup", || popups(&b, &rt).len() == 1);
+    let n = popups(&b, &rt).remove(0);
+    let buttons: Vec<&str> = n.actions.iter().map(|a| a.id.as_str()).collect();
+    assert_eq!(buttons, ["ok"], "no key is cut");
+    assert_eq!(n.actions[0].label.len(), notifications::MAX_ACTION_TEXT);
     s.shutdown();
 }
 
@@ -653,6 +886,85 @@ fn history_is_bounded_and_lying_pictures_are_refused() {
     until(&rt, &s, "the picture's file removed", || {
         !std::path::Path::new(&file).exists()
     });
+    s.shutdown();
+}
+
+/// (audit-byte-arrays) An 8 MiB `image-data` costs a few copies of its
+/// bytes at the peak, from the call to the picture shown, where a `Value`
+/// a byte cost 60 or more times its size (half a GiB) on the services
+/// thread before anything looked at it; one of another shape is left out
+/// and the notification is still shown.
+#[test]
+fn image_data_costs_its_bytes_and_a_mistyped_one_is_left_out() {
+    let _serial = serial();
+    history_in(None);
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+
+    const W: i32 = 1024;
+    const H: i32 = 2048;
+    let pixels: Vec<u8> = (0..W * H * 4).map(|i| (i % 251) as u8).collect();
+    // Sent as bytes: a `Value` here would cost this side what it cost
+    // the server.
+    let image = SerializeValue(&(W, H, W * 4, true, 8i32, 4i32, &pixels));
+    let hints = HashMap::from([("image-data", image)]);
+    let base = LIVE.load(Relaxed);
+    PEAK.store(base, Relaxed);
+    let big: u32 = call(
+        &tokio,
+        &conn,
+        NAME,
+        PATH,
+        NAME,
+        "Notify",
+        &("Viewer", 0u32, "", "Big", "", &[] as &[&str], hints, -1i32),
+    )
+    .body()
+    .deserialize()
+    .unwrap();
+    until(&rt, &s, "the big picture", || {
+        popups(&b, &rt)
+            .iter()
+            .any(|n| n.id == i64::from(big) && n.image.is_some())
+    });
+    let peak = PEAK.load(Relaxed).saturating_sub(base);
+    assert!(
+        peak < 16 * pixels.len(),
+        "{} MiB of pixels peaked at {} MiB",
+        pixels.len() >> 20,
+        peak >> 20
+    );
+
+    // image-data of another shape: left out, the rest read.
+    let mistyped = notify(
+        &tokio,
+        &conn,
+        0,
+        "Mistyped",
+        &[],
+        HashMap::from([
+            ("image-data", Value::from((1i32, 2i32))),
+            ("urgency", Value::from(2u8)),
+        ]),
+        -1,
+    );
+    until(&rt, &s, "the mistyped one", || {
+        popups(&b, &rt).iter().any(|n| n.id == i64::from(mistyped))
+    });
+    let n = popups(&b, &rt)
+        .into_iter()
+        .find(|n| n.id == i64::from(mistyped))
+        .unwrap();
+    assert_eq!(n.image, None);
+    assert_eq!(n.urgency, Urgency::Critical);
     s.shutdown();
 }
 
@@ -825,6 +1137,56 @@ fn shutdown_closes_the_notifications_still_open() {
     s.shutdown();
     wait_heard(&heard, &format!("Closed {one} 3"));
     wait_heard(&heard, &format!("Closed {two} 3"));
+}
+
+/// (audit-notify-sender) A replacement from another peer still queued
+/// behind the body's work (pictures being written) when strand exits:
+/// its sender was answered with the id, so it is told the id closed too,
+/// as is the first sender.
+#[test]
+fn shutdown_tells_a_queued_replacements_sender() {
+    let _serial = serial();
+    history_in(None);
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let first = connect(&tokio, &bus.address);
+    let heard_first = hear(&tokio, &first);
+    let other = connect(&tokio, &bus.address);
+    let heard_other = hear(&tokio, &other);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    let id = notify(&tokio, &first, 0, "Hi", &[], HashMap::new(), -1);
+    until(&rt, &s, "the popup", || popups(&b, &rt).len() == 1);
+    // The body is kept busy writing pictures, the replacement behind them.
+    const W: i32 = 2048;
+    const H: i32 = 2048;
+    let pixels: Vec<u8> = (0..W * H * 4).map(|i| (i % 251) as u8).collect();
+    for _ in 0..notifications::IMAGES_QUEUED - 1 {
+        let image = SerializeValue(&(W, H, W * 4, true, 8i32, 4i32, &pixels));
+        let hints = HashMap::from([("image-data", image)]);
+        let _: u32 = call(
+            &tokio,
+            &first,
+            NAME,
+            PATH,
+            NAME,
+            "Notify",
+            &("Viewer", 0u32, "", "Big", "", &[] as &[&str], hints, -1i32),
+        )
+        .body()
+        .deserialize()
+        .unwrap();
+    }
+    let again = notify(&tokio, &other, id, "Replaced", &[], HashMap::new(), -1);
+    assert_eq!(again, id);
+    s.shutdown();
+    wait_heard(&heard_first, &format!("Closed {id} 3"));
+    wait_heard(&heard_other, &format!("Closed {id} 3"));
 }
 
 /// (M5) A handler's press: surface 2, serial 77, invocation `n`.
@@ -1383,4 +1745,57 @@ fn clear_forgets_every_remembered_notification() {
     assert!(all(&b, &rt).is_empty(), "forgotten");
     s.shutdown();
     notifications::set_config(None);
+}
+
+/// (audit-notify-clear) `clear()` closes every kept notification in one
+/// change of `all`, where each closed in an update of its own (1,000
+/// list changes, each copying the whole history, for a full one); every
+/// sender is still told.
+#[test]
+fn clear_closes_every_notification_in_one_change() {
+    let _serial = serial();
+    history_in(None);
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let heard = hear(&tokio, &conn);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    let changes = Arc::new(Mutex::new(0usize));
+    let c = changes.clone();
+    let all_field = {
+        use strand_services::Store;
+        notifications::Notifications::FIELDS
+            .iter()
+            .position(|f| f.name == "all")
+            .unwrap()
+    };
+    b.notifications.dynamic().observe(Box::new(move |_, a| {
+        if let strand_services::Applied::Keyed { field, .. } = a
+            && *field == all_field
+        {
+            *c.lock().unwrap() += 1;
+        }
+    }));
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+    let ids: Vec<u32> = (0..50)
+        .map(|i| notify(&tokio, &conn, 0, &format!("n{i}"), &[], HashMap::new(), -1))
+        .collect();
+    until(&rt, &s, "all fifty", || all(&b, &rt).len() == 50);
+    *changes.lock().unwrap() = 0;
+    b.notifications
+        .dynamic()
+        .action(&rt, "clear", None, &[], Default::default())
+        .unwrap();
+    until(&rt, &s, "cleared", || all(&b, &rt).is_empty());
+    for id in &ids {
+        wait_heard(&heard, &format!("Closed {id} 2"));
+    }
+    s.pump(&rt);
+    assert_eq!(*changes.lock().unwrap(), 1, "one change of `all`");
+    s.shutdown();
 }

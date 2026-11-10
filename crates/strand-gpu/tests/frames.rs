@@ -479,6 +479,49 @@ fn an_upload_in_a_retired_uploads_slot_is_drawn() {
     assert_eq!(pixel(&px, 4, 4), [255, 0, 0, 255], "blue, a new generation");
 }
 
+/// (audit-upload-size) An upload wider than vello_gpu's 4096 px image
+/// atlas fails only its frame (`Render`, so render draws that surface on
+/// the CPU), where vello_gpu's unwrap of the allocation panicked and the
+/// device was reported lost. The device stays up and draws the next frame.
+#[test]
+fn an_upload_wider_than_the_image_atlas_fails_its_frame_not_the_device() {
+    let Some(mut h) = start() else { return };
+    let size = Size::new(4200, 8);
+    attach(&mut h, size);
+    let f = |id, w: u16| Frame {
+        surface: S,
+        id,
+        size,
+        scale: Scale::ONE,
+        ops: vec![Op::Image {
+            rect: Rect::new(0.0, 0.0, f64::from(w), 8.0),
+            image: id,
+            image_transform: Affine::IDENTITY,
+            tint: None,
+            smooth: false,
+        }],
+        uploads: vec![Upload {
+            id,
+            generation: 1,
+            pixmap: Arc::new(Pixmap::new(w, 8)),
+        }],
+        retire: Vec::new(),
+        clear: AlphaColor::TRANSPARENT,
+        snapshot: Default::default(),
+    };
+    h.gpu.send(GpuRequest::Frame(f(1, 4200)));
+    match h.next() {
+        GpuReply::Failed { surface, error, .. } => {
+            assert_eq!(surface, Some(S));
+            assert_eq!(error.kind, GpuErrorKind::Render, "{error:?}");
+        }
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    // Still up: a frame with an upload the atlas holds is drawn.
+    let px = frame(&mut h, f(2, 4096));
+    assert_eq!(pixel(&px, 0, 0), [0, 0, 0, 0]);
+}
+
 /// Every frame and pass is answered, also those that cannot be drawn
 /// (a surface not attached, a zero or over-large size, a pass that
 /// draws nothing): the host sends a surface's next frame only after the

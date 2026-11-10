@@ -445,13 +445,19 @@ impl Painter for Renderer {
         }
         let placed = self.placed_root(surface);
         if let Some(s) = self.surfaces.get_mut(&surface) {
-            s.posed = s.cache.as_ref().and_then(|f| f.pose);
-            s.painted_regions = s.cache.as_ref().map(|f| super::PaintedRegions {
-                blur: f.blur.clone(),
-                input: f.input.clone(),
-                root_paints: f.root_paints,
-                placed,
-            });
+            // (audit-held-regions) A paint that made no scene (held for a
+            // configure at a new size, the text it took having dropped
+            // the cache) leaves the buffer on screen, and its pose and
+            // regions, as they were.
+            if let Some(f) = s.cache.as_ref() {
+                s.posed = f.pose;
+                s.painted_regions = Some(super::PaintedRegions {
+                    blur: f.blur.clone(),
+                    input: f.input.clone(),
+                    root_paints: f.root_paints,
+                    placed,
+                });
+            }
             // The next frame waits for its own new text.
             s.text_deadline = None;
         }
@@ -817,7 +823,7 @@ impl Renderer {
                 surfaces.iter().any(|(sid, o)| {
                     *sid != surface
                         && o.root == root
-                        && o.painted_at
+                        && o.sampled_at
                             .is_some_and(|t| now.saturating_duration_since(t) < stall)
                         && (o.drawn.contains(&id) || o.records.contains_key(&id))
                 })
@@ -984,6 +990,7 @@ impl Renderer {
             self.probe
                 .keep_frame(surface, &f, target.size, target.scale, fade.weight());
             s.cache = Some(f);
+            s.sampled_at = Some(Instant::now());
             self.last_damage.insert(surface, total);
             #[cfg(feature = "gpu")]
             self.gpu_frame_stats(surface, stats.0, stats.1);
@@ -1099,6 +1106,7 @@ impl Renderer {
         if let Some(s) = self.surfaces.get_mut(&surface) {
             s.cache = Some(f);
             s.painted_at = Some(Instant::now());
+            s.sampled_at = s.painted_at;
         }
         self.last_damage.insert(surface, total);
         #[cfg(feature = "gpu")]

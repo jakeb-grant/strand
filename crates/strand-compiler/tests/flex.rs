@@ -407,6 +407,25 @@ fn a_literal_on_the_left_is_an_int_beside_an_int() {
     assert!(text.contains("round it here: `k.round()`"), "{text}");
 }
 
+/// Arithmetic on whole-number literals alone is an `int` (spec.md 7.1),
+/// as the literal it folds to is, in a `let`, a `state` and a list
+/// item; `/` and a fraction keep it a `float`, and a `state` written a
+/// fraction widens as `state c = 4` does.
+#[test]
+fn arithmetic_on_whole_literals_alone_is_an_int() {
+    let src = "let a = 24 * 60\nlet b = (1 + 2) * 3\nstate c = 2 + 2\nlet d = [1 + 1, 2]\n\
+               let e = 1 / 2\nlet f = 2 * 0.5\nlet g = -(7 % 3)\nlet h = [1, 2].take(a - 1438)\n";
+    assert_eq!(ty(src, "a"), "int");
+    assert_eq!(ty(src, "b"), "int");
+    assert_eq!(ty(src, "c"), "int");
+    assert_eq!(ty(src, "d"), "[int]");
+    assert_eq!(ty(src, "e"), "float");
+    assert_eq!(ty(src, "f"), "float");
+    assert_eq!(ty(src, "g"), "int");
+    let widened = "state c = 2 + 2\ncomponent C { box { on click { c = 0.5 } } }\n";
+    assert_eq!(ty(widened, "c"), "float");
+}
+
 /// A time signal in a canvas's `draw:` is a load error (it faulted at
 /// run time before), however it reaches the lambda: `t`, `wave(…)`,
 /// `noise` of `t`, or a `let` holding one. Elsewhere it is fine.
@@ -454,7 +473,7 @@ fn maths_follow_time_and_other_builtins_refuse_it() {
     };
     // At t = 1 s: 20 · sin(90°) = 20.
     let tables = strand_scene::TokenTable::default();
-    let at = |e: &strand_scene::TokenExpr, t: f32| {
+    let at = |e: &strand_scene::TokenExpr, t: f64| {
         let levels = [&tables];
         let scope = strand_scene::TokenScope::new(&levels)
             .with_time(Some(strand_scene::TimeContext::at(t)));

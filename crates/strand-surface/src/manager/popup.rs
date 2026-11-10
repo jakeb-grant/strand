@@ -730,6 +730,8 @@ impl<H: SurfaceHost + 'static> State<H> {
             at = self.surfaces.get(&id).and_then(|s| s.role.popup_parent());
         }
         // Outermost first: dismissing one takes the popups nested in it.
+        // A grabbing popup is outermost when its parent does not grab or
+        // is on the chain (a sibling submenu open in `parent` goes too).
         let others: Vec<SurfaceId> = self
             .surfaces
             .values()
@@ -739,7 +741,7 @@ impl<H: SurfaceHost + 'static> State<H> {
                 s.role
                     .popup_parent()
                     .and_then(|p| self.surfaces.get(&p))
-                    .is_none_or(|p| !p.role.grabbed())
+                    .is_none_or(|p| !p.role.grabbed() || chain.contains(&p.id))
             })
             .map(|s| s.id)
             .collect();

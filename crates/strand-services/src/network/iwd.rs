@@ -773,11 +773,18 @@ impl Levels {
     }
 }
 
+/// The last stopped body's teardown of its agents ([`Agents`]'s drop),
+/// awaited by the next [`Agents::serve`] before it exports its own.
+static TEARDOWN: Mutex<Option<tokio::task::JoinHandle<()>>> = Mutex::new(None);
+
 /// The agents served, registered with iwd, and taken down again. Each
 /// registration is tried once per iwd (a body follows one owner) and,
 /// for the signal level agent, once per station: one refused (another
 /// tool holds the station's one signal agent) is not asked again on
-/// every signal (review minor 3).
+/// every signal (review minor 3). Dropped before [`Agents::down`] ends
+/// (the body stopped mid-await), it unregisters and takes the agents
+/// down on a task of its own ([`TEARDOWN`]), as `bluetooth`'s pairing
+/// agent does.
 struct Agents {
     conn: zbus::Connection,
     /// The station the signal level agent is registered with.
@@ -786,6 +793,9 @@ struct Agents {
     tried_station: Option<Option<String>>,
     registered: bool,
     tried_agent: bool,
+    /// The agents are served on `conn` (until [`Agents::down`] removed
+    /// them).
+    exported: bool,
 }
 
 impl Agents {
@@ -796,6 +806,13 @@ impl Agents {
         levels: mpsc::UnboundedSender<u8>,
         iwd: Owner,
     ) -> zbus::Result<Agents> {
+        let prev = TEARDOWN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(t) = prev {
+            let _ = t.await;
+        }
         let server = conn.object_server();
         // A body that ended without taking them down.
         let _ = server.remove::<Agent, _>(AGENT_PATH).await;
@@ -813,6 +830,7 @@ impl Agents {
             tried_station: None,
             registered: false,
             tried_agent: false,
+            exported: true,
         })
     }
 
@@ -862,34 +880,77 @@ impl Agents {
     }
 
     /// Unregister (while iwd runs) and stop serving.
-    async fn down(self, iwd_runs: bool) {
-        if iwd_runs && let Ok(p) = ObjectPath::try_from(AGENT_PATH) {
-            if self.registered {
-                let _: zbus::Result<()> = call(
-                    &self.conn,
-                    MANAGER,
-                    AGENT_MANAGER,
-                    "UnregisterAgent",
-                    &(p.clone(),),
-                    dbus::CALL_TIMEOUT,
-                )
-                .await;
-            }
-            if let Some(station) = &self.station {
-                let _: zbus::Result<()> = call(
-                    &self.conn,
-                    station,
-                    STATION,
-                    "UnregisterSignalLevelAgent",
-                    &(p,),
-                    dbus::CALL_TIMEOUT,
-                )
-                .await;
-            }
+    async fn down(mut self, iwd_runs: bool) {
+        if !iwd_runs {
+            // iwd went: its registrations went with it.
+            self.registered = false;
+            self.station = None;
         }
+        unregister(&self.conn, &mut self.registered, &mut self.station).await;
         let server = self.conn.object_server();
         let _ = server.remove::<Agent, _>(AGENT_PATH).await;
         let _ = server.remove::<Levels, _>(AGENT_PATH).await;
+        self.exported = false;
+    }
+}
+
+impl Drop for Agents {
+    fn drop(&mut self) {
+        if !self.exported && !self.registered && self.station.is_none() {
+            return;
+        }
+        let conn = self.conn.clone();
+        let mut registered = self.registered;
+        let mut station = self.station.take();
+        let task = async move {
+            unregister(&conn, &mut registered, &mut station).await;
+            let server = conn.object_server();
+            let _ = server.remove::<Agent, _>(AGENT_PATH).await;
+            let _ = server.remove::<Levels, _>(AGENT_PATH).await;
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(h) => {
+                let t = h.spawn(task);
+                *TEARDOWN
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(t);
+            }
+            // No runtime (the process ends): iwd drops the agents with
+            // the connection.
+            Err(_) => log::debug!("network: no runtime to unregister the iwd agents on"),
+        }
+    }
+}
+
+/// Unregister the passphrase agent (when `registered`) and the signal
+/// level agent (from `station`) with iwd, each marked undone once asked.
+async fn unregister(conn: &zbus::Connection, registered: &mut bool, station: &mut Option<String>) {
+    let Ok(p) = ObjectPath::try_from(AGENT_PATH) else {
+        return;
+    };
+    if *registered {
+        let _: zbus::Result<()> = call(
+            conn,
+            MANAGER,
+            AGENT_MANAGER,
+            "UnregisterAgent",
+            &(p.clone(),),
+            dbus::CALL_TIMEOUT,
+        )
+        .await;
+        *registered = false;
+    }
+    if let Some(s) = station.as_deref() {
+        let _: zbus::Result<()> = call(
+            conn,
+            s,
+            STATION,
+            "UnregisterSignalLevelAgent",
+            &(p,),
+            dbus::CALL_TIMEOUT,
+        )
+        .await;
+        *station = None;
     }
 }
 
@@ -1409,7 +1470,17 @@ pub(super) async fn run(
                                 )
                                 .await;
                                 match set {
-                                    Ok(()) => on,
+                                    Ok(()) => {
+                                        // As iwd's `PropertiesChanged` will
+                                        // say: a signal of another property
+                                        // meanwhile does not undo it.
+                                        if let Some(props) =
+                                            iwd.objects.get_mut(&dev).and_then(|i| i.get_mut(DEVICE))
+                                        {
+                                            props.insert("Powered".into(), on.into());
+                                        }
+                                        on
+                                    }
                                     Err(e) => {
                                         log::warn!("network: Wi-Fi not switched: {e}");
                                         was

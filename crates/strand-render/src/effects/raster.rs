@@ -158,7 +158,7 @@ impl Built {
     pub(crate) fn time(&self, time: TimeContext) -> TimeContext {
         match self {
             Built::Grain(_) => TimeContext {
-                t: Grain::tick(time.t) as f32,
+                t: Grain::tick(time.t) as f64,
                 ..time
             },
             Built::Effect(Builtin {
@@ -248,8 +248,8 @@ impl RasterSource for Built {
     fn draw(&self, pixels: &mut [PremulRgba8], w: u32, h: u32, scale: f32, time: TimeContext) {
         match self {
             Built::Grain(g) => g.draw(pixels, w, h, scale, time),
-            Built::Effect(b) => b.draw(&mut Canvas { px: pixels, w, h }, scale, time.t),
-            Built::Particles(p) => p.draw(&mut Canvas { px: pixels, w, h }, scale, time.t),
+            Built::Effect(b) => b.draw(&mut Canvas { px: pixels, w, h }, scale, time.t as f32),
+            Built::Particles(p) => p.draw(&mut Canvas { px: pixels, w, h }, scale, time.t as f32),
         }
     }
 
@@ -275,9 +275,9 @@ impl Grain {
     /// The 12 fps tick `t` seconds into the node's clock (the nearest:
     /// a capped clock's `t` is a whole number of periods, which rounding
     /// errors can leave a hair under the tick).
-    fn tick(t: f32) -> u32 {
+    fn tick(t: f64) -> u32 {
         if t.is_finite() && t > 0.0 {
-            (t as f64 * 12.0).round().min(u32::MAX as f64) as u32
+            (t * 12.0).round().min(u32::MAX as f64) as u32
         } else {
             0
         }
@@ -319,7 +319,7 @@ fn noise(x: u32, y: u32, seed: u32) -> u32 {
 mod tests {
     use super::*;
 
-    fn draw(g: Grain, t: f32) -> Vec<PremulRgba8> {
+    fn draw(g: Grain, t: f64) -> Vec<PremulRgba8> {
         let mut px = vec![PremulRgba8::from_u8_array([0; 4]); 64 * 16];
         let b = Built::Grain(g);
         b.draw(&mut px, 64, 16, 1.0, b.time(TimeContext::at(t)));
@@ -358,7 +358,7 @@ mod tests {
         assert_eq!(a, draw(g, 0.04));
         assert_ne!(a, draw(g, 1.0 / 12.0));
         // A capped clock's t a hair under a tick is that tick.
-        assert_eq!(Grain::tick(GRAIN.as_secs_f32() * 5.0), 5);
+        assert_eq!(Grain::tick(GRAIN.as_secs_f64() * 5.0), 5);
     }
 
     #[test]

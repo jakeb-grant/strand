@@ -525,3 +525,105 @@ fn a_surface_opened_again_after_its_exit_enters_again() {
         }
     }
 }
+
+/// (audit-snapped-pose) A pose-only change that snaps (reduced motion)
+/// draws nothing new, but the surface still wants a frame: its paint
+/// damages nothing and reports the new pose, which the surface manager
+/// commits. A preview whose records match the last frame's must not
+/// settle the surface while its pose differs from the one painted.
+#[test]
+fn a_snapped_pose_change_reaches_the_compositor() {
+    // A translucent background: no opaque region to change with it.
+    let (mut diff, root) = panel("top_right", vec![]);
+    diff.set(root, Prop::Bg, color("#ff000080"));
+    let mut h = Host::new(true, diff, root);
+    h.r.set_reduced_motion(true);
+    h.open(true);
+    let _ = h.run();
+    let id = h.surface.as_ref().unwrap().0;
+    assert_eq!(h.r.surface_pose(id).map(|p| p.opacity), Some(1.0));
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Opacity, num(0.5));
+    h.apply(d);
+    h.r.update();
+    assert!(h.r.wants_frame(id), "a pose-only change asks for a frame");
+    let seen = h.run();
+    assert!(seen.iter().all(|s| s.damage == 0), "{seen:?}");
+    let pose = h.r.surface_pose(id).expect("the new pose");
+    assert!((pose.opacity - 0.5).abs() < 1e-4, "{pose:?}");
+}
+
+/// (audit-snapped-pose) The same for a blur the compositor draws: `blur`
+/// set on a translucent panel paints nothing new, and the surface still
+/// wants the frame that reports the region.
+#[test]
+fn a_blur_only_change_reaches_the_compositor() {
+    let (mut diff, root) = panel("top_right", vec![]);
+    diff.set(root, Prop::Bg, color("#ff000080"));
+    let mut h = Host::new(true, diff, root);
+    h.r.set_compositor_blur(true);
+    h.open(true);
+    let _ = h.run();
+    let id = h.surface.as_ref().unwrap().0;
+    assert!(h.r.blur_region(id).is_empty());
+    let mut d = SceneDiff::new();
+    d.set(root, Prop::Blur, num(20.0));
+    h.apply(d);
+    h.r.update();
+    assert!(h.r.wants_frame(id), "a blur-only change asks for a frame");
+    let seen = h.run();
+    assert!(seen.iter().all(|s| s.damage == 0), "{seen:?}");
+    assert_eq!(h.r.blur_region(id).len(), 1);
+}
+
+/// (audit-exit-sampled) A closing pose the compositor applies paints
+/// nothing, frame after frame, but those frames sample it: the exit
+/// stall (which ends an exit no frame samples, on an output asleep) does
+/// not cut it short. A 1.5 s fade with the stall at 50 ms still fades
+/// after 120 ms of frames.
+#[test]
+fn a_long_delegated_exit_is_not_cut_by_the_stall() {
+    let mut t = TokenTable::default();
+    t.insert(
+        "motion.effects",
+        PropValue::Transition(Transition::Duration {
+            duration: Duration::from_millis(1500),
+            easing: Easing::Linear,
+        }),
+    );
+    let mut b = Builder::default();
+    let root = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Width, num(80.0)),
+            (Prop::Height, num(40.0)),
+            (Prop::Bg, color("#ff0000")),
+            (Prop::Anchor, kw("top_right")),
+            (Prop::Open, PropValue::Bool(true)),
+            (Prop::Tokens, PropValue::Tokens(Box::new(t))),
+            (Prop::Exit, PropValue::Pose(vec![(Prop::Opacity, num(0.0))])),
+        ],
+    );
+    let mut h = Host::new(true, b.diff, root);
+    h.r.set_exit_stall(Duration::from_millis(50));
+    let _ = h.run();
+    h.open(false);
+    let mut last = 1.0;
+    for i in 0..6 {
+        let Some((id, buf, age)) = h.surface.as_mut() else {
+            panic!("closed by the stall after {i} frames");
+        };
+        let id = *id;
+        assert!(h.r.wants_frame(id), "frame {i}");
+        let d = buf.paint_at(&mut h.r, id, *age, frame(h.k));
+        h.k += 1;
+        assert!(d.is_empty(), "frame {i} paints nothing");
+        let o = h.r.surface_pose(id).expect("a delegated pose").opacity;
+        assert!(o < last && o > 0.5, "frame {i}: {o} after {last}");
+        last = o;
+        std::thread::sleep(Duration::from_millis(20));
+        h.r.update();
+        h.sync();
+    }
+}

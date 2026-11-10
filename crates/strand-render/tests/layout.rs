@@ -1775,6 +1775,85 @@ fn a_resized_content_sized_surface_waits_for_its_configure() {
     );
 }
 
+/// (audit-held-regions) A paint held for a configure at a new size draws
+/// nothing, and the buffer on screen stays the last one painted: the pose
+/// and the blur and input regions the surface manager commits with it
+/// stay that buffer's. Text that resizes a content-sized panel can land
+/// in the paint itself (the worker answered after the last `update`); the
+/// paint returned held and reported no pose and no blur, and the manager
+/// committed identity and an empty blur onto the old buffer.
+#[test]
+fn a_paint_held_for_a_resize_keeps_the_painted_regions() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+    use strand_render::{Renderer, TextBackend};
+    use strand_text::{FontConfig, TextWorker, test_font_path};
+    let data = std::fs::read(test_font_path()).unwrap();
+    let answers = Arc::new(AtomicUsize::new(0));
+    let counted = answers.clone();
+    let worker = TextWorker::spawn_with_waker(
+        FontConfig::isolated(vec![Arc::new(data)]),
+        Some(Box::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        })),
+    )
+    .unwrap();
+    let mut r = Renderer::new(TextBackend::Worker(worker));
+    r.set_resize_wait(Duration::from_secs(30));
+    r.set_compositor_blur(true);
+    r.set_compositor_poses(true);
+    let mut b = Builder::default();
+    let p = b.node(
+        NodeKind::Panel,
+        None,
+        vec![
+            (Prop::Font, PropValue::Font(font(13.0))),
+            (Prop::Bg, color("#1e1e2e80")),
+            (Prop::Blur, num(16.0)),
+            (Prop::Opacity, num(0.85)),
+        ],
+    );
+    let t = b.node(NodeKind::Text, Some(p), vec![(Prop::Text, text("short"))]);
+    assert!(r.apply(b.diff).is_empty());
+    assert!(r.wait_for_text(Duration::from_secs(10)));
+    let size = |r: &Renderer| {
+        let s = r.surface_spec(p).unwrap();
+        Size::new(s.width.unwrap() as u32, s.height.unwrap() as u32)
+    };
+    let first = size(&r);
+    r.attach_surface(S, p);
+    r.configure_surface(S, first, Scale::ONE);
+    let mut buf = Buffer::new(first.w, first.h, Scale::ONE);
+    assert!(!buf.paint(&mut r, S, 0).is_empty());
+    let blur = r.blur_region(S);
+    let pose = r.surface_pose(S);
+    assert_eq!(blur.len(), 1);
+    assert!(
+        pose.is_some_and(|p| (p.opacity - 0.85).abs() < 1e-4),
+        "{pose:?}"
+    );
+    // A longer text and a new background: the surface wants a frame, and
+    // the longer text's layout comes from the worker after `apply`.
+    let mut d = SceneDiff::new();
+    d.set(t, Prop::Text, text("a much longer line of text"));
+    d.set(p, Prop::Bg, color("#31324480"));
+    let before = answers.load(Ordering::SeqCst);
+    r.apply(d);
+    assert_eq!(size(&r), first, "the layout is not here yet");
+    // The worker answers (its waker runs); nothing polls it before the
+    // paint.
+    let until = Instant::now() + Duration::from_secs(10);
+    while answers.load(Ordering::SeqCst) == before {
+        assert!(Instant::now() < until, "the worker never answered");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(buf.paint(&mut r, S, 1).is_empty(), "held for the configure");
+    assert!(size(&r).w > first.w);
+    assert_eq!(r.blur_region(S), blur);
+    assert_eq!(r.surface_pose(S), pose);
+}
+
 /// (centred-surface) A panel anchored to one edge and sized by its content
 /// along it is stretched there by the compositor (anchored at both ends,
 /// size 0), so its content changing never resizes it on that axis, its

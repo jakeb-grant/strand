@@ -165,6 +165,11 @@ pub(crate) fn draw(
     // their pops return to.
     let mut cur = base * start;
     let mut saved: Vec<Affine> = Vec::new();
+    // What is pushed on the context: true for a layer, false for a clip.
+    // A pop that does not match the top is skipped, and what is still
+    // pushed at the end is popped, so an unbalanced list cannot reach
+    // vello's empty stacks (audit-mask-order; as `strand_gpu`'s build).
+    let mut stack: Vec<bool> = Vec::new();
     let mut i = 0;
     while i < items.len() {
         let d = &items[i];
@@ -187,8 +192,15 @@ pub(crate) fn draw(
                 cur = saved.pop().unwrap_or(base * start);
                 ctx.set_transform(cur);
             }
-            Item::PushClip(p) => ctx.push_clip_path(p),
-            Item::PopClip => ctx.pop_clip(),
+            Item::PushClip(p) => {
+                ctx.push_clip_path(p);
+                stack.push(false);
+            }
+            Item::PopClip => {
+                if pop(&mut stack, false) {
+                    ctx.pop_clip();
+                }
+            }
             Item::PushOpacity(o, _) => {
                 // (m6-owner-fixes, bug 17) A fade layer: its content's
                 // pixels, drawn once, as an image in surface pixels in
@@ -208,9 +220,9 @@ pub(crate) fn draw(
                     i = skip_group(items, i - 1);
                 } else {
                     ctx.push_opacity_layer(*o);
+                    stack.push(true);
                 }
             }
-            Item::PopOpacity => ctx.pop_layer(),
             Item::PushLayer(l) => {
                 crate::layers::push(ctx, l, cur);
                 // An offscreen group: its filtered pixels, as an image in
@@ -227,9 +239,15 @@ pub(crate) fn draw(
                     ctx.set_transform(cur);
                     ctx.pop_layer();
                     i = skip_group(items, i - 1);
+                } else {
+                    stack.push(true);
                 }
             }
-            Item::PopLayer => ctx.pop_layer(),
+            Item::PopOpacity | Item::PopLayer => {
+                if pop(&mut stack, true) {
+                    ctx.pop_layer();
+                }
+            }
             _ if !touches(&d.bounds) => {}
             Item::Shadow {
                 rect,
@@ -447,6 +465,40 @@ pub(crate) fn draw(
             }
         }
     }
+    if !stack.is_empty() {
+        unbalanced();
+    }
+    while let Some(layer) = stack.pop() {
+        if layer {
+            ctx.pop_layer();
+        } else {
+            ctx.pop_clip();
+        }
+    }
+}
+
+/// Pops the top of `stack` when it is a `layer` (else a clip), and says
+/// whether it did; an unmatched pop is reported ([`unbalanced`]).
+fn pop(stack: &mut Vec<bool>, layer: bool) -> bool {
+    if stack.last() == Some(&layer) {
+        stack.pop();
+        true
+    } else {
+        unbalanced();
+        false
+    }
+}
+
+/// Reports a display list whose groups do not nest, once per process:
+/// a flatten bug, drawn as well as it can be rather than panicking the
+/// render thread in vello (audit-mask-order).
+#[cold]
+fn unbalanced() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        #[cfg(feature = "gpu")]
+        log::warn!("render: a display list's groups do not nest; unmatched pops skipped");
+    });
 }
 
 pub(super) fn to_kurbo(r: Rect) -> kurbo::Rect {
@@ -507,4 +559,47 @@ pub(crate) fn disjoint(damage: &Damage) -> Vec<Rect> {
         open = next_open;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kurbo::Shape;
+
+    /// (audit-mask-order) A list whose groups cross, or that pops what it
+    /// never pushed, draws without reaching vello's empty layer stack.
+    #[test]
+    fn unbalanced_groups_draw_without_panicking() {
+        let at = |item| DisplayItem {
+            item,
+            bounds: Rect::new(0, 0, 16, 16),
+        };
+        let clip = || Item::PushClip(kurbo::Rect::new(0.0, 0.0, 8.0, 8.0).to_path(0.1));
+        let lists = [
+            vec![at(Item::PopLayer), at(Item::PopClip), at(Item::PopOpacity)],
+            vec![
+                at(clip()),
+                at(Item::PushOpacity(0.5, None)),
+                at(Item::PopClip),
+                at(Item::PopLayer),
+            ],
+            vec![at(Item::PushOpacity(0.5, None)), at(clip())],
+        ];
+        for items in lists {
+            let mut ctx = RenderContext::new(16, 16);
+            draw(
+                &mut ctx,
+                &items,
+                Rect::new(0, 0, 16, 16),
+                &AtlasMirror::default(),
+                &PaintCache::default(),
+                Scale::ONE,
+                Affine::IDENTITY,
+                Affine::IDENTITY,
+                &HashMap::new(),
+                &HashMap::new(),
+            );
+            ctx.flush();
+        }
+    }
 }

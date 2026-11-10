@@ -194,9 +194,22 @@ fn a_pending_wallpaper_writes_nothing() {
     img.save(dir.join("wall.png")).unwrap();
     let src = "use palette material(image: \"wall.png\", dark: true) ?? material(seed: #ff0000)\n\
                file \"out/a.txt\" { text: $palette.source }\n";
+    // The quantiser's worker records its seed under the palette cache's
+    // index lock before it reports: held here, the job cannot finish
+    // before boot's flush, however the threads are scheduled.
+    let palettes = dir.join("state").join("palettes");
+    std::fs::create_dir_all(&palettes).unwrap();
+    let lock = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(palettes.join("index.lock"))
+        .unwrap();
+    lock.lock().unwrap();
     let shell = boot(&[("a.strand", src)], &dir);
     let first = shell.take();
     assert!(first.is_empty(), "written while pending: {first:?}");
+    drop(lock);
     let theme = shell.inst.theme().unwrap();
     assert!(theme.wait_images(&shell.rt, Duration::from_secs(30)));
     shell.flush();

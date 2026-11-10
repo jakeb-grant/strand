@@ -21,6 +21,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use rustix::event::{EventfdFlags, PollFd, PollFlags, Timespec};
+use rustix::fs::OFlags;
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use rustix::io::Errno;
 
@@ -439,7 +440,10 @@ impl Watcher {
     /// is reported at the next quiet period. It blocks until the watches
     /// exist; a new path given without a hash is also read before it
     /// returns, one given with a hash is not (the watcher compares it
-    /// later). Call it from the loader, not the logic thread.
+    /// later). A path held only for [`Role::Asset`] is never read here:
+    /// its baseline is its stat stamp, and its first change is reported
+    /// `Modified` whatever its bytes. Call it from the loader, not the
+    /// logic thread.
     pub fn set_referenced<R: Into<Referenced>>(
         &self,
         refs: impl IntoIterator<Item = R>,
@@ -535,6 +539,15 @@ fn run(mut core: Core<Kernel>, rx: Receiver<Ctl>, wake: &OwnedFd, sink: EventSin
     // each distinct error is reported once.
     let mut backoff = Duration::ZERO;
     let mut reported = HashSet::new();
+    // A mount or unmount makes no inotify event: the mount table says so
+    // instead (`POLLPRI` on its next poll). Without it (no `/proc`), a
+    // mount is seen only by a rescan.
+    let mounts = rustix::fs::open(
+        "/proc/self/mountinfo",
+        OFlags::RDONLY | OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .ok();
     loop {
         let now = Instant::now();
         let mut deadline = core.deadline();
@@ -549,8 +562,13 @@ fn run(mut core: Core<Kernel>, rx: Receiver<Ctl>, wake: &OwnedFd, sink: EventSin
         }
         let timeout =
             deadline.and_then(|d| Timespec::try_from(d.saturating_duration_since(now)).ok());
-        let (ctl_ready, fs_ready) = {
+        let (ctl_ready, fs_ready, mounts_ready) = {
             let mut fds = vec![PollFd::new(wake, PollFlags::IN)];
+            // Always readable: only `PRI` (and `ERR`) tell of a change.
+            if let Some(m) = &mounts {
+                fds.push(PollFd::new(m, PollFlags::PRI));
+            }
+            let at = fds.len();
             if let Kernel::Inotify(i) = core.backend() {
                 fds.push(PollFd::new(&i.fd, PollFlags::IN));
             }
@@ -559,10 +577,11 @@ fn run(mut core: Core<Kernel>, rx: Receiver<Ctl>, wake: &OwnedFd, sink: EventSin
                     backoff = Duration::ZERO;
                     (
                         !fds[0].revents().is_empty(),
-                        fds.get(1).is_some_and(|f| !f.revents().is_empty()),
+                        fds.get(at).is_some_and(|f| !f.revents().is_empty()),
+                        mounts.is_some() && !fds[1].revents().is_empty(),
                     )
                 }
-                Err(Errno::INTR) => (false, false),
+                Err(Errno::INTR) => (false, false, false),
                 Err(e) => {
                     let msg = format!("poll: {e}");
                     if reported.insert(msg.clone()) {
@@ -572,10 +591,13 @@ fn run(mut core: Core<Kernel>, rx: Receiver<Ctl>, wake: &OwnedFd, sink: EventSin
                         .max(Duration::from_millis(10))
                         .min(opts.poll_interval);
                     std::thread::sleep(backoff);
-                    (true, true)
+                    (true, true, false)
                 }
             }
         };
+        if mounts_ready {
+            core.mounts_changed();
+        }
         if ctl_ready {
             // Reset the counter, then take every queued message: a message
             // sent after the drain writes the counter again.

@@ -41,10 +41,18 @@ fn aim(socket: std::path::PathBuf) {
     }));
 }
 
+/// The display shots connect to is process-wide: one test at a time.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Both protocols in one test: the display shots connect to is
 /// process-wide.
 #[test]
 fn a_screen_shot_is_one_frame_of_its_monitor() {
+    let _serial = serial();
     // ext-image-copy-capture, from the fake's output source.
     let fake = Fake::builder()
         .capture(true)
@@ -103,4 +111,34 @@ fn a_screen_shot_is_one_frame_of_its_monitor() {
     );
     assert!(shoot("HEADLESS-9", (64, 64)).is_none());
     wm::configure(None);
+}
+
+/// A compositor that takes the connection and never answers (stopped, or
+/// stuck in a modeset) gives `None` once the shot has taken
+/// [`SHOT_WAIT`], from the connection on: its startup waits under the
+/// same deadline as its frame.
+#[test]
+fn a_stalled_compositor_gives_none_within_shot_wait() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wayland-stalled");
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let (held_tx, held_rx) = mpsc::channel::<()>();
+    let _compositor = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        // Reads nothing, answers nothing, until the test ends.
+        let _ = held_rx.recv();
+        drop(stream);
+    });
+    aim(path);
+    let (tx, rx) = mpsc::channel();
+    let start = std::time::Instant::now();
+    let _shot = capture_screen("FAKE-1", (32, 24), move |f| {
+        let _ = tx.send(f.is_none());
+    });
+    let answer = rx.recv_timeout(SHOT_WAIT + Duration::from_secs(1));
+    drop(held_tx);
+    wm::configure(None);
+    assert_eq!(answer, Ok(true), "no answer within SHOT_WAIT");
+    assert!(start.elapsed() >= SHOT_WAIT, "{:?}", start.elapsed());
 }

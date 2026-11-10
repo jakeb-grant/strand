@@ -235,7 +235,17 @@ release's opt-levels without link-time optimisation), `eval` (the sandbox's
 gate), `site` (the site built and its media checked), `wasm` (the live
 examples in a browser), `compositors`, `lock-vm` and `package` (the release
 archive built, installed and started). On `main`, `deploy` and `release`
-wait for all of them, and `nightly` runs on the schedule.
+wait for all of them, and `nightly` runs on the schedule. They wait
+through one job, `checks`: on a push to `main`, `prior` looks for a green
+run of the same commit pushed to another branch, and each check job that
+passed there (a lock VM its path filter emptied does not count) is skipped
+on `main`, unless a cache input (the lockfile, a manifest, the image, the
+workflow or the setup action) changed since `main`'s previous head;
+`package` and `wasm`, which build what is published, always run, and any
+error or doubt in the lookup runs everything. `checks` passes a skipped job
+only with that proof (`scripts/container/prior-run.sh`, `checks-gate.sh`;
+decisions.md audit-main-rerun). On other pushes `prior` only prints what it
+would skip.
 `scripts/container/run.sh ci` runs the steps of the first seven in order in
 an image that matches CI (`CI_JOB=NAME` for one of them); `compositors` and
 `lock-vm` have `matrix.sh` and `lockvm.sh`, below. The steps:

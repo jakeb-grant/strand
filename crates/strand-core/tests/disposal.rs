@@ -718,6 +718,50 @@ fn frozen_state_coalesces_to_its_latest_value() {
     );
 }
 
+/// A disposal that ends no suspension (a finished handler task, a removed
+/// row elsewhere) does not walk the work hidden surfaces hold; disposing a
+/// held sink drops it from the held list, and the rest still runs once on
+/// resume.
+#[test]
+fn a_disposal_outside_a_suspension_leaves_held_work_unscanned() {
+    let rt = Runtime::new();
+    let x = rt.signal(0);
+    let runs = Rc::new(RefCell::new(0));
+    let (hidden, effects) = rt.scope(|rt| {
+        (0..100)
+            .map(|_| {
+                let r = runs.clone();
+                rt.effect(move |rt| {
+                    x.get(rt)?;
+                    *r.borrow_mut() += 1;
+                    Ok(())
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    rt.flush();
+    rt.suspend_closed(hidden.id()).unwrap();
+    x.set(&rt, 1).unwrap();
+    rt.flush();
+    assert_eq!(rt.held().len(), 100);
+    let scans = rt.stats().held_scans;
+    for _ in 0..50 {
+        rt.spawn(async { Ok(()) });
+        rt.flush();
+        let (row, _) = rt.scope(|rt| rt.signal(0));
+        row.dispose(&rt);
+    }
+    assert_eq!(rt.stats().held_scans, scans, "no pass over the held list");
+    rt.dispose(effects[0].id());
+    assert_eq!(rt.held().len(), 99, "a disposed sink leaves the held list");
+    assert_eq!(rt.stats().held_scans, scans);
+    *runs.borrow_mut() = 0;
+    rt.resume(hidden.id());
+    rt.flush();
+    assert_eq!(*runs.borrow(), 99, "each held sink runs once");
+    assert!(rt.held().is_empty());
+}
+
 /// (panel-change-closed) A closed surface's scope (`suspend_closed`):
 /// its effects stay frozen; an `on change` marked `keep_up_while_closed`
 /// waits, noting each flush's value, and when the scope resumes runs once

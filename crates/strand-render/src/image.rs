@@ -44,6 +44,11 @@ use vello_cpu::color::PremulRgba8;
 /// twice (decisions.md, m5-speed-caches).
 pub const IMAGE_CACHE_BYTES: usize = 32 << 20;
 
+/// Bytes of decodes no frame draws that stay however much of
+/// [`IMAGE_CACHE_BYTES`] the drawn ones take: a 4K wallpaper drawn
+/// (33 MB) leaves a closed launcher its icons (audit-image-floor).
+const UNDRAWN_FLOOR: usize = 8 << 20;
+
 /// (integration-r7 part 2) How many times its box's area the whole-source
 /// stand-in of a `cover` box may be ([`ImageStore::whole_for`]).
 const WHOLE_AREA: f64 = 4.0;
@@ -68,7 +73,8 @@ pub const MAX_DECODE_BYTES: usize = 64 << 20;
 const MAX_SOURCE_PIXELS: usize = MAX_DECODE_BYTES / 4;
 
 /// Largest source reduced as it is decoded (a non-interlaced PNG), in
-/// pixels: only one row is held at full resolution.
+/// pixels: only one row is held at full resolution, and the reduced
+/// pixels are held to [`MAX_SOURCE_PIXELS`] like a full decode.
 const MAX_STREAMED_PIXELS: usize = 1 << 30;
 
 /// Largest drawn size of one image, pixels per side.
@@ -451,8 +457,14 @@ struct Raster {
     /// side, whose last column or row then holds a part block (a 60 × 40
     /// PNG reduced by 3 is 20 × 14 pixels holding 20 × 13⅓ of source).
     /// Placement and resampling read this, so the content keeps the
-    /// source's aspect.
+    /// source's aspect. (audit-png-bound) Of a PNG drawn cover, only the
+    /// centred window its box shows; of one drawn fill, each side
+    /// reduced by its own factor.
     extent: (f64, f64),
+    /// (audit-png-bound) The whole source's size in pixels reduced by
+    /// one factor: `extent` unless cropped or stretched as it was read.
+    /// [`Decoded::source`] is this.
+    source: (f64, f64),
 }
 
 impl Raster {
@@ -462,6 +474,7 @@ impl Raster {
             h,
             rgba,
             extent: (w as f64, h as f64),
+            source: (w as f64, h as f64),
         }
     }
 }
@@ -516,14 +529,23 @@ pub fn load_with(
             let pm = |c: u8| ((c as u32 * a + 127) / 255) as u8;
             rgba.extend_from_slice(&[pm(px[0]), pm(px[1]), pm(px[2]), px[3]]);
         }
+        let still = anim.is_none();
         let src = Raster::new(sw, sh, rgba);
-        return Ok(Decoded {
+        let decoded = Decoded {
             pixmap: Arc::new(to_pixmap(&fit_raster(&src, w, h, key.fit))),
             symbolic,
             source: (sw as f64, sh as f64),
             fit: key.fit,
             anim,
-        });
+        };
+        // A still GIF or WebP has no next frame to stream: its player
+        // (the file and a canvas at the source's size) goes now, so the
+        // store holds only what is drawn.
+        if still {
+            let first = key.first();
+            players.retain(|k| *k != first);
+        }
+        return Ok(decoded);
     }
     let data = match data {
         Some(d) => d,
@@ -546,7 +568,7 @@ pub fn load_with(
                 "not a PNG, JPEG, SVG, GIF or WebP".into(),
             ));
         };
-        (fit_raster(&src, w, h, key.fit), src.extent)
+        (fit_raster(&src, w, h, key.fit), src.source)
     };
     Ok(Decoded {
         pixmap: Arc::new(to_pixmap(&out)),
@@ -580,8 +602,10 @@ fn push_rgba(out: &mut Vec<u8>, color: png::ColorType, p: &[u8]) {
 
 /// Decodes a PNG for a `want` box by `fit`. A non-interlaced one drawn
 /// at half its size or less is reduced as its rows arrive (each block of
-/// `f × f` source pixels averaged, `f` the whole reduction it allows),
-/// so only one source row is ever held at full resolution.
+/// `fx × fy` source pixels averaged, each the whole reduction its side
+/// allows, both the same unless stretched by fill), so only one source
+/// row is ever held at full resolution; cover sums only the window it
+/// shows, and the reduced pixels are held to [`MAX_SOURCE_PIXELS`].
 fn decode_png(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster, ImageError> {
     let mut dec = png::Decoder::new(std::io::Cursor::new(data));
     dec.set_transformations(png::Transformations::normalize_to_color8());
@@ -596,8 +620,16 @@ fn decode_png(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster, ImageEr
         return Err(ImageError::Decode("indexed PNG not expanded".into()));
     }
     let channels = color.samples();
+    // Fill stretches each side apart, so each is reduced by its own
+    // factor; any other fit keeps the aspect and reduces both by one.
     let f = (1.0 / needed_scale(sw, sh, want, fit)).floor().max(1.0) as u32;
-    if interlaced || f == 1 {
+    let (fx, fy) = if fit == Fit::Fill {
+        let by = |s: u32, d: u32| (s / d.max(1)).max(1);
+        (by(sw, want.0), by(sh, want.1))
+    } else {
+        (f, f)
+    };
+    if interlaced || (fx, fy) == (1, 1) {
         if pixels > MAX_SOURCE_PIXELS {
             return Err(ImageError::TooLarge);
         }
@@ -622,12 +654,31 @@ fn decode_png(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster, ImageEr
     if pixels > MAX_STREAMED_PIXELS {
         return Err(ImageError::TooLarge);
     }
-    let (rw, rh) = (sw.div_ceil(f), sh.div_ceil(f));
+    // Cover keeps only the window the box shows: whole blocks each side
+    // it crops (less one, for the resampling's edge) are never summed,
+    // so a panorama drawn as a square holds about the square.
+    let (x0, y0) = if fit == Fit::Cover {
+        let (bw, bh) = (want.0 as f64, want.1 as f64);
+        let (_, _, dw, dh) = placement(sw as f64, sh as f64, bw, bh, fit);
+        let skip = |s: u32, d: f64, b: f64, f: u32| {
+            let hidden = (d - b) / 2.0 * s as f64 / d;
+            ((hidden / f as f64).floor() as u32).saturating_sub(1) * f
+        };
+        (skip(sw, dw, bw, fx), skip(sh, dh, bh, fy))
+    } else {
+        (0, 0)
+    };
+    let (cw, ch) = (sw - 2 * x0, sh - 2 * y0);
+    let (rw, rh) = (cw.div_ceil(fx), ch.div_ceil(fy));
+    // The reduced pixels are held whole: as bounded as a full decode.
+    if (rw as usize).saturating_mul(rh as usize) > MAX_SOURCE_PIXELS {
+        return Err(ImageError::TooLarge);
+    }
     let mut out = Vec::with_capacity(rw as usize * rh as usize * 4);
     // A block holds at most every source pixel (`MAX_STREAMED_PIXELS`),
     // so its sums fit `u64` where `u32` overflows past `f` ≈ 4100.
     let mut sums = vec![0u64; rw as usize * 4];
-    let mut row_px = Vec::with_capacity(sw as usize * 4);
+    let mut row_px = Vec::with_capacity(cw as usize * 4);
     let mut rows_in_band = 0u32;
     let mut y = 0u32;
     while y < sh {
@@ -635,24 +686,28 @@ fn decode_png(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster, ImageEr
             .next_row()
             .map_err(|e| ImageError::Decode(e.to_string()))?
             .ok_or_else(|| ImageError::Decode("short PNG".into()))?;
+        y += 1;
+        if y <= y0 || y > sh - y0 {
+            continue;
+        }
         row_px.clear();
-        for p in row.data().chunks_exact(channels).take(sw as usize) {
+        let window = row.data().chunks_exact(channels).skip(x0 as usize);
+        for p in window.take(cw as usize) {
             push_rgba(&mut row_px, color, p);
         }
-        if row_px.len() != sw as usize * 4 {
+        if row_px.len() != cw as usize * 4 {
             return Err(ImageError::Decode("short PNG row".into()));
         }
         for (x, p) in row_px.chunks_exact(4).enumerate() {
-            let b = (x / f as usize) * 4;
+            let b = (x / fx as usize) * 4;
             for k in 0..4 {
                 sums[b + k] += p[k] as u64;
             }
         }
         rows_in_band += 1;
-        y += 1;
-        if rows_in_band == f || y == sh {
+        if rows_in_band == fy || y == sh - y0 {
             for bx in 0..rw {
-                let cols = f.min(sw - bx * f);
+                let cols = fx.min(cw - bx * fx);
                 let n = cols as u64 * rows_in_band as u64;
                 let b = bx as usize * 4;
                 for k in 0..4 {
@@ -663,13 +718,14 @@ fn decode_png(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster, ImageEr
             rows_in_band = 0;
         }
     }
-    // The last block of a side `f` does not divide holds less than `f`
-    // source pixels: its pixel covers that fraction of one.
+    // The last block of a side its factor does not divide holds less
+    // than a block of source pixels: its pixel covers that fraction of one.
     Ok(Raster {
         w: rw,
         h: rh,
         rgba: out,
-        extent: (sw as f64 / f as f64, sh as f64 / f as f64),
+        extent: (cw as f64 / fx as f64, ch as f64 / fy as f64),
+        source: (sw as f64 / f as f64, sh as f64 / f as f64),
     })
 }
 
@@ -736,7 +792,13 @@ fn decode_jpeg_inner(data: &[u8], want: (u32, u32), fit: Fit) -> Result<Raster, 
         .map_or((w as f64, h as f64), |d| {
             (sw as f64 * d as f64 / 8.0, sh as f64 * d as f64 / 8.0)
         });
-    Ok(Raster { w, h, rgba, extent })
+    Ok(Raster {
+        w,
+        h,
+        rgba,
+        extent,
+        source: extent,
+    })
 }
 
 /// Where a `sw × sh` source goes in a `w × h` box: its scaled size and
@@ -904,7 +966,7 @@ pub(crate) fn decode_rgba(
         Some(wh) => wh,
         None => {
             let side = |v: f64| v.clamp(1.0, MAX_SIDE as f64);
-            within(side(src.extent.0), side(src.extent.1), max_pixels)
+            within(side(src.source.0), side(src.source.1), max_pixels)
         }
     };
     if u64::from(w) * u64::from(h) > max_pixels {
@@ -1335,7 +1397,7 @@ impl ImageStore {
     pub(crate) fn frame_rate(
         &self,
         node: &crate::tree::Node,
-        t: impl FnOnce() -> f32,
+        t: impl FnOnce() -> f64,
     ) -> Option<crate::clock::Rate> {
         if node.kind != strand_scene::NodeKind::Image || self.timelines.is_empty() {
             return None;
@@ -1359,7 +1421,7 @@ impl ImageStore {
     pub(crate) fn frame_wake(
         &self,
         node: &crate::tree::Node,
-        t: f32,
+        t: f64,
         tick: std::time::Duration,
         next: std::time::Duration,
     ) -> std::time::Duration {
@@ -1867,6 +1929,7 @@ impl ImageStore {
                 }
             }
         }
+        let new = key.clone();
         if let Some(old) = self.entries.insert(
             key,
             Entry {
@@ -1878,18 +1941,29 @@ impl ImageStore {
             self.bytes -= old.bytes;
         }
         self.bytes += bytes;
-        // Least recently used first, never what a live frame draws.
-        while self.bytes > IMAGE_CACHE_BYTES {
-            let drawn = |k: &ImageKey| self.frames.values().any(|f| f.contains(k));
+        // Least recently used first, never what a live frame draws nor
+        // the decode just arrived, and never below `UNDRAWN_FLOOR` of
+        // undrawn bytes: drawn decodes over the budget do not empty it.
+        let drawn = |frames: &HashMap<SurfaceId, HashSet<ImageKey>>, k: &ImageKey| {
+            frames.values().any(|f| f.contains(k))
+        };
+        let mut undrawn: usize = self
+            .entries
+            .iter()
+            .filter(|(k, _)| !drawn(&self.frames, k))
+            .map(|(_, e)| e.bytes)
+            .sum();
+        while self.bytes > IMAGE_CACHE_BYTES && undrawn > UNDRAWN_FLOOR {
             let victim = self
                 .entries
                 .iter()
-                .filter(|(k, e)| e.bytes > 0 && !drawn(k))
+                .filter(|(k, e)| e.bytes > 0 && **k != new && !drawn(&self.frames, k))
                 .min_by_key(|(_, e)| e.used)
                 .map(|(k, _)| k.clone());
             let Some(v) = victim else { break };
             if let Some(e) = self.entries.remove(&v) {
                 self.bytes -= e.bytes;
+                undrawn -= e.bytes;
             }
             self.unhold(&v);
             if !self.entries.keys().any(|k| k.source == v.source) {
@@ -2102,6 +2176,57 @@ mod tests {
         assert!(!has(&s, 0) && has(&s, held + 3), "the oldest go first");
     }
 
+    /// A launcher closed while a 4K wallpaper is drawn keeps its icons:
+    /// the drawn decode over the budget does not evict every undrawn one,
+    /// nor the decode that just arrived.
+    #[test]
+    fn undrawn_icons_survive_a_large_drawn_image() {
+        let mut s = ImageStore::default();
+        let key = |src: String, w: u32, h: u32| ImageKey {
+            source: src,
+            icon: false,
+            w,
+            h,
+            fit: Fit::Cover,
+            scale: 1,
+            frame: 0,
+        };
+        let dec = |w: u32, h: u32| {
+            Ok(Decoded {
+                pixmap: Arc::new(Pixmap::new(w as u16, h as u16)),
+                symbolic: false,
+                source: (w as f64, h as f64),
+                fit: Fit::Cover,
+                anim: None,
+            })
+        };
+        let wall = key("wall".into(), 3840, 2160);
+        s.frames
+            .insert(SurfaceId(1), [wall.clone()].into_iter().collect());
+        s.insert(wall.clone(), dec(3840, 2160));
+        let icons: Vec<_> = (0..50).map(|i| key(format!("i{i}"), 96, 96)).collect();
+        s.frames
+            .insert(SurfaceId(2), icons.iter().cloned().collect());
+        for k in &icons {
+            s.insert(k.clone(), dec(96, 96));
+        }
+        s.frames.insert(SurfaceId(2), HashSet::new());
+        let extra = key("extra".into(), 96, 96);
+        s.insert(extra.clone(), dec(96, 96));
+        let kept = icons.iter().filter(|k| s.entries.contains_key(*k)).count();
+        assert_eq!(kept, 50, "closing the launcher must not drop its icons");
+        assert!(s.entries.contains_key(&extra), "the decode just arrived");
+        assert!(s.entries.contains_key(&wall));
+        // Undrawn decodes past the floor still go, oldest first.
+        let big: Vec<_> = (0..12).map(|i| key(format!("b{i}"), 1024, 1024)).collect();
+        for k in &big {
+            s.insert(k.clone(), dec(1024, 1024));
+        }
+        let undrawn = s.bytes() - 3840 * 2160 * 4;
+        assert!(undrawn <= UNDRAWN_FLOOR + 1024 * 1024 * 4, "{undrawn}");
+        assert!(s.entries.contains_key(&big[11]) && !s.entries.contains_key(&icons[0]));
+    }
+
     /// A surface drawing one image twice (two rows with one app's icon)
     /// no longer draws an image it dropped.
     #[test]
@@ -2275,6 +2400,82 @@ mod tests {
         let r = decode_png(&png_bytes, (1, 1), Fit::Contain).unwrap();
         assert_eq!((r.w, r.h), (1, 1));
         assert_eq!(r.rgba, [200, 120, 40, 255]);
+    }
+
+    /// A black 1-bit grey PNG, non-interlaced: kilobytes for any size.
+    fn thin_png(sw: u32, sh: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut bytes, sw, sh);
+            enc.set_color(png::ColorType::Grayscale);
+            enc.set_depth(png::BitDepth::One);
+            let mut w = enc.write_header().unwrap();
+            let mut s = w.stream_writer().unwrap();
+            let row = vec![0u8; (sw as usize).div_ceil(8)];
+            for _ in 0..sh {
+                std::io::Write::write_all(&mut s, &row).unwrap();
+            }
+            s.finish().unwrap();
+        }
+        bytes
+    }
+
+    /// (audit-png-bound) A PNG whose aspect is far from its box's, drawn
+    /// cover or fill, is reduced to about the box: cover sums only the
+    /// window it shows and fill reduces each side by its own factor,
+    /// where both were reduced only by the short side's factor (a 200,000
+    /// × 360 PNG for a 180 × 180 box held 72 MB). A reduction still past
+    /// the full-decode bound is refused.
+    #[test]
+    fn a_reduced_png_is_held_to_about_its_box() {
+        let bytes = thin_png(200_000, 360);
+        let r = decode_png(&bytes, (180, 180), Fit::Cover).unwrap();
+        assert!(r.w <= 184 && r.h == 180, "cover {}x{}", r.w, r.h);
+        assert!(r.extent.0 >= 180.0 && r.extent.1 == 180.0);
+        // What it reports as its source (stand-ins place and size by it)
+        // is still the whole source.
+        assert_eq!(r.source, (100_000.0, 180.0));
+        assert!(r.rgba.chunks_exact(4).all(|p| p == [0, 0, 0, 255]));
+        let out = fit_raster(&r, 180, 180, Fit::Cover);
+        assert!(out.rgba.chunks_exact(4).all(|p| p == [0, 0, 0, 255]));
+        let r = decode_png(&bytes, (180, 180), Fit::Fill).unwrap();
+        assert_eq!((r.w, r.h), (181, 180));
+        assert_eq!(r.source, (100_000.0, 180.0));
+        // 8200² reduced by 2 for cover is 4100² pixels, past 16 Mpx:
+        // refused from its header, before a row is read.
+        assert!(matches!(
+            decode_png(&thin_png(8200, 8200), (4100, 4100), Fit::Cover),
+            Err(ImageError::TooLarge)
+        ));
+    }
+
+    /// (audit-png-bound) A photo drawn cover in a box of another aspect
+    /// shows the same centred window it did when it was reduced whole.
+    #[test]
+    fn a_photo_drawn_cover_shows_its_centre() {
+        // 3000 × 2000, red rising left to right, into 100 × 100: reduced
+        // by 20, the 2000 columns shown are 500..2500.
+        let (sw, sh) = (3000u32, 2000u32);
+        let mut png_bytes = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut png_bytes, sw, sh);
+            enc.set_color(png::ColorType::Rgb);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut w = enc.write_header().unwrap();
+            let row: Vec<u8> = (0..sw)
+                .flat_map(|x| [(x * 255 / (sw - 1)) as u8, 0, 128])
+                .collect();
+            w.write_image_data(&row.repeat(sh as usize)).unwrap();
+        }
+        let r = decode_png(&png_bytes, (100, 100), Fit::Cover).unwrap();
+        assert!(r.w < 110 && r.h == 100, "{}x{}", r.w, r.h);
+        assert_eq!(r.source, (150.0, 100.0));
+        let out = fit_raster(&r, 100, 100, Fit::Cover);
+        for c in [0u32, 25, 50, 75, 99] {
+            let want = (500.0 + (c as f64 + 0.5) * 20.0) * 255.0 / (sw - 1) as f64;
+            let got = out.rgba[((50 * 100 + c) * 4) as usize] as f64;
+            assert!((got - want).abs() <= 2.0, "column {c}: {got} for {want}");
+        }
     }
 
     /// (opaque-fast-path) A decode claims to be opaque exactly when every

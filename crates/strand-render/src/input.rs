@@ -622,6 +622,9 @@ pub struct Router {
     /// (flex) Whether each slider being dragged runs upward, as it did
     /// when the press began: a drag does not change axis mid-way.
     drag_upright: HashMap<NodeId, bool>,
+    /// (audit-detach-drag) Sliders whose drag ended with their surface,
+    /// told the scene at the next flush ([`Router::detached`] has none).
+    drags_gone: Vec<NodeId>,
     /// The `input` whose text a held left button selects, per surface.
     selecting: HashMap<SurfaceId, NodeId>,
     /// (M4) A press on a `drag:` source, or the drag it became.
@@ -983,6 +986,15 @@ impl Router {
         self.release(surface);
         self.right_down.remove(&surface);
         self.middle_down.remove(&surface);
+        // (audit-detach-drag) So does a slider drag on it: the slider
+        // draws its `value` again at the next flush, or a panel, bar or
+        // osd (whose content stays mounted while closed) would show the
+        // drag's value, not its binding's, when it reopens.
+        if let Some(slider) = self.dragging.remove(&surface) {
+            self.drag_upright.remove(&slider);
+            self.drags_gone.push(slider);
+        }
+        self.selecting.remove(&surface);
         // (flex) Its focus is let go as a keyboard leave lets it go: the
         // node is told it lost focus, or it would keep its caret into
         // the next time its surface opens, beside the one focus gives
@@ -2039,6 +2051,11 @@ impl Router {
 
     /// Widgets draw hover, press, focus and selection at once.
     fn flush(&mut self, scene: &mut dyn InputScene) -> Vec<Intent> {
+        for slider in std::mem::take(&mut self.drags_gone) {
+            if !self.dragging.values().any(|s| *s == slider) {
+                scene.set_drag(slider, None);
+            }
+        }
         self.hover_popups(scene.tree(), self.now());
         self.tell_indexes();
         self.note_away_rows(scene.tree());
@@ -2240,8 +2257,18 @@ impl Router {
                 position,
                 ..
             } => {
-                self.pointer.insert(surface, *position);
-                let under = chain(scene, *position);
+                // (audit-release-presence) A release on a surface the
+                // pointer is not on (the manager's made-up release that
+                // ends a drag the compositor carried away, after its
+                // leave) ends the drag and the press but places no
+                // pointer there and hovers nothing.
+                let on = *state == ButtonState::Pressed || self.pointer.contains_key(&surface);
+                let under = if on {
+                    self.pointer.insert(surface, *position);
+                    chain(scene, *position)
+                } else {
+                    Vec::new()
+                };
                 if *b == button::LEFT && *state == ButtonState::Pressed {
                     self.click_away_from_others(surface, root, &under, scene);
                 }
@@ -2920,7 +2947,9 @@ impl Router {
     /// two-way: the catcher under such a surface covers only the usable
     /// area of its own output, so a press on Strand's own bar (or a
     /// surface on another output) is caught here. The press itself still
-    /// goes to what it landed on.
+    /// goes to what it landed on. Not from the exclusive surface a press
+    /// landed under (audit-exclusive-popup): a press in a popup nested in
+    /// the panel is inside the panel, not away from it.
     ///
     /// (integration-r8) Likewise from every other open popup with a
     /// two-way `open` ([`InputScene::popup_open`]): a popup's grab ends
@@ -2941,7 +2970,7 @@ impl Router {
         let tree = scene.tree();
         let away = |r: NodeId| {
             if scene.exclusive_open(r) {
-                return true;
+                return !tree.is_some_and(|t| t.is_ancestor(r, root));
             }
             if !scene.popup_open(r) {
                 return false;
@@ -3417,12 +3446,17 @@ impl Router {
             Some(PropValue::Text(t)) => t.clone(),
             _ => String::new(),
         };
+        // (audit-edit-clock) On the Router's clock, as the edit was
+        // stamped: a host on a virtual clock measures the window by it.
+        let clock = self.now();
         let in_flight = self
             .with_twins(input)
             .into_iter()
             .filter_map(|n| self.edits.get(&n))
             .filter(|e| {
-                e.latest != text && e.at.elapsed() < EDIT_IN_FLIGHT && e.pending.contains(&text)
+                e.latest != text
+                    && clock.saturating_duration_since(e.at) < EDIT_IN_FLIGHT
+                    && e.pending.contains(&text)
             })
             .max_by_key(|e| e.at);
         // (`observe` already dropped what logic answered.)

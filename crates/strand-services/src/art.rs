@@ -43,8 +43,10 @@ pub const CACHED: usize = 16;
 /// The kept files' bytes together (on a tmpfs: memory): two of the
 /// largest pictures, or many covers of the usual 100 KB–2 MB.
 pub const KEPT_BYTES: u64 = 2 * MAX_BYTES;
-/// Fetches at once. [`Cache::start`] is asked only for the URL shown, so
-/// the others running are for URLs shown before (a skipped track's): a
+/// Fetches at once. [`Cache::start`] is asked only for the URLs a visible
+/// reader reads (the active player's for `media.art`, every player's for
+/// `media.players`), so the others running are for URLs shown before (a
+/// skipped track's): a
 /// blocking fetch is not cancelled, so those run on until they end (kept
 /// for a skip back) or [`TIMEOUT`]. The bound is the threads stalled
 /// hosts may hold, not a queue the shown URL waits in: it waits only

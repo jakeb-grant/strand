@@ -2288,6 +2288,145 @@ fn popups_grab_only_right_after_a_press() {
     drop(pointer);
 }
 
+/// Two grabbing submenus of one grabbing menu (a tray menu's rows, each
+/// with its own `popup`): opening the second dismisses the first, told as
+/// a click away, before the new one grabs, so the grabs stay one chain
+/// and the new grab is on the topmost (xdg-shell). The menu they open in
+/// stays.
+#[test]
+fn a_grabbing_submenu_dismisses_its_grabbing_sibling() {
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::{wl_pointer, wl_registry};
+    use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+    use wayland_protocols_wlr::virtual_pointer::v1::client::{
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    };
+
+    struct Client;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Client {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    delegate_noop!(Client: ignore ZwlrVirtualPointerManagerV1);
+    delegate_noop!(Client: ignore ZwlrVirtualPointerV1);
+
+    let Some(sway) = Sway::start("a_grabbing_submenu_dismisses_its_grabbing_sibling") else {
+        return;
+    };
+    let mut mgr = strand_surface::SurfaceManager::with_connection(
+        sway.connect(),
+        TestHost::default(),
+        Config::default(),
+    )
+    .unwrap();
+    const BAR: NodeId = NodeId::new(1, 0);
+    const P: NodeId = NodeId::new(2, 0);
+    const C: NodeId = NodeId::new(3, 0);
+    const D: NodeId = NodeId::new(4, 0);
+    mgr.state_mut()
+        .apply_surface_change(BAR, SurfaceChange::Created(bar_spec("Top", 36.0)));
+    let input = mgr.take_input().unwrap();
+    wait_for_bars(&mut mgr, 1);
+
+    let conn = sway.connect();
+    let (globals, mut queue) = registry_queue_init::<Client>(&conn).unwrap();
+    let qh = queue.handle();
+    let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).unwrap();
+    let pointer = manager.create_virtual_pointer(None, &qh, ());
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(200));
+    // A first click on the desktop wakes the new virtual pointer up.
+    let click = |t: u32, x: u32, y: u32| {
+        pointer.motion_absolute(t, x, y, 1920, 1080);
+        pointer.frame();
+        pointer.button(t + 1, 0x110, wl_pointer::ButtonState::Pressed);
+        pointer.frame();
+        pointer.button(t + 2, 0x110, wl_pointer::ButtonState::Released);
+        pointer.frame();
+    };
+    click(1, 1500, 800);
+    queue.roundtrip(&mut Client).unwrap();
+    pump(&mut mgr, Duration::from_millis(100));
+    click(10, 130, 18);
+    queue.roundtrip(&mut Client).unwrap();
+    let ok = mgr
+        .dispatch_until(WAIT, |s| {
+            s.host()
+                .input
+                .iter()
+                .any(|e| matches!(e, InputEvent::PointerButton { .. }))
+        })
+        .unwrap();
+    assert!(ok, "the press reached the bar");
+
+    let popup =
+        |name: &str, parent: NodeId, x: f32| {
+            let mut spec = strand_scene::SurfaceSpec::resolve(NodeKind::Popup, |_| {
+                None::<&strand_scene::PropValue>
+            });
+            spec.name = Some(name.into());
+            spec.parent = Some(parent);
+            spec.anchor_rect = Some(LogicalRect::new(x, 8.0, 60.0, 20.0));
+            spec.width = Some(200.0);
+            spec.height = Some(120.0);
+            spec.open_two_way = true;
+            spec
+        };
+    let mapped = |mgr: &mut strand_surface::SurfaceManager<TestHost>, node: NodeId| {
+        mgr.dispatch_until(WAIT, |s| {
+            s.surfaces_of(node)
+                .first()
+                .and_then(|id| s.surface(*id))
+                .is_some_and(|i| i.stats.commits > 0)
+        })
+        .unwrap()
+    };
+
+    let serial = *mgr.state().host().press_serials.last().unwrap();
+    for node in [P, C, D] {
+        mgr.state_mut().set_popup_cause(node, Some(serial));
+    }
+    mgr.state_mut()
+        .apply_surface_change(P, SurfaceChange::Created(popup("P", BAR, 100.0)));
+    assert!(mapped(&mut mgr, P));
+    assert_eq!(mgr.state().stats().grabs, 1);
+    mgr.state_mut()
+        .apply_surface_change(C, SurfaceChange::Created(popup("C", P, 10.0)));
+    assert!(mapped(&mut mgr, C));
+    assert_eq!(mgr.state().stats().grabs, 2);
+    let c = mgr.state().surfaces_of(C)[0];
+    let before = mgr.state().host().input.len();
+    mgr.state_mut()
+        .apply_surface_change(D, SurfaceChange::Created(popup("D", P, 10.0)));
+    assert!(mapped(&mut mgr, D));
+    assert_eq!(mgr.state().stats().grabs, 3);
+    assert!(
+        mgr.state().surfaces_of(C).is_empty(),
+        "the sibling submenu goes before the new one grabs: {:?}",
+        mgr.state().surfaces_of(C)
+    );
+    assert!(
+        mgr.state().host().input[before..].contains(&InputEvent::ClickAway { surface: c }),
+        "{:?}",
+        &mgr.state().host().input[before..]
+    );
+    assert_eq!(
+        mgr.state().surfaces_of(P).len(),
+        1,
+        "the menu they open in stays"
+    );
+    drop(input);
+    drop(pointer);
+}
+
 /// Escape reaches a grabbing popup over a `keyboard: none` bar on a real
 /// compositor (a virtual keyboard, `zwp_virtual_keyboard_v1`): the popup
 /// gets keyboard focus from its grab, and the key arrives on it (the

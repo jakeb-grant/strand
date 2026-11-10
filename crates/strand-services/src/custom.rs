@@ -27,7 +27,8 @@
 //!   an event never is), once the host said a handler hears it
 //!   ([`hear_lines`]). It ending is a failure (retried with backoff). Commands run
 //!   in a process group of their own, ended whole (`SIGTERM`, then
-//!   `SIGKILL` after [`KILL_GRACE`]) when the service stops or restarts.
+//!   `SIGKILL` after [`KILL_GRACE`]) when the service stops or restarts,
+//!   strand's exit included (the services' shutdown waits for it).
 //! - **poll**: the command (or file) is read every interval, only while a
 //!   reader is visible.
 //! - **dir**: (services-round) the directory's files, listed now and
@@ -2109,6 +2110,18 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
             let _ = watch.drain();
             got = read_doc_bounded(path).await?;
         }
+        // (audit-file-torn) A JSON or XML file a change leaves as text or
+        // `key=value` lines is most often one written in more than one
+        // write (a large document, `curl -o`): read it again as it
+        // settles, until it parses as it did or `FILE_TORN_LIMIT` has
+        // passed, when what it holds is taken (a file that did change
+        // kind is read late, never lost).
+        let torn_until = std::time::Instant::now() + FILE_TORN_LIMIT;
+        while !first && torn(last.as_ref(), &got) && std::time::Instant::now() < torn_until {
+            tokio::time::sleep(FILE_SETTLE).await;
+            let _ = watch.drain();
+            got = read_doc_bounded(path).await?;
+        }
         note_over(&spec.name, path, &got, &mut over);
         // Too large: the last value stays (none yet: the defaults).
         let doc = match got {
@@ -2168,6 +2181,24 @@ async fn run_file(cx: &mut Cx<Custom>, spec: &Spec, path: &Path) -> Result<(), S
 /// How long a `from file` service waits before taking a file a change
 /// left empty as empty (a truncate-then-write shows empty in between).
 pub const FILE_SETTLE: Duration = Duration::from_millis(50);
+
+/// (audit-file-torn) How long a `from file` service reads a JSON or XML
+/// file again, every [`FILE_SETTLE`], while a change leaves it parsing as
+/// less (text, `key=value` lines): a write in progress.
+pub const FILE_TORN_LIMIT: Duration = Duration::from_millis(500);
+
+/// Whether `got` reads as a document torn by a write in progress: the
+/// last one read was JSON or XML and this one is not either.
+fn torn(last: Option<&(Document, Arc<str>)>, got: &Got) -> bool {
+    matches!(last, Some((Document::Json(_) | Document::Xml(..), _)))
+        && matches!(
+            got,
+            Got::Doc(
+                Document::Pairs(_) | Document::Text(_) | Document::NotXml { .. },
+                _
+            )
+        )
+}
 
 /// (services-round) The most files a `from dir` service lists (the
 /// first by name); more are left out, with a warning.
@@ -2430,10 +2461,15 @@ impl Drop for Proc {
         if !alive {
             return;
         }
+        // (audit-kill-exit) Listed until its `SIGKILL` is sent, so a
+        // strand exiting before then sends it ([`end_stopped_groups`]).
+        let deadline = std::time::Instant::now() + KILL_GRACE;
+        pending_kills().push((pgid, deadline));
         let kill = move || {
             std::thread::sleep(KILL_GRACE);
             // SAFETY: as above.
             unsafe { libc::kill(-pgid, libc::SIGKILL) };
+            pending_kills().retain(|&(p, d)| (p, d) != (pgid, deadline));
         };
         if std::thread::Builder::new()
             .name("strand-kill".into())
@@ -2442,8 +2478,72 @@ impl Drop for Proc {
         {
             // SAFETY: as above.
             unsafe { libc::kill(-pgid, libc::SIGKILL) };
+            pending_kills().retain(|&(p, d)| (p, d) != (pgid, deadline));
         }
     }
+}
+
+/// The groups sent `SIGTERM` whose `SIGKILL` is not sent yet, each with
+/// when it is due.
+fn pending_kills() -> std::sync::MutexGuard<'static, Vec<(i32, std::time::Instant)>> {
+    static PENDING: Mutex<Vec<(i32, std::time::Instant)>> = Mutex::new(Vec::new());
+    PENDING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// (audit-kill-exit) Ends the stopped commands' groups still waiting for
+/// their `SIGKILL`, at its time, before strand exits (which would take
+/// the `strand-kill` threads with it): a group whose every process has
+/// ended (a zombie is ended) is left at once, so this waits only for one
+/// that ignored `SIGTERM`, [`KILL_GRACE`] at most. Called once the
+/// services are stopped.
+pub(crate) fn end_stopped_groups() {
+    let limit = std::time::Instant::now() + KILL_GRACE;
+    loop {
+        let now = std::time::Instant::now();
+        let mut pending = std::mem::take(&mut *pending_kills());
+        if !pending.is_empty() {
+            let live = live_groups();
+            pending.retain(|&(pgid, due)| {
+                if !live.contains(&pgid) {
+                    return false;
+                }
+                if due <= now || limit <= now {
+                    // SAFETY: kill(2) on a group a `Proc` started.
+                    unsafe { libc::kill(-pgid, libc::SIGKILL) };
+                    return false;
+                }
+                true
+            });
+        }
+        if pending.is_empty() {
+            return;
+        }
+        // Back for the `strand-kill` threads too (it is theirs while
+        // listed); they send theirs, these are sent here first.
+        pending_kills().extend(pending);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// The process groups with a process that has not ended (a zombie has),
+/// from `/proc`.
+fn live_groups() -> Vec<i32> {
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    dir.filter_map(|e| {
+        let e = e.ok()?;
+        let name = e.file_name();
+        name.to_str()?.parse::<u32>().ok()?;
+        let stat = std::fs::read_to_string(e.path().join("stat")).ok()?;
+        // `pid (comm) state ppid pgrp …`, `comm` holding any byte.
+        let (_, rest) = stat.rsplit_once(')')?;
+        let mut f = rest.split_whitespace();
+        let state = f.next()?;
+        let pgrp = f.nth(1)?.parse::<i32>().ok()?;
+        (state != "Z" && state != "X").then_some(pgrp)
+    })
+    .collect()
 }
 
 /// (proc-ok) Whether `status` is a success: an exit with a status `ok`
@@ -2766,6 +2866,8 @@ async fn run_poll(
     let mut last: Option<tokio::time::Instant> = None;
     let mut not_xml = false;
     let mut over = None;
+    // Whether the values are a document's, which a file gone clears.
+    let mut held = false;
     // (build-ready) The failure last reported, until a poll answers: a
     // command failing the same way every poll is reported once. (proc-
     // reason) The same way is the same headline: what it printed may
@@ -2856,13 +2958,28 @@ async fn run_poll(
                 continue;
             }
         };
-        if let Got::Doc(doc, written) = doc {
-            let mut state = cx.state().clone();
-            note_not_xml(&spec.name, &doc, &mut not_xml);
-            replace_doc(spec, &doc, &written, &mut state);
-            if !cx.update(|s| *s = state) {
-                return Ok(());
+        match doc {
+            Got::Doc(doc, written) => {
+                let mut state = cx.state().clone();
+                note_not_xml(&spec.name, &doc, &mut not_xml);
+                replace_doc(spec, &doc, &written, &mut state);
+                held = true;
+                if !cx.update(|s| *s = state) {
+                    return Ok(());
+                }
             }
+            // (audit-poll-gone) A file removed after a poll read it:
+            // every field null until it is back, as under `from file`
+            // (a file never there already reads as the defaults).
+            Got::Gone if held => {
+                held = false;
+                let mut state = cx.state().clone();
+                state.values.iter_mut().for_each(|v| v.value = Data::Null);
+                if !cx.update(|s| *s = state) {
+                    return Ok(());
+                }
+            }
+            Got::Gone | Got::Over(_) => {}
         }
         if first {
             cx.ready();

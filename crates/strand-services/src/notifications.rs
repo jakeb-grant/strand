@@ -75,6 +75,7 @@ use tokio::sync::mpsc;
 use zbus::fdo::RequestNameReply;
 use zbus::zvariant::OwnedValue;
 
+use crate::lean::{ImageData, Lean, Typed};
 use crate::{Call, Cx, Event, Msg, ServiceError, Store, service};
 
 /// The schema the `notifications` service serves.
@@ -91,6 +92,78 @@ pub const PATH: &str = "/org/freedesktop/Notifications";
 /// (design.md: budgets are test targets, never limits on a shell): far
 /// past any history a person reads (mako keeps 5, dunst 20).
 pub const KEPT: usize = 1000;
+
+/// The most bytes of a `body` kept: what the text engine shapes
+/// (strand-text `MAX_TEXT_BYTES`). Like the other caps below, a bound on
+/// what one bus peer may make the shell hold (design.md: limits against
+/// input that would grow memory without end stay), applied as a
+/// notification arrives and cut at a char boundary.
+pub const MAX_BODY: usize = 64 * 1024;
+/// The most bytes of a `summary` and of an app name kept.
+pub const MAX_TEXT: usize = 1024;
+/// The most bytes of `app_icon` and of a string hint (`category`,
+/// `desktop-entry`, `image-path`) kept.
+pub const MAX_HINT: usize = 1024;
+/// The most bytes of an action's label kept, and of a key: an action
+/// whose key is longer is left out (a key is what `ActionInvoked` sends
+/// back, so it is never cut).
+pub const MAX_ACTION_TEXT: usize = 256;
+/// The most buttons (`actions`) a notification keeps; the rest are left
+/// out (`default` and `inline-reply` are still seen anywhere in the list).
+pub const MAX_ACTIONS: usize = 16;
+/// The most text bytes `all` keeps beside [`KEPT`]: beyond it the oldest
+/// closes as expired, and the remembered history is cut to it too.
+pub const KEPT_BYTES: usize = 16 << 20;
+/// A remembered history file larger than this is not read (it was not
+/// written by [`history_text`], which keeps it under [`KEPT_BYTES`]).
+const HISTORY_FILE_MAX: u64 = (KEPT_BYTES as u64) + (1 << 20);
+
+/// `s` cut to at most `max` bytes, at a char boundary.
+fn clipped(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let cut = (0..=max)
+        .rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0);
+    &s[..cut]
+}
+
+/// [`clipped`], in place.
+fn clip(mut s: String, max: usize) -> String {
+    let cut = clipped(&s, max).len();
+    s.truncate(cut);
+    s
+}
+
+/// The text bytes a notification holds, as [`KEPT_BYTES`] counts them.
+fn text_bytes(n: &Notification) -> usize {
+    let opt = |s: &Option<String>| s.as_ref().map_or(0, String::len);
+    n.app.name.len()
+        + n.app.icon.len()
+        + n.summary.len()
+        + n.body.len()
+        + opt(&n.image)
+        + opt(&n.category)
+        + opt(&n.desktop_entry)
+        + n.actions
+            .iter()
+            .map(|a| a.id.len() + a.label.len())
+            .sum::<usize>()
+}
+
+/// How many of `all`'s oldest close so that at most [`KEPT`] stay and
+/// their text is at most [`KEPT_BYTES`] (the newest always stays).
+fn over_kept(all: &[Notification]) -> usize {
+    let mut over = all.len().saturating_sub(KEPT);
+    let mut total: usize = all[over..].iter().map(text_bytes).sum();
+    while total > KEPT_BYTES && over + 1 < all.len() {
+        total -= text_bytes(&all[over]);
+        over += 1;
+    }
+    over
+}
 
 /// How many `image-data` pictures may wait to be written: beyond it a
 /// new notification's picture is left out.
@@ -345,9 +418,28 @@ enum Image {
     Data(ImageData),
 }
 
-/// `image-data`: width, height, rowstride, has alpha, bits, channels,
-/// pixels.
-type ImageData = (i32, i32, i32, bool, i32, i32, Vec<u8>);
+/// The hints a `Notify` is read for; the rest are skipped unread.
+#[derive(Debug)]
+struct HintKeys;
+
+impl crate::lean::Keys for HintKeys {
+    const KEYS: &'static [&'static str] = &[
+        "urgency",
+        "desktop-entry",
+        "image-data",
+        "image_data",
+        "icon_data",
+        "image-path",
+        "image_path",
+        "resident",
+        "transient",
+        "value",
+        "category",
+    ];
+}
+
+/// A `Notify`'s hints, read without a `Value` per pixel ([`Lean`]).
+type Hints = Lean<HintKeys>;
 
 /// What a sender's `Notify` asked for, as the store keeps it.
 #[derive(Clone, Debug)]
@@ -362,6 +454,11 @@ struct Arrival {
     default: bool,
     /// `transient`: never remembered across restarts.
     transient: bool,
+    /// Who sent it (its unique bus name). A replacement's sender is
+    /// recorded by the body as it shows the new content, not by the
+    /// interface: until then the notification shown, and what is done
+    /// with it, are still the earlier sender's.
+    sender: Option<String>,
 }
 
 /// From the bus to the service body.
@@ -382,6 +479,10 @@ struct Ids {
     /// closing. A broadcast would let any peer on the bus (a sandboxed app
     /// among them) read what the user typed in reply to another app.
     senders: HashMap<u32, String>,
+    /// Replacements handed to the body whose sender it has not recorded
+    /// yet (id, sender): told of the id's closing too if the run ends
+    /// with them still queued, since `Notify` gave them the id.
+    queued: Vec<(u32, String)>,
     /// The run ended: `Notify` and `CloseNotification` are refused (the
     /// name may still be ours while the closing signals go out).
     closed: bool,
@@ -402,20 +503,22 @@ fn hint_text(hints: &HashMap<String, OwnedValue>, keys: &[&str]) -> Option<Strin
             .get(*k)
             .and_then(|v| v.downcast_ref::<&str>().ok())
             .filter(|s| !s.is_empty())
-            .map(str::to_string)
+            .map(|s| clipped(s, MAX_HINT).to_string())
     })
 }
 
-/// The `image-data` hint (or its older names), else `image-path`.
-fn image(hints: &HashMap<String, OwnedValue>) -> Image {
+/// The `image-data` hint (or its older names; one of another shape is
+/// left out), else `image-path`. Taken out of `hints`: never copied.
+fn image(hints: &mut Hints) -> Image {
     let data = ["image-data", "image_data", "icon_data"]
         .iter()
-        .find_map(|k| hints.get(*k))
-        .and_then(|v| v.try_clone().ok())
-        .and_then(|v| ImageData::try_from(v).ok());
+        .find_map(|k| match hints.typed.remove(*k) {
+            Some(Typed::Image(d)) => Some(d),
+            _ => None,
+        });
     match data {
         Some(d) => Image::Data(d),
-        None => hint_text(hints, &["image-path", "image_path"])
+        None => hint_text(&hints.values, &["image-path", "image_path"])
             .map(Image::Path)
             .unwrap_or_default(),
     }
@@ -446,7 +549,7 @@ impl Server {
         summary: String,
         body: String,
         actions: Vec<String>,
-        hints: HashMap<String, OwnedValue>,
+        mut hints: Hints,
         expire_timeout: i32,
     ) -> Option<Arrival> {
         let (id, replaces) = {
@@ -463,6 +566,8 @@ impl Server {
                 (id, false)
             }
         };
+        let image = image(&mut hints);
+        let hints = hints.values;
         // A byte by the spec; some senders use another integer type.
         let urgency = match crate::dbus::number(&hints, "urgency").map(|n| n as i64) {
             Some(0) => Urgency::Low,
@@ -472,9 +577,9 @@ impl Server {
         let icon = if app_icon.is_empty() {
             hint_text(&hints, &["desktop-entry"]).unwrap_or_default()
         } else {
-            app_icon
+            clip(app_icon, MAX_HINT)
         };
-        let mut image = image(&hints);
+        let mut image = image;
         if let Image::Data(_) = image {
             // Bounded: a flood of pictures leaves the later ones out.
             if self.images.fetch_add(1, Ordering::AcqRel) >= IMAGES_QUEUED {
@@ -502,11 +607,15 @@ impl Server {
                 can_reply = true;
                 continue;
             }
-            buttons.push(NotificationAction {
-                id: key.clone(),
-                label: label.clone(),
-                notification: i64::from(id),
-            });
+            // A key is the sender's identifier: one too long to keep is
+            // left out whole, never cut into a key it did not register.
+            if buttons.len() < MAX_ACTIONS && key.len() <= MAX_ACTION_TEXT {
+                buttons.push(NotificationAction {
+                    id: key.clone(),
+                    label: clipped(label, MAX_ACTION_TEXT).to_string(),
+                    notification: i64::from(id),
+                });
+            }
         }
         let resident = hints
             .get("resident")
@@ -522,11 +631,11 @@ impl Server {
             n: Notification {
                 id: i64::from(id),
                 app: NotificationApp {
-                    name: app_name,
+                    name: clip(app_name, MAX_TEXT),
                     icon,
                 },
-                summary,
-                body,
+                summary: clip(summary, MAX_TEXT),
+                body: clip(body, MAX_BODY),
                 image: match &image {
                     Image::Path(p) => Some(p.clone()),
                     _ => None,
@@ -552,6 +661,7 @@ impl Server {
             resident,
             default,
             transient,
+            sender: None,
         })
     }
 }
@@ -567,7 +677,7 @@ impl Server {
         summary: String,
         body: String,
         actions: Vec<String>,
-        hints: HashMap<String, OwnedValue>,
+        hints: Hints,
         expire_timeout: i32,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<u32> {
@@ -584,21 +694,36 @@ impl Server {
                 expire_timeout,
             )
             .ok_or_else(stopped)?;
+        let mut a = a;
+        a.sender = header.sender().map(|s| s.to_string());
         let id = a.n.id as u32;
         let (fresh, data) = (!a.replaces, matches!(a.image, Image::Data(_)));
-        // A replacement's sender is the one told from now on.
+        // A new id is its sender's at once. A replacement's sender is
+        // recorded by the body together with the new content
+        // ([`Arrival::sender`]).
         if let Ok(mut ids) = self.ids.lock() {
-            match header.sender() {
-                Some(s) => ids.senders.insert(id, s.to_string()),
-                None => ids.senders.remove(&id),
-            };
+            match (fresh, &a.sender) {
+                (true, Some(s)) => {
+                    ids.senders.insert(id, s.clone());
+                }
+                (true, None) => {
+                    ids.senders.remove(&id);
+                }
+                (false, Some(s)) => ids.queued.push((id, s.clone())),
+                (false, None) => {}
+            }
         }
+        let from = a.sender.clone();
         if self.tx.send(FromBus::Notify(Box::new(a))).is_err() {
             // The body is gone: no id is handed out for a notification
             // nobody shows.
-            if fresh && let Ok(mut ids) = self.ids.lock() {
-                ids.live.remove(&id);
-                ids.senders.remove(&id);
+            if let Ok(mut ids) = self.ids.lock() {
+                if fresh {
+                    ids.live.remove(&id);
+                    ids.senders.remove(&id);
+                } else if let Some(from) = from {
+                    unqueue(&mut ids, id, &from);
+                }
             }
             if data {
                 self.images.fetch_sub(1, Ordering::AcqRel);
@@ -883,9 +1008,10 @@ impl Notifications {
                     };
                     match m {
                         FromBus::Notify(a) => {
-                            let Arrival { mut n, image, mut replaces, resident, default, transient } = *a;
+                            let Arrival { mut n, image, mut replaces, resident, default, transient, sender: from } = *a;
                             // It replaced one the body closed meanwhile: a
-                            // new notification under that id, open again.
+                            // new notification under that id, open again
+                            // (its sender recorded below, with its content).
                             if replaces && !cx.state().all.iter().any(|m| m.id == n.id) {
                                 replaces = false;
                                 if let Ok(mut ids) = ids.lock() {
@@ -915,19 +1041,34 @@ impl Notifications {
                             let shown = (replaces && cx.state().popups.iter().any(|m| m.id == n.id))
                                 || !cx.state().dnd
                                 || n.urgency == Urgency::Critical;
+                            // Its sender is the one told from now on, from the
+                            // moment its content shows: no await between.
+                            let before = record_sender(&ids, n.id, from.clone());
+                            let id = n.id;
                             let sent = received(&mut cx, &mut history, &kept, &n, shown);
                             if !sent || !cx.emit(NotificationsEvent::Received(n)) {
                                 return Ok(());
                             }
-                            // History is bounded: the oldest beyond it close.
+                            // Replaced by another peer (`notify-send -r`
+                            // from a new process): the earlier sender's
+                            // notification is closed, and it is told so,
+                            // rather than its signals going to the other
+                            // peer unheard (audit-notify-sender).
+                            if replaces
+                                && let Some(before) = before
+                                && from.as_deref() != Some(before.as_str())
+                            {
+                                signal_closed(&conn, &before, id, Closed::Closed).await;
+                            }
+                            // History is bounded (KEPT, KEPT_BYTES): the oldest beyond it close.
                             let over: Vec<i64> = {
                                 let all = &cx.state().all;
-                                all.iter().take(all.len().saturating_sub(KEPT)).map(|n| n.id).collect()
+                                all.iter().take(over_kept(all)).map(|n| n.id).collect()
                             };
-                            for id in over {
-                                if !close(&mut cx, &conn, &ids, &mut kept, &mut history, id, Closed::Expired).await {
-                                    return Ok(());
-                                }
+                            if !over.is_empty()
+                                && !close_all(&mut cx, &conn, &ids, &mut kept, &mut history, &over, Closed::Expired).await
+                            {
+                                return Ok(());
                             }
                         }
                         FromBus::Close(id) => {
@@ -956,13 +1097,10 @@ impl Notifications {
                         // (M5) Sent before `ActionInvoked` (spec 1.2).
                         let token = cx.activation_token().map(str::to_owned);
                         let alive = match a {
+                            // In one update: one list change, one snapshot.
                             NotificationsAction::Clear => {
                                 let all: Vec<i64> = cx.state().all.iter().map(|n| n.id).collect();
-                                let mut alive = true;
-                                for id in all {
-                                    alive &= close(&mut cx, &conn, &ids, &mut kept, &mut history, id, Closed::Dismissed).await;
-                                }
-                                alive
+                                close_all(&mut cx, &conn, &ids, &mut kept, &mut history, &all, Closed::Dismissed).await
                             }
                             // The popup ends; the notification stays open in
                             // `all` (closed once, when it leaves it).
@@ -1083,9 +1221,13 @@ impl Drop for CloseOnStop {
             Ok(mut ids) => {
                 ids.closed = true;
                 let senders = std::mem::take(&mut ids.senders);
+                let queued = std::mem::take(&mut ids.queued);
+                // A replacement still queued: its sender holds the id
+                // too (audit-notify-sender).
                 ids.live
                     .drain()
                     .filter_map(|id| Some((id, senders.get(&id)?.clone())))
+                    .chain(queued)
                     .collect()
             }
             Err(_) => return,
@@ -1094,6 +1236,7 @@ impl Drop for CloseOnStop {
             return;
         }
         open.sort_unstable();
+        open.dedup();
         let conn = self.conn.clone();
         // Sent after the body is gone, and waited for (bounded) when the
         // services' thread ends: `Services::shutdown` closes them too.
@@ -1167,13 +1310,14 @@ struct SavedHistory {
 }
 
 /// What to remember of `all`: the newest [`KEPT`] that are not
-/// `transient`, oldest first; an image only when it is a sender's own
-/// (`ours` names those whose picture we wrote from `image-data`: a file
-/// of this run, gone after it).
+/// `transient`, oldest first, as many as fit [`KEPT_BYTES`] of JSON; an
+/// image only when it is a sender's own (`ours` names those whose
+/// picture we wrote from `image-data`: a file of this run, gone after
+/// it).
 fn history_text(all: &[Notification], transient: &HashSet<i64>, ours: &HashSet<i64>) -> String {
     let kept: Vec<&Notification> = all.iter().filter(|n| !transient.contains(&n.id)).collect();
     let from = kept.len().saturating_sub(KEPT);
-    let notifications = kept[from..]
+    let mut notifications: Vec<Saved> = kept[from..]
         .iter()
         .map(|n| Saved {
             app_name: n.app.name.clone(),
@@ -1204,11 +1348,37 @@ fn history_text(all: &[Notification], transient: &HashSet<i64>, ours: &HashSet<i
             desktop_entry: n.desktop_entry.clone(),
         })
         .collect();
+    // The newest that fit the byte bound (JSON's escapes counted).
+    let mut total = 0usize;
+    let fit = notifications
+        .iter()
+        .rev()
+        .take_while(|saved| {
+            let mut count = Counted(0);
+            let bytes = serde_json::to_writer(&mut count, saved).map_or(usize::MAX, |()| count.0);
+            total = total.saturating_add(bytes);
+            total <= KEPT_BYTES
+        })
+        .count();
+    notifications.drain(..notifications.len() - fit);
     serde_json::to_string(&SavedHistory {
         version: HISTORY_VERSION,
         notifications,
     })
     .unwrap_or_default()
+}
+
+/// A writer that only counts the bytes written to it.
+struct Counted(usize);
+
+impl std::io::Write for Counted {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(buf.len());
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// The notifications a history file holds, numbered 1..=n oldest first,
@@ -1239,13 +1409,14 @@ fn restore(text: &str, exists: impl Fn(&Path) -> bool) -> Result<Vec<Notificatio
         .zip(1i64..)
         .map(|(s, id)| Notification {
             id,
+            // Cut as at arrival: a file written before the caps.
             app: NotificationApp {
-                name: s.app_name,
-                icon: s.app_icon,
+                name: clip(s.app_name, MAX_TEXT),
+                icon: clip(s.app_icon, MAX_HINT),
             },
-            summary: s.summary,
-            body: s.body,
-            image: s.image.and_then(picture),
+            summary: clip(s.summary, MAX_TEXT),
+            body: clip(s.body, MAX_BODY),
+            image: s.image.map(|i| clip(i, MAX_HINT)).and_then(picture),
             urgency: match s.urgency.as_str() {
                 "low" => Urgency::Low,
                 "critical" => Urgency::Critical,
@@ -1263,8 +1434,8 @@ fn restore(text: &str, exists: impl Fn(&Path) -> bool) -> Result<Vec<Notificatio
             },
             actions: Vec::new(),
             progress: s.progress,
-            category: s.category,
-            desktop_entry: s.desktop_entry,
+            category: s.category.map(|c| clip(c, MAX_HINT)),
+            desktop_entry: s.desktop_entry.map(|d| clip(d, MAX_HINT)),
             // Its sender cannot hear a reply.
             can_reply: false,
             // Nor a default action.
@@ -1417,6 +1588,18 @@ impl History {
             if !remember {
                 return (false, Vec::new());
             }
+            // Not read at all when larger than a save ever writes.
+            let size = store
+                .file_of(HISTORY_PATH)
+                .ok()
+                .and_then(|f| std::fs::metadata(f).ok())
+                .map_or(0, |m| m.len());
+            if size > HISTORY_FILE_MAX {
+                log::warn!(
+                    "notifications: the history not read: {size} bytes, more than {HISTORY_FILE_MAX}"
+                );
+                return (true, Vec::new());
+            }
             let restored = match store.load(HISTORY_PATH) {
                 Ok(Some(v)) => restore(&String::from_utf8_lossy(&v.value), Path::exists)
                     .unwrap_or_else(|e| {
@@ -1546,47 +1729,101 @@ async fn close(
     id: i64,
     why: Closed,
 ) -> bool {
-    let (alive, to) = forget(cx, ids, kept, history, id);
-    if let Some(to) = to {
+    close_all(cx, conn, ids, kept, history, &[id], why).await
+}
+
+/// Close the notifications `gone` in one update (one list change and one
+/// history snapshot however many: `clear()` with 1,000 kept), then tell
+/// each sender why. `false` once the service was stopped.
+async fn close_all(
+    cx: &mut Cx<Notifications>,
+    conn: &zbus::Connection,
+    ids: &Arc<Mutex<Ids>>,
+    kept: &mut Kept,
+    history: &mut History,
+    gone: &[i64],
+    why: Closed,
+) -> bool {
+    let (alive, told) = forget(cx, ids, kept, history, gone);
+    for (id, to) in told {
         signal_closed(conn, &to, id, why).await;
     }
     alive
 }
 
-/// What [`close`] does before its one wait, on which a stop can drop the body:
-/// the state and the history change first, so what was closed stays closed at
-/// the next boot whichever the stop lands on. Returns whether the service still
-/// runs, and who to tell.
+/// What [`close_all`] does before its waits, on which a stop can drop the
+/// body: the state and the history change first, so what was closed stays
+/// closed at the next boot whichever the stop lands on. Returns whether the
+/// service still runs, and who to tell of which.
 fn forget(
     cx: &mut Cx<Notifications>,
     ids: &Arc<Mutex<Ids>>,
     kept: &mut Kept,
     history: &mut History,
-    id: i64,
-) -> (bool, Option<String>) {
-    let known = cx.state().all.iter().any(|n| n.id == id);
-    let to = ids.lock().ok().and_then(|mut ids| {
-        ids.live.remove(&(id as u32));
-        ids.senders.remove(&(id as u32))
-    });
-    kept.resident.remove(&id);
-    kept.default.remove(&id);
-    kept.transient.remove(&id);
-    let restored = kept.restored.remove(&id);
-    // The file goes once the state no longer names it.
-    let image = kept.images.remove(&id);
-    if !known {
-        return (!cx.stopped(), None);
+    gone: &[i64],
+) -> (bool, Vec<(i64, String)>) {
+    let present: HashSet<i64> = cx.state().all.iter().map(|n| n.id).collect();
+    let senders: Vec<Option<String>> = {
+        let mut ids = ids.lock().ok();
+        gone.iter()
+            .map(|&id| {
+                let ids = ids.as_mut()?;
+                ids.live.remove(&(id as u32));
+                ids.senders.remove(&(id as u32))
+            })
+            .collect()
+    };
+    let mut told = Vec::new();
+    let mut images = Vec::new();
+    let mut known = HashSet::new();
+    for (&id, to) in gone.iter().zip(senders) {
+        kept.resident.remove(&id);
+        kept.default.remove(&id);
+        kept.transient.remove(&id);
+        let restored = kept.restored.remove(&id);
+        // The file goes once the state no longer names it.
+        images.push(kept.images.remove(&id));
+        if !present.contains(&id) {
+            continue;
+        }
+        known.insert(id);
+        // A restored one's sender is not told: it never knew this id.
+        if let Some(to) = to.filter(|_| !restored) {
+            told.push((id, to));
+        }
+    }
+    if known.is_empty() {
+        return (!cx.stopped(), Vec::new());
     }
     let alive = cx.update(|s| {
-        s.popups.retain(|n| n.id != id);
-        s.all.retain(|n| n.id != id);
+        s.popups.retain(|n| !known.contains(&n.id));
+        s.all.retain(|n| !known.contains(&n.id));
         s.count = s.all.len() as i64;
     });
     history.changed(cx.state(), kept);
-    drop(image);
-    // A restored one's sender is not told: it never knew this id.
-    (alive, to.filter(|_| !restored))
+    drop(images);
+    (alive, told)
+}
+
+/// Record `from` as the sender of notification `id` ([`Ids::senders`]),
+/// returning the one recorded before.
+fn record_sender(ids: &Mutex<Ids>, id: i64, from: Option<String>) -> Option<String> {
+    let mut ids = ids.lock().ok()?;
+    if let Some(from) = &from {
+        unqueue(&mut ids, id as u32, from);
+    }
+    match from {
+        Some(s) => ids.senders.insert(id as u32, s),
+        None => ids.senders.remove(&(id as u32)),
+    }
+}
+
+/// One replacement of `id` by `from` is no longer queued
+/// ([`Ids::queued`]).
+fn unqueue(ids: &mut Ids, id: u32, from: &str) {
+    if let Some(i) = ids.queued.iter().position(|(q, s)| *q == id && s == from) {
+        ids.queued.swap_remove(i);
+    }
 }
 
 /// The sender of live notification `id`, the one peer its signals go to
@@ -1663,10 +1900,10 @@ mod tests {
         };
         let pixels = || {
             let d: ImageData = (1, 1, 4, true, 8, 4, vec![1, 2, 3, 4]);
-            HashMap::from([(
-                "image-data".to_string(),
-                OwnedValue::try_from(zbus::zvariant::Value::from(d)).unwrap(),
-            )])
+            Hints::new(
+                HashMap::new(),
+                HashMap::from([("image-data".to_string(), Typed::Image(d))]),
+            )
         };
         let arrive = |hints| {
             server
@@ -1691,7 +1928,7 @@ mod tests {
         assert_eq!(server.images.load(Ordering::Acquire), IMAGES_QUEUED);
         // An image-path is still shown.
         let mut hints = pixels();
-        hints.insert(
+        hints.values.insert(
             "image-path".into(),
             OwnedValue::try_from(zbus::zvariant::Value::from("/tmp/p.png")).unwrap(),
         );
@@ -1710,10 +1947,173 @@ mod tests {
             "s".into(),
             String::new(),
             vec![],
-            HashMap::new(),
+            Hints::default(),
             -1,
         );
         assert!(none.is_none());
+    }
+
+    /// A sender's text and actions are cut as they arrive, at a char
+    /// boundary: the body to [`MAX_BODY`], summary and app name to
+    /// [`MAX_TEXT`], the icon and string hints to [`MAX_HINT`], each
+    /// action's label to [`MAX_ACTION_TEXT`], the buttons to
+    /// [`MAX_ACTIONS`] (a `default` past them still counts).
+    #[test]
+    fn an_oversized_notification_is_stored_cut() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let server = Server {
+            ids: Arc::default(),
+            tx,
+            images: Arc::new(AtomicUsize::new(0)),
+        };
+        // Three-byte chars, so no cap falls on a char boundary.
+        let big = |bytes: usize| "€".repeat(bytes / 3 + 1);
+        let mut actions: Vec<String> = (0..100)
+            .flat_map(|i| [format!("k{i}"), big(1000)])
+            .collect();
+        actions.extend(["default".to_string(), "Open".to_string()]);
+        let hint = |s: String| OwnedValue::try_from(zbus::zvariant::Value::from(s)).unwrap();
+        let hints = Hints::new(
+            HashMap::from([
+                ("category".to_string(), hint(big(10_000))),
+                ("desktop-entry".to_string(), hint(big(10_000))),
+                ("image-path".to_string(), hint(big(10_000))),
+            ]),
+            HashMap::new(),
+        );
+        let n = server
+            .arrival(
+                big(10_000),
+                0,
+                big(10_000),
+                big(10_000),
+                big(8 << 20),
+                actions,
+                hints,
+                -1,
+            )
+            .unwrap()
+            .n;
+        let cut = |s: &str, max: usize| {
+            assert!(s.len() <= max && s.len() > max - 3, "{} of {max}", s.len());
+            assert!(s.chars().all(|c| c == '€'));
+        };
+        cut(&n.body, MAX_BODY);
+        cut(&n.summary, MAX_TEXT);
+        cut(&n.app.name, MAX_TEXT);
+        cut(&n.app.icon, MAX_HINT);
+        cut(n.category.as_deref().unwrap(), MAX_HINT);
+        cut(n.desktop_entry.as_deref().unwrap(), MAX_HINT);
+        cut(n.image.as_deref().unwrap(), MAX_HINT);
+        assert_eq!(n.actions.len(), MAX_ACTIONS);
+        assert_eq!(n.actions[0].id, "k0");
+        assert_eq!(n.actions[MAX_ACTIONS - 1].id, "k15");
+        for a in &n.actions {
+            cut(&a.label, MAX_ACTION_TEXT);
+        }
+        assert!(n.can_activate, "a default past the cap still counts");
+        // Short text is kept whole.
+        let n = server
+            .arrival(
+                "Mail".into(),
+                0,
+                String::new(),
+                "s".into(),
+                "b".into(),
+                vec!["a".into(), "A".into()],
+                Hints::default(),
+                -1,
+            )
+            .unwrap()
+            .n;
+        assert_eq!((n.app.name.as_str(), n.summary.as_str()), ("Mail", "s"));
+        assert_eq!(n.body, "b");
+        assert_eq!(n.actions.len(), 1);
+    }
+
+    /// `all` keeps at most [`KEPT_BYTES`] of text beside [`KEPT`]
+    /// notifications (the oldest close first, the newest never), and
+    /// the remembered history is at most that much JSON.
+    #[test]
+    fn the_kept_history_is_bounded_in_bytes() {
+        let large = |id: i64| Notification {
+            body: "\u{1}".repeat(MAX_BODY),
+            ..sent(id, &format!("n{id}"), None)
+        };
+        let all: Vec<Notification> = (1..=KEPT as i64).map(large).collect();
+        let over = over_kept(&all);
+        let left = &all[over..];
+        assert!(!left.is_empty() && left.len() < KEPT);
+        assert!(left.iter().map(text_bytes).sum::<usize>() <= KEPT_BYTES);
+        assert!(
+            all[over - 1..].iter().map(text_bytes).sum::<usize>() > KEPT_BYTES,
+            "no more closes than the bound needs"
+        );
+        // Small ones: only the count bounds them.
+        let small: Vec<Notification> = (1..=KEPT as i64 + 3).map(|i| sent(i, "s", None)).collect();
+        assert_eq!(over_kept(&small), 3);
+        assert_eq!(over_kept(&all[..1]), 0, "the newest always stays");
+
+        // `\u{1}` is six bytes of JSON: the file is bounded, not the text.
+        let text = history_text(&all, &HashSet::new(), &HashSet::new());
+        assert!(text.len() <= KEPT_BYTES + 1024, "{}", text.len());
+        let back = restore(&text, |_| true).unwrap();
+        assert!(!back.is_empty());
+        assert_eq!(
+            back.last().unwrap().summary,
+            format!("n{KEPT}"),
+            "the newest kept"
+        );
+    }
+
+    /// A remembered history larger than a save ever writes is not read
+    /// (the run starts with none); one written before the caps, under
+    /// that size, comes back cut as at arrival.
+    #[tokio::test]
+    async fn a_remembered_history_over_the_limit_loads_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = strand_core::PersistStore::new(dir.path());
+        let saved = |body: String| {
+            serde_json::to_string(&SavedHistory {
+                version: HISTORY_VERSION,
+                notifications: vec![Saved {
+                    app_name: "x".repeat(4096),
+                    app_icon: String::new(),
+                    summary: "s".into(),
+                    body,
+                    image: None,
+                    urgency: "normal".into(),
+                    timeout_ms: None,
+                    persistent: false,
+                    time: SavedTime {
+                        year: 2026,
+                        month: 11,
+                        day: 10,
+                        weekday: 2,
+                        hour: None,
+                        minute: None,
+                    },
+                    progress: None,
+                    category: None,
+                    desktop_entry: None,
+                }],
+            })
+            .unwrap()
+        };
+        let history = History::new(Some(dir.path().to_path_buf()));
+
+        let huge = saved("x".repeat(HISTORY_FILE_MAX as usize + 1));
+        store.save(HISTORY_PATH, b"", huge.as_bytes()).unwrap();
+        assert_eq!(history.load().await, (true, Vec::new()));
+
+        store
+            .save(HISTORY_PATH, b"", saved("x".repeat(4 << 20)).as_bytes())
+            .unwrap();
+        let (remember, back) = history.load().await;
+        assert!(remember);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].body.len(), MAX_BODY);
+        assert_eq!(back[0].app.name.len(), MAX_TEXT);
     }
 
     #[test]
@@ -1967,6 +2367,7 @@ mod tests {
             crate::cx::Out {
                 tx,
                 wake: Arc::new(crate::cx::Wake::new(|| {})),
+                applied: tokio::sync::watch::channel(0).1,
             },
             msgs,
             crate::Buses::none(),
@@ -2011,13 +2412,13 @@ mod tests {
         }
         assert_eq!(to_save(&history), ["kept", "dismissed", "cleared"]);
 
-        let (alive, to) = forget(&mut cx, &ids, &mut kept, &mut history, 2);
-        assert_eq!((alive, to), (false, None));
+        let (alive, to) = forget(&mut cx, &ids, &mut kept, &mut history, &[2]);
+        assert_eq!((alive, to), (false, Vec::new()));
         assert_eq!(to_save(&history), ["kept", "cleared"]);
 
         ids.lock().unwrap().senders.insert(3, ":1.1".to_string());
-        let (alive, to) = forget(&mut cx, &ids, &mut kept, &mut history, 3);
-        assert_eq!((alive, to.as_deref()), (false, Some(":1.1")));
+        let (alive, to) = forget(&mut cx, &ids, &mut kept, &mut history, &[3]);
+        assert_eq!((alive, to), (false, vec![(3, ":1.1".to_string())]));
         assert_eq!(
             to_save(&history),
             ["kept"],
@@ -2116,6 +2517,7 @@ mod tests {
             images: Arc::new(AtomicUsize::new(0)),
         };
         let arrive = |hints: HashMap<String, OwnedValue>| {
+            let hints = Hints::new(hints, HashMap::new());
             server
                 .arrival(
                     "a".into(),

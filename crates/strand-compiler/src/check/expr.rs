@@ -113,7 +113,9 @@ impl<'a> Checker<'a> {
         {
             self.ctx.place = false;
         }
-        let h = self.expr_kind(e, expected, span);
+        // The parser bounds trees at 256 levels; grow the stack anyway, so
+        // a deeper tree costs heap rather than aborting the process.
+        let h = super::grow(|| self.expr_kind(e, expected, span));
         self.ctx.place = place;
         h
     }
@@ -385,7 +387,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Help for a `float` where an `int` is expected.
-    fn int_help(&self, h: &hir::Expr) -> String {
+    pub(super) fn int_help(&self, h: &hir::Expr) -> String {
         if let ExprKind::Def(d) = h.kind {
             let def = &self.defs[d.0 as usize];
             let kw = match def.kind {
@@ -3399,23 +3401,7 @@ impl<'a> Checker<'a> {
                 return Ty::Error;
             }
         };
-        let scalar = |p: Prim| p.is_scalar();
-        let res = match op {
-            BinaryOp::Mul => match (a, b) {
-                (Int, Int) => Some(Int),
-                (x, y) if scalar(x) && scalar(y) => Some(Float),
-                (x, d) | (d, x) if scalar(x) => Some(d),
-                _ => None,
-            },
-            BinaryOp::Div => match (a, b) {
-                (x, y) if scalar(x) && scalar(y) => Some(Float),
-                (d, x) if scalar(x) => Some(d),
-                (x, y) if x == y => Some(Float),
-                _ => None,
-            },
-            _ => common_unit(a, b),
-        };
-        match res {
+        match arith_prim(op, a, b) {
             Some(p) => Ty::Prim(p),
             None => {
                 let help = (a == Duration || b == Duration)
@@ -3946,15 +3932,20 @@ impl<'a> Checker<'a> {
                 let Some(e) = enum_id else {
                     return hir::Pattern::Error;
                 };
-                if let Ty::Enum(want) = target
-                    && *want != e
-                {
+                // A qualified variant against something that is not this
+                // enum (a `text` holding "dark") never matches: the same
+                // mismatch as against another enum.
+                if !target.is_lenient() && *target != Ty::Enum(e) {
                     let (a, b) = (self.types.enum_(e).name.clone(), self.show(target));
                     self.error(
                         "check::type_mismatch",
                         format!("this matches `{b}`, not `{a}`"),
                         p.span,
-                        "wrong enum",
+                        if matches!(target, Ty::Enum(_)) {
+                            "wrong enum"
+                        } else {
+                            "not an enum"
+                        },
                     );
                     return hir::Pattern::Error;
                 }
@@ -4550,6 +4541,29 @@ fn join_labels(quoted: &[String]) -> String {
 /// degrees beside a length, angle or percentage, a length and a
 /// percentage compare as written, and a duration goes only with a
 /// duration.
+/// The type of `a op b` on two numbers, or `None` when their units do not
+/// combine: `arith`'s table, which a compound assignment (`x op= e`, that
+/// is `x = x op e`) checks its result against too.
+pub(super) fn arith_prim(op: BinaryOp, a: Prim, b: Prim) -> Option<Prim> {
+    use Prim::*;
+    let scalar = |p: Prim| p.is_scalar();
+    match op {
+        BinaryOp::Mul => match (a, b) {
+            (Int, Int) => Some(Int),
+            (x, y) if scalar(x) && scalar(y) => Some(Float),
+            (x, d) | (d, x) if scalar(x) => Some(d),
+            _ => None,
+        },
+        BinaryOp::Div => match (a, b) {
+            (x, y) if scalar(x) && scalar(y) => Some(Float),
+            (d, x) if scalar(x) => Some(d),
+            (x, y) if x == y => Some(Float),
+            _ => None,
+        },
+        _ => common_unit(a, b),
+    }
+}
+
 fn common_unit(a: Prim, b: Prim) -> Option<Prim> {
     use Prim::*;
     match (a, b) {

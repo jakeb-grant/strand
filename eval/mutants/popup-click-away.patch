@@ -1,10 +1,10 @@
 diff --git a/crates/strand-render/src/input.rs b/crates/strand-render/src/input.rs
-index 2a8ea70..9916527 100644
+index 94d0557..182cc3d 100644
 --- a/crates/strand-render/src/input.rs
 +++ b/crates/strand-render/src/input.rs
-@@ -1904,7 +1904,7 @@ impl Router {
+@@ -2972,7 +2972,7 @@ impl Router {
              if scene.exclusive_open(r) {
-                 return true;
+                 return !tree.is_some_and(|t| t.is_ancestor(r, root));
              }
 -            if !scene.popup_open(r) {
 +            if true || !scene.popup_open(r) {

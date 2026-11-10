@@ -75,6 +75,7 @@ pub mod icon_theme;
 pub mod idle;
 pub mod ipc_bus;
 pub mod keyboard;
+mod lean;
 pub mod media;
 pub mod memory;
 pub mod network;

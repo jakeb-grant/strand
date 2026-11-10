@@ -4,6 +4,7 @@
 //! drop lands here too: a drop's arguments (`on drop(p, at)`).
 
 use strand_compiler::instantiate::{Instance, MAX_LIST_WINDOW};
+use strand_compiler::vm::ServiceHost;
 use strand_compiler::vm::Value;
 use strand_compiler::vm::schema_host::SchemaHost;
 use strand_render::HiddenRows;
@@ -23,7 +24,10 @@ pub(super) fn set_window(inst: &Instance, list: NodeId, first: u32, count: u32) 
 /// binding last held it (`None`, nothing to deliver, when the source is
 /// gone or holds no value now), or a `Drop` record for another
 /// program's drop, whose `app` is the installed `App` with the dropped
-/// id (null when there is none, or no `apps` service runs). `at` is the
+/// id (null when there is none, or no `apps` service runs), read from
+/// `apps.all` through `live`, the host the instance runs against (the
+/// composite under the real services; `host`, the schema host, makes
+/// the record and its variant). `at` is the
 /// insertion index render worked out (a global row index in a `list`),
 /// less one when (M6) a copy of a `drag:` source's value is among the
 /// windowed list's rows render could not see (`hidden`;
@@ -31,6 +35,7 @@ pub(super) fn set_window(inst: &Instance, list: NodeId, first: u32, count: u32) 
 pub(super) fn drop_args(
     inst: &Instance,
     host: &SchemaHost,
+    live: &dyn ServiceHost,
     payload: &DropPayload,
     at: u32,
     hidden: Option<HiddenRows>,
@@ -56,7 +61,7 @@ pub(super) fn drop_args(
         } => {
             let app = app_id
                 .as_deref()
-                .and_then(|id| installed_app(inst, host, id))
+                .and_then(|id| installed_app(inst, host, live, id))
                 .unwrap_or(Value::Null);
             let files = files
                 .iter()
@@ -76,13 +81,27 @@ pub(super) fn drop_args(
     Some(vec![value, Value::int(i64::from(at))])
 }
 
-/// The `App` in `apps.all` whose `id` is `id`.
-fn installed_app(inst: &Instance, host: &SchemaHost, id: &str) -> Option<Value> {
-    let all = host.get(inst.runtime(), "apps.all").ok()?;
+/// The `App` in the builtin `apps.all` whose `id` is `id`, read
+/// untracked from `live`. A drop names an app by its `.desktop` file's
+/// name, while `App.id` is the desktop id without `.desktop`: either
+/// matches.
+fn installed_app(
+    inst: &Instance,
+    host: &SchemaHost,
+    live: &dyn ServiceHost,
+    id: &str,
+) -> Option<Value> {
+    let all = inst
+        .runtime()
+        .untrack(|rt| live.read_builtin(rt, "apps", "all"))
+        .ok()?;
     let types = host.types();
     all.as_list()?
         .iter()
-        .find(|a| a.field(types, "id").and_then(Value::as_text) == Some(id))
+        .find(|a| {
+            let have = a.field(types, "id").and_then(Value::as_text);
+            have == Some(id) || have.is_some_and(|h| id.strip_suffix(".desktop") == Some(h))
+        })
         .cloned()
 }
 
@@ -120,7 +139,8 @@ panel P {
         let firefox = host.record(
             "App",
             &[
-                ("id", Value::text("firefox.desktop")),
+                // The desktop id, without `.desktop` (the drop's file name).
+                ("id", Value::text("firefox")),
                 ("name", Value::text("Firefox")),
             ],
         );
@@ -147,7 +167,7 @@ panel P {
         let (_rt, host, inst, mut m) = boot();
         let row = m.of_kind(NodeKind::Row)[0];
         let boxes = m.children(row).to_vec();
-        let args = drop_args(&inst, &host, &DropPayload::Node(boxes[2]), 0, None).unwrap();
+        let args = drop_args(&inst, &host, &*host, &DropPayload::Node(boxes[2]), 0, None).unwrap();
         assert_eq!(args[1], Value::int(0));
         assert!(inst.event(row, "drop", args));
         m.apply(&inst.flush().diff).unwrap();
@@ -160,24 +180,25 @@ panel P {
             text: String::new(),
             app_id: None,
         };
-        let args = drop_args(&inst, &host, &files, 2, None).unwrap();
+        let args = drop_args(&inst, &host, &*host, &files, 2, None).unwrap();
         assert!(inst.event(row, "drop", args));
         inst.flush();
         assert_eq!(texts(&inst, "files"), Value::int(2));
         assert_eq!(texts(&inst, "app"), Value::text("-"));
         assert_eq!(texts(&inst, "at"), Value::int(2));
-        // An app, resolved through `apps.all`; an unknown one is null.
+        // An app, resolved through `apps.all` by its `.desktop` file's
+        // name; an unknown one is null.
         let app = |id: &str| DropPayload::External {
             kind: DropKind::App,
             files: vec![],
             text: String::new(),
             app_id: Some(id.into()),
         };
-        let args = drop_args(&inst, &host, &app("firefox.desktop"), 1, None).unwrap();
+        let args = drop_args(&inst, &host, &*host, &app("firefox.desktop"), 1, None).unwrap();
         assert!(inst.event(row, "drop", args));
         inst.flush();
         assert_eq!(texts(&inst, "app"), Value::text("Firefox"));
-        let args = drop_args(&inst, &host, &app("nope.desktop"), 1, None).unwrap();
+        let args = drop_args(&inst, &host, &*host, &app("nope.desktop"), 1, None).unwrap();
         assert!(inst.event(row, "drop", args));
         inst.flush();
         assert_eq!(texts(&inst, "app"), Value::text("-"));
@@ -188,14 +209,14 @@ panel P {
             text: "hello".into(),
             app_id: None,
         };
-        let args = drop_args(&inst, &host, &text, 3, None).unwrap();
+        let args = drop_args(&inst, &host, &*host, &text, 3, None).unwrap();
         assert!(inst.event(row, "drop", args));
         inst.flush();
         assert_eq!(texts(&inst, "got"), Value::text("hello"));
         // A source that is no node of ours.
         let gone = NodeId::new(9999, 0);
         assert_eq!(
-            drop_args(&inst, &host, &DropPayload::Node(gone), 0, None),
+            drop_args(&inst, &host, &*host, &DropPayload::Node(gone), 0, None),
             None
         );
     }
@@ -243,8 +264,15 @@ panel P {
                 .unwrap()
         };
         let at = |app: &str, hidden| {
-            let args =
-                drop_args(&inst, &host, &DropPayload::Node(source(app)), 43, hidden).unwrap();
+            let args = drop_args(
+                &inst,
+                &host,
+                &*host,
+                &DropPayload::Node(source(app)),
+                43,
+                hidden,
+            )
+            .unwrap();
             args[1].clone()
         };
         let hidden = Some(HiddenRows {
@@ -345,7 +373,8 @@ panel P {
                 list: to,
                 before: 40,
             });
-            let args = drop_args(&inst, &host, &DropPayload::Node(from), 43, hidden).unwrap();
+            let args =
+                drop_args(&inst, &host, &*host, &DropPayload::Node(from), 43, hidden).unwrap();
             args[1].clone()
         };
         assert_eq!(at(source(from, "p5"), pins), Value::int(42), "a pin");
@@ -467,7 +496,8 @@ panel P {
                 list: to,
                 before: 40,
             });
-            let args = drop_args(&inst, &host, &DropPayload::Node(from), 43, hidden).unwrap();
+            let args =
+                drop_args(&inst, &host, &*host, &DropPayload::Node(from), 43, hidden).unwrap();
             args[1].clone()
         };
         for (to, what) in [

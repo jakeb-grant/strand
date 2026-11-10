@@ -146,7 +146,9 @@ struct Inner {
     config: ConfigSource,
     runtime: Handle,
     next_id: u64,
-    subs: Vec<(u64, Arc<Queue>)>,
+    /// The live subscriptions in arrival order, each with whether it can
+    /// report ([`WmHub::subscribe_reporting`]).
+    subs: Vec<(u64, Arc<Queue>, bool)>,
     /// What a subscriber holds after every batch so far.
     mirror: Mirror,
     /// A state was published (not only `Sources`).
@@ -202,6 +204,19 @@ impl WmHub {
     /// Joins: starts the service if this is the first subscriber, and
     /// queues the current state when it already runs.
     pub fn subscribe(&self) -> WmSubscription {
+        self.join(false)
+    }
+
+    /// Joins as [`WmHub::subscribe`] does, as a subscriber that raises the
+    /// service's diagnostics when it is the oldest such
+    /// ([`WmSubscription::reports`]): a store. A follower that only reads
+    /// (the keyboard's layout, the focused screen) subscribes with
+    /// [`WmHub::subscribe`] and never holds the role.
+    pub fn subscribe_reporting(&self) -> WmSubscription {
+        self.join(true)
+    }
+
+    fn join(&self, reporting: bool) -> WmSubscription {
         let mut inner = lock(&self.inner);
         let queue = Arc::new(Queue::default());
         let replay = inner.replay();
@@ -210,7 +225,7 @@ impl WmHub {
         }
         inner.next_id += 1;
         let id = inner.next_id;
-        inner.subs.push((id, queue.clone()));
+        inner.subs.push((id, queue.clone(), reporting));
         if inner.running.is_none() {
             inner.reap();
             let config = inner.config.get();
@@ -295,7 +310,7 @@ fn fan_out(hub: &Weak<Mutex<Inner>>, generation: u64, batch: Vec<WmChange>) {
     // Events are not state: a late subscriber never sees a past reload.
     inner.mirror.reloads.clear();
     let inner = &*inner;
-    for (_, q) in &inner.subs {
+    for (_, q, _) in &inner.subs {
         q.push(batch.clone(), || inner.replay());
     }
 }
@@ -331,6 +346,11 @@ impl Inner {
             out.push(WmChange::Sources(self.mirror.sources.clone()));
         }
         out
+    }
+
+    /// The oldest live subscription that can report.
+    fn reporter(&self) -> Option<u64> {
+        self.subs.iter().find(|s| s.2).map(|s| s.0)
     }
 
     /// Stops the run without waiting: its protocol thread is told to
@@ -376,7 +396,7 @@ impl Drop for Inner {
         for p in self.stopping.drain(..) {
             p.stop();
         }
-        for (_, q) in &self.subs {
+        for (_, q, _) in &self.subs {
             q.close();
         }
     }
@@ -429,14 +449,16 @@ impl WmSubscription {
         self.queue.lock().batches.len()
     }
 
-    /// Whether this is the oldest live subscription: the one store that
-    /// raises the service's diagnostics (`Sources::degraded`), so a
-    /// problem of the one shared service is reported once, not by every
-    /// store that shows it. When it leaves, the next oldest takes over.
+    /// Whether this is the oldest live subscription made with
+    /// [`WmHub::subscribe_reporting`]: the one store that raises the
+    /// service's diagnostics (`Sources::degraded`), so a problem of the
+    /// one shared service is reported once, not by every store that shows
+    /// it. When it leaves, the next oldest such takes over and is sent the
+    /// current `Sources` again, so it raises what still holds.
     pub fn reports(&self) -> bool {
         self.hub
             .upgrade()
-            .is_some_and(|h| lock(&h).subs.first().map(|(id, _)| *id) == Some(self.id))
+            .is_some_and(|h| lock(&h).reporter() == Some(self.id))
     }
 
     /// Runs an action and resolves to its outcome: `Ok` or a [`WmError`],
@@ -460,9 +482,24 @@ impl Drop for WmSubscription {
             return;
         };
         let mut inner = lock(&inner);
-        inner.subs.retain(|(id, _)| *id != self.id);
+        let was = inner.reporter();
+        inner.subs.retain(|(id, _, _)| *id != self.id);
         if inner.subs.is_empty() {
             inner.stop();
+            return;
+        }
+        // The reporter left: its successor hears the current `Sources`
+        // again (they are sent only when they change), so it raises a
+        // degradation that still holds.
+        let now = inner.reporter();
+        if was == Some(self.id)
+            && inner.has_sources
+            && let Some((_, q, _)) = inner.subs.iter().find(|s| Some(s.0) == now)
+        {
+            q.push(
+                vec![WmChange::Sources(inner.mirror.sources.clone())],
+                || inner.replay(),
+            );
         }
     }
 }

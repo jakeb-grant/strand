@@ -27,7 +27,13 @@ pub fn to_value(types: &TypeTable, d: &Data) -> Value {
         Data::Color(c) => Value::Color(Color::new(c.r, c.g, c.b, c.a)),
         Data::List(items) => Value::list(items.iter().map(|d| to_value(types, d)).collect()),
         Data::Record { ty, fields } => {
-            let Some(r) = types.find_record(ty) else {
+            // The schema's record: a config's own `type App` hides it by
+            // name only in the config's code. A name only the config
+            // declares (a document read as `any`) is the config's.
+            let Some(r) = types
+                .find_schema_record(ty)
+                .or_else(|| types.find_record(ty))
+            else {
                 return Value::Null;
             };
             let def = types.record(r);

@@ -19,5 +19,11 @@ wayland-protocols-wlr = { version = "0.3.12", features = ["server"] }
 rustix = { version = "1.1.5", features = ["event", "time"] }
 tempfile = "3.27.0"
 
+# tests/protocol_errors.rs: a raw client breaking xdg-shell's rules.
+[dev-dependencies]
+wayland-client = "0.31.15"
+wayland-protocols = { version = "0.32.13", features = ["client", "server", "staging", "unstable"] }
+wayland-protocols-wlr = { version = "0.3.12", features = ["client", "server"] }
+
 [lints]
 workspace = true

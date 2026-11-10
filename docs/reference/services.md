@@ -289,7 +289,7 @@ and only while a visible reader shows it.
 | `title` | `text?` | The track's title. |
 | `artist` | `text?` | The track's artist. |
 | `album` | `text?` | The track's album. |
-| `art` | `text?` | The album art: `image media.art { fit: cover }`. Local art (a `file://` URL or a path) as the player sent it; remote (`https://`, `http://`) art fetched and shown as a file once it is in. Null when the player sent none, while remote art loads, or when it failed, so `media.art ?? "audio-x-generic"` falls back. |
+| `art` | `text?` | The album art: `image media.art { fit: cover }`. Local art (a `file://` URL or a path) as the player sent it; remote (`https://`, `http://`) art fetched while a visible reader reads it and shown as a file once it is in. Null when the player sent none, while remote art loads, or when it failed, so `media.art ?? "audio-x-generic"` falls back. |
 | `position` | `float rw` | Fraction of the track played, 0 to 1. Writable: a scrubber's `slider { value: <-> media.position }` seeks the player (MPRIS `SetPosition`, or `Seek` when the track has no id). A player that cannot seek, or a track of unknown length, keeps its place. |
 | `elapsed` | `duration` | Time played. |
 | `length` | `duration?` | The track's length, when known. |
@@ -431,8 +431,8 @@ wiped once sent. A panel shows it:
 
 | Field | Type | |
 | --- | --- | --- |
-| `request` | `PolkitRequest?` | The request being answered, or null when none waits. |
-| `waiting` | `int` | How many more requests wait behind `request`, each shown in turn. |
+| `request` | `PolkitRequest?` | The request being answered, or null when none waits. Null for a moment between two requests too: when the shown one ends (answered, cancelled or withdrawn) it is null, as an update of its own, before the next shows, so a dialog `open: polkit.request != null` closes and opens again (its `on show` runs). |
+| `waiting` | `int` | How many more requests wait behind `request`, each shown in turn (every one, while `request` is null between two). |
 | `busy` | `bool` | An answer is being checked. |
 | `failed` | `bool` | The last answer was refused: `request` stays, and its prompt asks again. |
 | `available` | `bool` | Strand is this session's polkit agent. False while another agent is (a desktop's own, `polkit-gnome`), and when it cannot be one: polkit's helper (`polkit-agent-helper-1`, setuid root, or polkit's own socket for it) is not installed, polkit is not running, or Strand runs in no login session; `error` says which. |
@@ -440,8 +440,8 @@ wiped once sent. A panel shows it:
 
 | Method | |
 | --- | --- |
-| `action respond(answer: text)` | Answers `request.prompt` with `answer` (the password): `input { type: password; text: <-> pw; on activate { polkit.respond(pw); pw = "" } }`. Ignored while one is being checked, and when the request shown has not asked yet (it went, or another user was chosen, since the answer was typed: an answer is never given to a request it was not typed for). After a refusal an answer typed before the check asks again waits for that question, and only a secret one (not `echo`) takes it. Pass a password to nothing else: the config is trusted code, and a declared action's arguments can be read by every user in the process list. |
-| `action cancel()` | Dismisses `request`: the program is told it was refused, and the next request, if any, shows. |
+| `action respond(answer: text)` | Answers `request.prompt` with `answer` (the password): `input { type: password; text: <-> pw; on activate { polkit.respond(pw); pw = "" } }`. Ignored while one is being checked, while `request` is null between two requests, and when the request shown has not asked yet (another request shows, or another user was chosen, since the answer was typed). An answer typed before the dialog closed is never given to the next request; what is typed after it opened again is the new request's, so clear the input in `on show` and when you `choose` another user. After a refusal an answer typed before the check asks again waits for that question, and only a secret one (not `echo`) takes it. Pass a password to nothing else: the config is trusted code, and a declared action's arguments can be read by every user in the process list. |
+| `action cancel()` | Dismisses `request`: the program is told it was refused, and the next request, if any, shows. Ignored while `request` is null. |
 | `action choose(user: text)` | Asks for `user`'s password instead (one of `request.users`). |
 
 ## `power`

@@ -66,6 +66,7 @@ impl<H: SurfaceHost + 'static> State<H> {
         self.outputs.insert(global, output);
         self.host.monitor_added(&monitor, plugged.reconnected);
         self.reconcile_all();
+        self.add_catchers_on(global);
     }
 
     /// (output-id-order) Unplugs the monitors `renamed` names, for them

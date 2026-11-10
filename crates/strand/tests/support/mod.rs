@@ -369,3 +369,46 @@ pub mod poll {
         }
     }
 }
+
+/// What the screenshot comparisons (`acceptance.rs`, `m5/newcomer.rs`)
+/// add to their 4x4 block rule: a feature one or two pixels thin puts
+/// at most four differing pixels in any block, so the block rule alone
+/// passed a missing 1px line or a 2x2 dot.
+pub mod diff {
+    /// A run of this many differing pixels along a row or a column fails;
+    /// antialiasing noise, scattered, makes no such run.
+    pub const RUN_TOLERANCE: usize = 6;
+
+    /// The first thin feature in `far` (a `w`x`h` mask of differing
+    /// pixels, row by row): a run of [`RUN_TOLERANCE`] along a row or a
+    /// column, or a 2x2 square, as its top-left pixel and what it is.
+    pub fn thin_feature(far: &[bool], w: usize, h: usize) -> Option<(usize, usize, &'static str)> {
+        let at = |x: usize, y: usize| far[y * w + x];
+        for y in 0..h {
+            let mut run = 0;
+            for x in 0..w {
+                run = if at(x, y) { run + 1 } else { 0 };
+                if run == RUN_TOLERANCE {
+                    return Some((x + 1 - run, y, "row run"));
+                }
+            }
+        }
+        for x in 0..w {
+            let mut run = 0;
+            for y in 0..h {
+                run = if at(x, y) { run + 1 } else { 0 };
+                if run == RUN_TOLERANCE {
+                    return Some((x, y + 1 - run, "column run"));
+                }
+            }
+        }
+        for y in 1..h {
+            for x in 1..w {
+                if at(x, y) && at(x - 1, y) && at(x, y - 1) && at(x - 1, y - 1) {
+                    return Some((x - 1, y - 1, "2x2 square"));
+                }
+            }
+        }
+        None
+    }
+}

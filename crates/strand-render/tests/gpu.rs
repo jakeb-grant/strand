@@ -1556,6 +1556,72 @@ fn a_frame_that_cannot_be_drawn_takes_its_surface_back() {
     assert_eq!(d.area(), 80 * 40, "the CPU repaints it in full");
 }
 
+/// (audit-upload-size) A frame answered `Failed` may have had its
+/// uploads refused (a pixmap over the atlas, the atlas full), so the
+/// renderer forgets them: promoted again, the surface's next frame
+/// uploads the filtered group's pixmap anew rather than drawing an id
+/// the GPU never held, and the forgotten id is retired. Needs no device.
+#[test]
+fn a_failed_frames_uploads_are_sent_again() {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let group = b.node(
+        NodeKind::Box,
+        Some(root),
+        vec![
+            (Prop::X, num(10.0)),
+            (Prop::Y, num(10.0)),
+            (Prop::Size, num(40.0)),
+            (Prop::Filter, backdrop_call("grayscale", vec![num(1.0)])),
+        ],
+    );
+    b.node(
+        NodeKind::Box,
+        Some(group),
+        vec![(Prop::Size, num(20.0)), (Prop::Bg, color("#f38ba8"))],
+    );
+    let mut r = renderer();
+    assert!(r.apply(b.diff).is_empty());
+    r.attach_surface(S, r.tree().roots()[0]);
+    let mut buf = Buffer::new(120, 60, Scale::ONE);
+    buf.paint_at(&mut r, S, 0, Duration::from_secs(1));
+    let promote = |r: &mut Renderer, at: u64| {
+        r.promote_now(S);
+        r.set_backend(S, Backend::GpuPresent);
+        let _ = r.take_backend_changes();
+        r.paint_gpu(S, Duration::from_secs(at))
+            .expect("the switch's frame")
+    };
+    let first = promote(&mut r, 1);
+    let sent: Vec<(u64, Arc<_>)> = first
+        .uploads
+        .iter()
+        .map(|u| (u.id, u.pixmap.clone()))
+        .collect();
+    assert!(!sent.is_empty(), "the group's pixmap is uploaded");
+    r.deliver_gpu(GpuReply::Failed {
+        surface: Some(S),
+        key: None,
+        error: strand_gpu::GpuError {
+            kind: GpuErrorKind::Render,
+            message: "a 9000×40 image is larger than the GPU's image atlas".into(),
+        },
+    });
+    assert_eq!(r.backend(S), Backend::Cpu);
+    buf.paint_at(&mut r, S, 1, Duration::from_secs(2));
+    let again = promote(&mut r, 3);
+    for (id, pm) in &sent {
+        assert!(
+            again
+                .uploads
+                .iter()
+                .any(|u| Arc::ptr_eq(&u.pixmap, pm) && u.id != *id),
+            "upload {id} sent again under a new id"
+        );
+        assert!(again.retire.contains(id), "upload {id} retired");
+    }
+}
+
 /// (M5, m5-tools review) `strand report`'s frame time of a promoted
 /// surface includes the GPU's work: a `GpuPresent` frame runs from its
 /// `paint` to its `Presented`'s `at` (its submission; round 3,
@@ -3057,6 +3123,62 @@ fn a_backdrops_key_follows_a_fade_a_filter_or_a_move() {
             }
         }
     }
+}
+
+/// (audit-backdrop-transform) A backdrop inside a scaled ancestor reads
+/// what is behind it under the ancestor's transform in a presented
+/// frame as on the CPU: red and blue meet under the glass where they
+/// meet on the surface, not where they would unscaled.
+#[test]
+fn a_backdrop_under_a_scaled_ancestor_looks_the_same_on_either_backend() {
+    let Some(opts) = device() else { return };
+    let size = (480u32, 160u32);
+    let scene = || {
+        let mut b = Builder::default();
+        let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+        let abs = |x: f32, y: f32, w: f32, h: f32| {
+            vec![
+                (Prop::X, num(x)),
+                (Prop::Y, num(y)),
+                (Prop::Width, num(w)),
+                (Prop::Height, num(h)),
+                (Prop::Place, PropValue::Keyword("absolute".into())),
+            ]
+        };
+        // Scaled 0.5 about (240, 80): local 400 is the surface's 320.
+        let mut p = abs(0.0, 0.0, 480.0, 160.0);
+        p.push((Prop::Scale, num(0.5)));
+        let holder = b.node(NodeKind::Box, Some(root), p);
+        for (x, w, c) in [(0.0, 400.0, "#ff0000"), (400.0, 80.0, "#0000ff")] {
+            let mut p = abs(x, 0.0, w, 160.0);
+            p.push((Prop::Bg, color(c)));
+            b.node(NodeKind::Box, Some(holder), p);
+        }
+        let mut p = abs(320.0, 20.0, 160.0, 120.0);
+        p.push((Prop::Backdrop, backdrop_call("blur", vec![num(8.0)])));
+        b.node(NodeKind::Box, Some(holder), p);
+        b.diff
+    };
+    let want = backdrop_on_cpu(scene(), size);
+    // Glass over the surface's 280..360: red left of 320, blue right.
+    let (left, right) = (want.px(290, 80), want.px(350, 80));
+    assert!(left[2] > 200 && left[0] < 50, "CPU: red at left {left:?}");
+    assert!(
+        right[0] > 200 && right[2] < 50,
+        "CPU: blue at right {right:?}"
+    );
+    let (mut r, mut gpu, pings) = backdrop_presented(opts, scene(), size);
+    let t = Duration::from_secs(1) + Duration::from_millis(16);
+    let frame = r.paint_gpu(S, t).expect("the switch repaints");
+    assert_eq!(backdrops_in(&frame).len(), 1, "in the frame");
+    let px = draw(&mut gpu, &pings, frame);
+    let (bad, worst) = compare_bytes(&px, &want.pixels);
+    let share = bad as f64 / f64::from(size.0 * size.1);
+    assert!(
+        share <= EDGE_SHARE,
+        "{bad} pixels past {GPU_TOLERANCE} of the CPU's (worst {worst})"
+    );
+    drop(gpu);
 }
 
 /// An ancestor fading leaves a backdrop's key alone: the group open

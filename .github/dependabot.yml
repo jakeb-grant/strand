@@ -1,0 +1,11 @@
+# Moves the commit SHAs the workflows and the setup action pin their
+# third-party actions to (scripts/container/check-action-pins.sh; decisions.md
+# audit-action-pins), and the major tags of GitHub's own actions/*.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/setup
+    schedule:
+      interval: weekly

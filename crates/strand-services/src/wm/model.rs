@@ -286,6 +286,11 @@ pub struct Sources {
     pub ipc: Option<CompositorKind>,
     /// The adapter is connected (false while it reconnects).
     pub connected: bool,
+    /// The published windows' and workspaces' ids are the adapter's (its
+    /// state is merged in), not the protocols' keys: false before the
+    /// adapter's first state, when it cannot connect and while it is
+    /// degraded.
+    pub adapter_ids: bool,
     /// The compositor advertises `ext_foreign_toplevel_list_v1`.
     pub toplevel_list: bool,
     /// The compositor advertises `zwlr_foreign_toplevel_manager_v1`: with

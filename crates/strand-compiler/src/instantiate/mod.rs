@@ -169,6 +169,10 @@ impl RuntimeError {
 /// Drops a parked bar by its monitor's key; true if one was parked.
 pub(crate) type Forget = dyn Fn(&Runtime, &Value) -> bool;
 
+/// Disposes the cells a closed popup kept for a keyed `for`'s rows whose
+/// key its data no longer has ([`Ctx::sweep_kept`]).
+pub(crate) type Sweep = dyn Fn(&Runtime);
+
 /// Services a mounted scope reads ([`Ctx::hold`]).
 pub(crate) struct Hold {
     pub scope: Option<CoreId>,
@@ -250,6 +254,12 @@ pub(crate) struct Ctx {
     pub settings_prune_at: Cell<usize>,
     /// Per-monitor bar lists: forget a parked monitor's bar by key.
     pub forgetters: RefCell<Vec<std::rc::Weak<Forget>>>,
+    /// Mounted keyed `for`s: each disposes the kept cells of its rows
+    /// whose key the data dropped, when a popup closes.
+    pub sweepers: RefCell<Vec<std::rc::Weak<Sweep>>>,
+    /// The length `sweepers` is next pruned of unmounted entries at, as
+    /// `settings_prune_at`.
+    pub sweepers_prune_at: Cell<usize>,
     pub notices: RefCell<Vec<String>>,
     /// Persisted cells kept over a changed default since the last tick.
     pub kept: RefCell<Vec<crate::reconcile::KeptCell>>,
@@ -266,8 +276,10 @@ pub(crate) struct Ctx {
     pub registry: RefCell<reload::Registry>,
     /// A reload in progress: the old instance's registry.
     pub carry: RefCell<Option<reload::Carry>>,
-    /// Cells of bars parked when a reload happened (their monitor
-    /// unplugged), waiting for it to come back.
+    /// Cells a reload kept waiting for their content to mount again: a
+    /// parked bar's (its monitor unplugged) and a closed popup's (with a
+    /// windowed list's off-window rows). A keyed `for`'s sweeper disposes
+    /// those of its rows whose key its data dropped, when a popup closes.
     pub pending: RefCell<HashMap<Rc<str>, ParkedCell>>,
     /// Reload idents of parked bar instances.
     pub parked: RefCell<std::collections::HashSet<Rc<str>>>,
@@ -361,6 +373,89 @@ pub(crate) struct Ctx {
     pub(crate) not_a_list: Cell<bool>,
     /// (keyboard) So was a scroll action on an element that does not scroll.
     pub(crate) not_a_scroll: Cell<bool>,
+    /// (audit-reload-queues) The hooks of earlier programs' VMs that
+    /// handlers kept across reloads still run on, pointed at this one.
+    pub(crate) forwards: RefCell<Vec<Rc<Forward>>>,
+}
+
+/// (audit-reload-queues) A VM a reload replaced keeps running the
+/// handlers kept with an `await` in flight; its `play`, `propagate`,
+/// window and element asks go to the instance's current [`Ctx`] through
+/// this, so they reach the tree the host now shows. Kept nodes keep their
+/// element state and scene id, so those carry over as they are; a
+/// keyframes block, named by the old program's id, is found in the new
+/// program by its file, owner and name.
+pub(crate) struct Forward {
+    /// The replaced VM (`Weak`: once no kept task holds it, this goes).
+    old: std::rc::Weak<Vm>,
+    to: RefCell<std::rc::Weak<Ctx>>,
+}
+
+impl Forward {
+    fn to(&self) -> Option<Rc<Ctx>> {
+        self.to.borrow().upgrade()
+    }
+}
+
+/// The new program's keyframes block that `d` of `old` is: the same
+/// file (by module), owner (by name) and name.
+fn same_keyframes(old: &Program, d: DefId, new: &Program) -> Option<DefId> {
+    let owner = |p: &Program, o: Option<DefId>| o.map(|o| p.def(o).name.clone());
+    let od = old.def(d);
+    let oo = owner(old, od.owner);
+    let mut found = new.keyframes.keys().filter(|nd| {
+        let nd = new.def(**nd);
+        nd.name == od.name && nd.module == od.module && owner(new, nd.owner) == oo
+    });
+    match (found.next(), found.next()) {
+        (Some(nd), None) => Some(*nd),
+        _ => None,
+    }
+}
+
+impl VmHooks for Forward {
+    fn play(&self, rt: &Runtime, node: &Rc<NodeState>, keyframes: DefId) {
+        let (Some(to), Some(old)) = (self.to(), self.old.upgrade()) else {
+            return;
+        };
+        match same_keyframes(&old.prog, keyframes, &to.vm.prog) {
+            Some(d) => to.play(rt, node, d),
+            None => to.error("play", Error::failed("its keyframes are gone")),
+        }
+    }
+
+    fn propagate(&self, rt: &Runtime, ctx: &EventCtx) {
+        if let Some(to) = self.to() {
+            to.propagate(rt, ctx);
+        }
+    }
+
+    fn palette(&self, rt: &Runtime, name: &str) -> Result<Option<strand_scene::PropValue>, Error> {
+        match self.to() {
+            Some(to) => to.palette(rt, name),
+            None => Ok(None),
+        }
+    }
+
+    fn window(&self, rt: &Runtime, node: &Rc<NodeState>, ask: strand_scene::WindowAsk) {
+        if let Some(to) = self.to() {
+            to.window(rt, node, ask);
+        }
+    }
+
+    fn ask(&self, rt: &Runtime, node: &Rc<NodeState>, ask: strand_scene::NodeAsk) {
+        if let Some(to) = self.to() {
+            to.ask(rt, node, ask);
+        }
+    }
+
+    fn token(
+        self: Rc<Self>,
+        rt: &Runtime,
+        e: &strand_scene::TokenExpr,
+    ) -> Option<strand_scene::PropValue> {
+        self.to()?.token(rt, e)
+    }
 }
 
 impl Ctx {
@@ -943,6 +1038,8 @@ impl Ctx {
             errors: RefCell::default(),
             sites: RefCell::default(),
             forgetters: RefCell::default(),
+            sweepers: RefCell::default(),
+            sweepers_prune_at: Cell::new(SETTINGS_PRUNE_MIN),
             settings: RefCell::default(),
             settings_prune_at: Cell::new(SETTINGS_PRUNE_MIN),
             holds: RefCell::default(),
@@ -987,6 +1084,7 @@ impl Ctx {
             asks: RefCell::default(),
             not_a_list: Cell::default(),
             not_a_scroll: Cell::default(),
+            forwards: RefCell::default(),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
         let weak: std::rc::Weak<dyn VmHooks> = weak;
@@ -1190,7 +1288,8 @@ fn fault_outline() -> PropValue {
     })
 }
 
-/// The mounted-settings list is first pruned at this length.
+/// The mounted-settings list (and the keyed `for`s' sweepers) is first
+/// pruned at this length.
 pub(crate) const SETTINGS_PRUNE_MIN: usize = 16;
 
 /// The seed of the palette a config without `use palette` gets: the
@@ -1482,6 +1581,8 @@ impl Instance {
         }
         // (lockmon) A reload never stops a command: the runs carry on.
         vm.set_runs(old.vm.runs());
+        // (audit-reload-queues) Nor loses one a kept handler asks for.
+        vm.set_exec_queue(old.vm.exec_queue());
         vm.runs().declare(&rt, &vm.prog);
         let ctx = Ctx::create(
             vm,
@@ -1490,6 +1591,24 @@ impl Instance {
             Some(build.identity.clone()),
             Some(build.hashes.clone()),
         );
+        // (audit-reload-queues) The old VM's hooks (and those of VMs
+        // before it a kept handler still runs on) reach the new instance.
+        {
+            let mut forwards = std::mem::take(&mut *old.forwards.borrow_mut());
+            forwards.retain(|f| f.old.strong_count() > 0);
+            let f = Rc::new(Forward {
+                old: Rc::downgrade(&old.vm),
+                to: RefCell::new(std::rc::Weak::new()),
+            });
+            let weak: std::rc::Weak<Forward> = Rc::downgrade(&f);
+            let weak: std::rc::Weak<dyn VmHooks> = weak;
+            old.vm.set_hooks(weak);
+            forwards.push(f);
+            for f in &forwards {
+                *f.to.borrow_mut() = Rc::downgrade(&ctx);
+            }
+            *ctx.forwards.borrow_mut() = forwards;
+        }
         *ctx.parked.borrow_mut() = old.parked.borrow().clone();
         *ctx.lock.borrow_mut() = old.lock.borrow().clone();
         // (report review) Kept cells keep their ids: still left out.
@@ -1498,8 +1617,10 @@ impl Instance {
         *ctx.carry.borrow_mut() = Some(reload::Carry {
             old: std::mem::take(&mut *old.registry.borrow_mut()),
             old_prog: old.vm.prog.clone(),
+            same_layout: old.vm.prog.types.same_layout(&build.program.types),
             report: Report::default(),
             kept_nodes: Default::default(),
+            on_scene: old.em.borrow().on_scene(),
             scopes: Default::default(),
             fresh: Vec::new(),
             handover: Vec::new(),
@@ -1585,6 +1706,17 @@ impl Instance {
         let mut left: Vec<(Rc<str>, reload::CellRec)> = carry.old.cells.drain().collect();
         left.sort_by(|a, b| a.0.cmp(&b.0));
         let parked = |key: &str| ctx.parked.borrow().iter().any(|p| key.starts_with(&**p));
+        // (audit-reload-closed-state) The cells a closed popup's content
+        // kept wait for it to open (`pending`, as a parked bar's do) while
+        // the surface it is in is still mounted.
+        let in_surface = |key: &str| {
+            carry.surfaces.iter().any(|(ident, _)| {
+                key.strip_prefix(&**ident)
+                    .is_some_and(|r| r.starts_with(['/', '[', '#']))
+            })
+        };
+        let waits =
+            |key: &str| parked(key) || (old.closed.borrow().contains(key) && in_surface(key));
         // A file renamed in this load is one owner under both names: the
         // cells of the modules gone pair with those of the modules new
         // (decisions.md 2026-10-05, the edit table as the fuzzer reads
@@ -1607,7 +1739,7 @@ impl Instance {
         // How many cells each owner lost: more than it gained, and some of
         // them were removed (decisions.md, removed-state-notice).
         let mut lost: HashMap<String, usize> = HashMap::new();
-        for (key, _) in left.iter().filter(|(k, _)| !parked(k)) {
+        for (key, _) in left.iter().filter(|(k, _)| !waits(k)) {
             *lost.entry(group(reload::cell_owner(key))).or_default() += 1;
         }
         let mut gained: HashMap<String, usize> = HashMap::new();
@@ -1615,7 +1747,7 @@ impl Instance {
             *gained.entry(group(owner)).or_default() += 1;
         }
         for (key, rec) in left {
-            if parked(&key) {
+            if waits(&key) {
                 if let Some(r) = &self.root {
                     let _ = rt.reparent(rec_holder(&rec), Some(r.id()));
                 }
@@ -1647,6 +1779,30 @@ impl Instance {
                     rec.path().to_string(),
                     "removed with its module".to_string(),
                 );
+            }
+        }
+        // Cells waiting since an earlier reload move to the new root, out
+        // of the old one disposed below; those of a closed popup whose
+        // surface went go: nothing will open them again.
+        let gone: Vec<Rc<str>> = ctx
+            .pending
+            .borrow()
+            .iter()
+            .filter_map(|(k, (rec, _))| {
+                if parked(k) || in_surface(k) {
+                    if let Some(r) = &self.root {
+                        let _ = rt.reparent(rec_holder(rec), Some(r.id()));
+                    }
+                    None
+                } else {
+                    Some(k.clone())
+                }
+            })
+            .collect();
+        for k in gone {
+            let rec = ctx.pending.borrow_mut().remove(&k);
+            if let Some((rec, _)) = rec {
+                rec.dispose(&rt);
             }
         }
         report.finish();
@@ -2093,6 +2249,14 @@ impl Instance {
             wall: self.next_wake(),
         };
         (update, wake)
+    }
+
+    /// Whether scene ops wait for the next tick's diff: ones pushed
+    /// after this tick's diff was taken (a fault's outline from
+    /// [`Instance::freeze`], an external node created or removed), which
+    /// the host loop steps again for at once.
+    pub fn has_pending_ops(&self) -> bool {
+        !self.ctx.em.borrow().ops.is_empty()
     }
 
     /// When the host loop must run next: the runtime's next deadline

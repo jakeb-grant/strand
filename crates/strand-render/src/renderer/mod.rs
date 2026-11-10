@@ -128,8 +128,8 @@ pub const LOCK_FIRST_FRAME_TEXT_WAIT: Duration = Duration::from_millis(100);
 pub(crate) const MAX_HOLD_PAUSE: Duration = Duration::from_secs(1);
 
 /// How long an exit pose waits for frames: an exit older than this on a
-/// surface that painted nothing for as long (its output asleep or
-/// covered, so no frame callback comes) ends at once, so removed subtrees
+/// surface no paint sampled for as long (its output asleep or covered,
+/// so no frame callback comes) ends at once, so removed subtrees
 /// and closing surfaces never pile up. Any exit ends after
 /// `MAX_MOTION` plus this.
 pub const EXIT_STALL: Duration = Duration::from_secs(1);
@@ -181,6 +181,11 @@ struct SurfaceState {
     new_text_until: Option<Instant>,
     /// When it last painted a frame (see [`BUSY_WINDOW`]).
     painted_at: Option<Instant>,
+    /// (audit-exit-sampled) When a paint last sampled its motions,
+    /// whether or not it drew anything: a delegated pose's frames damage
+    /// nothing but play it. What ends an exit no frame samples
+    /// ([`EXIT_STALL`]) reads this, not `painted_at`.
+    sampled_at: Option<Instant>,
     dirty: bool,
     /// Fully opaque part of the last painted frame.
     opaque: Damage,

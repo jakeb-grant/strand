@@ -19,7 +19,8 @@
 //!   once anything faults: logic
 //!   ended or panicked; logic stopped answering the watchdog; SIGINT or
 //!   SIGTERM (logic is told to stop, the run ends after the unlock); the
-//!   lock drew no first frame within 1 s; no lock is mounted (the lock
+//!   lock drew no first frame within 1 s of its first content surface
+//!   (none while no output exists); no lock is mounted (the lock
 //!   was asked for with no `lock` compiled, or its node went); a runtime
 //!   fault inside the lock froze its component; the text worker died;
 //!   `auth` could not check a password; or the compositor ended a lock it
@@ -68,7 +69,9 @@ use super::*;
 
 /// How long a lock may go without a committed first frame of its
 /// content before the fallback shows (architecture.md: "a lock with no
-/// first frame within 1 s").
+/// first frame within 1 s"), from the first content surface the lock
+/// has, not from the ask: a lock asked for while no output exists waits
+/// for one (decisions.md audit-lock-no-output).
 pub(crate) const FIRST_FRAME: Duration = Duration::from_secs(1);
 
 /// (lockmon review) How long one monitor's instance has to draw its first
@@ -325,6 +328,24 @@ impl Secrets {
         }
     }
 
+    /// Forgets the inputs `mounted` no longer says are mounted password
+    /// inputs, remembering their values as a `Remove` does: the emitter
+    /// sends `Remove` for a subtree's top only, so an input nested in a
+    /// removed container gets none (audit-nested-password).
+    pub(super) fn prune(&mut self, mounted: impl Fn(NodeId) -> bool) {
+        let gone: Vec<NodeId> = self
+            .inputs
+            .keys()
+            .copied()
+            .filter(|id| !mounted(*id))
+            .collect();
+        for id in gone {
+            if let Some(Some(old)) = self.inputs.remove(&id) {
+                self.remember(old);
+            }
+        }
+    }
+
     /// A write to `node`'s `prop` (the `Router` editing an input).
     pub(super) fn see_write(&mut self, node: NodeId, prop: Prop, value: &PropValue) {
         if prop != Prop::Text {
@@ -561,6 +582,11 @@ pub(crate) struct LockScreen {
     /// When the main loop first saw this lock asked for or held (the
     /// first-frame deadline's start): the first frame's time is logged.
     asked: Option<Instant>,
+    /// When the main loop first saw this lock with a content surface (the
+    /// first-frame deadline's start): a lock asked for while no output
+    /// exists has nothing it could draw on, so its second starts when a
+    /// content is attached, not when it was asked for.
+    content_from: Option<Instant>,
     fallback: Option<Shown>,
     /// Why the fallback must show, from an event: `auth` failing, the
     /// compositor ending a held lock.
@@ -658,6 +684,28 @@ impl LockScreen {
         if let Some(f) = &mut self.fallback {
             f.dirty();
         }
+    }
+
+    /// The main loop's turn at `now` with this lock asked for or held: the
+    /// first content it has starts the first-frame deadline.
+    /// The last content going before a frame ends it: an output that came
+    /// and went gets a whole second when one returns.
+    fn content_seen(&mut self, now: Instant) {
+        if self.contents.is_empty() {
+            self.content_from = None;
+        } else {
+            self.content_from.get_or_insert(now);
+        }
+    }
+
+    /// When the lock must have drawn its first frame: [`FIRST_FRAME`]
+    /// after a content was first seen, none before one was or once one
+    /// drew.
+    fn first_frame_due(&self) -> Option<Instant> {
+        if self.drew {
+            return None;
+        }
+        self.content_from.map(|t| t + FIRST_FRAME)
     }
 
     /// The first content and its node.
@@ -945,6 +993,7 @@ impl LockScreen {
         self.drew_on.clear();
         self.configured_at.clear();
         self.asked = None;
+        self.content_from = None;
         // The helper goes with the lock session, and its checks still in
         // flight answer for a session that has ended.
         self.checker = None;
@@ -1217,6 +1266,7 @@ impl Guard {
         }
         state.host_mut().lock.see(true);
         state.host_mut().lock.asked.get_or_insert(since);
+        state.host_mut().lock.content_seen(now);
         if signalled && !self.stopping {
             self.stopping = true;
             log::info!("asked to stop while locked: the run ends after the unlock");
@@ -1236,7 +1286,7 @@ impl Guard {
             self.next_beat = Some(now + BEAT_EVERY);
         }
         let reason = self
-            .reason(state, now, since, logic_gone)
+            .reason(state, now, logic_gone)
             .or_else(|| state.host_mut().lock.pending.take());
         if let Some(why) = reason {
             state.host_mut().lock.show(&why);
@@ -1281,13 +1331,7 @@ impl Guard {
         self.next_beat = None;
     }
 
-    fn reason(
-        &mut self,
-        state: &State<Host>,
-        now: Instant,
-        since: Instant,
-        logic_gone: bool,
-    ) -> Option<String> {
+    fn reason(&mut self, state: &State<Host>, now: Instant, logic_gone: bool) -> Option<String> {
         if logic_gone {
             return Some("the shell's logic ended".into());
         }
@@ -1328,7 +1372,9 @@ impl Guard {
         {
             return Some("the text worker stopped".into());
         }
-        if !screen.drew && now.saturating_duration_since(since) >= FIRST_FRAME {
+        // From the first content, not the ask: with no output there is
+        // nothing to draw on, and the lock waits for one (audit-lock-no-output).
+        if screen.first_frame_due().is_some_and(|due| now >= due) {
             return Some(format!(
                 "the lock drew no first frame within {} ms",
                 FIRST_FRAME.as_millis()
@@ -1387,14 +1433,12 @@ impl Guard {
     /// When the main loop must look again: the first-frame deadline, the
     /// next heartbeat or the watchdog.
     pub(super) fn wait(&self, now: Instant, state: &State<Host>) -> Option<Duration> {
-        let since = self.since?;
+        self.since?;
         if state.host().lock.fallback_shown() {
             return None;
         }
         let mut at: Vec<Instant> = Vec::new();
-        if !state.host().lock.drew {
-            at.push(since + FIRST_FRAME);
-        }
+        at.extend(state.host().lock.first_frame_due());
         match self.waiting {
             // Its answer is looked for a beat after it went; past that,
             // the watchdog fires just after its limit.
@@ -2274,6 +2318,37 @@ mod tests {
         assert_eq!(g.since, Some(start + FIRST_FRAME));
     }
 
+    /// A lock asked for while no output exists has no first-frame deadline
+    /// until a content surface comes: its second runs from that content,
+    /// however long the lock waited for an output, and a lock that drew has
+    /// none (decisions.md audit-lock-no-output).
+    #[test]
+    fn the_first_frame_deadline_runs_from_the_first_content() {
+        let asked = Instant::now();
+        let mut s = LockScreen::default();
+        s.content_seen(asked);
+        s.content_seen(asked + FIRST_FRAME * 2);
+        assert_eq!(s.first_frame_due(), None, "no output: nothing to draw on");
+        let output = asked + FIRST_FRAME * 5;
+        s.sync_contents(&[SurfaceId(3)]);
+        s.content_seen(output);
+        s.content_seen(output + FIRST_FRAME / 2);
+        assert_eq!(s.first_frame_due(), Some(output + FIRST_FRAME));
+        // The output goes before a frame and another comes much later:
+        // its second is its own.
+        s.sync_contents(&[]);
+        s.content_seen(output + FIRST_FRAME / 2);
+        assert_eq!(s.first_frame_due(), None, "no output again");
+        let back = output + FIRST_FRAME * 9;
+        s.sync_contents(&[SurfaceId(4)]);
+        s.content_seen(back);
+        assert_eq!(s.first_frame_due(), Some(back + FIRST_FRAME));
+        s.drew = true;
+        assert_eq!(s.first_frame_due(), None, "it drew");
+        s.reset();
+        assert_eq!(s.first_frame_due(), None, "a new lock starts anew");
+    }
+
     /// The fallback's verdicts: only a success yields a token.
     #[test]
     fn only_a_success_yields_a_token() {
@@ -2578,6 +2653,36 @@ mod tests {
         assert_eq!(secrets.redact("again"), "<redacted>", "removed, kept");
         assert!(matches!(secrets.redact("x"), std::borrow::Cow::Borrowed(_)));
         assert_eq!(secrets.redact("visible"), "visible");
+    }
+
+    /// A password input nested in a container gets no `Remove` of its own
+    /// when the container goes: pruned by what the instance still mounts,
+    /// it is forgotten, a fault is no longer redacted whole, and its value
+    /// is kept as a removed input's is (decisions.md audit-nested-password).
+    #[test]
+    fn a_nested_password_input_is_forgotten_with_its_container() {
+        let (col, pw) = (NodeId::new(1, 0), NodeId::new(2, 0));
+        let mut secrets = Secrets::default();
+        let mut d = SceneDiff::new();
+        d.create(col, NodeKind::Col, None, 0)
+            .create(pw, NodeKind::Input, Some(col), 0)
+            .set(pw, Prop::InputType, PropValue::Keyword("password".into()));
+        secrets.see_diff(&d);
+        secrets.prune(|id| id == col || id == pw);
+        secrets.see_write(pw, Prop::Text, &PropValue::Text("hunter-two".into()));
+        assert_eq!(
+            secrets.redact_error(&strand_core::Error::failed("x")),
+            REDACTED
+        );
+        let mut d = SceneDiff::new();
+        d.push(SceneOp::Remove {
+            id: col,
+            window: false,
+        });
+        secrets.see_diff(&d);
+        secrets.prune(|_| false);
+        assert_eq!(secrets.redact_error(&strand_core::Error::failed("x")), "x");
+        assert_eq!(secrets.redact("hunter-two"), REDACTED, "removed, kept");
     }
 
     /// A kept cell's value and its notice line never show a password: a
