@@ -659,6 +659,11 @@ struct Client {
     /// (outputs-mode) The `wl_output`s, for the current mode of a head
     /// that names none, and (outputs-resync) to check the heads against.
     wl_outputs: Vec<WlOut>,
+    /// (outputs-apply) The compositor announced a `wl_output` before
+    /// version 4, which is not bound (it gives no name): the outputs then
+    /// tell nothing of an apply, where an empty [`Client::wl_outputs`] on
+    /// its own only says that no monitor is on.
+    old_wl_outputs: bool,
     /// (outputs-resync) xdg-output, for each `wl_output`'s logical place
     /// and size.
     xdg_manager: Option<ZxdgOutputManagerV1>,
@@ -1045,10 +1050,13 @@ impl Client {
     /// unless it was on with none when asked (`unseen`, a mirror): until
     /// it has one, what the configuration changed of its place, transform
     /// or scale is checked against its head ([`Client::unseen_unlike`]).
-    /// A compositor whose `wl_output`s give no names (before version 4)
-    /// tells nothing.
+    /// A compositor whose `wl_output`s give no names (before version 4,
+    /// [`Client::old_wl_outputs`]) tells nothing, nor do outputs bound but
+    /// not named yet; no `wl_output` at all is every monitor off.
     fn unlike(&self, asked: &[Expect]) -> Option<String> {
-        if self.wl_outputs.iter().all(|o| o.name.is_empty()) {
+        if self.old_wl_outputs
+            || !self.wl_outputs.is_empty() && self.wl_outputs.iter().all(|o| o.name.is_empty())
+        {
             return None;
         }
         asked.iter().find_map(|e| {
@@ -2113,6 +2121,11 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Client {
                     .wl_outputs
                     .push(WlOut::new(name, registry.bind(name, 4, qh, name)));
                 state.get_xdg_output(name, qh);
+            }
+            wl_registry::Event::Global { interface, .. }
+                if interface == wl_output::WlOutput::interface().name && !state.probe =>
+            {
+                state.old_wl_outputs = true;
             }
             wl_registry::Event::Global {
                 name,
@@ -3338,7 +3351,20 @@ mod tests {
             Some("DP-1 shows no mode")
         );
         c.wl_outputs[0].name.clear();
-        assert_eq!(c.unlike(&[asked]), None, "no names: nothing to tell by");
+        assert_eq!(
+            c.unlike(std::slice::from_ref(&asked)),
+            None,
+            "no names: nothing to tell by"
+        );
+        // No `wl_output` at all: every monitor is off, so the one asked
+        // on is not, unless the compositor's outputs give no names.
+        c.wl_outputs.clear();
+        assert_eq!(
+            c.unlike(std::slice::from_ref(&asked)).as_deref(),
+            Some("DP-1 is not on")
+        );
+        c.old_wl_outputs = true;
+        assert_eq!(c.unlike(&[asked]), None, "before version 4");
     }
 
     /// (outputs-apply, review round 5) A fractional scale is checked as
