@@ -409,6 +409,105 @@ fn nested_offscreen_groups_keep_their_filters_on_partial_repaints() {
     }
 }
 
+/// A pink tile under `filter: invert(1)` (x 10..50) and, 4 px to its
+/// right, a card with `backdrop: blur(8)` (reach 24 px) holding a
+/// translucent dot of colour `dot`. `chained`: that card is empty (54..94)
+/// and the dot is in a second one at x 100..220, which reads the first
+/// but not the tile. A grey box far right is read by the second card
+/// alone. Returns the scene, the effects per node and the dot.
+fn beside(dot: &str, chained: bool) -> (SceneDiff, Vec<(NodeId, Fx)>, NodeId) {
+    let mut b = Builder::default();
+    let root = b.node(NodeKind::Bar, None, vec![(Prop::Bg, color("#1e1e2e"))]);
+    let abs = |x: f32, w: f32, mut more: Fx| {
+        more.extend([
+            (Prop::X, num(x)),
+            (Prop::Y, num(10.0)),
+            (Prop::Width, num(w)),
+            (Prop::Height, num(40.0)),
+            (Prop::Place, PropValue::Keyword("absolute".into())),
+        ]);
+        more
+    };
+    let tile = b.node(
+        NodeKind::Box,
+        Some(root),
+        abs(10.0, 40.0, vec![(Prop::Bg, color("#f38ba8"))]),
+    );
+    // Far right (x 206..236): past what the lone card reads (30..198).
+    let far = b.node(
+        NodeKind::Box,
+        Some(root),
+        abs(206.0, 30.0, vec![(Prop::Bg, color("#f9e2af"))]),
+    );
+    let glass = || (Prop::Backdrop, call("blur", vec![num(8.0)]));
+    let mut effects = vec![
+        (tile, vec![filter(&[("invert", 1.0)])]),
+        (far, vec![grayscale()]),
+    ];
+    let first = b.node(
+        NodeKind::Box,
+        Some(root),
+        abs(54.0, if chained { 40.0 } else { 120.0 }, vec![]),
+    );
+    effects.push((first, vec![glass()]));
+    let card = if chained {
+        let second = b.node(NodeKind::Box, Some(root), abs(100.0, 120.0, vec![]));
+        effects.push((second, vec![glass()]));
+        second
+    } else {
+        first
+    };
+    let p = vec![
+        (Prop::X, num(6.0)),
+        (Prop::Y, num(10.0)),
+        (Prop::Size, num(10.0)),
+        (Prop::Place, PropValue::Keyword("absolute".into())),
+        (Prop::Bg, PropValue::Color(hex(dot).with_alpha(0.4))),
+    ];
+    let dot = b.node(NodeKind::Box, Some(card), p);
+    (b.diff, effects, dot)
+}
+
+/// (audit-backdrop-reads) A backdrop redrawn on a partial repaint finds
+/// the filtered groups it reads, though the damage misses them, and so
+/// does a backdrop it reads in turn: the repaint equals a full one, and
+/// it finds the backdrops the full paint drew, building nothing, though
+/// a filtered group it does not read is drawn in one and not the other.
+#[test]
+fn a_backdrop_beside_a_filtered_group_matches_full_on_a_partial_repaint() {
+    for (chained, card) in [(false, 54), (true, 100)] {
+        let (diff, effects, dot) = beside("#89b4fa", chained);
+        let (mut r, mut buf) = drawn(diff, &effects, Scale::ONE);
+        let builds = r.offscreen_cache().1;
+        // The dot changes: damage inside the card only.
+        let mut d = SceneDiff::new();
+        d.set(
+            dot,
+            Prop::Bg,
+            PropValue::Color(hex("#a6e3a1").with_alpha(0.4)),
+        );
+        assert!(r.apply(d).is_empty());
+        let damage = buf.paint(&mut r, S, 1);
+        // The damage meets the card holding the dot, never the tile's
+        // group (x < 50) nor, chained, the first card (x < 94).
+        assert!(
+            !damage.rects().is_empty() && damage.rects().iter().all(|d| d.x >= card),
+            "chained {chained}: {damage:?}"
+        );
+        let (diff, effects, _) = beside("#a6e3a1", chained);
+        let (_, full) = drawn(diff, &effects, Scale::ONE);
+        assert!(
+            buf.pixels == full.pixels,
+            "chained {chained}: partial differs from full"
+        );
+        assert_eq!(
+            r.offscreen_cache().1,
+            builds,
+            "chained {chained}: the backdrops are the full paint's"
+        );
+    }
+}
+
 /// design.md: cached offscreen groups redraw only when their children
 /// change, within a 32 MB budget, freed when idle. A repaint of the whole
 /// surface reuses the group; a change inside it draws it again; four

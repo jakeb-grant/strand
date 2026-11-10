@@ -312,15 +312,21 @@ pub(crate) fn read(
         .filter_map(|(d, k)| k.then_some(d))
 }
 
-/// The cache key of the backdrop group at `i` over `region`.
+/// The cache key of the backdrop group at `i` over `region` of a surface
+/// `surface`. (audit-backdrop-reads) A group's pixels are hashed only
+/// when it meets what is read, as [`render`] draws only those: a group
+/// elsewhere, drawn this frame or not, leaves the key alone.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn key(
     items: &[DisplayItem],
     i: usize,
     pass: Pass,
     region: Rect,
+    surface: Rect,
     scale: Scale,
     groups: &HashMap<usize, Drawn>,
 ) -> u64 {
+    let reads = region.inflate(pass.reach()).intersect(surface);
     let mut h = DefaultHasher::new();
     (
         "backdrop",
@@ -336,6 +342,7 @@ pub(crate) fn key(
     for d in read(items, i, pass, region) {
         crate::flatten::hash_item(&mut h, &d.item);
         if let Item::PushLayer(l) = &d.item
+            && reads.is_some_and(|r| r.intersects(d.bounds))
             && let Some(n) = groups.get(&layer_key(l))
         {
             (Arc::as_ptr(&n.pixmap) as usize).hash(&mut h);
@@ -632,10 +639,11 @@ mod tests {
         items.push(d(Item::PopLayer));
         let groups = HashMap::new();
         let region = Rect::new(10, 10, 50, 50);
-        let first = key(&items, at, p, region, Scale::ONE, &groups);
+        let surface = Rect::new(0, 0, 100, 100);
+        let first = key(&items, at, p, region, surface, Scale::ONE, &groups);
         ALLOCS.with(|a| a.set(0));
         COUNTING.with(|c| c.set(true));
-        let again = key(&items, at, p, region, Scale::ONE, &groups);
+        let again = key(&items, at, p, region, surface, Scale::ONE, &groups);
         COUNTING.with(|c| c.set(false));
         let allocs = ALLOCS.with(std::cell::Cell::get);
         assert_eq!(first, again);

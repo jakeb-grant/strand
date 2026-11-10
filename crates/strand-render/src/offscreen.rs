@@ -280,17 +280,49 @@ impl Offscreen {
         // Every group the damage touches, and every group inside one: an
         // outer group is drawn whole, so its inner groups must be ready
         // (their pixels drawn filtered) whether or not damage meets them.
-        let mut groups: Vec<usize> = Vec::new();
-        let mut i = 0;
-        while i < items.len() {
-            if offscreen(&items[i]) && touches(&items[i].bounds) {
+        // (audit-backdrop-reads) And every group closed before a chosen
+        // backdrop that meets what it reads, which it draws behind it
+        // whether or not damage meets them; to a fixed point, since such
+        // a group may hold, or be, a backdrop reading further.
+        let n = items.len();
+        let mut chosen = vec![false; n];
+        // The chosen backdrops: where they are and what they read.
+        let mut reads: Vec<(usize, Rect)> = Vec::new();
+        loop {
+            let before = reads.len();
+            for i in 0..n {
+                if chosen[i] || !offscreen(&items[i]) {
+                    continue;
+                }
+                let b = items[i].bounds;
                 let end = crate::raster::skip_group(items, i);
-                groups.extend((i..end.min(items.len())).filter(|&j| offscreen(&items[j])));
-                i = end.max(i + 1);
-            } else {
-                i += 1;
+                if !touches(&b) && !reads.iter().any(|&(at, r)| end <= at && r.intersects(b)) {
+                    continue;
+                }
+                for j in i..end.min(n) {
+                    if chosen[j] || !offscreen(&items[j]) {
+                        continue;
+                    }
+                    chosen[j] = true;
+                    if let Item::PushLayer(l) = &items[j].item
+                        && l.gpu.is_none()
+                        && !skip(j)
+                        && let Some(pass) = crate::backdrop::pass(l, scale)
+                        && let Some(read) = items[j]
+                            .bounds
+                            .intersect(surface)
+                            .and_then(|r| r.inflate(pass.reach()).intersect(surface))
+                    {
+                        reads.push((j, read));
+                    }
+                }
+            }
+            // Only a new read can choose more.
+            if reads.len() == before {
+                break;
             }
         }
+        let groups: Vec<usize> = (0..n).filter(|&i| chosen[i]).collect();
         // Each group after every group it shows: by where it ends, so
         // the groups inside one come before it (it is drawn whole), and a
         // backdrop (an empty group) comes after the groups closed before
@@ -317,7 +349,8 @@ impl Offscreen {
                 continue;
             };
             if let Some(pass) = crate::backdrop::pass(layer, scale) {
-                let key = crate::backdrop::key(items, i, pass, region, scale, &self.current);
+                let key =
+                    crate::backdrop::key(items, i, pass, region, surface, scale, &self.current);
                 let drawn = match self.get(key) {
                     Some(d) => d,
                     None => {
