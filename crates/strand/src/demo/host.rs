@@ -1025,12 +1025,12 @@ impl Host {
     #[cfg(feature = "gpu")]
     pub(crate) fn log_gpu_frames(&mut self) {
         for (surface, cpu, gpu) in self.renderer.take_gpu_frame_times() {
-            eprintln!(
-                "strand: gpu-frame surface={} cpu={:.2} gpu={:.2}",
+            crate::logging::to_stderr(&format!(
+                "strand: gpu-frame surface={} cpu={:.2} gpu={:.2}\n",
                 surface.0,
                 cpu.as_secs_f64() * 1e3,
                 gpu.as_secs_f64() * 1e3
-            );
+            ));
         }
     }
 
@@ -1039,7 +1039,7 @@ impl Host {
     #[cfg(feature = "gpu")]
     pub(crate) fn log_unsent(&self, surface: SurfaceId) {
         if self.log_damage {
-            eprintln!("strand: unsent surface={}", surface.0);
+            crate::logging::to_stderr(&format!("strand: unsent surface={}\n", surface.0));
         }
     }
 
@@ -1098,7 +1098,7 @@ impl Host {
                 ms(times.raster),
                 u8::from(gpu),
             );
-            let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+            crate::logging::to_stderr(&line);
         }
     }
 }
@@ -1720,7 +1720,7 @@ impl SurfaceHost for Host {
 
     fn frame_dropped(&mut self, surface: SurfaceId) {
         if self.log_damage {
-            eprintln!("strand: dropped surface={}", surface.0);
+            crate::logging::to_stderr(&format!("strand: dropped surface={}\n", surface.0));
         }
         self.renderer.invalidate(surface);
     }
