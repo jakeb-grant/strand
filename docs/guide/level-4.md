@@ -628,9 +628,14 @@ bar line below if you add it) and Strand is no agent.
   only the program.
 - `polkit.respond(answer)` answers. The password goes to polkit's own
   helper, `polkit-agent-helper-1`, which checks it and tells polkit;
-  Strand never checks it itself, and wipes it once sent. An answer
-  reaches only the request that asked for it: one typed just as its
-  request went is dropped, never given to the next. Pass the password
+  Strand never checks it itself, and wipes it once sent. When a
+  request ends (answered, cancelled, or the program gave up on it),
+  `polkit.request` is `null` before the next one shows, so the dialog
+  closes and opens again, and `on show { answer = "" }` clears what was
+  typed: an answer typed before the dialog closed is never given to the
+  next request, and what you type after it opened again is the new
+  request's. An answer sent while no request shows, or before the new
+  one asks, is dropped. Pass the password
   to nothing else: your config sees what is typed into it, and a
   declared action's arguments can be read by every user in the process
   list. `strand check` warns when a password reaches something that
@@ -645,7 +650,9 @@ bar line below if you add it) and Strand is no agent.
 - When several administrators could answer (the action needs an
   administrator, and your machine has more than one),
   `polkit.request?.users` lists them, and `polkit.choose(name)` asks
-  for another one's password instead.
+  for another one's password instead. Clear what was typed as you
+  choose, since it was for the user before: in the dialog,
+  `on click { polkit.choose(u); answer = "" }`.
 
 **Only one agent per session.** A desktop that ships its own agent
 (GNOME's, KDE's, `polkit-gnome` started from your compositor's config)

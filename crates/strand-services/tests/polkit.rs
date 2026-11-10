@@ -15,15 +15,17 @@
 //! says its agents changed; the helper's socket used before the setuid
 //! program; no registration without a helper, or with one that is not
 //! setuid; and an answer typed for a request that went never given to
-//! the next.
+//! the next, `request` null on its own between two requests.
 //!
 //! `polkit::configure` is process-wide: the tests take [`LOCK`].
 
 mod support;
 
+use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -34,7 +36,7 @@ use strand_services::polkit::{
 };
 use strand_services::session::{LOGIND, MANAGER};
 use strand_services::testing::{DbusMock, PrivateBus};
-use strand_services::{Builtin, Data, Services};
+use strand_services::{Builtin, Change, Data, Services, TapEvent};
 use support::*;
 use zbus::zvariant::OwnedValue;
 
@@ -575,6 +577,143 @@ fn an_answer_for_a_request_that_went_never_reaches_the_next() {
     w.act("respond", &[text("right")]);
     w.until_outcome("b", "ok");
     assert_eq!(lines(&dir.path().join("answers.log")), vec!["right"]);
+    w.b.polkit.release(&w.rt);
+    w.services.shutdown();
+}
+
+/// (audit-polkit-answer) A shown request that goes (withdrawn here;
+/// answered and dismissed end the same way) leaves `request` null, as an
+/// update of its own, before the next shows: a dialog bound to
+/// `polkit.request != null` closes, and what was typed in it goes with
+/// it. A typist that keeps its text until it sees the dialog close never
+/// gives b what it typed for a. Both requests are this user's alone, so
+/// it holds as root too.
+#[test]
+fn a_request_that_goes_leaves_none_shown_before_the_next() {
+    let _l = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let helper = fake_helper(dir.path());
+    let Some(w) = World::start(PolkitConfig {
+        helper: Some(helper),
+        socket: Some(dir.path().join("no.socket")),
+        owner: Some(uid()),
+    }) else {
+        return;
+    };
+    // Every value `request` takes, each pump's apart.
+    let heard: Rc<RefCell<Vec<bool>>> = Rc::default();
+    let h = heard.clone();
+    w.services.tap(Some(Box::new(move |e: &TapEvent<'_>| {
+        if let Change::Field {
+            field: "request",
+            new,
+            ..
+        } = &e.change
+            && e.service == "polkit"
+        {
+            h.borrow_mut().push(**new == Data::Null);
+        }
+    })));
+    w.b.polkit.acquire(&w.rt);
+    w.until("registered", |w| w.state().4);
+    let agent = w.agent();
+    w.begin(&agent, "a", &[uid()]);
+    w.begin(&agent, "b", &[uid()]);
+    let helpers = || lines(&dir.path().join("helper.log")).len();
+    w.until("a asks", |w| {
+        helpers() == 1 && w.request().is_some_and(|r| !r.prompt.is_empty())
+    });
+    heard.borrow_mut().clear();
+    // The user types a's password; the program withdraws a meanwhile.
+    let mut typed = Some("right");
+    w.tokio
+        .block_on(w.conn.call_method(
+            Some(AUTHORITY),
+            AUTHORITY_PATH,
+            Some(MOCK_IFACE),
+            "Withdraw",
+            &(agent.as_str(), "a"),
+        ))
+        .unwrap();
+    let mut pumps: Vec<Vec<bool>> = Vec::new();
+    until(&w.rt, &w.services, "b asks", || {
+        let seen = std::mem::take(&mut *heard.borrow_mut());
+        if w.request().is_none() {
+            // The dialog closed: what was typed in it went.
+            typed = None;
+        }
+        pumps.push(seen);
+        helpers() == 2 && w.request().is_some_and(|r| !r.prompt.is_empty())
+    });
+    assert!(
+        pumps.iter().flatten().any(|null| *null),
+        "request was null between a and b: {pumps:?}"
+    );
+    for p in &pumps {
+        assert!(
+            !p.windows(2).any(|w| w[0] && !w[1]),
+            "null and the next request in one pump: {pumps:?}"
+        );
+    }
+    // Return pressed now: the text typed for a, if it were still there.
+    if let Some(t) = typed {
+        w.act("respond", &[text(t)]);
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    w.services.pump(&w.rt);
+    w.rt.flush();
+    assert!(
+        lines(&dir.path().join("answers.log")).is_empty(),
+        "b's helper was given nothing"
+    );
+    assert_eq!(w.outcome("b"), "", "b still waits for its own answer");
+    // An answer typed once b shows is b's.
+    w.act("respond", &[text("right")]);
+    w.until_outcome("b", "ok");
+    assert_eq!(lines(&dir.path().join("answers.log")), vec!["right"]);
+    w.services.tap(None);
+    w.b.polkit.release(&w.rt);
+    w.services.shutdown();
+}
+
+/// (audit-polkit-answer) Between a request that ended and the next one
+/// shown, nothing acts on the next: an answer, a dismissal or a choice
+/// sent while `request` is null was meant for the one that ended.
+#[test]
+fn actions_between_two_requests_are_dropped() {
+    let _l = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let helper = fake_helper(dir.path());
+    let Some(w) = World::start(PolkitConfig {
+        helper: Some(helper),
+        socket: Some(dir.path().join("no.socket")),
+        owner: Some(uid()),
+    }) else {
+        return;
+    };
+    w.b.polkit.acquire(&w.rt);
+    w.until("registered", |w| w.state().4);
+    let agent = w.agent();
+    w.begin(&agent, "a", &[uid()]);
+    w.begin(&agent, "b", &[uid()]);
+    let helpers = || lines(&dir.path().join("helper.log")).len();
+    w.until("a asks", |w| {
+        helpers() == 1 && w.request().is_some_and(|r| !r.prompt.is_empty())
+    });
+    // The user dismisses a, then (before the dialog closed) dismisses
+    // again and answers: both were meant for a.
+    w.act("cancel", &[]);
+    w.act("cancel", &[]);
+    w.act("respond", &[text("right")]);
+    w.until_outcome("a", "org.freedesktop.PolicyKit1.Error.Cancelled");
+    w.until("b asks", |w| {
+        helpers() == 2 && w.request().is_some_and(|r| !r.prompt.is_empty())
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    w.services.pump(&w.rt);
+    w.rt.flush();
+    assert_eq!(w.outcome("b"), "", "b was neither dismissed nor answered");
+    assert!(lines(&dir.path().join("answers.log")).is_empty());
     w.b.polkit.release(&w.rt);
     w.services.shutdown();
 }

@@ -1967,6 +1967,7 @@ mod tests {
             crate::cx::Out {
                 tx,
                 wake: Arc::new(crate::cx::Wake::new(|| {})),
+                applied: tokio::sync::watch::channel(0).1,
             },
             msgs,
             crate::Buses::none(),

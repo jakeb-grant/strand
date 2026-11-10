@@ -738,6 +738,8 @@ struct Run<S: Service> {
     /// The actions its body never read, left as its context went
     /// ([`Cx`]'s `Drop`): refused as the run ends.
     unread: crate::cx::Unread<S>,
+    /// How many of its updates have been applied ([`Cx::applied`]).
+    applied: tokio::sync::watch::Sender<u64>,
 }
 
 impl<S: Service> Run<S> {
@@ -1170,13 +1172,16 @@ impl<S: Service> ClientInner<S> {
         let (out_tx, rx) = std::sync::mpsc::channel();
         let (tx, msgs) = mpsc::unbounded_channel();
         let notify: Notify = Arc::new(Mutex::new(None));
+        let (applied, applied_rx) = tokio::sync::watch::channel(0);
         let out = Out {
             tx: out_tx.clone(),
             wake: reg.wake.clone(),
+            applied: applied_rx.clone(),
         };
         let ended = Out {
             tx: out_tx,
             wake: reg.wake.clone(),
+            applied: applied_rx,
         };
         let watched = S::FIELDS
             .iter()
@@ -1272,6 +1277,7 @@ impl<S: Service> ClientInner<S> {
             started: rt.now(),
             stopped: Arc::default(),
             unread,
+            applied,
         });
     }
 
@@ -1796,6 +1802,9 @@ impl<S: Service> ClientInner<S> {
                             _ => How::Report(None),
                         };
                         self.apply_tapped(rt, p, how);
+                    }
+                    if let Some(run) = self.run.borrow().as_ref() {
+                        run.applied.send_modify(|n| *n += 1);
                     }
                 }
                 Envelope::Notice(m) => {

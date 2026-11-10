@@ -2491,6 +2491,90 @@ fn surfaces_show_hide_and_hold_services_while_shown() {
     assert_eq!(shell.host.readers("battery"), 1);
 }
 
+/// (audit-polkit-answer) A panel's `state` outlives its closing, so what
+/// clears the guide's polkit dialog between two requests is its
+/// `on show { answer = "" }`, run when `polkit.request` turns null and
+/// then the next request: text typed for one request is gone when the
+/// next shows. Without the null in between (one request replaced by the
+/// next) the panel never closes and the text stays.
+#[test]
+fn the_polkit_dialog_clears_its_answer_when_it_shows_again() {
+    let dialog = |reset: &str| {
+        format!(
+            "panel Polkit {{
+  layer: overlay; anchor: center; keyboard: exclusive
+  open: polkit.request != null
+  state answer = \"\"
+  {reset}
+  col {{
+    text polkit.request?.message ?? \"\"
+    input {{ type: password; placeholder: polkit.request?.prompt ?? \"\"; text: <-> answer; focus: true
+      on activate {{ if answer != \"\" {{ polkit.respond(answer) }}; answer = \"\" }}
+    }}
+  }}
+}}
+"
+        )
+    };
+    let request = |host: &SchemaHost, message: &str| {
+        host.record(
+            "PolkitRequest",
+            &[
+                ("message", Value::text(message)),
+                ("user", Value::text("alex")),
+                ("users", Value::list(vec![Value::text("alex")])),
+                ("prompt", Value::text("Password: ")),
+            ],
+        )
+    };
+    let typed = |shell: &Shell| {
+        let input = shell.scene.of_kind(NodeKind::Input)[0];
+        match shell.scene.prop(input, Prop::Text) {
+            Some(PropValue::Text(t)) => t.clone(),
+            other => panic!("{other:?}"),
+        }
+    };
+    for (reset, cleared) in [("on show { answer = \"\" }", true), ("", false)] {
+        let src = dialog(reset);
+        let mut shell = boot(&[("polkit.strand", &src)], |_, _| {});
+        let a = request(&shell.host, "a");
+        shell.host.set(&shell.rt, "polkit.request", a).unwrap();
+        shell.flush();
+        let input = shell.scene.of_kind(NodeKind::Input)[0];
+        shell
+            .inst
+            .write(input, Prop::Text, PropValue::Text("hunt".into()))
+            .unwrap();
+        shell.flush();
+        assert_eq!(typed(&shell), "hunt");
+        // Replaced in place: the panel stays open, and so does the text.
+        let b = request(&shell.host, "b");
+        shell.host.set(&shell.rt, "polkit.request", b).unwrap();
+        shell.flush();
+        assert!(shell.scene.find_text("b").is_some());
+        assert_eq!(typed(&shell), "hunt", "{reset:?}");
+        // Null, then the next: the panel closes and shows again.
+        shell
+            .host
+            .set(&shell.rt, "polkit.request", Value::Null)
+            .unwrap();
+        shell.flush();
+        let c = request(&shell.host, "c");
+        shell.host.set(&shell.rt, "polkit.request", c).unwrap();
+        shell.flush();
+        assert!(shell.scene.find_text("c").is_some());
+        if cleared {
+            assert_eq!(typed(&shell), "", "on show cleared it");
+        } else {
+            assert_eq!(
+                typed(&shell),
+                "hunt",
+                "a panel's state outlives its closing"
+            );
+        }
+    }
+}
+
 /// `segmented { options: Edge }`: a builtin enum names its options as a
 /// config enum does (`options: Look`), and a click writes the chosen
 /// variant through to the settings field.

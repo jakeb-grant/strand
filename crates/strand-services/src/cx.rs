@@ -103,6 +103,9 @@ impl Wake {
 pub(crate) struct Out<P> {
     pub(crate) tx: std::sync::mpsc::Sender<Envelope<P>>,
     pub(crate) wake: Arc<Wake>,
+    /// How many updates sent here the logic thread has applied
+    /// ([`Cx::applied`]).
+    pub(crate) applied: tokio::sync::watch::Receiver<u64>,
 }
 
 impl<P> Out<P> {
@@ -256,6 +259,8 @@ pub struct Cx<S: Service> {
     /// are left, for the logic thread to refuse as the run ends
     /// ([`Cx`]'s `Drop`).
     unread: Unread<S>,
+    /// How many updates (envelopes of patches) this context has sent.
+    sent: u64,
 }
 
 /// The actions a run's body never read (see [`Cx`]'s `Drop`).
@@ -317,7 +322,29 @@ impl<S: Service> Cx<S> {
             buses,
             notify,
             unread,
+            sent: 0,
         }
+    }
+
+    /// Resolves once the logic thread has applied every update sent so
+    /// far (or nothing listens any more): a later update is applied in
+    /// a later [`crate::Services::pump`], never with them. (audit-polkit-
+    /// answer) What `polkit` waits on after a shown request ends, so
+    /// `request = null` is seen on its own before the next one shows.
+    /// It holds nothing of the context, so it can wait beside
+    /// [`Cx::recv`].
+    pub fn applied(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let mut rx = self.out.applied.clone();
+        let sent = self.sent;
+        async move {
+            let _ = rx.wait_for(|n| *n >= sent).await;
+        }
+    }
+
+    /// Sends an envelope of patches, counted for [`Cx::applied`].
+    fn send_patches(&mut self, e: Envelope<S::Patch>) -> bool {
+        self.sent += 1;
+        self.out.send(e)
     }
 
     /// The service's name.
@@ -369,7 +396,7 @@ impl<S: Service> Cx<S> {
         if patches.is_empty() {
             return !self.stopped();
         }
-        self.out.send(Envelope::Patches {
+        self.send_patches(Envelope::Patches {
             patches,
             echo_of,
             initial: !self.ready,
@@ -385,7 +412,7 @@ impl<S: Service> Cx<S> {
         if patches.is_empty() {
             return !self.stopped();
         }
-        self.out.send(Envelope::Patches {
+        self.send_patches(Envelope::Patches {
             patches,
             echo_of: None,
             initial: !self.ready,
@@ -395,7 +422,7 @@ impl<S: Service> Cx<S> {
     /// Emit an event (`<Name>Event::Received(n)`): lossless, one
     /// delivery per emit.
     pub fn emit(&mut self, event: S::Event) -> bool {
-        self.out.send(Envelope::Patches {
+        self.send_patches(Envelope::Patches {
             patches: vec![event.into()],
             echo_of: None,
             initial: false,
