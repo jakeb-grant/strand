@@ -3075,7 +3075,12 @@ new program with the running one.
   so the notification history comes back after a restart (without
   buttons, never as popups; a sender's `transient` notifications are
   never kept). `notifications.remember = false` erases it at once and
-  stays off.
+  stays off. `all` keeps at most 1000 notifications and 16 MiB of their
+  text (beyond either the oldest closes as expired), and the history
+  file about 16 MiB (one past 17 MiB is not read). What a sender sends is
+  cut as it arrives, at a character boundary: a body to 64 KiB, a
+  summary and app name to 1 KiB, the icon and text hints to 1 KiB, each
+  action's key and label to 256 bytes, and the buttons to 16.
 
 ### 10.4 Escape hatches
 

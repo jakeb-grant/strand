@@ -92,6 +92,76 @@ pub const PATH: &str = "/org/freedesktop/Notifications";
 /// past any history a person reads (mako keeps 5, dunst 20).
 pub const KEPT: usize = 1000;
 
+/// The most bytes of a `body` kept: what the text engine shapes
+/// (strand-text `MAX_TEXT_BYTES`). Like the other caps below, a bound on
+/// what one bus peer may make the shell hold (design.md: limits against
+/// input that would grow memory without end stay), applied as a
+/// notification arrives and cut at a char boundary.
+pub const MAX_BODY: usize = 64 * 1024;
+/// The most bytes of a `summary` and of an app name kept.
+pub const MAX_TEXT: usize = 1024;
+/// The most bytes of `app_icon` and of a string hint (`category`,
+/// `desktop-entry`, `image-path`) kept.
+pub const MAX_HINT: usize = 1024;
+/// The most bytes of an action's key and of its label kept.
+pub const MAX_ACTION_TEXT: usize = 256;
+/// The most buttons (`actions`) a notification keeps; the rest are left
+/// out (`default` and `inline-reply` are still seen anywhere in the list).
+pub const MAX_ACTIONS: usize = 16;
+/// The most text bytes `all` keeps beside [`KEPT`]: beyond it the oldest
+/// closes as expired, and the remembered history is cut to it too.
+pub const KEPT_BYTES: usize = 16 << 20;
+/// A remembered history file larger than this is not read (it was not
+/// written by [`history_text`], which keeps it under [`KEPT_BYTES`]).
+const HISTORY_FILE_MAX: u64 = (KEPT_BYTES as u64) + (1 << 20);
+
+/// `s` cut to at most `max` bytes, at a char boundary.
+fn clipped(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let cut = (0..=max)
+        .rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0);
+    &s[..cut]
+}
+
+/// [`clipped`], in place.
+fn clip(mut s: String, max: usize) -> String {
+    let cut = clipped(&s, max).len();
+    s.truncate(cut);
+    s
+}
+
+/// The text bytes a notification holds, as [`KEPT_BYTES`] counts them.
+fn text_bytes(n: &Notification) -> usize {
+    let opt = |s: &Option<String>| s.as_ref().map_or(0, String::len);
+    n.app.name.len()
+        + n.app.icon.len()
+        + n.summary.len()
+        + n.body.len()
+        + opt(&n.image)
+        + opt(&n.category)
+        + opt(&n.desktop_entry)
+        + n.actions
+            .iter()
+            .map(|a| a.id.len() + a.label.len())
+            .sum::<usize>()
+}
+
+/// How many of `all`'s oldest close so that at most [`KEPT`] stay and
+/// their text is at most [`KEPT_BYTES`] (the newest always stays).
+fn over_kept(all: &[Notification]) -> usize {
+    let mut over = all.len().saturating_sub(KEPT);
+    let mut total: usize = all[over..].iter().map(text_bytes).sum();
+    while total > KEPT_BYTES && over + 1 < all.len() {
+        total -= text_bytes(&all[over]);
+        over += 1;
+    }
+    over
+}
+
 /// How many `image-data` pictures may wait to be written: beyond it a
 /// new notification's picture is left out.
 pub const IMAGES_QUEUED: usize = 8;
@@ -402,7 +472,7 @@ fn hint_text(hints: &HashMap<String, OwnedValue>, keys: &[&str]) -> Option<Strin
             .get(*k)
             .and_then(|v| v.downcast_ref::<&str>().ok())
             .filter(|s| !s.is_empty())
-            .map(str::to_string)
+            .map(|s| clipped(s, MAX_HINT).to_string())
     })
 }
 
@@ -472,7 +542,7 @@ impl Server {
         let icon = if app_icon.is_empty() {
             hint_text(&hints, &["desktop-entry"]).unwrap_or_default()
         } else {
-            app_icon
+            clip(app_icon, MAX_HINT)
         };
         let mut image = image(&hints);
         if let Image::Data(_) = image {
@@ -502,11 +572,13 @@ impl Server {
                 can_reply = true;
                 continue;
             }
-            buttons.push(NotificationAction {
-                id: key.clone(),
-                label: label.clone(),
-                notification: i64::from(id),
-            });
+            if buttons.len() < MAX_ACTIONS {
+                buttons.push(NotificationAction {
+                    id: clipped(key, MAX_ACTION_TEXT).to_string(),
+                    label: clipped(label, MAX_ACTION_TEXT).to_string(),
+                    notification: i64::from(id),
+                });
+            }
         }
         let resident = hints
             .get("resident")
@@ -522,11 +594,11 @@ impl Server {
             n: Notification {
                 id: i64::from(id),
                 app: NotificationApp {
-                    name: app_name,
+                    name: clip(app_name, MAX_TEXT),
                     icon,
                 },
-                summary,
-                body,
+                summary: clip(summary, MAX_TEXT),
+                body: clip(body, MAX_BODY),
                 image: match &image {
                     Image::Path(p) => Some(p.clone()),
                     _ => None,
@@ -919,10 +991,10 @@ impl Notifications {
                             if !sent || !cx.emit(NotificationsEvent::Received(n)) {
                                 return Ok(());
                             }
-                            // History is bounded: the oldest beyond it close.
+                            // History is bounded (KEPT, KEPT_BYTES): the oldest beyond it close.
                             let over: Vec<i64> = {
                                 let all = &cx.state().all;
-                                all.iter().take(all.len().saturating_sub(KEPT)).map(|n| n.id).collect()
+                                all.iter().take(over_kept(all)).map(|n| n.id).collect()
                             };
                             for id in over {
                                 if !close(&mut cx, &conn, &ids, &mut kept, &mut history, id, Closed::Expired).await {
@@ -1167,13 +1239,14 @@ struct SavedHistory {
 }
 
 /// What to remember of `all`: the newest [`KEPT`] that are not
-/// `transient`, oldest first; an image only when it is a sender's own
-/// (`ours` names those whose picture we wrote from `image-data`: a file
-/// of this run, gone after it).
+/// `transient`, oldest first, as many as fit [`KEPT_BYTES`] of JSON; an
+/// image only when it is a sender's own (`ours` names those whose
+/// picture we wrote from `image-data`: a file of this run, gone after
+/// it).
 fn history_text(all: &[Notification], transient: &HashSet<i64>, ours: &HashSet<i64>) -> String {
     let kept: Vec<&Notification> = all.iter().filter(|n| !transient.contains(&n.id)).collect();
     let from = kept.len().saturating_sub(KEPT);
-    let notifications = kept[from..]
+    let mut notifications: Vec<Saved> = kept[from..]
         .iter()
         .map(|n| Saved {
             app_name: n.app.name.clone(),
@@ -1204,11 +1277,36 @@ fn history_text(all: &[Notification], transient: &HashSet<i64>, ours: &HashSet<i
             desktop_entry: n.desktop_entry.clone(),
         })
         .collect();
+    // The newest that fit the byte bound (JSON's escapes counted).
+    let mut total = 0usize;
+    let fit = notifications
+        .iter()
+        .rev()
+        .take_while(|saved| {
+            let mut count = Counted(0);
+            total += serde_json::to_writer(&mut count, saved).map_or(usize::MAX, |()| count.0);
+            total <= KEPT_BYTES
+        })
+        .count();
+    notifications.drain(..notifications.len() - fit);
     serde_json::to_string(&SavedHistory {
         version: HISTORY_VERSION,
         notifications,
     })
     .unwrap_or_default()
+}
+
+/// A writer that only counts the bytes written to it.
+struct Counted(usize);
+
+impl std::io::Write for Counted {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(buf.len());
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// The notifications a history file holds, numbered 1..=n oldest first,
@@ -1239,13 +1337,14 @@ fn restore(text: &str, exists: impl Fn(&Path) -> bool) -> Result<Vec<Notificatio
         .zip(1i64..)
         .map(|(s, id)| Notification {
             id,
+            // Cut as at arrival: a file written before the caps.
             app: NotificationApp {
-                name: s.app_name,
-                icon: s.app_icon,
+                name: clip(s.app_name, MAX_TEXT),
+                icon: clip(s.app_icon, MAX_HINT),
             },
-            summary: s.summary,
-            body: s.body,
-            image: s.image.and_then(picture),
+            summary: clip(s.summary, MAX_TEXT),
+            body: clip(s.body, MAX_BODY),
+            image: s.image.map(|i| clip(i, MAX_HINT)).and_then(picture),
             urgency: match s.urgency.as_str() {
                 "low" => Urgency::Low,
                 "critical" => Urgency::Critical,
@@ -1263,8 +1362,8 @@ fn restore(text: &str, exists: impl Fn(&Path) -> bool) -> Result<Vec<Notificatio
             },
             actions: Vec::new(),
             progress: s.progress,
-            category: s.category,
-            desktop_entry: s.desktop_entry,
+            category: s.category.map(|c| clip(c, MAX_HINT)),
+            desktop_entry: s.desktop_entry.map(|d| clip(d, MAX_HINT)),
             // Its sender cannot hear a reply.
             can_reply: false,
             // Nor a default action.
@@ -1416,6 +1515,18 @@ impl History {
             };
             if !remember {
                 return (false, Vec::new());
+            }
+            // Not read at all when larger than a save ever writes.
+            let size = store
+                .file_of(HISTORY_PATH)
+                .ok()
+                .and_then(|f| std::fs::metadata(f).ok())
+                .map_or(0, |m| m.len());
+            if size > HISTORY_FILE_MAX {
+                log::warn!(
+                    "notifications: the history not read: {size} bytes, more than {HISTORY_FILE_MAX}"
+                );
+                return (true, Vec::new());
             }
             let restored = match store.load(HISTORY_PATH) {
                 Ok(Some(v)) => restore(&String::from_utf8_lossy(&v.value), Path::exists)
@@ -1714,6 +1825,167 @@ mod tests {
             -1,
         );
         assert!(none.is_none());
+    }
+
+    /// A sender's text and actions are cut as they arrive, at a char
+    /// boundary: the body to [`MAX_BODY`], summary and app name to
+    /// [`MAX_TEXT`], the icon and string hints to [`MAX_HINT`], each
+    /// action's key and label to [`MAX_ACTION_TEXT`], the buttons to
+    /// [`MAX_ACTIONS`] (a `default` past them still counts).
+    #[test]
+    fn an_oversized_notification_is_stored_cut() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let server = Server {
+            ids: Arc::default(),
+            tx,
+            images: Arc::new(AtomicUsize::new(0)),
+        };
+        // Three-byte chars, so no cap falls on a char boundary.
+        let big = |bytes: usize| "€".repeat(bytes / 3 + 1);
+        let mut actions: Vec<String> = (0..100)
+            .flat_map(|i| [format!("k{i}{}", big(1000)), big(1000)])
+            .collect();
+        actions.extend(["default".to_string(), "Open".to_string()]);
+        let hint = |s: String| OwnedValue::try_from(zbus::zvariant::Value::from(s)).unwrap();
+        let hints = HashMap::from([
+            ("category".to_string(), hint(big(10_000))),
+            ("desktop-entry".to_string(), hint(big(10_000))),
+            ("image-path".to_string(), hint(big(10_000))),
+        ]);
+        let n = server
+            .arrival(
+                big(10_000),
+                0,
+                big(10_000),
+                big(10_000),
+                big(8 << 20),
+                actions,
+                hints,
+                -1,
+            )
+            .unwrap()
+            .n;
+        let cut = |s: &str, max: usize| {
+            assert!(s.len() <= max && s.len() > max - 3, "{} of {max}", s.len());
+            assert!(s.chars().all(|c| c == '€'));
+        };
+        cut(&n.body, MAX_BODY);
+        cut(&n.summary, MAX_TEXT);
+        cut(&n.app.name, MAX_TEXT);
+        cut(&n.app.icon, MAX_HINT);
+        cut(n.category.as_deref().unwrap(), MAX_HINT);
+        cut(n.desktop_entry.as_deref().unwrap(), MAX_HINT);
+        cut(n.image.as_deref().unwrap(), MAX_HINT);
+        assert_eq!(n.actions.len(), MAX_ACTIONS);
+        assert!(n.actions[0].id.starts_with("k0"));
+        assert!(n.actions[MAX_ACTIONS - 1].id.starts_with("k15"));
+        for a in &n.actions {
+            assert!(a.id.len() <= MAX_ACTION_TEXT, "{}", a.id.len());
+            cut(&a.label, MAX_ACTION_TEXT);
+        }
+        assert!(n.can_activate, "a default past the cap still counts");
+        // Short text is kept whole.
+        let n = server
+            .arrival(
+                "Mail".into(),
+                0,
+                String::new(),
+                "s".into(),
+                "b".into(),
+                vec!["a".into(), "A".into()],
+                HashMap::new(),
+                -1,
+            )
+            .unwrap()
+            .n;
+        assert_eq!((n.app.name.as_str(), n.summary.as_str()), ("Mail", "s"));
+        assert_eq!(n.body, "b");
+        assert_eq!(n.actions.len(), 1);
+    }
+
+    /// `all` keeps at most [`KEPT_BYTES`] of text beside [`KEPT`]
+    /// notifications (the oldest close first, the newest never), and
+    /// the remembered history is at most that much JSON.
+    #[test]
+    fn the_kept_history_is_bounded_in_bytes() {
+        let large = |id: i64| Notification {
+            body: "\u{1}".repeat(MAX_BODY),
+            ..sent(id, &format!("n{id}"), None)
+        };
+        let all: Vec<Notification> = (1..=KEPT as i64).map(large).collect();
+        let over = over_kept(&all);
+        let left = &all[over..];
+        assert!(!left.is_empty() && left.len() < KEPT);
+        assert!(left.iter().map(text_bytes).sum::<usize>() <= KEPT_BYTES);
+        assert!(
+            all[over - 1..].iter().map(text_bytes).sum::<usize>() > KEPT_BYTES,
+            "no more closes than the bound needs"
+        );
+        // Small ones: only the count bounds them.
+        let small: Vec<Notification> = (1..=KEPT as i64 + 3).map(|i| sent(i, "s", None)).collect();
+        assert_eq!(over_kept(&small), 3);
+        assert_eq!(over_kept(&all[..1]), 0, "the newest always stays");
+
+        // `\u{1}` is six bytes of JSON: the file is bounded, not the text.
+        let text = history_text(&all, &HashSet::new(), &HashSet::new());
+        assert!(text.len() <= KEPT_BYTES + 1024, "{}", text.len());
+        let back = restore(&text, |_| true).unwrap();
+        assert!(!back.is_empty());
+        assert_eq!(
+            back.last().unwrap().summary,
+            format!("n{KEPT}"),
+            "the newest kept"
+        );
+    }
+
+    /// A remembered history larger than a save ever writes is not read
+    /// (the run starts with none); one written before the caps, under
+    /// that size, comes back cut as at arrival.
+    #[tokio::test]
+    async fn a_remembered_history_over_the_limit_loads_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = strand_core::PersistStore::new(dir.path());
+        let saved = |body: String| {
+            serde_json::to_string(&SavedHistory {
+                version: HISTORY_VERSION,
+                notifications: vec![Saved {
+                    app_name: "x".repeat(4096),
+                    app_icon: String::new(),
+                    summary: "s".into(),
+                    body,
+                    image: None,
+                    urgency: "normal".into(),
+                    timeout_ms: None,
+                    persistent: false,
+                    time: SavedTime {
+                        year: 2026,
+                        month: 11,
+                        day: 10,
+                        weekday: 2,
+                        hour: None,
+                        minute: None,
+                    },
+                    progress: None,
+                    category: None,
+                    desktop_entry: None,
+                }],
+            })
+            .unwrap()
+        };
+        let history = History::new(Some(dir.path().to_path_buf()));
+
+        let huge = saved("x".repeat(HISTORY_FILE_MAX as usize + 1));
+        store.save(HISTORY_PATH, b"", huge.as_bytes()).unwrap();
+        assert_eq!(history.load().await, (true, Vec::new()));
+
+        store
+            .save(HISTORY_PATH, b"", saved("x".repeat(4 << 20)).as_bytes())
+            .unwrap();
+        let (remember, back) = history.load().await;
+        assert!(remember);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].body.len(), MAX_BODY);
+        assert_eq!(back[0].app.name.len(), MAX_TEXT);
     }
 
     #[test]
