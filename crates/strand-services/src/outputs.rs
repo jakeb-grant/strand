@@ -1005,8 +1005,10 @@ impl Client {
             && (self.undone.is_some() || self.shown_at.is_some() && self.disagrees())
     }
 
-    /// When the next resync or check falls due, for the poll's timeout.
+    /// When the next resync or check falls due, for the poll's timeout:
+    /// none with no manager, as [`Client::resync_due`] acts on none then.
     fn resync_at(&self) -> Option<Instant> {
+        self.manager.as_ref()?;
         match (self.undone, self.shown_at) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -1188,6 +1190,10 @@ impl Client {
         self.manager = None;
         self.manager_global = None;
         self.serial = None;
+        // Nothing resyncs without a manager: a timer left set would put
+        // the poll's deadline in the past for good, a busy loop.
+        self.undone = None;
+        self.shown_at = None;
         self.changed = true;
         self.lost = true;
     }
@@ -3670,5 +3676,19 @@ mod tests {
         assert_eq!(c.publish(true), Publish::Cleared);
         assert_eq!(c.publish(false), Publish::Nothing, "not ready again");
         assert_eq!(c.publish(false), Publish::Nothing);
+    }
+
+    /// (outputs-resync) A manager that goes with a change undone or a
+    /// check pending leaves no resync deadline: nothing would act on it,
+    /// and a deadline in the past made the poll return at once forever.
+    #[test]
+    fn a_lost_manager_leaves_no_resync_deadline() {
+        let mut c = Client::default();
+        let now = Instant::now();
+        c.undone = Some(now);
+        c.shown_at = Some(now);
+        c.drop_manager();
+        assert!(!c.resync_due(now + RESYNC_AFTER * 2));
+        assert_eq!(c.resync_at(), None);
     }
 }
