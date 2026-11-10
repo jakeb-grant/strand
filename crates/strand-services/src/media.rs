@@ -217,9 +217,11 @@ pub struct Media {
     pub album: Option<String>,
     /// The album art: `image media.art { fit: cover }`. Local art (a
     /// `file://` URL or a path) as the player sent it; remote (`https://`,
-    /// `http://`) art fetched and shown as a file once it is in. Null when
-    /// the player sent none, while remote art loads, or when it failed, so
-    /// `media.art ?? "audio-x-generic"` falls back.
+    /// `http://`) art fetched while a visible reader reads it and shown as
+    /// a file once it is in. Null when the player sent none, while remote
+    /// art loads, or when it failed, so `media.art ?? "audio-x-generic"`
+    /// falls back.
+    #[store(stream)]
     pub art: Option<String>,
     /// Fraction of the track played, 0 to 1. Writable: a scrubber's
     /// `slider { value: <-> media.position }` seeks the player (MPRIS
@@ -1347,24 +1349,28 @@ impl Drop for Kept {
 /// `media.players`), every player too, their art alike; the active
 /// player's art is looked up last, so its file is the one the cache
 /// keeps above all.
-fn shown(players: &Players, kept: &mut Kept, now: Instant, listing: bool) -> Media {
+/// (audit-art-read) Remote art is fetched only for the players whose art
+/// a visible reader can read: the active player's while `media.art` is
+/// read (`art`, a `#[store(stream)]` field), every player's while the
+/// list is; otherwise a URL shows its file only when it is already in.
+fn shown(players: &Players, kept: &mut Kept, now: Instant, listing: bool, art: bool) -> Media {
     let mut items = if listing {
         players.items(now)
     } else {
         Vec::new()
     };
     for item in &mut items {
-        item.art = art_file(kept, item.art.take(), now);
+        item.art = art_file(kept, item.art.take(), now, true);
     }
     let mut m = players.state(now);
-    m.art = art_file(kept, m.art.take(), now);
+    m.art = art_file(kept, m.art.take(), now, art || listing);
     m.players = items;
     m
 }
 
 /// `url` as `art` shows it: local art as sent, remote art's fetched
-/// file (none until it is in, starting its fetch when due).
-fn art_file(kept: &mut Kept, url: Option<String>, now: Instant) -> Option<String> {
+/// file (none until it is in, starting its fetch when due and `fetch`).
+fn art_file(kept: &mut Kept, url: Option<String>, now: Instant, fetch: bool) -> Option<String> {
     let url = url?;
     if !art::is_remote(&url) {
         return Some(url);
@@ -1372,7 +1378,7 @@ fn art_file(kept: &mut Kept, url: Option<String>, now: Instant) -> Option<String
     if let Some(file) = kept.0.cache.file(&url) {
         return Some(file);
     }
-    if kept.0.cache.start(&url, now) {
+    if fetch && kept.0.cache.start(&url, now) {
         kept.fetch(url, art::fetch);
     }
     None
@@ -1493,7 +1499,13 @@ impl Media {
             }
         }
         let mut kept = Kept::take();
-        let state = shown(&players, &mut kept, Instant::now(), cx.watched("players"));
+        let state = shown(
+            &players,
+            &mut kept,
+            Instant::now(),
+            cx.watched("players"),
+            cx.watched("art"),
+        );
         if !cx.update(|s| *s = state) {
             return Ok(());
         }
@@ -1627,7 +1639,7 @@ impl Media {
                                 };
                                 if seek_by(&conn, &mut players, &mut tasks, name, by) {
                                     // The time shows the target now.
-                                    let state = shown(&players, &mut kept, Instant::now(), listing);
+                                    let state = shown(&players, &mut kept, Instant::now(), listing, cx.watched("art"));
                                     if !cx.update(|s| *s = state) {
                                         return Ok(());
                                     }
@@ -1639,7 +1651,7 @@ impl Media {
                                     log::info!("media: no player {} to select", item.id);
                                 }
                                 // The active player may have changed.
-                                let state = shown(&players, &mut kept, Instant::now(), listing);
+                                let state = shown(&players, &mut kept, Instant::now(), listing, cx.watched("art"));
                                 if !cx.update(|s| *s = state) {
                                     return Ok(());
                                 }
@@ -1684,7 +1696,7 @@ impl Media {
                         }
                         // The value stands (or is kept): the write is
                         // answered with it.
-                        let state = shown(&players, &mut kept, now, listing);
+                        let state = shown(&players, &mut kept, now, listing, cx.watched("art"));
                         if !cx.report(&w, |s| *s = state) {
                             return Ok(());
                         }
@@ -1716,7 +1728,7 @@ impl Media {
                         }
                         // The fix stands (or the place is kept): the
                         // write is answered with it.
-                        let state = shown(&players, &mut kept, now, listing);
+                        let state = shown(&players, &mut kept, now, listing, cx.watched("art"));
                         if !cx.report(&w, |s| *s = state) {
                             return Ok(());
                         }
@@ -1727,7 +1739,13 @@ impl Media {
                 },
             };
             if changed {
-                let state = shown(&players, &mut kept, Instant::now(), cx.watched("players"));
+                let state = shown(
+                    &players,
+                    &mut kept,
+                    Instant::now(),
+                    cx.watched("players"),
+                    cx.watched("art"),
+                );
                 if !cx.update(|s| *s = state) {
                     return Ok(());
                 }
