@@ -580,6 +580,21 @@ pub fn rename(an: &Analysis, file: FileId, offset: u32, new_name: &str) -> Resul
                 new_path = format!("{prefix}{new}");
             }
             let new = new_path.as_str();
+            // A path that already names a token (the schema's, the
+            // palette's or another of the config's) would merge the two:
+            // every existing `$new` would read the renamed definition.
+            if new != path
+                && (is_palette_path(new)
+                    || an.schema.tokens.contains_key(new)
+                    || walk::token_defs(p).iter().any(|(_, d)| d.path == new)
+                    || p.refs
+                        .iter()
+                        .any(|r| r.target == Target::Token(new.to_string())))
+            {
+                return Err(format!(
+                    "renaming to `${new}` would change what other names refer to: `${new}` is already a token"
+                ));
+            }
             for (f, s) in spots {
                 let text = s.text(an.text(f));
                 let dollar = text.starts_with('$');
@@ -671,8 +686,12 @@ pub fn rename(an: &Analysis, file: FileId, offset: u32, new_name: &str) -> Resul
         _ => false,
     };
     let new_name = new_path.as_str();
-    let was = ref_counts(p, |t| renamed(t).then_some(new_name));
-    let now = ref_counts(&after.compiled.program, |_| None);
+    let was = ref_counts(
+        p,
+        |t| renamed(t).then_some(new_name),
+        |f, at| moved(edits.get(&f), at),
+    );
+    let now = ref_counts(&after.compiled.program, |_| None, |_, at| at);
     if was != now {
         return Err(format!(
             "renaming to `{new_name}` would change what other names refer to"
@@ -681,12 +700,25 @@ pub fn rename(an: &Analysis, file: FileId, offset: u32, new_name: &str) -> Resul
     Ok(edits)
 }
 
+/// Where `at` in the original text lands once `edits` are applied.
+fn moved(edits: Option<&Vec<(Span, String)>>, at: u32) -> u32 {
+    let shift: i64 = edits
+        .into_iter()
+        .flatten()
+        .filter(|(s, _)| s.end <= at)
+        .map(|(s, t)| t.len() as i64 - i64::from(s.len()))
+        .sum();
+    u32::try_from(i64::from(at) + shift).unwrap_or(at)
+}
+
 /// How many references each declaration has, by a description that does
-/// not depend on ids or positions; `rename` gives the new name of the
-/// target being renamed.
+/// not depend on ids; `rename` gives the new name of the target being
+/// renamed and `at` where a local's declaration sits in the renamed text,
+/// so two same-named locals (one shadowing the other) stay apart.
 fn ref_counts<'n>(
     p: &Program,
     rename: impl Fn(&Target) -> Option<&'n str>,
+    at: impl Fn(FileId, u32) -> u32,
 ) -> BTreeMap<String, usize> {
     let mut out = BTreeMap::new();
     for r in &p.refs {
@@ -704,8 +736,9 @@ fn ref_counts<'n>(
             Target::Local(l) => {
                 let local = p.local(*l);
                 format!(
-                    "local {:?} {:?} {}",
+                    "local {:?} {} {:?} {}",
                     local.file,
+                    at(local.file, local.span.start),
                     std::mem::discriminant(&local.kind),
                     new.unwrap_or(&local.name)
                 )

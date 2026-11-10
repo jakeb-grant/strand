@@ -974,6 +974,51 @@ fn rename_refuses_to_capture_another_name() {
     assert!(c.applied(&edit, "a.strand", src).contains("opacity: alpha"));
 }
 
+/// Two locals of one kind and name are still two: renaming an inner
+/// binding to an enclosing one's name would move the outer's readers.
+#[test]
+fn rename_refuses_to_shadow_an_enclosing_binding() {
+    let src = "let total = [1, 2].map(a => [3, 4].map(b => a + b))\n";
+    let mut c = Client::start(&[("a.strand", src.into())]);
+    c.open("a.strand");
+    assert_eq!(c.diagnostics("a.strand"), Vec::<Value>::new());
+    let e = c.rename_err("a.strand", Client::pos(src, "b)", 0, 0), "a");
+    assert!(e.contains("would change what other names refer to"), "{e}");
+    let edit = c.rename("a.strand", Client::pos(src, "b)", 0, 0), "c");
+    assert_eq!(
+        c.applied(&edit, "a.strand", src),
+        "let total = [1, 2].map(a => [3, 4].map(c => a + c))\n"
+    );
+
+    let src = "component Row(xs: [int], ys: [int]) {\n  for b in xs key b { for a in ys key a { text num(a - b) } }\n}\n";
+    let mut c = Client::start(&[("b.strand", src.into())]);
+    c.open("b.strand");
+    assert_eq!(c.diagnostics("b.strand"), Vec::<Value>::new());
+    let e = c.rename_err("b.strand", Client::pos(src, "key a", 0, 4), "b");
+    assert!(e.contains("would change what other names refer to"), "{e}");
+}
+
+/// A token renamed onto a path that already names one (here the schema's
+/// `$space.2`) would hand every existing reader the renamed value.
+#[test]
+fn rename_refuses_a_token_path_already_taken() {
+    let mut c = Client::shells_edited(&[GLOW]);
+    let theme = c.text("theme.strand");
+    c.open("theme.strand");
+    let e = c.rename_err(
+        "theme.strand",
+        Client::pos(&theme, "card.fill", 0, 1),
+        "space.2",
+    );
+    assert!(e.contains("would change what other names refer to"), "{e}");
+    let e = c.rename_err(
+        "theme.strand",
+        Client::pos(&theme, "card.fill", 0, 1),
+        "$glow.hard",
+    );
+    assert!(e.contains("would change what other names refer to"), "{e}");
+}
+
 /// design.md, "What you see" #2: renaming a component's prop renames the
 /// parameter, its reads, and the prop at every call site in other files.
 #[test]
