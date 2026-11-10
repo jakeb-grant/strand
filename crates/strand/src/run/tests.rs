@@ -2848,6 +2848,67 @@ fn a_bad_settings_value_is_kept_and_shown() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A binding that faults on a value set from outside (`strand set`, its
+/// D-Bus call) is outlined red at once: the outline, pushed when the
+/// shell froze the component after the step's diff was taken, goes out in
+/// one more step, not at the next unrelated wake (audit-pending-ops). The
+/// overlay waits a minute here, so nothing else wakes the loop.
+#[test]
+fn a_fault_is_outlined_without_another_wake() {
+    let dir = temp_dir("fault-outline-wake");
+    std::fs::write(
+        dir.join("bar.strand"),
+        "export state zero = 1\nbar Top {\n  text join(\" \", \"n\", 10 / zero)\n}\n",
+    )
+    .unwrap();
+    let program = load(&dir);
+    let (to_logic, from_main) = calloop::channel::channel();
+    let (tx, rx) = calloop::channel::channel::<SceneDiff>();
+    to_logic
+        .send(ToLogic::Screens(vec![screen("A", "DP-1")]))
+        .unwrap();
+    let (give, take) = std::sync::mpsc::channel();
+    let live = Live {
+        requests_to: Some(logic::RequestsTo(Box::new(move |r| {
+            let _ = give.send(r);
+        }))),
+        ..Live::default()
+    };
+    let t = std::thread::spawn(move || {
+        crate::overlay::QUIET_ON_THIS_THREAD.with(|q| q.set(Some(Duration::from_secs(60))));
+        logic(program, Storage::none(), from_main, tx, live)
+    });
+    let mut m = Mirror::new(rx);
+    m.until("the bar", |s| s.texts() == ["n 10"]);
+    let outlined = |s: &SceneMirror| {
+        s.of_kind(NodeKind::Bar)
+            .into_iter()
+            .chain(s.of_kind(NodeKind::Text))
+            .any(|n| s.prop(n, Prop::Border).is_some())
+    };
+    assert!(!outlined(&m.scene), "{}", m.scene.render());
+    // The trim the bar's Create armed has woken the loop and gone.
+    std::thread::sleep(Duration::from_millis(1200));
+    let requests = take.recv_timeout(Duration::from_secs(10)).unwrap();
+    let ans = std::thread::spawn(move || {
+        block_on(
+            requests
+                .call(ipc::Request::Set {
+                    path: "bar.zero".into(),
+                    value: "0".into(),
+                })
+                .unwrap(),
+        )
+    })
+    .join()
+    .unwrap();
+    assert_eq!(ans, json!({"ok": true}));
+    m.until("the outline", outlined);
+    to_logic.send(ToLogic::Shutdown).unwrap();
+    assert_eq!(t.join().unwrap(), Ok(()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// A mock `org.freedesktop.portal.Settings` for the theme test.
 pub(crate) struct MockPortal {
     pub(crate) values: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,

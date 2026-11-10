@@ -449,6 +449,12 @@ pub fn logic(
         if refocused {
             also(Some(Duration::ZERO));
         }
+        // Scene ops the work after the diff pushed (a fault's outline,
+        // the overlay shown, refreshed or hidden) go out in one more step
+        // now, not at the next unrelated wake (audit-pending-ops).
+        if shell.inst.has_pending_ops() {
+            also(Some(Duration::ZERO));
+        }
         // A step that closed the lock: the deferred load commits now
         // (no polling while it stays shown: only a step can unlock).
         if (shell.deferred.is_some() || shell.deferred_hard) && !shell.inst.lock_shown() {

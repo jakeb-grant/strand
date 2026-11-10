@@ -2249,6 +2249,14 @@ impl Instance {
         (update, wake)
     }
 
+    /// Whether scene ops wait for the next tick's diff: ones pushed
+    /// after this tick's diff was taken (a fault's outline from
+    /// [`Instance::freeze`], an external node created or removed), which
+    /// the host loop steps again for at once.
+    pub fn has_pending_ops(&self) -> bool {
+        !self.ctx.em.borrow().ops.is_empty()
+    }
+
     /// When the host loop must run next: the runtime's next deadline
     /// (timers, sleeping handlers) as a logic-clock time.
     pub fn next_deadline(&self) -> Option<Duration> {
