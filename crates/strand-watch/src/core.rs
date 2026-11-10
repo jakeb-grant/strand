@@ -2212,7 +2212,29 @@ impl<B: Backend> Core<B> {
             self.watched.insert(d.clone(), mode);
             added.push(d);
         }
+        // Watch, then check: a waiting directory created after the walk
+        // above looked for it and before its ancestor's watch existed made
+        // no event. Seen now, it is woken as its creation would have.
+        self.wake_appeared();
         added
+    }
+
+    /// Wake every waiting path that is a directory now (created or
+    /// mounted with no event heard), so the next flush re-syncs and reads
+    /// what lies below it.
+    fn wake_appeared(&mut self) {
+        let appeared: Vec<PathBuf> = self
+            .waiting
+            .iter()
+            .filter(|p| p.is_dir())
+            .cloned()
+            .collect();
+        for p in &appeared {
+            self.wake_under(p);
+        }
+        if !appeared.is_empty() {
+            self.mark(Instant::now());
+        }
     }
 
     /// Notices raised outside a flush (a new watch fell back to polling)
@@ -2518,6 +2540,51 @@ mod tests {
         assert_eq!(core.watched_dirs(), vec![root.join("state/strand")]);
         assert!(core.waiting.is_empty());
     }
+
+    /// A backend that creates `dir` the moment its parent gets the watch
+    /// that would hear it: the creation lands between the existence check
+    /// and the watch, and makes no event.
+    struct CreatesDuringWatch {
+        dir: PathBuf,
+        done: bool,
+    }
+
+    impl Backend for CreatesDuringWatch {
+        fn watch(&mut self, d: &Path, kind: WatchKind) -> Result<(), String> {
+            if kind == WatchKind::Parent && self.dir.parent() == Some(d) && !self.done {
+                self.done = true;
+                std::fs::create_dir(&self.dir).unwrap();
+            }
+            Ok(())
+        }
+        fn unwatch(&mut self, _: &Path) {}
+    }
+
+    /// Watch, then check: a waiting directory created while its ancestor's
+    /// watch was being added is checked for once the watch exists, and the
+    /// file written in it is reported.
+    #[test]
+    fn a_directory_created_before_its_ancestor_is_watched_is_seen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let wal = root.join("wal");
+        let backend = CreatesDuringWatch {
+            dir: wal.clone(),
+            done: false,
+        };
+        let mut core = Core::new(backend, Options::default(), None);
+        let colors = wal.join("colors.json");
+        core.add_file(&colors, Role::Other, None);
+        assert!(core.backend.done);
+        std::fs::write(&colors, "{}").unwrap();
+        let due = core.deadline().expect("the new directory is looked at");
+        let b = core.flush(due).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].kind, ChangeKind::Created);
+        assert_eq!(core.watched_dirs(), vec![wal]);
+        assert!(core.waiting.is_empty());
+    }
+
     /// Watch, then list: the rescan lists a new directory before its watch
     /// exists, so it is listed once more after the next quiet period. A
     /// file written in between (no event at all) is found then.
