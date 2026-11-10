@@ -1811,6 +1811,61 @@ fn a_closed_popups_kept_state_goes_with_its_surface() {
     assert_eq!(shell.scene.texts(), ["M 1"]);
 }
 
+/// (audit-popup-row-cells) A reload while a popup is closed keeps its
+/// `for` rows' states waiting for it to open; a row whose key then
+/// leaves the data loses them at the popup's next close, as one whose key
+/// leaves without a reload does, while a row whose key stayed keeps its
+/// own.
+#[test]
+fn a_closed_popups_waiting_rows_whose_key_left_free_their_cells() {
+    let src = "export state p = false\n\
+               export state ks = [1, 2]\n\
+               component Row {\n\
+                 state taps = 0\n\
+                 text join(\" \", \"row\", taps)\n\
+                 box { on click { taps += 1 } }\n\
+               }\n\
+               bar B { popup { open: <-> p; for k in ks key k { Row } } }\n";
+    let mut shell = boot(&[("rows.strand", src)]);
+    let open = |shell: &mut Shell, on: bool| {
+        shell.inst.set("rows.p", Value::Bool(on)).unwrap();
+        shell.flush();
+    };
+    let keys = |shell: &mut Shell, ks: &[i64]| {
+        let ks = ks.iter().map(|&k| Value::int(k)).collect();
+        shell.inst.set("rows.ks", Value::list(ks)).unwrap();
+        shell.flush();
+    };
+    // Row 1 tapped once, row 2 twice.
+    open(&mut shell, true);
+    let taps = shell.scene.of_kind(NodeKind::Box);
+    for (b, n) in taps.into_iter().zip([1, 2]) {
+        for _ in 0..n {
+            assert!(shell.inst.event(b, "click", Vec::new()));
+            shell.flush();
+        }
+    }
+    assert_eq!(shell.scene.texts(), ["row 1", "row 2"]);
+    open(&mut shell, false);
+
+    let edited = src.replace("\"row\"", "\"Row\"");
+    let (report, _) = shell.reload(&[("rows.strand", &edited)]);
+    assert!(report.reset.is_empty(), "{report:?}");
+    // Key 1 leaves while the popup is closed; it opens and closes.
+    keys(&mut shell, &[2]);
+    open(&mut shell, true);
+    assert_eq!(shell.scene.texts(), ["Row 2"]);
+    open(&mut shell, false);
+    // Key 1 comes back: its state went; key 2 kept its own.
+    keys(&mut shell, &[1, 2]);
+    open(&mut shell, true);
+    assert_eq!(
+        shell.scene.texts(),
+        ["Row 0", "Row 2"],
+        "a dropped key's waiting state came back"
+    );
+}
+
 /// (M6, the review of the owner's ruling) On the schema host, a config
 /// `service screens` or `service system` shadows the builtin for the
 /// config's reads only: the bars still mount on the builtin `screens`

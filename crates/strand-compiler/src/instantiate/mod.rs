@@ -276,8 +276,10 @@ pub(crate) struct Ctx {
     pub registry: RefCell<reload::Registry>,
     /// A reload in progress: the old instance's registry.
     pub carry: RefCell<Option<reload::Carry>>,
-    /// Cells of bars parked when a reload happened (their monitor
-    /// unplugged), waiting for it to come back.
+    /// Cells a reload kept waiting for their content to mount again: a
+    /// parked bar's (its monitor unplugged) and a closed popup's (with a
+    /// windowed list's off-window rows). A keyed `for`'s sweeper disposes
+    /// those of its rows whose key its data dropped, when a popup closes.
     pub pending: RefCell<HashMap<Rc<str>, ParkedCell>>,
     /// Reload idents of parked bar instances.
     pub parked: RefCell<std::collections::HashSet<Rc<str>>>,

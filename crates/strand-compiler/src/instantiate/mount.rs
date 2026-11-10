@@ -1102,7 +1102,7 @@ impl Ctx {
     /// whose key left while its popup was closed kept its cells under the
     /// popup's keep scope for the life of the surface.
     fn sweep_kept(&self, rt: &Runtime) {
-        if self.closed.borrow().is_empty() {
+        if self.closed.borrow().is_empty() && self.pending.borrow().is_empty() {
             return;
         }
         let live: Vec<Rc<super::Sweep>> = self
@@ -3303,17 +3303,21 @@ impl Ctx {
         }
         // Every key the data has (a windowed list mounts only some), for
         // its sweeper: a closed popup's kept cells of rows whose key is
-        // not among them are disposed when a popup closes.
+        // not among them are disposed when a popup closes, and so are
+        // those a reload left waiting in `pending`.
         let live: Rc<RefCell<std::collections::HashSet<ValueKey>>> = Rc::default();
         if !park {
             let (ctx, live, prefix) = (self.clone(), live.clone(), prefix.clone());
             let sweep: Rc<super::Sweep> = Rc::new(move |rt: &Runtime| {
                 let start = format!("{prefix}[");
-                let gone: Vec<strand_core::Scope> = {
+                let (gone, waiting): (Vec<strand_core::Scope>, Vec<Rc<str>>) = {
                     let closed = ctx.closed.borrow();
+                    let pending = ctx.pending.borrow();
                     let mine: Vec<&Rc<str>> =
                         closed.iter().filter(|k| k.starts_with(&start)).collect();
-                    if mine.is_empty() {
+                    let waits: Vec<&Rc<str>> =
+                        pending.keys().filter(|k| k.starts_with(&start)).collect();
+                    if mine.is_empty() && waits.is_empty() {
                         return;
                     }
                     let rows: Vec<String> = live
@@ -3328,15 +3332,27 @@ impl Ctx {
                         })
                     };
                     let reg = ctx.registry.borrow();
-                    mine.into_iter()
-                        .filter(|k| !in_row(k))
-                        .filter_map(|k| reg.cells.get(k).map(|c| c.holder()))
-                        .collect()
+                    (
+                        mine.into_iter()
+                            .filter(|k| !in_row(k))
+                            .filter_map(|k| reg.cells.get(k).map(|c| c.holder()))
+                            .collect(),
+                        waits.into_iter().filter(|k| !in_row(k)).cloned().collect(),
+                    )
                 };
                 // Their cleanups take them out of the registry and
                 // `closed`.
                 for s in gone {
                     s.dispose(rt);
+                }
+                // (audit-popup-row-cells) A reload moved a closed popup's
+                // row cells (and a windowed list's off-window ones) to
+                // `pending`: they obey the same rule.
+                for k in waiting {
+                    let rec = ctx.pending.borrow_mut().remove(&k);
+                    if let Some((rec, _)) = rec {
+                        rec.dispose(rt);
+                    }
                 }
             });
             {
