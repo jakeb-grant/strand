@@ -1107,6 +1107,72 @@ fn a_polled_file_removed_reads_null_until_it_is_back() {
     custom::forget(id);
 }
 
+/// (audit-kill-exit) A `from listen` command that ignores `SIGTERM` is
+/// killed when strand shuts its services down and exits at once: this
+/// test runs itself as that strand, and the command must not outlive it.
+#[test]
+fn a_command_ignoring_sigterm_ends_when_strand_exits() {
+    const HELPER: &str = "STRAND_KILL_EXIT_HELPER";
+    if let Some(file) = std::env::var_os(HELPER) {
+        let file = std::path::PathBuf::from(file);
+        let script = format!(
+            "trap '' TERM; echo $$ > {}; while :; do sleep 1; done",
+            file.display()
+        );
+        let rt = Runtime::new();
+        let services = Services::new(&rt, Buses::none(), || {});
+        let _started = started(
+            &rt,
+            &services,
+            "stubborn",
+            Source::Listen {
+                command: sh(&script),
+            },
+            vec![field("level", Default::default())],
+        );
+        until(&rt, &services, "the command started", || {
+            std::fs::read_to_string(&file).is_ok_and(|s| s.ends_with('\n'))
+        });
+        services.shutdown();
+        std::process::exit(0);
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("pid");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_command_ignoring_sigterm_ends_when_strand_exits",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(HELPER, &file)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "the helper ran");
+    let pid = std::fs::read_to_string(&file).unwrap().trim().to_string();
+    // Ended: no process, or a zombie its new parent has yet to reap.
+    let gone = || {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |s| {
+            s.rsplit_once(')')
+                .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
+        })
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !gone() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let ended = gone();
+    if !ended && let Ok(p) = pid.parse::<i32>() {
+        // The test's own leftover.
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &format!("-{p}")])
+            .status();
+    }
+    assert!(ended, "the command {pid} outlived its strand");
+}
+
 /// (build-ready) A `from poll` command that fails is a warning naming
 /// the service (the log, `strand watch`), once while it fails the same
 /// way, and a service whose polls have never answered is not `ready`

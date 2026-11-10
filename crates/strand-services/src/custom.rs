@@ -27,7 +27,8 @@
 //!   an event never is), once the host said a handler hears it
 //!   ([`hear_lines`]). It ending is a failure (retried with backoff). Commands run
 //!   in a process group of their own, ended whole (`SIGTERM`, then
-//!   `SIGKILL` after [`KILL_GRACE`]) when the service stops or restarts.
+//!   `SIGKILL` after [`KILL_GRACE`]) when the service stops or restarts,
+//!   strand's exit included (the services' shutdown waits for it).
 //! - **poll**: the command (or file) is read every interval, only while a
 //!   reader is visible.
 //! - **dir**: (services-round) the directory's files, listed now and
@@ -2430,10 +2431,15 @@ impl Drop for Proc {
         if !alive {
             return;
         }
+        // (audit-kill-exit) Listed until its `SIGKILL` is sent, so a
+        // strand exiting before then sends it ([`end_stopped_groups`]).
+        let deadline = std::time::Instant::now() + KILL_GRACE;
+        pending_kills().push((pgid, deadline));
         let kill = move || {
             std::thread::sleep(KILL_GRACE);
             // SAFETY: as above.
             unsafe { libc::kill(-pgid, libc::SIGKILL) };
+            pending_kills().retain(|&(p, d)| (p, d) != (pgid, deadline));
         };
         if std::thread::Builder::new()
             .name("strand-kill".into())
@@ -2442,8 +2448,72 @@ impl Drop for Proc {
         {
             // SAFETY: as above.
             unsafe { libc::kill(-pgid, libc::SIGKILL) };
+            pending_kills().retain(|&(p, d)| (p, d) != (pgid, deadline));
         }
     }
+}
+
+/// The groups sent `SIGTERM` whose `SIGKILL` is not sent yet, each with
+/// when it is due.
+fn pending_kills() -> std::sync::MutexGuard<'static, Vec<(i32, std::time::Instant)>> {
+    static PENDING: Mutex<Vec<(i32, std::time::Instant)>> = Mutex::new(Vec::new());
+    PENDING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// (audit-kill-exit) Ends the stopped commands' groups still waiting for
+/// their `SIGKILL`, at its time, before strand exits (which would take
+/// the `strand-kill` threads with it): a group whose every process has
+/// ended (a zombie is ended) is left at once, so this waits only for one
+/// that ignored `SIGTERM`, [`KILL_GRACE`] at most. Called once the
+/// services are stopped.
+pub(crate) fn end_stopped_groups() {
+    let limit = std::time::Instant::now() + KILL_GRACE;
+    loop {
+        let now = std::time::Instant::now();
+        let mut pending = std::mem::take(&mut *pending_kills());
+        if !pending.is_empty() {
+            let live = live_groups();
+            pending.retain(|&(pgid, due)| {
+                if !live.contains(&pgid) {
+                    return false;
+                }
+                if due <= now || limit <= now {
+                    // SAFETY: kill(2) on a group a `Proc` started.
+                    unsafe { libc::kill(-pgid, libc::SIGKILL) };
+                    return false;
+                }
+                true
+            });
+        }
+        if pending.is_empty() {
+            return;
+        }
+        // Back for the `strand-kill` threads too (it is theirs while
+        // listed); they send theirs, these are sent here first.
+        pending_kills().extend(pending);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// The process groups with a process that has not ended (a zombie has),
+/// from `/proc`.
+fn live_groups() -> Vec<i32> {
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    dir.filter_map(|e| {
+        let e = e.ok()?;
+        let name = e.file_name();
+        name.to_str()?.parse::<u32>().ok()?;
+        let stat = std::fs::read_to_string(e.path().join("stat")).ok()?;
+        // `pid (comm) state ppid pgrp …`, `comm` holding any byte.
+        let (_, rest) = stat.rsplit_once(')')?;
+        let mut f = rest.split_whitespace();
+        let state = f.next()?;
+        let pgrp = f.nth(1)?.parse::<i32>().ok()?;
+        (state != "Z" && state != "X").then_some(pgrp)
+    })
+    .collect()
 }
 
 /// (proc-ok) Whether `status` is a success: an exit with a status `ok`

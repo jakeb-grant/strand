@@ -691,7 +691,9 @@ impl Services {
     /// thread, which waits [`FINALIZE_LIMIT`] at most for finalizers and
     /// [`JOIN_LIMIT`] at most for blocking work still running). Services
     /// on threads of their own are told to stop and joined, [`JOIN_LIMIT`]
-    /// at most in all (one that overruns is logged and left).
+    /// at most in all (one that overruns is logged and left). A stopped
+    /// command that ignores `SIGTERM` is sent its `SIGKILL` before this
+    /// returns, [`crate::custom::KILL_GRACE`] at most later.
     pub fn shutdown(&self) {
         let members: Vec<Rc<dyn Member>> = self.0.members.borrow().clone();
         for m in &members {
@@ -699,6 +701,9 @@ impl Services {
         }
         self.0.shared.borrow_mut().take();
         join_all(members.iter().filter_map(|m| m.take_thread()).collect());
+        // (audit-kill-exit) Before strand can exit: a stopped command
+        // that ignored `SIGTERM` gets its `SIGKILL` here.
+        crate::custom::end_stopped_groups();
     }
 }
 
@@ -710,6 +715,7 @@ impl Drop for Registry {
         }
         self.shared.get_mut().take();
         join_all(members.iter().filter_map(|m| m.take_thread()).collect());
+        crate::custom::end_stopped_groups();
     }
 }
 
