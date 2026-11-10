@@ -2729,7 +2729,9 @@ Wayland crate. Its interface (`strand-gpu/src/lib.rs`):
   `Op::Backdrop` and `Op::Snapshot` draw on the GPU what the CPU would
   have uploaded; `Op::Backdrop`'s `key` lets an unchanged backdrop
   reuse the last frame's pixels, and its textures come from a
-  per-surface `pass::Pool` so steady animation allocates nothing.
+  per-surface `pass::Pool` so steady animation allocates nothing;
+  `Op::Pass`'s steps draw into a second per-surface pool
+  (audit-pass-pool).
   `FrameSnapshot` is `None`, `Take` or `Keep` (the crossfade
   snapshot). The op and field contracts are documented on `Op` and
   `Frame`.

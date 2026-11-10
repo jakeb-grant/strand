@@ -76,7 +76,8 @@ pub(crate) struct Drawn {
 }
 
 /// (perf-gpu-retain review) Textures a surface's backdrops render and
-/// run their passes into, reused by size from frame to frame: those a
+/// run their passes into (audit-pass-pool: its inline passes too, in a
+/// pool of their own), reused by size from frame to frame: those a
 /// frame handed back are kept for the next one ([`Pool::end_frame`]),
 /// the rest freed, so it holds no more than one frame's worth.
 #[derive(Default)]
@@ -115,6 +116,16 @@ impl Pool {
         for f in &mut self.free {
             f.1 = false;
         }
+    }
+
+    /// (audit-pass-pool) The end of a frame whose scene read `shown`,
+    /// now submitted: they are handed back, then [`Pool::end_frame`].
+    pub fn end_frame_with(mut self, shown: Vec<Drawn>) -> Pool {
+        for d in shown {
+            self.give(d);
+        }
+        self.end_frame();
+        self
     }
 
     /// Textures held.
@@ -277,28 +288,6 @@ impl Passes {
         Ok(last)
     }
 
-    /// A new pass texture.
-    fn texture(dev: &Device, width: u32, height: u32) -> (wgpu::Texture, wgpu::TextureView) {
-        let texture = dev.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("strand pass"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        (texture, view)
-    }
-
     /// `@group(0)`: Strand's globals for a `width × height` pass, its
     /// input and the sampler.
     fn group0(
@@ -403,13 +392,7 @@ impl Passes {
         globals: PassGlobals,
         input: Option<&wgpu::TextureView>,
     ) -> Result<Drawn, GpuError> {
-        let (texture, view) = Self::texture(dev, width, height);
-        let target = Drawn {
-            texture,
-            view,
-            width,
-            height,
-        };
+        let target = target(dev, width, height);
         self.step_into(dev, encoder, code, uniforms, globals, input, &target)?;
         Ok(target)
     }
@@ -437,13 +420,14 @@ impl Passes {
         Ok(())
     }
 
-    /// (perf-gpu-retain review) [`Self::draw`] over `input`, which it
-    /// takes, every step drawn into a texture of `pool` (made when none
-    /// of the size is free) and each texture read handed back to it once
-    /// read, `input` first: a backdrop drawn every frame allocates
+    /// (perf-gpu-retain review) [`Self::draw`] at `width × height` over
+    /// `input`, which it takes, every step drawn into a texture of `pool`
+    /// (made when none of the size is free) and each texture read handed
+    /// back to it once read, `input` first: a backdrop, or
+    /// (audit-pass-pool) an inline pass, drawn every frame allocates
     /// nothing once its textures are in the pool. The pass's pixels are
     /// returned (`Ok(None)`, `input` back in the pool, when it has no
-    /// step).
+    /// step or a zero or over-large size).
     #[allow(clippy::too_many_arguments)]
     pub fn draw_pooled(
         &mut self,
@@ -451,22 +435,28 @@ impl Passes {
         encoder: &mut wgpu::CommandEncoder,
         pass: &ShaderPass,
         globals: PassGlobals,
-        input: Drawn,
+        (width, height): (u32, u32),
+        input: Option<Drawn>,
         pool: &mut Pool,
     ) -> Result<Option<Drawn>, GpuError> {
-        let (width, height) = (input.width, input.height);
+        let max = dev.device.limits().max_texture_dimension_2d;
         let steps = match &pass.code {
+            _ if width == 0 || height == 0 || width > max || height > max => Vec::new(),
             ShaderRef::File(code) => vec![(code.clone(), pass.uniforms.to_vec())],
             ShaderRef::Bundled(Bundled::Particles) => {
                 // Reads no input: drawn as any pass.
                 let out = self.draw(dev, encoder, pass, width, height, globals, None);
-                pool.give(input);
+                if let Some(input) = input {
+                    pool.give(input);
+                }
                 return out;
             }
             ShaderRef::Bundled(b) => crate::bundled::steps(*b, &pass.uniforms),
         };
         if steps.is_empty() {
-            pool.give(input);
+            if let Some(input) = input {
+                pool.give(input);
+            }
             return Ok(None);
         }
         let mut read = input;
@@ -478,17 +468,21 @@ impl Passes {
                 code,
                 uniforms,
                 globals,
-                Some(&read.view),
+                read.as_ref().map(|d| &d.view),
                 &target,
             );
             if let Err(e) = drawn {
-                pool.give(read);
+                if let Some(read) = read {
+                    pool.give(read);
+                }
                 pool.give(target);
                 return Err(e);
             }
-            pool.give(std::mem::replace(&mut read, target));
+            if let Some(old) = read.replace(target) {
+                pool.give(old);
+            }
         }
-        Ok(Some(read))
+        Ok(read)
     }
 
     /// `particles` above the CPU's cap: one instanced sprite per particle
@@ -522,7 +516,12 @@ impl Passes {
             .map(|v| if v.is_finite() { *v } else { 0.0 })
             .collect();
         let count = (instances.len() / PARTICLE_FLOATS) as u32;
-        let (texture, view) = Self::texture(dev, width, height);
+        let Drawn {
+            texture,
+            view,
+            width,
+            height,
+        } = target(dev, width, height);
         let vbuf = (count > 0).then(|| {
             let b = dev.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("strand particles"),

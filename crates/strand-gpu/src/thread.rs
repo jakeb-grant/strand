@@ -222,6 +222,10 @@ struct Target {
     /// same key is drawn from them, nothing rendered or run; those the
     /// next frame does not draw are freed.
     kept: Vec<(u64, pass::Drawn)>,
+    /// (audit-pass-pool) The textures its last frame's inline passes
+    /// ([`Op::Pass`]) drew their steps into, reused by the next frame's
+    /// of the same size; those it does not use are freed.
+    passes: pass::Pool,
 }
 
 /// (perf-gpu-retain) A surface's backdrop textures while a frame draws.
@@ -249,6 +253,7 @@ impl Target {
             snapshot: None,
             backdrops: pass::Pool::default(),
             kept: Vec::new(),
+            passes: pass::Pool::default(),
         }
     }
 }
@@ -736,7 +741,9 @@ impl State {
     /// into their own textures, numbering them as [`Op::passes_in`]
     /// does from `*next` (a backdrop's number is skipped here: its
     /// pixels are drawn by [`State::draw_backdrops`]). A pass that fails
-    /// draws nothing; the first failure is returned.
+    /// draws nothing; the first failure is returned. (audit-pass-pool)
+    /// Their steps draw into textures of `pool`, the surface's; what
+    /// they show is in `keep` until the frame is submitted.
     #[allow(clippy::too_many_arguments)]
     fn draw_passes(
         &mut self,
@@ -747,6 +754,7 @@ impl State {
         out: &mut [Option<DrawnPass>],
         bindings: &mut vello_gpu::TextureBindings,
         keep: &mut Vec<pass::Drawn>,
+        pool: &mut pass::Pool,
     ) -> Option<GpuError> {
         let mut failed = None;
         for op in ops {
@@ -762,10 +770,15 @@ impl State {
                     if !(w >= 1.0 && h >= 1.0 && w <= 16384.0 && h <= 16384.0) {
                         continue;
                     }
-                    match self
-                        .passes
-                        .draw(dev, encoder, pass, w as u32, h as u32, *globals, None)
-                    {
+                    match self.passes.draw_pooled(
+                        dev,
+                        encoder,
+                        pass,
+                        *globals,
+                        (w as u32, h as u32),
+                        None,
+                        pool,
+                    ) {
                         Ok(Some(d)) => {
                             let id = TextureId(at as u64 + 1);
                             bindings.insert(id, d.view.clone());
@@ -787,7 +800,7 @@ impl State {
                 Op::Backdrop { ops: inner, .. } => {
                     *next += 1;
                     if let Some(e) =
-                        self.draw_passes(dev, encoder, inner, next, out, bindings, keep)
+                        self.draw_passes(dev, encoder, inner, next, out, bindings, keep, pool)
                     {
                         failed.get_or_insert(e);
                     }
@@ -916,7 +929,8 @@ impl State {
                             &mut encoder,
                             p,
                             *globals,
-                            input,
+                            (input.width, input.height),
+                            Some(input),
                             &mut tex.pool,
                         ) {
                             Ok(d) => drawn = d,
@@ -1061,6 +1075,13 @@ impl State {
         let mut bindings = vello_gpu::TextureBindings::new();
         let mut keep = Vec::new();
         let mut drawn: Vec<Option<DrawnPass>> = vec![None; Op::passes_in(&frame.ops)];
+        // (audit-pass-pool) Back in the target once the frame is
+        // submitted; a frame that fails frees it.
+        let mut pool = self
+            .targets
+            .get_mut(&surface)
+            .map(|t| std::mem::take(&mut t.passes))
+            .unwrap_or_default();
         let pass_error = self.draw_passes(
             dev,
             &mut encoder,
@@ -1069,6 +1090,7 @@ impl State {
             &mut drawn,
             &mut bindings,
             &mut keep,
+            &mut pool,
         );
         if let Some(e) = pass_error {
             // The frame ends here with one answer, `Failed`: render takes
@@ -1215,7 +1237,7 @@ impl State {
                 queued,
                 Some(ph),
             );
-            drop(keep);
+            target.passes = pool.end_frame_with(keep);
             reply.send(presented?);
             Ok(())
         } else {
@@ -1228,8 +1250,9 @@ impl State {
             read.record(&mut encoder, &ft.texture);
             dev.queue.submit([encoder.finish()]);
             ph.mark("submit");
-            drop(keep);
-            let pixels = read.read(dev)?;
+            let pixels = read.read(dev);
+            target.passes = pool.end_frame_with(keep);
+            let pixels = pixels?;
             ph.mark("read");
             reply.send(GpuReply::Pixels {
                 surface,
@@ -1947,6 +1970,83 @@ mod tests {
             assert_eq!(held(&st), 1, "reduce {reduce}: kept alone");
         }
         draw(&mut st, 0, 1, false);
+        assert_eq!(held(&st), 0, "freed");
+    }
+
+    /// (audit-pass-pool) An inline pass drawn every frame (an animated
+    /// shader node on a GPU surface) makes no texture once the surface's
+    /// pool has its steps' (here a two-step blur's two, which swap roles
+    /// each frame), where every step made a surface-sized texture each
+    /// frame; a frame without it frees them.
+    #[test]
+    fn a_pass_drawn_every_frame_reuses_its_textures() {
+        let dev = match Device::open(&GpuOptions::from_env()) {
+            Ok(d) => d,
+            Err(e) => {
+                let required = std::env::var("STRAND_REQUIRE_GPU").is_ok_and(|v| v == "1");
+                assert!(!required, "STRAND_REQUIRE_GPU=1 but no GPU: {e}");
+                eprintln!("skipped: no GPU ({e})");
+                return;
+            }
+        };
+        use crate::kurbo::Rect;
+        use strand_scene::{Bundled, ShaderInput, ShaderRef};
+        let mut st = State::new(&dev);
+        let s = SurfaceId(1);
+        let size = Size::new(64, 32);
+        st.targets
+            .insert(s, Target::new(size, Scale::ONE, None, None));
+        let (tx, rx) = mpsc::channel();
+        let waker = || {};
+        let reply = Reply {
+            tx: &tx,
+            waker: &waker,
+        };
+        let frame = |id: u64, pass: bool| Frame {
+            surface: s,
+            id,
+            size,
+            scale: Scale::ONE,
+            ops: if pass {
+                vec![Op::Pass {
+                    pass: crate::ShaderPass {
+                        code: ShaderRef::Bundled(Bundled::BackdropBlur),
+                        uniforms: std::sync::Arc::from([3.0f32].as_slice()),
+                        input: ShaderInput::None,
+                    },
+                    bounds: Rect::new(0.0, 0.0, 64.0, 32.0),
+                    globals: crate::PassGlobals {
+                        time: id as f32,
+                        ..crate::PassGlobals::default()
+                    },
+                }]
+            } else {
+                Vec::new()
+            },
+            uploads: Vec::new(),
+            retire: Vec::new(),
+            clear: crate::AlphaColor::TRANSPARENT,
+            snapshot: FrameSnapshot::None,
+        };
+        let made = || pass::TARGETS_MADE.with(std::cell::Cell::get);
+        let held = |st: &State| st.targets.get(&s).map_or(0, |t| t.passes.len());
+        let mut id = 0;
+        let mut draw = |st: &mut State, pass: bool| {
+            id += 1;
+            st.frame(&dev, frame(id, pass), Duration::ZERO, &reply);
+            match rx.try_recv() {
+                Ok(GpuReply::Pixels { .. }) => {}
+                other => panic!("frame {id}: {other:?}"),
+            }
+        };
+        draw(&mut st, true);
+        let before = made();
+        for n in 2..=6 {
+            draw(&mut st, true);
+            assert_eq!(made(), before, "frame {n}: a texture made");
+            assert_eq!(held(&st), 2, "frame {n}");
+        }
+        draw(&mut st, false);
         assert_eq!(held(&st), 0, "freed");
     }
 
