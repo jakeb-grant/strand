@@ -1,7 +1,8 @@
 //! The socket's server, on the logic thread's loop: every socket is
 //! non-blocking, and a client that does not read its events is dropped
 //! once the last flush left more than [`MAX_QUEUED`] unwritten as another
-//! line comes; a line of any size is queued whole.
+//! line comes, or once one loop turn queued more than [`MAX_TURN_QUEUED`]
+//! for it; a line of any size is queued whole.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -18,6 +19,12 @@ use super::{MAX_LINE, Request, parse};
 /// another line is queued against what the last flush left unwritten
 /// (never against the line itself, nor lines queued since that flush).
 const MAX_QUEUED: usize = 1 << 20;
+
+/// Output a client may have queued at all, checked as another line is
+/// queued: lines of one loop turn (thousands of pipelined requests read
+/// at once) do not count against [`MAX_QUEUED`], so this bounds them; a
+/// client's queue never exceeds it by more than one line.
+const MAX_TURN_QUEUED: usize = 16 * MAX_QUEUED;
 
 /// What one [`Server::read`] takes from a client at most: the rest waits
 /// for the loop's next turn (its read source is level-triggered), so a
@@ -249,7 +256,9 @@ impl Server {
     /// a client that does not read, so one line of any size (a `get` of
     /// a long list), and any lines after it in the same loop turn, are
     /// queued whole and delivered to a client that reads them
-    /// (decisions.md ipc-large-answer).
+    /// (decisions.md ipc-large-answer). A client with more than
+    /// [`MAX_TURN_QUEUED`] queued is dropped too, so a turn's pipelined
+    /// requests cannot queue without bound (audit-ipc-turn-backlog).
     pub fn send(&mut self, id: ClientId, v: &Json) {
         let Some(c) = self.clients.get_mut(&id) else {
             return;
@@ -261,6 +270,14 @@ impl Server {
             log::warn!(
                 "ipc: client {id} does not read its events: dropped with {} bytes unread",
                 c.backlog
+            );
+            c.closed = true;
+            return;
+        }
+        if c.out.len() > MAX_TURN_QUEUED {
+            log::warn!(
+                "ipc: client {id} does not read its answers: dropped with {} bytes queued",
+                c.out.len()
             );
             c.closed = true;
             return;
@@ -684,6 +701,55 @@ mod tests {
             Some(3 * MAX_QUEUED / 2)
         );
         assert_eq!(lines[1].trim(), r#"{"ok":true,"value":"after"}"#);
+        drop(server);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (audit-ipc-turn-backlog) A client that pipelines many requests
+    /// with large answers in one write and reads nothing is dropped in
+    /// that one loop turn, its queue never more than the turn bound plus
+    /// one answer.
+    #[test]
+    fn pipelined_requests_never_read_close_the_client_in_one_turn() {
+        use calloop::EventLoop;
+        let dir = std::env::temp_dir().join(format!("strand-ipc-pipe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.sock");
+        let mut el = EventLoop::<Data>::try_new().unwrap();
+        let handle = el.handle();
+        let mut server = Server::bind(&path, &handle).unwrap();
+        let mut data = Data::default();
+        let mut client = UnixStream::connect(&path).unwrap();
+        while server.clients.is_empty() {
+            el.dispatch(Some(Duration::from_millis(50)), &mut data)
+                .unwrap();
+            if std::mem::take(&mut data.0).accept {
+                server.accept(&handle);
+            }
+        }
+        let id = *server.clients.keys().next().unwrap();
+        let requests = 200;
+        let get = encode(&Request::Get { path: "x".into() });
+        client.write_all(get.repeat(requests).as_bytes()).unwrap();
+        let handed = server.read(id);
+        assert_eq!(handed.len(), requests, "one read takes every request");
+        let answer = json!({"ok": true, "value": "x".repeat(200_000)});
+        let size = answer.to_string().len() + 1;
+        let mut most = 0;
+        for _ in &handed {
+            server.answer(id, &answer);
+            most = most.max(server.clients[&id].out.len());
+        }
+        let c = &server.clients[&id];
+        assert!(c.closed, "a client that reads nothing is dropped");
+        assert!(
+            most <= MAX_TURN_QUEUED + size,
+            "queue bounded: {most} bytes"
+        );
+        server.flush(&handle);
+        assert!(!server.has(id));
+        drop(client);
         drop(server);
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -550,8 +550,9 @@ name them.
   only. Token paths are spelled `$accent`.
 - `MAX_LINE` (64 KiB) bounds requests; an answer is delivered whole,
   whatever its size: the connection's 1 MiB queue drops a client only
-  when the last flush left that much unread and another line is queued
-  (decisions.md ipc-large-answer, audit-ipc-turn-backlog).
+  when the last flush left that much unread and another line is queued,
+  or when 16 MiB is queued for it at all (one loop turn's pipelined
+  answers) (decisions.md ipc-large-answer, audit-ipc-turn-backlog).
 - **The D-Bus name**: `DBUS_NAME` (`io.github.jakeb_grant.Strand`), bus
   and interface name, object path `/`; its only spelling (a
   strand-services test holds any zbus literal equal to it). It may be
