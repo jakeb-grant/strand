@@ -223,16 +223,25 @@ impl Env {
     /// against this scope, and from now on reads and writes the new
     /// program's cells. `old` and `new` name the programs' declarations
     /// and locals.
+    ///
+    /// A declaration is found by its module and name: every file's
+    /// top-level cells live in the root scope, and two files may each
+    /// have a `state open` (spec.md 4.2). By name alone only when its
+    /// module is gone (a file renamed).
     pub fn redirect(&self, new: &Env, old: &Program, newp: &Program) {
         let mut defs = self.defs.borrow_mut();
         for (d, slot) in defs.iter_mut() {
-            let name = &old.def(*d).name;
+            let od = old.def(*d);
+            let module_kept = newp.files.iter().any(|f| f.module == od.module);
             let found = new
                 .defs
                 .borrow()
                 .iter()
                 .rev()
-                .find(|(nd, _)| newp.def(*nd).name == *name)
+                .find(|(nd, _)| {
+                    let nd = newp.def(*nd);
+                    nd.name == od.name && (!module_kept || nd.module == od.module)
+                })
                 .map(|(_, s)| *s);
             if let Some(s) = found {
                 *slot = s;

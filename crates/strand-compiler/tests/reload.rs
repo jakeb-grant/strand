@@ -718,6 +718,24 @@ fn a_kept_handler_plays_on_the_new_tree_after_a_reload() {
     assert_eq!(k.name, "shake");
 }
 
+/// (audit-reload-same-names) Two files may each have a top-level `state`
+/// of one name: a handler kept across a reload writes its own file's
+/// cell, not the one of the file declared last.
+#[test]
+fn a_kept_handler_writes_its_own_files_cell_of_a_shared_name() {
+    let a = "state open = false\nbar A {\n  box { on click { await sleep(1s); open = true } }\n}\n";
+    let b = |t: &str| format!("state open = false\nbar B {{\n  text \"{t}\"\n}}\n");
+    let mut shell = boot(&[("a.strand", a), ("b.strand", &b("b"))]);
+    let bx = shell.scene.of_kind(NodeKind::Box)[0];
+    shell.inst.event(bx, "click", Vec::new());
+    shell.at(0.5);
+    let (report, _) = shell.reload(&[("a.strand", a), ("b.strand", &b("b2"))]);
+    assert_eq!(report.restarted, 0, "{report:?}");
+    shell.at(2.0);
+    assert_eq!(shell.value("a", "open"), Value::Bool(true));
+    assert_eq!(shell.value("b", "open"), Value::Bool(false));
+}
+
 /// A timer's duration edit rescales the remaining time.
 #[test]
 fn timer_duration_rescales() {
