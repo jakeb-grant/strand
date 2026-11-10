@@ -817,7 +817,7 @@ impl Renderer {
                 surfaces.iter().any(|(sid, o)| {
                     *sid != surface
                         && o.root == root
-                        && o.painted_at
+                        && o.sampled_at
                             .is_some_and(|t| now.saturating_duration_since(t) < stall)
                         && (o.drawn.contains(&id) || o.records.contains_key(&id))
                 })
@@ -984,6 +984,7 @@ impl Renderer {
             self.probe
                 .keep_frame(surface, &f, target.size, target.scale, fade.weight());
             s.cache = Some(f);
+            s.sampled_at = Some(Instant::now());
             self.last_damage.insert(surface, total);
             #[cfg(feature = "gpu")]
             self.gpu_frame_stats(surface, stats.0, stats.1);
@@ -1099,6 +1100,7 @@ impl Renderer {
         if let Some(s) = self.surfaces.get_mut(&surface) {
             s.cache = Some(f);
             s.painted_at = Some(Instant::now());
+            s.sampled_at = s.painted_at;
         }
         self.last_damage.insert(surface, total);
         #[cfg(feature = "gpu")]

@@ -119,7 +119,7 @@ impl Renderer {
                     .surfaces
                     .values()
                     .filter(|s| Some(s.root) == root)
-                    .filter_map(|s| s.painted_at)
+                    .filter_map(|s| s.sampled_at)
                     .max();
                 let asleep = last.map_or(started, |t| t.max(started)) + stall;
                 Some(asleep.min(started + strand_scene::motion::MAX_MOTION + stall))

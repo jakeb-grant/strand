@@ -229,7 +229,7 @@ impl Renderer {
     }
 
     /// Ends exits no frame samples: older than the stall limit on a
-    /// surface that painted nothing for as long, or older than any motion
+    /// surface no paint sampled for as long, or older than any motion
     /// may run.
     pub(super) fn expire_exits(&mut self) {
         let now = Instant::now();
@@ -239,7 +239,7 @@ impl Renderer {
             let root = self.tree.root_of(id);
             let painting = self.surfaces.values().any(|s| {
                 Some(s.root) == root
-                    && s.painted_at
+                    && s.sampled_at
                         .is_some_and(|t| now.saturating_duration_since(t) < stall)
             });
             if age >= strand_scene::motion::MAX_MOTION + stall || (age >= stall && !painting) {

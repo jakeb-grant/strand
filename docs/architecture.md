@@ -1132,8 +1132,9 @@ is being saved, so the idle-wakeup windows hold.
   hit; the `Router` drops its focus) that unmounts when the pose
   settles; a surface whose `open` goes false stays open in its spec
   until its exit or its ghosts settle. Exits are bounded:
-  `MAX_GHOSTS_PER_PARENT` (8), and an exit on a surface that painted
-  nothing for `EXIT_STALL` (1 s) or older than `MAX_MOTION` + 1 s ends
+  `MAX_GHOSTS_PER_PARENT` (8), and an exit on a surface no frame
+  sampled for `EXIT_STALL` (1 s) (a delegated pose's frames that draw
+  nothing count) or older than `MAX_MOTION` + 1 s ends
   at the next `apply`/`update`. (lock-polish) A `lock` closing keeps the
   content logic removes with it that has no pose drawn as it was
   (`Renderer::lock_closing`) while what has one plays it, and while it
