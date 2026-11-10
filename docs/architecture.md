@@ -3280,7 +3280,9 @@ itself.
   counted per running body (`bus::with_user`) and close with the last;
   a service owning a bus name uses its own (`bus::own_session`). What a
   dropped body still has to say is a finalizer (`client::finalize`),
-  awaited up to `FINALIZE_LIMIT` (500 ms) as the thread ends. Calls
+  awaited up to `FINALIZE_LIMIT` (500 ms) as the thread ends; blocking
+  work still running then (an art fetch, a `statvfs` on a hung disk) is
+  waited for up to `JOIN_LIMIT` (2 s) and left. Calls
   that may wait on an app run as tasks in a body-owned `JoinSet`.
   Pixels from D-Bus become bounded, content-addressed PNGs under
   `$XDG_RUNTIME_DIR/strand/pixmaps/<pid>` (`strand_services::pixmap`),
