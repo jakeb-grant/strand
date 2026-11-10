@@ -248,6 +248,27 @@ impl Entry {
         };
     }
 
+    /// Record only the file's stat stamp as the baseline, leaving its
+    /// hash unknown: its first change after this is read and reported
+    /// `Modified` whatever its bytes. Anything but a regular file takes
+    /// [`Entry::take_baseline`], which reads none of those.
+    fn take_stamp(&mut self, path: &Path) {
+        match std::fs::metadata(path) {
+            Ok(m) if m.is_file() => {
+                (self.hash, self.stamp, self.error, self.exists) =
+                    (None, Some(Stamp::of(&m)), None, true);
+            }
+            _ => self.take_baseline(path),
+        }
+    }
+
+    /// Only drawn (`Role::Asset`): the baseline's bytes would serve only
+    /// to drop a no-op event, and a mounted image can be large and
+    /// mounted again and again, so the baseline is the stamp alone.
+    fn stamp_only(&self) -> bool {
+        self.roles().into_iter().all(|r| r == Role::Asset)
+    }
+
     fn unused(&self) -> bool {
         !self.module && self.loader.is_empty() && self.explicit.is_empty()
     }
@@ -840,6 +861,7 @@ impl<B: Backend> Core<B> {
                     self.pending.files.insert(path.clone());
                     recheck = true;
                 }
+                None if e.stamp_only() => e.take_stamp(path),
                 None => e.take_baseline(path),
             }
         }
@@ -1363,13 +1385,17 @@ impl<B: Backend> Core<B> {
                 }
             }
             let mut any = false;
-            for (f, e) in &self.files {
+            for (f, e) in self.files.iter_mut() {
                 if !e.exists || !e.resolved.watch_dirs().any(|d| d == dir) {
                     continue;
                 }
                 let stamp = fresh_stamp(f);
                 let swept = sweep && stamp.is_some_and(|s| s.len <= self.opts.sweep_max_bytes);
-                if stamp != e.stamp || swept {
+                if swept && stamp == e.stamp && e.hash.is_none() && e.error.is_none() {
+                    // A stamp-only baseline (an asset): the sweep fills in
+                    // its hash, reporting nothing.
+                    e.take_baseline(f);
+                } else if stamp != e.stamp || swept {
                     self.pending.files.insert(f.clone());
                     any = true;
                 }
@@ -3819,6 +3845,67 @@ mod tests {
         let b = core.flush(core.deadline().unwrap()).unwrap();
         assert_eq!(b.changes[0].hash, Some(blake3::hash(b"png 3")));
         assert!(b.notices.is_empty());
+    }
+
+    /// A file only drawn (`Role::Asset`) is registered with its stamp
+    /// alone, never read, however often it is mounted again; its first
+    /// change is read and reported `Modified`. A file another role holds
+    /// too is still read at registration.
+    #[test]
+    fn an_asset_baseline_is_its_stamp_alone() {
+        let (_tmp, root) = cfg_dir();
+        let big = root.join("big.png");
+        let prefs = root.join("prefs.toml");
+        std::fs::write(&big, vec![7u8; 1 << 20]).unwrap();
+        std::fs::write(&prefs, "a = 1").unwrap();
+        let mut core = Core::new(Silent::default(), Options::default(), None);
+        let refs = || {
+            vec![
+                Referenced::from((big.clone(), Role::Asset)),
+                Referenced::from((prefs.clone(), Role::Asset)),
+                Referenced::from((prefs.clone(), Role::Settings)),
+            ]
+        };
+        for _ in 0..2 {
+            core.set_referenced(refs());
+            let e = &core.files[&big];
+            assert!(e.exists && e.stamp.is_some() && e.error.is_none());
+            assert_eq!(e.hash, None, "an asset is not read at registration");
+            assert_eq!(core.files[&prefs].hash, Some(blake3::hash(b"a = 1")));
+            assert!(core.deadline().is_none());
+            core.set_referenced(Vec::<Referenced>::new());
+            assert!(!core.files.contains_key(&big));
+        }
+        core.set_referenced(refs());
+        std::fs::write(&big, b"png 2").unwrap();
+        core.on_raw(Raw::Written(big.clone()), Instant::now());
+        // A quiet period after the write, so it is not too fresh to read.
+        let quiet = Instant::now() + Options::default().coalesce + MTIME_SKEW;
+        let b = core.flush(core.deadline().unwrap().max(quiet)).unwrap();
+        assert_eq!(b.changes.len(), 1, "{b:#?}");
+        assert_eq!(b.changes[0].kind, ChangeKind::Modified);
+        assert_eq!(b.changes[0].hash, Some(blake3::hash(b"png 2")));
+    }
+
+    /// Polling: the content sweep fills in a small asset's stamp-only
+    /// baseline silently, and compares it from then on.
+    #[test]
+    fn the_sweep_fills_in_an_asset_baseline_silently() {
+        let (_tmp, root) = cfg_dir();
+        let icon = root.join("icon.png");
+        std::fs::write(&icon, "png").unwrap();
+        let opts = Options {
+            force_polling: true,
+            ..Options::default()
+        };
+        let mut core = Core::new(Silent::default(), opts.clone(), None);
+        core.set_referenced(vec![Referenced::from((icon.clone(), Role::Asset))]);
+        core.flush(core.deadline().unwrap());
+        assert_eq!(core.files[&icon].hash, None);
+        let t0 = Instant::now() + opts.content_sweep + Duration::from_secs(1);
+        core.poll(t0);
+        assert!(core.deadline().is_none(), "nothing changed");
+        assert_eq!(core.files[&icon].hash, Some(blake3::hash(b"png")));
     }
 
     /// A batch of content edits does not touch the watches, so its cost

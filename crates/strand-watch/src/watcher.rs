@@ -439,7 +439,10 @@ impl Watcher {
     /// is reported at the next quiet period. It blocks until the watches
     /// exist; a new path given without a hash is also read before it
     /// returns, one given with a hash is not (the watcher compares it
-    /// later). Call it from the loader, not the logic thread.
+    /// later). A path held only for [`Role::Asset`] is never read here:
+    /// its baseline is its stat stamp, and its first change is reported
+    /// `Modified` whatever its bytes. Call it from the loader, not the
+    /// logic thread.
     pub fn set_referenced<R: Into<Referenced>>(
         &self,
         refs: impl IntoIterator<Item = R>,

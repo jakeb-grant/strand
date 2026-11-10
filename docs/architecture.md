@@ -3617,7 +3617,10 @@ writes. It depends on neither `strand-compiler` nor `strand-core`.
     logic thread's `Job::Referenced` list. The worker hands changed
     asset files to `live::Job::Assets`' sink, which reaches
     `Renderer::assets_changed(&paths)` on the main thread: no reload;
-    the old decode or text is drawn until the new one replaces it.
+    the old decode or text is drawn until the new one replaces it. A
+    file held only as an asset is registered with its stat stamp, never
+    read: its first change is reported `Modified` even when its bytes
+    are the same.
   - **Blocking:** `watch_file`, `set_referenced` and `watch_tree` wait
     for the watcher thread; call them from the loader, compile worker,
     boot or a service thread, never from logic. `watch_file_loaded`,
