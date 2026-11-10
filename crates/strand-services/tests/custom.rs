@@ -1070,6 +1070,43 @@ fn file_and_poll_declarations_are_ready_after_their_first_read() {
     }
 }
 
+/// (audit-poll-gone) A polled file removed after a poll read it reads
+/// null, as under `from file`, not its last values; back, it is read
+/// again.
+#[test]
+fn a_polled_file_removed_reads_null_until_it_is_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("bat.json");
+    std::fs::write(&path, r#"{"level": 2}"#).unwrap();
+    let rt = Runtime::new();
+    let services = Services::new(&rt, Buses::none(), || {});
+    let (client, id) = started(
+        &rt,
+        &services,
+        "bat",
+        Source::Poll {
+            target: custom::PollTarget::File(path.clone()),
+            every: Duration::from_millis(50),
+            ok: vec![0],
+        },
+        vec![field("level", Default::default())],
+    );
+    until(&rt, &services, "read", || {
+        value(&rt, &client, 0) == Some(Data::Int(2))
+    });
+    std::fs::remove_file(&path).unwrap();
+    until(&rt, &services, "null once gone", || {
+        value(&rt, &client, 0) == Some(Data::Null)
+    });
+    assert!(client.ready(&rt), "a file gone is still ready");
+    std::fs::write(&path, r#"{"level": 3}"#).unwrap();
+    until(&rt, &services, "read again", || {
+        value(&rt, &client, 0) == Some(Data::Int(3))
+    });
+    services.shutdown();
+    custom::forget(id);
+}
+
 /// (build-ready) A `from poll` command that fails is a warning naming
 /// the service (the log, `strand watch`), once while it fails the same
 /// way, and a service whose polls have never answered is not `ready`

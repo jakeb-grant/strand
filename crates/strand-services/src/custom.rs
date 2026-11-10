@@ -2766,6 +2766,8 @@ async fn run_poll(
     let mut last: Option<tokio::time::Instant> = None;
     let mut not_xml = false;
     let mut over = None;
+    // Whether the values are a document's, which a file gone clears.
+    let mut held = false;
     // (build-ready) The failure last reported, until a poll answers: a
     // command failing the same way every poll is reported once. (proc-
     // reason) The same way is the same headline: what it printed may
@@ -2856,13 +2858,28 @@ async fn run_poll(
                 continue;
             }
         };
-        if let Got::Doc(doc, written) = doc {
-            let mut state = cx.state().clone();
-            note_not_xml(&spec.name, &doc, &mut not_xml);
-            replace_doc(spec, &doc, &written, &mut state);
-            if !cx.update(|s| *s = state) {
-                return Ok(());
+        match doc {
+            Got::Doc(doc, written) => {
+                let mut state = cx.state().clone();
+                note_not_xml(&spec.name, &doc, &mut not_xml);
+                replace_doc(spec, &doc, &written, &mut state);
+                held = true;
+                if !cx.update(|s| *s = state) {
+                    return Ok(());
+                }
             }
+            // (audit-poll-gone) A file removed after a poll read it:
+            // every field null until it is back, as under `from file`
+            // (a file never there already reads as the defaults).
+            Got::Gone if held => {
+                held = false;
+                let mut state = cx.state().clone();
+                state.values.iter_mut().for_each(|v| v.value = Data::Null);
+                if !cx.update(|s| *s = state) {
+                    return Ok(());
+                }
+            }
+            Got::Gone | Got::Over(_) => {}
         }
         if first {
             cx.ready();

@@ -722,8 +722,9 @@ monitor, the keyboard always).
   (a file a change leaves empty is read again 50 ms later, since a
   rewrite in place truncates before it writes); `from listen command`
   reads the lines a command prints; `from poll command every T` runs a
-  command, or reads a file, at an interval. Their fields are checked
-  against the schema you declare.
+  command, or reads a file, at an interval. A file either reads that is
+  missing, or goes, is no document (every field its default) until it
+  is back. Their fields are checked against the schema you declare.
 - `from dir path { files: [File] }` (services-round) lists a
   directory's files: its document is `{ files: [...] }`, each a `File`
   (`path`, `name`, `modified: Date`, `size` in bytes) for a regular
