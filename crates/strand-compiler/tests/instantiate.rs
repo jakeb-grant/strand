@@ -4851,7 +4851,7 @@ fn time_values_convert_to_token_time_leaves() {
     let mut table = TokenTable::default();
     table.insert("accent", PropValue::Color(strand_scene::Color::WHITE));
     let levels = [&table];
-    let at = |t: f32, v: &PropValue| {
+    let at = |t: f64, v: &PropValue| {
         TokenScope::new(&levels)
             .with_time(Some(TimeContext::at(t)))
             .resolve(v)

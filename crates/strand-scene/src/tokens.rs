@@ -268,8 +268,10 @@ pub enum TokenExpr {
 /// layout (`x: index * 8`) is kept.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct TimeContext {
-    /// Seconds since the node appeared.
-    pub t: f32,
+    /// Seconds since the node appeared, in f64: a node lives as long as
+    /// the shell, and an f32 past a day of uptime no longer resolves a
+    /// frame (decisions.md, audit-time-precision).
+    pub t: f64,
     /// A `letters` letter's position, 0 elsewhere.
     pub index: u32,
     /// How many letters its `letters` block has, 0 elsewhere.
@@ -278,7 +280,7 @@ pub struct TimeContext {
 
 impl TimeContext {
     /// `t` seconds into a node that is not a letter.
-    pub const fn at(t: f32) -> Self {
+    pub const fn at(t: f64) -> Self {
         Self {
             t,
             index: 0,
@@ -299,13 +301,20 @@ impl TimeContext {
 
 /// 1-D gradient noise (Perlin): smooth, in `-1..=1`, 0 at whole `x`.
 pub fn noise(x: f32) -> f32 {
+    noise_at(x as f64)
+}
+
+/// [`noise`] of an f64 `x`: the lattice cell is found in f64, so `noise(t
+/// * k)` keeps its resolution at any uptime; the smoothing runs in f32
+/// on the fraction, as [`noise`] always did.
+fn noise_at(x: f64) -> f32 {
     if !x.is_finite() {
         return 0.0;
     }
     let x0 = x.floor();
-    let f = x - x0;
+    let f = (x - x0) as f32;
     // A gradient in -1..=1 per lattice point, from an integer hash.
-    let grad = |i: f32| {
+    let grad = |i: f64| {
         let mut h = (i as i64 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
         h ^= h >> 31;
         h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -1094,6 +1103,10 @@ impl<'a> TokenScope<'a> {
                 };
                 Some(PropValue::Number(v as f32))
             }
+            TokenExpr::Binary { .. } if e.reads_time() => {
+                let v = self.exact(e, depth, base, budget)? as f32;
+                v.is_finite().then_some(PropValue::Number(v))
+            }
             TokenExpr::Binary { op, lhs, rhs } => {
                 let (a, b) = (num(lhs)?, num(rhs)?);
                 let v = match op {
@@ -1116,27 +1129,27 @@ impl<'a> TokenScope<'a> {
                         *slot = col(e)?;
                     }
                 }
-                for (slot, expr) in v.numbers_mut().into_iter().zip(numbers) {
-                    if let Some(e) = expr {
-                        *slot = num(e)?;
+                for ((slot, angle), expr) in v.numbers_and_angles_mut().into_iter().zip(numbers) {
+                    match expr {
+                        // An angle that turns with time is reduced to a
+                        // turn before it is narrowed: `t * 40deg` is
+                        // millions of degrees after a day.
+                        Some(e) if angle && e.reads_time() => {
+                            *slot = (self.exact(e, depth + 1, base, budget)? % 360.0) as f32;
+                        }
+                        Some(e) => *slot = num(e)?,
+                        None => {}
                     }
                 }
                 Some(v)
             }
-            TokenExpr::Time => Some(PropValue::Number(self.clock().t)),
+            TokenExpr::Time => Some(PropValue::Number(self.clock().t as f32)),
             TokenExpr::Index => Some(PropValue::Number(self.clock().index as f32)),
             TokenExpr::Count => Some(PropValue::Number(self.clock().count as f32)),
-            TokenExpr::Wave { period, phase } => {
-                let phase = num(phase)?;
-                let period = period.as_secs_f32();
-                if period <= 0.0 {
-                    return None;
-                }
-                let turns = self.clock().t / period + phase;
-                let v = 0.5 - 0.5 * (std::f32::consts::TAU * turns).cos();
+            TokenExpr::Wave { .. } | TokenExpr::Noise(_) => {
+                let v = self.exact(e, depth, base, budget)? as f32;
                 v.is_finite().then_some(PropValue::Number(v))
             }
-            TokenExpr::Noise(x) => Some(PropValue::Number(noise(num(x)?))),
             TokenExpr::Math { f, args } => {
                 let mut xs = [0.0f32; 3];
                 for (slot, a) in xs.iter_mut().zip(args) {
@@ -1145,6 +1158,54 @@ impl<'a> TokenScope<'a> {
                 Some(PropValue::Number(f.apply(&xs[..args.len().min(3)])?))
             }
         }
+    }
+}
+
+impl TokenScope<'_> {
+    /// (audit-time-precision) A number evaluated in f64: `t`, `wave(…)`,
+    /// `noise(…)` and arithmetic on them, so a node's time keeps a
+    /// frame's resolution however long it has lived. `wave` reads `t`
+    /// modulo its period before the cosine. Any other leaf is the f32
+    /// number [`TokenScope::eval_in`] gives.
+    fn exact(
+        &self,
+        e: &TokenExpr,
+        depth: u32,
+        base: Option<Oklch>,
+        budget: &Budget,
+    ) -> Option<f64> {
+        if depth > MAX_TOKEN_DEPTH || !budget.step() {
+            return None;
+        }
+        let sub = |e: &TokenExpr| self.exact(e, depth + 1, base, budget);
+        let v = match e {
+            TokenExpr::Time => self.clock().t,
+            TokenExpr::Wave { period, phase } => {
+                let phase = sub(phase)?;
+                let period = period.as_secs_f64();
+                if period <= 0.0 {
+                    return None;
+                }
+                let turns = self.clock().t.rem_euclid(period) / period + phase;
+                0.5 - 0.5 * (std::f64::consts::TAU * turns).cos()
+            }
+            TokenExpr::Noise(x) => noise_at(sub(x)?) as f64,
+            TokenExpr::Binary { op, lhs, rhs } => {
+                let (a, b) = (sub(lhs)?, sub(rhs)?);
+                match op {
+                    BinOp::Add => a + b,
+                    BinOp::Sub => a - b,
+                    BinOp::Mul => a * b,
+                    BinOp::Div => a / b,
+                    BinOp::Rem => a % b,
+                }
+            }
+            e => self
+                .eval_in(e, depth, base, budget)
+                .as_ref()
+                .and_then(fraction)? as f64,
+        };
+        v.is_finite().then_some(v)
     }
 }
 
@@ -1352,11 +1413,76 @@ mod tests {
     }
 
     #[test]
+    fn time_signals_keep_a_frames_resolution_after_twelve_days_of_uptime() {
+        // A node that has lived twelve days, read at eight 60 Hz frames:
+        // in f32 seconds `t` stepped 62.5 ms and most frames repeated.
+        let levels: [&TokenTable; 0] = [];
+        let base = 12.0 * 86_400.0;
+        let frames = |e: &TokenExpr| -> Vec<f32> {
+            (0..8)
+                .map(|k| {
+                    let scope = TokenScope::new(&levels)
+                        .with_time(Some(TimeContext::at(base + k as f64 / 60.0)));
+                    number(scope, e)
+                })
+                .collect()
+        };
+        let lit = |n: f32| Box::new(TokenExpr::value(PropValue::Number(n)));
+        // `wave(2s)` advances a 120th of a turn per frame.
+        let wave = TokenExpr::Wave {
+            period: std::time::Duration::from_secs(2),
+            phase: lit(0.0),
+        };
+        let waves = frames(&wave);
+        for (k, w) in waves.iter().enumerate() {
+            let want = 0.5 - 0.5 * (std::f64::consts::TAU * (k as f64 / 120.0)).cos();
+            assert!((*w as f64 - want).abs() < 1e-4, "frame {k}: {waves:?}");
+        }
+        // `t * 40deg` as a conic's start: two thirds of a degree a frame,
+        // reduced to a turn before it is narrowed.
+        let spin = TokenExpr::Binary {
+            op: BinOp::Mul,
+            lhs: Box::new(TokenExpr::Time),
+            rhs: lit(40.0),
+        };
+        let conic = TokenExpr::Template {
+            value: Box::new(PropValue::Paint(Paint::Conic {
+                from: 0.0,
+                stops: Vec::new(),
+            })),
+            colors: Vec::new(),
+            numbers: vec![Some(spin)],
+        };
+        let from: Vec<f32> = (0..8)
+            .map(|k| {
+                let scope = TokenScope::new(&levels)
+                    .with_time(Some(TimeContext::at(base + k as f64 / 60.0)));
+                match scope.eval(&conic).as_ref() {
+                    Some(PropValue::Paint(Paint::Conic { from, .. })) => *from,
+                    other => panic!("{other:?}"),
+                }
+            })
+            .collect();
+        for w in from.windows(2) {
+            let step = (w[1] - w[0]).rem_euclid(360.0);
+            assert!((step - 40.0 / 60.0).abs() < 1e-3, "{from:?}");
+        }
+        // `noise(t * 2)` and `t` itself still move every frame.
+        let noisy = TokenExpr::Noise(Box::new(TokenExpr::Binary {
+            op: BinOp::Mul,
+            lhs: Box::new(TokenExpr::Time),
+            rhs: lit(2.0),
+        }));
+        let n = frames(&noisy);
+        assert!(n.windows(2).all(|w| w[0] != w[1]), "{n:?}");
+    }
+
+    #[test]
     fn time_leaves_read_the_scope_time() {
         let t = table();
         let levels = [&t];
         let still = TokenScope::new(&levels);
-        let at = |secs: f32| {
+        let at = |secs: f64| {
             still.with_time(Some(TimeContext {
                 t: secs,
                 index: 3,
@@ -2135,7 +2261,7 @@ mod tests {
         assert!(t.time_reads("turn") && !t.time_reads("twice"));
         t.freeze();
         assert!(t.time_reads("turn") && !t.time_reads("base"));
-        let at = |s: f32| {
+        let at = |s: f64| {
             TokenScope::new(&[&t])
                 .with_time(Some(TimeContext::at(s)))
                 .lookup("turn")

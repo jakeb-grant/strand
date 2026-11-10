@@ -1383,7 +1383,7 @@ impl ImageStore {
     pub(crate) fn frame_rate(
         &self,
         node: &crate::tree::Node,
-        t: impl FnOnce() -> f32,
+        t: impl FnOnce() -> f64,
     ) -> Option<crate::clock::Rate> {
         if node.kind != strand_scene::NodeKind::Image || self.timelines.is_empty() {
             return None;
@@ -1407,7 +1407,7 @@ impl ImageStore {
     pub(crate) fn frame_wake(
         &self,
         node: &crate::tree::Node,
-        t: f32,
+        t: f64,
         tick: std::time::Duration,
         next: std::time::Duration,
     ) -> std::time::Duration {

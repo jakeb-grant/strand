@@ -86,11 +86,11 @@ impl Timeline {
 
     /// The frame shown `t` seconds after the image appeared: the last
     /// frame once a finite loop count has played out.
-    pub fn frame_at(&self, t: f32) -> u32 {
+    pub fn frame_at(&self, t: f64) -> u32 {
         if self.done(t) {
             return self.delays.len() as u32 - 1;
         }
-        let ms = (t.max(0.0) as f64 * 1000.0).round() as u64 % self.total.max(1);
+        let ms = (t.max(0.0) * 1000.0).round() as u64 % self.total.max(1);
         let mut acc = 0;
         for (i, d) in self.delays.iter().enumerate() {
             acc += d;
@@ -106,12 +106,12 @@ impl Timeline {
     /// count has played out. The clock wakes for that boundary only, not
     /// for every [`Timeline::tick`] between (decisions.md,
     /// m4-effects-media-w2).
-    pub fn until_change(&self, t: f32) -> Option<Duration> {
+    pub fn until_change(&self, t: f64) -> Option<Duration> {
         if self.done(t) {
             return None;
         }
         let total = self.total.max(1);
-        let into = (t.max(0.0) as f64 * 1000.0).round() as u64 % total;
+        let into = (t.max(0.0) * 1000.0).round() as u64 % total;
         let mut acc = 0;
         for d in &self.delays {
             acc += d;
@@ -124,9 +124,9 @@ impl Timeline {
 
     /// True once a finite loop count has played out at `t`: the last
     /// frame stays and nothing ticks any more.
-    pub fn done(&self, t: f32) -> bool {
+    pub fn done(&self, t: f64) -> bool {
         self.loops
-            .is_some_and(|n| (t.max(0.0) as f64 * 1000.0) >= (self.total as f64) * n as f64)
+            .is_some_and(|n| (t.max(0.0) * 1000.0) >= (self.total as f64) * n as f64)
     }
 }
 

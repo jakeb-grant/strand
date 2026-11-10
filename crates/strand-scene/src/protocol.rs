@@ -853,45 +853,62 @@ impl PropValue {
     pub fn numbers_mut(&mut self) -> Vec<&mut f32> {
         let mut out = Vec::new();
         self.collect_numbers(&mut out);
+        out.into_iter().map(|(n, _)| n).collect()
+    }
+
+    /// [`PropValue::numbers_mut`], each number with whether it is an
+    /// angle in degrees (an `Angle`, a `Linear` gradient's angle, a
+    /// `Conic` one's start): a time-bound angle is reduced to a turn
+    /// before it is narrowed (decisions.md, audit-time-precision).
+    pub fn numbers_and_angles_mut(&mut self) -> Vec<(&mut f32, bool)> {
+        let mut out = Vec::new();
+        self.collect_numbers(&mut out);
         out
     }
 
-    fn collect_numbers<'a>(&'a mut self, out: &mut Vec<&'a mut f32>) {
-        fn paint<'a>(p: &'a mut Paint, out: &mut Vec<&'a mut f32>) {
+    fn collect_numbers<'a>(&'a mut self, out: &mut Vec<(&'a mut f32, bool)>) {
+        fn paint<'a>(p: &'a mut Paint, out: &mut Vec<(&'a mut f32, bool)>) {
             let stops = match p {
                 Paint::Solid(_) => return,
                 Paint::Linear { angle, stops } => {
-                    out.push(angle);
+                    out.push((angle, true));
                     stops
                 }
                 Paint::Radial { stops } => stops,
                 Paint::Conic { from, stops } => {
-                    out.push(from);
+                    out.push((from, true));
                     stops
                 }
             };
-            out.extend(stops.iter_mut().map(|s| &mut s.offset));
+            out.extend(stops.iter_mut().map(|s| (&mut s.offset, false)));
         }
         match self {
-            PropValue::Number(n) | PropValue::Angle(n) => out.push(n),
-            PropValue::Length(Length::Px(n) | Length::Percent(n) | Length::Ch(n)) => out.push(n),
-            PropValue::Insets(i) => {
-                out.extend([&mut i.top, &mut i.right, &mut i.bottom, &mut i.left])
+            PropValue::Angle(n) => out.push((n, true)),
+            PropValue::Number(n) => out.push((n, false)),
+            PropValue::Length(Length::Px(n) | Length::Percent(n) | Length::Ch(n)) => {
+                out.push((n, false))
             }
-            PropValue::Corners(c) => out.extend([
-                &mut c.top_left,
-                &mut c.top_right,
-                &mut c.bottom_right,
-                &mut c.bottom_left,
-            ]),
+            PropValue::Insets(i) => out
+                .extend([&mut i.top, &mut i.right, &mut i.bottom, &mut i.left].map(|n| (n, false))),
+            PropValue::Corners(c) => out.extend(
+                [
+                    &mut c.top_left,
+                    &mut c.top_right,
+                    &mut c.bottom_right,
+                    &mut c.bottom_left,
+                ]
+                .map(|n| (n, false)),
+            ),
             PropValue::Paint(p) => paint(p, out),
             PropValue::Border(b) => {
-                out.push(&mut b.width);
+                out.push((&mut b.width, false));
                 paint(&mut b.paint, out);
             }
             PropValue::Shadow(list) => {
                 for s in list {
-                    out.extend([&mut s.x, &mut s.y, &mut s.blur, &mut s.spread]);
+                    out.extend(
+                        [&mut s.x, &mut s.y, &mut s.blur, &mut s.spread].map(|n| (n, false)),
+                    );
                 }
             }
             PropValue::List(items) | PropValue::Call { args: items, .. } => {

@@ -1293,7 +1293,12 @@ is being saved, so the idle-wakeup windows hold.
     `Template::numbers` holds numeric slots, so `glow: 10 * wave(2s),
     $accent` travels as one value. A scope reads a per-node
     `TimeContext` through `TokenScope::with_time`; under
-    `reduced_motion` it is `TimeContext::frozen`. A prop that reads time
+    `reduced_motion` it is `TimeContext::frozen`. `TimeContext::t` is
+    f64 seconds, and `t`, `wave`, `noise` and arithmetic on them are
+    evaluated in f64 (`wave` modulo its period, a time-bound angle slot
+    of a template modulo 360) before a value narrows to its f32
+    `PropValue`; animated images and Lottie pick frames from the f64
+    (decisions.md, audit-time-precision). A prop that reads time
     (`PropValue::reads_time`, also through a global token) repaints its
     node each frame while visible, and only it.
   - **Per-node clocks with frame caps.** A node that reads time or plays

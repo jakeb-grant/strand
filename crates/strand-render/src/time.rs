@@ -64,7 +64,7 @@ impl NodeTimes {
             }
         };
         let cx = TimeContext {
-            t: t.as_secs_f32(),
+            t: t.as_secs_f64(),
             index,
             count,
         };
@@ -107,7 +107,7 @@ impl NodeTimes {
         let next = ((now + 1) * p - offset).max(0);
         let ns = |n: i128| Duration::from_nanos(u64::try_from(n).unwrap_or(u64::MAX));
         let cx = TimeContext {
-            t: ns(t).as_secs_f32(),
+            t: ns(t).as_secs_f64(),
             index,
             count,
         };
@@ -175,6 +175,28 @@ mod tests {
 
     fn id(i: u32) -> NodeId {
         NodeId::new(i, 0)
+    }
+
+    #[test]
+    fn t_keeps_a_frames_resolution_after_twelve_days() {
+        // A node drawn for twelve days: in f32 seconds its `t` stepped
+        // 62.5 ms, so most 60 Hz frames repeated the last one's.
+        let mut times = NodeTimes::default();
+        let start = Duration::from_secs(5);
+        times.begin(id(1), start);
+        let base = start + Duration::from_secs(12 * 86_400);
+        let ts: Vec<f64> = (0..8u32)
+            .map(|k| {
+                let frame = base + Duration::from_nanos(16_666_667) * k;
+                times
+                    .context(id(1), frame, true, false, None, Duration::ZERO)
+                    .0
+                    .t
+            })
+            .collect();
+        for w in ts.windows(2) {
+            assert!((w[1] - w[0] - 1.0 / 60.0).abs() < 1e-6, "{ts:?}");
+        }
     }
 
     #[test]

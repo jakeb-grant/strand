@@ -454,7 +454,7 @@ fn maths_follow_time_and_other_builtins_refuse_it() {
     };
     // At t = 1 s: 20 · sin(90°) = 20.
     let tables = strand_scene::TokenTable::default();
-    let at = |e: &strand_scene::TokenExpr, t: f32| {
+    let at = |e: &strand_scene::TokenExpr, t: f64| {
         let levels = [&tables];
         let scope = strand_scene::TokenScope::new(&levels)
             .with_time(Some(strand_scene::TimeContext::at(t)));

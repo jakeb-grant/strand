@@ -933,7 +933,7 @@ impl<'a> Flattener<'a> {
                 let boxed = map_rect(self.xform, phys)
                     .intersect(self.surface)
                     .unwrap_or_default();
-                let t = time.map_or(0.0, |t| t.t);
+                let t = time.map_or(0.0, |t| t.t as f32);
                 self.backdrop_pass(node.id, &e, boxed, read, end + 1, r.top_left, t, &mut sig)
             };
             #[cfg(not(feature = "gpu"))]
@@ -1216,7 +1216,7 @@ impl<'a> Flattener<'a> {
                 w,
                 h,
                 self.scale.as_f32(),
-                time.map_or(0.0, |t| t.t),
+                time.map_or(0.0, |t| t.t as f32),
                 pointer,
             ) {
                 let id = crate::renderer::backend::PassId::new(
@@ -2128,7 +2128,7 @@ impl<'a> Flattener<'a> {
             if mask_group.is_some() || !self.blurred_box(i, plain_fill) {
                 // (M4) Its bundled passes, drawn by the GPU.
                 #[cfg(feature = "gpu")]
-                self.filter_pass(node.id, i, time.map_or(0.0, |t| t.t));
+                self.filter_pass(node.id, i, time.map_or(0.0, |t| t.t as f32));
                 self.marker(Item::PopLayer);
             }
         }
