@@ -452,6 +452,11 @@ struct Arrival {
     default: bool,
     /// `transient`: never remembered across restarts.
     transient: bool,
+    /// Who sent it (its unique bus name). A replacement's sender is
+    /// recorded by the body as it shows the new content, not by the
+    /// interface: until then the notification shown, and what is done
+    /// with it, are still the earlier sender's.
+    sender: Option<String>,
 }
 
 /// From the bus to the service body.
@@ -648,6 +653,7 @@ impl Server {
             resident,
             default,
             transient,
+            sender: None,
         })
     }
 }
@@ -680,12 +686,16 @@ impl Server {
                 expire_timeout,
             )
             .ok_or_else(stopped)?;
+        let mut a = a;
+        a.sender = header.sender().map(|s| s.to_string());
         let id = a.n.id as u32;
         let (fresh, data) = (!a.replaces, matches!(a.image, Image::Data(_)));
-        // A replacement's sender is the one told from now on.
-        if let Ok(mut ids) = self.ids.lock() {
-            match header.sender() {
-                Some(s) => ids.senders.insert(id, s.to_string()),
+        // A new id is its sender's at once. A replacement's sender is
+        // recorded by the body together with the new content
+        // ([`Arrival::sender`]).
+        if fresh && let Ok(mut ids) = self.ids.lock() {
+            match &a.sender {
+                Some(s) => ids.senders.insert(id, s.clone()),
                 None => ids.senders.remove(&id),
             };
         }
@@ -979,9 +989,10 @@ impl Notifications {
                     };
                     match m {
                         FromBus::Notify(a) => {
-                            let Arrival { mut n, image, mut replaces, resident, default, transient } = *a;
+                            let Arrival { mut n, image, mut replaces, resident, default, transient, sender: from } = *a;
                             // It replaced one the body closed meanwhile: a
-                            // new notification under that id, open again.
+                            // new notification under that id, open again
+                            // (its sender recorded below, with its content).
                             if replaces && !cx.state().all.iter().any(|m| m.id == n.id) {
                                 replaces = false;
                                 if let Ok(mut ids) = ids.lock() {
@@ -1011,9 +1022,24 @@ impl Notifications {
                             let shown = (replaces && cx.state().popups.iter().any(|m| m.id == n.id))
                                 || !cx.state().dnd
                                 || n.urgency == Urgency::Critical;
+                            // Its sender is the one told from now on, from the
+                            // moment its content shows: no await between.
+                            let before = record_sender(&ids, n.id, from.clone());
+                            let id = n.id;
                             let sent = received(&mut cx, &mut history, &kept, &n, shown);
                             if !sent || !cx.emit(NotificationsEvent::Received(n)) {
                                 return Ok(());
+                            }
+                            // Replaced by another peer (`notify-send -r`
+                            // from a new process): the earlier sender's
+                            // notification is closed, and it is told so,
+                            // rather than its signals going to the other
+                            // peer unheard (audit-notify-sender).
+                            if replaces
+                                && let Some(before) = before
+                                && from.as_deref() != Some(before.as_str())
+                            {
+                                signal_closed(&conn, &before, id, Closed::Closed).await;
                             }
                             // History is bounded (KEPT, KEPT_BYTES): the oldest beyond it close.
                             let over: Vec<i64> = {
@@ -1723,6 +1749,16 @@ fn forget(
     drop(image);
     // A restored one's sender is not told: it never knew this id.
     (alive, to.filter(|_| !restored))
+}
+
+/// Record `from` as the sender of notification `id` ([`Ids::senders`]),
+/// returning the one recorded before.
+fn record_sender(ids: &Mutex<Ids>, id: i64, from: Option<String>) -> Option<String> {
+    let mut ids = ids.lock().ok()?;
+    match from {
+        Some(s) => ids.senders.insert(id as u32, s),
+        None => ids.senders.remove(&(id as u32)),
+    }
 }
 
 /// The sender of live notification `id`, the one peer its signals go to

@@ -548,6 +548,176 @@ fn hints_and_inline_replies() {
     s.shutdown();
 }
 
+/// (audit-notify-sender) A replacement from another peer (`notify-send
+/// -r` from a new process) keeps the id and shows the new content, and the
+/// first sender is told its notification closed (reason 3): what is done
+/// with the popup from then on (a reply typed into it) goes to the peer
+/// whose content it shows, and the first sender is never left holding an
+/// id whose signals another peer now hears. Another peer's
+/// `CloseNotification` closes one, as the spec allows, and its sender
+/// alone is told.
+#[test]
+fn a_replacement_by_another_peer_closes_the_first_senders_notification() {
+    let _serial = serial();
+    history_in(None);
+    notifications::offer_replies(true);
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let first = connect(&tokio, &bus.address);
+    let heard_first = hear(&tokio, &first);
+    let other = connect(&tokio, &bus.address);
+    let heard_other = hear(&tokio, &other);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+
+    let reply = ["inline-reply", "Reply"];
+    let id = notify(&tokio, &first, 0, "Hi", &reply, HashMap::new(), -1);
+    until(&rt, &s, "the popup", || popups(&b, &rt).len() == 1);
+    let again = notify(&tokio, &other, id, "Replaced", &reply, HashMap::new(), -1);
+    assert_eq!(again, id, "another peer's replacement keeps the id");
+    until(&rt, &s, "the replacement", || {
+        popups(&b, &rt)
+            .first()
+            .is_some_and(|n| n.summary == "Replaced")
+    });
+    wait_heard(&heard_first, &format!("Closed {id} 3"));
+
+    let item = popups(&b, &rt)[0].to_data();
+    b.notifications
+        .dynamic()
+        .action(
+            &rt,
+            "reply",
+            Some(&item),
+            &[Data::text("typed")],
+            Default::default(),
+        )
+        .unwrap();
+    wait_heard(&heard_other, &format!("Replied {id} typed"));
+    wait_heard(&heard_other, &format!("Closed {id} 2"));
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        *heard_first.lock().unwrap(),
+        [format!("Closed {id} 3")],
+        "the first sender hears its closing alone"
+    );
+
+    let mine = notify(&tokio, &first, 0, "Mine", &[], HashMap::new(), -1);
+    until(&rt, &s, "the second popup", || {
+        popups(&b, &rt).iter().any(|n| n.id == i64::from(mine))
+    });
+    call(
+        &tokio,
+        &other,
+        NAME,
+        PATH,
+        NAME,
+        "CloseNotification",
+        &(mine,),
+    );
+    wait_heard(&heard_first, &format!("Closed {mine} 3"));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        !heard_other
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with(&format!("Closed {mine} "))),
+        "{:?}",
+        heard_other.lock().unwrap()
+    );
+    s.shutdown();
+}
+
+/// (audit-notify-sender) A `Notify` replacing an id whose
+/// `CloseNotification` was sent just before it (both read before the
+/// server closes it) is a new notification under that id, its sender
+/// recorded: its buttons are heard, where they went nowhere.
+#[test]
+fn a_replacement_queued_behind_its_close_is_its_senders() {
+    let _serial = serial();
+    history_in(None);
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let tokio = tokio();
+    let conn = connect(&tokio, &bus.address);
+    let heard = hear(&tokio, &conn);
+    let rt = Runtime::new();
+    let (s, b) = services(&rt, bus.buses());
+    b.notifications.acquire(&rt);
+    assert!(s.wait_ready(&rt, Duration::from_secs(10)));
+    assert!(bus.wait_for_name(NAME, Duration::from_secs(5)));
+
+    // The close may be applied before the `Notify` is read, which then
+    // makes a new id: tried until both are read first.
+    for _ in 0..20 {
+        let id = notify(&tokio, &conn, 0, "First", &[], HashMap::new(), -1);
+        until(&rt, &s, "the first", || {
+            all(&b, &rt).iter().any(|n| n.id == i64::from(id))
+        });
+        let close = (id,);
+        let replace = (
+            "Mail",
+            id,
+            "",
+            "Second",
+            "",
+            vec!["open", "Open"],
+            HashMap::<&str, Value<'_>>::new(),
+            -1i32,
+        );
+        let (closed, again) = tokio.block_on(async {
+            tokio::join!(
+                conn.call_method(Some(NAME), PATH, Some(NAME), "CloseNotification", &close),
+                conn.call_method(Some(NAME), PATH, Some(NAME), "Notify", &replace),
+            )
+        });
+        closed.unwrap();
+        let again: u32 = again.unwrap().body().deserialize().unwrap();
+        wait_heard(&heard, &format!("Closed {id} 3"));
+        // Read in the other order, the replacement is closed in turn.
+        let shown = strand_test_support::wait::within(
+            Duration::from_secs(2),
+            Duration::from_millis(5),
+            || {
+                s.pump(&rt);
+                rt.flush();
+                all(&b, &rt)
+                    .iter()
+                    .any(|n| n.id == i64::from(again) && n.summary == "Second")
+            },
+        );
+        if again != id || !shown {
+            continue;
+        }
+        let n = all(&b, &rt)
+            .into_iter()
+            .find(|n| n.id == i64::from(id))
+            .unwrap();
+        b.notifications
+            .dynamic()
+            .action(
+                &rt,
+                "invoke",
+                Some(&n.actions[0].to_data()),
+                &[],
+                Default::default(),
+            )
+            .unwrap();
+        wait_heard(&heard, &format!("Invoked {id} open"));
+        wait_heard(&heard, &format!("Closed {id} 2"));
+        s.shutdown();
+        return;
+    }
+    panic!("the close was applied before the replacement was read every time");
+}
+
 /// (services-round) A program that names neither `can_reply` nor
 /// `reply` shows no reply field, so the server does not advertise
 /// `inline-reply` (an app told of it drops its own "Reply" button), and
