@@ -90,6 +90,7 @@ filter = '''
   | test(=a_question_that_times_out_does_not_wait_for_another_callers_connect)
   | test(=commits_lock_to_the_refresh_rate)
   | test(=media_follows_the_active_player_without_polling)
+  | test(=remote_art_is_fetched_only_while_it_is_read)
   | test(=network_follows_iwd_where_networkmanager_is_absent)
   | test(=network_follows_networkmanager_and_scans_only_while_watched)
   | test(=saved_connections_are_listed_while_read_and_switched)

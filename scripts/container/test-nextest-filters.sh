@@ -36,7 +36,7 @@ filter = 'binary_id(/^strand-services::(media)\$/)'
 retries = 1"
 expect 1 "not one whose test holds a gate"
 config "[[profile.ci.overrides]]
-filter = '(binary_id(/^strand-services::(media)\$/)) & not (test(=a_frozen_player_does_not_hold_up_the_others) | test(=media_follows_the_active_player_without_polling) | test(=players_list_every_player_and_select_picks_the_one_media_follows))'
+filter = '(binary_id(/^strand-services::(media)\$/)) & not (test(=a_frozen_player_does_not_hold_up_the_others) | test(=media_follows_the_active_player_without_polling) | test(=remote_art_is_fetched_only_while_it_is_read) | test(=players_list_every_player_and_select_picks_the_one_media_follows))'
 retries = 1"
 expect 0 "unless the retry leaves that test out"
 config "[[profile.ci.overrides]]

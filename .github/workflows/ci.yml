@@ -381,9 +381,9 @@ jobs:
         with:
           cache-key: release
       - run: scripts/container/run.sh cargo test --release -p strand --test acceptance -- --nocapture --test-threads=1
-      # The CPU core's .text keeps its own gate (24,903,680 B; the GPU
-      # backend's is 29,097,984 B), both re-based on wave-cost's
-      # tree with a 512 KiB reserve (decisions.md growth, services-round, wave-cost;
+      # The CPU core's .text keeps its own gate (27,262,976 B; the GPU
+      # backend's is 31,195,136 B), each CI's measurement at its last
+      # re-base with a 512 KiB reserve (decisions.md growth, services-round, wave-cost, audit-text-gate, audit-text-gate-cpu;
       # docs/architecture.md, "`strand-gpu`"). Here rather than in budgets,
       # whose last step it was and whose run it lengthened by its 6 min
       # fat-LTO build (decisions.md audit-cpu-gate-move).
@@ -1022,7 +1022,10 @@ jobs:
   # RAILWAY_TOKEN (a project token) and the variable RAILWAY_SERVICE;
   # with no token it says so and deploys nothing.
   deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !cancelled() && needs.checks.result == 'success'
+    # `checks` by its result, not the default `success()`: that one looks
+    # at every job behind `checks` too, and one `prior` let main skip
+    # would skip this job with it.
     # Every check job through `checks`, `package` too: the site serves
     # scripts/install.sh, which it tests.
     needs: checks
@@ -1089,9 +1092,10 @@ jobs:
   # since; a tag vX, which must name the workspace's version, becomes
   # the release vX. The only job whose token may write to the repository.
   release:
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && !cancelled() && needs.checks.result == 'success'
     # Every check job, through `checks`: lint, test, budgets, acceptance,
-    # timing, eval, site, wasm, compositors, lock-vm, package.
+    # timing, eval, site, wasm, compositors, lock-vm, package. By its
+    # result, as deploy.
     needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 15

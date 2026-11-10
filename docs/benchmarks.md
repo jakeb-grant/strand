@@ -381,7 +381,9 @@ services-merge to 29,622,272 and 25,690,112 B, and blocks-ci to
 30,408,704 and 26,476,544 B (29,764,823 and 25,691,287 B measured at the
 blocks merge, 2026-11-07), and audit-text-gate the default build's alone
 to 31,195,136 B (30,413,527 B measured with the audit's fixes,
-2026-11-10; the CPU-only build, 26,316,375 B, stayed under its gate).
+2026-11-10; the CPU-only build, 26,316,375 B, stayed under its gate
+then), and audit-text-gate-cpu the CPU-only build's to 27,262,976 B
+(26,476,951 B measured forty-odd fixes later the same day).
 
 No idle-wakeup window in budgets.rs changed: nothing records on a timer,
 and the `strand-report` thread lives only while a report is written.

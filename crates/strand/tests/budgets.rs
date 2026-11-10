@@ -50,13 +50,13 @@
 //!   Vulkan mapped, aiming at 76 MB and failing above 128 MiB in release.
 //! - `the_release_binary_code_stays_within_its_gate`: the release
 //!   binary's `.text` (most of it resident on a large-folio page cache):
-//!   31,195,136 B with the GPU backend (the default build), 26,476,544 B
+//!   31,195,136 B with the GPU backend (the default build), 27,262,976 B
 //!   for the CPU core (`--no-default-features`); both re-based for the
 //!   speed profile and since by the measured-plus-reserve rule, last for
 //!   the document formats and the monitor-profile building blocks and,
-//!   the GPU build's alone, for the audit's fixes
+//!   each build's in its turn, for the audit's fixes
 //!   (decisions.md m5-speed, growth, services-round, wave-cost,
-//!   services-merge, blocks-ci, audit-text-gate; docs/architecture.md,
+//!   services-merge, blocks-ci, audit-text-gate, audit-text-gate-cpu; docs/architecture.md,
 //!   "`strand-gpu`", "Budgets and tests").
 //! - `the_binary_holds_no_fault_code`: no `STRAND_FAULT` point in a
 //!   default build (the lock's `faults` feature).
@@ -2583,7 +2583,11 @@ fn the_ledger_half_reads_size_delta_baseline_and_gate() {
 /// m5-integration-w2), 22,282,240 B after the speed review (decisions.md
 /// m5-speed) and 18.5 MiB before it.
 const TEXT_GATE_GPU: u64 = 31_195_136;
-/// `.text` of the CPU-only release build: 26,476,544 B (101 × 256 KiB):
+/// `.text` of the CPU-only release build: 27,262,976 B (104 × 256 KiB):
+/// the audit's fixes measured 26,476,951 B in GitHub CI's budgets job
+/// (run 42837700148), 407 B over the gate before, plus a 512 KiB
+/// reserve, rounded up to 256 KiB (decisions.md audit-text-gate-cpu). It
+/// was 26,476,544 B (101 × 256 KiB):
 /// the same tree measured 25,691,287 B, 1,175 B over the gate before,
 /// plus the reserve, rounded up (decisions.md blocks-ci). It was
 /// 25,690,112 B (98 × 256 KiB): the services merge measured
@@ -2610,7 +2614,7 @@ const TEXT_GATE_GPU: u64 = 31_195_136;
 /// after the speed review (decisions.md m5-speed) and 15,859,712 B
 /// before it. The gate catches accidental growth, never caps a feature:
 /// a deliberate choice re-bases it with its measured reason.
-const TEXT_GATE_CPU: u64 = 26_476_544;
+const TEXT_GATE_CPU: u64 = 27_262_976;
 /// The lock's fault injection never ships (decisions.md, m4-lock-w2):
 /// the `faults` feature's `STRAND_FAULT` points are not in the binary a
 /// default build makes, in the dev profile here and in release in CI's
