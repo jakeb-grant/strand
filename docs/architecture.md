@@ -3363,8 +3363,11 @@ itself.
   connected but does not understand its compositor (`wm::understood`)
   sends `AdapterMsg::Degraded(text)`: the run serves the protocols as if
   disconnected, sets `Sources::degraded`, and retries on its backoff
-  without flapping ids (`understood::Degradation`); the oldest
-  subscription raises each new text with `Cx::warn`. Unknown events are
+  without flapping ids (`understood::Degradation`); the oldest store's
+  subscription (`WmHub::subscribe_reporting`; a follower's plain
+  `subscribe()` never reports) raises each new text with `Cx::failing`,
+  and when it leaves, the next oldest store is sent the current
+  `Sources` again and raises what still holds. Unknown events are
   ignored; a known one that cannot be read triggers a re-read
   (decisions.md laptop-resilience). Windows carry `app` and `icon` from
   `apps::AppIndex`, read on the blocking pool and refreshed by

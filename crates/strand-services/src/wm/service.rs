@@ -459,7 +459,7 @@ pub fn slots(
 /// The hub's subscription, or the error that ends the body.
 fn subscribe() -> Result<WmSubscription, ServiceError> {
     hub()
-        .map(|h| h.subscribe())
+        .map(|h| h.subscribe_reporting())
         .ok_or_else(|| ServiceError("no services runtime".into()))
 }
 

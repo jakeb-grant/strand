@@ -823,6 +823,105 @@ fn a_hyprland_the_adapter_cannot_read_falls_back_to_the_protocols_with_a_diagnos
     wm::configure(None);
 }
 
+/// A degraded Hyprland adapter is reported by a store whatever
+/// subscribed to the compositor service first (here the focused-screen
+/// follower, which reports nothing), and when the reporting store stops
+/// for lack of readers, a store still running raises it again: it is
+/// never left resolved while the adapter is still degraded.
+#[test]
+fn a_degraded_adapter_is_reported_by_a_running_store_whoever_subscribed_first() {
+    let _serial = serial();
+    let Some(sway) = Sway::start("hyprland_degraded_reporter") else {
+        return;
+    };
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let _enter = tokio.enter();
+    let fake = common::hyprland::FakeHyprland::start();
+    wm::configure(Some(WmConfig {
+        backend: Some(fake.backend.clone()),
+        wayland: Some(WaylandTarget::Socket(sway.socket())),
+        ..Default::default()
+    }));
+    let rt = Runtime::new();
+    let s = Services::new(&rt, Buses::none(), || {});
+    let b = Builtin::register(&s, &rt);
+    // The follower subscribes first: the oldest subscription is not a
+    // store's.
+    let (tx, heard) = std::sync::mpsc::channel();
+    let tx = std::sync::Mutex::new(tx);
+    let _follower = wm::follow_focused_screen(&s, move |named| {
+        let _ = tx.lock().unwrap().send(named);
+    });
+    heard.recv_timeout(Duration::from_secs(10)).unwrap();
+    b.windows.acquire(&rt);
+    b.workspaces.acquire(&rt);
+    let diagnostics = RefCell::new(Vec::new());
+    let until = |what: &str, cond: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            s.pump(&rt);
+            rt.flush();
+            diagnostics.borrow_mut().extend(s.take_diagnostics());
+            if cond() {
+                return;
+            }
+            assert!(Instant::now() < deadline, "never: {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    until("boot", &|| {
+        b.windows
+            .cells()
+            .snapshot(&rt)
+            .is_ok_and(|w| w.all.iter().any(|w| w.id == "0x55d0c0a1b2c0"))
+            && b.workspaces.cells().snapshot(&rt).is_ok()
+    });
+    fake.set_reply(
+        "j/clients",
+        br#"[{"addr": "0x55d0c0a1c3d0", "mapped": true, "workspace": {"id": 2, "name": "2"}}]"#,
+    );
+    fake.send("openwindow>>55d0c0a1c3d0,2,foot,foot\n");
+    let open = |service: Option<&str>| {
+        let d = diagnostics.borrow();
+        d.iter()
+            .rposition(|d| d.message.contains("does not understand") && !d.resolved)
+            .map(|i| d[i].clone())
+            .filter(|d| service.is_none_or(|s| s == d.service))
+    };
+    until("the degradation raised", &|| open(None).is_some());
+    let first = open(None).unwrap();
+    let other = match first.service.as_str() {
+        "windows" => {
+            b.windows.release(&rt);
+            "workspaces"
+        }
+        "workspaces" => {
+            b.workspaces.release(&rt);
+            "windows"
+        }
+        s => panic!("raised by {s}"),
+    };
+    rt.tick(STOP_GRACE + Duration::from_millis(1));
+    until("the stopped store resolved its own", &|| {
+        diagnostics
+            .borrow()
+            .iter()
+            .any(|d| d.resolved && d.service == first.service)
+    });
+    until("the store still running raises it again", &|| {
+        open(Some(other)).is_some()
+    });
+    let again = open(Some(other)).unwrap();
+    assert_eq!(again.message, first.message);
+    assert!(again.standing, "{again:?}");
+    s.shutdown();
+    wm::configure(None);
+}
+
 /// Bugs 3 and gaps 9 (m6-w2-services): a window is linked to its desktop
 /// entry, `win.app`, and draws the entry's icon: the owner's Chromium
 /// (`Chromium-browser`) and Spotify (`Spotify`, XWayland) on Hyprland,
