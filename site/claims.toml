@@ -150,14 +150,14 @@ proof  = "scripts/release/test-install.sh full: again with no flag after --edge 
 [[claim]]
 page   = "site/start/install.md"
 text   = "A build on either channel passed CI first"
-source = ['''.github/workflows/ci.yml "startsWith(github.ref, 'refs/tags/v')) needs: [lint, test, budgets, acceptance, timing, eval, site, wasm, compositors, lock-vm, package]"''']
-proof  = "read: the release job needs every other job, the package job's smoke test among them"
+source = ['''.github/workflows/ci.yml "startsWith(github.ref, 'refs/tags/v')) # Every check job, through `checks`: lint, test, budgets, acceptance, # timing, eval, site, wasm, compositors, lock-vm, package. needs: checks"''', '.github/workflows/ci.yml "needs: [prior, lint, test, budgets, acceptance, timing, eval, site, wasm, compositors, lock-vm, package]"', '''scripts/container/checks-gate.sh "elif [ "$r" = skipped ] && [ "$pr" = true ] && [ "$p" = success ]; then"''']
+proof  = "read: the release job needs `checks`, which needs every other job, the package job's smoke test among them, and passes one skipped on main only when prior-run.sh found it green on a run of the same commit (scripts/container/test-prior-run.sh)"
 
 [[claim]]
 page   = "site/start/install.md"
-text   = "So did every edge build: they run on each push to `main`, and on `main` every night as well."
-source = ['.github/workflows/ci.yml "cron: "17 3 * * *""', '.github/workflows/ci.yml "schedule:* | workflow_dispatch:* | push:tag:* | push:branch:refs/heads/main:* | *:true)"', '''.github/workflows/ci.yml "release: if: github.event_name == 'push' && (github.ref == 'refs/heads/main'"''']
-proof  = "read: the lock-vm job's Decide step boots the VM on a schedule, a dispatch, a tag or a push to main, and the release job, which publishes edge from main, needs the lock-vm job"
+text   = "So did every edge build: they run on each commit `main` publishes, on its branch or on `main`, and on `main` every night as well."
+source = ['''scripts/container/prior-run.sh "job<TAB>step: the step a job's path filter can skip, which must have run."''', '.github/workflows/ci.yml "cron: "17 3 * * *""', '.github/workflows/ci.yml "schedule:* | workflow_dispatch:* | push:tag:* | push:branch:refs/heads/main:* | *:true)"', '''.github/workflows/ci.yml "release: if: github.event_name == 'push' && (github.ref == 'refs/heads/main'"''']
+proof  = "read: the lock-vm job's Decide step boots the VM on a schedule, a dispatch, a tag or a push to main, and the release job, which publishes edge from main, needs `checks`, which takes a lock-vm job main skipped only when the same commit's branch run passed its Lock VM scenarios step (scripts/container/test-prior-run.sh)"
 
 [[claim]]
 page   = "site/start/install.md"
@@ -3288,8 +3288,8 @@ proof  = "read: `[ \"$(id -u)\" != 0 ] || [ $force = 1 ]`"
 [[claim]]
 page   = "site/start/install.md"
 text   = "Every release also passed the lock screen's tests in their VM."
-source = ['.github/workflows/ci.yml "schedule:* | workflow_dispatch:* | push:tag:* | push:branch:refs/heads/main:* | *:true)"', '''.github/workflows/ci.yml "startsWith(github.ref, 'refs/tags/v')) needs: [lint, test, budgets, acceptance, timing, eval, site, wasm, compositors, lock-vm, package]"''']
-proof  = "read: a tag push always boots the VM, and the release job needs the lock-vm job"
+source = ['.github/workflows/ci.yml "schedule:* | workflow_dispatch:* | push:tag:* | push:branch:refs/heads/main:* | *:true)"', '''.github/workflows/ci.yml "startsWith(github.ref, 'refs/tags/v')) # Every check job, through `checks`: lint, test, budgets, acceptance, # timing, eval, site, wasm, compositors, lock-vm, package. needs: checks"''', '.github/workflows/ci.yml "needs: [prior, lint, test, budgets, acceptance, timing, eval, site, wasm, compositors, lock-vm, package]"', '''scripts/container/checks-gate.sh "elif [ "$r" = skipped ] && [ "$pr" = true ] && [ "$p" = success ]; then"''']
+proof  = "read: a tag push always boots the VM, and the release job needs `checks`, which needs the lock-vm job"
 
 [[claim]]
 page   = "site/start/running.md"

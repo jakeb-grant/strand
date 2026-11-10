@@ -138,8 +138,9 @@ build names its channel: `strand 0.1.0 (edge, a764f45c0d1e)`.
 A build on either channel passed CI first, including the compositor
 matrix and this script installing, updating and removing it on fresh
 Ubuntu and Arch systems. Every release also passed the lock screen's
-tests in their VM. So did every edge build: they run on each push to
-`main`, and on `main` every night as well.
+tests in their VM. So did every edge build: they run on each commit
+`main` publishes, on its branch or on `main`, and on `main` every night as
+well.
 
 ## Uninstall
 

@@ -137,6 +137,44 @@ jobs:
           scripts/container/publish-image.sh publish
           STRAND_IMAGE_FILE=Dockerfile.matrix scripts/container/publish-image.sh publish
 
+  # (audit-main-rerun) Main moves by fast-forward to a commit whose branch
+  # run is already green, the same commit, workflow, image and commands. On
+  # a push to main this job finds that run and, per check job, whether it
+  # passed there (a job its path filter emptied there is not proven); those
+  # jobs skip here, unless a cache input changed since main's previous head
+  # (main's caches are the ones every branch reads). Any error or doubt
+  # proves nothing and every job runs. On other pushes it is a dry run of
+  # the same query; package and wasm, whose artifacts release and deploy
+  # ship, and every scheduled or dispatched run are as before
+  # (scripts/container/prior-run.sh).
+  prior:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      green: ${{ steps.find.outputs.green }}
+      proven_lint: ${{ steps.find.outputs.proven_lint }}
+      proven_test: ${{ steps.find.outputs.proven_test }}
+      proven_budgets: ${{ steps.find.outputs.proven_budgets }}
+      proven_acceptance: ${{ steps.find.outputs.proven_acceptance }}
+      proven_timing: ${{ steps.find.outputs.proven_timing }}
+      proven_eval: ${{ steps.find.outputs.proven_eval }}
+      proven_site: ${{ steps.find.outputs.proven_site }}
+      proven_compositors: ${{ steps.find.outputs.proven_compositors }}
+      proven_lock_vm: ${{ steps.find.outputs.proven_lock_vm }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: find
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+        run: scripts/container/prior-run.sh
+
   # The checks of every push, split into jobs that run side by side (the
   # single `check` job took about 23 min; docs/decisions.md, laptop-ci).
   # Each job starts from .github/actions/setup, and all but `wasm` run their
@@ -145,8 +183,8 @@ jobs:
 
   # Formatting and lints: no tests.
   lint:
-    needs: image-publish
-    if: github.event_name != 'schedule'
+    needs: [image-publish, prior]
+    if: "!cancelled() && needs.image-publish.result == 'success' && github.event_name != 'schedule' && needs.prior.outputs.proven_lint != 'true'"
     # The runner's release only matters to `wasm` and to what runs on the
     # host's Docker; the pixel references come from the CI image's packages.
     runs-on: ubuntu-24.04
@@ -189,7 +227,8 @@ jobs:
       # (the nightly cache pruning) and check-path-filters.sh, which then holds the lock-vm and package
       # jobs' path filters to the tree: an entry naming a moved file would
       # silently stop that job running for it; check-action-pins.sh, which
-      # then holds every third-party action to a commit SHA; image.sh, publish-image.sh and
+      # then holds every third-party action to a commit SHA; prior-run.sh and
+      # checks-gate.sh, what lets main skip a job its branch run passed; image.sh, publish-image.sh and
       # what run.sh passes, on a stand-in docker; then, on the runner's real
       # one, that ci.yml's top env reaches the container.
       - run: scripts/container/run.sh scripts/container/test-gate-misses.sh
@@ -210,14 +249,15 @@ jobs:
       - run: scripts/container/run.sh scripts/container/test-check-path-filters.sh
       - run: scripts/container/run.sh scripts/container/check-path-filters.sh
       - run: scripts/container/run.sh scripts/container/test-check-action-pins.sh
+      - run: scripts/container/run.sh scripts/container/test-prior-run.sh
       - run: scripts/container/run.sh scripts/container/test-image.sh
       - run: scripts/container/test-run-env.sh
 
   # The debug test build: the workspace's tests through cargo-nextest, the
   # doc-tests, the 100 reloads and the reload fuzzer's short run.
   test:
-    needs: image-publish
-    if: github.event_name != 'schedule'
+    needs: [image-publish, prior]
+    if: "!cancelled() && needs.image-publish.result == 'success' && github.event_name != 'schedule' && needs.prior.outputs.proven_test != 'true'"
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -279,8 +319,8 @@ jobs:
   # opt-levels are what the budgets rest on (crates/strand/tests/
   # budgets.rs checks them).
   budgets:
-    needs: image-publish
-    if: github.event_name != 'schedule'
+    needs: [image-publish, prior]
+    if: "!cancelled() && needs.image-publish.result == 'success' && github.event_name != 'schedule' && needs.prior.outputs.proven_budgets != 'true'"
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -329,8 +369,8 @@ jobs:
   # slides and swaps are caught (the test job runs them in debug without
   # those).
   acceptance:
-    needs: image-publish
-    if: github.event_name != 'schedule'
+    needs: [image-publish, prior]
+    if: "!cancelled() && needs.image-publish.result == 'success' && github.event_name != 'schedule' && needs.prior.outputs.proven_acceptance != 'true'"
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -367,8 +407,8 @@ jobs:
   # opt-levels without its link-time optimisation, which they do not
   # measure.
   timing:
-    needs: image-publish
-    if: github.event_name != 'schedule'
+    needs: [image-publish, prior]
+    if: "!cancelled() && needs.image-publish.result == 'success' && github.event_name != 'schedule' && needs.prior.outputs.proven_timing != 'true'"
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -428,8 +468,8 @@ jobs:
   # shell), which builds strand's report test too, hence 50 minutes. The
   # mutants run nightly (eval-matrix.yml).
   eval:
-    needs: image-publish
-    if: github.event_name != 'schedule'
+    needs: [image-publish, prior]
+    if: "!cancelled() && needs.image-publish.result == 'success' && github.event_name != 'schedule' && needs.prior.outputs.proven_eval != 'true'"
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     steps:
@@ -470,8 +510,8 @@ jobs:
   # eval-matrix.yml's viewer check): a console error, a failed request, a page wider than the
   # screen or a search or player that does not work fails it.
   site:
-    needs: image-publish
-    if: github.event_name != 'schedule'
+    needs: [image-publish, prior]
+    if: "!cancelled() && needs.image-publish.result == 'success' && github.event_name != 'schedule' && needs.prior.outputs.proven_site != 'true'"
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     steps:
@@ -585,7 +625,8 @@ jobs:
   # compositor and its package version (an annotation and the job
   # summary; decisions.md laptop-resilience).
   compositors:
-    needs: image-publish
+    needs: [image-publish, prior]
+    if: "!cancelled() && needs.image-publish.result == 'success' && needs.prior.outputs.proven_compositors != 'true'"
     name: "${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'compositors (nightly: archlinux:latest Hyprland, niri, sway, labwc)' || 'compositors' }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -681,7 +722,8 @@ jobs:
   # a cold build here runs nothing unpinned; a tag archive GitHub
   # regenerates fails with a message saying so.
   lock-vm:
-    needs: image-publish
+    needs: [image-publish, prior]
+    if: "!cancelled() && needs.image-publish.result == 'success' && needs.prior.outputs.proven_lock_vm != 'true'"
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -953,6 +995,24 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # (audit-main-rerun) What deploy and release wait for: every check job
+  # passed in this run, or skipped because `prior` proved it on a green
+  # branch run of this commit; anything else fails (scripts/container/
+  # checks-gate.sh). Not on the schedule, whose runs skip the check jobs and
+  # neither deploy nor release.
+  checks:
+    needs: [prior, lint, test, budgets, acceptance, timing, eval, site, wasm, compositors, lock-vm, package]
+    if: "!cancelled() && github.event_name != 'schedule'"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: scripts/container/checks-gate.sh
+
   # The docs site on Railway (deploy/railway/README.md): on a push to
   # main whose every job passed, the site the wasm job built and checked
   # (the `site-live` artifact) is packaged with deploy/railway's
@@ -963,8 +1023,9 @@ jobs:
   # with no token it says so and deploys nothing.
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    # `package` too: the site serves scripts/install.sh, which it tests.
-    needs: [lint, test, budgets, acceptance, timing, eval, site, wasm, compositors, lock-vm, package]
+    # Every check job through `checks`, `package` too: the site serves
+    # scripts/install.sh, which it tests.
+    needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     concurrency:
@@ -1029,7 +1090,9 @@ jobs:
   # the release vX. The only job whose token may write to the repository.
   release:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-    needs: [lint, test, budgets, acceptance, timing, eval, site, wasm, compositors, lock-vm, package]
+    # Every check job, through `checks`: lint, test, budgets, acceptance,
+    # timing, eval, site, wasm, compositors, lock-vm, package.
+    needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
