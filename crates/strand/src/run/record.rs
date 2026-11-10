@@ -1168,6 +1168,29 @@ impl ChangeRecorder {
         }
     }
 
+    /// (proc-run) Whether a command of `action` run with `argv` was given
+    /// a text that is not the config's: an argument after the program
+    /// that is neither one of the action's own written words (`"-c"`, a
+    /// script, a flag; `Program::is_text_literal` holds chunk constants
+    /// only) nor a text of the program.
+    fn given_typed_text(&self, action: &str, argv: &[String]) -> bool {
+        let home = std::env::var_os("HOME").and_then(|h| h.into_string().ok());
+        let written: Vec<&str> = self
+            .program
+            .execs
+            .values()
+            .filter(|a| a.name == action)
+            .flat_map(|a| &a.argv)
+            .filter_map(|p| match p {
+                strand_compiler::hir::ArgvPart::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        argv.iter()
+            .skip(1)
+            .any(|a| !written.contains(&a.as_str()) && !self.argument_literal(a, home.as_deref()))
+    }
+
     /// A service's patch, from `Services::tap`.
     pub(crate) fn service(&mut self, t: u64, ev: &TapEvent<'_>) {
         if strand_services::secret(ev.service) {
@@ -1406,11 +1429,7 @@ impl ChangeRecorder {
         argv: &[String],
         answer: &Result<Value, String>,
     ) {
-        let home = std::env::var_os("HOME").and_then(|h| h.into_string().ok());
-        let tainted = argv
-            .iter()
-            .skip(1)
-            .any(|a| !self.argument_literal(a, home.as_deref()));
+        let tainted = self.given_typed_text(action, argv);
         if self.ring.as_ref().is_none_or(Ring::paused) {
             return;
         }
@@ -1501,23 +1520,7 @@ impl ChangeRecorder {
     /// `queued`: it waits behind one running, whose output it then
     /// holds back too if it would.
     pub(crate) fn run_started(&mut self, action: &str, argv: &[String], queued: bool) {
-        let home = std::env::var_os("HOME").and_then(|h| h.into_string().ok());
-        // The command's own words (`"-c"`, a script) are the config's.
-        let written: Vec<&str> = self
-            .program
-            .execs
-            .values()
-            .filter(|a| a.name == action)
-            .flat_map(|a| &a.argv)
-            .filter_map(|p| match p {
-                strand_compiler::hir::ArgvPart::Text(t) => Some(t.as_str()),
-                _ => None,
-            })
-            .collect();
-        let tainted = argv
-            .iter()
-            .skip(1)
-            .any(|a| !written.contains(&a.as_str()) && !self.argument_literal(a, home.as_deref()));
+        let tainted = self.given_typed_text(action, argv);
         let was = queued && self.run_tainted.get(action).copied().unwrap_or(false);
         self.run_tainted.insert(action.to_string(), tainted || was);
     }
@@ -3565,16 +3568,31 @@ mod tests {
     /// <name>`; a command given typed text keeps no text of its answer.
     #[test]
     fn a_result_actions_answer_is_recorded_as_its_call() {
-        let mut c = ChangeRecorder::new(true, program("let q = \"-t\""));
+        let src = "permit exec \"qalc\"\naction calc(q: text) -> text [\"qalc\", \"-t\", q]\n\
+                   let q = \"1+1\"";
+        let mut c = ChangeRecorder::new(true, program(src));
         let argv = |q: &str| vec!["qalc".to_string(), "-t".to_string(), q.to_string()];
         c.exec_answered(5, "calc", &argv("hunter2+1"), &Ok(Value::text("hunter3")));
-        c.exec_answered(6, "calc", &argv("-t"), &Err("`qalc` failed".into()));
+        c.exec_answered(6, "calc", &argv("1+1"), &Err("`qalc` failed".into()));
         let e = entries(c.ring().unwrap());
         assert_eq!(e[0].name.as_deref(), Some("action calc"));
         assert_eq!(e[0].rec.kind, kind::FETCH);
         assert_eq!(value_of(&e[0]), serde_json::json!({"ok": {"~text": 7}}));
         assert_eq!(value_of(&e[1]), serde_json::json!({"err": "`qalc` failed"}));
         assert!(!contains(&c.dump().unwrap(), b"hunter"));
+    }
+
+    /// (proc-run) A result action's own written words (a flag, a
+    /// subcommand) are the config's: called with no typed text, its
+    /// answer is kept, though no code names the flag.
+    #[test]
+    fn a_result_actions_own_flag_keeps_its_answer() {
+        let src = "permit exec \"uname\"\naction kernel() -> text [\"uname\", \"-r\"]\nlet x = 1";
+        let mut c = ChangeRecorder::new(true, program(src));
+        let argv = vec!["uname".to_string(), "-r".to_string()];
+        c.exec_answered(5, "kernel", &argv, &Ok(Value::text("6.1")));
+        let e = entries(c.ring().unwrap());
+        assert_eq!(value_of(&e[0]), serde_json::json!({"ok": "6.1"}));
     }
 
     /// (path-tilde) A `path` argument written as `~/…` reaches the
