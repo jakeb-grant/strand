@@ -754,6 +754,24 @@ impl Role {
     fn grabbed(&self) -> bool {
         matches!(self, Role::Popup { grabbed: true, .. })
     }
+
+    /// The surface is being destroyed: a lock surface's or a popup's role
+    /// objects go now, before the `wl_surface`, which the GPU thread's
+    /// swapchain may keep a while yet (`doomed` in `gpu_handoff.rs`). (audit-popup-roles) A popup's `xdg_popup`, then its
+    /// `xdg_surface`, as SCTK's drop would send them; that drop, later,
+    /// sends both again, which the client library drops unsent for a
+    /// destroyed proxy, and then the `wl_surface`'s. Events still on the
+    /// way to the destroyed roles are dropped there too.
+    fn drop_role(&mut self) {
+        match self {
+            Role::Lock(l) => l.drop_role(),
+            Role::Popup { popup, .. } => {
+                popup.xdg_popup().destroy();
+                popup.xdg_surface().destroy();
+            }
+            Role::Layer(_) | Role::Window(_) => {}
+        }
+    }
 }
 
 impl Surface {

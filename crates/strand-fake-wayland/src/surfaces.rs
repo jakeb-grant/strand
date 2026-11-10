@@ -347,6 +347,9 @@ pub(crate) struct Surfaces {
     held_feedback: Vec<WpPresentationFeedback>,
     /// (eval-surface-leg) Every commit, in order ([`CommitRecord`]).
     pub(crate) log: Arc<Mutex<Vec<CommitRecord>>>,
+    /// (audit-popup-roles) Every popup role request, in order
+    /// ([`crate::Fake::popup_log`]).
+    pub(crate) popup_log: Arc<Mutex<Vec<String>>>,
     /// With [`SurfaceGlobals::vblank`]: the frame callbacks and the
     /// feedback (with the index of its commit in `log`) waiting for the
     /// next refresh, and the commits since the last one.
@@ -392,6 +395,28 @@ impl Surfaces {
         {
             f(rec);
         }
+    }
+
+    /// (audit-popup-roles) Logs `what` about the popup on `surface`
+    /// (its index given) and, for `get_popup`, its parent's.
+    pub(crate) fn log_popup(
+        &self,
+        surface: &ObjectId,
+        parent: Option<&ObjectId>,
+        what: impl FnOnce(usize, Option<usize>) -> String,
+    ) {
+        let Some(index) = self.live.get(surface).map(|l| l.index) else {
+            return;
+        };
+        let parent = parent.and_then(|p| self.live.get(p)).map(|l| l.index);
+        if let Ok(mut log) = self.popup_log.lock() {
+            log.push(what(index, parent));
+        }
+    }
+
+    /// Whether `surface` has an `xdg_popup` role.
+    pub(crate) fn is_popup(&self, surface: &ObjectId) -> bool {
+        self.live.get(surface).is_some_and(|l| l.popup.is_some())
     }
 
     /// Gives `surface` its `xdg_popup` role.

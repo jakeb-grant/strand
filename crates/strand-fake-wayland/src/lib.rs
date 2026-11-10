@@ -1083,6 +1083,8 @@ pub struct Fake {
     selection: Arc<Mutex<Option<Selection>>>,
     /// (eval-surface-leg) Every surface commit, in order.
     commits: Arc<Mutex<Vec<CommitRecord>>>,
+    /// (audit-popup-roles) Every popup role request, in order.
+    popup_log: Arc<Mutex<Vec<String>>>,
     /// Wakes the fake's thread for a [`Cmd`] (a byte written), so a
     /// command is applied at once rather than at its next poll timeout.
     wake: std::os::unix::net::UnixStream,
@@ -1267,6 +1269,8 @@ impl Fake {
         wake.set_nonblocking(true)?;
         let commits = Arc::new(Mutex::new(Vec::new()));
         let thread_commits = commits.clone();
+        let popup_log = Arc::new(Mutex::new(Vec::new()));
+        let thread_popup_log = popup_log.clone();
         let (tx, rx) = mpsc::channel::<Cmd>();
         let stop = Arc::new(AtomicBool::new(false));
         let activated = Arc::new(Mutex::new(Vec::new()));
@@ -1352,6 +1356,7 @@ impl Fake {
             state.surf.globals = surface_globals;
             state.surf.records = thread_surfaces;
             state.surf.log = thread_commits;
+            state.surf.popup_log = thread_popup_log;
             state.capture.log = thread_captures;
             state.dc.log = thread_selection;
             while !thread_stop.load(Ordering::SeqCst) {
@@ -1418,6 +1423,7 @@ impl Fake {
             activation_log,
             selection,
             commits,
+            popup_log,
             wake,
             thread: Some(thread),
         })
@@ -1487,6 +1493,15 @@ impl Fake {
     /// (eval-surface-leg) How many surface commits there were so far.
     pub fn commit_count(&self) -> usize {
         self.commits.lock().map_or(0, |c| c.len())
+    }
+
+    /// (audit-popup-roles) Every `xdg_popup` role request so far, in
+    /// order, surfaces named by their index in [`Fake::surfaces`]:
+    /// `popup N on P` (`xdg_surface.get_popup`, `P` its parent's index or
+    /// `-` for none), `grab N`, `popup_destroy N` and
+    /// `xdg_surface_destroy N` (a popup's `xdg_surface`).
+    pub fn popup_log(&self) -> Vec<String> {
+        self.popup_log.lock().map(|l| l.clone()).unwrap_or_default()
     }
 
     /// Every surface created so far, in creation order, as last committed.

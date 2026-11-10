@@ -275,8 +275,17 @@ impl Dispatch<XdgSurface, ObjectId> for Server {
         init: &mut DataInit<'_, Self>,
     ) {
         match request {
-            xdg_surface::Request::GetPopup { id, positioner, .. } => {
+            xdg_surface::Request::GetPopup {
+                id,
+                parent,
+                positioner,
+            } => {
                 let popup = init.init(id, surface.clone());
+                let parent = parent.as_ref().and_then(|p| p.data::<ObjectId>());
+                state.surf.log_popup(surface, parent, |n, p| {
+                    let p = p.map_or_else(|| "-".to_owned(), |p| p.to_string());
+                    format!("popup {n} on {p}")
+                });
                 let size = positioner_size(&positioner);
                 state.surf.set_popup(
                     surface,
@@ -310,6 +319,11 @@ impl Dispatch<XdgSurface, ObjectId> for Server {
                 state
                     .surf
                     .toplevel_record(surface, |t| t.acked.push(serial));
+            }
+            xdg_surface::Request::Destroy if state.surf.is_popup(surface) => {
+                state
+                    .surf
+                    .log_popup(surface, None, |n, _| format!("xdg_surface_destroy {n}"));
             }
             _ => {}
         }
@@ -370,12 +384,25 @@ impl Dispatch<XdgPopup, ObjectId> for Server {
         _: &DisplayHandle,
         _: &mut DataInit<'_, Self>,
     ) {
-        // A reposition is answered at once, in place, at the new
-        // positioner's size.
-        if let xdg_popup::Request::Reposition { positioner, token } = request {
-            state
-                .surf
-                .reposition_popup(surface, token, positioner_size(&positioner));
+        match request {
+            // A reposition is answered at once, in place, at the new
+            // positioner's size.
+            xdg_popup::Request::Reposition { positioner, token } => {
+                state
+                    .surf
+                    .reposition_popup(surface, token, positioner_size(&positioner));
+            }
+            xdg_popup::Request::Grab { .. } => {
+                state
+                    .surf
+                    .log_popup(surface, None, |n, _| format!("grab {n}"));
+            }
+            xdg_popup::Request::Destroy => {
+                state
+                    .surf
+                    .log_popup(surface, None, |n, _| format!("popup_destroy {n}"));
+            }
+            _ => {}
         }
     }
 }

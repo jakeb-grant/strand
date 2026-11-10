@@ -2870,7 +2870,9 @@ for a lock's content surface, renewed instead of taken back (below).
   `SurfaceHost::gpu_release`; the `wl_surface` lives until `take_back`,
   so the swapchain is always dropped first. A lock surface's
   `ext_session_lock_surface_v1` goes at once, so its output may get a new
-  one (one per output, `duplicate_output`).
+  one (one per output, `duplicate_output`); so do a popup's `xdg_popup`
+  and `xdg_surface`, so it is gone before its parent popup and before
+  the next grab (decisions.md audit-popup-roles).
 - (lock-gpu) A lent or presented lock content surface is never taken
   back for `wl_shm` once the GPU thread may have presented to it
   (decisions.md gpu-stay): it is renewed (`State::renew_lock_content`).
