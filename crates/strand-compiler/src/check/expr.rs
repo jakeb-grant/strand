@@ -3932,15 +3932,20 @@ impl<'a> Checker<'a> {
                 let Some(e) = enum_id else {
                     return hir::Pattern::Error;
                 };
-                if let Ty::Enum(want) = target
-                    && *want != e
-                {
+                // A qualified variant against something that is not this
+                // enum (a `text` holding "dark") never matches: the same
+                // mismatch as against another enum.
+                if !target.is_lenient() && *target != Ty::Enum(e) {
                     let (a, b) = (self.types.enum_(e).name.clone(), self.show(target));
                     self.error(
                         "check::type_mismatch",
                         format!("this matches `{b}`, not `{a}`"),
                         p.span,
-                        "wrong enum",
+                        if matches!(target, Ty::Enum(_)) {
+                            "wrong enum"
+                        } else {
+                            "not an enum"
+                        },
                     );
                     return hir::Pattern::Error;
                 }

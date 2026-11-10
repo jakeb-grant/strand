@@ -3393,6 +3393,56 @@ fn a_file_named_like_a_builtin_type_is_not_a_qualifier() {
     );
 }
 
+/// A qualified variant pattern (`Look.dark`, `k.Look.dark`) against a
+/// scrutinee that is not that enum is the mismatch the bare `dark` is,
+/// in an expression, a statement and a tree `match`; against `Look?` it
+/// still matches.
+#[test]
+fn a_qualified_variant_against_a_non_enum_is_a_mismatch() {
+    for (scrutinee, arm) in [
+        ("\"dark\"", "Look.dark"),
+        ("3", "Look.dark"),
+        ("true", "Look.dark"),
+        ("\"dark\"", "k.Look.dark"),
+    ] {
+        for use_ in [
+            format!("let x = match mode {{ {arm} => 1, _ => 2 }}\n"),
+            format!(
+                "state n = 0\nbar H {{ box {{ on click {{ match mode {{ {arm} => n = 1, _ => n = 2 }} }} }} }}\n"
+            ),
+            format!("bar B {{ match mode {{ {arm} => text \"a\", _ => text \"b\" }} }}\n"),
+        ] {
+            let mut files = vec![("a.strand", format!("state mode = {scrutinee}\n{use_}"))];
+            let look = "enum Look { dark, light }\n".to_string();
+            if arm.starts_with("k.") {
+                files.push(("k.strand", look));
+            } else {
+                files[0].1.insert_str(0, &look);
+            }
+            let (out, map) = compile_files(&files);
+            let shown = render(&out.diagnostics, &map, Style::Plain);
+            assert_eq!(
+                codes_of(&out),
+                ["check::type_mismatch"],
+                "{}{shown}",
+                files[0].1
+            );
+            assert!(shown.contains("not `Look`"), "{shown}");
+        }
+    }
+    let (out, map) = compile_files(&[(
+        "a.strand",
+        "enum Look { dark, light }\nstate mode: Look? = null\n\
+         let x = match mode { Look.dark => 1, _ => 2 }\n"
+            .to_string(),
+    )]);
+    assert!(
+        out.diagnostics.is_empty(),
+        "{}",
+        render(&out.diagnostics, &map, Style::Plain)
+    );
+}
+
 /// (Review minor 11) A qualifier that is a name in scope, a service or
 /// a value keeps the parser's "statement in a tree" error, never "no
 /// file".
