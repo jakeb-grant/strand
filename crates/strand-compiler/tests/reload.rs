@@ -662,6 +662,62 @@ fn a_kept_handler_keeps_its_await_when_the_types_stay() {
     assert_eq!(shell.value("t", "out"), Value::int(1), "kept running");
 }
 
+/// (audit-reload-queues) A handler kept with an `await` in flight still
+/// runs on the replaced VM: the declared actions it calls afterwards go
+/// to the queue the host takes from, and an `await` of one's result
+/// resumes when it is answered.
+#[test]
+fn a_kept_handler_calls_its_actions_after_a_reload() {
+    let src = |t: &str| {
+        format!(
+            "permit exec \"true\"\npermit exec \"calc\"\naction ping() [\"true\"]\naction calc() -> text [\"calc\"]\nstate out = \"\"\nbar Top {{\n  box {{ on click {{ await sleep(1s); ping(); out = await calc() }} }}\n  text \"{t}\"\n}}\n"
+        )
+    };
+    let mut shell = boot(&[("t.strand", &src("a"))]);
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.at(0.5);
+    let (report, _) = shell.reload(&[("t.strand", &src("b"))]);
+    assert_eq!(report.restarted, 0, "{report:?}");
+    shell.at(2.0);
+    let execs = shell.inst.take_execs();
+    let names: Vec<&str> = execs.iter().map(|e| e.action.as_str()).collect();
+    assert_eq!(names, ["ping", "calc"], "{execs:?}");
+    execs[1]
+        .reply
+        .as_ref()
+        .expect("a reply slot")
+        .answer(Ok(Value::text("42")));
+    shell.at(2.1);
+    assert_eq!(shell.value("t", "out"), Value::text("42"));
+}
+
+/// (audit-reload-queues) A kept handler's `play` after a reload reaches
+/// the tree the host now shows, its keyframes found in the new program
+/// though another block declared above moved their id.
+#[test]
+fn a_kept_handler_plays_on_the_new_tree_after_a_reload() {
+    let src = |extra: &str| {
+        format!(
+            "{extra}keyframes shake {{ 0%, 100% {{ x: 0 }}; 50% {{ x: 4 }} }}\nbar Top {{\n  box {{ on click {{ await sleep(1s); play shake }} }}\n}}\n"
+        )
+    };
+    let mut shell = boot(&[("t.strand", &src(""))]);
+    let b = shell.scene.of_kind(NodeKind::Box)[0];
+    shell.inst.event(b, "click", Vec::new());
+    shell.at(0.5);
+    let moved = src("keyframes pulse { 0% { scale: 1 }; 100% { scale: 1.1 } }\n");
+    let (report, _) = shell.reload(&[("t.strand", &moved)]);
+    assert_eq!(report.restarted, 0, "{report:?}");
+    assert!(shell.scene.prop(b, Prop::Play).is_none());
+    let u = shell.at(2.0);
+    assert!(u.errors.is_empty(), "{:?}", u.errors);
+    let Some(PropValue::Keyframes(k)) = shell.scene.prop(b, Prop::Play) else {
+        panic!("the kept handler's play was lost");
+    };
+    assert_eq!(k.name, "shake");
+}
+
 /// A timer's duration edit rescales the remaining time.
 #[test]
 fn timer_duration_rescales() {

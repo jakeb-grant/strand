@@ -361,6 +361,89 @@ pub(crate) struct Ctx {
     pub(crate) not_a_list: Cell<bool>,
     /// (keyboard) So was a scroll action on an element that does not scroll.
     pub(crate) not_a_scroll: Cell<bool>,
+    /// (audit-reload-queues) The hooks of earlier programs' VMs that
+    /// handlers kept across reloads still run on, pointed at this one.
+    pub(crate) forwards: RefCell<Vec<Rc<Forward>>>,
+}
+
+/// (audit-reload-queues) A VM a reload replaced keeps running the
+/// handlers kept with an `await` in flight; its `play`, `propagate`,
+/// window and element asks go to the instance's current [`Ctx`] through
+/// this, so they reach the tree the host now shows. Kept nodes keep their
+/// element state and scene id, so those carry over as they are; a
+/// keyframes block, named by the old program's id, is found in the new
+/// program by its file, owner and name.
+pub(crate) struct Forward {
+    /// The replaced VM (`Weak`: once no kept task holds it, this goes).
+    old: std::rc::Weak<Vm>,
+    to: RefCell<std::rc::Weak<Ctx>>,
+}
+
+impl Forward {
+    fn to(&self) -> Option<Rc<Ctx>> {
+        self.to.borrow().upgrade()
+    }
+}
+
+/// The new program's keyframes block that `d` of `old` is: the same
+/// file (by module), owner (by name) and name.
+fn same_keyframes(old: &Program, d: DefId, new: &Program) -> Option<DefId> {
+    let owner = |p: &Program, o: Option<DefId>| o.map(|o| p.def(o).name.clone());
+    let od = old.def(d);
+    let oo = owner(old, od.owner);
+    let mut found = new.keyframes.keys().filter(|nd| {
+        let nd = new.def(**nd);
+        nd.name == od.name && nd.module == od.module && owner(new, nd.owner) == oo
+    });
+    match (found.next(), found.next()) {
+        (Some(nd), None) => Some(*nd),
+        _ => None,
+    }
+}
+
+impl VmHooks for Forward {
+    fn play(&self, rt: &Runtime, node: &Rc<NodeState>, keyframes: DefId) {
+        let (Some(to), Some(old)) = (self.to(), self.old.upgrade()) else {
+            return;
+        };
+        match same_keyframes(&old.prog, keyframes, &to.vm.prog) {
+            Some(d) => to.play(rt, node, d),
+            None => to.error("play", Error::failed("its keyframes are gone")),
+        }
+    }
+
+    fn propagate(&self, rt: &Runtime, ctx: &EventCtx) {
+        if let Some(to) = self.to() {
+            to.propagate(rt, ctx);
+        }
+    }
+
+    fn palette(&self, rt: &Runtime, name: &str) -> Result<Option<strand_scene::PropValue>, Error> {
+        match self.to() {
+            Some(to) => to.palette(rt, name),
+            None => Ok(None),
+        }
+    }
+
+    fn window(&self, rt: &Runtime, node: &Rc<NodeState>, ask: strand_scene::WindowAsk) {
+        if let Some(to) = self.to() {
+            to.window(rt, node, ask);
+        }
+    }
+
+    fn ask(&self, rt: &Runtime, node: &Rc<NodeState>, ask: strand_scene::NodeAsk) {
+        if let Some(to) = self.to() {
+            to.ask(rt, node, ask);
+        }
+    }
+
+    fn token(
+        self: Rc<Self>,
+        rt: &Runtime,
+        e: &strand_scene::TokenExpr,
+    ) -> Option<strand_scene::PropValue> {
+        self.to()?.token(rt, e)
+    }
 }
 
 impl Ctx {
@@ -987,6 +1070,7 @@ impl Ctx {
             asks: RefCell::default(),
             not_a_list: Cell::default(),
             not_a_scroll: Cell::default(),
+            forwards: RefCell::default(),
         });
         let weak: std::rc::Weak<Ctx> = Rc::downgrade(&ctx);
         let weak: std::rc::Weak<dyn VmHooks> = weak;
@@ -1482,6 +1566,8 @@ impl Instance {
         }
         // (lockmon) A reload never stops a command: the runs carry on.
         vm.set_runs(old.vm.runs());
+        // (audit-reload-queues) Nor loses one a kept handler asks for.
+        vm.set_exec_queue(old.vm.exec_queue());
         vm.runs().declare(&rt, &vm.prog);
         let ctx = Ctx::create(
             vm,
@@ -1490,6 +1576,24 @@ impl Instance {
             Some(build.identity.clone()),
             Some(build.hashes.clone()),
         );
+        // (audit-reload-queues) The old VM's hooks (and those of VMs
+        // before it a kept handler still runs on) reach the new instance.
+        {
+            let mut forwards = std::mem::take(&mut *old.forwards.borrow_mut());
+            forwards.retain(|f| f.old.strong_count() > 0);
+            let f = Rc::new(Forward {
+                old: Rc::downgrade(&old.vm),
+                to: RefCell::new(std::rc::Weak::new()),
+            });
+            let weak: std::rc::Weak<Forward> = Rc::downgrade(&f);
+            let weak: std::rc::Weak<dyn VmHooks> = weak;
+            old.vm.set_hooks(weak);
+            forwards.push(f);
+            for f in &forwards {
+                *f.to.borrow_mut() = Rc::downgrade(&ctx);
+            }
+            *ctx.forwards.borrow_mut() = forwards;
+        }
         *ctx.parked.borrow_mut() = old.parked.borrow().clone();
         *ctx.lock.borrow_mut() = old.lock.borrow().clone();
         // (report review) Kept cells keep their ids: still left out.
